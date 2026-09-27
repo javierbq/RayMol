@@ -66,6 +66,13 @@ class Boltz2Predictor(Predictor):
     # and the interface scores all exist. Everything but pLDDT used to be computed and
     # dropped on the floor -- #308 is what gives them somewhere to land.
     metric_specs = SCORED_SPECS
+    #: What a finished run is restaged by (#546) when the set has no ranking key of its
+    #: own. `min_ipsae` first: for a complex it is the interface gate (the worse
+    #: direction), which is what a binder campaign is judged on. It is ABSENT for a
+    #: single chain, so a monomer fold falls through to `mean_plddt`. Both are STATE
+    #: scalars, so their columns carry no chain suffix. No ipTM: boltz-mlx does not
+    #: report one.
+    ranking_metrics = ('min_ipsae', 'mean_plddt')
 
     #: 'inference' is the coarse phase the host writes today, and it is zero-span
     #: because boltz-mlx v0.1.1 reports nothing from inside predictScored. 'trunk'

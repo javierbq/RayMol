@@ -704,6 +704,7 @@ final class SetsStore {
     func sets(running: [String: BatchProgress] = [:]) -> [SetEntry] {
         let budgetDefault = defaultStageBudget()
         let views = viewsBySet()
+        let notices = noticesBySet()
         let rows = query("""
             SELECT s.id, s.name, s.kind, s.tool, s.group_name, s.budget, s.ranking_key,
                    s.sort_key, s.sort_desc, s.filter, s.columns, s.reference,
@@ -735,8 +736,28 @@ final class SetsStore {
                 columns: columns,
                 histogram: bins,
                 views: views[id] ?? [],
-                running: running[id])
+                running: running[id],
+                notice: notices[id] ?? "")
         }
+    }
+
+    /// Every set's one-line notice (#546), by set id: `meta` rows
+    /// `set_notice:<set id>` holding `{"kind", "text"}`, written by Python when
+    /// something the user did not do changed what a set shows (a finished run
+    /// restaged it) and cleared by the next staging action. One query, on a version
+    /// change only, like the views.
+    func noticesBySet() -> [String: String] {
+        var out: [String: String] = [:]
+        let prefix = "set_notice:"
+        for row in query("SELECT key, value FROM meta WHERE key LIKE 'set_notice:%'") {
+            guard let key = row.string("key"), key.hasPrefix(prefix),
+                  let value = row.string("value"),
+                  let data = value.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let text = object["text"] as? String, !text.isEmpty else { continue }
+            out[String(key.dropFirst(prefix.count))] = text
+        }
+        return out
     }
 
     /// The entries of one set in delivery order (`e.ord`), each with every scalar

@@ -1680,6 +1680,10 @@ struct SetEntry: Identifiable, Equatable {
     var views: [SetView] = []
     /// A batch still landing in this set (#416), or nil.
     var running: BatchProgress? = nil
+    /// The set's one-line notice (#546) -- "Restaged top 6 by pLDDT" when a finished
+    /// run moved its staging -- or "". Shown over the drawer's tab by
+    /// `SetNoticeBanner` until the next staging action or an explicit dismiss.
+    var notice: String = ""
 
     var rankingColumn: MetricColumn? {
         columns.first { $0.column == rankingKey && $0.isScalar }

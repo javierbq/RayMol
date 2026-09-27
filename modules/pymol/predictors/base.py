@@ -214,6 +214,13 @@ class Predictor(abc.ABC):
     #: finds a key in the schema is entitled to conclude the tool can produce it.
     metric_specs = ()
 
+    #: The metric keys a finished run into a set is RESTAGED by when the set has no
+    #: ranking key of its own (#546), in preference order: the first that is a column of
+    #: the set, declares `higher_is_better` and separates the candidates wins. Declare
+    #: only a quality score the method genuinely produces; () means "no opinion", and
+    #: a batch then stays staged in arrival order unless the user sorts.
+    ranking_metrics = ()
+
     #: This predictor's pipeline phases, ordered, as (phase, start, end) bands.
     #: EMPTY BY DEFAULT on purpose: the base class makes no claim about anyone's
     #: pipeline. A predictor that declares nothing gets an indeterminate card with

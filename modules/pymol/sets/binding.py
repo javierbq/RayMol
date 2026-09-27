@@ -22,7 +22,7 @@ from pymol import cmd, colorprinting
 from pymol.metrics import binding as mbinding, schema as mschema, store as mstore
 from pymol.metrics.errors import MetricError
 
-from . import document, store
+from . import document, schema, store
 from .errors import (SetBudgetExceeded, SetFormatError, SetInputError, SetNameConflict,
                      SetNotFound)
 
@@ -455,7 +455,7 @@ def _staged(c, set_id, _self=cmd):
         if e['staged_object'] in present:
             live.append(e)
         else:
-            c.update_entry(e['id'], staged_object=None, pinned=0)
+            c.update_entry(e['id'], staged_object=None, pinned=0, staged_by='')
     return live
 
 
@@ -777,7 +777,8 @@ def _restore_whole(c, entry, obj, set_row, _self=cmd):
             _self.delete(temp)
 
 
-def place(c, set_row, entry, obj, superpose=True, allow_split=True, _self=cmd):
+def place(c, set_row, entry, obj, superpose=True, allow_split=True,
+          by=schema.STAGED_AUTO, _self=cmd):
     """Place a whole complex that was just loaded (or delivered) as `entry`'s staged
     object, link it, and -- when `split_plan` allows -- reduce it to its design chains
     over the set's shared target. Returns the plan, or None when staged whole.
@@ -789,7 +790,10 @@ def place(c, set_row, entry, obj, superpose=True, allow_split=True, _self=cmd):
     binders are still staged over it is first rebuilt from one of them.
 
     If anything fails once the split has begun, the target made for it is removed and
-    `obj` is put back whole, so nothing is left orphaned or half-reduced."""
+    `obj` is put back whole, so nothing is left orphaned or half-reduced.
+
+    `by` is recorded as the entry's `staged_by` (#546): 'auto' for a batch delivery,
+    which a finished run may replace, 'user' for `set_stage`."""
     plan = split_plan(c, entry) if allow_split else None
     record = _target_record(c, set_row['id'])
     existing = record['object'] if record else ''
@@ -821,7 +825,7 @@ def place(c, set_row, entry, obj, superpose=True, allow_split=True, _self=cmd):
             target, made = _share_target(c, set_row, obj, plan, _self=_self)
             created = created or made
             reduced = True
-        c.update_entry(entry['id'], staged_object=obj)
+        c.update_entry(entry['id'], staged_object=obj, staged_by=by)
         if plan:
             _adopt_target(c, set_row, entry['id'], target, plan[1])
     except Exception:
@@ -835,6 +839,8 @@ def place(c, set_row, entry, obj, superpose=True, allow_split=True, _self=cmd):
         if reduced and _exists(obj, _self=_self):
             _restore_whole(c, entry, obj, set_row, _self=_self)
         raise
+    if by == schema.STAGED_AUTO:
+        _remember_provisional(entry['id'], obj, _self=_self)
     return plan
 
 
@@ -1065,12 +1071,14 @@ def _load_entry_into(c, entry, obj, _self=cmd):
         pass
 
 
-def stage(set_row, entries, budget_override=None, _self=cmd):
+def stage(set_row, entries, budget_override=None, by=schema.STAGED_USER, _self=cmd):
     """Load entries as objects in the set's group. Returns the object names.
 
     Refuses past the budget with the unpinned staged names it would need to drop; it
     never drops them itself. An entry already staged is left alone and its object name
-    returned.
+    returned -- but staged BY the caller from now on (#546): `set_stage` on a
+    provisional entry is the user keeping it, so a finished run may no longer replace
+    it. `by` is 'user' for every caller but the end-of-run restage.
     """
     c = container()
     set_id = set_row['id']
@@ -1087,6 +1095,10 @@ def stage(set_row, entries, budget_override=None, _self=cmd):
             % (len(todo), len(staged) + len(todo), limit,
                ', '.join(unpinned) or 'nothing is unpinned'), unpinned=unpinned)
     names = [e['staged_object'] for e in entries if e['id'] in already]
+    live = {e['id']: e for e in staged}
+    for e in entries:
+        if e['id'] in already and live[e['id']].get('staged_by') != by:
+            c.update_entry(e['id'], staged_by=by)
     if not todo:
         return names
     group = set_row.get('group_name') or set_row['name']
@@ -1101,15 +1113,18 @@ def stage(set_row, entries, budget_override=None, _self=cmd):
             _self.group(group, obj, 'add', quiet=1)
         except Exception as exc:
             colorprinting.warning(' sets: could not add %s to group %s (%s)' % (obj, group, exc))
-        place(c, set_row, e, obj, superpose=True, _self=_self)
+        place(c, set_row, e, obj, superpose=True, by=by, _self=_self)
         _write_back_metrics(c, dict(e, staged_object=obj), obj, _self=_self)
         names.append(obj)
     return names
 
 
-def unstage(set_row, entries, include_pinned=False, _self=cmd):
+def unstage(set_row, entries, include_pinned=False, by=schema.STAGED_USER, _self=cmd):
     """Delete the entries' objects and their metrics runs; clear the links. Pinned
-    entries are skipped unless `include_pinned` (the caller named them explicitly)."""
+    entries are skipped unless `include_pinned` (the caller named them explicitly).
+
+    `by` is recorded on each entry unstaged (#546): 'user' means a person took it out,
+    so a finished run's restage will not put it back; the restage itself passes ''."""
     c = container()
     removed = []
     for e in entries:
@@ -1125,10 +1140,245 @@ def unstage(set_row, entries, include_pinned=False, _self=cmd):
                 pass
             _self.delete(obj)
             removed.append(obj)
-        c.update_entry(e['id'], staged_object=None, pinned=0)
+        c.update_entry(e['id'], staged_object=None, pinned=0, staged_by=by)
+        _PROVISIONAL.pop(e['id'], None)
     _settle_target(c, set_row['id'], _self=_self)
     _drop_empty_group(set_row, _self=_self)
     return removed
+
+
+#: entry id -> (object name, fingerprint) for every PROVISIONAL stage this process
+#: made (#546 review). What lets a restage tell "the batch put this here and nobody
+#: has touched it" from "the user has been working on it": an edit of any kind
+#: (`alter`, `remove`, a mutation, a repack) changes the fingerprint, and an entry
+#: whose object was edited is the user's. In memory on purpose: a restage only
+#: happens in the process whose batch staged the entry, and an entry with no record
+#: here counts as edited -- the safe side.
+_PROVISIONAL = {}
+
+
+def _fingerprint(obj, _self=cmd):
+    """A cheap digest of what an edit changes: every atom's identity, element, B, q
+    and charge, and the coordinates of the displayed state. Not colours or
+    representations -- the app colours delivered designs itself -- and not the object
+    matrix, which a view drag moves without editing anything."""
+    import hashlib
+    atoms = []
+    try:
+        _self.iterate(obj, 'atoms.append((chain, resi, resn, name, elem, b, q,'
+                      ' formal_charge))', space={'atoms': atoms})
+        coords = _self.get_coords(obj, state=-1)
+    except Exception:
+        return ''
+    digest = hashlib.sha1(repr(atoms).encode('utf-8'))
+    if coords is not None:
+        digest.update(coords.round(3).tobytes())
+    return digest.hexdigest()
+
+
+def _remember_provisional(entry_id, obj, _self=cmd):
+    _PROVISIONAL[entry_id] = (obj, _fingerprint(obj, _self=_self))
+
+
+def _edited(entry, _self=cmd):
+    """True when a provisional entry's object is not the one its stage left: renamed,
+    edited, or staged before this process could fingerprint it."""
+    record = _PROVISIONAL.get(entry['id'])
+    obj = entry.get('staged_object')
+    if record is None or record[0] != obj:
+        return True
+    return _fingerprint(obj, _self=_self) != record[1]
+
+
+def _tool_ranking_keys(tool):
+    """The ranking metrics a tool DECLARES (`ranking_metrics` on its Predictor or
+    Generator class), in preference order; () when it declares none or is unknown."""
+    if not tool:
+        return ()
+    for module in ('pymol.predictors.registry', 'pymol.generators.registry'):
+        try:
+            registry = __import__(module, fromlist=['get'])
+            return tuple(getattr(registry.get(tool), 'ranking_metrics', ()) or ())
+        except Exception:
+            continue
+    return ()
+
+
+#: An entry with a STRUCTURE to stage: a stored chain. Not `n_chains`, which counts the
+#: chains of a sequence-only entry too.
+HAS_STRUCTURE = 'EXISTS (SELECT 1 FROM chains ch WHERE ch.entry_id = e.id)'
+
+
+def _candidates_sql(c, set_row, column):
+    """(where, params) for the entries a restage may put in the scene, ranked on
+    `column`: a value for it, not rejected, a structure, past the active filter (the
+    rows `top:N` reads), and not taken out by a person."""
+    from . import filter as _filter, selectors
+    columns = selectors._columns_map(c, set_row['id'])
+    where, params = _filter.compile(set_row.get('filter') or '', columns)
+    clauses = ['%s IS NOT NULL' % column, 'e.rejected = 0', HAS_STRUCTURE,
+               'NOT (e.staged_by = ? AND e.staged_object IS NULL)']
+    params = list(params) + [schema.STAGED_USER]
+    if where:
+        clauses.insert(0, '(%s)' % where)
+    return ' AND '.join(clauses), tuple(params)
+
+
+def _ranking(c, set_row):
+    """(column, descending, label) to restage by, or None (#546 review).
+
+    Which key: the set's own ranking key when it has one (the user sorted on it);
+    otherwise the first of its tool's declared `ranking_metrics` that is a column here.
+    The tool's key is USED, not written into `ranking_key`, so `top:N`, the histogram and
+    the sort indicator stay what the user made them.
+
+    Which direction: the column's `higher_is_better`. An ascending click on the header
+    is a way of LOOKING at the worst, not a statement that low pLDDT is good. Only a
+    column that declares no direction falls back to the sort -- and only for the set's
+    own key; a tool key with no direction is not a ranking.
+
+    Only when it separates anything: at least two distinct values among the
+    candidates. Ties everywhere (a backbone-validity score of 100 for every design)
+    would announce a restage that ranked nothing."""
+    columns = {col.get('column'): col for col in c.columns(set_row['id'])
+               if col.get('column')}
+    own = set_row.get('ranking_key') or ''
+    choices = []
+    if own in columns:
+        choices.append((own, True))
+    else:
+        choices.extend((k, False) for k in _tool_ranking_keys(set_row.get('tool'))
+                       if k in columns)
+    for key, is_own in choices:
+        spec = columns[key]
+        better = spec.get('higher_is_better')
+        if better is None:
+            if not is_own or (set_row.get('sort_key') or '') != key:
+                continue
+            desc = bool(int(set_row.get('sort_desc') or 0))
+        else:
+            desc = bool(better)
+        column = 'm.%s' % schema.quote(key)
+        where, params = _candidates_sql(c, set_row, column)
+        if c.distinct_count(set_row['id'], column, where, params) < 2:
+            if is_own:
+                return None
+            continue
+        return key, desc, spec.get('label') or key
+    return None
+
+
+def restage_by_ranking(set_row, _self=cmd):
+    """When a run finishes (#546): replace the set's PROVISIONAL staging with its top
+    entries by ranking key. Returns `{'staged', 'unstaged', 'top', 'kept', 'key',
+    'label', 'text'}`, or None when there is nothing to rank by (see `_ranking`), in
+    which case the provisional staging stays as it is.
+
+    The rule, in order:
+      * pinned entries, ones a person staged (`staged_by` other than 'auto') and
+        provisional ones whose object was EDITED since it was staged are never
+        touched; an edited one becomes the user's. They are charged to the budget
+        first;
+      * the slots left (`budget - kept`, never negative) go to the best candidates by
+        the ranking key (`_candidates_sql`);
+      * slots the ranking cannot fill -- too few entries have a value yet -- keep the
+        provisional entries already there, in arrival order, so an unscored design
+        is displaced only by a ranked one and the scene never shrinks for want of a
+        score;
+      * the provisional entries left over are unstaged.
+
+    The whole SET is ranked, not just the run that finished: an extending run's
+    designs compete with the earlier run's provisional ones.
+
+    Stage first, then unstage: while the new entries go in, the old ones are still
+    users of the shared target (#545), so it is never deleted and remade in between.
+    If staging fails part-way, only as many displaced entries are unstaged as the
+    budget needs, so the set is never left over budget and never emptier than asked.
+    """
+    c = container()
+    set_row = c.get_set(set_row['id'])
+    if (set_row.get('kind') or 'structures') != 'structures':
+        return None
+    ranking = _ranking(c, set_row)
+    if ranking is None:
+        return None
+    key, desc, label = ranking
+    set_id = set_row['id']
+    column = 'm.%s' % schema.quote(key)
+    staged = _staged(c, set_id, _self=_self)
+    _settle_target(c, set_id, _self=_self)
+    kept, provisional = [], []
+    for e in staged:
+        if e.get('pinned') or e.get('staged_by') != schema.STAGED_AUTO:
+            kept.append(e)
+        elif _edited(e, _self=_self):
+            c.update_entry(e['id'], staged_by=schema.STAGED_USER)
+            kept.append(e)
+        else:
+            provisional.append(e)
+    kept_ids = {e['id'] for e in kept}
+    limit = budget(set_row)
+    slots = max(limit - len(kept), 0)
+
+    from . import selectors
+    where, params = _candidates_sql(c, set_row, column)
+    order = selectors._order(dict(set_row, sort_key=key, sort_desc=1 if desc else 0),
+                             selectors._columns_map(c, set_id))
+    top = []
+    if slots:
+        # `kept` entries can rank anywhere, so ask for enough rows to skip past them.
+        for e in c.entries(set_id, where=where, params=params, order_by=order,
+                           limit=slots + len(kept)):
+            if e['id'] in kept_ids:
+                continue
+            top.append(e)
+            if len(top) == slots:
+                break
+    top_ids = {e['id'] for e in top}
+    # Slots the ranking left empty keep the UNSCORED provisional entries already
+    # there, oldest first.
+    def value(e):
+        return (e.get('scalars') or {}).get(key)
+
+    filler = [e for e in sorted(provisional, key=lambda e: e.get('ord') or 0)
+              if e['id'] not in top_ids and value(e) is None][:max(slots - len(top), 0)]
+    stay = top_ids | {e['id'] for e in filler}
+    to_stage = [e for e in top if not e.get('staged_object')]
+    # Worst first -- unscored, then lowest-ranked -- so a partial swap gives up the
+    # least valuable entries.
+    to_drop = [e for e in provisional if e['id'] not in stay]
+    to_drop.sort(key=lambda e: (value(e) is not None,
+                                0 if value(e) is None else (value(e) if desc else -value(e))))
+    result = {'staged': [], 'unstaged': [], 'top': len(top), 'kept': len(kept),
+              'key': key, 'label': label, 'text': ''}
+    if not to_stage and not to_drop:
+        return result
+    done = False
+    try:
+        if to_stage:
+            result['staged'] = stage(set_row, to_stage,
+                                     budget_override=len(staged) + len(to_stage),
+                                     by=schema.STAGED_AUTO, _self=_self)
+        done = True
+    finally:
+        drop = to_drop
+        if not done:
+            # Only what the budget needs: each new entry that made it in displaces one.
+            live = len(_staged(c, set_id, _self=_self))
+            excess = max(live - max(limit, len(kept)), 0)
+            drop = to_drop[:excess]
+        if drop:
+            result['unstaged'] = unstage(set_row, drop, by='', _self=_self)
+    text = 'Restaged top %d by %s' % (len(top), label)
+    extra = []
+    if kept:
+        extra.append('%d pinned or staged by you kept' % len(kept))
+    if filler:
+        extra.append('%d not yet scored kept' % len(filler))
+    if extra:
+        text += ' (%s)' % '; '.join(extra)
+    result['text'] = text
+    return result
 
 
 def _drop_empty_group(set_row, _self=cmd):
@@ -1148,7 +1398,19 @@ def _drop_empty_group(set_row, _self=cmd):
 
 def on_objects_deleted(_self=cmd):
     """After `delete`: clear links whose object is gone, NOW, so a new object made
-    under the same name is never mistaken for the entry that once bore it."""
+    under the same name is never mistaken for the entry that once bore it.
+
+    A staged object deleted by hand is the user unstaging it (#546), so it is marked
+    so first -- a finished run's restage must not bring back what was just deleted.
+    `reconcile` alone (a session load) leaves `staged_by` neutral instead."""
+    if store.is_open():
+        c = container()
+        present = set(_self.get_names('all') or [])
+        for s in c.sets():
+            for e in c.entries(s['id'], where='e.staged_object IS NOT NULL'):
+                if e['staged_object'] not in present:
+                    c.update_entry(e['id'], staged_object=None, pinned=0,
+                                   staged_by=schema.STAGED_USER)
     reconcile(_self=_self)
 
 
@@ -1450,6 +1712,12 @@ def load_raymol(filename, partial=0, quiet=1, *, _self=cmd):
         # resets the store, which would close the document if it were installed.
         _self.reinitialize()
     store.replace(new)
+    # A restage notice is about the run that just ended in THAT session; days later,
+    # in another, it would describe nothing on screen (#546 review). A recovery notice
+    # is the one kind that is about opening the file, and has its own rules (#547).
+    for s in new.sets():
+        if (new.notice(s['id']) or {}).get('kind') == 'restage':
+            new.set_notice(s['id'], None)
     if session is not None:
         r = _self.set_session(session, quiet=quiet, partial=0, steal=1)
     else:

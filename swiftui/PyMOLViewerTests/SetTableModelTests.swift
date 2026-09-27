@@ -794,6 +794,42 @@ final class SetsStoreTests: XCTestCase {
                        "the injection closes nothing: both quotes are escaped")
     }
 
+    // MARK: - the set notice strip (#546)
+
+    private func exec(_ sql: String) throws {
+        var db: OpaquePointer?
+        guard sqlite3_open(path, &db) == SQLITE_OK, let db else {
+            throw XCTSkip("could not open the scratch database")
+        }
+        defer { sqlite3_close(db) }
+        XCTAssertEqual(sqlite3_exec(db, sql, nil, nil, nil), SQLITE_OK, sql)
+    }
+
+    func testANoticeIsReadWithItsSetAndShowsTheBanner() throws {
+        try exec("""
+            INSERT INTO meta VALUES
+              ('set_notice:ab12cd34', '{"kind": "restage", "text": "Restaged top 6 by pLDDT"}'),
+              ('set_notice:zz999999', 'not json'),
+              ('set_notice_other', '{"text": "not a notice key"}')
+            """)
+        let store = try XCTUnwrap(SetsStore(path: path))
+        XCTAssertEqual(store.noticesBySet(), ["ab12cd34": "Restaged top 6 by pLDDT"],
+                       "a malformed row and a look-alike key are skipped, not fatal")
+        let set = try XCTUnwrap(store.sets().first)
+        XCTAssertEqual(set.notice, "Restaged top 6 by pLDDT")
+        XCTAssertEqual(SetNoticeModel.make(set: set)?.text, "Restaged top 6 by pLDDT")
+    }
+
+    func testNoNoticeMeansNoBanner() throws {
+        let store = try XCTUnwrap(SetsStore(path: path))
+        let set = try XCTUnwrap(store.sets().first)
+        XCTAssertEqual(set.notice, "", "a file with no notice rows reads as none")
+        XCTAssertNil(SetNoticeModel.make(set: set))
+        var blank = set
+        blank.notice = "   "
+        XCTAssertNil(SetNoticeModel.make(set: blank), "whitespace is not a notice")
+    }
+
     func testMetricColumnDecodeTolerantOfMissingFields() throws {
         let json = #"[{"key":"plddt"},{"key":"x","column":"x","higher_is_better":null,"lo":null}]"#
         let columns = SetsStore.decodeColumns(json)

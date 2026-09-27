@@ -214,6 +214,7 @@ def get_command_keywords(self_cmd=cmd):
         'set_view_delete': [ self_cmd.set_view_delete   , 0 , 0 , ''  , parsing.STRICT ],
         'set_stage'     : [ self_cmd.set_stage         , 0 , 0 , ''  , parsing.STRICT ],
         'set_unstage'   : [ self_cmd.set_unstage       , 0 , 0 , ''  , parsing.STRICT ],
+        'set_notice'    : [ self_cmd.set_notice        , 0 , 0 , ''  , parsing.STRICT ],
         'set_peek'      : [ self_cmd.set_peek          , 0 , 0 , ''  , parsing.STRICT ],
         'set_reference' : [ self_cmd.set_reference     , 0 , 0 , ''  , parsing.STRICT ],
         'set_budget'    : [ self_cmd.set_budget        , 0 , 0 , ''  , parsing.STRICT ],

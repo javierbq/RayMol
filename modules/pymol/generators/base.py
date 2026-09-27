@@ -340,6 +340,11 @@ class Generator(abc.ABC):
     option_defaults = {'recycling_steps': 2, 'diffusion_steps': 200, 'seed': 0}
     #: MetricSpecs this method can produce (#308), registered under `id`.
     metric_specs = ()
+
+    #: As `Predictor.ranking_metrics` (#546). A backbone generator produces geometry,
+    #: not a quality score, so the default is none: a design run stays staged in
+    #: arrival order until the user sorts on something.
+    ranking_metrics = ()
     #: This generator's pipeline phases, ordered, as (phase, start, end) bands on an
     #: overall 0..1 scale. Empty means an indeterminate card with a live clock, which
     #: is the correct rendering of no information.

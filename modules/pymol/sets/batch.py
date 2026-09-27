@@ -72,7 +72,8 @@ class _Batch:
     """One tool invocation delivering into one set."""
 
     __slots__ = ('id', 'set_id', 'run_id', 'tool', 'total', 'settled', 'landed',
-                 'group', 'superpose', 'slots', 'members', 'order', 'detached')
+                 'group', 'superpose', 'slots', 'members', 'order', 'detached',
+                 'quiet_end')
 
     def __init__(self, id, set_id, run_id, tool, total, group, superpose, slots):
         self.id = id
@@ -101,6 +102,9 @@ class _Batch:
         #: Set once the store changed under the batch. Later members skip the write
         #: without a second warning; the batch leaves `running()`.
         self.detached = False
+        #: Set by `quiesce` when the batch is being torn down rather than finishing
+        #: (`clear_pending`): its end is not a run's end, so nothing is restaged.
+        self.quiet_end = False
 
 
 def _container():
@@ -352,6 +356,13 @@ def land(object_name, state=None, _self=cmd):
             ' object is left where it is, unlinked' % (object_name, batch.id, entry_name, exc))
         staged = False
     _settle(batch, object_name)
+    if staged and batch.id not in _BATCHES:
+        # This was the last member, and the end-of-run restage (#546) may just have
+        # replaced it: say what is true now.
+        try:
+            staged = bool(c.entry_by_id(entry_id).get('staged_object'))
+        except Exception:
+            pass
     return {'set_id': batch.set_id, 'entry_id': entry_id, 'staged': staged,
             'entry': entry_name}
 
@@ -466,11 +477,17 @@ def _settle(batch, object_name):
 def _reap(batch):
     """Forget a batch whose every member has settled. A batch that landed NOTHING
     deletes its empty set, as today's batch deletes its empty group: a cancelled
-    campaign leaves nothing behind. Never touches a store that changed under it."""
+    campaign leaves nothing behind. Never touches a store that changed under it.
+
+    A batch that landed something has FINISHED, and its set's staging follows the
+    ranking from here (#546, `_restage`)."""
     for name in batch.order:
         _MEMBER.pop(name, None)
     _BATCHES.pop(batch.id, None)
-    if batch.detached or batch.landed or not _still_ours(batch):
+    if batch.detached or not _still_ours(batch):
+        return
+    if batch.landed:
+        _restage(batch)
         return
     try:
         c = _container()
@@ -478,6 +495,48 @@ def _reap(batch):
             c.delete_set(batch.set_id)
     except Exception:
         pass
+
+
+def _restage(batch):
+    """The end of a run (#546): while it ran, members were staged as they landed into
+    whatever slots were free -- the first to ARRIVE, not the best. Now that every
+    member has settled, `binding.restage_by_ranking` replaces those provisional stages
+    with the top of the set by its ranking key, leaving pinned and hand-staged entries
+    alone, and says so in one line (console, and the drawer's notice strip).
+
+    A run that was CANCELLED part-way is still restaged, over what landed: its designs
+    are as real as a finished run's and were staged in the same arbitrary order, so
+    leaving the first arrivals in view would be the same problem with fewer entries.
+
+    Skipped when the batch made no group (a single design stays exactly where it lands,
+    as it does without sets) and when a teardown ended it (`quiesce`). Never raises:
+    the run is over and every design is on disk whatever happens here.
+    """
+    if not batch.group or batch.quiet_end:
+        return
+    try:
+        c = _container()
+        set_row = c.get_set(batch.set_id)
+        result = binding.restage_by_ranking(set_row, _self=cmd)
+    except Exception as exc:
+        colorprinting.warning(' sets: %s finished, but its staging could not follow the'
+                              ' ranking (%s); what is staged stays as it landed'
+                              % (batch.id, exc))
+        return
+    if result and result.get('text'):
+        colorprinting.parrot(' sets: %s -- %s.' % (set_row['name'], result['text']))
+        try:
+            c.set_notice(batch.set_id, {'kind': 'restage', 'text': result['text']})
+        except Exception:
+            pass
+
+
+def quiesce():
+    """Mark every live batch as ending by teardown, not by finishing: for the
+    `clear_pending` loops, which settle each member on the way out and would otherwise
+    restage a set in the middle of a reset."""
+    for batch in _BATCHES.values():
+        batch.quiet_end = True
 
 
 def abandon(batch):
