@@ -363,7 +363,18 @@ SEE ALSO
 
     obj = _one_object(source, _self=_self)
     state = max(1, int(_self.get_state() or 1))
-    backbone = designer_base.read_backbone(obj, state, _self=_self)
+    # A staged binder shown over its set's shared target is designed IN CONTEXT: the
+    # backbone is the complex as it sits in the scene, and the target -- outside the
+    # source selection -- is held (#545 review). Everything else reads `obj` as before.
+    from pymol.sets import binding as set_binding
+    context = 'shared_target' if set_binding.is_split(obj, _self=_self) else ''
+    with set_binding.complex_of(obj, state, _self=_self) as (src, src_state):
+        backbone = designer_base.read_backbone(src, src_state, _self=_self)
+    if context:
+        colorprinting.parrot(' design_sequences: %s is staged over its set\'s shared'
+                             ' target %s; designing it in that context, target held'
+                             % (obj, set_binding.split_context(obj, _self=_self)
+                                or '(read from the stored complex)'))
     spec = designer_obj.parse_backbone(
         backbone, name=obj, source=obj, state=state,
         fixed=_held_positions(backbone, source, fixed, obj, _self=_self))
@@ -375,7 +386,8 @@ SEE ALSO
     register_pending(obj, job.job_id,
                      on_object={'object': obj, 'state': state,
                                 'designer': designer_obj.id,
-                                'n_sequences': options.n_sequences})
+                                'n_sequences': options.n_sequences,
+                                'context': context})
     if not int(quiet):
         colorprinting.parrot(
             ' design_sequences: job %s submitted, %d sequence%s for %s (%d of %d'
@@ -434,8 +446,9 @@ def _design_set(designer_obj, source, name='', n_sequences=1, temperature=0.1,
         # different set of positions per entry and a different one again tomorrow.
         raise PredictionOptionError(
             'fixed= takes a selection, which only means something for an object input;'
-            ' a set entry is not in the session. Stage the entry and design on the'
-            ' object if you need to hold residues.')
+            ' a set entry is not in the session. Stage the entry and design on its'
+            ' staged object if you need to hold residues -- a binder staged over its'
+            " set's shared target is designed with that target in context and held.")
 
     options = _resolve_options(designer_obj, n_sequences, temperature, seed, omit)
 
@@ -839,7 +852,11 @@ def _deliver_on_object(record, document, _self=cmd):
     # Checked ONCE, before anything is written. A false answer suppresses the whole
     # recording rather than just the arrays: the object-scope summaries describe the same
     # run and would be just as wrong against a different structure.
-    ours = _object_is_still_the_one(obj, index, _self=_self)
+    context = where.get('context') or ''
+    ours = _object_is_still_the_one(obj, index, state=state, context=context, _self=_self)
+    # Designed in the context of a shared target: only the object's OWN residues are
+    # recorded against it (the target's are the target's, and held).
+    only = _residue_keys(obj, _self=_self) if (ours and context) else None
     if not ours:
         colorprinting.warning(
             ' design_sequences: %s is not the structure this run was started against any'
@@ -860,10 +877,20 @@ def _deliver_on_object(record, document, _self=cmd):
         # Printed either way: the design took real time and the user has to see it even
         # when nothing can honestly be recorded against the session.
         if ours:
-            _record_on_object(obj, designer_id, state, index, sample, number)
+            _record_on_object(obj, designer_id, state, index, sample, number, only=only)
 
 
-def _object_is_still_the_one(obj, index, _self=cmd):
+def _residue_keys(obj, _self=cmd):
+    keys = set()
+    try:
+        _self.iterate('(%s) and polymer and guide' % obj, 'keys.add((chain, resi))',
+                      space={'keys': keys})
+    except Exception:
+        pass
+    return {(str(chain), str(resi)) for chain, resi in keys}
+
+
+def _object_is_still_the_one(obj, index, state=1, context='', _self=cmd):
     """True while `obj` is the structure this run was started against.
 
     IDENTITY, cheaply: the object exists and its designable residues are still the ones
@@ -881,23 +908,40 @@ def _object_is_still_the_one(obj, index, _self=cmd):
         if not index:
             return True
         keys = []
-        _self.iterate('(%s) and polymer and guide' % obj,
-                      'keys.append((chain, resi))', space={'keys': keys})
+        if context:
+            # Designed over a shared target: the identity is the complex it was read
+            # from, which has to still be there to be checked.
+            from pymol.sets import binding as set_binding
+            if not set_binding.is_split(obj, _self=_self):
+                return False
+            with set_binding.complex_of(obj, state, _self=_self) as (src, _):
+                _self.iterate('(%s) and polymer and guide' % src,
+                              'keys.append((chain, resi))', space={'keys': keys})
+        else:
+            _self.iterate('(%s) and polymer and guide' % obj,
+                          'keys.append((chain, resi))', space={'keys': keys})
         return [(str(chain), str(resi)) for chain, resi in keys] == list(index)
     except Exception:
         return True
 
 
-def _record_on_object(obj, designer_id, state, index, sequence, number):
+def _record_on_object(obj, designer_id, state, index, sequence, number, only=None):
     """One metrics-store run for one designed sequence. Never raises: bookkeeping must
-    not be the reason a finished design is lost."""
+    not be the reason a finished design is lost. `only`: record just the positions whose
+    (chain, resi) is in it -- the object's own residues of a complex it was read from."""
     try:
+        keep = None if only is None else [i for i, key in enumerate(index) if key in only]
         from pymol.metrics import binding as mbinding, store as mstore
         from .designers.metrics import RESIDUE_SPECS, SEQUENCE_SPECS
         values = []
         for spec in RESIDUE_SPECS:
             array = (sequence.get('arrays') or {}).get(spec.key)
             if array is None or not index or len(array) != len(index):
+                continue
+            if keep is not None:
+                values.append(mstore.value(designer_id, spec.key, state=int(state),
+                                           index=[index[i] for i in keep],
+                                           values=[array[i] for i in keep]))
                 continue
             # WITH the state: these scores depend on the backbone the sequence was
             # threaded onto, so a design against model 2 of a five-model object is not

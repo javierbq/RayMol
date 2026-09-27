@@ -14,6 +14,7 @@ differ by tool, so the table is created with the set and grown with ALTER TABLE 
 appear. A key is restricted to ^[a-z][a-z0-9_]*$ so that quoting it into DDL is safe by
 construction; a value is never interpolated anywhere in this package.
 """
+import json
 import re
 import sqlite3
 import time
@@ -23,7 +24,7 @@ from .errors import SetFormatError, SetInputError
 #: Bumped only for a change an older reader cannot absorb. A file newer than this
 #: refuses to open, naming the build that wrote it; an older file is migrated forward
 #: inside one transaction. There is no downgrade path.
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 
 #: A metric key. Lower-case, starts with a letter, no separators but '_': the same
 #: alphabet MetricSpec keys already use, tightened to exclude a leading digit so the
@@ -39,14 +40,15 @@ _CHAIN_UNSAFE = re.compile(r'[^A-Za-z0-9_]')
 RESERVED_COLUMNS = frozenset((
     'id', 'set_id', 'ord', 'name', 'run_id', 'created', 'sequences', 'n_chains',
     'n_residues', 'parents', 'starred', 'rejected', 'tags', 'note', 'staged_object',
-    'pinned', 'entry_id', 'rowid',
+    'pinned', 'entry_id', 'rowid', 'design_chains',
 ))
 
 SET_KINDS = ('structures', 'sequences', 'mixed')
 ARRAY_ENCODINGS = ('f32', 'u8q')
 BLOB_KINDS = ('cif', 'f32', 'u8q', 'thumb')
 
-#: Format version 1, verbatim from the spec (§2.2). Order matters for the foreign keys.
+#: Format version 1 from the spec (§2.2), plus `entries.design_chains` (version 2,
+#: #545). Order matters for the foreign keys.
 DDL = (
     """CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)""",
     """CREATE TABLE session (
@@ -81,6 +83,7 @@ DDL = (
   tags TEXT NOT NULL DEFAULT '',
   note TEXT NOT NULL DEFAULT '',
   staged_object TEXT, pinned INTEGER NOT NULL DEFAULT 0,
+  design_chains TEXT NOT NULL DEFAULT '[]',
   UNIQUE (set_id, name))""",
     """CREATE INDEX entries_set_ord ON entries(set_id, ord)""",
     """CREATE INDEX entries_staged ON entries(staged_object)
@@ -117,10 +120,95 @@ DDL = (
 TABLES = ('meta', 'session', 'sets', 'runs', 'entries', 'blobs', 'chains', 'arrays',
           'views')
 
-#: from_version -> callable(conn) that brings the file to from_version + 1. Empty at
-#: v1; `open_or_migrate` walks it so that the first real migration is one entry here
-#: and no change to the open path.
-MIGRATIONS = {}
+def _json_or(text, default):
+    try:
+        value = json.loads(text) if isinstance(text, str) else default
+    except ValueError:
+        return default
+    return value if isinstance(value, type(default)) else default
+
+
+def resolve_design_chains(chain_ids, explicit=None, metric=None, run_inputs=None,
+                          parent_chains=()):
+    """Which of an entry's chains were DESIGNED, as a sorted list (#545).
+
+    The first source that names a chain the entry actually has wins, in this order:
+    what the caller said (`explicit`), the entry's own `design_chain` metric (every
+    generator records it, `generators/metrics.py`), its run's `inputs['design_chain']`
+    (what `DesignSpec.design_chain` asked for), and then its parents' design chains --
+    so a refold or a redesign of a design keeps pointing at the binder. `[]` when none
+    applies: an entry with no designed chain is shown and staged whole, as before.
+
+    One function for delivery and for the v1 -> v2 backfill, so a migrated file and a
+    fresh one say the same thing about the same entry.
+    """
+    have = {str(c) for c in chain_ids or ()}
+
+    def pick(value):
+        if value is None or value == '':
+            return []
+        if isinstance(value, (list, tuple, set)):
+            names = [str(v) for v in value if v not in (None, '')]
+        else:
+            names = [c.strip() for c in str(value).split(',') if c.strip()]
+        return sorted({c for c in names if c in have})
+
+    for candidate in (explicit, metric, (run_inputs or {}).get('design_chain'),
+                      list(parent_chains or ())):
+        chosen = pick(candidate)
+        if chosen:
+            return chosen
+    return []
+
+
+def _migrate_1_to_2(conn):
+    """v1 -> v2: `entries.design_chains`, backfilled from what the file already knows
+    (#545) -- each entry's `design_chain` metric column where its set has one, else
+    its run's inputs, else its parents'. Oldest entries first, so a parent in another
+    set is resolved before the child that inherits from it."""
+    have_column = any(r[1] == 'design_chains'
+                      for r in conn.execute('PRAGMA table_info(entries)'))
+    if not have_column:
+        # Idempotent, so a file a test walked forward from an older hook still opens.
+        conn.execute("ALTER TABLE entries ADD COLUMN design_chains TEXT NOT NULL"
+                     " DEFAULT '[]'")
+    runs = {rid: _json_or(inputs, {})
+            for rid, inputs in conn.execute('SELECT id, inputs FROM runs')}
+    metric = {}
+    for (set_id,) in conn.execute('SELECT id FROM sets').fetchall():
+        table = metrics_table(set_id)
+        try:
+            cols = [r[1] for r in conn.execute('PRAGMA table_info(%s)' % quote(table))]
+        except sqlite3.Error:
+            continue
+        if 'design_chain' in cols:
+            for eid, value in conn.execute(
+                    'SELECT entry_id, "design_chain" FROM %s' % quote(table)):
+                if value not in (None, ''):
+                    metric[eid] = value
+    chains = {}
+    for eid, chain in conn.execute('SELECT entry_id, chain FROM chains'):
+        chains.setdefault(eid, set()).add(chain)
+    done = {}
+    rows = conn.execute('SELECT id, run_id, sequences, parents FROM entries'
+                        ' ORDER BY created, ord').fetchall()
+    for eid, run_id, sequences, parents in rows:
+        have = set(chains.get(eid, ())) | set(_json_or(sequences, {}))
+        inherited = []
+        for parent in _json_or(parents, []):
+            inherited.extend(done.get(str(parent), ()))
+        picked = resolve_design_chains(have, metric=metric.get(eid),
+                                       run_inputs=runs.get(run_id),
+                                       parent_chains=inherited)
+        done[eid] = picked
+        if picked:
+            conn.execute('UPDATE entries SET design_chains = ? WHERE id = ?',
+                         (json.dumps(picked), eid))
+
+
+#: from_version -> callable(conn) that brings the file to from_version + 1.
+#: `open_or_migrate` walks it inside one transaction.
+MIGRATIONS = {1: _migrate_1_to_2}
 
 
 def check_key(key):
@@ -227,8 +315,31 @@ def open_or_migrate(conn):
             found += 1
             conn.execute("UPDATE meta SET value = ? WHERE key = 'format_version'",
                          (str(found),))
+        # The file is now THIS build's format, so an older build's refusal must name
+        # this build, not the one that first wrote it (#545 review).
+        conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('app_version', ?)",
+                     (app_version() or 'format %d reader' % FORMAT_VERSION,))
         conn.execute('COMMIT')
-    except (sqlite3.Error, SetFormatError):
+    except SetFormatError:
         conn.execute('ROLLBACK')
         raise
+    except Exception as exc:
+        # Anything else a migration trips over -- a malformed JSON field is a
+        # TypeError, not an sqlite3.Error -- must not leave the transaction open.
+        try:
+            conn.execute('ROLLBACK')
+        except sqlite3.Error:
+            pass
+        raise SetFormatError('could not migrate this file from format version %d: %s'
+                             % (found, exc))
     return found
+
+
+def app_version():
+    """This build's version string, or '' when it cannot be read. Imported lazily: the
+    store is session-free, and only a migration needs to know."""
+    try:
+        from pymol import cmd
+        return str(cmd.get_version()[0])
+    except Exception:
+        return ''

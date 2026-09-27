@@ -170,11 +170,15 @@ struct SetRow: Identifiable, Equatable, Hashable {
     /// want it; the STRUCTURES and arrays those parents point at stay lazy.
     let parents: [String]
     let values: [String: MetricValue]
+    /// `entries.design_chains` (#545): the chains that were DESIGNED, sorted; empty
+    /// when the entry has none or the file predates the column. What the Sequences tab
+    /// shows by default — a binder run's target is the same in every row.
+    let designChains: [String]
 
     init(id: String, name: String, ord: Int, starred: Bool, rejected: Bool,
          pinned: Bool, stagedObject: String?, nChains: Int, nResidues: Int,
          tags: String, runID: String?, values: [String: MetricValue],
-         parents: [String] = []) {
+         parents: [String] = [], designChains: [String] = []) {
         self.id = id
         self.name = name
         self.ord = ord
@@ -188,6 +192,7 @@ struct SetRow: Identifiable, Equatable, Hashable {
         self.runID = runID
         self.parents = parents
         self.values = values
+        self.designChains = designChains
     }
 
     var isStaged: Bool { stagedObject != nil }
@@ -745,9 +750,11 @@ final class SetsStore {
         // hand-edited file cannot turn a column name into SQL.
         let metricSelect = scalar.map { ", m.\(Self.quote($0)) AS \(Self.quote("m_" + $0))" }
             .joined()
+        // A format-1 file has no `design_chains` (#545); it still reads, as "none".
+        let designSelect = entriesHasColumn("design_chains") ? ", e.design_chains" : ""
         let sql = """
             SELECT e.id, e.name, e.ord, e.starred, e.rejected, e.pinned, e.staged_object,
-                   e.n_chains, e.n_residues, e.tags, e.run_id, e.parents\(metricSelect)
+                   e.n_chains, e.n_residues, e.tags, e.run_id, e.parents\(designSelect)\(metricSelect)
             FROM entries e LEFT JOIN \(Self.quote("m_" + setID)) m ON m.entry_id = e.id
             WHERE e.set_id = ? ORDER BY e.ord
             """
@@ -768,8 +775,14 @@ final class SetsStore {
                 tags: row.string("tags") ?? "",
                 runID: row.string("run_id"),
                 values: values,
-                parents: Self.decodeParents(row.string("parents") ?? "[]"))
+                parents: Self.decodeParents(row.string("parents") ?? "[]"),
+                designChains: Self.decodeParents(row.string("design_chains") ?? "[]"))
         }
+    }
+
+    /// Whether `entries` has `column`. One PRAGMA, on the same read-only connection.
+    func entriesHasColumn(_ column: String) -> Bool {
+        query("PRAGMA table_info(entries)").contains { $0.string("name") == column }
     }
 
     // MARK: Lazy per-entry reads (#419)

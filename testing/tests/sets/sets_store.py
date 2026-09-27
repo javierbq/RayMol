@@ -74,7 +74,7 @@ class FormatTest(SetStoreTestCase):
 
     def testFreshFileHasSchema(self):
         c = self.open()
-        self.assertEqual(c.meta_get('format_version'), '1')
+        self.assertEqual(c.meta_get('format_version'), str(schema.FORMAT_VERSION))
         self.assertEqual(c.version(), 0)
         tables = {r[0] for r in sqlite3.connect(self.path).execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
@@ -121,7 +121,7 @@ class FormatTest(SetStoreTestCase):
         try:
             c = self.open()
             self.assertEqual(called, [True])
-            self.assertEqual(c.meta_get('format_version'), '1')
+            self.assertEqual(c.meta_get('format_version'), str(schema.FORMAT_VERSION))
         finally:
             del schema.MIGRATIONS[0]
 

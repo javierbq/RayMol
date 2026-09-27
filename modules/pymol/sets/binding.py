@@ -13,6 +13,7 @@ The one module in `pymol.sets` that imports `cmd`. Four jobs:
 Nothing here is reached by a poll. The Swift side (#417) will read the database itself
 and call these through `set_*` commands.
 """
+import contextlib
 import json
 import os
 import pickle
@@ -93,6 +94,10 @@ def _split_cif_blocks(text):
     return blocks
 
 
+#: CIF items whose value is the exporting object's name (see `canonical_cif`).
+_OBJECT_ID_TAGS = ('_entry.id ', '_cell.entry_id ', '_symmetry.entry_id ')
+
+
 def canonical_cif(text, label):
     """`get_cifstr` output with its object-derived header lines replaced by `label`.
 
@@ -112,8 +117,10 @@ def canonical_cif(text, label):
     for line in text.splitlines(keepends=True):
         if line.startswith('data_'):
             line = 'data_%s\n' % label
-        elif line.startswith('_entry.id '):
-            line = '_entry.id %s\n' % label
+        elif line.startswith(_OBJECT_ID_TAGS):
+            # `_entry.id`, and on anything with a unit cell `_cell.entry_id` and
+            # `_symmetry.entry_id` too (#545 review): all three carry the object name.
+            line = '%s %s\n' % (line.split(None, 1)[0], label)
         out.append(line)
     return ''.join(out)
 
@@ -178,15 +185,18 @@ def _spec_or_none(tool, key):
         return None
 
 
-def _superpose(obj, ref, _self=cmd):
-    """`super` obj onto ref; a failure is a warning, never an error."""
+def _superpose(obj, ref, _self=cmd, ref_sel=None):
+    """`super` obj onto ref; a failure is a warning, never an error. `ref_sel` is the
+    selection to superpose onto when it is more than the reference object itself -- a
+    reference staged as its design chain over a shared target (#545)."""
     if not ref or ref == obj or not _exists(ref, _self=_self):
         return False
+    target = ref_sel or ref
     try:
         if _self.count_atoms('(%s) and polymer' % obj) == 0 or \
-                _self.count_atoms('(%s) and polymer' % ref) == 0:
+                _self.count_atoms('(%s) and polymer' % target) == 0:
             return False
-        _self.super(obj, ref, quiet=1)
+        _self.super(obj, target, quiet=1)
         return True
     except Exception as exc:
         colorprinting.warning(' sets: could not superpose %s onto %s (%s)' % (obj, ref, exc))
@@ -284,18 +294,21 @@ def capture_object(set_id, obj, name='', run_id=None, parents=(), states='all',
         entry_name = base if len(state_list) == 1 else '%s_%d' % (base, state)
         entry_name = _unique_entry_name(c, set_id, entry_name)
         cifs, seqs = [], {}
-        for ch in chains:
-            sel = _chain_sel(obj, ch)
-            try:
-                text = _self.get_cifstr(sel, state)
-            except Exception as exc:
-                raise SetInputError('could not export %s chain %r: %s' % (obj, ch, exc))
-            if not text or not text.strip():
-                continue
-            cifs.append((ch, canonical_cif(text, ch)))
-            seq = _sequence(sel, state, _self=_self)
-            if seq:
-                seqs[ch] = seq
+        # A staged binder shown over its set's shared target is captured WITH the
+        # target (#545 review): the entry is the complex, not the half on display.
+        with complex_of(obj, state, _self=_self) as (src, src_state):
+            for ch in (chains if src == obj else _chains(src, _self=_self)):
+                sel = _chain_sel(src, ch)
+                try:
+                    text = _self.get_cifstr(sel, src_state)
+                except Exception as exc:
+                    raise SetInputError('could not export %s chain %r: %s' % (obj, ch, exc))
+                if not text or not text.strip():
+                    continue
+                cifs.append((ch, canonical_cif(text, ch)))
+                seq = _sequence(sel, src_state, _self=_self)
+                if seq:
+                    seqs[ch] = seq
         m_scalars, arrays, m_specs, runs = _metric_payload(obj, state)
         this_run = run_id
         if this_run is None and runs:
@@ -464,6 +477,540 @@ def _ensure_group(group, _self=cmd):
     _self.group(group, quiet=1)
 
 
+# -- The shared target (#545) -----------------------------------------------------------
+#
+# A binder-design run holds its target fixed, so every entry carries the same target
+# chain -- ONE blob (see `canonical_cif`) -- and staging six of them used to put six
+# copies of it in the scene. Instead, an entry whose non-design chains are that one
+# blob stages as its design chain(s) only, over a single `target_<set>` object in the
+# set's group (see `target_name`), loaded once. Identity is decided by content hash, never assumed:
+#
+#   * the entry names its design chains, has at least one other chain, and
+#   * its run HELD THE REST FIXED -- a design run, whose inputs name the `design_chain`
+#     it generated against a given target. A fold predicts every chain, and its first
+#     model to land cannot know the second will differ, so hash identity alone would
+#     split one model of a Boltz run and stage the rest whole -- and
+#   * every entry of its RUN holds the same blob for each of those other chains, and
+#   * that is the blob the set's shared target already holds (or there is none yet), and
+#   * no metric of the entry is tied to a non-design chain (a chain scalar, or a residue
+#     array indexed on the target), because those could not be written back onto a
+#     binder-only object -- such an entry is staged whole, so no metric is ever dropped.
+#
+# Anything else is staged whole, exactly as before (a fold predicts every chain, so its
+# target differs per entry). The target is an Object, not an Entry: it is never counted
+# against the budget, it goes into a .pse as a plain object, and it is removed when the
+# last entry staged over it leaves the scene. Its record lives in the container
+# (`Container.shared_target`), so a saved or recovered session keeps the link.
+
+
+def target_name(group):
+    """`target_<set>`, the shared target's object name.
+
+    NOT `<set>_target`, which is what #545 first asked for: PyMOL resolves a selection
+    word that names no object by UNIQUE PREFIX (`SelectGetInfoIter`) before it expands
+    groups, so a lone `rfd3_a1_target` inside the group `rfd3_a1` made `hide rfd3_a1`,
+    `color red, rfd3_a1` and `get_object_list('rfd3_a1')` act on the target alone and
+    never reach the binders (measured). A name the group's name is not a prefix of
+    cannot shadow it -- which `target_<set>` is not, for a set called `t`, `ta`,
+    `target` or `target_t`, so those take the next prefix that is safe."""
+    for prefix in ('target_', 'shared_', 'fixed_'):
+        name = prefix + str(group)
+        if not name.startswith(str(group)):
+            return name
+    return 'target_of_' + str(group)
+
+
+def _target_record(c, set_id):
+    record = c.shared_target(set_id)
+    if record is None:
+        return None
+    record = dict(record)
+    record['entries'] = [str(e) for e in record.get('entries') or ()]
+    record['signature'] = [list(p) for p in record.get('signature') or ()]
+    return record
+
+
+def _chains_of_index(index):
+    """Chain ids an array's `index` names: [[chain, resi], ...], or nested pairs."""
+    out = set()
+    for item in index or ():
+        if isinstance(item, (list, tuple)) and len(item) == 2 and \
+                not isinstance(item[0], (list, tuple)):
+            out.add(str(item[0]))
+        elif isinstance(item, (list, tuple)):
+            out |= _chains_of_index(item)
+    return out
+
+
+def _metrics_touch_other_chains(c, entry, designed):
+    """True when a metric of `entry` is tied to a chain outside `designed`."""
+    designed = {str(ch) for ch in designed}
+    scalars = entry.get('scalars') or {}
+    for col in c.columns(entry['set_id']):
+        chain = col.get('chain')
+        if col.get('column') and chain not in (None, '') and str(chain) not in designed \
+                and scalars.get(col['column']) is not None:
+            return True
+    for row in c.arrays_of(entry['id']):
+        chain = row.get('chain')
+        if chain not in (None, '') and str(chain) not in designed:
+            return True
+        if _chains_of_index(row.get('index')) - designed:
+            return True
+    return False
+
+
+def split_plan(c, entry):
+    """(design chains, target signature) when `entry` may stage as its design chains
+    over the set's shared target, else None. See the block comment above."""
+    designed = [str(ch) for ch in entry.get('design_chains') or ()]
+    if not designed:
+        return None
+    held = c.chain_blobs(entry['id'])
+    chains = [ch for ch, _ in held]
+    if not set(designed) <= set(chains):
+        return None
+    signature = sorted([ch, h] for ch, h in held if ch not in designed)
+    if not signature:
+        return None
+    if not entry.get('run_id'):
+        return None
+    try:
+        inputs = c.run(entry['run_id']).get('inputs') or {}
+    except Exception:
+        return None
+    if not isinstance(inputs, dict) or not inputs.get('design_chain'):
+        return None
+    per_chain = c.run_chain_blobs(entry['run_id'], [ch for ch, _ in signature])
+    if any(len(hashes) != 1 for hashes in per_chain.values()):
+        return None
+    record = _target_record(c, entry['set_id'])
+    if record is not None and record['entries'] and record['signature'] != signature:
+        return None
+    if _metrics_touch_other_chains(c, entry, designed):
+        return None
+    return designed, signature
+
+
+def _chains_sel(obj, chains):
+    return '(%s) and (%s)' % (obj, ' or '.join('chain %s' % (ch if ch else '""')
+                                               for ch in chains))
+
+
+def _show_target(target, set_row=None, _self=cmd):
+    """The shared target's look, the same whichever path made it (#545 review): a
+    cartoon, with ligands as sticks. A delivered design has its own target copy hidden
+    (`designing._hide_target_copy`), so a target made from one would otherwise inherit
+    "hidden" -- and one made by `stage` would not.
+
+    When it COINCIDES with the set's reference -- the user's own target, on screen, same
+    chain sequences and within `COINCIDE_RMSD` on CA -- it is made DISABLED (round 2):
+    drawing it would draw the same structure twice. Disabled rather than repless, so
+    the object panel's toggle still does something: switch it on and the cartoon is
+    there."""
+    try:
+        _self.hide('everything', target)
+        _self.show('cartoon', target)
+        _self.show('sticks', '(%s) and organic' % target)
+    except Exception:
+        pass
+    try:
+        if set_row is not None and _coincides_with_reference(target, set_row, _self=_self):
+            _self.disable(target)
+        else:
+            _self.enable(target)
+    except Exception:
+        pass
+
+
+#: CA RMSD (A) under which the shared target is the reference drawn a second time.
+COINCIDE_RMSD = 0.5
+
+
+def _polymer_sequences(sel, _self=cmd):
+    chains = {}
+    try:
+        _self.iterate('(%s) and polymer and name CA' % sel,
+                      'chains.setdefault(chain, []).append(resn)',
+                      space={'chains': chains})
+    except Exception:
+        return None
+    return [chains[ch] for ch in sorted(chains)]
+
+
+def _coincides_with_reference(target, set_row, _self=cmd):
+    """True when the set's reference is in the scene and the target is the same
+    structure in the same place: equal per-chain residue sequences (chains in id
+    order) and CA RMSD at most `COINCIDE_RMSD`, as they sit now."""
+    ref = set_row.get('reference') or ''
+    if not ref or ref == target or not _exists(ref, _self=_self):
+        return False
+    seq_t = _polymer_sequences(target, _self=_self)
+    seq_r = _polymer_sequences(ref, _self=_self)
+    if not seq_t or seq_t != seq_r:
+        return False
+    try:
+        a = _self.get_coords('(%s) and polymer and name CA' % target, 1)
+        b = _self.get_coords('(%s) and polymer and name CA' % ref,
+                             max(1, int(_self.get_state() or 1)))
+        if a is None or b is None or len(a) != len(b) or not len(a):
+            return False
+        # Ordered by chain id for both, as `_polymer_sequences` compared them.
+        order_t = []
+        order_r = []
+        _self.iterate('(%s) and polymer and name CA' % target, 'L.append(chain)',
+                      space={'L': order_t})
+        _self.iterate('(%s) and polymer and name CA' % ref, 'L.append(chain)',
+                      space={'L': order_r})
+        ia = sorted(range(len(order_t)), key=lambda i: (order_t[i], i))
+        ib = sorted(range(len(order_r)), key=lambda i: (order_r[i], i))
+        total = sum(sum((a[i][k] - b[j][k]) ** 2 for k in range(3))
+                    for i, j in zip(ia, ib))
+        return (total / len(ia)) ** 0.5 <= COINCIDE_RMSD
+    except Exception:
+        return False
+
+
+def _fit_onto_target(obj, target, designed, _self=cmd):
+    """Move the whole complex in `obj` so its non-design chains lie on the shared
+    target. Their atoms are the target's, blob for blob, so the fit is exact: the binder
+    lands where its own complex puts it relative to THIS target, wherever the target
+    or the reference has been moved since (#545 review). False when it cannot."""
+    mobile = '(%s) and not (%s)' % (obj, _chains_sel(obj, designed))
+    try:
+        # Every target atom must have its twin in the complex (same identifiers): a
+        # target the user re-chained or edited matches only part of it, and `fit`
+        # over a part -- or over nothing, which it does not raise for -- places the
+        # binder wrong (round 2). Refused, so the caller falls back.
+        n_target = _self.count_atoms(target)
+        matched = _self.count_atoms('(%s) in (%s)' % (mobile, target))
+        if not n_target or matched != n_target or \
+                _self.count_atoms(mobile) != n_target:
+            raise SetInputError('%d of %d target atoms have a twin in the complex'
+                                % (matched, n_target))
+        _self.fit(mobile, target, mobile_state=0, target_state=1, quiet=1)
+        return True
+    except Exception as exc:
+        colorprinting.warning(' sets: could not fit %s onto %s (%s)' % (obj, target, exc))
+        return False
+
+
+def _live_users(c, set_id, record, exclude=(), _self=cmd):
+    """Entries named by the target record that are still staged, with their object in
+    the scene."""
+    users = set(record.get('entries') or ()) - set(exclude)
+    if not users:
+        return []
+    return [e for e in c.entries(set_id, where='e.staged_object IS NOT NULL')
+            if e['id'] in users and _exists(e['staged_object'], _self=_self)]
+
+
+def _complex_on_binder(c, entry, binder, name, _self=cmd):
+    """Load `entry`'s stored complex into `name`, placed by fitting its design chains
+    onto `binder` -- the entry's staged object, which holds exactly those atoms -- so
+    the complex sits where the scene says it does. True when the fit held."""
+    _load_entry_into(c, entry, name, _self=_self)
+    designed = [str(ch) for ch in entry.get('design_chains') or ()]
+    try:
+        _self.fit(_chains_sel(name, designed), binder, quiet=1)
+        return True
+    except Exception as exc:
+        colorprinting.warning(' sets: could not place %s on %s (%s)' % (entry['name'],
+                                                                         binder, exc))
+        return False
+
+
+def _rebuild_target(c, set_row, record, survivor, _self=cmd):
+    """Recreate a shared target the user deleted while binders are still staged over
+    it: from a SURVIVOR's stored complex, fit onto that survivor's staged binder (round
+    2). The survivors keep their places; a target rebuilt from the new complex
+    superposed on the reference could land anywhere relative to them."""
+    temp = _self.get_unused_name('_raymol_rebuild')
+    try:
+        if not _complex_on_binder(c, survivor, survivor['staged_object'], temp,
+                                  _self=_self):
+            return ''
+        designed = [str(ch) for ch in survivor.get('design_chains') or ()]
+        _make_target(c, set_row, record['object'], temp, designed, state=1, _self=_self)
+        return record['object']
+    finally:
+        if _exists(temp, _self=_self):
+            _self.delete(temp)
+
+
+def _make_target(c, set_row, target, source, designed, state=1, _self=cmd):
+    """Create `target` from `source`'s non-design chains, give it the target look and
+    put it in the set's group. Removes it again if any step fails."""
+    group = set_row.get('group_name') or set_row['name']
+    _self.create(target, '(%s) and not (%s)' % (source, _chains_sel(source, designed)),
+                 source_state=state, target_state=1, zoom=0, quiet=1)
+    try:
+        if group in (_self.get_names('public_group_objects') or []):
+            try:
+                _self.group(group, target, 'add', quiet=1)
+            except Exception as exc:
+                colorprinting.warning(' sets: could not add %s to group %s (%s)'
+                                      % (target, group, exc))
+        _show_target(target, set_row, _self=_self)
+    except Exception:
+        if _exists(target, _self=_self):
+            _self.delete(target)
+        raise
+    return target
+
+
+def _restore_whole(c, entry, obj, set_row, _self=cmd):
+    """Put `entry`'s whole complex back in `obj` after a failed split, where the scene
+    had it: the stored complex, fit onto what `obj` still holds."""
+    temp = _self.get_unused_name('_raymol_restore')
+    try:
+        _complex_on_binder(c, entry, obj, temp, _self=_self)
+        group = set_row.get('group_name') or set_row['name']
+        _self.delete(obj)
+        _self.set_name(temp, obj)
+        if group in (_self.get_names('public_group_objects') or []):
+            _self.group(group, obj, 'add', quiet=1)
+    except Exception as exc:
+        colorprinting.warning(' sets: could not restore %s whole (%s)' % (obj, exc))
+    finally:
+        if _exists(temp, _self=_self):
+            _self.delete(temp)
+
+
+def place(c, set_row, entry, obj, superpose=True, allow_split=True, _self=cmd):
+    """Place a whole complex that was just loaded (or delivered) as `entry`'s staged
+    object, link it, and -- when `split_plan` allows -- reduce it to its design chains
+    over the set's shared target. Returns the plan, or None when staged whole.
+
+    Placement: over an existing shared target, the complex is FIT onto it by its target
+    chains; otherwise it is superposed onto the reference when `superpose` (what
+    staging always did), and a target made now is made from it. One rule for `stage` and
+    for batch delivery, so a set never mixes placements. A target the user deleted while
+    binders are still staged over it is first rebuilt from one of them.
+
+    If anything fails once the split has begun, the target made for it is removed and
+    `obj` is put back whole, so nothing is left orphaned or half-reduced."""
+    plan = split_plan(c, entry) if allow_split else None
+    record = _target_record(c, set_row['id'])
+    existing = record['object'] if record else ''
+    created = ''
+    if plan and existing and not _exists(existing, _self=_self):
+        survivors = _live_users(c, set_row['id'], record, exclude=(entry['id'],),
+                                _self=_self)
+        if survivors:
+            # The MOST RECENTLY staged survivor: `_adopt_target` appends, and if the
+            # user moved the target by hand the later binders are the ones fit to
+            # where it was last.
+            order = {e: i for i, e in enumerate(record['entries'])}
+            latest = max(survivors, key=lambda e: order.get(e['id'], -1))
+            created = _rebuild_target(c, set_row, record, latest, _self=_self)
+    fitted = False
+    if plan and existing and _exists(existing, _self=_self):
+        fitted = _fit_onto_target(obj, existing, plan[0], _self=_self)
+        if not fitted:
+            colorprinting.warning(' sets: %s is superposed on the reference instead, and'
+                                  ' staged whole' % obj)
+            plan = None                          # it cannot share a target it cannot fit
+    if not fitted and superpose and set_row.get('reference'):
+        _superpose(obj, set_row['reference'], _self=_self,
+                   ref_sel=_reference_selection(c, set_row, _self=_self))
+    reduced = False
+    try:
+        target = ''
+        if plan:
+            target, made = _share_target(c, set_row, obj, plan, _self=_self)
+            created = created or made
+            reduced = True
+        c.update_entry(entry['id'], staged_object=obj)
+        if plan:
+            _adopt_target(c, set_row, entry['id'], target, plan[1])
+    except Exception:
+        if created and _exists(created, _self=_self) and \
+                not _live_users(c, set_row['id'], _target_record(c, set_row['id']) or {},
+                                exclude=(entry['id'],), _self=_self):
+            try:
+                _self.delete(created)
+            except Exception:
+                pass
+        if reduced and _exists(obj, _self=_self):
+            _restore_whole(c, entry, obj, set_row, _self=_self)
+        raise
+    return plan
+
+
+def _share_target(c, set_row, obj, plan, _self=cmd):
+    """Reduce the whole complex in `obj` to its design chains, putting the rest in the
+    set's shared target (made from `obj`'s own atoms, so it sits exactly where this
+    complex was placed, when there is none yet). Returns (target, the name if it was
+    created here else '').
+
+    The removal from `obj` is the LAST step, so a failure anywhere leaves `obj` whole;
+    and a target made here is deleted again if that removal fails (round 2).
+
+    The entry's link and the target's user list are written by the caller AFTER this
+    returns, and the target object exists before its record names it: a `delete` in
+    here runs `reconcile`, which must never see a record with no live user."""
+    designed, signature = plan
+    group = set_row.get('group_name') or set_row['name']
+    record = _target_record(c, set_row['id'])
+    target = record['object'] if record else ''
+    created = ''
+    if not target or not _exists(target, _self=_self):
+        # A record whose object the user deleted gets it back under the same name.
+        target = target or _free_object_name(target_name(group), _self=_self)
+        state = max(1, int(_self.count_states(obj) or 1))
+        _make_target(c, set_row, target, obj, designed, state=state, _self=_self)
+        created = target
+    try:
+        _self.remove('(%s) and not (%s)' % (obj, _chains_sel(obj, designed)))
+    except Exception:
+        if created and _exists(created, _self=_self):
+            _self.delete(created)
+        raise
+    return target, created
+
+
+def _adopt_target(c, set_row, entry_id, target, signature):
+    record = _target_record(c, set_row['id']) or {'entries': []}
+    users = [e for e in record['entries'] if e != entry_id] + [entry_id]
+    c.set_shared_target(set_row['id'], {'object': target, 'signature': signature,
+                                        'entries': users})
+
+
+def _settle_target(c, set_id, _self=cmd):
+    """Drop users of the set's shared target that are no longer staged; when none is
+    left, delete the target object and its record. Links are read as `_staged` leaves
+    them, so call it after that."""
+    record = _target_record(c, set_id)
+    if record is None:
+        return
+    staged = {e['id'] for e in c.entries(set_id, where='e.staged_object IS NOT NULL')}
+    users = [e for e in record['entries'] if e in staged]
+    if users == record['entries']:
+        return
+    if users:
+        c.set_shared_target(set_id, dict(record, entries=users))
+        return
+    c.set_shared_target(set_id, None)
+    target = record['object']
+    if _exists(target, _self=_self):
+        try:
+            mstore.forget_object(target)
+        except Exception:
+            pass
+        _self.delete(target)
+
+
+def shared_target_object(c, set_id, _self=cmd):
+    """The set's shared target object's name when it is in the scene, else ''."""
+    record = _target_record(c, set_id)
+    if record and record['entries'] and _exists(record['object'], _self=_self):
+        return record['object']
+    return ''
+
+
+def _split_info(obj, _self=cmd):
+    """(container, set id, entry, record) when `obj` is a staged entry shown as its
+    design chains over its set's shared target -- whether or not the target object is
+    still in the scene -- else None."""
+    try:
+        if not obj or not store.is_open():
+            return None
+        c = container()
+        targets = c.shared_targets()
+        for set_id, record in targets.items():
+            users = set(str(e) for e in record.get('entries') or ())
+            for e in c.entries(set_id, where='e.staged_object = ?', params=(str(obj),)):
+                if e['id'] in users:
+                    return c, set_id, e, record
+    except Exception:
+        return None
+    return None
+
+
+def split_context(obj, _self=cmd):
+    """The shared target object when `obj` is a staged entry shown as its design chains
+    over it and that target is in the scene, else ''."""
+    info = _split_info(obj, _self=_self)
+    if info and _exists(info[3].get('object'), _self=_self):
+        return info[3]['object']
+    return ''
+
+
+def is_split(obj, _self=cmd):
+    """True when `obj` is a staged binder shown over a shared target (present or not):
+    what an object-level tool (`set_add`, `predict`, `design_sequences`) asks before
+    reading `obj` as if it were the whole complex."""
+    return _split_info(obj, _self=_self) is not None
+
+
+@contextlib.contextmanager
+def complex_of(obj, state=1, _self=cmd):
+    """`(name, state)` to read `obj` from AS THE WHOLE COMPLEX.
+
+    For a staged binder shown over a shared target that is a hidden scratch object,
+    deleted on exit, holding the entry's chains IN ITS STORED ORDER (round 2: a merge of
+    two objects follows their object-list order, which differed between delivered and
+    restaged binders) with the coordinates the scene has -- the binder's `state`, and
+    the target as it sits. When the target object is gone, the stored complex is fit
+    onto the binder instead (round 2), so a tool never silently reads half of it. For
+    anything else it is `(obj, state)` itself, untouched."""
+    info = _split_info(obj, _self=_self)
+    if info is None:
+        yield obj, state
+        return
+    c, _set_id, entry, record = info
+    scratch = _self.get_unused_name('_raymol_complex')
+    try:
+        target = record.get('object') or ''
+        designed = {str(ch) for ch in entry.get('design_chains') or ()}
+        if target and _exists(target, _self=_self):
+            texts = []
+            for ch, _hash in c.chain_blobs(entry['id']):
+                source, src_state = (obj, int(state)) if ch in designed else (target, 1)
+                text = _self.get_cifstr(_chain_sel(source, ch), src_state)
+                if text and text.strip():
+                    texts.append((ch, text))
+            _load_chains(texts, scratch, _self=_self)
+        else:
+            colorprinting.warning(' sets: %s is staged over a shared target that is not in'
+                                  ' the scene; reading its stored complex' % obj)
+            _complex_on_binder(c, entry, obj, scratch, _self=_self)
+        _self.disable(scratch)
+        yield scratch, 1
+    finally:
+        if _exists(scratch, _self=_self):
+            _self.delete(scratch)
+
+
+def complex_sources(obj, _self=cmd):
+    """{chain: object it is read from in the scene} for `complex_of(obj)`: the design
+    chains from `obj`, the rest from the shared target (or `obj` when it is gone)."""
+    info = _split_info(obj, _self=_self)
+    if info is None:
+        return {}
+    c, _set_id, entry, record = info
+    designed = {str(ch) for ch in entry.get('design_chains') or ()}
+    target = record.get('object') or ''
+    if not _exists(target, _self=_self):
+        target = obj
+    return {ch: (obj if ch in designed else target) for ch, _ in c.chain_blobs(entry['id'])}
+
+
+def _reference_selection(c, set_row, _self=cmd):
+    """What to superpose onto: the reference, plus the shared target when the reference
+    is an entry staged as its design chains over it (it holds only a binder)."""
+    ref = set_row.get('reference') or ''
+    record = _target_record(c, set_row['id'])
+    if not ref or record is None or not _exists(record['object'], _self=_self):
+        return None
+    users = set(record['entries'])
+    if any(e['staged_object'] == ref and e['id'] in users
+           for e in c.entries(set_row['id'], where='e.staged_object IS NOT NULL')):
+        return '(%s) or (%s)' % (ref, record['object'])
+    return None
+
+
 def _write_back_metrics(c, entry, obj, _self=cmd):
     """The entry's columns and arrays as metrics-store runs on the staged object, one run
     per tool this build declares. Undeclared tools and keys are skipped: the numbers stay
@@ -528,6 +1075,7 @@ def stage(set_row, entries, budget_override=None, _self=cmd):
     c = container()
     set_id = set_row['id']
     staged = _staged(c, set_id, _self=_self)
+    _settle_target(c, set_id, _self=_self)      # a record naming only dead links
     already = {e['id'] for e in staged}
     todo = [e for e in entries if e['id'] not in already]
     limit = int(budget_override) if budget_override else budget(set_row)
@@ -543,16 +1091,17 @@ def stage(set_row, entries, budget_override=None, _self=cmd):
         return names
     group = set_row.get('group_name') or set_row['name']
     _ensure_group(group, _self=_self)
-    ref = set_row.get('reference') or ''
     for e in todo:
         obj = _free_object_name(e['name'], _self=_self)
+        # Whole first, placed as a whole (fit onto the shared target, or superposed on
+        # the reference), and only THEN reduced to its design chains, so a binder staged
+        # over the shared target sits where its own complex puts it relative to it.
         _load_entry_into(c, e, obj, _self=_self)
         try:
             _self.group(group, obj, 'add', quiet=1)
         except Exception as exc:
             colorprinting.warning(' sets: could not add %s to group %s (%s)' % (obj, group, exc))
-        _superpose(obj, ref, _self=_self)
-        c.update_entry(e['id'], staged_object=obj)
+        place(c, set_row, e, obj, superpose=True, _self=_self)
         _write_back_metrics(c, dict(e, staged_object=obj), obj, _self=_self)
         names.append(obj)
     return names
@@ -577,6 +1126,7 @@ def unstage(set_row, entries, include_pinned=False, _self=cmd):
             _self.delete(obj)
             removed.append(obj)
         c.update_entry(e['id'], staged_object=None, pinned=0)
+    _settle_target(c, set_row['id'], _self=_self)
     _drop_empty_group(set_row, _self=_self)
     return removed
 
@@ -610,6 +1160,9 @@ def on_object_renamed(old, new, _self=cmd):
     for s in c.sets():
         for e in c.entries(s['id'], where='e.staged_object = ?', params=(old,)):
             c.update_entry(e['id'], staged_object=new)
+    for set_id, record in c.shared_targets().items():
+        if record.get('object') == old:
+            c.set_shared_target(set_id, dict(record, object=new))
 
 
 def reconcile(_self=cmd):
@@ -618,8 +1171,13 @@ def reconcile(_self=cmd):
     if not store.is_open():
         return
     c = container()
+    targets = c.shared_targets()
     for s in c.sets():
         _staged(c, s['id'], _self=_self)
+        if s['id'] in targets:
+            _settle_target(c, s['id'], _self=_self)
+    for set_id in set(targets) - {s['id'] for s in c.sets()}:
+        c.set_shared_target(set_id, None)        # its set is gone
 
 
 # -- Peek ------------------------------------------------------------------------------
@@ -636,7 +1194,17 @@ def peek(set_row, entry, _self=cmd):
     c = container()
     clear_peek(_self=_self)
     _load_entry_into(c, entry, PEEK, _self=_self)
-    _superpose(PEEK, set_row.get('reference') or '', _self=_self)
+    _superpose(PEEK, set_row.get('reference') or '', _self=_self,
+               ref_sel=_reference_selection(c, set_row, _self=_self))
+    # Only the designed chain(s) (#545): the target is already on screen, and a ghost
+    # of it drawn over itself is 141 residues of noise around a 60-residue binder.
+    # Superposed WHOLE first, so the binder lands where its complex puts it.
+    # Only for an entry that WOULD stage over the shared target: a fold whose target
+    # really differs is ghosted whole, target and all (#545 review).
+    plan = split_plan(c, entry)
+    designed = list(plan[0]) if plan else []
+    if designed and set(designed) < set(_chains(PEEK, _self=_self)):
+        _self.remove('(%s) and not (%s)' % (PEEK, _chains_sel(PEEK, designed)))
     try:
         _self.hide('everything', PEEK)
         _self.show('cartoon', PEEK)
@@ -681,6 +1249,13 @@ def warn_if_pse_leaves_sets(filename='', _self=cmd):
         c = container()
         names = [s['name'] for s in c.sets()
                  if c.count(s['id']) > c.count(s['id'], 'e.staged_object IS NOT NULL')]
+        # A set whose binders are staged over a shared target that is no longer in the
+        # scene is ALSO left behind: the .pse holds only the binders (#545 review).
+        by_id = {s['id']: s['name'] for s in c.sets()}
+        for set_id, record in c.shared_targets().items():
+            if record.get('entries') and not _exists(record.get('object'), _self=_self) \
+                    and by_id.get(set_id) and by_id[set_id] not in names:
+                names.append(by_id[set_id])
     except Exception:
         return False
     if not names:
@@ -810,6 +1385,25 @@ def checkpoint_session(_self=cmd):
     return True
 
 
+def _read_session_readonly(path):
+    """The session blob of `path` read through a READ-ONLY connection, or None when
+    there is none or the file cannot be read that way (the container's own open then
+    says why)."""
+    import sqlite3
+    from urllib.request import pathname2url
+    try:
+        conn = sqlite3.connect('file:%s?mode=ro' % pathname2url(path), uri=True)
+    except Exception:
+        return None
+    try:
+        row = conn.execute('SELECT pse FROM session WHERE id = 1').fetchone()
+        return bytes(row[0]) if row and row[0] is not None else None
+    except Exception:
+        return None
+    finally:
+        conn.close()
+
+
 def load_raymol(filename, partial=0, quiet=1, *, _self=cmd):
     """`load x.raymol`. Opens the container IN PLACE, then restores the session blob it
     carries. Later results write straight into the document.
@@ -826,14 +1420,28 @@ def load_raymol(filename, partial=0, quiet=1, *, _self=cmd):
     filename = os.path.abspath(_self.exp_path(filename))
     if not os.path.isfile(filename):
         raise SetInputError('no such file: %s' % filename)
+    # The session blob is read and unpickled BEFORE the container is opened, because
+    # opening migrates an older file in place (#545 review): a file whose session this
+    # build cannot read is refused untouched, not refused after it was upgraded.
+    early = _read_session_readonly(filename)
+    session = None
+    if early is not None:
+        try:
+            session = pickle.loads(early)
+        except Exception as exc:
+            raise SetFormatError('%s carries a session this build cannot read: %s'
+                                 % (filename, exc))
     new = store.Container(filename)          # SetFormatError if it is not ours
-    try:
-        blob = new.read_session()
-        session = pickle.loads(blob) if blob else None
-    except Exception as exc:
-        new.close()
-        raise SetFormatError('%s carries a session this build cannot read: %s'
-                             % (filename, exc))
+    if early is None:
+        # The read-only look found no session (or could not look): ask the container,
+        # which is the authority. Unpickled ONCE either way (#545 review round 2).
+        try:
+            blob = new.read_session()
+            session = pickle.loads(blob) if blob else None
+        except Exception as exc:
+            new.close()
+            raise SetFormatError('%s carries a session this build cannot read: %s'
+                                 % (filename, exc))
     old = container()
     old_path = old.path
     if session is None:

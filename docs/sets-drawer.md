@@ -22,7 +22,30 @@ page is about the UI that sits on top of them (#417, #418, #419, tracking #421).
   as before.
 - **Inspector → OBJECTS.** A set's group is an ordinary group row. It holds exactly
   the set's staged objects and reads "5 of 1024 staged" — the rest of the set is in
-  the drawer, not in the scene.
+  the drawer, not in the scene. A design run holds its target fixed, so its entries
+  stage as their **designed chain** only, over one shared `target_<set>` object in the
+  same group (#545): six staged designs are seven objects, not six copies of the
+  target. Identity is checked by content hash — an entry whose other chains differ
+  from the run's (a fold predicts every chain) is staged whole, as before, and so is
+  one with a metric tied to a target chain. The shared target is never counted
+  against the stage budget, goes into a `.pse` as a plain object, and leaves with the
+  last entry staged over it. It is `target_<set>` rather than `<set>_target` because
+  PyMOL resolves a selection word by unique prefix before it expands groups, so a
+  lone `<set>_target` would make `hide <set>` hide only the target (a set whose name
+  is itself a prefix of `target_…`, such as `ta`, gets `shared_<set>`).
+  A binder staged over the target is **fit onto it** by the target chains, wherever
+  the target or the reference has moved; the target itself is placed once, when it is
+  made (superposed on the reference when staged from the drawer). `set_add`,
+  `predict` and `design_sequences` on a staged binder read it together with its target
+  (`design_sequences` holds the target), rebuilding the complex from the stored entry
+  if the target object was deleted. A plain `save x.pdb` of the binder object writes
+  the binder only — select `binder or target_<set>` to write the complex.
+  The target is drawn as a cartoon, except when it lies on the set's reference (same
+  sequences, CA RMSD ≤ 0.5 Å): then it is made **disabled** — its eye in the object
+  panel shows it — so the same structure is not drawn twice. Deleted while binders are
+  still staged, it is rebuilt from the most recently staged one, where they are. A
+  target that no longer fits (re-chained or edited by hand) makes the next entry stage
+  whole on the reference, with a warning.
 - **Data drawer** (macOS; `View ▸ Show Data Drawer`, ⌘4). A band below the viewport
   with a header naming the set, the tab bar with the filter beside it, and the active
   tab. All four tabs — Table, Plot, Sequences, Lineage — are live since #419. Drag the
@@ -179,6 +202,11 @@ The set's entries as sequences: the rows you have selected, or everything the fi
 admits when nothing is selected. The **scene** sequences are not here — they are the
 Object viewer, its own pane above the viewport (⌘2).
 
+- **The designed chain is the subject.** Rows and the consensus band show each
+  entry's designed chain (`entries.design_chains`, recorded at delivery from the run's
+  `DesignSpec`, inherited by refolds and redesigns) by default; the **Chain** menu in
+  the tab's header switches to all chains or any one chain. A set with no designed
+  chain shows every chain, as before. Peek likewise ghosts only the designed chain.
 - **Rows that share a parent share a column space.** Eight MPNN sequences off one
   backbone are padded, per chain, to the longest of them, so position 31 is position 31
   on every row of that group and you can read down a column. A chain one row does not

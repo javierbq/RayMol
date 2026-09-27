@@ -49,9 +49,9 @@ SET_FIELDS = frozenset(('note', 'tool', 'group_name', 'budget', 'ranking_key',
 #: Fields `update_entry` may write: the user-facing flags and links, never the
 #: identity or the derived counts.
 ENTRY_FIELDS = frozenset(('starred', 'rejected', 'tags', 'note', 'staged_object',
-                          'pinned', 'parents'))
+                          'pinned', 'parents', 'design_chains'))
 
-_ENTRY_JSON = ('sequences', 'parents')
+_ENTRY_JSON = ('sequences', 'parents', 'design_chains')
 _SET_JSON = ('columns',)
 _VIEW_JSON = ('columns',)
 
@@ -338,6 +338,54 @@ class Container:
         with self._tx() as conn:
             conn.execute('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)',
                          (str(key), str(value)))
+
+    # -- shared targets (#545) ------------------------------------------------------
+
+    _TARGET_PREFIX = 'shared_target:'
+
+    def shared_targets(self):
+        """{set_id: record} for every set with a shared target staged. A record is
+        `{'object', 'signature', 'entries'}`: the object's name, the (chain, blob hash)
+        pairs it holds, and the entry ids staged as their design chains over it. Kept
+        in `meta` because it is a scene link like `staged_object`, not a property of
+        any one entry, and nothing but `binding` reads it."""
+        out = {}
+        for row in self._all("SELECT key, value FROM meta WHERE key LIKE ?",
+                             (self._TARGET_PREFIX + '%',)):
+            try:
+                record = json.loads(row['value'])
+            except ValueError:
+                continue
+            if isinstance(record, dict) and record.get('object'):
+                out[row['key'][len(self._TARGET_PREFIX):]] = record
+        return out
+
+    def shared_target(self, set_id):
+        return self.shared_targets().get(str(set_id))
+
+    def set_shared_target(self, set_id, record):
+        """Write (or, with None, drop) a set's shared-target record."""
+        key = self._TARGET_PREFIX + str(set_id)
+        with self._tx() as conn:
+            if record is None:
+                conn.execute('DELETE FROM meta WHERE key = ?', (key,))
+            else:
+                conn.execute('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)',
+                             (key, _dumps(record)))
+
+    def run_chain_blobs(self, run_id, chains):
+        """{chain: {blob hash, ...}} over every entry of `run_id`, for `chains`.
+        One distinct hash per chain is what "the run's target is one structure" means."""
+        chains = [str(c) for c in chains]
+        if run_id is None or not chains:
+            return {}
+        out = {}
+        for row in self._all(
+                'SELECT DISTINCT c.chain, c.blob FROM chains c JOIN entries e'
+                ' ON e.id = c.entry_id WHERE e.run_id = ? AND c.chain IN (%s)'
+                % ','.join('?' * len(chains)), (run_id,) + tuple(chains)):
+            out.setdefault(row['chain'], set()).add(row['blob'])
+        return out
 
     def save_into(self, path):
         """Copy this database to `path`, close this one, return a Container on the copy.
@@ -674,8 +722,12 @@ class Container:
     # -- entries -----------------------------------------------------------------
 
     def add_entry(self, set_id, name, run_id=None, sequences=None, parents=(),
-                  chains=(), scalars=None, arrays=(), specs=()):
+                  chains=(), scalars=None, arrays=(), specs=(), design_chains=None):
         """One entry, whole or not at all.
+
+        `design_chains` names the chains that were DESIGNED (#545). None derives them
+        (`schema.resolve_design_chains`): the entry's `design_chain` metric, then its
+        run's inputs, then its parents' -- always narrowed to chains the entry has.
 
         `chains` is (chain_id, cif_text) pairs in display order; `scalars` maps a
         column name -- or a (key, chain) pair -- to a value; `arrays` is dicts of
@@ -702,14 +754,16 @@ class Container:
                             ' WHERE set_id = ?', (set_id,))['n']
             entry_id = self._new_id('entries')
             chain_ids = {str(c) for c, _ in chains} | {str(c) for c in sequences}
+            designed = self._design_chains_for(chain_ids, design_chains, scalars,
+                                               run_id, parents)
             conn.execute(
                 'INSERT INTO entries (id, set_id, ord, name, run_id, created,'
-                ' sequences, n_chains, n_residues, parents)'
-                ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                ' sequences, n_chains, n_residues, parents, design_chains)'
+                ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
                 (entry_id, set_id, ord, name, run_id, _now(),
                  _dumps({str(c): str(s) for c, s in sequences.items()}),
                  len(chain_ids), sum(len(s) for s in sequences.values()),
-                 _dumps([str(p) for p in parents or ()])))
+                 _dumps([str(p) for p in parents or ()]), _dumps(designed)))
             conn.execute('INSERT INTO %s (entry_id) VALUES (?)' % self._table(set_id),
                          (entry_id,))
             for i, (chain, text) in enumerate(chains):
@@ -719,6 +773,26 @@ class Container:
             for spec in arrays:
                 self._add_array(entry_id, spec)
         return entry_id
+
+    def _design_chains_for(self, chain_ids, explicit, scalars, run_id, parents):
+        """`add_entry`'s derivation of `design_chains`; see `resolve_design_chains`."""
+        if explicit is None:
+            metric = (scalars or {}).get('design_chain')
+        else:
+            metric = None
+        inputs = {}
+        if explicit is None and run_id is not None:
+            row = self._one('SELECT inputs FROM runs WHERE id = ?', (run_id,))
+            inputs = schema._json_or(row['inputs'] if row else '{}', {})
+        inherited = []
+        if explicit is None and parents:
+            ids = [str(p) for p in parents]
+            for chunk in _chunks(ids):
+                for row in self._all('SELECT design_chains FROM entries WHERE id IN (%s)'
+                                     % ','.join('?' * len(chunk)), tuple(chunk)):
+                    inherited.extend(schema._json_or(row['design_chains'], []))
+        return schema.resolve_design_chains(chain_ids, explicit=explicit, metric=metric,
+                                            run_inputs=inputs, parent_chains=inherited)
 
     def _add_chain(self, entry_id, chain, ord, text):
         hash, gz, size = blobs.encode_cif(text)
@@ -899,6 +973,8 @@ class Container:
         for key, value in fields.items():
             if key == 'parents':
                 values[key] = _dumps([str(p) for p in value or ()])
+            elif key == 'design_chains':
+                values[key] = _dumps(sorted({str(c) for c in value or () if c}))
             elif key in ('starred', 'rejected', 'pinned'):
                 values[key] = int(bool(int(value)))
             elif key == 'staged_object':
@@ -940,11 +1016,22 @@ class Container:
             self._delete_orphan_blobs()
         return deleted
 
-    def chain_cifs(self, entry_id):
+    def chain_cifs(self, entry_id, chains=None):
+        """(chain, cif text) in display order; only `chains` when given."""
         rows = self._all(
             'SELECT c.chain, b.bytes FROM chains c JOIN blobs b ON b.hash = c.blob'
             ' WHERE c.entry_id = ? ORDER BY c.ord', (entry_id,))
-        return [(r['chain'], blobs.decode_cif(r['bytes'])) for r in rows]
+        wanted = None if chains is None else {str(c) for c in chains}
+        return [(r['chain'], blobs.decode_cif(r['bytes'])) for r in rows
+                if wanted is None or r['chain'] in wanted]
+
+    def chain_blobs(self, entry_id):
+        """(chain, blob hash) in display order. The hash is the sha256 of the chain's
+        canonical CIF (`binding.canonical_cif`), so two entries holding the same chain
+        -- a target held fixed across a batch -- answer the same hash without either
+        blob being read (#545)."""
+        return [(r['chain'], r['blob']) for r in self._all(
+            'SELECT chain, blob FROM chains WHERE entry_id = ? ORDER BY ord', (entry_id,))]
 
     def array(self, entry_id, key, chain=None):
         """(index, values) for one array, decoded. `index` is [[chain, resi], ...]

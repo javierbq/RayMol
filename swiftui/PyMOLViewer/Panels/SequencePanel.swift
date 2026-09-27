@@ -583,10 +583,12 @@ struct SequenceEntryInput: Equatable, Identifiable {
     let starred: Bool
     let rejected: Bool
     let staged: Bool
+    /// `entries.design_chains` (#545): the chains this entry's run designed.
+    let designChains: [String]
 
     init(id: String, name: String, ord: Int = 0, sequences: [String: String],
          parents: [String] = [], runID: String? = nil, starred: Bool = false,
-         rejected: Bool = false, staged: Bool = false) {
+         rejected: Bool = false, staged: Bool = false, designChains: [String] = []) {
         self.id = id
         self.name = name
         self.ord = ord
@@ -596,6 +598,7 @@ struct SequenceEntryInput: Equatable, Identifiable {
         self.starred = starred
         self.rejected = rejected
         self.staged = staged
+        self.designChains = designChains
     }
 
     /// Chains in a stable, displayable order. The store writes `sequences` as a JSON
@@ -658,6 +661,19 @@ struct ConsensusColumn: Equatable {
     var isInvariant: Bool { distinct == 1 && count > 0 }
 }
 
+/// Which chains the Sequences tab lays out (#545).
+///
+/// `.designed` is the default because the designed chain is the SUBJECT of a design
+/// set: a binder run holds its target fixed, so the target chain is identical in every
+/// row and a consensus over it is a trivial 100% that pushes the binder — the only
+/// part that varies — to a stub at the right edge. A set whose entries name no
+/// designed chain (an import, a fold of plain sequences) falls back to every chain.
+enum SequenceChainScope: Hashable {
+    case designed
+    case all
+    case chain(String)
+}
+
 /// Everything the Sequences tab computes from a list of entries.
 ///
 /// Three decisions live here, and all three are pinned by `SequenceRowModelTests`:
@@ -713,11 +729,14 @@ struct SequenceRowModel: Equatable {
         let columns: Int
     }
 
+    /// `chains`: lay out only these chains (see `visibleChains`); nil lays out all.
     init(entries: [SequenceEntryInput], selection: Set<String> = [],
-         collapseThreshold: Int = SequenceRowModel.defaultCollapseThreshold) {
+         collapseThreshold: Int = SequenceRowModel.defaultCollapseThreshold,
+         chains: [String]? = nil) {
         self.entries = entries
         self.selection = selection
         self.collapseThreshold = max(collapseThreshold, 1)
+        let visible = chains.map(Set.init)
 
         // One pass to size each group, a second to lay its rows out against that size.
         var order: [String] = []
@@ -730,7 +749,11 @@ struct SequenceRowModel: Equatable {
                 widths[key] = [:]
                 order.append(key)
             }
-            for chain in entry.chainOrder {
+            // An entry that has none of the visible chains (a row with no designed
+            // chain in a set whose other rows have one) shows all of its own chains
+            // rather than an empty row (#545 review).
+            let own = visible.flatMap { v in entry.chainOrder.contains(where: v.contains) ? v : nil }
+            for chain in entry.chainOrder where own?.contains(chain) ?? true {
                 if !(chainOrders[key] ?? []).contains(chain) {
                     chainOrders[key, default: []].append(chain)
                 }
@@ -773,6 +796,34 @@ struct SequenceRowModel: Equatable {
                                     starred: entry.starred, rejected: entry.rejected,
                                     staged: entry.staged,
                                     isSelected: selection.contains(entry.id))
+        }
+    }
+
+    // MARK: chains (#545)
+
+    /// Every chain any entry has, sorted: what the chain picker offers.
+    static func availableChains(_ entries: [SequenceEntryInput]) -> [String] {
+        Array(Set(entries.flatMap { $0.chainOrder })).sorted()
+    }
+
+    /// The designed chains across the entries, sorted.
+    static func designedChains(_ entries: [SequenceEntryInput]) -> [String] {
+        Array(Set(entries.flatMap { $0.designChains })).sorted()
+    }
+
+    /// The chains `scope` lays out, or nil for all of them. `.designed` on entries that
+    /// name none, and a `.chain` no entry has, both fall back to all chains rather than
+    /// to an empty tab.
+    static func visibleChains(scope: SequenceChainScope,
+                              entries: [SequenceEntryInput]) -> [String]? {
+        switch scope {
+        case .all:
+            return nil
+        case .designed:
+            let designed = designedChains(entries)
+            return designed.isEmpty ? nil : designed
+        case .chain(let chain):
+            return availableChains(entries).contains(chain) ? [chain] : nil
         }
     }
 
@@ -1076,20 +1127,31 @@ struct SequenceEntryRowsView: View {
     /// Which strips are on. All of the set's residue metrics, until the user says
     /// otherwise; an entry with none draws none and the picker is absent.
     @State private var hiddenTracks: Set<String> = []
+    /// Which chains the rows and the consensus band lay out (#545). The designed
+    /// chain until the user picks otherwise.
+    @State private var chainScope: SequenceChainScope = .designed
 
     private static let rowHeight: CGFloat = 15
     private static let stripHeight: CGFloat = 4
 
     private var hairline: Color { themeManager.active.panelText.color.opacity(0.18) }
 
-    private var model: SequenceRowModel {
-        SequenceRowModel(entries: rows.map { row in
+    private var inputs: [SequenceEntryInput] {
+        rows.map { row in
             SequenceEntryInput(
                 id: row.id, name: row.name, ord: row.ord,
                 sequences: engine.sequenceDetail(row.id)?.sequences ?? [:],
                 parents: row.parents, runID: row.runID,
-                starred: row.starred, rejected: row.rejected, staged: row.isStaged)
-        }, selection: engine.setSelection)
+                starred: row.starred, rejected: row.rejected, staged: row.isStaged,
+                designChains: row.designChains)
+        }
+    }
+
+    private var model: SequenceRowModel {
+        let inputs = self.inputs
+        return SequenceRowModel(
+            entries: inputs, selection: engine.setSelection,
+            chains: SequenceRowModel.visibleChains(scope: chainScope, entries: inputs))
     }
 
     private var tracks: [SequenceHeatTrack] {
@@ -1153,6 +1215,7 @@ struct SequenceEntryRowsView: View {
                         + " Select rows in the Table to read them here."
                       : "Rows that share a parent are padded to one column space, so"
                         + " position N is position N on every row of that group.")
+            chainPicker(model: model)
             ForEach(SequenceHeatTrack.tracks(columns: set.columns)) { track in
                 let on = !hiddenTracks.contains(track.key)
                 Text(track.label)
@@ -1172,6 +1235,45 @@ struct SequenceEntryRowsView: View {
         }
         .padding(.horizontal, 8)
         .frame(height: 18)
+    }
+
+    /// "Chains: B (designed) ▾". Absent for a one-chain set, where there is no choice.
+    @ViewBuilder
+    private func chainPicker(model: SequenceRowModel) -> some View {
+        let available = SequenceRowModel.availableChains(model.entries)
+        let designed = SequenceRowModel.designedChains(model.entries)
+        if available.count > 1 {
+            Menu {
+                if !designed.isEmpty {
+                    Button("Designed (\(designed.joined(separator: ", ")))") {
+                        chainScope = .designed
+                    }
+                }
+                Button("All chains") { chainScope = .all }
+                Divider()
+                ForEach(available, id: \.self) { chain in
+                    Button("Chain \(chain)" + (designed.contains(chain) ? " (designed)" : "")) {
+                        chainScope = .chain(chain)
+                    }
+                }
+            } label: {
+                Text(Self.chainLabel(scope: chainScope, entries: model.entries))
+                    .font(.system(size: 9))
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Which chains the rows and the consensus band show. A design run holds"
+                  + " its target fixed, so the designed chain is shown by default.")
+        }
+    }
+
+    static func chainLabel(scope: SequenceChainScope, entries: [SequenceEntryInput]) -> String {
+        guard let chains = SequenceRowModel.visibleChains(scope: scope, entries: entries) else {
+            return "All chains"
+        }
+        let designed = Set(SequenceRowModel.designedChains(entries))
+        let names = chains.joined(separator: ", ")
+        return Set(chains) == designed ? "Chain \(names) (designed)" : "Chain \(names)"
     }
 
     private static func number(_ v: Double) -> String {

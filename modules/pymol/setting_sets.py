@@ -112,6 +112,18 @@ USAGE
         except Exception as exc:
             colorprinting.warning(' set_rename: group %s kept its name (%s)' % (group, exc))
             _c().update_set(row['id'], group_name=group)
+    # The shared target follows its set's name when it still has the name the set gave
+    # it (#545 review); `set_name` fires `on_object_renamed`, which updates the record.
+    record = _c().shared_target(row['id'])
+    if record and record.get('object') == binding.target_name(group):
+        new_target = binding.target_name(new_name)
+        if record['object'] in (_self.get_names('objects') or []) and \
+                new_target not in (_self.get_names('all') or []):
+            try:
+                _self.set_name(record['object'], new_target)
+            except Exception as exc:
+                colorprinting.warning(' set_rename: %s kept its name (%s)'
+                                      % (record['object'], exc))
     return new_name
 
 
@@ -300,7 +312,7 @@ USAGE
 NOTES
 
     Without a key: {entry name: {column: value, plus id, run_id, parents, sequences,
-    starred, rejected, pinned, tags, note, staged}}. With an array key: {entry name:
+    starred, rejected, pinned, tags, note, staged, design_chains}}. With an array key: {entry name:
     (index, values)}; with a scalar key or one of the fields above: {entry name: value}.
     """
     c = _c()
@@ -313,7 +325,8 @@ NOTES
         fields = dict(id=e['id'], run_id=e.get('run_id'), parents=e.get('parents') or [],
                       sequences=e.get('sequences') or {}, starred=e.get('starred'),
                       rejected=e.get('rejected'), pinned=e.get('pinned'),
-                      tags=e.get('tags'), note=e.get('note'), staged=e.get('staged_object'))
+                      tags=e.get('tags'), note=e.get('note'), staged=e.get('staged_object'),
+                      design_chains=e.get('design_chains') or [])
         if not key:
             out[e['name']] = dict(scalars, **fields)
         elif key in scalars:
