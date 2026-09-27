@@ -121,6 +121,39 @@ struct SetPlotModel: Equatable {
         self.peekedID = peekedID
     }
 
+    // MARK: default axes (#544)
+
+    /// The columns an axis may open on: numeric scalars with more than one distinct
+    /// value over `rows`, scores first, each group in declared order. A constant axis
+    /// collapses the scatter to a line or a point (#544: x = Designed residues, 60 on
+    /// every row), so a constant is never a candidate at all.
+    static func axisCandidates(_ columns: [MetricColumn], rows: [SetRow]) -> [MetricColumn] {
+        let varying = columns.filter { column in
+            guard column.isScalar, column.dtype != "str" else { return false }
+            var seen = Set<Double>()
+            for row in rows {
+                if case .number(let v) = row.value(column), v.isFinite {
+                    seen.insert(v)
+                    if seen.count > 1 { return true }
+                }
+            }
+            return false
+        }
+        return varying.filter(\.isScore) + varying.filter { !$0.isScore }
+    }
+
+    /// The axes a plot opens on. x is the set's ranking key — the column the user
+    /// sorted by — when it varies; otherwise the first candidate. y is the next
+    /// candidate that is not x. Either is "" when nothing varying is left for it,
+    /// which the view shows as "—" rather than a constant.
+    static func defaultAxes(columns: [MetricColumn], rows: [SetRow],
+                            rankingKey: String) -> (x: String, y: String) {
+        let names = axisCandidates(columns, rows: rows).compactMap(\.column)
+        let x = names.contains(rankingKey) && !rankingKey.isEmpty ? rankingKey : (names.first ?? "")
+        let y = names.first { $0 != x } ?? ""
+        return (x, y)
+    }
+
     // MARK: domains
 
     /// The axis range for a column.
@@ -342,6 +375,9 @@ struct SetPlotView: View {
 
     @State private var xKey: String = ""
     @State private var yKey: String = ""
+    /// Set once the user picks an axis; until then the defaults may be re-chosen as
+    /// rows arrive (a set opened mid-batch has no rows to judge "varies" on yet).
+    @State private var axesPicked = false
     @State private var colorChoice: SetPlotColor = .none
     @State private var band: CGRect? = nil
     @State private var bandOrigin: CGPoint? = nil
@@ -411,24 +447,29 @@ struct SetPlotView: View {
             footer
         }
         .onAppear(perform: chooseDefaults)
+        .onChange(of: rows.count) { _ in chooseDefaults() }
         .onDisappear { hoverWork?.cancel() }
     }
 
     private var hairline: Color { themeManager.active.panelText.color.opacity(0.18) }
 
-    /// x, y and colour default to the columns the user already cares about: the set's
-    /// ranking key on Y — it is the one they sorted by — and the next numeric column on
-    /// X. A plot that opens on two arbitrary columns has to be configured before it
-    /// says anything, and most of the time nobody bothers.
+    /// x and y default to the columns the user already cares about
+    /// (`SetPlotModel.defaultAxes`, #544): the set's ranking key on x — it is the one
+    /// they sorted by — and the next varying score on y, never a column that is the
+    /// same on every row. A plot that opens on two arbitrary columns has to be
+    /// configured before it says anything, and most of the time nobody bothers.
+    ///
+    /// Re-run as rows arrive until both axes are filled or the user picks one: on
+    /// appear mid-batch nothing varies yet, and an axis chosen then would stay "—".
     private func chooseDefaults() {
-        guard xKey.isEmpty, yKey.isEmpty else { return }
-        let names = numericColumns.compactMap(\.column)
+        guard !axesPicked, xKey.isEmpty || yKey.isEmpty else { return }
         // Through `numericColumns`, not `set.rankingColumn`: a set ranked on a STRING
         // column would otherwise name an axis the menu never offers, and the plot
         // would open empty with no way to tell why.
-        let ranking = names.first { $0 == self.set.rankingKey }
-        yKey = ranking ?? names.first ?? ""
-        xKey = names.first { $0 != yKey } ?? yKey
+        let axes = SetPlotModel.defaultAxes(columns: numericColumns, rows: rows,
+                                            rankingKey: self.set.rankingKey)
+        xKey = axes.x
+        yKey = axes.y
     }
 
     // MARK: the plot area
@@ -544,8 +585,11 @@ struct SetPlotView: View {
 
     private func axisMenu(_ label: String, key: Binding<String>) -> some View {
         Menu {
-            ForEach(numericColumns) { column in
-                Button(SetTableModel.header(column)) { key.wrappedValue = column.column ?? "" }
+            ForEach(SetTableModel.ordered(numericColumns)) { column in
+                Button(SetTableModel.header(column)) {
+                    axesPicked = true
+                    key.wrappedValue = column.column ?? ""
+                }
             }
         } label: {
             Text("\(label): \(column(key.wrappedValue).map(SetTableModel.header) ?? "—")")

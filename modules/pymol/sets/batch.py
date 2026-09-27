@@ -51,11 +51,13 @@ cmd = sys.modules['pymol.cmd']
 #: wrote them; neither is a declared METRIC of any tool, so `binding._write_back_metrics`
 #: skips them on stage and `set_set` refuses to edit them, which is right for both.
 SEED_SPEC = {'key': 'seed', 'scope': 'object', 'dtype': 'int', 'label': 'Seed',
+             'role': 'provenance',
              'description': 'random seed this entry was generated at'}
 MODEL_SPEC = {'key': 'model', 'scope': 'object', 'dtype': 'int', 'label': 'Model',
+              'role': 'provenance',
               'description': 'which model of an n_models run this entry is'}
 SEQUENCE_SPEC = {'key': 'sequence_n', 'scope': 'object', 'dtype': 'int',
-                 'label': 'Sequence',
+                 'label': 'Sequence', 'role': 'provenance',
                  'description': 'which sequence of an n_sequences design run this entry'
                                 ' is (#453)'}
 

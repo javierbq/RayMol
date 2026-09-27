@@ -42,9 +42,27 @@ struct MetricColumn: Identifiable, Equatable, Hashable, Decodable {
     let tool: String
     /// The wide-table column, `key` or `key__chain`; nil for residue/pair arrays.
     let column: String?
+    /// `score` or `provenance` (#544): whether this column measures the result — what
+    /// a user triages on, so the table shows it first — or records what was asked for
+    /// and what it cost. Python writes it (`MetricSpec.role`); a container from before
+    /// the field gets it by the same rule Python applies, `defaultRole`.
+    let role: String
+
+    static let scoreRole = "score"
+    static let provenanceRole = "provenance"
+
+    /// `metrics.schema.default_role`, verbatim: a column with a better end is a
+    /// score, one without is provenance.
+    static func defaultRole(higherIsBetter: Bool?) -> String {
+        higherIsBetter == nil ? provenanceRole : scoreRole
+    }
 
     var id: String { column ?? "\(key)#\(chain ?? "")" }
     var isScalar: Bool { column != nil }
+    var isScore: Bool { role == Self.scoreRole }
+    /// A chain id column (`design_chain`): one or two characters that need a floor on
+    /// their width and some air, or they run into the next cell (#544).
+    var isChainID: Bool { dtype == "str" && (key == "chain" || key.hasSuffix("_chain")) }
     /// "plddt/B" for a chain scalar, else the spec's label.
     var title: String {
         if let chain, !chain.isEmpty { return "\(label)/\(chain)" }
@@ -52,14 +70,14 @@ struct MetricColumn: Identifiable, Equatable, Hashable, Decodable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case key, scope, dtype, units, label, lo, hi, chain, tool, column
+        case key, scope, dtype, units, label, lo, hi, chain, tool, column, role
         case higherIsBetter = "higher_is_better"
     }
 
     init(key: String, scope: String = "object", dtype: String = "float", units: String = "",
          label: String = "", lo: Double? = nil, hi: Double? = nil,
          higherIsBetter: Bool? = nil, chain: String? = nil, tool: String = "",
-         column: String? = nil) {
+         column: String? = nil, role: String? = nil) {
         self.key = key
         self.scope = scope
         self.dtype = dtype
@@ -71,6 +89,11 @@ struct MetricColumn: Identifiable, Equatable, Hashable, Decodable {
         self.chain = chain
         self.tool = tool
         self.column = column
+        if let role, role == Self.scoreRole || role == Self.provenanceRole {
+            self.role = role
+        } else {
+            self.role = Self.defaultRole(higherIsBetter: higherIsBetter)
+        }
     }
 
     /// Every field but `key` is optional on the way in: the JSON is written by
@@ -90,7 +113,8 @@ struct MetricColumn: Identifiable, Equatable, Hashable, Decodable {
             higherIsBetter: try? c.decodeIfPresent(Bool.self, forKey: .higherIsBetter),
             chain: try? c.decodeIfPresent(String.self, forKey: .chain),
             tool: (try? c.decodeIfPresent(String.self, forKey: .tool)) ?? "",
-            column: try? c.decodeIfPresent(String.self, forKey: .column))
+            column: try? c.decodeIfPresent(String.self, forKey: .column),
+            role: try? c.decodeIfPresent(String.self, forKey: .role))
     }
 }
 
@@ -1803,6 +1827,7 @@ extension PyMOLEngine {
         setSelection = []
         setViewportSelection = []
         setHiddenColumns = []
+        setInlineColumns = []
         dataDrawerTab = Self.tabAfterSetChange(dataDrawerTab)
         // The TAB is deliberately NOT reset. This runs on every `activeSetID` change,
         // and a campaign makes a new set active repeatedly — `binder_design` then

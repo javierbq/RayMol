@@ -16,7 +16,7 @@ of what was asked for, identical for every state of the object. Every geometry n
 state-scope, because a state is one set of coordinates and that is what geometry is
 measured on.
 """
-from pymol.metrics.schema import MetricSpec, OBJECT, STATE
+from pymol.metrics.schema import MetricSpec, OBJECT, PROVENANCE, SCORE, STATE
 
 from ..predictors.metrics import INPUT_SPECS, RUNTIME_SPECS
 
@@ -31,26 +31,26 @@ SHARED_INPUT_SPECS = tuple(spec for spec in INPUT_SPECS if spec.key != 'msa_dept
 #: reader needs in order to interpret the geometry below: an interface distance means
 #: something different for a 40-residue design than for a 120-residue one.
 DESIGN_INPUT_SPECS = (
-    MetricSpec('design_length', OBJECT, dtype='int', units='residues',
+    MetricSpec('design_length', OBJECT, role=PROVENANCE, dtype='int', units='residues',
                label='Designed residues',
                description='Length of the generated chain. The target is the rest of'
                            ' the object and is held fixed.'),
-    MetricSpec('design_target_residues', OBJECT, dtype='int', units='residues',
+    MetricSpec('design_target_residues', OBJECT, role=PROVENANCE, dtype='int', units='residues',
                label='Target residues',
                description='Residues of the target the design was conditioned on --'
                            ' the selection as the engine read it, after non-standard'
                            ' residues and alternate locations were excluded.'),
-    MetricSpec('design_hotspots', OBJECT, dtype='int', units='residues',
+    MetricSpec('design_hotspots', OBJECT, role=PROVENANCE, dtype='int', units='residues',
                label='Hotspots',
                description='Interface residues of the target the design was directed'
                            ' at. They set the sampler origin, so they change the'
                            ' result rather than only scoring it.'),
-    MetricSpec('design_chain', OBJECT, dtype='str', label='Designed chain',
+    MetricSpec('design_chain', OBJECT, role=PROVENANCE, dtype='str', label='Designed chain',
                description='Chain id of the generated chain in this object. The rest is'
                            ' the target, held fixed. Recorded rather than assumed'
                            ' because computing refold-versus-design RMSD later means'
                            ' knowing which chain the design is.'),
-    MetricSpec('design_key', OBJECT, dtype='str', label='Design key',
+    MetricSpec('design_key', OBJECT, role=PROVENANCE, dtype='str', label='Design key',
                description='Stable identity of this design: the generator, the weight'
                            ' pack, the target residues and their coordinates, the'
                            ' hotspots, the length, the seed and the sampler schedule.'
@@ -62,40 +62,40 @@ DESIGN_INPUT_SPECS = (
 #: What the run MEASURED about the coordinates it produced. Every one of these comes out
 #: of the runtime, which is the only place the coordinates exist while it is running.
 GEOMETRY_SPECS = (
-    MetricSpec('design_ca_ca_mean', STATE, units='A', label='Designed CA-CA mean',
+    MetricSpec('design_ca_ca_mean', STATE, role=SCORE, units='A', label='Designed CA-CA mean',
                lo=3.0, hi=4.5,
                description='Mean distance between consecutive CA atoms of the designed'
                            ' chain. An ideal peptide is 3.80 A; a sampler that has not'
                            ' converged reads low.'),
-    MetricSpec('backbone_valid_pct', STATE, units='%', label='Backbone bonds in range',
+    MetricSpec('backbone_valid_pct', STATE, role=SCORE, units='%', label='Backbone bonds in range',
                lo=0, hi=100, higher_is_better=True,
                description='Percentage of consecutive CA-CA distances inside'
                            ' [3.6, 4.0] A. The bond-length sanity check, not a'
                            ' designability score.'),
-    MetricSpec('design_radius_of_gyration', STATE, units='A',
+    MetricSpec('design_radius_of_gyration', STATE, role=SCORE, units='A',
                label='Designed chain radius of gyration',
                description='Compactness of the designed chain, over its CA atoms. A'
                            ' number far above what its length implies is an extended'
                            ' or unfolded sample.'),
-    MetricSpec('interface_min_distance', STATE, units='A', label='Interface distance',
+    MetricSpec('interface_min_distance', STATE, role=SCORE, units='A', label='Interface distance',
                description='Closest CA-CA approach between the designed chain and the'
                            ' target. NEITHER DIRECTION IS BETTER: around 4-6 A is'
                            ' contact, far above that is a chain floating off the'
                            ' surface, and far below it is a clash. Deliberately'
                            ' declares no `higher_is_better`, so nothing sorts or'
                            ' colours it as though one end were good.'),
-    MetricSpec('contacts_under_8a', STATE, dtype='int', units='pairs',
+    MetricSpec('contacts_under_8a', STATE, role=SCORE, dtype='int', units='pairs',
                label='CA pairs within 8 A', higher_is_better=True,
                description='Designed-chain CA to target CA pairs closer than 8 A -- how'
                            ' much surface the design actually engages, rather than'
                            ' whether it touches at all.'),
-    MetricSpec('hotspot_min_distance', STATE, units='A', label='Hotspot distance',
+    MetricSpec('hotspot_min_distance', STATE, role=SCORE, units='A', label='Hotspot distance',
                higher_is_better=False,
                description='Closest approach from the designed chain to any hotspot CA.'
                            ' This is the one number that says whether the design went'
                            ' where it was aimed: a geometrically fine design docked on'
                            ' the far side of the target reads large here.'),
-    MetricSpec('target_drift_max', STATE, units='A', label='Target drift',
+    MetricSpec('target_drift_max', STATE, role=SCORE, units='A', label='Target drift',
                lo=0, higher_is_better=False,
                description='Largest movement of any target atom from where it was'
                            ' supplied. The contract is that the target is HELD FIXED,'
@@ -103,6 +103,10 @@ GEOMETRY_SPECS = (
                            ' quality signal -- on any other.'),
 )
 
+#: Roles (#544): what was asked for -- DESIGN_INPUT_SPECS -- is PROVENANCE, and every
+#: geometry number above is a SCORE even where it declares no better end, because it is
+#: a measurement of the result and a thing to triage on. The runtime cost is provenance
+#: (predictors/metrics.py says why).
 #: The set a geometry-only generator declares.
 DESIGN_SPECS = (SHARED_INPUT_SPECS + DESIGN_INPUT_SPECS + RUNTIME_SPECS
                 + GEOMETRY_SPECS)

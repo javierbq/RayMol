@@ -34,7 +34,7 @@ import threading
 import tempfile
 import time
 
-from ..metrics.schema import MetricSpec, ARRAY_SCOPES
+from ..metrics.schema import MetricSpec, ARRAY_SCOPES, ROLES, default_role
 from ..metrics.errors import MetricSchemaError
 from ..msas.store import _FORBIDDEN as _FORBIDDEN_NAME_CHARS
 from . import blobs, schema
@@ -566,7 +566,15 @@ class Container:
             self._ensure_ranking_index(set_id)
 
     def columns(self, set_id):
-        return list(json.loads(self._set_row(set_id)['columns'] or '[]'))
+        """The declared columns, in declaration order. A record from a container
+        written before columns carried a `role` (#544) gets one here, by the rule a
+        new spec that omits it follows, so a reader never has to ask which vintage
+        of file it is holding."""
+        declared = list(json.loads(self._set_row(set_id)['columns'] or '[]'))
+        for record in declared:
+            if isinstance(record, dict) and record.get('role') not in ROLES:
+                record['role'] = default_role(record.get('higher_is_better'))
+        return declared
 
     def _column_dtypes(self, set_id):
         return {c['column']: c['dtype'] for c in self.columns(set_id) if c.get('column')}

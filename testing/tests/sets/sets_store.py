@@ -2,6 +2,7 @@
 
     pymol -ckqy testing/testing.py --run testing/tests/sets/sets_store.py
 """
+import json
 import os
 import sqlite3
 import struct
@@ -256,6 +257,68 @@ class ColumnTest(SetStoreTestCase):
         # And the stored dicts can be fed straight back in.
         c.declare_columns(sid, c.columns(sid))
         self.assertEqual(len(c.columns(sid)), 2)
+
+    def testRoleRoundTrips(self):
+        # #544: what a column is FOR rides with its declaration, explicit or derived,
+        # and survives being fed back through declare_columns.
+        c = self.open()
+        sid = c.create_set('demo')['id']
+        c.declare_columns(sid, [
+            MetricSpec('plddt', 'state', lo=0, hi=100, higher_is_better=True),
+            MetricSpec('elapsed_s', 'state', higher_is_better=False,
+                       role='provenance'),
+            MetricSpec('rog', 'state', role='score'),
+            MetricSpec('design_length', 'object', dtype='int'),
+            dict(key='seed', scope='object', dtype='int', role='provenance'),
+            dict(key='rmsd', scope='state', higher_is_better=False),
+        ])
+        roles = {d['key']: d['role'] for d in c.columns(sid)}
+        self.assertEqual(roles, {'plddt': 'score', 'elapsed_s': 'provenance',
+                                 'rog': 'score', 'design_length': 'provenance',
+                                 'seed': 'provenance', 'rmsd': 'score'})
+        # In the file itself, not only in what columns() hands back.
+        raw = json.loads(c._conn.execute(
+            'SELECT columns FROM sets WHERE id = ?', (sid,)).fetchone()[0])
+        self.assertEqual({d['key']: d['role'] for d in raw}, roles)
+        # Reopened from disk, and re-declared from its own output.
+        c.close()
+        c = self.open()
+        c.declare_columns(sid, c.columns(sid))
+        self.assertEqual({d['key']: d['role'] for d in c.columns(sid)}, roles)
+
+    def testBadRoleRefused(self):
+        c = self.open()
+        sid = c.create_set('demo')['id']
+        self.assertRaises(SetInputError, c.declare_columns, sid,
+                          [dict(key='x', scope='state', role='ranking')])
+        self.assertEqual(self.columns_of(c, sid), ['entry_id'])
+
+    def testLegacyColumnsWithoutARoleDefaultByTheSameRule(self):
+        # A container written before #544 has no `role` in sets.columns. The reader
+        # fills it in by `higher_is_better`: a metric with a better end is a score,
+        # one without is provenance -- the rule a new spec that omits it follows.
+        c = self.open()
+        sid = c.create_set('demo')['id']
+        c.declare_columns(sid, [
+            MetricSpec('plddt', 'state', higher_is_better=True),
+            MetricSpec('rmsd', 'state', higher_is_better=False),
+            MetricSpec('design_length', 'object', dtype='int'),
+        ])
+        raw = json.loads(c._conn.execute(
+            'SELECT columns FROM sets WHERE id = ?', (sid,)).fetchone()[0])
+        for record in raw:
+            del record['role']
+        with c._conn:
+            c._conn.execute('UPDATE sets SET columns = ? WHERE id = ?',
+                            (json.dumps(raw), sid))
+        c.close()
+        c = self.open()
+        self.assertEqual({d['key']: d['role'] for d in c.columns(sid)},
+                         {'plddt': 'score', 'rmsd': 'score',
+                          'design_length': 'provenance'})
+        # And re-declaring a legacy column is still a no-op.
+        c.declare_columns(sid, [MetricSpec('plddt', 'state', higher_is_better=True)])
+        self.assertEqual(len(c.columns(sid)), 3)
 
     def testBadKeyRefused(self):
         c = self.open()
