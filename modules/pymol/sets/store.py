@@ -34,7 +34,7 @@ import threading
 import tempfile
 import time
 
-from ..metrics.schema import MetricSpec, ARRAY_SCOPES
+from ..metrics.schema import MetricSpec, ARRAY_SCOPES, ROLES, legacy_role
 from ..metrics.errors import MetricSchemaError
 from ..msas.store import _FORBIDDEN as _FORBIDDEN_NAME_CHARS
 from . import blobs, schema
@@ -243,9 +243,13 @@ class Container:
                 schema.create(conn)
             else:
                 schema.open_or_migrate(conn)
+                self._migrate_roles()
         except SetError:
             self.close()
             raise
+        except sqlite3.Error as exc:
+            self.close()
+            raise SetFormatError('cannot update %s: %s' % (path, exc))
 
     # -- lifecycle ---------------------------------------------------------------
 
@@ -566,7 +570,40 @@ class Container:
             self._ensure_ranking_index(set_id)
 
     def columns(self, set_id):
-        return list(json.loads(self._set_row(set_id)['columns'] or '[]'))
+        """The declared columns, in declaration order. A record from a container
+        written before columns carried a `role` (#544) is migrated when the file
+        opens (`_migrate_roles`); this fills one in all the same, by `legacy_role`, so
+        a reader never has to ask which vintage of file it is holding."""
+        declared = list(json.loads(self._set_row(set_id)['columns'] or '[]'))
+        _fill_roles(declared)
+        return declared
+
+    def _migrate_roles(self):
+        """Give every role-less declared column its role, in the file (#544).
+
+        In place rather than on read because Swift reads `sets.columns` straight from
+        SQLite: a Python-side default would never reach the table. No version bump --
+        nothing a reader shows changes except through the role itself, and a freshly
+        opened container is re-read from scratch anyway."""
+        rows = self._conn.execute('SELECT id, columns FROM sets').fetchall()
+        changed = []
+        for set_id, text in rows:
+            try:
+                declared = json.loads(text or '[]')
+            except ValueError:
+                continue
+            if isinstance(declared, list) and _fill_roles(declared):
+                changed.append((_dumps(declared), set_id))
+        if not changed:
+            return
+        with self._lock:
+            self._conn.execute('BEGIN IMMEDIATE')
+            try:
+                self._conn.executemany('UPDATE sets SET columns = ? WHERE id = ?', changed)
+                self._conn.execute('COMMIT')
+            except sqlite3.Error:
+                self._conn.execute('ROLLBACK')
+                raise
 
     def _column_dtypes(self, set_id):
         return {c['column']: c['dtype'] for c in self.columns(set_id) if c.get('column')}
@@ -983,6 +1020,18 @@ class Container:
 
     def __repr__(self):
         return 'Container(%r%s)' % (self._path, ', closed' if self.closed else '')
+
+
+def _fill_roles(declared):
+    """Set `role` on every record of a declared-column list that lacks a valid one.
+    Returns True if anything changed."""
+    changed = False
+    for record in declared:
+        if isinstance(record, dict) and record.get('role') not in ROLES:
+            record['role'] = legacy_role(record.get('key'), record.get('higher_is_better'),
+                                         record.get('tool') or '')
+            changed = True
+    return changed
 
 
 def _column_identity(record):

@@ -60,6 +60,79 @@ final class SetPlotModelTests: XCTestCase {
                      color: color, size: size, selection: selection, peekedID: peeked)
     }
 
+    // MARK: default axes (#544)
+
+    private func constRow(_ i: Int, plddt: Double?, rmsd: Double?, score: Double?) -> SetRow {
+        var r = row("r\(i)", ord: i, plddt: plddt, rmsd: rmsd, score: score)
+        r = SetRow(id: r.id, name: r.name, ord: r.ord, starred: false, rejected: false,
+                   pinned: false, stagedObject: nil, nChains: 1, nResidues: 70, tags: "",
+                   runID: nil, values: r.values.merging(["length": .number(60)]) { $1 })
+        return r
+    }
+
+    private let length = MetricColumn(key: "design_length", dtype: "int",
+                                      label: "Designed residues", column: "length",
+                                      role: "provenance")
+
+    func testAxesNeverDefaultToAConstant() {
+        // Declared provenance-first, as DESIGN_SPECS is: the old default took the
+        // first numeric column and opened on x = Designed residues, 60 everywhere.
+        let rows = [constRow(1, plddt: 80, rmsd: 1, score: 2),
+                    constRow(2, plddt: 90, rmsd: 2, score: 2)]
+        let axes = SetPlotModel.defaultAxes(columns: [length, score, plddt, rmsd],
+                                            rows: rows, rankingKey: "")
+        XCTAssertEqual(axes.x, "plddt", "the first VARYING score")
+        XCTAssertEqual(axes.y, "rmsd", "the next one; `score` is constant here")
+    }
+
+    func testRankingKeyIsXWhenItVaries() {
+        let rows = [constRow(1, plddt: 80, rmsd: 1, score: 2),
+                    constRow(2, plddt: 90, rmsd: 2, score: 3)]
+        let axes = SetPlotModel.defaultAxes(columns: [length, plddt, rmsd, score],
+                                            rows: rows, rankingKey: "rmsd")
+        XCTAssertEqual(axes.x, "rmsd")
+        XCTAssertEqual(axes.y, "plddt")
+        // A constant ranking key is passed over like any other constant.
+        let flat = [constRow(1, plddt: 80, rmsd: 1, score: 2),
+                    constRow(2, plddt: 90, rmsd: 1, score: 3)]
+        let fallback = SetPlotModel.defaultAxes(columns: [length, plddt, rmsd, score],
+                                                rows: flat, rankingKey: "rmsd")
+        XCTAssertEqual(fallback.x, "plddt")
+        XCTAssertEqual(fallback.y, "score")
+    }
+
+    func testScoresBeforeVaryingProvenanceAndNothingWhenNothingVaries() {
+        let seed = MetricColumn(key: "seed", dtype: "int", column: "seed", role: "provenance")
+        let rows = [
+            SetRow(id: "a", name: "a", ord: 1, starred: false, rejected: false, pinned: false,
+                   stagedObject: nil, nChains: 1, nResidues: 70, tags: "", runID: nil,
+                   values: ["seed": .number(1), "plddt": .number(80), "rmsd": .number(1)]),
+            SetRow(id: "b", name: "b", ord: 2, starred: false, rejected: false, pinned: false,
+                   stagedObject: nil, nChains: 1, nResidues: 70, tags: "", runID: nil,
+                   values: ["seed": .number(2), "plddt": .number(80), "rmsd": .number(2)]),
+        ]
+        let axes = SetPlotModel.defaultAxes(columns: [seed, plddt, rmsd], rows: rows,
+                                            rankingKey: "")
+        XCTAssertEqual(axes.x, "rmsd", "the only varying score")
+        XCTAssertEqual(axes.y, "seed", "a varying provenance column beats a constant")
+        let none = SetPlotModel.defaultAxes(columns: [plddt, rmsd], rows: [], rankingKey: "rmsd")
+        XCTAssertEqual(none.x, "rmsd", "nothing varies yet: fall back to the ranking key")
+        XCTAssertEqual(none.y, "plddt", "and the first other numeric column, never x again")
+        XCTAssertFalse(SetPlotModel.axesVary(x: none.x, y: none.y, columns: [plddt, rmsd],
+                                             rows: []), "a fallback is not final")
+        // One varying column: it takes x, and y falls back rather than going blank.
+        let one = SetPlotModel.defaultAxes(columns: [seed, plddt], rows: rows, rankingKey: "")
+        XCTAssertEqual(one.x, "seed")
+        XCTAssertEqual(one.y, "plddt", "a constant axis beats an empty plot")
+        let single = SetPlotModel.defaultAxes(columns: [plddt], rows: [], rankingKey: "")
+        XCTAssertEqual(single.x, "plddt")
+        XCTAssertEqual(single.y, "plddt", "x == y only when there is one numeric column")
+        XCTAssertTrue(SetPlotModel.axesVary(x: axes.x, y: axes.y, columns: [seed, plddt, rmsd],
+                                            rows: rows))
+        XCTAssertEqual(SetPlotModel.axisCandidates([verdict, plddt], rows: rows).map(\.key),
+                       [], "a string column is never an axis; pLDDT is constant here")
+    }
+
     // MARK: domains
 
     func testDeclaredDomainWins() {

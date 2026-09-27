@@ -42,6 +42,24 @@ class SpecTest(SchemaTestCase):
         self.assertRaises(MetricSchemaError, schema.MetricSpec, 'k', schema.RESIDUE,
                           summarizes='harmonic_mean')
 
+    def testRoleDefaultsFromHigherIsBetter(self):
+        # #544: a metric with a better end is a score, one without is provenance.
+        self.assertEqual(schema.MetricSpec('a', 'state', higher_is_better=True).role,
+                         schema.SCORE)
+        self.assertEqual(schema.MetricSpec('a', 'state', higher_is_better=False).role,
+                         schema.SCORE)
+        self.assertEqual(schema.MetricSpec('a', 'state').role, schema.PROVENANCE)
+        self.assertEqual(schema.MetricSpec('a', 'state', higher_is_better=False,
+                                           role='provenance').role, schema.PROVENANCE)
+        self.assertEqual(schema.MetricSpec('a', 'state', role='score').role,
+                         schema.SCORE)
+        self.assertEqual(schema.MetricSpec('a', 'state').as_dict()['role'],
+                         schema.PROVENANCE)
+
+    def testUnknownRoleRefused(self):
+        self.assertRaises(MetricSchemaError, schema.MetricSpec, 'a', 'state',
+                          role='ranking')
+
     def testCastKeepsNoneAsNone(self):
         # Absent is not zero. A masked residue has no score, and a single-chain fold
         # has no interface score; both must survive as absent.
@@ -143,6 +161,25 @@ class ShippedSchemaTest(testing.PyMOLTestCase):
         self.assertNotIn('min_ipsae', keys)
         self.assertIn('elapsed_s', keys)
         self.assertIn('n_residues', keys)
+
+    def testShippedSchemasNameTheirRoles(self):
+        # #544: the run constants (what was asked for, what it cost) are provenance
+        # and the measurements are scores -- including the runtime cost, which HAS
+        # a better end and is still not something to triage on.
+        from pymol.generators.metrics import DESIGN_SPECS
+        from pymol.predictors.metrics import SCORED_SPECS
+        from pymol.designers.metrics import DESIGN_SEQUENCE_SPECS
+        roles = {}
+        for spec in DESIGN_SPECS + SCORED_SPECS + DESIGN_SEQUENCE_SPECS:
+            roles[spec.key] = spec.role
+        for key in ('design_length', 'design_target_residues', 'design_hotspots',
+                    'design_chain', 'design_key', 'elapsed_s', 'peak_bytes',
+                    'n_residues', 'n_chains', 'msa_depth', 'temperature'):
+            self.assertEqual(roles[key], schema.PROVENANCE, key)
+        for key in ('plddt', 'mean_plddt', 'min_ipsae', 'ipae', 'backbone_valid_pct',
+                    'interface_min_distance', 'hotspot_min_distance',
+                    'mean_native_fit', 'sequence_recovery'):
+            self.assertEqual(roles[key], schema.SCORE, key)
 
     def testDesignDeclaresItsMetrics(self):
         from pymol import raymol_design    # noqa: F401  (registers at import)

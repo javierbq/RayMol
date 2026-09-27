@@ -165,6 +165,10 @@ final class PyMOLEngine: ObservableObject {
     /// Columns hidden in the drawer. A property of the view on the data, not of the
     /// set, so it lives here and is saved INTO a view rather than into the store.
     @Published var setHiddenColumns: Set<String> = []
+    /// Run-constant columns the user asked to see IN the table (#544). A column whose
+    /// value is the same on every shown row goes to the run header by default; Columns
+    /// ▾ brings it back inline, and that choice lives here beside `setHiddenColumns`.
+    @Published var setInlineColumns: Set<String> = []
     /// The tab the drawer shows, PERSISTED (#419 review). Every other pane in the
     /// window remembers what it was doing; a user who triages in Plot all day should
     /// not be handed the Table on every launch.

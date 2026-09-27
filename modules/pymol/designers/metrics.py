@@ -19,7 +19,7 @@ The scopes follow from what varies. The residue arrays are per RESIDUE, indexed 
 recovery are per OBJECT: they are properties of one designed sequence, which is one
 entry, and a sequence entry has no coordinates and therefore no states to vary over.
 """
-from pymol.metrics.schema import MetricSpec, OBJECT, RESIDUE
+from pymol.metrics.schema import MetricSpec, OBJECT, PROVENANCE, RESIDUE, SCORE
 
 from ..predictors.metrics import RUNTIME_SPECS
 
@@ -30,11 +30,11 @@ from ..predictors.metrics import RUNTIME_SPECS
 #: Written as ARRAYS rather than as a per-residue column so #419's heat strips can draw
 #: them under a row without a query per residue.
 RESIDUE_SPECS = (
-    MetricSpec('native_fit', RESIDUE, units='log P', label='Native fit',
+    MetricSpec('native_fit', RESIDUE, role=SCORE, units='log P', label='Native fit',
                lo=-6.0, hi=0.0, higher_is_better=True, summarizes='mean',
                description='Log-probability MPNN assigns to the residue actually'
                            ' present, scored leave-one-out against the backbone.'),
-    MetricSpec('certainty', RESIDUE, label='Certainty', lo=0.0, hi=1.0,
+    MetricSpec('certainty', RESIDUE, role=SCORE, label='Certainty', lo=0.0, hi=1.0,
                higher_is_better=True, summarizes='mean',
                description='1 - Shannon entropy / ln(21) over the 21-letter'
                            ' distribution: 0 is flat, 1 is one-hot.'),
@@ -45,22 +45,22 @@ RESIDUE_SPECS = (
 #: and an array the runtime wrote could disagree about which residues were included, and
 #: `summarizes` is advisory on purpose.
 SEQUENCE_SPECS = (
-    MetricSpec('sequence_recovery', OBJECT, label='Native recovery', lo=0.0, hi=1.0,
+    MetricSpec('sequence_recovery', OBJECT, role=SCORE, label='Native recovery', lo=0.0, hi=1.0,
                summarizes='mean',
                description='Fraction of DESIGNED positions whose letter matches the'
                            ' backbone\'s own. Deliberately declares no'
                            ' `higher_is_better`: recovering the native sequence is a'
                            ' sanity signal on a natural backbone and a null result on a'
                            ' generated one, where there is no native to recover.'),
-    MetricSpec('mean_native_fit', OBJECT, units='log P', label='Mean native fit',
+    MetricSpec('mean_native_fit', OBJECT, role=SCORE, units='log P', label='Mean native fit',
                lo=-6.0, hi=0.0, higher_is_better=True,
                description='Mean of `native_fit` over the scored residues of this'
                            ' sequence. Masked residues are absent, not zero.'),
-    MetricSpec('mean_certainty', OBJECT, label='Mean certainty', lo=0.0, hi=1.0,
+    MetricSpec('mean_certainty', OBJECT, role=SCORE, label='Mean certainty', lo=0.0, hi=1.0,
                higher_is_better=True,
                description='Mean of `certainty` over the scored residues of this'
                            ' sequence.'),
-    MetricSpec('temperature', OBJECT, label='Sampling temperature', lo=0.0,
+    MetricSpec('temperature', OBJECT, role=PROVENANCE, label='Sampling temperature', lo=0.0,
                description='What this sequence was sampled at. 0 is greedy argmax, so'
                            ' every sequence of a run at 0 is the same sequence --'
                            ' recorded because it is the knob that decides whether a'
