@@ -395,10 +395,13 @@ keeps that file open and fully written (every entry is folded into the main file
 lands, so a Finder copy or a backup has all of them), and a second RayMol sharing the
 state folder neither sweeps it, offers it for recovery nor lets you discard it until the
 batch has finished; `save` over it is refused. Moving or renaming the file in Finder
-mid-batch is fine: the design that lands next is kept in the current scene, and opening
-the moved file takes the batch back. Opening a Finder *copy* of the document does not
-pull the batch into the copy — only the file it left (or, once that is gone, the moved
-file) takes it back.
+mid-batch is fine: RayMol keeps hold of the file itself, so the designs that land next
+still go into it at its new name, and opening it there takes the batch back. Opening a
+Finder *copy* does not pull the batch into the copy while the original still exists,
+wherever it has moved to. Only if the original is **deleted** do later designs stay in
+the current scene as plain objects — and then the next file you open in which the
+batch's run is found, which can be an earlier copy, takes the batch back, being the
+only copy of the campaign left.
 
 In the app, opening a session file, dropping one on the viewport or choosing File ▸
 Clear Session while a batch is running asks first — **Save…** (as a `.raymol`),

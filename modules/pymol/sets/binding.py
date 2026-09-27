@@ -1801,6 +1801,7 @@ def load_raymol(filename, partial=0, quiet=1, *, _self=cmd):
     # The session blob is read and unpickled BEFORE the container is opened, because
     # opening migrates an older file in place (#545 review): a file whose session this
     # build cannot read is refused untouched, not refused after it was upgraded.
+    store.about_to_open(filename)
     early = _read_session_readonly(filename)
     session = None
     if early is not None:

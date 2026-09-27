@@ -75,7 +75,7 @@ class _Batch:
 
     __slots__ = ('id', 'set_id', 'run_id', 'tool', 'total', 'settled', 'landed',
                  'group', 'superpose', 'slots', 'members', 'order', 'detached',
-                 'quiet_end', 'home', 'away', 'hold')
+                 'quiet_end', 'home', 'away', 'hold', 'home_ident')
 
     def __init__(self, id, set_id, run_id, tool, total, group, superpose, slots,
                  home=''):
@@ -121,6 +121,10 @@ class _Batch:
         #: which is what ANOTHER RayMol's sweep, recovery offer and Discard read as "in
         #: use" (`store._has_sidecar`) -- a per-process registry cannot tell them.
         self.hold = None
+        #: (st_dev, st_ino) of the home file while the batch is away, so a document
+        #: MOVED in Finder is still recognised as home by its inode, and a copy is not
+        #: (#448 review round 3). None once the file is known to be gone for good.
+        self.home_ident = None
 
 
 def _container():
@@ -325,7 +329,7 @@ def _still_ours(batch):
         return False
     # The same ids in ANOTHER file -- a Finder duplicate of the document the batch left
     # -- are not its document (#448 review): an away batch only comes back to its own.
-    if batch.away and not _is_home(c.path, batch.home):
+    if batch.away and not _is_home(batch, c.path):
         return False
     return True
 
@@ -333,6 +337,7 @@ def _still_ours(batch):
 def _detach(batch):
     batch.detached = True
     _release_hold(batch)
+    batch.home_ident = None
     raise SetError(
         'the set document changed while batch %s was running (a .raymol or .pse'
         ' was loaded, or the session was reset), and the document it was writing into'
@@ -376,21 +381,54 @@ def _open_home(batch):
 
 def _home_container(batch):
     """The held home Container of an away batch, opening (and holding) it on first
-    use; None when `_open_home` refuses."""
+    use; None when there is no file to write into any more.
+
+    A held connection is reused while the path still names the file it was opened on,
+    AND while that file merely MOVED (#448 review round 3): the hold keeps a descriptor
+    on the inode, and a link count above zero means the document still exists under
+    some name -- a Finder move or rename -- so results keep going into it (each one
+    checkpointed into the main file) rather than being stranded in an unrelated scene.
+    Only an inode with no name left (deleted) is gone; writing into that would reach
+    nobody, the failure #447's review found, so then the hold is dropped and the path
+    reopened, which fails and detaches.
+    """
     c = batch.hold
-    if c is not None and not c.closed and _same(c.path, batch.home) \
-            and _identity(batch.home) == getattr(c, '_raymol_identity', None):
-        return c
-    # Gone, replaced or never opened. A connection to a file that was unlinked (or
-    # replaced) under it would write into an inode nobody can reach, silently -- the
-    # failure #447's review found -- so a held connection is only reused while the
-    # path still names the very file it was opened on.
+    if c is not None and not c.closed:
+        if _same(c.path, batch.home) \
+                and _identity(batch.home) == getattr(c, '_raymol_identity', None):
+            return c
+        if _still_linked(c):
+            return c
     _release_hold(batch)
     c = _open_home(batch)
     if c is not None:
         c._raymol_identity = _identity(batch.home)
+        try:
+            c._raymol_fd = os.open(batch.home, os.O_RDONLY)
+            st = os.fstat(c._raymol_fd)
+            if (st.st_dev, st.st_ino) != c._raymol_identity:
+                # Replaced between the two opens: do not trust either.
+                os.close(c._raymol_fd)
+                c._raymol_fd = None
+        except OSError:
+            c._raymol_fd = None
+        batch.home_ident = c._raymol_identity
+    else:
+        # Nothing by that name, and no descriptor that says it moved: gone.
+        batch.home_ident = None
     batch.hold = c
     return c
+
+
+def _still_linked(c):
+    """True when the held file still has a name somewhere (moved, not deleted)."""
+    fd = getattr(c, '_raymol_fd', None)
+    if fd is None:
+        return False
+    try:
+        return os.fstat(fd).st_nlink > 0
+    except OSError:
+        return False
 
 
 def _identity(path):
@@ -415,6 +453,13 @@ def _release_hold(batch):
         c.close()
     except Exception:
         pass
+    fd = getattr(c, '_raymol_fd', None)
+    if fd is not None:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        c._raymol_fd = None
     if folded and not os.path.exists(path):
         for extra in ('-wal', '-shm'):
             try:
@@ -441,9 +486,11 @@ def _left_behind(batch, object_name, entry_name, _self=cmd):
     """Say where a result that landed in a document nobody has open went. Said every
     time, for the reason `_stage_or_discard` says its line: a finished design that does
     not appear in the scene with nothing on the console looks lost."""
+    where = batch.home if os.path.exists(batch.home or '') else (
+        'the file that was %s (moved since)' % batch.home)
     colorprinting.parrot(
         ' sets: %s landed as entry %s of %s in %s, which is not the open session;'
-        ' "load" that file to see it.' % (object_name, entry_name, batch.id, batch.home))
+        ' "load" that file to see it.' % (object_name, entry_name, batch.id, where))
 
 
 def land(object_name, state=None, source=None, _self=cmd):
@@ -810,15 +857,27 @@ def _same(a, b):
     return bool(a) and bool(b) and os.path.realpath(a) == os.path.realpath(b)
 
 
-def _is_home(path, home):
-    """`path` is the batch's home file itself, or the home is gone (moved in Finder)
-    and `path` is the only candidate left."""
-    if not home or not os.path.exists(home):
-        return True
-    try:
-        return os.path.samefile(path, home)
-    except OSError:
-        return _same(path, home)
+def _is_home(batch, path):
+    """`path` is the file this away batch left (#448 reviews):
+
+    * the home path still exists -> it must be that very file (`samefile`), so a Finder
+      duplicate opened beside it is not home;
+    * it has moved -> the inode the batch was holding (`home_ident`), wherever it is
+      now, so the moved document is home and a copy is not;
+    * it is gone for good (deleted, or never held) -> any file in which the batch's
+      run resolves, since that is the only copy of the campaign left -- which can be
+      an earlier Finder duplicate. Accepted on purpose: a copy that takes the rest of
+      the results is better than none.
+    """
+    home = batch.home
+    if home and os.path.exists(home):
+        try:
+            return os.path.samefile(path, home)
+        except OSError:
+            return _same(path, home)
+    if batch.home_ident is not None:
+        return _identity(path) == batch.home_ident
+    return True
 
 
 def _observe(event, container=None, path=None, old=None, new=None, **_):
@@ -836,7 +895,7 @@ def _observe(event, container=None, path=None, old=None, new=None, **_):
                     ours = container.run(batch.run_id).get('set_id') == batch.set_id
                 except Exception:
                     ours = False
-            if ours and batch.away and not _is_home(container.path, batch.home):
+            if ours and batch.away and not _is_home(batch, container.path):
                 # The run resolves, but in ANOTHER file: a Finder duplicate of the home
                 # document carries the same set and run ids (#448 review). A batch that
                 # is away only goes back to the file it left -- or, when that is gone,
@@ -851,6 +910,7 @@ def _observe(event, container=None, path=None, old=None, new=None, **_):
                 # home, and the batch is this session's again.
                 _release_hold(batch)
                 batch.home = os.path.abspath(container.path)
+                batch.home_ident = None
                 batch.away = False
                 batch.detached = False
             else:
@@ -872,7 +932,10 @@ def _observe(event, container=None, path=None, old=None, new=None, **_):
             # path shares the -wal and is ordinary SQLite concurrency.
             if ident is not None and not _same(c.path, path) \
                     and ident == getattr(c, '_raymol_identity', None):
+                # The home document, moved, is being opened under its new name: let
+                # go (one WAL per database), and follow it there.
                 _release_hold(batch)
+                batch.home = os.path.abspath(path)
         return None
     if event in ('kept', 'left'):
         # Hold the file from now on, not from the first late result: a batch that has

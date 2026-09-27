@@ -1488,6 +1488,13 @@ def _notify(event, **details):
     return answers
 
 
+def about_to_open(path):
+    """Say that `path` is about to be opened by something other than a Container (a
+    raw read-only look), so a holder of the same file under another name lets go
+    first (#448 review round 3; see `Container.__init__`)."""
+    _notify('opening', path=os.fspath(path))
+
+
 def writers(path):
     """Ids of live batches whose remaining results are written to the container at
     `path`, whether or not it is open. [] when none, or when no batch module exists."""

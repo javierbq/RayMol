@@ -1534,7 +1534,7 @@ class SessionReplacedMidBatchRound2(BatchTestCase):
         shutil.copyfile(doc, copy)
         self.assertEqual(len(self.entries_in(copy, row['id'])), 3)
 
-    def testAMovedDocumentTakesTheBatchBackWhenOpened(self):
+    def testAMovedDocumentKeepsReceivingAndTakesTheBatchBackWhenOpened(self):
         for deliver_first in (False, True):
             with self.subTest(deliver_first=deliver_first):
                 self.tearDown()
@@ -1545,22 +1545,57 @@ class SessionReplacedMidBatchRound2(BatchTestCase):
                     deliver_designs(jobs[1:2])
                 moved = os.path.join(_RESULTS['dir'], 'moved campaign.raymol')
                 os.rename(doc, moved)
-                landed_away = 2
                 if deliver_first:
-                    # Nowhere to write: kept in this scene under a free name.
-                    with redirect_stdout(io.StringIO()):
+                    # Moved, not deleted (#448 review round 3): the design still goes
+                    # into the document, wherever it now is -- nothing stranded here.
+                    out = io.StringIO()
+                    with redirect_stdout(out):
                         deliver_designs(jobs[2:3])
-                    self.assertIn(jobs[2].spec.name, cmd.get_names('objects'))
+                    self.assertNotIn(jobs[2].spec.name, cmd.get_names('all'))
+                    self.assertIn('moved since', out.getvalue())
+                    self.assertNotIn('kept as the plain object', out.getvalue())
                 with redirect_stdout(io.StringIO()):
                     cmd.load(moved)
-                self.assertEqual(store.active().count(row['id']), landed_away)
+                self.assertEqual(store.active().count(row['id']),
+                                 3 if deliver_first else 2)
                 self.assertIn(row['id'], batch.running())
                 with redirect_stdout(io.StringIO()):
                     deliver_designs(jobs[3:] if deliver_first else jobs[2:])
-                self.assertEqual(store.active().count(row['id']),
-                                 3 if deliver_first else 4)
+                self.assertEqual(store.active().count(row['id']), 4)
                 self.assertEqual(batch.running(), {})
                 self.assertFalse(os.path.exists(doc + '-wal'))
+                self.assertFalse(os.path.exists(doc + '-shm'))
+
+    def testADeletedDocumentStillFallsBackToAPlainObject(self):
+        jobs, row, doc = self.start(n=3, landed=1, titled=True)
+        self.replace_session('pse')
+        with redirect_stdout(io.StringIO()):
+            deliver_designs(jobs[1:2])
+        os.unlink(doc)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            deliver_designs(jobs[2:])
+        self.assertIn(jobs[2].spec.name, cmd.get_names('objects'))
+        self.assertIn('kept as the plain object', out.getvalue())
+        self.assertFalse(os.path.exists(doc))
+
+    def testAFinderCopyIsNotHomeWhileTheMovedOriginalExists(self):
+        import shutil
+        jobs, row, doc = self.start(n=3, landed=1, titled=True)
+        self.replace_session('pse')
+        with redirect_stdout(io.StringIO()):
+            deliver_designs(jobs[1:2])
+        dup = os.path.join(_RESULTS['dir'], 'campaign copy.raymol')
+        shutil.copyfile(doc, dup)
+        moved = os.path.join(_RESULTS['dir'], 'moved campaign.raymol')
+        os.rename(doc, moved)
+        with redirect_stdout(io.StringIO()):
+            cmd.load(dup)
+        self.assertEqual(batch.running(), {})            # the copy is not home
+        with redirect_stdout(io.StringIO()):
+            deliver_designs(jobs[2:])
+        self.assertEqual(store.active().count(row['id']), 2)
+        self.assertEqual(len(self.entries_in(moved, row['id'])), 3)
 
     def testSetDeleteInTheBatchsOwnSessionIsNotAwayAndCancelClearsPlaceholders(self):
         from pymol import designing
