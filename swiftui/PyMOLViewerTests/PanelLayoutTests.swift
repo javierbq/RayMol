@@ -624,7 +624,8 @@ final class PanelLayoutTests: XCTestCase {
                              objects: Int? = 5,
                              modeBar: Bool = false, drawerVisible: Bool = true,
                              tab: DataDrawerTab = .table,
-                             frac: CGFloat = 0) -> PanelLayout.MacColumnPlan {
+                             frac: CGFloat = 0,
+                             notice: Bool = false) -> PanelLayout.MacColumnPlan {
         let h = console ? PanelLayout.consoleHeight(
             frac: 0, windowHeight: window,
             defaultHeight: PanelLayout.macDefaultConsoleHeight,
@@ -634,7 +635,7 @@ final class PanelLayoutTests: XCTestCase {
                                          topRail: true, sequenceObjects: objects,
                                          dockedModeBar: modeBar,
                                          drawerVisible: drawerVisible, tab: tab,
-                                         drawerFrac: frac)
+                                         drawerFrac: frac, noticeShown: notice)
     }
 
     func testDrawerMinimumCoversItsOwnChromePlusARow() {
@@ -989,6 +990,81 @@ final class PanelLayoutTests: XCTestCase {
                 }
             }
         }
+    }
+
+    /// #546's notice strip (23pt over the drawer tab) is charged INSIDE the drawer, so
+    /// #456's guarantee holds under it: a drawer that fits with a notice showing still
+    /// draws a table row (list tabs), the hover-card plot area (Plot), or the minimum
+    /// canvas (Lineage), below the notice.
+    func testTheNoticeStripIsChargedInsideTheDrawer() {
+        XCTAssertEqual(PanelLayout.macDrawerNoticeHeight, 23, accuracy: 1e-9)
+        for tab in DataDrawerTab.allCases {
+            XCTAssertEqual(PanelLayout.minDrawerHeight(tab: tab, notice: true),
+                           PanelLayout.minDrawerHeight(tab: tab) + 23, accuracy: 1e-9)
+            XCTAssertEqual(PanelLayout.comfortDrawerHeight(tab: tab, notice: true),
+                           PanelLayout.comfortDrawerHeight(tab: tab) + 23, accuracy: 1e-9)
+        }
+        XCTAssertEqual(PanelLayout.drawerTableRows(
+            drawerHeight: PanelLayout.minDrawerHeight(tab: .table, notice: true), notice: true), 1)
+        XCTAssertEqual(PanelLayout.drawerTableRows(
+            drawerHeight: PanelLayout.minDrawerHeight(tab: .table), notice: true), 0,
+            "the notice-less floor under a notice draws nothing — which is why it is charged")
+        for window in [CGFloat(600), 650, 700, 719, 771, 800, 900, 1200] {
+            for console in [true, false] {
+                for objects in [nil, 0, 1, 3, 5] as [Int?] {
+                    for modeBar in [false, true] {
+                        for tab in DataDrawerTab.allCases {
+                            for frac in [CGFloat(0), 0.05, 0.2, 0.6] {
+                                let plan = Self.plan(window: window, console: console,
+                                                     objects: objects, modeBar: modeBar,
+                                                     tab: tab, frac: frac, notice: true)
+                                let what = "\(window)pt console \(console)"
+                                    + " \(String(describing: objects)) bar \(modeBar)"
+                                    + " \(tab) frac \(frac), notice"
+                                guard plan.drawerFits, let h = plan.drawerHeight else { continue }
+                                XCTAssertLessThanOrEqual(h, plan.drawerCeiling + 1e-9, what)
+                                switch tab {
+                                case .table, .sequences:
+                                    XCTAssertGreaterThanOrEqual(PanelLayout.drawerTableRows(
+                                        drawerHeight: h, notice: true), 1, what)
+                                case .plot:
+                                    XCTAssertGreaterThanOrEqual(PanelLayout.plotAreaHeight(
+                                        drawerHeight: h, notice: true),
+                                        PanelLayout.macMinPlotAreaHeight - 1e-9, what)
+                                case .lineage:
+                                    XCTAssertGreaterThanOrEqual(
+                                        h - 23 - PanelLayout.macDrawerAboveTabHeight
+                                            - PanelLayout.macLineageHeaderHeight
+                                            - PanelLayout.macDrawerHairline,
+                                        PanelLayout.macMinLineageAreaHeight - 1e-9, what)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // The default window (719 content, console + viewer up): the viewer is already
+        // at one row, so the notice's 23pt comes out of the table — TWO rows while a
+        // notice shows (three without), still a table and no hint.
+        for objects in [1, 5] {
+            let plan = Self.plan(window: 719, objects: objects, notice: true)
+            XCTAssertTrue(plan.drawerFits)
+            XCTAssertEqual(plan.sequenceRows, 1)
+            XCTAssertEqual(plan.drawerHeight ?? 0, 216, accuracy: 0.5)
+            XCTAssertEqual(PanelLayout.drawerTableRows(drawerHeight: plan.drawerHeight ?? 0,
+                                                       notice: true), 2)
+        }
+        // KNOWN (#546 follow-up): the Plot tab's floor with a notice is 225, above the
+        // 216 this column can give, so Plot shows the hint while a notice is up at the
+        // default window with the console open. Pinned so a change to it is deliberate.
+        XCTAssertFalse(Self.plan(window: 719, objects: 5, tab: .plot, notice: true).drawerFits)
+        XCTAssertTrue(Self.plan(window: 719, console: false, objects: 5, tab: .plot,
+                                notice: true).drawerFits, "Hide Console")
+        // At 771 the viewer yields one more row for it and the table keeps three.
+        let tall = Self.plan(window: 771, objects: 5, notice: true)
+        XCTAssertEqual(PanelLayout.drawerTableRows(drawerHeight: tall.drawerHeight ?? 0,
+                                                   notice: true), 3)
     }
 
     /// The viewer yields through its maxHeight, not a new identity: the cap is the

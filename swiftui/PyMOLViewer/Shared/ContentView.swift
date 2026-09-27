@@ -701,7 +701,8 @@ struct ContentView: View {
             sequenceObjects: engine.sequenceVisible ? engine.sequences.count : nil,
             dockedModeBar: macModeBarDocked,
             drawerVisible: engine.dataDrawerVisible, tab: engine.dataDrawerTab,
-            drawerFrac: CGFloat(dataDrawerFrac))
+            drawerFrac: CGFloat(dataDrawerFrac),
+            noticeShown: macDrawerNoticeShown)  // TODO(#546): engine.setNotice != nil
     }
 
     // The rows the Object viewer is charged at — the plan's, so the pane's ideal height
@@ -710,6 +711,12 @@ struct ContentView: View {
     private func macSequenceRows(windowHeight: CGFloat) -> Int {
         macColumnPlan(windowHeight: windowHeight).sequenceRows
             ?? PanelLayout.sequenceStripRows(objects: engine.sequences.count)
+    }
+
+    // #546's SetNoticeBanner over the drawer tab (23pt while a notice shows). Wired
+    // when the #546 stack merges; until then there is no notice view to charge.
+    private var macDrawerNoticeShown: Bool {
+        false // TODO(#546): engine.setNotice != nil
     }
 
     // The two pieces of column chrome that come and go (#458). Both read the SAME
@@ -758,10 +765,11 @@ struct ContentView: View {
                     .onChanged { v in
                         // The same floor `drawerFits` uses, so the drag and the hint
                         // cannot disagree about whether a height is usable (#456).
-                        let minH = PanelLayout.minDrawerHeight(tab: tab)
+                        let minH = PanelLayout.minDrawerHeight(tab: tab,
+                                                               notice: macDrawerNoticeShown)
                         let start = macDrawerDragAnchor ?? PanelLayout.drawerHeight(
                             frac: CGFloat(dataDrawerFrac), windowHeight: windowHeight,
-                            maxHeight: maxH, tab: tab)
+                            maxHeight: maxH, tab: tab, notice: macDrawerNoticeShown)
                         macDrawerDragAnchor = start
                         let h = min(max(start - v.translation.height, minH), maxH)
                         if let f = PanelLayout.consoleFrac(height: h, windowHeight: windowHeight) {
