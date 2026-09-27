@@ -1,4 +1,4 @@
-// SetNoticeBanner.swift — the one-line strip over a set's tab in the Data drawer.
+// SetNoticeBanner.swift — a set's one-line notice, INLINE in the Data drawer's header row.
 //
 // It says what changed the set's staging WITHOUT the user asking: "Restaged top 6 by
 // pLDDT" when a run finished and its staging moved from arrival order to the ranking
@@ -7,9 +7,16 @@
 // say the same thing. Gone after the next staging action, which clears the row, or on
 // Dismiss, which is `set_notice <set>, 1` — every drawer action has a `set_*` command.
 //
-// Its own file, and one hook in `DataDrawer.tabHalf`, so the drawer's table and layout
-// code (in flight elsewhere) is not touched. When it shows it takes `height` from the
-// drawer's content; the drawer's layout budget has to charge that.
+// Where it goes: in the header row that is already there (`DATA · <set>` on the left,
+// `N of M staged · budget B ×` on the right), in the space between them. Not a strip of
+// its own: at the default window a strip cost the table a row and pushed the Plot tab
+// under its floor, so a notice appearing swapped the drawer for the "needs more room"
+// hint (review). The header's height does not change, so the drawer's layout budget
+// needs no charge for it. Narrow, it degrades in steps: the full text, the text
+// truncated (the tooltip has all of it), and last the × alone.
+//
+// Its own file, and one hook in `DataDrawer.header`, so the drawer's table and layout
+// code (in flight elsewhere) is not touched.
 
 import SwiftUI
 
@@ -25,46 +32,57 @@ struct SetNoticeModel: Equatable {
 }
 
 #if os(macOS)
-struct SetNoticeBanner: View {
-    /// The strip's height, hairline included. The drawer's content loses this much
-    /// while a notice shows.
-    static let height: CGFloat = 23
-
+/// The notice in the drawer header. Takes the header's slack and nothing else: with no
+/// notice it is only the spacer the header always had.
+struct SetNoticeInline: View {
     @EnvironmentObject var engine: PyMOLEngine
-    @EnvironmentObject private var themeManager: ThemeManager
     let set: SetEntry
 
+    /// How much of the text the truncating step keeps before giving up on text.
+    static let truncatedTextWidth: CGFloat = 150
+
     var body: some View {
-        if let model = SetNoticeModel.make(set: set) {
-            VStack(spacing: 0) {
-                HStack(spacing: 8) {
-                    Image(systemName: "arrow.triangle.2.circlepath")
-                        .font(.system(size: 10))
-                        .foregroundColor(PanelTheme.headerColor)
-                    Text(model.text)
-                        .font(.system(size: 10))
-                        .foregroundColor(PanelTheme.textColor)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .help(model.text)
-                    Spacer(minLength: 8)
-                    Button("Dismiss") { engine.dismissSetNotice(set) }
-                        .font(.system(size: 10))
-                        .controlSize(.small)
-                        .help("Hide this line (set_notice \(set.name), 1)")
+        HStack(spacing: 0) {
+            if let model = SetNoticeModel.make(set: set) {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 6) { message(model); dismiss(model) }
+                    HStack(spacing: 6) {
+                        message(model).frame(maxWidth: Self.truncatedTextWidth,
+                                             alignment: .leading)
+                        dismiss(model)
+                    }
+                    dismiss(model)
                 }
-                .padding(.horizontal, 10)
-                .frame(height: Self.height - 1)
-                Rectangle().fill(themeManager.active.panelText.color.opacity(0.18))
-                    .frame(height: 1)
+                .padding(.leading, 4)
             }
+            Spacer(minLength: 8)
         }
+    }
+
+    private func message(_ model: SetNoticeModel) -> some View {
+        Text(model.text)
+            .font(.system(size: 10, weight: .medium))
+            .foregroundColor(PanelTheme.accentColor)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .help(model.text)
+    }
+
+    private func dismiss(_ model: SetNoticeModel) -> some View {
+        Button { engine.dismissSetNotice(set) } label: {
+            Image(systemName: "xmark.circle")
+                .font(.system(size: 10))
+                .foregroundColor(PanelTheme.headerColor)
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .help("\(model.text) -- hide this notice (set_notice \(set.name), 1)")
     }
 }
 
 extension PyMOLEngine {
     /// Dismiss: `set_notice name, 1`. The version bump re-reads the sets, which hides
-    /// the strip.
+    /// the notice.
     func dismissSetNotice(_ set: SetEntry) {
         runPythonQuiet("from pymol import cmd as _c\n_c.set_notice(\(Self.pythonLiteral(set.name)), 1)")
     }
