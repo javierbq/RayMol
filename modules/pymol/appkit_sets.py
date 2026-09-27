@@ -340,6 +340,15 @@ def open_set(name, _self=cmd):
     global _active_set_id, _last_filter_key
     row = _set_row(name)
     _active_set_id = row['id']
+    # Remembered IN THE FILE, as the set a recovery of this document should point at
+    # (#547). Only when it moves, so re-opening the same set writes nothing.
+    try:
+        from pymol.sets import binding
+        c = _store().active()
+        if c.meta_get(binding.LAST_ACTIVE_KEY, '') != row['id']:
+            c.meta_set(binding.LAST_ACTIVE_KEY, row['id'])
+    except Exception:
+        pass
     # Arm the filter channel rather than emitting here. ORDER is the reason: the far
     # side clears the drawer's filter when the SETS: marker moves the active set, so a
     # SETSFILTER line printed BEFORE that marker would be wiped by it. Clearing the key
@@ -415,6 +424,20 @@ def toggle_stage(name, entries, _self=cmd):
     except SetBudgetExceeded as exc:
         colorprinting.warning(' sets: %s' % exc)
         return []
+    except SetError as exc:
+        colorprinting.warning(' sets: %s' % exc)
+        return []
+
+
+def stage_entries(name, entries, _self=cmd):
+    """Stage `entries` (a selector) of set `name` -- the recovery notice's "Stage N
+    starred" (#547) sends `starred`. `set_stage` itself, so the budget is the one every
+    other path answers to; a refusal is one warning line naming what would have to be
+    unstaged, not a traceback, and the notice stays up so the user can act on it."""
+    from pymol.sets.errors import SetError
+    row = _set_row(name)
+    try:
+        return _self.set_stage(row['name'], entries, quiet=1)
     except SetError as exc:
         colorprinting.warning(' sets: %s' % exc)
         return []

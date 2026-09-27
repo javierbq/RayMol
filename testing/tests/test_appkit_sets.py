@@ -596,6 +596,126 @@ class TestRecovery(AppkitSetsTestCase):
         self.assertFalse(os.path.exists(path))
         self.assertEqual(appkit_sets.recoverable(), [])
 
+    # -- #547: a recovery Open leaves a next step ------------------------------------
+
+    def crashed_campaign(self, starred=('m1', 'm3'), view='top50', with_session=False,
+                         active=None):
+        """A container a RayMol that was kill -9'd left behind: two sets of real
+        structures, `starred` entries of `camp` starred, a saved view, nothing staged
+        -- and, unless `with_session`, no session blob (the crash never saved one).
+        Returns the preserved path, with the scene and store reset as a relaunch
+        would have them."""
+        import sqlite3
+        cmd.set_create('older')
+        cmd.fab('GG', 'old1')
+        cmd.set_add('older', 'old1')
+        cmd.set_create('camp')
+        for name, seq in (('m1', 'ACDEF'), ('m2', 'GHIKL'), ('m3', 'MNPQR'),
+                          ('m4', 'STVWY')):
+            cmd.fab(seq, name)
+            cmd.set_add('camp', name)
+        cmd.delete('all')
+        if starred:
+            cmd.set_star('camp', '+'.join(starred))
+        if view:
+            cmd.set_view_save('camp', view)
+        if active:
+            appkit_sets.open_set(active)
+        saved = os.path.join(self._sets_dir, 'snapshot.raymol')
+        with captured():
+            cmd.save(saved)
+        if not with_session:
+            conn = sqlite3.connect(saved)
+            conn.execute('DELETE FROM session')
+            conn.commit()
+            conn.close()
+        appkit_sets.close_set()
+        store.reset()
+        cmd.reinitialize()
+        dead = os.path.join(store.working_dir(), 'raymol_sets_999999.raymol')
+        os.replace(saved, dead)
+        return store.preserve_working_file(dead)
+
+    def open_recovered(self, path):
+        with captured() as out:
+            cmd.load(path)
+        return out.getvalue()
+
+    def test_a_recovery_open_points_at_the_set_and_its_starred_entries(self):
+        path = self.crashed_campaign()
+        printed = self.open_recovered(path)
+        c = store.active()
+        camp = c.get_set('camp')
+        self.assertEqual(c.notice(camp['id']),
+                         {'kind': 'recovered', 'text': 'Scene not recovered.'})
+        self.assertIsNone(c.notice(c.get_set('older')['id']))
+        self.assertEqual(appkit_sets.active_set_id(), camp['id'],
+                         'the drawer opens on the set the notice is on')
+        self.assertIn('"set_stage camp, starred" puts its 2 starred entries back', printed)
+        self.assertIn('view:top50', printed)
+        # One click: the banner's Stage button sends exactly this.
+        with captured():
+            names = appkit_sets.stage_entries('camp', 'starred')
+        self.assertEqual(sorted(names), ['m1', 'm3'])
+        self.assertEqual(sorted(e['name'] for e in c.entries(camp['id'])
+                                if e.get('staged_object')), ['m1', 'm3'])
+        self.assertTrue(all(e['staged_by'] == 'user' for e in c.entries(camp['id'])
+                            if e.get('staged_object')))
+        self.assertIsNone(c.notice(camp['id']), 'a staging action answers the notice')
+        # And it does not come back for this container.
+        with captured():
+            cmd.save(path)
+        store.reset()
+        cmd.reinitialize()
+        self.open_recovered(path)
+        self.assertIsNone(store.active().notice(store.active().get_set('camp')['id']))
+
+    def test_staging_the_starred_respects_the_budget_and_keeps_the_notice(self):
+        path = self.crashed_campaign(starred=('m1', 'm2', 'm3'))
+        self.open_recovered(path)
+        c = store.active()
+        camp = c.get_set('camp')
+        cmd.set_budget(2, 'camp')
+        with captured() as out:
+            names = appkit_sets.stage_entries('camp', 'starred')
+        self.assertEqual(names, [])
+        self.assertIn('the budget is 2', out.getvalue())
+        self.assertEqual(c.count(camp['id'], 'e.staged_object IS NOT NULL'), 0)
+        self.assertEqual(c.notice(camp['id'])['kind'], 'recovered',
+                         'a refused stage is not an answer; the notice stays')
+        cmd.set_notice('camp', 1)
+        self.assertIsNone(c.notice(camp['id']))
+
+    def test_the_notice_goes_to_the_set_last_opened_in_the_drawer(self):
+        path = self.crashed_campaign(active='older')
+        self.open_recovered(path)
+        c = store.active()
+        self.assertEqual(c.notice(c.get_set('older')['id'])['kind'], 'recovered')
+        self.assertIsNone(c.notice(c.get_set('camp')['id']))
+
+    def test_a_recovery_that_brings_the_scene_back_needs_no_notice(self):
+        path = self.crashed_campaign(with_session=True)
+        self.open_recovered(path)
+        c = store.active()
+        self.assertEqual([c.notice(s['id']) for s in c.sets()], [None, None])
+
+    def test_an_ordinary_raymol_open_leaves_no_notice(self):
+        cmd.set_create('camp')
+        cmd.fab('ACD', 'm1')
+        cmd.set_add('camp', 'm1')
+        saved = os.path.join(self._sets_dir, 'plain.raymol')
+        with captured():
+            cmd.save(saved)
+        store.reset()
+        cmd.reinitialize()
+        import sqlite3
+        conn = sqlite3.connect(saved)
+        conn.execute('DELETE FROM session')
+        conn.commit()
+        conn.close()
+        self.open_recovered(saved)
+        self.assertIsNone(store.active().notice(store.active().get_set('camp')['id']))
+
 
 def filter_markers(text):
     """How many `SETSFILTER:ready` lines the captured output holds."""

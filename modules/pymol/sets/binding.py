@@ -1595,4 +1595,78 @@ def load_raymol(filename, partial=0, quiet=1, *, _self=cmd):
             colorprinting.warning(' sets: the previous session had sets that were never'
                                   ' saved; they were kept in %s' % kept)
     _self.set('session_file', filename.replace('\\', '/'), quiet=1)
+    if session is None and store.is_preserved(filename):
+        try:
+            after_recovery(_self=_self)
+        except Exception as exc:
+            colorprinting.warning(' sets: recovered, but could not point you at a set'
+                                  ' (%s)' % exc)
     return r
+
+
+#: `meta` key set once a recovered container has shown its "Scene not recovered"
+#: notice (#547). The notice itself is the set's (`set_notice:<id>`) and goes with the
+#: next staging action or Dismiss; this is what keeps it from coming back when the
+#: same recovered file is opened again.
+RECOVERY_NOTICE_KEY = 'recovery_notice'
+
+#: `meta` key naming the set the drawer was last opened on -- "the most recently
+#: active set" a recovery points at. Written by `appkit_sets.open_set`.
+LAST_ACTIVE_KEY = 'last_active_set'
+
+RECOVERY_TEXT = 'Scene not recovered.'
+
+
+def most_recently_active_set(c):
+    """The set the user was last working in: the one the drawer was last opened on,
+    else the one that received the newest entry, else the newest set. None when the
+    file has no sets."""
+    sets = c.sets()
+    if not sets:
+        return None
+    by_id = {s['id']: s for s in sets}
+    last = c.meta_get(LAST_ACTIVE_KEY, '') or ''
+    if last in by_id:
+        return by_id[last]
+    newest = None
+    for s in sets:
+        rows = c.entries(s['id'], order_by='e.created DESC', limit=1)
+        stamp = rows[0]['created'] if rows else s.get('created') or 0
+        if newest is None or stamp > newest[0]:
+            newest = (stamp, s)
+    return newest[1]
+
+
+def after_recovery(_self=cmd):
+    """A recovered container was opened and the scene did not come back with it
+    (#547): the sets, stars and views are there, and nothing is staged. Put a notice
+    on the most recently active set -- the drawer draws it as `Scene not recovered.
+    [Stage N starred] [Apply <view>] [Dismiss]` -- open the drawer on that set, and
+    say the same on the console, with the command, for an agent or a user without
+    the drawer. Once per container: `RECOVERY_NOTICE_KEY` is written with the notice.
+    Returns the set's name, or '' when there was nothing to point at."""
+    c = container()
+    if c.meta_get(RECOVERY_NOTICE_KEY):
+        return ''
+    row = most_recently_active_set(c)
+    if row is None:
+        return ''
+    c.set_notice(row['id'], {'kind': 'recovered', 'text': RECOVERY_TEXT})
+    c.meta_set(RECOVERY_NOTICE_KEY, '1')
+    try:
+        from pymol import appkit_sets
+        appkit_sets.open_set(row['name'], _self=_self)
+    except Exception:
+        pass
+    starred = c.count(row['id'], where='e.starred = 1 AND e.staged_object IS NULL')
+    views = c.views(row['id'])
+    hints = []
+    if starred:
+        hints.append('"set_stage %s, starred" puts its %d starred entr%s back'
+                     % (row['name'], starred, 'y' if starred == 1 else 'ies'))
+    if views:
+        hints.append('"set_stage %s, view:%s" stages a saved view'
+                     % (row['name'], views[-1]['name']))
+    colorprinting.parrot(' sets: %s -- the sets came back, the scene did not.%s'
+                         % (row['name'], (' ' + '; '.join(hints) + '.') if hints else ''))
+    return row['name']

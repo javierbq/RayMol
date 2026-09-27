@@ -332,6 +332,21 @@ straight back into it — so the recovered session continues where it stopped. D
 deletes it. Keep for Later leaves it alone and offers it again next time. If more than
 one is waiting, the most recent is offered and the alert says how many there are.
 
+When the container comes back **without** its scene (a crash, so the session was never
+written into it), the drawer opens on the set you were last working in (the one last
+opened in the drawer, else the one that received the newest entry), with one line over
+its tab (#547):
+
+    Scene not recovered.  [Stage 4 starred]  [Apply top50]  [Dismiss]
+
+**Stage N starred** is `set_stage <set>, starred`. It shows only when starred entries
+are not staged yet. It answers to the stage budget like every other stage: when they
+would not fit, the button is disabled and says why. **Apply <view>** applies the set's
+most recent saved view, and shows only when there is one. The line goes away with any
+staging action on the set, or with **Dismiss** (`set_notice <set>, 1`). It is not shown
+again for that container. The console gets the same pointer, with the command, for an
+agent or a session without the drawer.
+
 Kept is not kept forever: RayMol keeps the **ten most recent** preserved containers and
 drops anything **older than 30 days**, sweeping once on the first launch that touches
 the store. Nothing is swept while it is open — not by this RayMol and not by a second

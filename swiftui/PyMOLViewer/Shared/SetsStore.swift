@@ -695,17 +695,18 @@ final class SetsStore {
                 histogram: bins,
                 views: views[id] ?? [],
                 running: running[id],
-                notice: notices[id] ?? "")
+                notice: notices[id])
         }
     }
 
-    /// Every set's one-line notice (#546), by set id: `meta` rows
+    /// Every set's one-line notice (#546, #547), by set id: `meta` rows
     /// `set_notice:<set id>` holding `{"kind", "text"}`, written by Python when
     /// something the user did not do changed what a set shows (a finished run
-    /// restaged it) and cleared by the next staging action. One query, on a version
-    /// change only, like the views.
-    func noticesBySet() -> [String: String] {
-        var out: [String: String] = [:]
+    /// restaged it; a recovery brought the sets back without the scene) and cleared
+    /// by the next staging action. One query, on a version change only, like the
+    /// views.
+    func noticesBySet() -> [String: SetNotice] {
+        var out: [String: SetNotice] = [:]
         let prefix = "set_notice:"
         for row in query("SELECT key, value FROM meta WHERE key LIKE 'set_notice:%'") {
             guard let key = row.string("key"), key.hasPrefix(prefix),
@@ -713,7 +714,8 @@ final class SetsStore {
                   let data = value.data(using: .utf8),
                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let text = object["text"] as? String, !text.isEmpty else { continue }
-            out[String(key.dropFirst(prefix.count))] = text
+            out[String(key.dropFirst(prefix.count))] =
+                SetNotice(kind: object["kind"] as? String ?? "", text: text)
         }
         return out
     }
