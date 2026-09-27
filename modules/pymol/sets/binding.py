@@ -1204,6 +1204,11 @@ def _tool_ranking_keys(tool):
     return ()
 
 
+#: An entry with a STRUCTURE to stage: a stored chain. Not `n_chains`, which counts the
+#: chains of a sequence-only entry too.
+HAS_STRUCTURE = 'EXISTS (SELECT 1 FROM chains ch WHERE ch.entry_id = e.id)'
+
+
 def _candidates_sql(c, set_row, column):
     """(where, params) for the entries a restage may put in the scene, ranked on
     `column`: a value for it, not rejected, a structure, past the active filter (the
@@ -1211,7 +1216,7 @@ def _candidates_sql(c, set_row, column):
     from . import filter as _filter, selectors
     columns = selectors._columns_map(c, set_row['id'])
     where, params = _filter.compile(set_row.get('filter') or '', columns)
-    clauses = ['%s IS NOT NULL' % column, 'e.rejected = 0', 'e.n_chains > 0',
+    clauses = ['%s IS NOT NULL' % column, 'e.rejected = 0', HAS_STRUCTURE,
                'NOT (e.staged_by = ? AND e.staged_object IS NULL)']
     params = list(params) + [schema.STAGED_USER]
     if where:

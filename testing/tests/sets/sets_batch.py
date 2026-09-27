@@ -1739,6 +1739,18 @@ class RestageReviewRound1(RestageByRanking):
         self.assertEqual(sorted(store.active().shared_target(row['id'])['entries']),
                          sorted(e['id'] for e in self.staged(row)))
 
+    def testASequenceOnlyEntryIsNeverACandidate(self):
+        def mid(row, jobs):
+            c = store.active()
+            # Chains by SEQUENCE only (n_chains 1), top score, nothing to load.
+            c.add_entry(row['id'], 'seq_only', sequences={'B': 'GGGGGG'},
+                        scalars={self.KEY: 1000.0})
+
+        row, jobs, printed = self.run_ascending(10, before_rest=mid)
+        self.assertNotIn('could not follow', printed)
+        self.assertNotIn('seq_only', self.staged_names(row))
+        self.assertEqual(self.staged_names(row), self.top(row, 6, exclude=('seq_only',)))
+
     def testTiesEverywhereRestageNothing(self):
         row, jobs, printed = self.run_ascending(8, scores=[100.0] * 8)
         self.assertNotIn('Restaged', printed)
