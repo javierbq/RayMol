@@ -1,4 +1,4 @@
-// SetNoticeBanner.swift — the one-line strip over a set's tab in the Data drawer.
+// SetNoticeBanner.swift — a set's one-line notice, INLINE in the Data drawer's header row.
 //
 // It says what changed the set WITHOUT the user asking, and — when there is one — offers
 // the next step:
@@ -18,9 +18,16 @@
 // is a warning, not a traceback), Apply is the drawer's own view apply
 // (`set_filter` + `set_sort`).
 //
-// Its own file, and one hook in `DataDrawer.tabHalf`, so the drawer's table and layout
-// code (in flight elsewhere) is not touched. When it shows it takes `height` from the
-// drawer's content; the drawer's layout budget has to charge that.
+// Where it goes: in the header row that is already there (`DATA · <set>` on the left,
+// `N of M staged · budget B ×` on the right), in the space between them. Not a strip of
+// its own: at the default window a strip cost the table a row and pushed the Plot tab
+// under its floor, so a notice appearing swapped the drawer for the "needs more room"
+// hint (review). The header's height does not change, so the drawer's layout budget
+// needs no charge for it. Narrow, it degrades in steps: the full text, the text
+// truncated (the tooltip has all of it), the buttons alone, and last a `⋯` menu.
+//
+// Its own file, and one hook in `DataDrawer.header`, so the drawer's table and layout
+// code (in flight elsewhere) is not touched.
 
 import SwiftUI
 
@@ -38,6 +45,9 @@ struct SetNotice: Equatable {
 /// are testable without a view.
 struct SetNoticeModel: Equatable {
     let text: String
+    /// A recovery notice (#547): its Dismiss is a word, not an ×, because it sits
+    /// beside other verbs.
+    var isRecovery: Bool = false
     /// Starred entries not staged yet: the count on "Stage N starred". 0 hides it.
     let starredToStage: Int
     /// Why those would not fit the stage budget, or nil when they fit. The button is
@@ -64,74 +74,117 @@ struct SetNoticeModel: Equatable {
         let starred = set.kind == "sequences" ? 0
             : rows.filter { $0.starred && !$0.isStaged && $0.hasStructure }.count
         let budget = SetTableModel(set: set, rows: rows)
-        return SetNoticeModel(text: text, starredToStage: starred,
+        return SetNoticeModel(text: text, isRecovery: true, starredToStage: starred,
                               stageRefusal: starred > 0 ? budget.stageRefusal(starred) : nil,
                               view: set.views.last)
     }
 }
 
 #if os(macOS)
-struct SetNoticeBanner: View {
-    /// The strip's height, hairline included. The drawer's content loses this much
-    /// while a notice shows.
-    static let height: CGFloat = 23
-
+/// The notice in the drawer header. Takes the header's slack and nothing else: with no
+/// notice it is only the spacer the header always had.
+struct SetNoticeInline: View {
     @EnvironmentObject var engine: PyMOLEngine
-    @EnvironmentObject private var themeManager: ThemeManager
     let set: SetEntry
 
+    /// How much of the text the truncating step keeps before giving up on text.
+    static let truncatedTextWidth: CGFloat = 150
+
     var body: some View {
-        if let model = SetNoticeModel.make(set: set, rows: engine.setRows) {
-            VStack(spacing: 0) {
-                HStack(spacing: 8) {
-                    Image(systemName: set.notice?.kind == SetNotice.recoveredKind
-                          ? "exclamationmark.triangle" : "arrow.triangle.2.circlepath")
+        HStack(spacing: 0) {
+            if let model = SetNoticeModel.make(set: set, rows: engine.setRows) {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) { message(model); buttons(model) }
+                    HStack(spacing: 8) {
+                        message(model).frame(maxWidth: Self.truncatedTextWidth,
+                                             alignment: .leading)
+                        buttons(model)
+                    }
+                    HStack(spacing: 8) { buttons(model) }
+                    overflow(model)
+                }
+                .padding(.leading, 4)
+            }
+            Spacer(minLength: 8)
+        }
+    }
+
+    private func message(_ model: SetNoticeModel) -> some View {
+        Text(model.text)
+            .font(.system(size: 10, weight: .medium))
+            .foregroundColor(PanelTheme.accentColor)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .help(model.text)
+    }
+
+    @ViewBuilder
+    private func buttons(_ model: SetNoticeModel) -> some View {
+        HStack(spacing: 8) {
+            if model.showsStage {
+                link(model.stageTitle,
+                     help: model.stageRefusal
+                        ?? "Put the starred entries back in the scene (set_stage \(set.name), starred)") {
+                    engine.stageStarred(set)
+                }
+                .disabled(model.stageRefusal != nil)
+            }
+            if let view = model.view, let title = model.applyTitle {
+                link(title, help: "Apply the saved view's filter, sort and columns") {
+                    engine.applySetView(set, view)
+                }
+            }
+            if model.isRecovery {
+                link("Dismiss", help: dismissHelp) { engine.dismissSetNotice(set) }
+            } else {
+                Button { engine.dismissSetNotice(set) } label: {
+                    Image(systemName: "xmark.circle")
                         .font(.system(size: 10))
                         .foregroundColor(PanelTheme.headerColor)
-                    Text(model.text)
-                        .font(.system(size: 10))
-                        .foregroundColor(PanelTheme.textColor)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .help(model.text)
-                    if model.showsStage {
-                        Button(model.stageTitle) { engine.stageStarred(set) }
-                            .font(.system(size: 10))
-                            .controlSize(.small)
-                            .disabled(model.stageRefusal != nil)
-                            .help(model.stageRefusal
-                                  ?? "Put the starred entries back in the scene (set_stage \(set.name), starred)")
-                        if let refusal = model.stageRefusal {
-                            Text("over budget")
-                                .font(.system(size: 9, weight: .semibold))
-                                .foregroundColor(PanelTheme.atomTranspColor)
-                                .help(refusal)
-                        }
-                    }
-                    if let view = model.view, let title = model.applyTitle {
-                        Button(title) { engine.applySetView(set, view) }
-                            .font(.system(size: 10))
-                            .controlSize(.small)
-                            .help("Apply the saved view's filter, sort and columns")
-                    }
-                    Spacer(minLength: 8)
-                    Button("Dismiss") { engine.dismissSetNotice(set) }
-                        .font(.system(size: 10))
-                        .controlSize(.small)
-                        .help("Hide this line (set_notice \(set.name), 1)")
                 }
-                .padding(.horizontal, 10)
-                .frame(height: Self.height - 1)
-                Rectangle().fill(themeManager.active.panelText.color.opacity(0.18))
-                    .frame(height: 1)
+                .buttonStyle(.plain)
+                .help(dismissHelp)
             }
         }
+        .fixedSize()
+    }
+
+    private func overflow(_ model: SetNoticeModel) -> some View {
+        Menu {
+            Text(model.text)
+            if model.showsStage {
+                Button(model.stageTitle) { engine.stageStarred(set) }
+                    .disabled(model.stageRefusal != nil)
+            }
+            if let view = model.view, let title = model.applyTitle {
+                Button(title) { engine.applySetView(set, view) }
+            }
+            Button("Dismiss") { engine.dismissSetNotice(set) }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .font(.system(size: 11))
+                .foregroundColor(PanelTheme.accentColor)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(model.text)
+    }
+
+    private var dismissHelp: String { "Hide this notice (set_notice \(set.name), 1)" }
+
+    private func link(_ title: String, help: String,
+                      action: @escaping () -> Void) -> some View {
+        Button(title, action: action)
+            .buttonStyle(.link)
+            .font(.system(size: 10))
+            .help(help)
     }
 }
 
 extension PyMOLEngine {
     /// Dismiss: `set_notice name, 1`. The version bump re-reads the sets, which hides
-    /// the strip.
+    /// the notice.
     func dismissSetNotice(_ set: SetEntry) {
         runPythonQuiet("from pymol import cmd as _c\n_c.set_notice(\(Self.pythonLiteral(set.name)), 1)")
     }

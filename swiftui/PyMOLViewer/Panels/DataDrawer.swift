@@ -475,7 +475,6 @@ struct DataDrawer: View {
         VStack(spacing: 0) {
             tabRow(set: set)
             Rectangle().fill(hairline).frame(height: 1)
-            SetNoticeBanner(set: set)      // #546: nothing unless the set has a notice
             switch engine.dataDrawerTab {
             case .plot:
                 SetPlotView(set: set, rows: engine.filteredSetRows)
@@ -534,7 +533,13 @@ struct DataDrawer: View {
                     RunningBadge(progress: running)
                 }
             }
-            Spacer(minLength: 8)
+            if let set = engine.activeSet {
+                // #546/#547: the set's notice, in this row's slack; just the spacer
+                // when there is none. Lowest priority: the name and the budget first.
+                SetNoticeInline(set: set).layoutPriority(-1)
+            } else {
+                Spacer(minLength: 8)
+            }
             if let set = engine.activeSet {
                 Text(SetTableModel(set: set, rows: engine.setRows).budgetLabel)
                     .font(.system(size: 10).monospacedDigit())

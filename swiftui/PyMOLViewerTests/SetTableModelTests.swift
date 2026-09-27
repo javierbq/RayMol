@@ -642,6 +642,7 @@ final class SetsStoreTests: XCTestCase {
         let model = try XCTUnwrap(SetNoticeModel.make(set: set, rows: rows))
         XCTAssertEqual(model.text, "Restaged top 6 by pLDDT")
         XCTAssertFalse(model.showsStage, "a restage notice offers nothing but Dismiss")
+        XCTAssertFalse(model.isRecovery, "its Dismiss is the header's x")
         XCTAssertNil(model.view)
     }
 
@@ -671,6 +672,7 @@ final class SetsStoreTests: XCTestCase {
         let (set, rows) = try recovered()
         let model = try XCTUnwrap(SetNoticeModel.make(set: set, rows: rows))
         XCTAssertEqual(model.text, "Scene not recovered.")
+        XCTAssertTrue(model.isRecovery)
         // Fixture: e1 starred and unstaged, e2 staged (not starred), e3 neither.
         XCTAssertEqual(model.starredToStage, 1)
         XCTAssertEqual(model.stageTitle, "Stage 1 starred")
