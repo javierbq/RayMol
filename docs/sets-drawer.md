@@ -384,14 +384,21 @@ again: its badge comes back and the remaining designs land and stage as usual. O
 that file has been deleted in the meantime do later designs fall back to landing as
 plain objects in the current scene (under a free name), with a warning.
 
-A late design never touches anything in the current scene by its own name: it is loaded
-into a scratch object, written into the batch's file and the scratch deleted, so an
-object of yours that happens to share the design's name (member names repeat across
-runs) is left alone. While a batch writes into a file it keeps that file open, so a
-second RayMol sharing the state folder neither sweeps it, offers it for recovery nor
-lets you discard it until the batch has finished; `save` over it is refused. Opening a
-Finder copy of the document does not pull the batch into the copy — only the file it
-left takes it back.
+A late design never touches anything in the current scene by its own name — not when
+it lands, not when its live view would be drawn, not when it is cancelled, and not after
+its file has gone: it is loaded into a scratch object, written into the batch's file and
+the scratch deleted, no live view is drawn for it, Cancel deletes nothing, and if there
+is nowhere to write it the design is kept at the top level under a free name rather than
+in a group of the batch's name. An object of yours that happens to share the design's
+name (member names repeat across runs) is left alone. While a batch writes into a file it
+keeps that file open and fully written (every entry is folded into the main file as it
+lands, so a Finder copy or a backup has all of them), and a second RayMol sharing the
+state folder neither sweeps it, offers it for recovery nor lets you discard it until the
+batch has finished; `save` over it is refused. Moving or renaming the file in Finder
+mid-batch is fine: the design that lands next is kept in the current scene, and opening
+the moved file takes the batch back. Opening a Finder *copy* of the document does not
+pull the batch into the copy — only the file it left (or, once that is gone, the moved
+file) takes it back.
 
 In the app, opening a session file, dropping one on the viewport or choosing File ▸
 Clear Session while a batch is running asks first — **Save…** (as a `.raymol`),

@@ -909,8 +909,9 @@ class GenerationCheck(BatchTestCase):
         for job in jobs[1:]:
             self.assertIn(job.spec.name, cmd.get_names('objects'))
             self.assertEqual(sorted(cmd.get_chains(job.spec.name)), ['A', 'B'])
-        self.assertEqual(sorted(self.children(row['name'])),
-                         sorted(j.spec.name for j in jobs[1:]))
+            # Top level: a group of the batch's name in THIS scene is not the batch's
+            # (#448 review round 2).
+            self.assertNotIn(job.spec.name, self.children(row['name']))
         self.assertEqual(store.active().sets(), [])              # nothing written here
         # And no file was CREATED where the kept one used to be.
         self.assertEqual([n for n in os.listdir(self._sets_dir)
@@ -1425,6 +1426,152 @@ class SessionReplacedMidBatchReview(BatchTestCase):
         self.assertEqual(batch.running()[row['id']]['done'], 2)
         deliver_designs(jobs[2:])
         self.assertEqual(store.active().count(row['id']), 3)
+
+
+class SessionReplacedMidBatchRound2(BatchTestCase):
+    """#448 review round 2: the name stays unsafe after the batch detaches, live views,
+    a complete main file, a moved document, and `set_delete`."""
+
+    def collide(self, jobs, members):
+        """Replace the session with one holding the USER'S objects under `members`'
+        names; return {name: atom count}."""
+        path = os.path.join(_RESULTS['dir'], 'mine2.pse')
+        with redirect_stdout(io.StringIO()):
+            for i, name in enumerate(members):
+                cmd.fab('WWWWWWWW', 'mine_%d' % i, chain='Z')
+                cmd.set_name('mine_%d' % i, name)
+            cmd.save(path, ' '.join(members))
+            for name in members:
+                cmd.delete(name)
+            cmd.load(path)
+        return {name: cmd.count_atoms('model %s' % name) for name in members}
+
+    def assertAllUntouched(self, counts, group=None):
+        for name, atoms in counts.items():
+            self.assertUntouched(name, atoms)
+            if group:
+                self.assertNotIn(name, self.children(group))
+
+    def testADetachedBatchStillNeverTouchesTheUsersObjects(self):
+        jobs, row, _ = self.start(n=4, landed=1)
+        counts = self.collide(jobs, [j.spec.name for j in jobs[1:]])
+        self.drop_kept_files()
+        with redirect_stdout(io.StringIO()):
+            deliver_designs(jobs[1:])                    # detaches on the first
+        self.assertTrue(batch.batch_of(jobs[3].spec.name) is None
+                        or batch.batch_of(jobs[3].spec.name).detached)
+        self.assertAllUntouched(counts, group=row['name'])
+        self.assertEqual([n for n in cmd.get_names('all') if n.startswith('_set_delivery')],
+                         [])
+
+    drop_kept_files = GenerationCheck.drop_kept_files
+    kept_files = SessionReplacedMidBatch.kept_files
+    other_pse = SessionReplacedMidBatch.other_pse
+    other_raymol = SessionReplacedMidBatch.other_raymol
+    replace_session = SessionReplacedMidBatch.replace_session
+    start = SessionReplacedMidBatch.start
+    entries_in = staticmethod(SessionReplacedMidBatch.entries_in)
+    assertUntouched = SessionReplacedMidBatchReview.assertUntouched
+
+    def testADetachedPredictionStillNeverTouchesTheUsersObjects(self):
+        jobs = self.design(2)
+        deliver_designs(jobs)
+        parent = self.only_set()
+        preds = cmd.predict(PRED, 'set:%s' % parent['name'], n_models=2)
+        deliver_models(preds[:1])
+        counts = self.collide(preds, [p.spec.name for p in preds[1:]])
+        self.drop_kept_files()
+        with redirect_stdout(io.StringIO()):
+            deliver_models(preds[1:])
+        self.assertAllUntouched(counts)
+
+    def testCancellingADetachedMemberLeavesTheUsersObjectAlone(self):
+        from pymol import designing
+        jobs, row, _ = self.start(n=4, landed=1)
+        counts = self.collide(jobs, [j.spec.name for j in jobs[2:]])
+        self.drop_kept_files()
+        with redirect_stdout(io.StringIO()):
+            deliver_designs(jobs[1:2])                   # detaches
+            # A live view seeded after the detach would be a recording by this name,
+            # which Cancel deletes: none may be made.
+            designing.trajectory_seed(jobs[2].spec.name, cmd.get_pdbstr(jobs[2].spec.name),
+                                      0, 8)
+            designing.discard_pending(jobs[2].spec.name)
+            designing.discard_pending(jobs[3].spec.name)
+        self.assertAllUntouched(counts)
+
+    def testALiveViewNeverDrawsIntoTheUsersObject(self):
+        from pymol import designing
+        jobs, row, _ = self.start(n=3, landed=1)
+        clash = jobs[1].spec.name
+        counts = self.collide(jobs, [clash])
+        pdb = cmd.get_pdbstr(clash)
+        with redirect_stdout(io.StringIO()):
+            self.assertFalse(designing.trajectory_seed(clash, pdb, 0, 8))
+            self.assertFalse(designing.trajectory_frame(clash, [0.0] * 24))
+            self.assertFalse(designing.trajectory_display(clash))
+        self.assertAllUntouched(counts)
+        with redirect_stdout(io.StringIO()):
+            deliver_designs(jobs[1:])
+        self.assertAllUntouched(counts)
+        self.assertEqual(len(self.entries_in(self.kept_files()[0], row['id'])), 3)
+
+    def testTheMainFileAloneHoldsEveryAwayEntry(self):
+        import shutil
+        jobs, row, doc = self.start(n=3, landed=1, titled=True)
+        self.replace_session('pse')
+        with redirect_stdout(io.StringIO()):
+            deliver_designs(jobs[1:2])
+        # A Finder copy, a backup, an AirDrop: the main file only, no -wal.
+        copy = os.path.join(_RESULTS['dir'], 'bytes.raymol')
+        shutil.copyfile(doc, copy)
+        self.assertEqual(len(self.entries_in(copy, row['id'])), 2)
+        # And the way out folds everything in and lets go of the file.
+        batch.release_all()
+        self.assertFalse(os.path.exists(doc + '-wal'))
+        with redirect_stdout(io.StringIO()):
+            deliver_designs(jobs[2:])
+        shutil.copyfile(doc, copy)
+        self.assertEqual(len(self.entries_in(copy, row['id'])), 3)
+
+    def testAMovedDocumentTakesTheBatchBackWhenOpened(self):
+        for deliver_first in (False, True):
+            with self.subTest(deliver_first=deliver_first):
+                self.tearDown()
+                self.setUp()
+                jobs, row, doc = self.start(n=4, landed=1, titled=True)
+                self.replace_session('pse')
+                with redirect_stdout(io.StringIO()):
+                    deliver_designs(jobs[1:2])
+                moved = os.path.join(_RESULTS['dir'], 'moved campaign.raymol')
+                os.rename(doc, moved)
+                landed_away = 2
+                if deliver_first:
+                    # Nowhere to write: kept in this scene under a free name.
+                    with redirect_stdout(io.StringIO()):
+                        deliver_designs(jobs[2:3])
+                    self.assertIn(jobs[2].spec.name, cmd.get_names('objects'))
+                with redirect_stdout(io.StringIO()):
+                    cmd.load(moved)
+                self.assertEqual(store.active().count(row['id']), landed_away)
+                self.assertIn(row['id'], batch.running())
+                with redirect_stdout(io.StringIO()):
+                    deliver_designs(jobs[3:] if deliver_first else jobs[2:])
+                self.assertEqual(store.active().count(row['id']),
+                                 3 if deliver_first else 4)
+                self.assertEqual(batch.running(), {})
+                self.assertFalse(os.path.exists(doc + '-wal'))
+
+    def testSetDeleteInTheBatchsOwnSessionIsNotAwayAndCancelClearsPlaceholders(self):
+        from pymol import designing
+        jobs, row, _ = self.start(n=3, landed=1)
+        member = jobs[2].spec.name
+        self.assertIn(member, cmd.get_names('objects'))          # its placeholder
+        with redirect_stdout(io.StringIO()):
+            cmd.set_delete(row['name'])
+        self.assertFalse(batch.is_away(member))
+        designing.discard_pending(member)
+        self.assertNotIn(member, cmd.get_names('objects'))
 
 
 class SharedTarget(BatchTestCase):

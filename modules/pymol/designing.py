@@ -768,10 +768,9 @@ def _deliver_away(path, name, seed, landing, _self=cmd):
             _self.enable(keep)
         except Exception:
             keep = scratch
+        # At the top level, not in the batch's group: a group of that name in THIS
+        # scene is not the batch's either (#448 review round 2).
         colorprinting.warning(' design: %s is kept as the plain object %s' % (name, keep))
-        if keep == name:
-            # Where a design that could not be written has always gone (#445).
-            _join_batch_group(keep, _self=_self)
 
 
 def _land_in_set(name, source=None, _self=cmd):
@@ -1263,7 +1262,7 @@ def discard_pending(name, _self=cmd):
     # nothing -- the price of creating it at submit rather than at delivery. Read from
     # `_BATCH_OF` before `_reap_batches` below drops the entry.
     entry = _BATCH_OF.get(name)
-    if entry is not None:
+    if entry is not None and not away:
         _drop_empty_batch_group(entry['batch'], _self=_self)
     # Last, though the position is not load-bearing and saying so is cheaper than leaving
     # a reader to work it out: `_reap_batches` only drops a batch when NO member is in
@@ -2176,6 +2175,12 @@ def trajectory_seed(name, pdb, design_offset, design_atoms, keep=1, _self=cmd):
     the frames that follow find no record to splice into and are dropped for the same
     reason -- and delivery then loads the result plainly, exactly as a non-live run does.
     """
+    if _set_is_away(name):
+        # The batch's session was replaced (#448 review round 2): `name` in THIS scene
+        # is not the design's -- it may be the user's object -- so a live view is not
+        # drawn at all. The design still lands, through `_deliver_away`.
+        _TRAJECTORY.pop(name, None)
+        return False
     try:
         name = _legal_object_name(name, _self=_self)
         offset = int(design_offset)
@@ -2403,6 +2408,12 @@ def trajectory_frame(name, coords, advance=1, smooth=0, _self=cmd):
     object the user deleted mid-run, or a run whose seed failed -- is a no-op rather than
     an error.
     """
+    if _set_is_away(name):
+        # The batch's session was replaced (#448 review round 2): `name` in THIS scene
+        # is not the design's -- it may be the user's object -- so a live view is not
+        # drawn at all. The design still lands, through `_deliver_away`.
+        _TRAJECTORY.pop(name, None)
+        return False
     try:
         name = _legal_object_name(name, _self=_self)
         record = _TRAJECTORY.get(name)
@@ -2575,6 +2586,12 @@ def trajectory_display(name, _self=cmd):
 
     Never raises. Everything on this path degrades to "no smoothing".
     """
+    if _set_is_away(name):
+        # The batch's session was replaced (#448 review round 2): `name` in THIS scene
+        # is not the design's -- it may be the user's object -- so a live view is not
+        # drawn at all. The design still lands, through `_deliver_away`.
+        _TRAJECTORY.pop(name, None)
+        return False
     try:
         import time
         name = _legal_object_name(name, _self=_self)

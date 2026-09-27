@@ -36,6 +36,7 @@ Nothing here is reached by a poll except `running()`, which reads process state 
 Spec: docs/superpowers/specs/2026-09-13-sets-batch-delivery-design.md,
 docs/superpowers/specs/2026-09-16-sets-sequence-design-design.md
 """
+import atexit
 import os
 import sys
 
@@ -401,24 +402,39 @@ def _identity(path):
 
 
 def _release_hold(batch):
+    """Checkpoint and close the held home connection. When the file was MOVED under
+    it (Finder), SQLite leaves the -wal/-shm behind at the old name on close; once the
+    checkpoint has folded them into the moved main file they are empty debris beside a
+    file that no longer exists, and are removed (#448 review round 2)."""
     c, batch.hold = batch.hold, None
-    if c is not None:
-        try:
-            c.close()
-        except Exception:
-            pass
+    if c is None:
+        return
+    path = c.path
+    folded = c.checkpoint()
+    try:
+        c.close()
+    except Exception:
+        pass
+    if folded and not os.path.exists(path):
+        for extra in ('-wal', '-shm'):
+            try:
+                os.unlink(path + extra)
+            except OSError:
+                pass
 
 
 def is_away(object_name):
     """True when `object_name` is a member of a live batch whose session was replaced
-    under it (#448): its result belongs to a document that is not the open one, so the
+    under it (#448) -- and STAYS true once the batch has detached, because what makes
+    the name unsafe is the replaced scene, not whether the batch can still write (#448
+    review round 2). Not true after `set_delete` of the batch's set in its own session:
+    the scene is still the batch's, and its placeholders are still its own.
+    Its result belongs to a document that is not the open one, so the
     delivering tool must not load it into, read it from, or delete anything by that
     name in THIS scene -- the name may well be the user's own object here. The caller
     loads the result into a scratch object and hands that to `land(..., source=)`."""
     batch = batch_of(object_name)
-    if batch is None or batch.detached:
-        return False
-    return not _still_ours(batch)
+    return batch is not None and bool(batch.away)
 
 
 def _left_behind(batch, object_name, entry_name, _self=cmd):
@@ -530,6 +546,8 @@ def _land_away(batch, object_name, member, source, _self=cmd):
                                  specs=member['specs'], into=c, _self=_self)
     entry_id = ids[0]
     batch.landed += 1
+    # The main file alone must hold it: the hold keeps a WAL connection open for hours.
+    c.checkpoint()
     # On disk in the batch's file: only now may the scratch leave the scene.
     try:
         mstore.forget_object(source)
@@ -602,6 +620,7 @@ def _write_sequence(batch, c, member_name, member, sequences, scalars, arrays, s
                            specs=all_specs)
     batch.landed += 1
     if away:
+        c.checkpoint()
         _left_behind(batch, member_name, entry_name)
     _settle(batch, member_name)
     out = {'set_id': batch.set_id, 'entry_id': entry_id, 'staged': False,
@@ -811,8 +830,6 @@ def _observe(event, container=None, path=None, old=None, new=None, **_):
     """
     if event == 'installed':
         for batch in list(_BATCHES.values()):
-            if batch.detached:
-                continue
             ours = False
             if container is not None and not container.closed:
                 try:
@@ -828,11 +845,14 @@ def _observe(event, container=None, path=None, old=None, new=None, **_):
                 # ATTACHED, and is handled below.
                 ours = False
             if ours:
-                # Save As, or the batch's own file opened again: it is home, and the
-                # batch is this session's again.
+                # Save As, or the batch's own file opened again -- or, for a batch
+                # that detached because its file was MOVED, the moved file (#448
+                # review round 2; the main file is complete, see `checkpoint`): it is
+                # home, and the batch is this session's again.
                 _release_hold(batch)
                 batch.home = os.path.abspath(container.path)
                 batch.away = False
+                batch.detached = False
             else:
                 batch.away = True
         return None
@@ -841,6 +861,18 @@ def _observe(event, container=None, path=None, old=None, new=None, **_):
             if _same(batch.home, old):
                 _release_hold(batch)
                 batch.home = os.path.abspath(new)
+        return None
+    if event == 'opening':
+        ident = _identity(path) if path else None
+        for batch in list(_BATCHES.values()):
+            c = batch.hold
+            if c is None or c.closed:
+                continue
+            # The same file under ANOTHER name only: a second connection by the same
+            # path shares the -wal and is ordinary SQLite concurrency.
+            if ident is not None and not _same(c.path, path) \
+                    and ident == getattr(c, '_raymol_identity', None):
+                _release_hold(batch)
         return None
     if event in ('kept', 'left'):
         # Hold the file from now on, not from the first late result: a batch that has
@@ -858,3 +890,15 @@ def _observe(event, container=None, path=None, old=None, new=None, **_):
 
 
 store.observe(_observe)
+
+
+def release_all():
+    """Checkpoint and close every away batch's held home container. For the way out
+    (atexit here, and the app's applicationWillTerminate, which may never reach Python's
+    atexit): the -wal must be folded in and the sidecars gone, or the file a batch was
+    writing into is left looking busy to the next launch (#448 review round 2)."""
+    for batch in list(_BATCHES.values()):
+        _release_hold(batch)
+
+
+atexit.register(release_all)

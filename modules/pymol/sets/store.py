@@ -204,6 +204,11 @@ class Container:
 
     def __init__(self, path):
         path = os.fspath(path)
+        # Anyone in this process holding this FILE open on the side (an away batch,
+        # #448) lets go first: a second connection through another name for the same
+        # inode -- the document moved in Finder -- would get its own -wal and -shm, and
+        # two WALs over one database is corruption, not concurrency (review round 2).
+        _notify('opening', path=path)
         fresh = not os.path.exists(path) or os.path.getsize(path) == 0
         self._path = path
         self._depth = 0
@@ -292,6 +297,24 @@ class Container:
         self._conn.close()
         self._conn = None
         _unregister_open(self._path)
+
+    def checkpoint(self):
+        """Fold the -wal into the main file now, keeping the connection (#448 review).
+
+        For a connection held open for a long time -- an away batch's hold -- so that
+        the main file alone is always the whole document: a Finder copy, a backup, an
+        AirDrop or a move of just that file must not be missing the newest entries,
+        which in WAL mode would otherwise sit in the -wal until the connection closes.
+        The sidecars stay (they exist while any connection is open), which is what
+        another process reads as "in use". Never raises; True when it ran."""
+        if self._conn is None:
+            return False
+        try:
+            with self._lock:
+                self._conn.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+            return True
+        except sqlite3.Error:
+            return False
 
     def holds_entries(self):
         """True / False / None: does any set in this container hold an entry (#447)?

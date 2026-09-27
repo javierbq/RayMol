@@ -65,6 +65,10 @@ final class RayMolAppDelegate: NSObject, NSApplicationDelegate {
         // this is only the camera and the objects.
         PyMOLEngine.shared.runPython(
             "from pymol.sets import binding as _sb; _sb.checkpoint_session()")
+        // A batch whose session was replaced holds its document open (#448); fold its
+        // -wal into the file and let go, since Python's atexit may never run here.
+        PyMOLEngine.shared.runPython(
+            "from pymol.sets import batch as _sbb; _sbb.release_all()")
         // The tempfile channels are named after this pid (#399), so nothing will
         // ever reuse them — without this they'd accumulate one set per run.
         TempChannel.removeAll()
