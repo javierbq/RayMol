@@ -429,7 +429,9 @@ USAGE
     for e in found:
         if not e.get('staged_object'):
             raise SetInputError('%s is not staged; stage it before pinning' % e['name'])
-        _c().update_entry(e['id'], pinned=1 if int(on) else 0)
+        # Pinning -- and unpinning -- is a person deciding about this entry, so it is
+        # theirs from now on: a finished run's restage never replaces it (#546 review).
+        _c().update_entry(e['id'], pinned=1 if int(on) else 0, staged_by='user')
         names.append(e['name'])
     return names
 

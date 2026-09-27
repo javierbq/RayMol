@@ -165,6 +165,7 @@ def _install_fakes():
         name = 'Fake predictor'
         weight_bundle = None
         metric_specs = SCORED_SPECS
+        ranking_metrics = ('min_ipsae', 'mean_plddt')     # as boltz2 declares (#546)
 
         def check_available(self):
             return None
@@ -1648,6 +1649,133 @@ class RestageByRanking(BatchTestCase):
         result = binding.restage_by_ranking(c.get_set(row['id']))
         self.assertEqual(result['kept'], 2)
         self.assertEqual(result['staged'] + result['unstaged'], [])
+
+
+class RestageReviewRound1(RestageByRanking):
+    """#546 review round 1: edits, pins, direction, partial scores, a failed swap, the
+    tool's own ranking metric, ties, and restage notices that outlive their session."""
+
+    def testAnEditedProvisionalDesignIsTheUsersAndSurvives(self):
+        info = {}
+
+        def mid(row, jobs):
+            deliver_designs(jobs[1:3])
+            obj = store.active().entry(row['id'], jobs[0].spec.name)['staged_object']
+            cmd.alter(obj, 'b=99.0')
+            info['altered'] = (jobs[0].spec.name, obj)
+            obj = store.active().entry(row['id'], jobs[1].spec.name)['staged_object']
+            cmd.remove(obj + ' and resi 1')
+            info['removed'] = (jobs[1].spec.name, obj)
+            return 3
+
+        row, jobs, printed = self.run_ascending(10, before_rest=mid)
+        staged = self.staged_names(row)
+        by = {e['name']: e['staged_by'] for e in store.active().entries(row['id'])}
+        for name, obj in info.values():
+            self.assertIn(name, staged)
+            self.assertIn(obj, cmd.get_names('objects'))
+            self.assertEqual(by[name], 'user')
+        self.assertEqual(len(staged), 6)
+        self.assertIn('Restaged top 4', printed)
+        # An untouched provisional design still goes: jobs[2] scored third-lowest.
+        self.assertNotIn(jobs[2].spec.name, staged)
+
+    def testPinningThenUnpinningMakesTheEntryTheUsers(self):
+        info = {}
+
+        def mid(row, jobs):
+            cmd.set_pin(row['name'], jobs[0].spec.name)
+            cmd.set_pin(row['name'], jobs[0].spec.name, 0)
+            info['name'] = jobs[0].spec.name
+
+        row, jobs, printed = self.run_ascending(10, before_rest=mid)
+        self.assertIn(info['name'], self.staged_names(row))
+        self.assertEqual(store.active().entry(row['id'], info['name'])['staged_by'], 'user')
+
+    def testAnAscendingSortStillStagesTheBest(self):
+        def mid(row, jobs):
+            cmd.set_sort(row['name'], self.KEY, 0)      # the second header click
+
+        row, jobs, printed = self.run_ascending(10, before_rest=mid)
+        self.assertEqual(self.staged_names(row), self.top(row, 6))
+
+    def testUnscoredProvisionalEntriesFillWhatTheRankingCannot(self):
+        jobs = self.design(10)
+        self.score([jobs[0]] + jobs[8:], [1.0, 50.0, 60.0])
+        deliver_designs(jobs[:1])
+        row = self.only_set()
+        cmd.set_sort(row['name'], self.KEY, 1)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            deliver_designs(jobs[1:])
+        names = [j.spec.name for j in jobs]
+        self.assertEqual(self.staged_names(row),
+                         sorted([names[0], names[8], names[9]] + names[1:4]),
+                         'the three scored plus the oldest three unscored')
+        self.assertIn('Restaged top 3', out.getvalue())
+        self.assertIn('3 not yet scored kept', out.getvalue())
+
+    def testAFailedSwapNeverLeavesTheSetOverBudget(self):
+        real = binding._load_entry_into
+        calls = {'n': 0}
+
+        def flaky(c, entry, obj, _self=cmd):
+            calls['n'] += 1
+            if calls['n'] == 2:
+                raise RuntimeError('injected')
+            return real(c, entry, obj, _self=_self)
+
+        def mid(row, jobs):
+            deliver_designs(jobs[1:9])
+            return 9
+
+        with patch.object(binding, '_load_entry_into', flaky):
+            row, jobs, printed = self.run_ascending(10, before_rest=mid)
+        self.assertIn('could not follow the ranking', printed)
+        staged = self.staged_names(row)
+        self.assertEqual(len(staged), 6, 'one new in, one displaced out')
+        self.assertLessEqual(len(self.staged(row)), binding.budget(row))
+        self.assertNotIn(jobs[0].spec.name, staged, 'the worst goes first')
+        self.assertEqual(sorted(store.active().shared_target(row['id'])['entries']),
+                         sorted(e['id'] for e in self.staged(row)))
+
+    def testTiesEverywhereRestageNothing(self):
+        row, jobs, printed = self.run_ascending(8, scores=[100.0] * 8)
+        self.assertNotIn('Restaged', printed)
+        self.assertEqual(self.staged_names(row), sorted(j.spec.name for j in jobs[:6]))
+
+    def testAPredictionIsRestagedByItsToolsDeclaredMetric(self):
+        import json
+        parent = PredictOverASet.parent(self, 4)
+        jobs = cmd.predict(PRED, 'set:%s@top:4' % parent['name'], n_models=3)
+        self.assertEqual(len(jobs), 12)
+        for i, job in enumerate(jobs):
+            path = os.path.join(_RESULTS['dir'], '%s.metrics.json' % job.job_id)
+            with open(path, 'w') as handle:
+                json.dump({'tool': PRED, 'values': [
+                    {'key': 'mean_plddt', 'state': 1, 'value': 40.0 + i}]}, handle)
+            (getattr(job, '_real', None) or job).metrics_path = path
+        out = io.StringIO()
+        with redirect_stdout(out):
+            deliver_models(jobs)
+        c = store.active()
+        child = c.get_set('%s_1' % PRED)
+        self.assertEqual(child['ranking_key'], '', 'used, not written into the set')
+        values = {e['name']: e['scalars'].get('mean_plddt') for e in c.entries(child['id'])}
+        best = sorted(sorted(values, key=lambda k: -values[k])[:6])
+        self.assertEqual(sorted(e['name'] for e in self.staged(child)), best)
+        self.assertIn('Restaged top 6 by Mean confidence', out.getvalue())
+
+    def testARestageNoticeDoesNotOutliveItsSession(self):
+        row, jobs, printed = self.run_ascending(10)
+        c = store.active()
+        self.assertEqual(c.notice(row['id'])['kind'], 'restage')
+        path = os.path.join(_RESULTS['dir'], 'later.raymol')
+        with redirect_stdout(io.StringIO()):
+            cmd.save(path)
+            cmd.reinitialize()
+            cmd.load(path)
+        self.assertIsNone(store.active().notice(row['id']))
 
 
 class Running(BatchTestCase):
