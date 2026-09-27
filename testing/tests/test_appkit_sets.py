@@ -599,7 +599,7 @@ class TestRecovery(AppkitSetsTestCase):
     # -- #547: a recovery Open leaves a next step ------------------------------------
 
     def crashed_campaign(self, starred=('m1', 'm3'), view='top50', with_session=False,
-                         active=None):
+                         active=None, scores=None, offset=None):
         """A container a RayMol that was kill -9'd left behind: two sets of real
         structures, `starred` entries of `camp` starred, a saved view, nothing staged
         -- and, unless `with_session`, no session blob (the crash never saved one).
@@ -613,8 +613,19 @@ class TestRecovery(AppkitSetsTestCase):
         for name, seq in (('m1', 'ACDEF'), ('m2', 'GHIKL'), ('m3', 'MNPQR'),
                           ('m4', 'STVWY')):
             cmd.fab(seq, name)
+            if offset:
+                cmd.translate(list(offset), name, camera=0)
             cmd.set_add('camp', name)
         cmd.delete('all')
+        if scores:
+            c = store.active()
+            camp = c.get_set('camp')
+            c.declare_columns(camp['id'], [{'key': 'score', 'scope': 'object',
+                                            'dtype': 'float', 'label': 'Score',
+                                            'higher_is_better': True}])
+            for name, value in scores.items():
+                c.set_scalar(c.entry(camp['id'], name)['id'], 'score', value)
+            cmd.set_sort('camp', 'score', 1)
         if starred:
             cmd.set_star('camp', '+'.join(starred))
         if view:
@@ -672,6 +683,55 @@ class TestRecovery(AppkitSetsTestCase):
         self.assertTrue(all(e['staged_by'] == 'user' for e in c.entries(camp['id'])
                             if e.get('staged_object')))
         self.assertIsNone(c.notice(camp['id']), 'a staging action answers the notice')
+
+    def test_more_stars_than_budget_stage_the_best_that_fit(self):
+        path = self.crashed_campaign(starred=('m1', 'm2', 'm3', 'm4'),
+                                     scores={'m1': 10.0, 'm2': 90.0, 'm3': 50.0,
+                                             'm4': 70.0})
+        c = store.active() if store.is_open() else None
+        # The budget is the file's, set before the crash.
+        conn = __import__('sqlite3').connect(path)
+        conn.execute("INSERT OR REPLACE INTO meta VALUES ('stage_budget', '2')")
+        conn.commit()
+        conn.close()
+        printed = self.open_recovered(path)
+        self.assertIn('"set_stage camp, m2+m4" stages the top 2 of its 4 starred entries'
+                      ' (by Score; the budget is 2)', printed)
+        with captured():
+            names = appkit_sets.stage_entries('camp', 'starred', fit=1)
+        self.assertEqual(sorted(names), ['m2', 'm4'])
+        c = store.active()
+        self.assertIsNone(c.notice(c.get_set('camp')['id']))
+
+    def test_with_no_ranking_the_first_starred_that_fit_are_staged(self):
+        path = self.crashed_campaign(starred=('m1', 'm2', 'm3', 'm4'))
+        conn = __import__('sqlite3').connect(path)
+        conn.execute("INSERT OR REPLACE INTO meta VALUES ('stage_budget', '3')")
+        conn.commit()
+        conn.close()
+        printed = self.open_recovered(path)
+        self.assertIn('stages the top 3 of its 4 starred entries (in delivery order',
+                      printed)
+        with captured():
+            names = appkit_sets.stage_entries('camp', 'starred', fit=1)
+        self.assertEqual(sorted(names), ['m1', 'm2', 'm3'])
+
+    def test_staging_into_the_empty_recovered_scene_brings_the_camera_to_it(self):
+        path = self.crashed_campaign(offset=(300.0, -200.0, 150.0))
+        self.open_recovered(path)
+        before = cmd.get_view()
+        with captured():
+            appkit_sets.stage_entries('camp', 'starred')
+        after = cmd.get_view()
+        self.assertNotEqual(before, after)
+        (lo, hi) = cmd.get_extent('camp')
+        # The camera's origin is now on what was staged (it was 300+ A away).
+        for got, a, b in zip(after[12:15], lo, hi):
+            self.assertTrue(a <= got <= b, (got, a, b))
+        # With something on screen the camera is the user's: never moved.
+        with captured():
+            cmd.set_stage('camp', 'm2')
+        self.assertEqual(cmd.get_view(), after)
 
     def test_a_second_crash_after_staging_brings_the_notice_back(self):
         path = self.crashed_campaign()

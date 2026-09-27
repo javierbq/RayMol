@@ -50,6 +50,11 @@ struct SetNoticeModel: Equatable {
     var isRecovery: Bool = false
     /// Starred entries not staged yet: the count on "Stage N starred". 0 hides it.
     let starredToStage: Int
+    /// How many of them the click stages: all when they fit the free stage slots, else
+    /// the free slots' worth -- "Stage top K starred", the best K by the set's ranking
+    /// (`appkit_sets.stage_entries(..., fit=1)`). A recovered campaign usually has more
+    /// stars than budget, and greying the only way back out is the wrong answer.
+    var stageCount: Int = 0
     /// Why those would not fit the stage budget, or nil when they fit. The button is
     /// disabled on it and the strip shows it, so the click never silently does nothing.
     let stageRefusal: String?
@@ -57,8 +62,17 @@ struct SetNoticeModel: Equatable {
     let view: SetView?
 
     var showsStage: Bool { starredToStage > 0 }
-    var stageTitle: String { "Stage \(starredToStage) starred" }
+    var stageTitle: String {
+        stageCount > 0 && stageCount < starredToStage
+            ? "Stage top \(stageCount) starred" : "Stage \(starredToStage) starred"
+    }
     var applyTitle: String? { view.map { "Apply \($0.name)" } }
+    func stageHelp(set name: String) -> String {
+        stageCount < starredToStage
+            ? "\(stageCount) of the \(starredToStage) starred entries fit the stage budget;"
+              + " stage the best \(stageCount) by the set's ranking (set_stage \(name), …)"
+            : "Put the starred entries back in the scene (set_stage \(name), starred)"
+    }
 
     /// `rows` are the set's entries (all of them, not the filtered ones: `starred` as a
     /// selector names every starred entry, whatever the table shows).
@@ -74,8 +88,12 @@ struct SetNoticeModel: Equatable {
         let starred = set.kind == "sequences" ? 0
             : rows.filter { $0.starred && !$0.isStaged && $0.hasStructure }.count
         let budget = SetTableModel(set: set, rows: rows)
+        let fits = min(starred, budget.budgetRemaining)
         return SetNoticeModel(text: text, isRecovery: true, starredToStage: starred,
-                              stageRefusal: starred > 0 ? budget.stageRefusal(starred) : nil,
+                              stageCount: fits,
+                              // Refused only when not even one fits.
+                              stageRefusal: starred > 0 && fits == 0
+                                ? budget.stageRefusal(starred) : nil,
                               view: set.views.last)
     }
 }
@@ -124,7 +142,7 @@ struct SetNoticeInline: View {
             if model.showsStage {
                 link(model.stageTitle,
                      help: model.stageRefusal
-                        ?? "Put the starred entries back in the scene (set_stage \(set.name), starred)") {
+                        ?? model.stageHelp(set: set.name)) {
                     engine.stageStarred(set)
                 }
                 .disabled(model.stageRefusal != nil)
@@ -193,7 +211,7 @@ extension PyMOLEngine {
     /// every other path answers to. Staging clears the notice.
     func stageStarred(_ set: SetEntry) {
         runPython("from pymol import appkit_sets as _s\n"
-                  + "_s.stage_entries(\(Self.pythonLiteral(set.name)), 'starred')")
+                  + "_s.stage_entries(\(Self.pythonLiteral(set.name)), 'starred', fit=1)")
     }
 }
 #endif

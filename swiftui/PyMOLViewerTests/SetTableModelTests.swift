@@ -713,6 +713,27 @@ final class SetsStoreTests: XCTestCase {
         XCTAssertFalse(model.showsStage)
     }
 
+    func testMoreStarsThanFreeSlotsOffersTheTopThatFit() throws {
+        // e1 and e3 starred and unstaged; budget 2 with e2 staged leaves one slot.
+        try exec("UPDATE entries SET starred = 1 WHERE id = 'e3'")
+        try exec("UPDATE meta SET value = '2' WHERE key = 'stage_budget'")
+        let (set, rows) = try recovered()
+        let model = try XCTUnwrap(SetNoticeModel.make(set: set, rows: rows))
+        XCTAssertEqual(model.starredToStage, 2)
+        XCTAssertEqual(model.stageCount, 1)
+        XCTAssertEqual(model.stageTitle, "Stage top 1 starred")
+        XCTAssertNil(model.stageRefusal, "enabled: one of them fits")
+        XCTAssertTrue(model.stageHelp(set: set.name).contains("1 of the 2 starred"))
+    }
+
+    func testStarsThatFitKeepTheFullCountLabel() throws {
+        try exec("UPDATE entries SET starred = 1 WHERE id = 'e3'")
+        let (set, rows) = try recovered()
+        let model = try XCTUnwrap(SetNoticeModel.make(set: set, rows: rows))
+        XCTAssertEqual(model.stageCount, 2)
+        XCTAssertEqual(model.stageTitle, "Stage 2 starred", "budget 4, 1 staged: both fit")
+    }
+
     func testStagingTheStarredPastTheBudgetIsRefusedOnTheButton() throws {
         try exec("UPDATE meta SET value = '1' WHERE key = 'stage_budget'")
         let (set, rows) = try recovered()

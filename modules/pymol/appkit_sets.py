@@ -432,13 +432,18 @@ def toggle_stage(name, entries, _self=cmd):
         return []
 
 
-def stage_entries(name, entries, _self=cmd):
+def stage_entries(name, entries, fit=0, _self=cmd):
     """Stage `entries` (a selector) of set `name` -- the recovery notice's "Stage N
     starred" (#547) sends `starred`. Through `set_stage`, so the budget is the one every
     other path answers to. Only the named entries that HAVE a structure and are not
     staged yet are sent -- the same ones the drawer counts -- so a starred sequence
     entry cannot fail the whole click. A refusal, or any other failure, is one warning
-    line rather than a traceback, and the notice stays up so the user can act on it."""
+    line rather than a traceback, and the notice stays up so the user can act on it.
+
+    `fit=1` is "Stage top K starred" (#547 review): when the entries outnumber the free
+    stage slots, stage the best K of them by the set's ranking (`binding.pick_to_fit`)
+    rather than refusing them all. With no free slot at all the whole list goes, so
+    the budget refusal is what the user hears."""
     from pymol.sets import selectors
     from pymol.sets.errors import SetError
     try:
@@ -450,6 +455,14 @@ def stage_entries(name, entries, _self=cmd):
                  if not e.get('staged_object') and c.chain_blobs(e['id'])]
         if not names:
             return []
+        if int(fit):
+            from pymol.sets import binding
+            keep = {e['name'] for e in found if e['name'] in names}
+            chosen, _label = binding.pick_to_fit(
+                _store().active(), row, [e for e in found if e['name'] in keep],
+                _self=_self)
+            if chosen:
+                names = [e['name'] for e in chosen]
         return _self.set_stage(row['name'], '+'.join(names), quiet=1)
     except SetError as exc:
         colorprinting.warning(' sets: %s' % exc)

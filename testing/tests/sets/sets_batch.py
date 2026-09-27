@@ -1751,6 +1751,25 @@ class RestageReviewRound1(RestageByRanking):
         self.assertNotIn('seq_only', self.staged_names(row))
         self.assertEqual(self.staged_names(row), self.top(row, 6, exclude=('seq_only',)))
 
+    def testStagingIntoAnEmptySceneShowsTheTargetAndZoomsOntoIt(self):
+        jobs = self.design(3)
+        deliver_designs(jobs)
+        row = self.only_set()
+        cmd.set_unstage(row['name'])
+        cmd.delete('all')                         # the reference is gone too
+        cmd.set_view((1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -50, 500, 500, 500, 40, 100, -20))
+        names = cmd.set_stage(row['name'], '%s+%s' % (jobs[0].spec.name, jobs[1].spec.name))
+        target = self.target(row)
+        self.assertTrue(target)
+        self.assertIn(target, cmd.get_names('objects', enabled_only=1),
+                      'no reference in the scene: nothing it coincides with')
+        for obj in names:
+            self.assertIn(obj, cmd.get_names('objects', enabled_only=1))
+        (lo, hi) = cmd.get_extent(row['group_name'])
+        # The camera's origin is now on what was staged (it was 500 A away).
+        for got, a, b in zip(cmd.get_view()[12:15], lo, hi):
+            self.assertTrue(a <= got <= b, (got, a, b))
+
     def testTiesEverywhereRestageNothing(self):
         row, jobs, printed = self.run_ascending(8, scores=[100.0] * 8)
         self.assertNotIn('Restaged', printed)

@@ -350,9 +350,13 @@ its tab (#547):
 
     Scene not recovered.  [Stage 4 starred]  [Apply top50]  [Dismiss]
 
-**Stage N starred** is `set_stage <set>, starred`. It shows only when starred entries
-are not staged yet. It answers to the stage budget like every other stage: when they
-would not fit, the button is disabled and says why. **Apply <view>** applies the set's
+**Stage N starred** is `set_stage <set>, starred`, and shows only when starred entries
+are not staged yet. When there are more of them than free stage slots it becomes
+**Stage top K starred**: the best K by the set's ranking (its ranking key, else its
+tool's ranking metric), or the first K in delivery order when there is none. It is
+disabled, saying why, only when not even one fits. Staging into an empty scene — the
+usual case after a recovery — brings the camera to what was staged; with anything else
+on screen, staging never moves the camera. **Apply <view>** applies the set's
 most recent saved view, and shows only when there is one. The line goes away with any
 staging action on the set, or with **Dismiss** (`set_notice <set>, 1`). It is not shown
 again for that container. The console gets the same pointer, with the command, for an

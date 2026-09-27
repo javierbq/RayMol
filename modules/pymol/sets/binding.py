@@ -1102,6 +1102,13 @@ def stage(set_row, entries, budget_override=None, by=schema.STAGED_USER, _self=c
     if not todo:
         return names
     group = set_row.get('group_name') or set_row['name']
+    # Staged into an EMPTY scene -- after a recovery that brought the sets back without
+    # the scene, typically -- the camera is still wherever the empty session left it,
+    # and a design sitting at its target's coordinates is off-screen: a black viewport
+    # with the objects listed beside it (#547 review, measured: get_view unchanged by a
+    # stage). So only then, the camera goes to what was staged. With anything else in
+    # the scene the camera is the user's and is never moved.
+    was_empty = not (_self.get_names('public_nongroup_objects') or [])
     _ensure_group(group, _self=_self)
     for e in todo:
         obj = _free_object_name(e['name'], _self=_self)
@@ -1116,7 +1123,48 @@ def stage(set_row, entries, budget_override=None, by=schema.STAGED_USER, _self=c
         place(c, set_row, e, obj, superpose=True, by=by, _self=_self)
         _write_back_metrics(c, dict(e, staged_object=obj), obj, _self=_self)
         names.append(obj)
+    if was_empty and names:
+        try:
+            _self.zoom(group, animate=0)
+        except Exception:
+            pass
     return names
+
+
+def pick_to_fit(c, set_row, entries, _self=cmd):
+    """`entries` cut to the set's FREE stage slots, best first: `(chosen, label)`.
+
+    All of them, with label '', when they fit. Otherwise the top `free` by the set's
+    ranking -- the key a finished run restages by (`_ranking`: its own ranking key,
+    else its tool's declared metric), with that key's label -- and, when there is none,
+    the first `free` in delivery order, with label ''. What "Stage top K starred" stages
+    after a recovery (#547 review): sixteen stars and a budget of six must not leave
+    the one staging action greyed out."""
+    entries = list(entries)
+    free = max(budget(set_row) - len(_staged(c, set_row['id'], _self=_self)), 0)
+    if len(entries) <= free:
+        return entries, ''
+    ranking = _ranking(c, set_row)
+    label = ''
+    if ranking is not None:
+        key, desc, label = ranking
+
+        def order(e):
+            value = (e.get('scalars') or {}).get(key)
+            if value is None:
+                return (1, 0, e.get('ord') or 0)
+            return (0, -value if desc else value, e.get('ord') or 0)
+    else:
+        def order(e):
+            return (0, 0, e.get('ord') or 0)
+    return sorted(entries, key=order)[:free], label
+
+
+def stageable_starred(c, set_row):
+    """Starred entries a stage could still add: unstaged, with a stored structure --
+    the ones the drawer's "Stage N starred" counts."""
+    return c.entries(set_row['id'], where='e.starred = 1 AND e.staged_object IS NULL'
+                                          ' AND ' + HAS_STRUCTURE)
 
 
 def unstage(set_row, entries, include_pinned=False, by=schema.STAGED_USER, _self=cmd):
@@ -1796,15 +1844,26 @@ def after_recovery(_self=cmd):
         appkit_sets.open_set(row['name'], _self=_self)
     except Exception:
         pass
-    # The same entries the drawer's "Stage N starred" counts: starred, unstaged, with a
-    # structure to stage.
-    starred = c.count(row['id'], where='e.starred = 1 AND e.staged_object IS NULL'
-                                       ' AND ' + HAS_STRUCTURE)
+    # The same entries the drawer's "Stage N starred" counts, and the same cut to the
+    # budget its "Stage top K starred" makes.
+    starred = stageable_starred(c, row)
     views = c.views(row['id'])
     hints = []
     if starred:
-        hints.append('"set_stage %s, starred" puts its %d starred entr%s back'
-                     % (row['name'], starred, 'y' if starred == 1 else 'ies'))
+        chosen, label = pick_to_fit(c, row, starred, _self=_self)
+        if len(chosen) == len(starred):
+            hints.append('"set_stage %s, starred" puts its %d starred entr%s back'
+                         % (row['name'], len(starred), 'y' if len(starred) == 1 else 'ies'))
+        elif chosen:
+            hints.append('"set_stage %s, %s" stages the top %d of its %d starred entries'
+                         ' (%s; the budget is %d)'
+                         % (row['name'], '+'.join(e['name'] for e in chosen), len(chosen),
+                            len(starred), 'by %s' % label if label else 'in delivery order',
+                            budget(row)))
+        else:
+            hints.append('its %d starred entries do not fit the stage budget (%d);'
+                         ' unstage some or raise it with set_budget'
+                         % (len(starred), budget(row)))
     if views:
         # What the drawer's "Apply <view>" does: the view's filter and sort become the
         # set's. Not `set_stage ..., view:`, which would usually be over budget.
