@@ -85,12 +85,15 @@ scroll like ten.
 a **score** measures the result (pLDDT, ipTM, an RMSD, a geometry check) and a
 **provenance** column records what was asked for or what it cost (designed length,
 target residues, hotspots, the designed chain, the seed, inference time). Score columns
-come first, each group in declared order. A column whose value is the same on every row
-shown moves out of the table into a one-line **run header** above it
-(`Designed residues 60 · Target residues 141 · Hotspots 7 · Designed chain B · Seed 3827`);
-**Columns ▾** lists it as "in run header" and puts it back in the table when picked. A
-spec that names no role is a score when it declares `higher_is_better` and provenance
-when it does not, and a container written before roles existed reads by the same rule.
+come first, each group in declared order. A provenance column whose value is the same on
+every entry of the set moves out of the table into a one-line **run header** above it
+(`Designed residues 60 · Target residues 141 · Hotspots 7 · Designed chain B · Seed 3827`).
+Constancy is judged over the whole set, not the filtered rows, so filtering never moves a
+column, and a score is never folded. In **Columns ▾** each run constant has a submenu:
+in table, in run header, or hidden; a saved view records the choice. A spec that names no
+role is a score when it declares `higher_is_better` and provenance when it does not; a
+container written before roles existed is migrated on open by the same rule, corrected for
+the shipped keys it gets wrong (inference time and peak memory are provenance).
 
 Keys, while the table has focus:
 
@@ -157,7 +160,8 @@ and are entry selectors everywhere: `set_export s, out.csv, view:top50`,
 One scatter over the same filtered rows the table shows — filter in one and the other
 follows. It opens on the set's ranking column for x (when that varies) and the next
 score column with more than one value for y — never on a column that is the same on
-every row, which would collapse the scatter to a line. Choose the x, y and colour
+every row, which would collapse the scatter to a line — unless fewer than two columns
+vary yet, when it falls back to the ranking column so the points still draw. Choose the x, y and colour
 columns from the menus, or colour by tag, parent, run or staged state. Staged points are ringed, the peeked point is drawn large, and
 hovering a point peeks it and raises a card with **Stage**, **★** and **✕**.
 

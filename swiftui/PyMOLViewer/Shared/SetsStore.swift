@@ -57,6 +57,24 @@ struct MetricColumn: Identifiable, Equatable, Hashable, Decodable {
         higherIsBetter == nil ? provenanceRole : scoreRole
     }
 
+    /// `metrics.schema.LEGACY_ROLE_OVERRIDES`, verbatim: the shipped keys the default
+    /// rule gets wrong, for a record with no role. Python migrates a file's records on
+    /// open, but this reader can see one first, and an old boltz set must not open on
+    /// Inference time and Peak memory.
+    static let legacyRoleOverrides: [String: String] = [
+        "elapsed_s": provenanceRole,
+        "peak_bytes": provenanceRole,
+        "design_ca_ca_mean": scoreRole,
+        "design_radius_of_gyration": scoreRole,
+        "interface_min_distance": scoreRole,
+        "sequence_recovery": scoreRole,
+    ]
+
+    /// The role of a record that names none: the override, else the default rule.
+    static func legacyRole(key: String, higherIsBetter: Bool?) -> String {
+        legacyRoleOverrides[key] ?? defaultRole(higherIsBetter: higherIsBetter)
+    }
+
     var id: String { column ?? "\(key)#\(chain ?? "")" }
     var isScalar: Bool { column != nil }
     var isScore: Bool { role == Self.scoreRole }
@@ -92,7 +110,7 @@ struct MetricColumn: Identifiable, Equatable, Hashable, Decodable {
         if let role, role == Self.scoreRole || role == Self.provenanceRole {
             self.role = role
         } else {
-            self.role = Self.defaultRole(higherIsBetter: higherIsBetter)
+            self.role = Self.legacyRole(key: key, higherIsBetter: higherIsBetter)
         }
     }
 
@@ -1899,7 +1917,12 @@ extension PyMOLEngine {
     func saveSetView(_ set: SetEntry, named view: String, columns: [String]) {
         let clean = view.trimmingCharacters(in: .whitespaces)
         guard !clean.isEmpty else { return }
-        let list = columns.filter { SetsStore.isSafeIdentifier($0) }.joined(separator: "+")
+        // `name@inline` (#544) is a column name plus a marker no column name can hold.
+        let list = columns.filter { name in
+            let bare = name.hasSuffix(SetTableModel.inlineMarker)
+                ? String(name.dropLast(SetTableModel.inlineMarker.count)) : name
+            return SetsStore.isSafeIdentifier(bare)
+        }.joined(separator: "+")
         runPythonQuiet("from pymol import cmd as _c\n"
                        + "_c.set_view_save(\(pyQuoted(set.name)), \(pyQuoted(clean)),"
                        + " columns=\(Self.pythonLiteral(list)))")
@@ -1913,9 +1936,10 @@ extension PyMOLEngine {
         setFilterText = view.filter
         setBrushes = []
         if !view.columns.isEmpty {
-            let visible = Set(view.columns)
-            setHiddenColumns = Set(set.columns.compactMap(\.column)
-                                    .filter { !visible.contains($0) })
+            let restored = SetTableModel.restore(viewColumns: view.columns,
+                                                 allColumns: set.columns.compactMap(\.column))
+            setHiddenColumns = restored.hidden
+            setInlineColumns = restored.inline
         }
         runPythonQuiet("from pymol import appkit_sets as _s\n"
                        + "_s.apply_view(\(pyQuoted(set.name)), \(pyQuoted(view.name)))")

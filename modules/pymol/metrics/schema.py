@@ -62,6 +62,33 @@ def default_role(higher_is_better):
     return PROVENANCE if higher_is_better is None else SCORE
 
 
+#: Where `default_role` gets a SHIPPED key wrong, for a record that carries no role
+#: (a `.raymol` written before #544). Without it an old boltz or RFD3 set would put
+#: Inference time and Peak memory -- which have a better end -- FIRST in the table, and
+#: file the unsigned geometry measurements under provenance. Mirrored verbatim by
+#: `MetricColumn.legacyRoleOverrides` in SetsStore.swift, because Swift reads
+#: `sets.columns` straight from the file and may see one before it is migrated.
+LEGACY_ROLE_OVERRIDES = {
+    'elapsed_s': PROVENANCE,
+    'peak_bytes': PROVENANCE,
+    'design_ca_ca_mean': SCORE,
+    'design_radius_of_gyration': SCORE,
+    'interface_min_distance': SCORE,
+    'sequence_recovery': SCORE,
+}
+
+
+def legacy_role(key, higher_is_better=None, tool=''):
+    """The role of a declared-column record that has none: the registered spec's when
+    this build declares (tool, key), else the shipped override, else `default_role`."""
+    table = _SCHEMAS.get(str(tool or ''))
+    if table and key in table:
+        return table[key].role
+    if key in LEGACY_ROLE_OVERRIDES:
+        return LEGACY_ROLE_OVERRIDES[key]
+    return default_role(higher_is_better)
+
+
 class MetricSpec:
     """One thing a tool measures.
 

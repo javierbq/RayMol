@@ -144,14 +144,29 @@ struct SetPlotModel: Equatable {
 
     /// The axes a plot opens on. x is the set's ranking key — the column the user
     /// sorted by — when it varies; otherwise the first candidate. y is the next
-    /// candidate that is not x. Either is "" when nothing varying is left for it,
-    /// which the view shows as "—" rather than a constant.
+    /// candidate that is not x. When fewer than two columns vary (a batch with one row
+    /// landed, a run where one score is all there is), the missing axis falls back to
+    /// the ranking key, then to the first numeric column, scores first: a constant
+    /// axis still draws the points, and an empty plot draws nothing. x and y are the
+    /// same column only when the set has one numeric column at all.
     static func defaultAxes(columns: [MetricColumn], rows: [SetRow],
                             rankingKey: String) -> (x: String, y: String) {
         let names = axisCandidates(columns, rows: rows).compactMap(\.column)
-        let x = names.contains(rankingKey) && !rankingKey.isEmpty ? rankingKey : (names.first ?? "")
-        let y = names.first { $0 != x } ?? ""
+        let numeric = SetTableModel.ordered(columns.filter { $0.isScalar && $0.dtype != "str" })
+            .compactMap(\.column)
+        let ranking = numeric.contains(rankingKey) && !rankingKey.isEmpty ? rankingKey : nil
+        let fallback = (ranking.map { [$0] } ?? []) + numeric
+        var x = ranking.flatMap { names.contains($0) ? $0 : nil } ?? names.first ?? ""
+        if x.isEmpty { x = fallback.first ?? "" }
+        let y = names.first { $0 != x } ?? fallback.first { $0 != x } ?? x
         return (x, y)
+    }
+
+    /// True when both axes are columns that vary — the defaults are final. Until then
+    /// the view re-chooses them as rows land.
+    static func axesVary(x: String, y: String, columns: [MetricColumn], rows: [SetRow]) -> Bool {
+        let names = Set(axisCandidates(columns, rows: rows).compactMap(\.column))
+        return names.contains(x) && names.contains(y) && x != y
     }
 
     // MARK: domains
@@ -447,7 +462,7 @@ struct SetPlotView: View {
             footer
         }
         .onAppear(perform: chooseDefaults)
-        .onChange(of: rows.count) { _ in chooseDefaults() }
+        .onChange(of: engine.setRows.count) { _ in chooseDefaults() }
         .onDisappear { hoverWork?.cancel() }
     }
 
@@ -459,14 +474,21 @@ struct SetPlotView: View {
     /// same on every row. A plot that opens on two arbitrary columns has to be
     /// configured before it says anything, and most of the time nobody bothers.
     ///
-    /// Re-run as rows arrive until both axes are filled or the user picks one: on
-    /// appear mid-batch nothing varies yet, and an axis chosen then would stay "—".
+    /// Judged over the WHOLE set (`engine.setRows`), not the filtered rows, so a filter
+    /// never moves an axis. Re-run as rows arrive until both axes vary or the user
+    /// picks one: on appear mid-batch nothing varies yet, and the fallback chosen then
+    /// (a constant axis) should give way once real spread lands.
     private func chooseDefaults() {
-        guard !axesPicked, xKey.isEmpty || yKey.isEmpty else { return }
+        guard !axesPicked else { return }
+        let all = engine.setRows
+        if !xKey.isEmpty, !yKey.isEmpty,
+           SetPlotModel.axesVary(x: xKey, y: yKey, columns: numericColumns, rows: all) {
+            return
+        }
         // Through `numericColumns`, not `set.rankingColumn`: a set ranked on a STRING
         // column would otherwise name an axis the menu never offers, and the plot
         // would open empty with no way to tell why.
-        let axes = SetPlotModel.defaultAxes(columns: numericColumns, rows: rows,
+        let axes = SetPlotModel.defaultAxes(columns: numericColumns, rows: all,
                                             rankingKey: self.set.rankingKey)
         xKey = axes.x
         yKey = axes.y

@@ -293,32 +293,71 @@ class ColumnTest(SetStoreTestCase):
                           [dict(key='x', scope='state', role='ranking')])
         self.assertEqual(self.columns_of(c, sid), ['entry_id'])
 
-    def testLegacyColumnsWithoutARoleDefaultByTheSameRule(self):
-        # A container written before #544 has no `role` in sets.columns. The reader
-        # fills it in by `higher_is_better`: a metric with a better end is a score,
-        # one without is provenance -- the rule a new spec that omits it follows.
+    def _strip_roles(self, c, sid):
+        """Make `sid`'s declared columns look like a pre-#544 file: no `role` field."""
+        raw = json.loads(c._conn.execute(
+            'SELECT columns FROM sets WHERE id = ?', (sid,)).fetchone()[0])
+        for record in raw:
+            del record['role']
+        c._conn.execute('UPDATE sets SET columns = ? WHERE id = ?',
+                        (json.dumps(raw), sid))
+
+    def _raw_roles(self, c, sid):
+        raw = json.loads(c._conn.execute(
+            'SELECT columns FROM sets WHERE id = ?', (sid,)).fetchone()[0])
+        return {d['key']: d.get('role') for d in raw}
+
+    def testLegacyColumnsWithoutARoleAreMigratedOnOpen(self):
+        # A container written before #544 has no `role` in sets.columns. Opening it
+        # writes one IN THE FILE -- Swift reads sets.columns straight from SQLite, so
+        # a default applied only on the Python read path would never reach the table.
         c = self.open()
         sid = c.create_set('demo')['id']
         c.declare_columns(sid, [
             MetricSpec('plddt', 'state', higher_is_better=True),
             MetricSpec('rmsd', 'state', higher_is_better=False),
             MetricSpec('design_length', 'object', dtype='int'),
+            # The shipped keys `default_role` gets wrong: a runtime cost HAS a better
+            # end and is still provenance; unsigned geometry is still a score.
+            MetricSpec('elapsed_s', 'state', higher_is_better=False),
+            MetricSpec('peak_bytes', 'state', dtype='int', higher_is_better=False),
+            MetricSpec('interface_min_distance', 'state'),
+            MetricSpec('sequence_recovery', 'object'),
         ])
-        raw = json.loads(c._conn.execute(
-            'SELECT columns FROM sets WHERE id = ?', (sid,)).fetchone()[0])
-        for record in raw:
-            del record['role']
-        with c._conn:
-            c._conn.execute('UPDATE sets SET columns = ? WHERE id = ?',
-                            (json.dumps(raw), sid))
+        self._strip_roles(c, sid)
+        self.assertEqual(set(self._raw_roles(c, sid).values()), {None})
         c.close()
         c = self.open()
-        self.assertEqual({d['key']: d['role'] for d in c.columns(sid)},
-                         {'plddt': 'score', 'rmsd': 'score',
-                          'design_length': 'provenance'})
+        expected = {'plddt': 'score', 'rmsd': 'score', 'design_length': 'provenance',
+                    'elapsed_s': 'provenance', 'peak_bytes': 'provenance',
+                    'interface_min_distance': 'score', 'sequence_recovery': 'score'}
+        self.assertEqual(self._raw_roles(c, sid), expected, 'migrated in the file')
+        self.assertEqual({d['key']: d['role'] for d in c.columns(sid)}, expected)
         # And re-declaring a legacy column is still a no-op.
         c.declare_columns(sid, [MetricSpec('plddt', 'state', higher_is_better=True)])
-        self.assertEqual(len(c.columns(sid)), 3)
+        self.assertEqual(len(c.columns(sid)), 7)
+
+    def testLegacyRoleComesFromTheRegisteredSpecWhenThereIsOne(self):
+        from pymol.metrics import schema as mschema
+        mschema.register('legacy-tool', [
+            MetricSpec('widget', 'state', role='score'),
+            MetricSpec('gadget', 'state', higher_is_better=True, role='provenance'),
+        ], replace=True)
+        try:
+            c = self.open()
+            sid = c.create_set('demo')['id']
+            c.declare_columns(sid, [dict(key='widget', scope='state', tool='legacy-tool'),
+                                    dict(key='gadget', scope='state', tool='legacy-tool',
+                                         higher_is_better=True),
+                                    dict(key='widget2', scope='state')])
+            self._strip_roles(c, sid)
+            c.close()
+            c = self.open()
+            self.assertEqual(self._raw_roles(c, sid),
+                             {'widget': 'score', 'gadget': 'provenance',
+                              'widget2': 'provenance'})
+        finally:
+            mschema.forget('legacy-tool')
 
     def testBadKeyRefused(self):
         c = self.open()

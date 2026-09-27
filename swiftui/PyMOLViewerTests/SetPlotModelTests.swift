@@ -115,9 +115,20 @@ final class SetPlotModelTests: XCTestCase {
                                             rankingKey: "")
         XCTAssertEqual(axes.x, "rmsd", "the only varying score")
         XCTAssertEqual(axes.y, "seed", "a varying provenance column beats a constant")
-        let none = SetPlotModel.defaultAxes(columns: [plddt, rmsd], rows: [], rankingKey: "plddt")
-        XCTAssertEqual(none.x, "", "no rows yet: nothing varies, so no axis is chosen")
-        XCTAssertEqual(none.y, "")
+        let none = SetPlotModel.defaultAxes(columns: [plddt, rmsd], rows: [], rankingKey: "rmsd")
+        XCTAssertEqual(none.x, "rmsd", "nothing varies yet: fall back to the ranking key")
+        XCTAssertEqual(none.y, "plddt", "and the first other numeric column, never x again")
+        XCTAssertFalse(SetPlotModel.axesVary(x: none.x, y: none.y, columns: [plddt, rmsd],
+                                             rows: []), "a fallback is not final")
+        // One varying column: it takes x, and y falls back rather than going blank.
+        let one = SetPlotModel.defaultAxes(columns: [seed, plddt], rows: rows, rankingKey: "")
+        XCTAssertEqual(one.x, "seed")
+        XCTAssertEqual(one.y, "plddt", "a constant axis beats an empty plot")
+        let single = SetPlotModel.defaultAxes(columns: [plddt], rows: [], rankingKey: "")
+        XCTAssertEqual(single.x, "plddt")
+        XCTAssertEqual(single.y, "plddt", "x == y only when there is one numeric column")
+        XCTAssertTrue(SetPlotModel.axesVary(x: axes.x, y: axes.y, columns: [seed, plddt, rmsd],
+                                            rows: rows))
         XCTAssertEqual(SetPlotModel.axisCandidates([verdict, plddt], rows: rows).map(\.key),
                        [], "a string column is never an axis; pLDDT is constant here")
     }
