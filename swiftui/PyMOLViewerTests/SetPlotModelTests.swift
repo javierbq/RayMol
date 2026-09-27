@@ -150,6 +150,61 @@ final class SetPlotModelTests: XCTestCase {
         XCTAssertEqual(domain.upperBound, 9 + 0.4, accuracy: 1e-9)
     }
 
+    // MARK: fitted range
+
+    func testAFittedAxisSpendsThePanelOnThePointsShown() {
+        // The walkthrough's case: 132 designs with pLDDT 85-98 on a 0-100 axis used the
+        // right seventh of the panel. Fitted, they span it, padded 5% each side.
+        let domain = SetPlotModel.fittedDomain(values: [85, 90, 98], lo: 0, hi: 100)
+        XCTAssertEqual(domain.lowerBound, 85 - 0.65, accuracy: 1e-9)
+        XCTAssertEqual(domain.upperBound, 98 + 0.65, accuracy: 1e-9)
+        let full = SetPlotModel.domain(values: [85, 90, 98], lo: 0, hi: 100)
+        XCTAssertEqual(full, 0...100, "full scale is unchanged")
+    }
+
+    func testAFittedAxisNeverPassesADeclaredBound() {
+        // Padding a pLDDT of 99.5 would draw a 100.x tick; the declared ceiling caps it.
+        let domain = SetPlotModel.fittedDomain(values: [80, 99.5], lo: 0, hi: 100)
+        XCTAssertEqual(domain.upperBound, 100)
+        XCTAssertEqual(domain.lowerBound, 80 - 0.975, accuracy: 1e-9)
+        let floor = SetPlotModel.fittedDomain(values: [0, 0.2], lo: 0, hi: 1)
+        XCTAssertEqual(floor.lowerBound, 0)
+    }
+
+    func testAFittedAxisOnOneValueStillHasWidth() {
+        XCTAssertEqual(SetPlotModel.fittedDomain(values: [7, 7], lo: nil, hi: nil), 6.5...7.5)
+        // All at the ceiling: opens inwards rather than collapsing to 100...100.
+        let top = SetPlotModel.fittedDomain(values: [100, 100], lo: 0, hi: 100)
+        XCTAssertLessThan(top.lowerBound, 100)
+        XCTAssertGreaterThan(top.upperBound, top.lowerBound)
+        // Nothing measured: the metric's own scale.
+        XCTAssertEqual(SetPlotModel.fittedDomain(values: [], lo: 0, hi: 100), 0...100)
+    }
+
+    func testTheStripUnderAFittedAxisCountsOnlyWhatTheAxisShows() {
+        // Values outside the zoom are left out, not piled into the edge bars, so a bar
+        // always sits under the points it counts.
+        let bins = SetPlotModel.bins(values: [0, 10, 85, 86, 90, 98, 98.65, 150],
+                                     in: 84.35...98.65, count: 4)
+        XCTAssertEqual(bins.reduce(0, +), 5, "0, 10 and 150 are outside")
+        XCTAssertEqual(bins[0], 2, "85 and 86")
+        XCTAssertEqual(bins[3], 2, "98 and the upper bound itself")
+        XCTAssertEqual(SetPlotModel.bins(values: [1, 2], in: 3...3, count: 4), [0, 0, 0, 0])
+    }
+
+    func testFittedPointsSpreadAcrossThePanel() {
+        // End to end through the model: with the fitted range as the override the
+        // extreme points land near the panel's edges instead of in one corner.
+        let rows = [row("a", ord: 0, plddt: 85, rmsd: 1.0),
+                    row("b", ord: 1, plddt: 98, rmsd: 0.5)]
+        var m = SetPlotModel(rows: rows, xColumn: plddt, yColumn: rmsd,
+                             size: CGSize(width: 200, height: 100))
+        m.xDomainOverride = SetPlotModel.fittedDomain(values: [85, 98], lo: 0, hi: 100)
+        let xs = m.points.map(\.position.x).sorted()
+        XCTAssertLessThan(xs[0], 20)
+        XCTAssertGreaterThan(xs[1], 180)
+    }
+
     func testDegenerateDomainOpensRatherThanDividingByZero() {
         XCTAssertEqual(SetPlotModel.domain(values: [7, 7, 7], lo: nil, hi: nil), 6.5...7.5)
         XCTAssertEqual(SetPlotModel.domain(values: [], lo: nil, hi: nil), -0.5...0.5)

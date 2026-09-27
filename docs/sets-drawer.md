@@ -233,6 +233,15 @@ distribution and brushes like a header histogram.
 An entry with no value on one of the axes is left out rather than drawn at zero — an
 unmeasured entry is not a bad one — and the footer says how many.
 
+**range: fit** (the default) fits both axes to the designs shown, padded 5% and never
+past a metric's declared bounds, so 132 designs with pLDDT above 85 fill the panel
+instead of its right seventh. Filtering zooms in; clearing the filter zooms back out.
+While you drag a brush on the axis strip the axes hold still, and they re-fit when you
+let go. The strip then counts only the values inside the axis's range. **range: full**
+plots each metric on its whole declared scale (pLDDT 0–100), the way to compare two
+runs on the same axes; the strip is then the set's own histogram, as in the table
+header. The choice is remembered.
+
 ## The Sequences tab
 
 The set's entries as sequences: the rows you have selected, or everything the filter

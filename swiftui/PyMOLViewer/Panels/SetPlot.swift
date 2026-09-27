@@ -199,6 +199,49 @@ struct SetPlotModel: Equatable {
         return high > low ? low...high : (observedLow - 0.5)...(observedLow + 0.5)
     }
 
+    /// The axis range when the plot is fitted to its points: the observed range of
+    /// `values` padded 5% on each side, and never past a declared `lo`/`hi`.
+    ///
+    /// `domain` answers "where does this value sit on the metric's scale", which is
+    /// what makes two runs comparable, but a triage plot is almost always looking at
+    /// the top of that scale: 132 designs with pLDDT > 85 on a 0-100 axis fill the
+    /// right seventh of the panel. Fitting spends the panel on the points that are
+    /// there. The declared bounds still cap it, so a pLDDT axis never reads 101.
+    static func fittedDomain(values: [Double], lo: Double?, hi: Double?) -> ClosedRange<Double> {
+        let finite = values.filter { $0.isFinite }
+        guard let observedLow = finite.min(), let observedHigh = finite.max() else {
+            return domain(values: [], lo: lo, hi: hi)
+        }
+        let pad = observedHigh > observedLow ? (observedHigh - observedLow) * 0.05 : 0.5
+        var low = observedLow - pad
+        var high = observedHigh + pad
+        if let lo { low = max(low, lo) }
+        if let hi { high = min(high, hi) }
+        if !(high > low) {
+            // Every value at a declared bound (a set of pLDDT 100s): open inwards.
+            low = observedLow - pad
+            high = observedHigh + pad
+        }
+        return low...high
+    }
+
+    /// `values` counted into `count` equal bins over `domain`. Values outside it are
+    /// left out rather than piled into the edge bins: under a fitted axis the strip
+    /// shows the distribution the axis shows, and a spike at either end would read as
+    /// data sitting at the edge of the zoom.
+    static func bins(values: [Double], in domain: ClosedRange<Double>, count: Int) -> [Int] {
+        guard count > 0 else { return [] }
+        var counts = [Int](repeating: 0, count: count)
+        let span = domain.upperBound - domain.lowerBound
+        guard span > 0 else { return counts }
+        for v in values where v.isFinite && domain.contains(v) {
+            let i = min(Int(((v - domain.lowerBound) / span * Double(count)).rounded(.down)),
+                        count - 1)
+            counts[i] += 1
+        }
+        return counts
+    }
+
     var xDomain: ClosedRange<Double> {
         xDomainOverride ?? Self.domain(values: values(of: xColumn),
                                        lo: xColumn?.lo, hi: xColumn?.hi)
@@ -398,6 +441,19 @@ struct SetPlotView: View {
     @State private var bandOrigin: CGPoint? = nil
     @State private var hovered: SetPlotPoint? = nil
     @State private var hoverWork: DispatchWorkItem? = nil
+    /// Fit the axes to the points shown (default) or use each metric's full scale.
+    @AppStorage("raymol_set_plot_fit_to_data") private var fitToData = true
+    /// The fitted domains held still while a brush on the axis strip is being dragged.
+    /// A live brush previews a narrower filter, the rows shown shrink, and a fitted
+    /// axis would shrink with them, so the same pointer position would mean a
+    /// different value from one event to the next (the #418 R2 failure). Taken at the
+    /// first live event, released on commit.
+    @State private var frozenDomains: PlotDomains? = nil
+
+    private struct PlotDomains {
+        var x: ClosedRange<Double>?
+        var y: ClosedRange<Double>?
+    }
 
     /// Room for the y tick labels on the left and the x ones underneath.
     private static let leftGutter: CGFloat = 46
@@ -422,11 +478,41 @@ struct SetPlotView: View {
                                  selection: engine.setSelection,
                                  peekedID: engine.peekedEntryID)
         if case .metric(let name) = colorChoice { model.colorColumn = column(name) }
-        // The same range the axis strip is binned over, so the strip and the points
+        // The same range the axis strip is drawn over, so the strip and the points
         // above it cannot disagree about where a value sits (#418 review R2).
-        model.xDomainOverride = engine.setHistograms[xKey]?.domain
-        model.yDomainOverride = engine.setHistograms[yKey]?.domain
+        let domains = self.domains()
+        model.xDomainOverride = domains.x
+        model.yDomainOverride = domains.y
         return model
+    }
+
+    /// The axis ranges for this frame: held while a strip brush is live, otherwise
+    /// fitted to the rows shown, or the whole set's histogram domain at full scale.
+    private func domains() -> PlotDomains {
+        if let frozenDomains { return frozenDomains }
+        guard fitToData else {
+            return PlotDomains(x: engine.setHistograms[xKey]?.domain,
+                               y: engine.setHistograms[yKey]?.domain)
+        }
+        return PlotDomains(x: fittedDomain(xKey), y: fittedDomain(yKey))
+    }
+
+    private func fittedDomain(_ key: String) -> ClosedRange<Double>? {
+        guard let column = column(key) else { return nil }
+        let values = rows.compactMap { $0.values[key]?.number }
+        guard !values.isEmpty else { return engine.setHistograms[key]?.domain }
+        return SetPlotModel.fittedDomain(values: values, lo: column.lo, hi: column.hi)
+    }
+
+    /// The strip's bars. At full scale these are the set's own histogram, the one the
+    /// table header brushes on; fitted (or held), the whole set's values re-binned over
+    /// the x axis's range, so each bar still sits under the points it counts.
+    private func stripBins(domain: ClosedRange<Double>?) -> [Int] {
+        guard fitToData || frozenDomains != nil, let domain else {
+            return engine.setHistograms[xKey]?.bins ?? []
+        }
+        let values = engine.setRows.compactMap { $0.values[xKey]?.number }
+        return SetPlotModel.bins(values: values, in: domain, count: SetsStore.histogramBins)
     }
 
     var body: some View {
@@ -445,12 +531,18 @@ struct SetPlotView: View {
                 // strip's domain shrink mid-drag on a column with no declared lo/hi,
                 // so the same pointer position meant a different value from one event
                 // to the next and the brush could never widen again.
+                let domains = self.domains()
                 SetHistogramBrushView(
                     column: column(xKey),
-                    bins: engine.setHistograms[xKey]?.bins ?? [],
-                    domain: engine.setHistograms[xKey]?.domain,
+                    bins: stripBins(domain: domains.x),
+                    domain: domains.x,
                     brush: engine.setBrushes.first { $0.column == xKey },
                     onBrush: { brush, commit in
+                        if commit {
+                            frozenDomains = nil
+                        } else if frozenDomains == nil {
+                            frozenDomains = domains
+                        }
                         engine.updateBrush(set, brush, column: xKey, commit: commit)
                     })
                     .frame(height: PanelLayout.macPlotAxisBrushHeight)
@@ -598,6 +690,7 @@ struct SetPlotView: View {
             axisMenu("x", key: $xKey)
             axisMenu("y", key: $yKey)
             colorMenu
+            rangeMenu
             Spacer(minLength: 8)
             if case .category = colorChoice { legend }
         }
@@ -620,6 +713,19 @@ struct SetPlotView: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .help("Which column this axis plots")
+    }
+
+    private var rangeMenu: some View {
+        Menu {
+            Button("Fit to the designs shown") { fitToData = true }
+            Button("Each metric's full scale") { fitToData = false }
+        } label: {
+            Text("range: \(fitToData ? "fit" : "full")").font(.system(size: 10))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Fit the axes to the designs shown, or plot each metric on its full scale "
+              + "so two runs share the same axes")
     }
 
     private var colorMenu: some View {
