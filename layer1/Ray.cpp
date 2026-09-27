@@ -27,6 +27,7 @@ Z* -------------------------------------------------------------------
 #include"Ortho.h"
 #include"Util.h"
 #include"Ray.h"
+#include"Material.h"
 #include"Triangle.h"
 #include"Color.h"
 #include"Matrix.h"
@@ -3243,6 +3244,11 @@ int RayTraceThread(CRayThreadInfo * T)
   const int spec_local = SettingGetGlobal_i(I->G, cSetting_ray_spec_local);
   float legacy = SettingGetGlobal_f(I->G, cSetting_ray_legacy_lighting);
   int spec_count = SettingGetGlobal_i(I->G, cSetting_spec_count);
+  /* Per-material ray knobs (#499), indexed by CPrimitive::material. Looked up
+     once per thread rather than per sample; ids past the table stay default. */
+  MaterialRayParams mat_ray[128];
+  for(int m = 0; m < 128; m++)
+    mat_ray[m] = MaterialRayParamsFor(m);
   const float _0 = 0.0F;
   const float _1 = 1.0F;
   const float _p5 = 0.5F;
@@ -4099,6 +4105,14 @@ int RayTraceThread(CRayThreadInfo * T)
               }
 
               bright = ambient + (((_1 - direct_shade) + direct_shade * lit) * direct * direct_cmp + lreflect * reflect_cmp * (legacy_1m + legacy * direct_cmp));       /* blend legacy */
+              if(r1.prim->material) {
+                /* A material's ray knobs (#499): scale the highlight and the
+                   lit diffuse term, never the ambient one. Branch-guarded so a
+                   `default` primitive runs exactly the code below it. */
+                const MaterialRayParams &mr = mat_ray[(int) r1.prim->material];
+                excess *= mr.specular;
+                bright = ambient + (bright - ambient) * mr.diffuse;
+              }
               if(excess > _1)
                 excess = _1;
               if(bright > _1)
@@ -4108,9 +4122,19 @@ int RayTraceThread(CRayThreadInfo * T)
 
               /*                      bright *= (_1-excess); */
 
+              if(r1.prim->material &&
+                 mat_ray[(int) r1.prim->material].specTint != _0) {
+                /* the highlight in the surface's own colour: mix white toward
+                   fc before fc is lit, so the base colour is never altered */
+                float const t = mat_ray[(int) r1.prim->material].specTint;
+                fc[0] = (bright * fc[0] + excess * ((_1 - t) + t * fc[0]));
+                fc[1] = (bright * fc[1] + excess * ((_1 - t) + t * fc[1]));
+                fc[2] = (bright * fc[2] + excess * ((_1 - t) + t * fc[2]));
+              } else {
               fc[0] = (bright * fc[0] + excess);
               fc[1] = (bright * fc[1] + excess);
               fc[2] = (bright * fc[2] + excess);
+              }
 
               if(n_basis_tmp && fogFlagTmp) {
                 if(perspective) {
@@ -6596,6 +6620,13 @@ void CRay::wobble(int mode, const float *v)
     copy3f(v, I->WobbleParam);
 }
 
+void CRay::material(int id)
+{
+  /* char on the primitive; the table is far smaller than that, and anything
+     out of range reads as default rather than wrapping onto another row */
+  Material = (id > 0 && id < 128) ? id : 0;
+}
+
 
 /*========================================================================*/
 void CRay::transparentf(float v)
@@ -6647,6 +6678,7 @@ int CRay::sphere3fv(const float *v, float r)
   p->r1 = r;
   p->trans = I->Trans;
   p->wobble = I->Wobble;
+  p->material = I->Material;
   p->ramped = (I->CurColor[0] < 0.0F);
   p->no_lighting = 0;
 
@@ -6732,6 +6764,7 @@ int CRay::character(int char_id)
   p->trans = I->Trans;
   p->char_id = char_id;
   p->wobble = I->Wobble;
+  p->material = I->Material;
   p->ramped = 0;
   p->no_lighting = 0;
   /*
@@ -6873,6 +6906,7 @@ int CRay::cylinder3fv(const float *v1, const float *v2, float r, const float *c1
   p->cap1 = cCylCapFlat;
   p->cap2 = cCylCapFlat;
   p->wobble = I->Wobble;
+  p->material = I->Material;
   p->ramped = ((c1[0] < 0.0F) || (c2[0] < 0.0F));
   p->no_lighting = 0;
   /* 
@@ -6969,6 +7003,7 @@ int CRay::customCylinder3fv(const float *v1, const float *v2, float r,
   p->cap1 = cap1;
   p->cap2 = cap2;
   p->wobble = I->Wobble;
+  p->material = I->Material;
   p->ramped = ((c1[0] < 0.0F) || (c2[0] < 0.0F));
   p->no_lighting = 0;
   /*
@@ -7056,6 +7091,7 @@ int CRay::cone3fv(const float *v1, const float *v2, float r1, float r2,
 
   p->cap2 = cap2;
   p->wobble = I->Wobble;
+  p->material = I->Material;
   p->ramped = ((c1[0] < 0.0F) || (c2[0] < 0.0F));
   p->no_lighting = 0;
   /*
@@ -7122,6 +7158,7 @@ int CRay::sausage3fv(const float *v1, const float *v2, float r, const float *c1,
   p->r1 = r;
   p->trans = I->Trans;
   p->wobble = I->Wobble;
+  p->material = I->Material;
   p->ramped = ((c1[0] < 0.0F) || (c2[0] < 0.0F));
   p->no_lighting = 0;
   /*  
@@ -7187,6 +7224,7 @@ int CRay::ellipsoid3fv(const float *v, float r, const float *n1, const float *n2
   p->r1 = r;                    /* maximum extent */
   p->trans = I->Trans;
   p->wobble = I->Wobble;
+  p->material = I->Material;
   p->ramped = (I->CurColor[0] < 0.0F);
   p->no_lighting = 0;
 
@@ -7320,6 +7358,7 @@ int CRay::triangle3fv(
   p->tr[1] = I->Trans;
   p->tr[2] = I->Trans;
   p->wobble = I->Wobble;
+  p->material = I->Material;
   p->ramped = ((c1[0] < 0.0F) || (c2[0] < 0.0F) || (c3[0] < 0.0F));
   p->no_lighting = 0;
   /*
@@ -7491,6 +7530,7 @@ CRay *RayNew(PyMOLGlobals * G, int antialias)
   I->BigEndian = (*testPtr) & 0x01;
   I->Trans = 0.0F;
   I->Wobble = 0;
+  I->Material = 0;
   I->TTTFlag = false;
   zero3f(I->WobbleParam);
   PRINTFB(I->G, FB_Ray, FB_Blather)

@@ -61,6 +61,7 @@ public:
   // Viewport and clear
   void viewport(int x, int y, int w, int h) override;
   bool getViewportRect(int& x, int& y, int& w, int& h) const override;
+  void setGridSlot(int slot) override;
   void clear(bool color, bool depth, bool stencil) override;
   void clearColor(float r, float g, float b, float a) override;
   void scissor(int x, int y, int w, int h) override;
@@ -172,6 +173,8 @@ public:
       float fracBack = 0.0f) override;
   void setBaseModelView(const float* m) override;
   void setRepContour(bool enabled, const float* rgba, float widthPx) override;
+  void setRepMaterial(const MaterialParams& params) override;
+  void setReflectionParams(int env, int samples) override;
   void setRepScreenAO(bool exempt) override;
   void invalidateVBOCache(uint64_t key) override;
   void invalidateVBOCacheEntry(const void* cpuData) override;
@@ -222,8 +225,13 @@ public:
   // Targets self-heal to the window size on the next live beginLiveFrame.
   void beginOffscreen(int w, int h, const std::string& path);
   void endOffscreen();
-  void beginTransparentOIT() override;
+  void beginTransparentOIT(bool peel = false) override;
+  void beginPeelPrepass() override;
+  void endPeelPrepass() override;
+  bool peelSupported() const override;
+  void resetTransparentOIT() override;
   void endTransparentOIT() override;
+  void setEnvironment(int mode, float bgR, float bgG, float bgB) override;
   void drawBezierTubes(const void* controlPoints, size_t dataSize, float radius,
       float r, float g, float b) override;
 
@@ -323,10 +331,19 @@ private:
   // Pipeline state cache
   id<MTLRenderPipelineState> _currentPipeline;
   id<MTLRenderPipelineState> _batchPipeline;  // built-in batch shader pipeline
-  id<MTLRenderPipelineState> _vboPipelineUByte; // VBO with UByte4Norm color
-  id<MTLRenderPipelineState> _vboPipelineFloat; // VBO with Float4 color
+  // Lit pipelines are specialised per MATERIAL FAMILY (#503): the fragment
+  // function is compiled with kMatFamily fixed, so the `default` family carries
+  // none of the material code at all and renders byte for byte as it did before
+  // materials existed. Only families with an implemented material are built
+  // (MaterialFamilyIsImplemented), so a family nothing can draw costs nothing.
+  id<MTLRenderPipelineState> _vboPipelineUByte[cMaterialFamily_count] = {};
+  id<MTLRenderPipelineState> _vboPipelineFloat[cMaterialFamily_count] = {};
   id<MTLFunction> _vboVertexFunc;
-  id<MTLFunction> _vboFragmentFunc;
+  id<MTLFunction> _vboFragmentFunc[cMaterialFamily_count] = {};
+  // Fragment function specialised for one material family, or nil when the
+  // family has no implemented material or specialisation failed.
+  id<MTLFunction> materialFragmentFunction(
+      id<MTLLibrary> lib, NSString* name, int family);
   id<MTLFunction> _vboVertexUnlitFunc;   // flat-color (no normal) for lines/dots
   id<MTLFunction> _vboFragmentUnlitFunc;
   // Unlit, position-ONLY (no per-vertex color attribute): used for uniform-
@@ -336,7 +353,7 @@ private:
   // attribute 2 and would fail to compile a pipeline for such a layout).
   id<MTLFunction> _vboVertexUnlitFlatFunc;
   // Impostor ray-casting (analytic spheres/cylinders). nil-init (MRC).
-  id<MTLRenderPipelineState> _sphereImpostorPipeline = nil;
+  id<MTLRenderPipelineState> _sphereImpostorPipeline[cMaterialFamily_count] = {};
   // Cylinder impostor pipelines are cached PER VERTEX LAYOUT — (stride, a_cap
   // offset) — not in a single slot. a_cap's offset is part of the vertex
   // descriptor, so a stick VBO (per-vertex a_cap) and a CGO VBO (one constant
@@ -349,8 +366,12 @@ private:
     id<MTLRenderPipelineState> opaque = nil;
     id<MTLRenderPipelineState> oit = nil;
     id<MTLRenderPipelineState> shadow = nil;
+    id<MTLRenderPipelineState> peel = nil;   // depth-only, peel-depth format
   };
-  std::map<std::pair<NSUInteger, int>, CylinderPipelines> _cylinderPipelines;
+  // Keyed by (stride, a_cap offset, MATERIAL FAMILY): a marble stick and a
+  // default stick at the same layout need different pipelines, and whichever
+  // drew first would otherwise decide how both looked.
+  std::map<std::tuple<NSUInteger, int, int>, CylinderPipelines> _cylinderPipelines;
   id<MTLRenderPipelineState> _cylinderImpostorPipeline = nil; // alias, not owned
 
   // Post-processing: the scene renders to offscreen color+depth, then
@@ -409,6 +430,7 @@ private:
   // acceleration structure when the accumulated sphere set changes.
   void buildSphereProtoAS();
   void ensureRayTracingAS();
+  void uploadRTMaterials();
   id<MTLAccelerationStructure> buildAccelStructure(MTLAccelerationStructureDescriptor* desc);
 
   // Order-independent transparency (weighted-blended). Transparent geometry
@@ -417,27 +439,102 @@ private:
   id<MTLTexture> _oitAccum = nil;    // RGBA16Float, additive
   id<MTLTexture> _oitReveal = nil;   // R16Float, revealage (multiplicative)
   MTLRenderPassDescriptor* _oitPassDesc = nil;
-  id<MTLRenderPipelineState> _vboOitPipelineUByte = nil;
-  id<MTLRenderPipelineState> _vboOitPipelineFloat = nil;
-  id<MTLFunction> _vboFragmentOitFunc = nil;  // for one-off OIT pipelines
+  id<MTLRenderPipelineState> _vboOitPipelineUByte[cMaterialFamily_count] = {};
+  id<MTLRenderPipelineState> _vboOitPipelineFloat[cMaterialFamily_count] = {};
+  id<MTLFunction> _vboFragmentOitFunc[cMaterialFamily_count] = {};
   // Build a weighted-blended OIT MRT pipeline (vbo_vertex + vbo_fragment_oit)
   // for an arbitrary vertex layout (e.g. the surface's stride-44 layout).
-  id<MTLRenderPipelineState> oitPipelineForVD(MTLVertexDescriptor* vd);
+  id<MTLRenderPipelineState> oitPipelineForVD(
+      MTLVertexDescriptor* vd, int family);
   // Build-once cache for one-off VBO pipelines whose vertex layout does not match
   // a prebuilt stride (e.g. the molecular-surface stride-44 layout). Without it,
   // drawVBO/drawVBOIndexed rebuilt a pipeline on EVERY such draw — a per-frame
   // MRC leak plus the (significant) cost of pipeline-state compilation. The cache
   // OWNS each +1 pipeline; callers borrow. Released in setSampleCount + the dtor.
-  enum class VBOPipelineVariant { Lit, Unlit, UnlitFlat, Oit, Shadow };
+  enum class VBOPipelineVariant { Lit, Unlit, UnlitFlat, Oit, Shadow, Peel };
   id<MTLRenderPipelineState> cachedVBOPipeline(VBOPipelineVariant variant,
       size_t stride, int posOffset, int normalOffset, int colorOffset,
       int colorType, MTLVertexDescriptor* vd);
-  id<MTLRenderPipelineState> _sphereOitPipeline = nil;
+  id<MTLRenderPipelineState> _sphereOitPipeline[cMaterialFamily_count] = {};
   id<MTLRenderPipelineState> _cylinderOitPipeline = nil; // alias, not owned
   NSUInteger _cylinderOitStride = 0;
   id<MTLRenderPipelineState> _oitResolvePipeline = nil;
+  // --- Environment cubemap for the reflective materials (#493) ---
+  // Six 128px RGBA16F faces with mipmaps, rebuilt only when material_env or
+  // the background colour changes. Mipmaps are the roughness axis: a rough
+  // material samples a coarser level, which is what lets brushed metal read
+  // differently from a mirror without a second texture.
+  //
+  // Bound on EVERY encoder that draws molecular geometry -- the scene pass, the
+  // shadow pass and its resume, and the OIT pass -- so a reflective object
+  // reflects the same room whichever one draws it. NOT the RT composite: that
+  // is a post pass with its own fullscreen fragment and never samples this.
+  // Frosted-glass environment taps: what an export can afford vs what an
+  // interactive orbit can. Mirrored into MaterialParams.p[5] by setRepMaterial.
+  static constexpr float kFrostTaps = 5.0f;
+  // 4, not 2: the ring loop draws taps-1 offset samples, so 2 gave a single
+  // one-sided tap -- a one-sided smear, not a blur. 3 would only be an opposed
+  // PAIR, still one-dimensional; 4 is a real 2-D ring, which is also what makes
+  // the result stable across the shader's `up` basis flip. Measured residual
+  // step at the flip, worst case: 0.108 at 2 taps, 0.039 at 3, 0.0049 at 4 --
+  // i.e. from a visible contour ring on a curved glass surface to nothing, for
+  // one extra sample.
+  static constexpr float kFrostTapsLive = 4.0f;
+  static constexpr NSUInteger kEnvFaceDim = 128;
+  static constexpr NSUInteger kEnvTextureIndex = 6;   // fragment texture slot
+  id<MTLTexture> _envCubemap = nil;
+  id<MTLSamplerState> _envSampler = nil;
+  int _envMode = -1;            // the material_env the cubemap was built for
+  float _envBg[3] = {-1.0f, -1.0f, -1.0f};
+  bool _envDirty = true;
+  id<MTLTexture> _envFallbackCube = nil;   // 1x1 black; slot 6 is never empty
+  bool ensureEnvironmentMap();
+  bool ensureEnvironmentSampler();
+  bool ensureEnvironmentFallback();
+  void bindEnvironment(id<MTLRenderCommandEncoder> enc);
+
   bool _oitActive = false;      // true while the transparent pass is rendering
   bool _oitHasContent = false;  // true if any transparent fragments drew
+
+  // --- Per-object transparent depth peel (#488) ---
+  // _peelDepth is a single-sample copy of the opaque depth that ONE object's
+  // depth-only pre-pass then writes its nearest surface into; that object's OIT
+  // draw is then tested for EQUALITY against it, so only the front-most shell
+  // of that object contributes. Blitting the opaque depth in first is what
+  // makes a transparent fragment behind opaque geometry lose the pre-pass test
+  // and therefore never match -- occlusion comes for free.
+  //
+  // The peel pipelines are the SHADOW vertex/fragment functions (depth only,
+  // and the camera matrices are already loaded when the scene loop runs this)
+  // built against Depth32Float_Stencil8 instead of the shadow map's plain
+  // Depth32Float. Same shaders, different attachment formats -- so the depth a
+  // fragment writes here is computed by the same code that computes the depth
+  // the OIT pass compares, which is what makes the equality test exact.
+  id<MTLTexture> _peelDepth = nil;
+  MTLRenderPassDescriptor* _peelPassDesc = nil;   // zero colour attachments
+  MTLRenderPassDescriptor* _oitPeelPassDesc = nil;  // OIT MRT + _peelDepth
+  id<MTLDepthStencilState> _peelWriteState = nil;   // Less, write
+  id<MTLDepthStencilState> _peelTestState = nil;    // Equal, no write
+  id<MTLRenderPipelineState> _vboPeelPipelineUByte = nil;
+  id<MTLRenderPipelineState> _vboPeelPipelineFloat = nil;
+  id<MTLRenderPipelineState> _spherePeelPipeline = nil;
+  id<MTLRenderPipelineState> _cylinderPeelPipeline = nil;  // alias, not owned
+  id<MTLRenderPipelineState> peelPipelineForVD(MTLVertexDescriptor* vd);
+  id<MTLDepthStencilState> oitDepthPeelAwareState();
+  // Re-open the scene pass with LOAD semantics after an aborted peel pass.
+  void resumeScenePass();
+  // Create _peelDepth on first use and point the two peel descriptors at it.
+  bool ensurePeelTargets();
+  id<MTLDepthStencilState> peelWriteState();
+  id<MTLDepthStencilState> peelTestState();
+  bool _peelMode = false;       // true between begin/endPeelPrepass
+  // Set when a draw could not run its peel pre-pass (no pipeline for that
+  // layout). Its OIT draw must then use the ordinary LessEqual test: EQUAL
+  // against a depth it never wrote rejects it at every pixel, i.e. the geometry
+  // disappears.
+  bool _peelUnseeded = false;
+  bool _oitPeelTest = false;    // true while an OIT pass tests against the peel
+  bool _oitCleared = false;     // the frame's first transparent encoder cleared
 
   // --- Real shadow map (light-POV depth pre-pass + PCF in the post pass) ---
   // _shadowDepth is a fixed-resolution single-sample Depth32Float map rendered
@@ -451,6 +548,9 @@ private:
   id<MTLDepthStencilState> _shadowDepthState = nil;
   id<MTLSamplerState> _shadowSampler = nil;
   id<MTLFunction> _vboFragmentShadowFunc = nil;  // depth-only VBO fragment
+  // Depth-only VBO fragment for the PEEL pre-pass: applies the per-rep clip so
+  // the depth it records matches what vbo_fragment_oit writes (#488).
+  id<MTLFunction> _vboFragmentPeelFunc = nil;
   // Surface interior-cap (stencil): mark = position-only/no-color/stencil-INVERT,
   // fill = full-screen quad gated on stencil. Built once; mark rebuilt per stride.
   id<MTLRenderPipelineState> _capMarkPipeline = nil;
@@ -474,6 +574,14 @@ private:
   // setRepClip alongside the eye-space depths.
   float _repClipFracFront = 0.0f;
   float _repClipFracBack = 0.0f;
+  // Traced-reflection material for the next draw (setRepMaterial): reflect (F0),
+  // tint, roughness. Recorded per RT geometry occurrence in _rtFrameMat.
+  float _repMat[3] = {0.0f, 0.0f, 0.0f};
+  // Full material of the next draw (#503). Bound to the lit fragment shaders as
+  // MaterialU; _repMat above is the ray tracer's view of the same three fields.
+  MaterialParams _repMatParams;
+  int _reflEnv = 1;        // metal_rt_reflect_env
+  int _reflSamples = 8;    // metal_rt_reflect_samples (offscreen exports)
   // Surface outer-contour outline (per-surface, coverage-boundary). When armed
   // (setRepContour), the next surface draw is stashed; after the scene the
   // stashed geometry is rendered to a coverage mask and a post pass outlines the
@@ -519,6 +627,12 @@ private:
   id<MTLRenderPipelineState> _sphereShadowPipeline = nil;   // Stage 3
   id<MTLRenderPipelineState> _cylinderShadowPipeline = nil; // Stage 3, alias
   bool _shadowMode = false;       // true between begin/endShadowPass
+  // The shadow-map pre-pass ran THIS frame, so _shadowDepth / _lightViewProjEye
+  // describe this frame's scene. SceneRenderMetal skips the pre-pass in
+  // grid_mode (one global map cannot be per-cell), and without this gate the
+  // post passes kept PCF-sampling whatever the map held from the last non-grid
+  // frame — stale shadows, and from every cell's objects at once (#478).
+  bool _shadowMapValid = false;
   float _lightViewProjEye[16];    // eye-space light VP, column-major (PostU)
   float _shadowRadius = 1.0f;     // world half-extent of the shadow ortho box
                                   // (from SceneBuildLightViewProjEye); lets the
@@ -533,13 +647,12 @@ private:
 
   // Anti-aliased screen-space line quads. _vboLinePipeline (lazy, sample-count
   // aware) renders CPU-expanded feathered quads. _lineExpand is the per-frame
-  // scratch where segments are expanded (9 floats/vert); it's uploaded into
-  // _lineBuffer, grown on demand and tracked by _lineBufferSize.
+  // scratch where segments are expanded (9 floats/vert); each draw uploads it
+  // into its OWN transient MTLBuffer (see drawVBOLines: a buffer shared across
+  // draws is read by all of them at commit time, #462).
   id<MTLRenderPipelineState> _vboLinePipeline = nil;
   id<MTLFunction> _lineAAVtxFunc = nil;
   id<MTLFunction> _lineAAFragFunc = nil;
-  id<MTLBuffer> _lineBuffer = nil;
-  size_t _lineBufferSize = 0;
   std::vector<float> _lineExpand;
 
   // GPU-tessellated Bezier tube ("tube cartoon") pipeline.
@@ -568,6 +681,8 @@ private:
   // off => the DOF stage is skipped entirely (no regression).
   int _dofEnabled = 0;
   float _dofFocus = 0.0f;   // eye-space focus distance; <=0 => auto (screen center)
+  // Range/aperture take 0 at face value (sharp falloff / closed aperture, i.e. no
+  // blur); only a NEGATIVE value means "unset" and resolves to the 14.0 default.
   float _dofRange = 14.0f;  // eye-space distance over which CoC ramps to max blur
   float _dofAperture = 14.0f;  // cSetting_metal_dof_aperture: max blur radius (px)
   int _dofQuality = 4;         // cSetting_metal_dof_quality: 1..4 bokeh quality
@@ -626,6 +741,11 @@ private:
   struct RTGeom {
     std::vector<float> spheres;  // x,y,z,r per sphere (size scale applied)
     std::vector<float> tris;     // 9 floats per triangle
+    // Traced reflections: per-primitive colour + per-vertex normals so a
+    // reflection ray can shade what it hits. 3 floats per triangle / per sphere.
+    std::vector<float> triCols;
+    std::vector<float> triNrms;  // 9 floats per triangle: per-vertex normals
+    std::vector<float> sphereCols;
     uint64_t params = 0;         // draw-call scalars the extraction used
     uint64_t gen = 0;            // bumped on every (re)extraction; 0 = never
   };
@@ -656,6 +776,12 @@ private:
   //    surface-clipped-open cavities stop occluding (#425).
   std::vector<Mat4> _rtFrameXform;
   std::vector<std::array<float, 2>> _rtFrameClip;
+  // Per-occurrence traced-reflection material {reflect, tint, rough, 0}. NOT
+  // folded into the rebuild signature: the built AS stores each primitive's
+  // occurrence index, and the material table is refreshed from the current
+  // frame's record every frame, so dragging a material slider never rebuilds.
+  std::vector<std::array<float, 4>> _rtFrameMat;
+  std::vector<std::array<float, 4>> _rtBuiltMat;   // table uploaded for the built AS
   Mat4 _rtBaseModelView{};      // camera-only modelview (world -> eye)
   Mat4 _rtBaseModelViewInv{};   // its inverse (eye -> world)
 
@@ -671,6 +797,9 @@ private:
     if (g.gen == 0 || g.params != params) {
       g.spheres.clear();
       g.tris.clear();
+      g.triCols.clear();
+      g.triNrms.clear();
+      g.sphereCols.clear();
       extract(g);
       g.params = params;
       g.gen = ++_rtGeomGen;
@@ -697,6 +826,7 @@ private:
     std::memcpy(delta.data(), &d, 64);
     _rtFrameXform.push_back(delta);
     _rtFrameClip.push_back({_repClipFront, _repClipBack});
+    _rtFrameMat.push_back({_repMat[0], _repMat[1], _repMat[2], 0.0f});
 
     _rtFrameSig ^= (uint64_t)reinterpret_cast<uintptr_t>(key);
     _rtFrameSig *= 1099511628211ULL;
@@ -731,11 +861,45 @@ private:
   // freed (or whose contents changed). Handles both primary and alias keys.
   void rtDropGeometry(const void* cpuData);
   id<MTLAccelerationStructure> _rtSphereProtoAS = nil;  // unit icosphere (shared)
-  id<MTLAccelerationStructure> _rtTriProtoAS = nil;     // world triangle mesh
+  // World triangle meshes, one primitive AS per grid cell (a single one when
+  // grid_mode is off), all pointing into _rtTriBuffer at that cell's range.
+  std::vector<id<MTLAccelerationStructure>> _rtTriProtoASs;
   id<MTLAccelerationStructure> _rtInstanceAS = nil;     // top-level (atoms + tris)
+  // Traced reflections: parallel per-triangle colour (3 floats/tri,
+  // same global triangle index as _rtTriBuffer) and per-sphere-instance record
+  // {cx,cy,cz,r, r,g,b,0} indexed by instance_id (sphere instances come first).
+  id<MTLBuffer> _rtTriColBuffer = nil;
+  id<MTLBuffer> _rtTriNrmBuffer = nil;   // 9 floats/tri: world-space vertex normals
+  id<MTLBuffer> _rtTriMatBuffer = nil;   // uint32/tri: occurrence index into the material table
+  id<MTLBuffer> _rtMatBuffer = nil;      // float4 per occurrence: {reflect, tint, rough, 0}
+  id<MTLBuffer> _rtSphereBuffer = nil;
+  size_t _rtSphereInstCount = 0;
   id<MTLBuffer> _rtTriBuffer = nil;   // world-tri vertices (9 floats/tri), bound to rt_ao so the
                                       // shadow ray can read the hit facet's plane (grazing-hit reject)
-  int _rtTriInstance = -1;            // top-level instance index of the world-tri mesh (-1 = none)
+
+  // grid_mode cell attribution (#478). Every cell shares one world space, so
+  // an acceleration structure built from all cells' geometry lets cell A's AO
+  // and shadow rays hit cell B's objects. SceneRenderMetal calls setGridSlot
+  // before each cell's draws; the frame record is split into cells at those
+  // points, each cell's instances carry a distinct instance mask bit, and
+  // rt_ao traces with the mask of the cell the pixel lies in. Cells past
+  // kRTMaxGridCells (32 mask bits) are left out of the AS and render
+  // unshadowed, like the raster shadow-map path does for every cell.
+  static constexpr int kRTMaxGridCells = 32;
+  struct RTFrameCell {
+    int slot = 0;                       // grid slot (>= 1)
+    float rect[4] = {0.f, 0.f, 1.f, 1.f}; // x0,y0,x1,y1 in scene-texture uv
+    size_t firstKey = 0;                // index into _rtFrameKeys of its first draw
+  };
+  std::vector<RTFrameCell> _rtFrameCells;   // recorded this frame, draw order
+  // Snapshot matching the built AS (same one-frame latency as the geometry).
+  struct RTBuiltCell {
+    float rect[4] = {0.f, 0.f, 1.f, 1.f};
+    uint32_t triBase = 0, triCount = 0;   // this cell's range in _rtTriBuffer
+    int triInstance = -1;                 // top-level instance id of its tri mesh
+  };
+  std::vector<RTBuiltCell> _rtBuiltCells;
+  bool _rtBuiltGrid = false;              // built AS carries per-cell masks
   id<MTLBuffer> _rtProtoVerts = nil;
   id<MTLBuffer> _rtProtoIndices = nil;
   uint32_t _rtProtoIndexCount = 0;
@@ -763,12 +927,10 @@ private:
   // vertices, so there is no per-vertex buffer to cache beyond the CGO's own.
   id<MTLRenderPipelineState> _connectorPipeline = nil;
   size_t _connectorStride = 0;       // layout the pipeline was built for
-  // Grow-on-demand upload buffer for the per-connector records. Deliberately
-  // NOT the pointer-keyed _vboCache: the connector CGO is rebuilt whenever a
-  // label setting changes, and a recycled heap address would serve stale
-  // background/connector colors from the cache.
-  id<MTLBuffer> _connectorBuffer = nil;
-  size_t _connectorBufferSize = 0;
+  // The per-connector records are uploaded into a transient per-draw buffer
+  // (see drawConnectors). Deliberately NOT the pointer-keyed _vboCache: the
+  // connector CGO is rebuilt whenever a label setting changes, and a recycled
+  // heap address would serve stale background/connector colors from the cache.
   uint32_t _currentProgram = 0;
 
   // Depth/stencil state

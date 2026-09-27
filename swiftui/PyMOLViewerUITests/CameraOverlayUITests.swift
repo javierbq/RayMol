@@ -19,6 +19,9 @@ final class CameraOverlayUITests: XCTestCase {
         app.launchEnvironment["PYMOL_AUTOLOAD"] = "1ubq.cif"
         app.launchEnvironment["PYMOL_AUTOPANEL"] = "closed"
         app.launchEnvironment["PYMOL_SKIP_GESTURE_HELP"] = "1"
+        // Without this the What's New sheet auto-shows after a version bump and
+        // covers the whole app, so every test here fails on "icon not found".
+        app.launchEnvironment["PYMOL_SKIP_WHATS_NEW"] = "1"
         app.launchEnvironment["PYMOL_AUTOCMD"] = "hide everything; show cartoon; orient"
     }
 
@@ -43,6 +46,35 @@ final class CameraOverlayUITests: XCTestCase {
         XCTAssertFalse(app.buttons["camDock.ortho"].exists, "Ortho should not be in the strip")
         // No surface open yet → no slider present (Objects panel is closed).
         XCTAssertFalse(app.sliders.firstMatch.exists, "A slider is open before any icon was tapped")
+    }
+
+    // MARK: - The dock clears the parked inspector tongue (#474)
+
+    // With the inspector closed, the horizontal tongue parks on the viewport's
+    // bottom edge — the same edge the dock docks to — and paints ON TOP of it
+    // (its overlay is applied by the layout, outside viewportView). It used to
+    // land across the Zoom/Depth icons and, since only the pill is hit-testable,
+    // swallow taps meant for them. The dock now pads itself above the pill.
+    func testDockClearsParkedTongue() throws {
+        app.launch()
+        XCTAssertTrue(waitForRender(timeout: 30), "molecule never rendered")
+        cameraChipButton().tap()
+        Thread.sleep(forTimeInterval: 1.5)
+        attach("tongue_1_dock_open")
+
+        // PYMOL_AUTOPANEL=closed leaves the tongue parked and pointing up.
+        let tongue = app.buttons["Show panel"]
+        XCTAssertTrue(tongue.waitForExistence(timeout: 5), "parked inspector tongue not found")
+
+        for id in ["camDock.lens", "camDock.zoom", "camDock.depth", "camDock.close"] {
+            let icon = app.buttons[id]
+            XCTAssertTrue(icon.waitForExistence(timeout: 5), "Strip icon '\(id)' not found")
+            XCTAssertFalse(icon.frame.intersects(tongue.frame),
+                           "tongue \(tongue.frame) overlaps \(id) \(icon.frame)")
+        }
+        // The pill sits BELOW the dock, not through it.
+        XCTAssertGreaterThan(tongue.frame.minY, app.buttons["camDock.close"].frame.maxY,
+                             "tongue should be parked under the dock, not across it")
     }
 
     // MARK: - Lens/Zoom open a single slider, one at a time

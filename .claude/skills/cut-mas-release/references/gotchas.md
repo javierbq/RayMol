@@ -49,3 +49,21 @@ If a prior Sparkle rollback pinned an older version as GitHub "Latest" or someon
 
 - Only one version can be in review at a time. A prior `WAITING_FOR_REVIEW` blocks a new submission — release or remove it first.
 - `CFBundleVersion` (build number) is shared with the Sparkle build via `project.yml`. Builds only ever shipped on Sparkle never reached ASC, so the last ASC build can be several numbers behind the tag — that's fine, as long as the new build is strictly greater than the last **ASC** build.
+
+## Build numbers are per-platform, and the ASC API's build list mixes them
+
+macOS and iOS have **independent** `CFBundleVersion` streams under the same App ID — e.g. macOS shipped build 30 on the same day iOS Xcode Cloud was at 106, and a macOS 29 was accepted while iOS 103 already existed. `scripts/asc_status.py` now prints a platform column for builds (via the `preReleaseVersion` relationship; `builds` itself has no `platform` attribute). Read the number to beat off the **macOS** rows only — comparing against the iOS stream will make you think you need a build number in the 100s.
+
+## Command sandboxes lie about the keychain
+
+Under a sandboxed shell, `security find-identity -v -p codesigning` prints **"0 valid identities found"** even when the certs are present and fine — which reads exactly like a missing-certificate failure and will send you chasing a non-existent problem. `sysctl` (used by `build_macos.sh`) and git/gh network access are blocked too. Run release commands unsandboxed and re-check any "missing cert / missing identity" result before believing it.
+
+## Export failed but the archive is good — don't rebuild
+
+`archive_appstore.sh` does archive → export as one run, so an export-stage failure (most often `No Accounts`, i.e. Xcode isn't signed in) looks like the whole 15-25 min build was wasted. It wasn't: `build_archive/RayMol-<DEST>.xcarchive` is complete and reusable. Once the cause is fixed, re-run only the export (~1 min):
+
+```bash
+xcodebuild -exportArchive -archivePath build_archive/RayMol-macOS.xcarchive \
+  -exportOptionsPlist /tmp/raymol-export-macOS.plist \
+  -exportPath build_export/macOS -allowProvisioningUpdates
+```

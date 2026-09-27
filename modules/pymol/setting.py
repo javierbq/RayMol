@@ -60,6 +60,47 @@ if True:
 
     boolean_sc = Shortcut(boolean_dict.keys())
 
+    # Materials (#503). The table lives in C (layer1/Material.cpp); the settings
+    # store IDS, the user types NAMES. The full table is mapped here -- a
+    # material whose shader has not landed yet is still a real id that can be
+    # set and round-trips through .pse -- while get_material_names() offers only
+    # the implemented ones, which is what the Inspector dropdown shows.
+    material_id_dict = dict((n, i) for (i, n) in _cmd.get_material_names(0))
+
+    material_indices = frozenset(
+        index_dict[n] for n in (
+            'cartoon_material', 'surface_material', 'stick_material',
+            'sphere_material', 'material_default') if n in index_dict)
+
+    def get_material_names(only_implemented=1, _self=cmd):
+        """Materials that can be applied today, as [(id, name), ...] with
+        `default` first. Pass 0 for the whole table including the ones whose
+        shader has not landed yet."""
+        return _cmd.get_material_names(int(only_implemented))
+
+    def _material_value(index, value):
+        """Map a material NAME to its id, for the five settings that hold one.
+
+        Ints and numeric strings pass straight through: an id no row claims
+        renders as `default`, which is how a .pse from a newer build stays
+        readable. A NAME never falls back -- an unknown one is an error HERE,
+        at set time, never a surprise at draw time."""
+        if index not in material_indices:
+            return value
+        if isinstance(value, (int, float)):
+            return value
+        text = str(value).strip()
+        try:
+            return int(text)
+        except ValueError:
+            pass
+        if text in material_id_dict:
+            return material_id_dict[text]
+        from pymol import CmdException
+        raise CmdException(
+            "unknown material '%s'. Valid materials: %s. See `help material`."
+            % (text, ', '.join(sorted(material_id_dict))))
+
     def _get_index(name):
         '''Get setting index for given name. `name` may be abbreviated.
         Raises QuietException for unknown names or ambiguous abbreviations.'''
@@ -260,7 +301,8 @@ SEE ALSO
         selection = selector.process(selection)
         index = _get_index(name)
         type = _cmd.get_setting_type(index)
-        v = (type, _validate_value(type, value))
+        # Map the name AFTER the log line below has seen what the user typed.
+        v = (type, _validate_value(type, _material_value(index, value)))
         if log:
             name = name_dict.get(index, name)
             _self.log('',

@@ -53,6 +53,9 @@ Z* -------------------------------------------------------------------
 #include"Ortho.h"
 #include"ObjectMolecule.h"
 #include"ObjectMolecule3.h"
+#include"CoordSet.h"
+#include"Rep.h"
+#include"Material.h"
 #include"Executive.h"
 #include"ExecutivePython.h"
 #include"Selector.h"
@@ -2343,6 +2346,408 @@ static PyObject *CmdGetType(PyObject * self, PyObject * args)
   auto res = ExecutiveGetType(G, str1);
   APIExit(G);
   return APIResult(G, res);
+}
+
+/**
+ * Materials (#503): the material table as [(id, name), ...].
+ *
+ * With only_implemented (the default), only the materials that can actually
+ * draw today, which is what the Inspector dropdown offers. Pass 0 for the whole
+ * table, which is what `set stick_material, marble` maps a name through: an
+ * unimplemented material is a real id that renders as `default`, not an error.
+ *
+ * Static table, no globals: safe to call at import time.
+ *
+ * _cmd.get_material_names([only_implemented=1])
+ */
+/**
+ * Shading family of a material id: 0 default, 1 procedural, 2 reflective,
+ * 3 glass. -1 when no row has that id.
+ *
+ * _cmd.get_material_family(id)
+ */
+/**
+ * The material id a representation EFFECTIVELY draws with, after the per-rep
+ * degradation (glass on sphere impostors -> default). The SETTING still holds
+ * what the user typed; this is what reaches the shader.
+ *
+ * _cmd.get_effective_material(id, rep_index)
+ */
+static PyObject* CmdGetEffectiveMaterial(PyObject*, PyObject* args)
+{
+  int id = -1, repType = -1;
+  if (!PyArg_ParseTuple(args, "ii", &id, &repType)) {
+    API_HANDLE_ERROR;
+    return APIAutoNone(nullptr);
+  }
+  return PyInt_FromLong(MaterialEffectiveId(id, repType));
+}
+
+static PyObject* CmdGetMaterialFamily(PyObject*, PyObject* args)
+{
+  int id = -1;
+  if (!PyArg_ParseTuple(args, "i", &id)) {
+    API_HANDLE_ERROR;
+    return APIAutoNone(nullptr);
+  }
+  return PyInt_FromLong(MaterialGetFamily(id));
+}
+
+static PyObject* CmdGetMaterialNames(PyObject*, PyObject* args)
+{
+  int onlyImplemented = 1;
+  if (!PyArg_ParseTuple(args, "|i", &onlyImplemented)) {
+    API_HANDLE_ERROR;
+    return APIAutoNone(nullptr);
+  }
+  PyObject* list = PyList_New(0);
+  if (!list) {
+    return APIAutoNone(nullptr);
+  }
+  for (int id = 0; id < MaterialTableSize(); ++id) {
+    if (onlyImplemented && !MaterialIsImplemented(id)) {
+      continue;
+    }
+    const char* name = MaterialGetName(id);
+    if (!name) {
+      continue;
+    }
+    PyObject* item = Py_BuildValue("is", id, name);
+    if (!item) {
+      Py_DECREF(list);
+      return APIAutoNone(nullptr);
+    }
+    PyList_Append(list, item);
+    Py_DECREF(item);
+  }
+  return list;
+}
+
+/**
+ * Materials (#503): the material id one representation of one object resolves
+ * to for a draw -- object value, then the rep's global value, then
+ * material_default. Internal; the Inspector and the CI test read it.
+ *
+ * It must pass the SAME two setting tables the renderer does, or it would report
+ * a different material than the one drawn: `metalApplyRepMaterial` resolves with
+ * the coordinate set's settings first and the object's second, and the
+ * coordinate-set (object-state) slot is the highest-precedence branch.
+ *
+ * state 0 (the default) means the state the VIEWPORT is drawing, because that
+ * is the coordinate set `metalApplyRepMaterial` reads: answering with the
+ * object-level value instead would disagree with the picture on screen.
+ * state N>0 names a state explicitly; state <0 forces the object level.
+ *
+ * _cmd.get_rep_material(object_name_or_empty, rep_index[, state=0])
+ */
+static PyObject* CmdGetRepMaterial(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  const char* oname = "";
+  int repType = -1;
+  int state = 0;
+  if (!PyArg_ParseTuple(args, "Osi|i", &self, &oname, &repType, &state)) {
+    API_HANDLE_ERROR;
+    return APIAutoNone(nullptr);
+  }
+  API_SETUP_PYMOL_GLOBALS;
+  if (!G) {
+    return APIAutoNone(nullptr);
+  }
+  APIEnterBlocked(G);
+  const CSetting* stateSetting = nullptr;
+  const CSetting* objSetting = nullptr;
+  bool ok = true;
+  if (oname && oname[0]) {
+    pymol::CObject* obj = ExecutiveFindObjectByName(G, oname);
+    if (!obj) {
+      ErrMessage(G, "GetRepMaterial", "named object not found.");
+      ok = false;
+    } else {
+      objSetting = obj->Setting.get();
+      // 0 -> the state being drawn; N>0 -> that state; <0 -> the object level.
+      int const resolved =
+          (state == 0) ? obj->getCurrentState() : (state < 0 ? -1 : state - 1);
+      // Same shape as CmdGetObjectSettings: a state handle equal to the
+      // object's own means the state carries no settings of its own.
+      auto* handle = obj->getSettingHandle(resolved);
+      if (handle && handle != &obj->Setting) {
+        stateSetting = handle->get();
+      }
+    }
+  }
+  PyObject* result = nullptr;
+  if (ok) {
+    result = PyInt_FromLong(
+        MaterialResolveSettingId(G, stateSetting, objSetting, repType));
+  }
+  APIExitBlocked(G);
+  return APIAutoNone(result);
+}
+
+/* The FINAL material parameters a representation draws with: family, mode and
+   the reflect/tint/rough triple after the legacy-slider decision. Exposed so
+   the rules can be asserted without a Metal context -- `frosted_glass` losing
+   its roughness to `metal_rt_reflect_rough` (default 0) made it render as clear
+   glass, and nothing in Python could see the difference. */
+static PyObject* CmdGetMaterialDrawParams(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  const char* oname = "";
+  int repType = 0;
+  int state = 0;
+  if (!PyArg_ParseTuple(args, "Osi|i", &self, &oname, &repType, &state)) {
+    API_HANDLE_ERROR;
+    return APIAutoNone(nullptr);
+  }
+  API_SETUP_PYMOL_GLOBALS;
+  if (!G) {
+    return APIAutoNone(nullptr);
+  }
+  APIEnterBlocked(G);
+  PyObject* result = nullptr;
+  pymol::CObject* obj = ExecutiveFindObjectByName(G, oname);
+  auto* objmol = dynamic_cast<ObjectMolecule*>(obj);
+  if (!objmol) {
+    PyErr_Format(PyExc_ValueError, "no such molecular object: %s", oname);
+  } else {
+    int const resolved =
+        (state == 0) ? objmol->getCurrentState() : (state < 0 ? 0 : state - 1);
+    CoordSet* cs = objmol->getCoordSet(resolved);
+    MaterialParams const p = MaterialDrawParams(G,
+        cs ? cs->Setting.get() : nullptr, objmol->Setting.get(), repType, cs);
+    /* The per-material KNOBS are part of "what this draw uses" too, and until
+       #496 nothing could see them from Python. They are the half of a material
+       that fails QUIETLY: zeroing jelly's absorption renders a white body,
+       zeroing its scatter or its wet highlight renders a plausible gummy that
+       is simply the wrong one.
+
+       All six slots, but note what p[5] means here: this is MaterialDrawParams,
+       which is upstream of RendererMetal::setRepMaterial, and setRepMaterial
+       overwrites p[5] for the whole glass family with the frost tap count the
+       current target can afford. So Python sees the TABLE's p[5] and can never
+       see the tap count -- a test that asserts on it is asserting on the table
+       row, not on what the fragment reads. It is returned for completeness and
+       so that a future table knob parked in p[5] is at least visible as such;
+       catching the collision itself needs an observer on the renderer side,
+       which does not exist. */
+    result = Py_BuildValue("(iifff(ffffff))", p.family, p.mode, p.reflect,
+        p.tint, p.rough, p.p[0], p.p[1], p.p[2], p.p[3], p.p[4], p.p[5]);
+  }
+  APIExitBlocked(G);
+  return result;
+}
+
+/* What the CPU ray tracer uses for one representation (#499): the final
+   `ray_texture` mode after "an explicit ray_texture wins", the material id
+   stamped on its primitives, and that id's highlight knobs. The same two
+   calls CoordSet::render makes, so a test asserts what `ray` is handed rather
+   than what the setting says. */
+static PyObject* CmdGetMaterialRayParams(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  const char* oname = "";
+  int repType = 0;
+  int state = 0;
+  if (!PyArg_ParseTuple(args, "Osi|i", &self, &oname, &repType, &state)) {
+    API_HANDLE_ERROR;
+    return APIAutoNone(nullptr);
+  }
+  API_SETUP_PYMOL_GLOBALS;
+  if (!G) {
+    return APIAutoNone(nullptr);
+  }
+  APIEnterBlocked(G);
+  PyObject* result = nullptr;
+  pymol::CObject* obj = ExecutiveFindObjectByName(G, oname);
+  auto* objmol = dynamic_cast<ObjectMolecule*>(obj);
+  if (!objmol) {
+    PyErr_Format(PyExc_ValueError, "no such molecular object: %s", oname);
+  } else {
+    int const resolved =
+        (state == 0) ? objmol->getCurrentState() : (state < 0 ? 0 : state - 1);
+    CoordSet* cs = objmol->getCoordSet(resolved);
+    const CSetting* set1 = cs ? cs->Setting.get() : nullptr;
+    const CSetting* set2 = objmol->Setting.get();
+    int const id = MaterialRayId(G, set1, set2, repType, cs);
+    int const wobble = MaterialRayWobble(G, set1, set2, id);
+    MaterialRayParams const r = MaterialRayParamsFor(id);
+    result = Py_BuildValue(
+        "(iifff)", wobble, id, r.specular, r.diffuse, r.specTint);
+  }
+  APIExitBlocked(G);
+  return result;
+}
+
+/* Was `line_stick_helper` still on when the LINES rep was built (#496)?
+
+   The setting says what the user asked for; this says what the build decided.
+   #495 turns the helper off for a stick rep that a MATERIAL made translucent,
+   without the material ever writing `stick_transparency` -- so a test written
+   against the setting stays green with that rule reverted, and the geometry the
+   helper suppresses is not otherwise visible from Python. It had no test
+   anywhere in the tree until this. */
+static PyObject* CmdGetBuiltLineStickHelper(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  const char* oname = "";
+  int state = 0;
+  if (!PyArg_ParseTuple(args, "Os|i", &self, &oname, &state)) {
+    API_HANDLE_ERROR;
+    return APIAutoNone(nullptr);
+  }
+  API_SETUP_PYMOL_GLOBALS;
+  if (!G) {
+    return APIAutoNone(nullptr);
+  }
+  APIEnterBlocked(G);
+  PyObject* result = nullptr;
+  pymol::CObject* obj = ExecutiveFindObjectByName(G, oname);
+  auto* objmol = dynamic_cast<ObjectMolecule*>(obj);
+  if (!objmol) {
+    PyErr_Format(PyExc_ValueError, "no such molecular object: %s", oname);
+  } else {
+    int const resolved =
+        (state == 0) ? objmol->getCurrentState() : (state < 0 ? 0 : state - 1);
+    CoordSet* cs = objmol->getCoordSet(resolved);
+    Rep* rep = cs ? cs->Rep[cRepLine] : nullptr;
+    if (!rep) {
+      PyErr_SetString(PyExc_ValueError,
+          "the lines representation is not built");
+    } else if (rep->builtLineStickHelper() < 0) {
+      /* Unreachable today, and kept anyway: RepWireBondNew is the only factory
+         for cRepLine and always records, so a lines rep that exists carries a
+         value. It is here because 0 must not also mean "nothing recorded" --
+         the distinction that IS live for CmdGetBuiltTransparency, where
+         several rep types record nothing. No test can cover this branch; the
+         one named for it exercises the missing-rep case above. */
+      PyErr_SetString(PyExc_ValueError,
+          "this representation records no line_stick_helper");
+    } else {
+      result = PyLong_FromLong(rep->builtLineStickHelper());
+    }
+  }
+  APIExitBlocked(G);
+  return result;
+}
+
+/* The transparency a representation's GEOMETRY was actually built with (#495).
+   Read off the REP, not re-derived from the settings: a material's implied
+   alpha is a build input that is deliberately never written back as a setting,
+   so re-deriving it only ever proves that the derivation agrees with itself.
+   Two dead layer2 call sites passed CI that way -- the conversion had been
+   applied downstream of where the per-vertex alpha is written, so glass
+   cartoons and multi-coloured glass surfaces still built fully opaque while
+   every test stayed green. */
+static PyObject* CmdGetBuiltTransparency(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  const char* oname = "";
+  int repType = 0;
+  int state = 0;
+  if (!PyArg_ParseTuple(args, "Osi|i", &self, &oname, &repType, &state)) {
+    API_HANDLE_ERROR;
+    return APIAutoNone(nullptr);
+  }
+  API_SETUP_PYMOL_GLOBALS;
+  if (!G) {
+    return APIAutoNone(nullptr);
+  }
+  if (repType < 0 || repType >= cRepCnt) {
+    PyErr_SetString(PyExc_ValueError, "representation index out of range");
+    return nullptr;
+  }
+  APIEnterBlocked(G);
+  PyObject* result = nullptr;
+  pymol::CObject* obj = ExecutiveFindObjectByName(G, oname);
+  auto* objmol = dynamic_cast<ObjectMolecule*>(obj);
+  if (!objmol) {
+    PyErr_Format(PyExc_ValueError, "no such molecular object: %s", oname);
+  } else {
+    int const resolved =
+        (state == 0) ? objmol->getCurrentState() : (state < 0 ? 0 : state - 1);
+    CoordSet* cs = objmol->getCoordSet(resolved);
+    /* A rep that has not been built yet is not "transparency 0" -- saying so
+       would let a test pass against geometry that never existed. */
+    if (!cs || !cs->Rep[repType]) {
+      PyErr_SetString(PyExc_ValueError,
+          "representation is not built; show it first");
+    } else {
+      float const t = cs->Rep[repType]->builtTransparency();
+      if (t < 0.0f) {
+        /* Built, but this rep never records one. Answering 0.0 would look like
+           a confident "opaque" and make any test written against it vacuous. */
+        PyErr_SetString(PyExc_ValueError,
+            "this representation does not record a built transparency");
+      } else {
+        result = PyFloat_FromDouble(t);
+      }
+    }
+  }
+  APIExitBlocked(G);
+  return result;
+}
+
+/**
+ * Whether an object's transparent geometry is depth-PEELED as things stand
+ * (#488): the resolved answer, not the raw `transparency_peel` value.
+ *
+ * Exposed because the whole point of the -1 default is that it is AUTO -- the
+ * answer comes from the materials the object's representations resolve to, so
+ * reading the setting tells you nothing about what the renderer will do.
+ *
+ * This reports the object's REQUEST, not the frame's decision. It is the same
+ * predicate the scene loop consults, but the loop then applies three gates
+ * this does not: the object must be Enabled, the renderer must support peeling
+ * (the GL path does not), and SceneCollectPeelObjects stops after
+ * kMaxPeeledObjects. So a 1 here can still draw unpeeled -- which matters,
+ * because a jelly object's implied alpha was measured peeled and an unpeeled
+ * one is denser (see the table comment in layer1/Material.cpp). Bounding this
+ * by the cap would be worse, not better: the cap is per frame and depends on
+ * object order, so it is not a property of the object being asked about.
+ *
+ * _cmd.get_object_peel(object_name_or_empty[, state=0])
+ */
+static PyObject* CmdGetObjectPeel(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  const char* oname = "";
+  int state = 0;
+  if (!PyArg_ParseTuple(args, "Os|i", &self, &oname, &state)) {
+    API_HANDLE_ERROR;
+    return APIAutoNone(nullptr);
+  }
+  API_SETUP_PYMOL_GLOBALS;
+  if (!G) {
+    return APIAutoNone(nullptr);
+  }
+  APIEnterBlocked(G);
+  const CSetting* stateSetting = nullptr;
+  const CSetting* objSetting = nullptr;
+  bool ok = true;
+  pymol::CObject* obj = nullptr;
+  if (oname && oname[0]) {
+    obj = ExecutiveFindObjectByName(G, oname);
+    if (!obj) {
+      ErrMessage(G, "GetObjectPeel", "named object not found.");
+      ok = false;
+    } else {
+      objSetting = obj->Setting.get();
+      int const resolved =
+          (state == 0) ? obj->getCurrentState() : (state < 0 ? -1 : state - 1);
+      auto* handle = obj->getSettingHandle(resolved);
+      if (handle && handle != &obj->Setting) {
+        stateSetting = handle->get();
+      }
+    }
+  }
+  PyObject* result = nullptr;
+  if (ok) {
+    result = PyInt_FromLong(
+        MaterialObjectWantsPeel(G, stateSetting, objSetting, obj) ? 1 : 0);
+  }
+  APIExitBlocked(G);
+  return APIAutoNone(result);
 }
 
 static PyObject *CmdGetObjectSettings(PyObject * self, PyObject * args)
@@ -6579,6 +6984,15 @@ static PyMethodDef Cmd_methods[] = {
   {"get_object_matrix", CmdGetObjectMatrix, METH_VARARGS},
   {"get_object_ttt", CmdGetObjectTTT, METH_VARARGS},
   {"get_object_settings", CmdGetObjectSettings, METH_VARARGS},
+  {"get_material_names", CmdGetMaterialNames, METH_VARARGS},
+  {"get_material_family", CmdGetMaterialFamily, METH_VARARGS},
+  {"get_effective_material", CmdGetEffectiveMaterial, METH_VARARGS},
+  {"get_rep_material", CmdGetRepMaterial, METH_VARARGS},
+  {"get_built_transparency", CmdGetBuiltTransparency, METH_VARARGS},
+  {"get_built_line_stick_helper", CmdGetBuiltLineStickHelper, METH_VARARGS},
+  {"get_material_draw_params", CmdGetMaterialDrawParams, METH_VARARGS},
+  {"get_material_ray_params", CmdGetMaterialRayParams, METH_VARARGS},
+  {"get_object_peel", CmdGetObjectPeel, METH_VARARGS},
   {"get_origin", CmdGetOrigin, METH_VARARGS},
   {"get_position", CmdGetPosition, METH_VARARGS},
   {"get_povray", CmdGetPovRay, METH_VARARGS},

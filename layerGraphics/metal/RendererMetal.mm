@@ -14,6 +14,70 @@
 #include "MyPNG.h"
 #include "Image.h"
 
+// MaterialU, the fragment-stage mirror of MaterialParams (#503). Mirrored field
+// for field by the `MaterialU` struct in every lit MSL library; the inverse
+// modelview is appended here so impostor fragment shaders can evaluate
+// procedural patterns in TRUE model space (a rotation-only transform makes the
+// grain swim under pan and zoom). Floats and ints only, 16-byte aligned, bound
+// at fragment buffer kMaterialBufferIndex on every lit draw.
+//
+// Metal API validation aborts a draw whose bound buffer is smaller than the
+// argument the function declares, so the size must not drift from the MSL side.
+namespace
+{
+// Fragment buffer index for MaterialU. Above every existing fragment binding on
+// every lit pipeline (ClipU and the impostor uniforms both sit at 1).
+constexpr NSUInteger kMaterialBufferIndex = 2;
+
+struct MaterialU {
+  simd_float4x4 invModelview;
+  int family;
+  int mode;
+  int wantsPeel;
+  int _pad0;
+  float reflect;
+  float tint;
+  float rough;
+  float _pad1;
+  float p[6];
+  float _pad2[2];
+};
+static_assert(sizeof(MaterialU) == 128, "MaterialU must match the MSL struct");
+static_assert(sizeof(MaterialU) % 16 == 0, "MaterialU must stay 16-byte aligned");
+
+// Fill and bind MaterialU for the draw about to be issued. Called from EVERY
+// lit draw path, so a material cannot leak from one representation onto the
+// next; the reps that have no material of their own bind a neutral `default`.
+void bindMaterialU(id<MTLRenderCommandEncoder> enc, const MaterialParams& mp,
+    const float* invModelview)
+{
+  if (!enc)
+    return;
+  MaterialU u{};
+  std::memcpy(&u.invModelview, invModelview, 16 * sizeof(float));
+  u.family = mp.family;
+  u.mode = mp.mode;
+  u.wantsPeel = mp.wantsPeel;
+  u.reflect = mp.reflect;
+  u.tint = mp.tint;
+  u.rough = mp.rough;
+  for (int i = 0; i < 6; ++i)
+    u.p[i] = mp.p[i];
+  [enc setFragmentBytes:&u length:sizeof(u) atIndex:kMaterialBufferIndex];
+}
+
+// The neutral `default` material, bound when an encoder is created so no draw
+// can ever see an unbound buffer even if a future draw path forgets the
+// per-draw bind.
+void bindNeutralMaterialU(id<MTLRenderCommandEncoder> enc)
+{
+  static const float kIdentity4x4[16] = {
+      1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+  bindMaterialU(enc, MaterialParams{}, kIdentity4x4);
+}
+} // namespace
+
+
 // Read a Metal BGRA8 texture and write it to a PNG via PyMOL's libpng writer.
 // Converts BGRA→RGBA and flips to PyMOL's bottom-up row order. Runs off the
 // render thread (command-buffer completion handler) after the GPU finishes.
@@ -159,15 +223,11 @@ RendererMetal::RendererMetal(id<MTLDevice> device, id<MTLCommandQueue> queue)
     , _drawable(nil)
     , _currentPipeline(nil)
     , _batchPipeline(nil)
-    , _vboPipelineUByte(nil)
-    , _vboPipelineFloat(nil)
     , _vboVertexFunc(nil)
-    , _vboFragmentFunc(nil)
     , _vboVertexUnlitFunc(nil)
     , _vboFragmentUnlitFunc(nil)
     , _vboVertexUnlitFlatFunc(nil)
     , _batchBuffer(nil)
-    , _sphereImpostorPipeline(nil)
     , _cylinderImpostorPipeline(nil)
     , _depthStencilState(nil)
     , _inFlight(std::make_shared<std::atomic<int>>(0))
@@ -337,8 +397,17 @@ void RendererMetal::setSampleCount(NSUInteger n)
   // MRC: release the +1 sample-count-dependent pipelines before discarding them.
   // Lazy ones (sphere/cylinder/bezier/label/line) rebuild on next use; the eager
   // batch/VBO pipelines are rebuilt by build*Pipelines() below.
-  [_sphereImpostorPipeline release];   _sphereImpostorPipeline = nil;
+  for (int f = 0; f < cMaterialFamily_count; ++f) {
+    [_sphereImpostorPipeline[f] release]; _sphereImpostorPipeline[f] = nil;
+    [_sphereOitPipeline[f] release];      _sphereOitPipeline[f] = nil;
+  }
   releaseCylinderPipelines();
+  // buildImpostorPipelines' guard is the opaque default-family pipeline nil'd
+  // above, so it re-runs and re-assigns these two over live +1 references.
+  // Leaked one pipeline state per MSAA toggle; the shadow one pre-dates #488,
+  // the peel one would have doubled it.
+  [_sphereShadowPipeline release];     _sphereShadowPipeline = nil;
+  [_spherePeelPipeline release];       _spherePeelPipeline = nil;
   [_bezierTubePipeline release];       _bezierTubePipeline = nil;
   [_labelPipeline release];            _labelPipeline = nil;
   [_connectorPipeline release];        _connectorPipeline = nil;
@@ -394,22 +463,21 @@ RendererMetal::~RendererMetal()
   [_sceneColor release];     [_sceneDepth release];     [_postColor release];
   [_sceneColorMS release];   [_sceneDepthMS release];
   [_oitAccum release];       [_oitReveal release];
+  [_peelDepth release];      _peelDepth = nil;
   [_rtAO release];           [_rtAOHistory release];    [_rtAOAccum release];
   [_dofTex release];
   [_shadowDepth release];    [_labelAtlas release];
 
   // Render-pass descriptors ([[MTLRenderPassDescriptor alloc] init], +1).
   [_scenePassDesc release];  [_oitPassDesc release];    [_shadowPassDesc release];
+  [_peelPassDesc release];   [_oitPeelPassDesc release];
 
   // Pipeline states (newRenderPipelineStateWithDescriptor, +1).
   [_batchPipeline release];
-  [_vboPipelineUByte release];        [_vboPipelineFloat release];
-  [_sphereImpostorPipeline release];
-  [_vboOitPipelineUByte release];     [_vboOitPipelineFloat release];
-  [_sphereOitPipeline release];
   [_oitResolvePipeline release];
   [_vboShadowPipelineUByte release];  [_vboShadowPipelineFloat release];
-  [_sphereShadowPipeline release];
+  [_vboPeelPipelineUByte release];    [_vboPeelPipelineFloat release];
+  [_sphereShadowPipeline release];    [_spherePeelPipeline release];
   releaseCylinderPipelines(); // per-layout cylinder pipelines (owner)
   [_shadowDebugPipeline release];
   [_capMarkPipeline release];         [_capFillPipeline release];
@@ -428,39 +496,44 @@ RendererMetal::~RendererMetal()
   [_connectorPipeline release];
 
   // Shader functions (newFunctionWithName, +1).
-  [_vboVertexFunc release];           [_vboFragmentFunc release];
+  [_vboVertexFunc release];
+  for (int f = 0; f < cMaterialFamily_count; ++f) {
+    [_vboFragmentFunc[f] release];      [_vboFragmentOitFunc[f] release];
+    [_vboPipelineUByte[f] release];     [_vboPipelineFloat[f] release];
+    [_vboOitPipelineUByte[f] release];  [_vboOitPipelineFloat[f] release];
+    [_sphereImpostorPipeline[f] release];  [_sphereOitPipeline[f] release];
+  }
   [_vboVertexUnlitFunc release];      [_vboFragmentUnlitFunc release];
   [_vboVertexUnlitFlatFunc release];
-  [_vboFragmentOitFunc release];      [_vboFragmentShadowFunc release];
+  [_vboFragmentShadowFunc release];
   [_capMarkVtxFunc release];          [_capMarkFragFunc release];
   [_capFillVtxFunc release];          [_capFillFragFunc release];
   [_lineAAVtxFunc release];           [_lineAAFragFunc release];
 
   // Samplers (newSamplerStateWithDescriptor, +1).
   [_postSampler release];   [_shadowSampler release];   [_labelSampler release];
+  [_envCubemap release];    [_envSampler release];
+  [_envFallbackCube release];
 
   // Depth-stencil states (newDepthStencilStateWithDescriptor, +1).
   [_depthStencilState release];  [_shadowDepthState release];
   [_capMarkDSS release];         [_capFillDSS release];
   [_oitDepthState release];      [_bezierDepthState release];
+  [_peelWriteState release];     [_peelTestState release];
 
   // Real-time ray-tracing buffers + acceleration structures (+1).
   [_rtProtoVerts release];       [_rtProtoIndices release];
-  [_rtSphereProtoAS release];    [_rtTriProtoAS release];   [_rtInstanceAS release];
+  [_rtSphereProtoAS release];    [_rtInstanceAS release];
+  for (id<MTLAccelerationStructure> as : _rtTriProtoASs) [as release];
+  _rtTriProtoASs.clear();
   [_rtTriBuffer release];
+  [_rtTriColBuffer release];  [_rtSphereBuffer release];  [_rtTriNrmBuffer release];
+  [_rtTriMatBuffer release];  [_rtMatBuffer release];
   [_bezierTessFactors release];
 
   // Reusable batch buffer (+1; grown via newBufferWithLength).
   [_batchBuffer release];
 
-  // MRC: the grow-on-demand line-AA scratch buffer is owned here.
-  [_lineBuffer release];
-  _lineBuffer = nil;
-  _lineBufferSize = 0;
-  // Same for the connector (label background/outline/line) upload buffer.
-  [_connectorBuffer release];
-  _connectorBuffer = nil;
-  _connectorBufferSize = 0;
   [(id)_upscaler release];   // MetalFX spatial scaler (MRC)
   _upscaler = nil;
 }
@@ -576,6 +649,12 @@ void RendererMetal::ensureEncoder()
   }
 
   _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:_passDesc];
+  bindNeutralMaterialU(_encoder);
+  // The environment every reflective material samples (#493). Bound with the
+  // neutral material so no encoder can exist without it, and identical on the
+  // scene and OIT passes -- a reflective object must reflect the same room
+  // whichever pass draws it.
+  bindEnvironment(_encoder);
   if (!_encoder) return;
 
   // Restore viewport
@@ -640,6 +719,33 @@ void RendererMetal::setRepClip(float front, float back, float fracFront,
   _repClipBack = back;
   _repClipFracFront = fracFront; // view-independent 0..1 (RT rebuild signature)
   _repClipFracBack = fracBack;
+}
+
+void RendererMetal::setRepMaterial(const MaterialParams& params)
+{
+  _repMatParams = params;
+  auto clamp01 = [](float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); };
+  _repMatParams.reflect = clamp01(params.reflect);
+  _repMatParams.tint = clamp01(params.tint);
+  _repMatParams.rough = clamp01(params.rough);
+  // Frost tap count for the glass family (#495), carried in the last knob slot
+  // so the shader needs no extra uniform. Capped in the LIVE view: this is a
+  // per-fragment cubemap sample loop on geometry that can cover the whole
+  // viewport, and an export can afford what an interactive orbit cannot.
+  if (_repMatParams.family == cMaterialFamily_glass) {
+    _repMatParams.p[5] = _offscreen ? kFrostTaps : kFrostTapsLive;
+  }
+  // The ray tracer's per-occurrence table reads the same three fields.
+  _repMat[0] = _repMatParams.reflect;
+  _repMat[1] = _repMatParams.tint;
+  _repMat[2] = _repMatParams.rough;
+}
+
+
+void RendererMetal::setReflectionParams(int env, int samples)
+{
+  _reflEnv = env ? 1 : 0;
+  _reflSamples = samples < 1 ? 1 : (samples > 64 ? 64 : samples);
 }
 
 void RendererMetal::setRepContour(bool enabled, const float* rgba, float widthPx)
@@ -766,12 +872,24 @@ void RendererMetal::beginFrame()
   // render command buffer is in flight (that stalls/blackouts the frame).
   // Model-space geometry is stable, so one-frame latency is invisible.
   if (_rtEnabled) ensureRayTracingAS();
+  // Arm the OIT clear for this frame (#488). The peel path opens several
+  // transparent encoders per frame and only the first may CLEAR the
+  // accumulation and reveal targets -- but the flag has to be re-armed by the
+  // FRAME, not by the scene loop. Resetting it only where the transparent pass
+  // is assembled leaves every render path that does not go through there --
+  // and there is more than one -- clearing exactly once for the life of the
+  // process: revealage then decays multiplicatively toward zero, accumulation
+  // grows without bound, and the composite turns the whole frame black after a
+  // few frames. Which is exactly what it did.
+  _oitCleared = false;
   // Start this frame's geometry record. Only the LIST of contributing cache
   // entries is re-accumulated during the opaque pass; the geometry itself stays
   // in _rtGeomCache and is touched again only when that list changes.
   _rtFrameKeys.clear();
   _rtFrameXform.clear();
   _rtFrameClip.clear();
+  _rtFrameMat.clear();
+  _rtFrameCells.clear();   // grid_mode cells are re-recorded by setGridSlot
   _rtFrameSig = 1469598103934665603ULL;
 
   _cmdBuffer = [_queue commandBuffer];
@@ -781,6 +899,7 @@ void RendererMetal::beginFrame()
   _coverageDraws.clear();  // surface outer-contour: re-stashed during this frame
   _contourActive = false;
   _aoExemptDraws.clear();  // cartoon/ribbon AO-exempt mask: re-stashed this frame
+  _shadowMapValid = false; // set again by endShadowPass if the pre-pass runs
 
   // Configure clear values on the render pass descriptor
   if (_passDesc) {
@@ -794,6 +913,12 @@ void RendererMetal::beginFrame()
 
     // Create the encoder immediately to ensure the clear executes
     _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:_passDesc];
+    bindNeutralMaterialU(_encoder);
+  // The environment every reflective material samples (#493). Bound with the
+  // neutral material so no encoder can exist without it, and identical on the
+  // scene and OIT passes -- a reflective object must reflect the same room
+  // whichever pass draws it.
+  bindEnvironment(_encoder);
   }
 }
 
@@ -945,9 +1070,16 @@ static float post_linear_depth(float d, float projA, float projB,
 // (zc, linear eye distance) — a depth step of that size is a crease / contact /
 // occluding silhouette, which is exactly the contact darkening users read as
 // depth. Returns the occluded fraction 0..1; callers scale it by an intensity.
+// `cell` (x0,y0,x1,y1 in uv) limits the ring to the pixel's own grid_mode cell:
+// a sample from the neighbouring cell is another object entirely and must not
+// read as an occluder (#478). Default: the whole frame.
+static bool post_in_cell(float2 uv, float4 cell) {
+  return uv.x >= cell.x && uv.x < cell.z && uv.y >= cell.y && uv.y < cell.w;
+}
 static float post_ssao_occlusion(depth2d<float> depthTex, sampler s, float2 uv,
                                  float2 invres, float zc, float radiusPx,
-                                 float projA, float projB, float ortho) {
+                                 float projA, float projB, float ortho,
+                                 float4 cell = float4(0.0, 0.0, 1.0, 1.0)) {
   const int N = 12;
   const float TWO_PI = 6.28318530718;
   const float range = 0.06; // ignore occluders farther than 6% of center z
@@ -957,6 +1089,7 @@ static float post_ssao_occlusion(depth2d<float> depthTex, sampler s, float2 uv,
     // vary the radius across the ring to cover the disk
     float rr = radiusPx * (0.35 + 0.65 * float((i % 4) + 1) / 4.0);
     float2 off = float2(cos(ang), sin(ang)) * rr * invres;
+    if (!post_in_cell(uv + off, cell)) continue; // other cell: not an occluder
     float dn = depthTex.sample(s, uv + off);
     if (dn >= 0.99999) continue; // background neighbor: no occlusion (no halo)
     float zn = post_linear_depth(dn, projA, projB, ortho);
@@ -993,11 +1126,18 @@ static bool post_ao_exempt(texture2d<float> aoMaskTex, sampler s, float2 uv,
 // position and the normal derived from it become garbage — which turns the SSAO /
 // shadow terms fully black across the geometry (issue #139). projX/projY are
 // proj[0]/proj[5]; PyMOL's ortho frustum is symmetric so there is no x/y offset.
+// `cell` (x0,y0,x1,y1 in texture uv) is the viewport the pixel was projected
+// into: in grid_mode every cell replays the projection into its own sub-rect,
+// so ndc must be measured against THAT rect, not the whole frame, or the
+// reconstructed positions (and so the RT ray origins) land off the surface
+// (#478). Default: the full frame.
 static float3 post_eye_pos(float2 uv, float d, float projA, float projB,
-                           float projX, float projY, float ortho = 0.0) {
+                           float projX, float projY, float ortho = 0.0,
+                           float4 cell = float4(0.0, 0.0, 1.0, 1.0)) {
+  float2 uvl = (uv - cell.xy) / max(cell.zw - cell.xy, float2(1e-6));
   float ndcz = 2.0 * d - 1.0;
-  float ndcx = 2.0 * uv.x - 1.0;
-  float ndcy = 1.0 - 2.0 * uv.y;
+  float ndcx = 2.0 * uvl.x - 1.0;
+  float ndcy = 1.0 - 2.0 * uvl.y;
   if (ortho > 0.5) {
     float ez = (ndcz - projB) / projA;             // ortho: linear eye z
     return float3(ndcx / projX, ndcy / projY, ez); // no -ez foreshortening
@@ -1020,17 +1160,25 @@ static float3 post_eye_pos(float2 uv, float d, float projA, float projB,
 static float3 post_eye_normal(depth2d<float> depthTex, sampler s, float2 uv,
                               float2 invres, float cd, float3 cp, float projA,
                               float projB, float projX, float projY,
-                              float ortho = 0.0) {
+                              float ortho = 0.0,
+                              float4 cell = float4(0.0, 0.0, 1.0, 1.0)) {
   float2 ux = float2(invres.x, 0.0);
   float2 uy = float2(0.0, invres.y);
   float dl = depthTex.sample(s, uv - ux), dr = depthTex.sample(s, uv + ux);
   float dd = depthTex.sample(s, uv - uy), du = depthTex.sample(s, uv + uy);
-  float3 gx = (abs(dl - cd) < abs(dr - cd))
-                  ? (cp - post_eye_pos(uv - ux, dl, projA, projB, projX, projY, ortho))
-                  : (post_eye_pos(uv + ux, dr, projA, projB, projX, projY, ortho) - cp);
-  float3 gy = (abs(dd - cd) < abs(du - cd))
-                  ? (cp - post_eye_pos(uv - uy, dd, projA, projB, projX, projY, ortho))
-                  : (post_eye_pos(uv + uy, du, projA, projB, projX, projY, ortho) - cp);
+  // A neighbour that lies in another grid_mode cell belongs to another object
+  // drawn under another viewport: treat it as the discontinuous side (#478).
+  const float far = 1e30;
+  float sl = post_in_cell(uv - ux, cell) ? abs(dl - cd) : far;
+  float sr = post_in_cell(uv + ux, cell) ? abs(dr - cd) : far;
+  float sd = post_in_cell(uv - uy, cell) ? abs(dd - cd) : far;
+  float su = post_in_cell(uv + uy, cell) ? abs(du - cd) : far;
+  float3 gx = (sl < sr)
+                  ? (cp - post_eye_pos(uv - ux, dl, projA, projB, projX, projY, ortho, cell))
+                  : (post_eye_pos(uv + ux, dr, projA, projB, projX, projY, ortho, cell) - cp);
+  float3 gy = (sd < su)
+                  ? (cp - post_eye_pos(uv - uy, dd, projA, projB, projX, projY, ortho, cell))
+                  : (post_eye_pos(uv + uy, du, projA, projB, projX, projY, ortho, cell) - cp);
   float3 n = normalize(cross(gx, gy));
   if (n.z < 0.0) n = -n; // face toward camera
   return n;
@@ -1046,21 +1194,23 @@ static float3 post_eye_normal(depth2d<float> depthTex, sampler s, float2 uv,
 static float3 post_eye_normal_smooth(depth2d<float> depthTex, sampler s, float2 uv,
                                      float2 invres, float cd, float3 cp, float projA,
                                      float projB, float projX, float projY,
-                                     float ortho = 0.0) {
+                                     float ortho = 0.0,
+                                     float4 cell = float4(0.0, 0.0, 1.0, 1.0)) {
   float3 nSum = post_eye_normal(depthTex, s, uv, invres, cd, cp,
-                                projA, projB, projX, projY, ortho);
+                                projA, projB, projX, projY, ortho, cell);
   float wSum = 1.0;
   float ztol = max(0.02 * abs(cp.z), 0.05);
   for (int j = -1; j <= 1; j++)
     for (int i = -1; i <= 1; i++) {
       if (i == 0 && j == 0) continue;
       float2 o = float2(float(i), float(j)) * 2.0 * invres;
+      if (!post_in_cell(uv + o, cell)) continue;  // other grid cell (#478)
       float dn = depthTex.sample(s, uv + o);
       if (dn >= 0.99999) continue;
-      float3 pn = post_eye_pos(uv + o, dn, projA, projB, projX, projY, ortho);
+      float3 pn = post_eye_pos(uv + o, dn, projA, projB, projX, projY, ortho, cell);
       float w = exp(-abs(pn.z - cp.z) / ztol);
       nSum += post_eye_normal(depthTex, s, uv + o, invres, dn, pn,
-                              projA, projB, projX, projY, ortho) * w;
+                              projA, projB, projX, projY, ortho, cell) * w;
       wSum += w;
     }
   return normalize(nSum);
@@ -1628,6 +1778,7 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   [_sceneColor release];   [_postColor release];   [_sceneDepth release];
   [_sceneColorMS release];  [_sceneDepthMS release];
   [_oitAccum release];      [_oitReveal release];
+  [_peelDepth release];
   [_rtAO release];          [_dofTex release];
   [_rtAOHistory release];   [_rtAOAccum release];
   [_surfaceCoverageTex release];
@@ -1635,6 +1786,7 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   _sceneColor = _postColor = _sceneDepth = nil;
   _sceneColorMS = _sceneDepthMS = nil;
   _oitAccum = _oitReveal = nil;
+  _peelDepth = nil;
   _surfaceCoverageTex = nil;
   _aoExemptMaskTex = nil;
   _rtAO = nil;              _dofTex = nil;
@@ -1753,6 +1905,52 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   _oitPassDesc.depthAttachment.storeAction = MTLStoreActionStore;
   _oitPassDesc.stencilAttachment.texture = _sceneDepth;
   _oitPassDesc.stencilAttachment.loadAction = MTLLoadActionLoad;
+
+  // --- Per-object peel (#488) ---
+  // Same format and size as _sceneDepth so the blit that seeds it is a plain
+  // texture copy, and so the OIT pipelines -- whose depthAttachmentPixelFormat
+  // is fixed at build time -- can be bound against either one unchanged.
+  // Single-sample even under MSAA, exactly like _oitPassDesc, which also tests
+  // against the RESOLVED _sceneDepth.
+  // NOT allocated here. No material asks to be peeled today, so on a session
+  // that never sets transparency_peel this would be a full-res depth-stencil
+  // texture -- 8 B/px, ~24 MB on an iPhone 15 Pro, reallocated on every resize
+  // -- held for a feature that never runs. ensurePeelTargets() creates it on
+  // the first peel request instead; _rtW/_rtH are recorded above, so it always
+  // matches _sceneDepth.
+  //
+  // The pre-pass descriptor has ZERO colour attachments -- that is the whole
+  // point of it being cheap. Depth loads (the blit put the opaque depth there)
+  // and stores.
+  if (!_peelPassDesc)
+    _peelPassDesc = [[MTLRenderPassDescriptor alloc] init];
+  _peelPassDesc.depthAttachment.texture = nil;
+  _peelPassDesc.depthAttachment.loadAction = MTLLoadActionLoad;
+  _peelPassDesc.depthAttachment.storeAction = MTLStoreActionStore;
+  // No stencil attachment: neither peel depth state touches stencil, and on a
+  // tile-based GPU attaching it would load and write out a full-frame stencil
+  // per peeled object per grid cell for nothing.
+  _peelPassDesc.stencilAttachment.texture = nil;
+
+  // The peeled object's OIT pass: the same MRT targets as _oitPassDesc (so the
+  // peeled and unpeeled passes accumulate into one image) but depth-tested
+  // against _peelDepth. Load actions for the colour targets are set per pass in
+  // beginTransparentOIT, since only the first encoder of the frame may clear.
+  if (!_oitPeelPassDesc)
+    _oitPeelPassDesc = [[MTLRenderPassDescriptor alloc] init];
+  _oitPeelPassDesc.colorAttachments[0].texture = _oitAccum;
+  _oitPeelPassDesc.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0);
+  _oitPeelPassDesc.colorAttachments[0].storeAction = MTLStoreActionStore;
+  _oitPeelPassDesc.colorAttachments[1].texture = _oitReveal;
+  _oitPeelPassDesc.colorAttachments[1].clearColor = MTLClearColorMake(1, 0, 0, 0);
+  _oitPeelPassDesc.colorAttachments[1].storeAction = MTLStoreActionStore;
+  _oitPeelPassDesc.depthAttachment.texture = nil;
+  _oitPeelPassDesc.depthAttachment.loadAction = MTLLoadActionLoad;
+  // This pass TESTS the peel depth and never writes it (peelTestState has
+  // depthWriteEnabled NO), and the next object's pre-pass re-seeds it from the
+  // opaque depth anyway -- so writing it back out is pure tile traffic.
+  _oitPeelPassDesc.depthAttachment.storeAction = MTLStoreActionDontCare;
+  _oitPeelPassDesc.stencilAttachment.texture = nil;
 
   // Shadow map: fixed-resolution single-sample depth target rendered from the
   // light POV. Independent of the viewport (kShadowDim^2), so it survives
@@ -1980,8 +2178,8 @@ struct RTU {
   float shadowRadius;      // world half-extent of the shadow ortho box (Angstroms)
   float shadowBias;        // metal_shadow_bias: user multiplier on the self-shadow bias
   float projOrtho;         // >0.5: orthographic projection (linear eye-z / no foreshortening)
-  float triInstance;       // instance_id of the world-triangle mesh in the AS (-1 = none)
-  float triCount;          // number of triangles in the world-tri buffer
+  float gridActive;        // >0.5: grid_mode, trace with the pixel's cell mask (#478)
+  float cellCount;         // entries in RTGridU (1 without grid_mode; <= 32)
   float klx, kly, klz;     // key-light dir (toward light, eye space) = -normalize(cSetting_light)
                            // -> still 8 floats after lightViewProj: struct size is a
                            //    multiple of 16 on both sides (validation checks
@@ -1990,7 +2188,45 @@ struct RTU {
   float aoCreaseRadiusPx;  // crease ring radius in pixels (== PostU.aoRadiusPx)
   float aoExemptEnabled;   // >0.5: aoMaskTex marks cartoon/ribbon pixels that skip it (#79)
   float pad3;              // -> 12 floats after lightViewProj (still a 16-byte multiple)
+  // Traced self-reflections (metal_rt_reflect*): env 0 = bg colour / 1 = studio
+  // gradient on miss; samples = rays/pixel for glossy materials (offscreen);
+  // sphereCount = number of sphere instances (ids below it are spheres);
+  // matCount = rows in the material table; then the two-light model.
+  float reflEnv, reflSamples, sphereCount, matCount;
+  float lAmbient, lDirect, lReflect, lSpec;
+  float lShin, pad4, pad5, pad6;   // -> 24 floats after lightViewProj
 };
+
+// grid_mode cells (#478). rect = x0,y0,x1,y1 of the cell in scene uv; tri =
+// {first triangle of the cell's mesh in `tris`, its triangle count, top-level
+// instance id of that mesh (0xFFFFFFFF = none), unused}. Cell k's casters carry
+// instance mask bit k. Without grid_mode there is one cell spanning the frame
+// and every instance has an all-bits mask.
+struct RTCellU { float4 rect; uint4 tri; };
+struct RTGridU { RTCellU cell[32]; };
+
+// Which grid cell a pixel belongs to. Returns false when grid_mode is on and the
+// pixel is in no listed cell (a cell past the 32-bit mask limit): such pixels
+// get no rays and stay lit, like the raster shadow-map path in grid mode. With
+// grid_mode off, cell 0 spans the frame and the mask has every bit set.
+static bool rt_find_cell(float2 uv, constant RTU& u, constant RTGridU& g,
+                         thread uint& ci, thread uint& mask, thread float4& rect) {
+  ci = 0u;
+  mask = 0xFFFFFFFFu;
+  rect = float4(0.0, 0.0, 1.0, 1.0);
+  if (u.gridActive <= 0.5) return true;
+  uint n = min(uint(u.cellCount), 32u);
+  for (uint k = 0u; k < n; ++k) {
+    float4 rc = g.cell[k].rect;
+    if (uv.x >= rc.x && uv.x < rc.z && uv.y >= rc.y && uv.y < rc.w) {
+      ci = k;
+      mask = 1u << k;
+      rect = rc;
+      return true;
+    }
+  }
+  return false;
+}
 
 // Facet normal of world-tri p, averaged with its strip neighbours p-1 and p+1.
 // Ribbon strips arrive as consecutive triangles, and on a twisted quad the two
@@ -2016,6 +2252,13 @@ static float3 rt_tri_normal_smooth(device const packed_float3* tris, uint p, uin
   return normalize(acc);
 }
 
+// Traced reflections: smooth normal of world-tri q at barycentric (b.x -> v1, b.y -> v2).
+static float3 rt_interp_normal(device const packed_float3* nrms, uint q, float2 b) {
+  float3 n0 = float3(nrms[3 * q]), n1 = float3(nrms[3 * q + 1]), n2 = float3(nrms[3 * q + 2]);
+  float3 n = n0 * (1.0 - b.x - b.y) + n1 * b.x + n2 * b.y;
+  float l = length(n);
+  return l > 1e-6 ? n / l : normalize(cross(n1 - n0, n2 - n0));
+}
 static float rt_hash(float2 p) {
   return fract(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453);
 }
@@ -2045,22 +2288,36 @@ fragment float4 rt_ao(PostVOut in [[stage_in]],
     sampler s [[sampler(0)]],
     instance_acceleration_structure accel [[buffer(0)]],
     constant RTU& u [[buffer(1)]],
-    device const packed_float3* tris [[buffer(2)]]) {
+    device const packed_float3* tris [[buffer(2)]],
+    constant RTGridU& g [[buffer(3)]]) {
   float d = depthTex.sample(s, in.uv);
   if (d >= 0.99999 || d <= 0.0015) return float4(1.0, 1.0, 1.0, 1.0);  // no occlusion
+
+  // grid_mode (#478): find the cell this pixel is drawn in. Every ray below is
+  // traced with that cell's instance mask, so objects that live in other cells
+  // (same world space, different viewport) can neither occlude nor shadow it,
+  // and the eye-space reconstruction measures ndc against the cell's own rect,
+  // so the ray origins sit on the surface actually drawn there.
+  uint ci, mask; float4 cell;
+  if (!rt_find_cell(in.uv, u, g, ci, mask, cell)) return float4(1.0, 1.0, 1.0, 1.0);
+  // This cell's world-triangle mesh: where it starts in `tris`, how many, and
+  // its top-level instance id (-1 = the cell has no triangles).
+  const uint triCount = g.cell[ci].tri.y;
+  const int triInst = int(g.cell[ci].tri.z);
+  device const packed_float3* ctris = tris + 3u * g.cell[ci].tri.x;
 
   // Eye-space position + robust normal (matches post_ssao_fog reconstruction).
   // post_eye_normal avoids the cross-silhouette derivative blow-up that plain
   // cross(dfdx,dfdy) produces, which otherwise mis-orients the AO hemisphere /
   // ray-origin bias in a 1-2px band along every silhouette.
-  float3 pEye = post_eye_pos(in.uv, d, u.projA, u.projB, u.projX, u.projY, u.projOrtho);
+  float3 pEye = post_eye_pos(in.uv, d, u.projA, u.projB, u.projX, u.projY, u.projOrtho, cell);
   float2 invres = 1.0 / float2(depthTex.get_width(), depthTex.get_height());
   // SMOOTH normal (bilateral over the facets, silhouette-preserving), like the
   // shadow-map path: the plain per-triangle reconstruction made the ray-origin
   // offset and the light-facing test flip per triangle on coarse cartoon
   // strands -> "triangles under shadows" in the traced-shadow path too.
   float3 nEye = post_eye_normal_smooth(depthTex, s, in.uv, invres, d, pEye,
-                                       u.projA, u.projB, u.projX, u.projY, u.projOrtho);
+                                       u.projA, u.projB, u.projX, u.projY, u.projOrtho, cell);
 
   float3 pModel = (u.invModelview * float4(pEye, 1.0)).xyz;
   float3 nModel = normalize((u.invModelview * float4(nEye, 0.0)).xyz);
@@ -2092,11 +2349,11 @@ fragment float4 rt_ao(PostVOut in [[stage_in]],
     pr.direction = dirM;
     pr.min_distance = 0.0;
     pr.max_distance = dEye + 0.5;
-    auto pres = pit.intersect(pr, accel);
-    if (pres.type != intersection_type::none && u.triInstance >= 0.0
-        && int(pres.instance_id) == int(u.triInstance)
+    auto pres = pit.intersect(pr, accel, mask);
+    if (pres.type != intersection_type::none && triInst >= 0
+        && int(pres.instance_id) == triInst
         && abs(pres.distance - dEye) < 0.5) {
-      nSelf = rt_tri_normal_smooth(tris, pres.primitive_id, uint(u.triCount));
+      nSelf = rt_tri_normal_smooth(ctris, pres.primitive_id, triCount);
       if (dot(nSelf, nModel) < 0.0) nSelf = -nSelf;   // face the camera side
     }
   }
@@ -2136,7 +2393,7 @@ fragment float4 rt_ao(PostVOut in [[stage_in]],
     // that grazing contribute almost nothing to a cosine-weighted estimate.
     rr.min_distance = bias / max(dirT.z, 0.15);
     rr.max_distance = u.aoRadius;
-    auto res = it.intersect(rr, accel);
+    auto res = it.intersect(rr, accel, mask);
     if (res.type != intersection_type::none) occ += 1.0;
   }
   float ao = 1.0 - (occ / float(N)) * u.aoIntensity;
@@ -2191,12 +2448,12 @@ fragment float4 rt_ao(PostVOut in [[stage_in]],
       // incidence the ray travels inside the slab for thickness/sin(angle).
       float const ownReach = 1.2 * u.shadowBias / max(abs(nL), 0.15);
       for (int k = 0; k < 4; ++k) {
-        auto sres = sit.intersect(sr, accel);
+        auto sres = sit.intersect(sr, accel, mask);
         if (sres.type == intersection_type::none) break;
-        bool onTri = (u.triInstance >= 0.0 && int(sres.instance_id) == int(u.triInstance));
+        bool onTri = (triInst >= 0 && int(sres.instance_id) == triInst);
         bool ownFace = false, grazingSelf = false;
         if (onTri && sres.distance < 12.0 * u.shadowBias) {
-          float3 fn = rt_tri_normal_smooth(tris, sres.primitive_id, uint(u.triCount));
+          float3 fn = rt_tri_normal_smooth(ctris, sres.primitive_id, triCount);
           // OWN face: a facet (near-)parallel to this fragment's surface, within
           // the slab reach. That is the far face when we sit on the unlit side
           // of a thin ribbon/surface (ray entered the slab), or the ribbon's own
@@ -2238,19 +2495,33 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
     texture2d<float> aoMaskTex [[texture(4)]],
     sampler s [[sampler(0)]],
     sampler shadowSamp [[sampler(1)]],
-    constant RTU& u [[buffer(1)]]) {
+    constant RTU& u [[buffer(1)]],
+    constant RTGridU& g [[buffer(3)]],
+    instance_acceleration_structure accel [[buffer(0)]],
+    device const packed_float3* tris [[buffer(2)]],
+    device const packed_float3* triCols [[buffer(4)]],
+    device const float4* sph [[buffer(5)]],
+    device const packed_float3* triNrms [[buffer(6)]],
+    device const uint* triMat [[buffer(7)]],
+    device const float4* mats [[buffer(8)]]) {
   float3 col = colorTex.sample(s, in.uv).rgb;
+  float3 colRaw = col;   // lit colour before AO/shadow: tints the reflection
   float d = depthTex.sample(s, in.uv);
   if (d >= 0.99999) return float4(col, 1.0);  // background: leave as-is
   if (d <= 0.0015) return float4(col, 1.0);   // interior-cap cross-section: flat
 
+  // grid_mode (#478): reconstruct against the pixel's own cell rect (see rt_ao).
+  // A pixel in no listed cell got no rays (AO 1, lit): leave its colour as-is.
+  uint ci, mask; float4 cell;
+  if (!rt_find_cell(in.uv, u, g, ci, mask, cell)) return float4(col, 1.0);
+
   // Eye-space position + SMOOTH normal (matches post_ssao_fog). The bilateral
   // smoothing removes the coarse-mesh facet normal that made faceGate + the
   // shadow-map self-compare step per triangle.
-  float3 pEye = post_eye_pos(in.uv, d, u.projA, u.projB, u.projX, u.projY, u.projOrtho);
+  float3 pEye = post_eye_pos(in.uv, d, u.projA, u.projB, u.projX, u.projY, u.projOrtho, cell);
   float2 invres = 1.0 / float2(colorTex.get_width(), colorTex.get_height());
   float3 nEye = post_eye_normal_smooth(depthTex, s, in.uv, invres, d, pEye,
-                                       u.projA, u.projB, u.projX, u.projY, u.projOrtho);
+                                       u.projA, u.projB, u.projX, u.projY, u.projOrtho, cell);
 
   // Depth-aware 5x5 blur of the AO term: weight neighbours by eye-space depth
   // closeness so AO doesn't bleed across object silhouettes.
@@ -2260,6 +2531,9 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
   for (int j = -2; j <= 2; ++j)
     for (int i = -2; i <= 2; ++i) {
       float2 uv = in.uv + float2(i, j) * texel;
+      // grid_mode: never blend AO/visibility across a cell border, another
+      // cell's object at a similar depth must not bleed into this cell (#478).
+      if (!post_in_cell(uv, cell)) continue;
       float dn = depthTex.sample(s, uv);
       if (dn >= 0.99999) continue;
       // Neighbour eye-z via the shared, ortho-aware inverse (post_linear_depth
@@ -2296,7 +2570,7 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
     if (!exempt) {
       float zc = post_linear_depth(d, u.projA, u.projB, u.projOrtho);
       float occ = post_ssao_occlusion(depthTex, s, in.uv, invres, zc,
-                                      u.aoCreaseRadiusPx, u.projA, u.projB, u.projOrtho);
+                                      u.aoCreaseRadiusPx, u.projA, u.projB, u.projOrtho, cell);
       ao = min(ao, clamp(1.0 - occ * u.aoCrease, 0.0, 1.0));
     }
   }
@@ -2356,6 +2630,135 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
     }
   }
 
+  // Traced self-reflections (metal_rt_reflect / _tint / _rough, per object).
+  // A primary ray finds the primitive under the pixel -> its occurrence's
+  // material and a barycentric-smooth normal. If the material reflects, one
+  // reflection ray (NS jittered rays for glossy exports) is traced against the
+  // same instance AS the AO/shadow rays use; the hit is shaded with the
+  // two-light model from the per-primitive colour + normal buffers, a miss
+  // returns the environment. Blended with a Schlick Fresnel whose F0 is the
+  // material strength, so grazing angles reflect more like real dielectrics.
+  if (u.matCount > 0.5) {
+    const uint triBase = g.cell[ci].tri.x;
+    const int triInst = int(g.cell[ci].tri.z);
+    float3 pModel = (u.invModelview * float4(pEye, 1.0)).xyz;
+    float3 nModel = normalize((u.invModelview * float4(nEye, 0.0)).xyz);
+    float3 camM, viewM;   // camera position / direction from camera to the point
+    if (u.projOrtho > 0.5) {
+      viewM = normalize((u.invModelview * float4(0.0, 0.0, -1.0, 0.0)).xyz);
+      camM = pModel - viewM * 1000.0;
+    } else {
+      camM = (u.invModelview * float4(0.0, 0.0, 0.0, 1.0)).xyz;
+      viewM = normalize(pModel - camM);
+    }
+    // Own primitive: material row + smooth normal. Sphere impostors keep the
+    // depth normal (analytic, already smooth); a pixel whose primary ray finds
+    // no matching caster (labels, lines, clipped caps) is not reflective.
+    float3 nSelf = nModel;
+    int mi = -1;
+    {
+      float const dEye = length(pModel - camM);
+      intersector<instancing, triangle_data> pit;
+      pit.assume_geometry_type(geometry_type::triangle);
+      pit.accept_any_intersection(false);
+      ray pr; pr.origin = camM; pr.direction = viewM; pr.min_distance = 0.0; pr.max_distance = dEye + 0.5;
+      auto pres = pit.intersect(pr, accel, mask);
+      if (pres.type != intersection_type::none && abs(pres.distance - dEye) < 0.5) {
+        if (float(pres.instance_id) < u.sphereCount) {
+          mi = int(sph[2u * pres.instance_id + 1u].w);
+        } else if (triInst >= 0 && int(pres.instance_id) == triInst) {
+          uint prim = triBase + pres.primitive_id;
+          mi = int(triMat[prim]);
+          nSelf = rt_interp_normal(triNrms, prim, pres.triangle_barycentric_coord);
+          if (dot(nSelf, nModel) < 0.0) nSelf = -nSelf;
+        }
+      }
+    }
+    float4 mat = (mi >= 0 && float(mi) < u.matCount) ? mats[mi] : float4(0.0);
+    const float F0 = mat.x, tint = mat.y, rough = mat.z;
+    if (F0 > 0.001) {
+      float3 R0 = reflect(viewM, nSelf);
+      // Light directions in model space (key light + fill on +Z, like the raster).
+      float3 L1 = normalize(u.lightDirModel.xyz);
+      float3 L0 = normalize((u.invModelview * float4(0.0, 0.0, 1.0, 0.0)).xyz);
+      float3 reflAcc = float3(0.0);
+      int NS = rough > 0.0 ? max(int(u.reflSamples), 1) : 1;
+      for (int si = 0; si < NS; ++si) {
+        float3 R = R0;
+        if (rough > 0.0) {   // glossy: jitter inside a cone (frame-stable)
+          float2 hx = float2(fract(rt_hash(in.uv * 977.0) + float(si) * 0.618034),
+                             fract(rt_hash(in.uv * 1543.0 + 7.0) + rt_radinv2(uint(si))));
+          float3 upv = abs(R.z) < 0.9 ? float3(0, 0, 1) : float3(1, 0, 0);
+          float3 tx = normalize(cross(upv, R)), ty = cross(R, tx);
+          float a = rough * rough * 0.5;
+          float phi = 6.2831853 * hx.x, rr = a * sqrt(hx.y);
+          R = normalize(R + tx * (rr * cos(phi)) + ty * (rr * sin(phi)));
+        }
+        // Environment on a miss: bg colour, or a simple studio (eye-space up
+        // gradient + a soft key-light card) so a mirror surface reads as
+        // reflective even where nothing of the molecule is in view.
+        float3 Re = float3(dot(u.invModelview[0].xyz, R), dot(u.invModelview[1].xyz, R),
+                           dot(u.invModelview[2].xyz, R));   // model -> eye (rotation^T)
+        float3 envCol = u.bgFog.rgb;
+        if (u.reflEnv > 0.5) {
+          float t = saturate(Re.y * 0.5 + 0.5);
+          envCol = mix(float3(0.06, 0.06, 0.07), float3(0.55, 0.57, 0.62), t);
+          envCol += float3(1.0, 0.98, 0.92) * pow(max(dot(Re, normalize(float3(u.klx, u.kly, u.klz))), 0.0), 14.0) * 1.2;
+          envCol += float3(0.5, 0.6, 0.8) * pow(max(dot(Re, normalize(float3(-0.7, 0.2, 0.3))), 0.0), 24.0) * 0.6;
+        }
+        float3 reflCol = envCol;
+        intersector<instancing, triangle_data> it;
+        it.assume_geometry_type(geometry_type::triangle);
+        it.accept_any_intersection(false);
+        ray rr;
+        rr.origin = pModel + nSelf * 0.03;
+        rr.direction = R;
+        rr.min_distance = 0.05;
+        rr.max_distance = 1.0e4;
+        for (int k = 0; k < 4; ++k) {
+          auto res = it.intersect(rr, accel, mask);
+          if (res.type == intersection_type::none) break;
+          float3 hitP = rr.origin + R * res.distance;
+          float3 hn, hc;
+          bool isSphere = float(res.instance_id) < u.sphereCount;
+          if (isSphere) {
+            float4 c = sph[2u * res.instance_id];
+            hc = sph[2u * res.instance_id + 1u].rgb;
+            hn = normalize(hitP - c.xyz);
+          } else {
+            uint prim = triBase + res.primitive_id;
+            hn = rt_interp_normal(triNrms, prim, res.triangle_barycentric_coord);
+            if (dot(hn, R) > 0.0) hn = -hn;          // face the incoming ray
+            hc = float3(triCols[prim]);
+            // Grazing self-hit on our own strip (facet nearly parallel to us,
+            // very close): step past it instead of reflecting ourselves.
+            if (res.distance < 0.6 && abs(dot(hn, nSelf)) > 0.85) {
+              rr.min_distance = res.distance + 0.02;
+              continue;
+            }
+          }
+          float inten = u.lAmbient + u.lDirect * max(dot(hn, L0), 0.0) + u.lReflect * max(dot(hn, L1), 0.0);
+          float specv = 0.0;
+          if (dot(hn, L1) > 0.0) {
+            float3 H = normalize(L1 - R);            // view direction at the hit is -R
+            specv = u.lSpec * pow(max(dot(hn, H), 0.0), max(u.lShin, 1.0));
+          }
+          reflCol = hc * min(inten, 1.0) + specv;
+          // Fade distant hits toward the environment so far-off geometry does
+          // not read as a hard mirror image (cheap "reflection fog").
+          reflCol = mix(reflCol, envCol, saturate(res.distance / 120.0));
+          break;
+        }
+        reflAcc += reflCol;
+      }
+      float3 reflCol = reflAcc / float(NS);
+      reflCol *= mix(float3(1.0), saturate(colRaw * 1.6), tint);
+      float NdotV = saturate(dot(nSelf, -viewM));
+      float F = F0 + (1.0 - F0) * pow(1.0 - NdotV, 5.0);
+      col = mix(col, reflCol, F);
+    }
+  }
+
   // Depth-cue fog toward bg (eye distance), matching the SSAO pass.
   if (u.bgFog.w > 0.5) {
     float dist = -pEye.z; // eye distance (pEye.z is the eye-space z, negative)
@@ -2387,7 +2790,8 @@ static inline uint64_t rtFloatBits(float f)
 
 // Tessellate a cylinder (a→b, radius r) into a K-sided tube (no caps — bonded
 // atoms cover the ends) and append the triangles (x,y,z per vertex) to `out`.
-static void rtAppendCylinder(std::vector<float>& out, simd_float3 a, simd_float3 b, float r)
+static void rtAppendCylinder(std::vector<float>& out, std::vector<float>& cols,
+    std::vector<float>& nrms, simd_float3 rgb, simd_float3 a, simd_float3 b, float r)
 {
   simd_float3 axis = b - a;
   float len = simd_length(axis);
@@ -2400,26 +2804,33 @@ static void rtAppendCylinder(std::vector<float>& out, simd_float3 a, simd_float3
   // 12 sides: the shadow/AO proxy for sticks. Six sides cast visibly hexagonal
   // hard shadows at high zoom; twelve is still 2 tris/side (24 tris per stick).
   const int K = 12;
-  simd_float3 ringA[K], ringB[K];
+  simd_float3 ringA[K], ringB[K], ringN[K];
   for (int i = 0; i < K; ++i) {
     float ang = 6.2831853f * (float)i / (float)K;
-    simd_float3 off = (cosf(ang) * t1 + sinf(ang) * t2) * r;
-    ringA[i] = a + off;
-    ringB[i] = b + off;
+    simd_float3 n = cosf(ang) * t1 + sinf(ang) * t2;
+    ringN[i] = n;
+    ringA[i] = a + n * r;
+    ringB[i] = b + n * r;
   }
   auto push = [&](simd_float3 p) { out.push_back(p.x); out.push_back(p.y); out.push_back(p.z); };
+  auto pushN = [&](simd_float3 n) { nrms.push_back(n.x); nrms.push_back(n.y); nrms.push_back(n.z); };
   for (int i = 0; i < K; ++i) {
     int j = (i + 1) % K;
     push(ringA[i]); push(ringA[j]); push(ringB[j]);
+    pushN(ringN[i]); pushN(ringN[j]); pushN(ringN[j]);
     push(ringA[i]); push(ringB[j]); push(ringB[i]);
+    pushN(ringN[i]); pushN(ringN[j]); pushN(ringN[i]);
+    for (int t = 0; t < 2; ++t) { cols.push_back(rgb.x); cols.push_back(rgb.y); cols.push_back(rgb.z); }
   }
 }
 
 // Append the triangles of a VBO (cartoon/surface mesh) to `out`, reading the
 // float3 position at posOffset. Handles triangle list/strip/fan/quads; indices
 // are UInt32 (matches drawVBOIndexed) or sequential when indexData is null.
-static void rtAppendVBOTris(std::vector<float>& out, PrimitiveType mode,
-    int count, const void* data, size_t stride, int posOffset, const void* indexData)
+static void rtAppendVBOTris(std::vector<float>& out, std::vector<float>& cols,
+    std::vector<float>& nrms, int normalOffset, int colorOffset, int colorType,
+    PrimitiveType mode, int count, const void* data, size_t stride, int posOffset,
+    const void* indexData)
 {
   if (!data || stride == 0 || posOffset < 0 || count < 3) return;
   const uint8_t* base = static_cast<const uint8_t*>(data);
@@ -2429,7 +2840,37 @@ static void rtAppendVBOTris(std::vector<float>& out, PrimitiveType mode,
     const float* p = reinterpret_cast<const float*>(base + (size_t)vi * stride + posOffset);
     out.push_back(p[0]); out.push_back(p[1]); out.push_back(p[2]);
   };
-  auto tri = [&](uint32_t i0, uint32_t i1, uint32_t i2) { push(i0); push(i1); push(i2); };
+  // Traced reflections: colour of the triangle = average of its three vertex colours
+  // (UByte4Norm when colorType == 0, Float4 otherwise; grey when absent).
+  auto vcol = [&](uint32_t vi, float c[3]) {
+    if (colorOffset < 0) { c[0] = c[1] = c[2] = 0.8f; return; }
+    const uint8_t* cp = base + (size_t)vi * stride + colorOffset;
+    if (colorType == 0) { c[0] = cp[0] / 255.f; c[1] = cp[1] / 255.f; c[2] = cp[2] / 255.f; }
+    else { const float* f = reinterpret_cast<const float*>(cp); c[0] = f[0]; c[1] = f[1]; c[2] = f[2]; }
+  };
+  auto tri = [&](uint32_t i0, uint32_t i1, uint32_t i2) {
+    push(i0); push(i1); push(i2);
+    float a[3], b[3], c[3];
+    vcol(i0, a); vcol(i1, b); vcol(i2, c);
+    for (int k = 0; k < 3; ++k) cols.push_back((a[k] + b[k] + c[k]) / 3.f);
+    // Traced reflections: per-vertex normals (Float3 at normalOffset); facet normal when absent.
+    if (normalOffset >= 0) {
+      const uint32_t vi[3] = {i0, i1, i2};
+      for (int v = 0; v < 3; ++v) {
+        const float* n = reinterpret_cast<const float*>(base + (size_t)vi[v] * stride + normalOffset);
+        nrms.push_back(n[0]); nrms.push_back(n[1]); nrms.push_back(n[2]);
+      }
+    } else {
+      const float* p0 = reinterpret_cast<const float*>(base + (size_t)i0 * stride + posOffset);
+      const float* p1 = reinterpret_cast<const float*>(base + (size_t)i1 * stride + posOffset);
+      const float* p2 = reinterpret_cast<const float*>(base + (size_t)i2 * stride + posOffset);
+      simd_float3 e1 = simd_make_float3(p1[0]-p0[0], p1[1]-p0[1], p1[2]-p0[2]);
+      simd_float3 e2 = simd_make_float3(p2[0]-p0[0], p2[1]-p0[1], p2[2]-p0[2]);
+      simd_float3 fn = simd_cross(e1, e2);
+      float l = simd_length(fn); fn = l > 1e-12f ? fn / l : simd_make_float3(0, 0, 1);
+      for (int v = 0; v < 3; ++v) { nrms.push_back(fn.x); nrms.push_back(fn.y); nrms.push_back(fn.z); }
+    }
+  };
   using PT = PrimitiveType;
   if (mode == PT::Triangles) {
     for (int k = 0; k + 2 < count; k += 3) tri(gi(k), gi(k + 1), gi(k + 2));
@@ -2552,6 +2993,24 @@ void RendererMetal::buildSphereProtoAS()
 // atom, transform = translate(center)·scale(radius), MODEL space). Rebuilt only
 // when the accumulated sphere set changes — model-space centers are invariant
 // under camera rotation, so this does NOT rebuild while orbiting.
+// Upload the per-occurrence traced-reflection material table ({reflect, tint,
+// rough, 0} per RT geometry occurrence, indexed by the per-primitive occurrence
+// index the built AS carries). Tiny; rewritten whenever the record or a
+// material slider changes.
+void RendererMetal::uploadRTMaterials()
+{
+  const size_t n = _rtBuiltMat.size();
+  const size_t bytes = std::max<size_t>(n, 1) * 4 * sizeof(float);
+  if (!_rtMatBuffer || _rtMatBuffer.length < bytes) {
+    [_rtMatBuffer release];
+    _rtMatBuffer = [_device newBufferWithLength:bytes options:MTLResourceStorageModeShared];
+  }
+  if (!_rtMatBuffer) return;
+  float* dst = static_cast<float*>(_rtMatBuffer.contents);
+  if (n == 0) { dst[0] = dst[1] = dst[2] = dst[3] = 0.0f; return; }
+  std::memcpy(dst, _rtBuiltMat.data(), n * 4 * sizeof(float));
+}
+
 void RendererMetal::ensureRayTracingAS()
 {
   if (!_rtEnabled || !_rtSupported) { _rtReady = false; return; }
@@ -2563,7 +3022,18 @@ void RendererMetal::ensureRayTracingAS()
   // entries at the same generations and lands on the same signature.
   uint64_t h = _rtFrameSig;
   if (_rtReady && _rtInstanceAS && !_rtGeomDirty && h == _rtSphereHash) {
-    /* unchanged */
+    // Unchanged casters. The grid cell RECTS are not part of the signature (a
+    // window resize must not rebuild), so refresh them from this frame's record.
+    if (_rtBuiltGrid) {
+      for (size_t c = 0; c < _rtBuiltCells.size() && c < _rtFrameCells.size(); ++c)
+        std::memcpy(_rtBuiltCells[c].rect, _rtFrameCells[c].rect, 4 * sizeof(float));
+    }
+    // Same record, possibly new materials (a slider drag): refresh the table.
+    // Occurrence order is identical (same signature), so indices still match.
+    if (_rtFrameMat.size() == _rtBuiltMat.size() && _rtFrameMat != _rtBuiltMat) {
+      _rtBuiltMat = _rtFrameMat;
+      uploadRTMaterials();
+    }
   } else {
     // Concatenate the frame's cached geometry. Entries can have been erased
     // since (invalidateVBOCacheEntry runs between draws), so tolerate misses:
@@ -2597,9 +3067,42 @@ void RendererMetal::ensureRayTracingAS()
     static const Mat4 kIdentity = identityMatrix();
 
     if (nSph > 0) buildSphereProtoAS();
-    // (Re)build the world-triangle primitive AS (sticks + cartoon/surface).
-    [_rtTriProtoAS release];  // MRC: release the previous rebuild's proto AS (+1)
-    _rtTriProtoAS = nil;
+
+    // grid_mode (#478): split the frame record into cells. setGridSlot opened
+    // one cell per slot in draw order, so cell c owns the keys
+    // [firstKey_c, firstKey_c+1). Cell c's instances get mask bit c; rt_ao
+    // traces each pixel with the mask of the cell it lies in, so a cell's
+    // rays only ever meet that cell's own casters. Without grid_mode there is
+    // one cell owning every key with an all-bits mask. Cells beyond the 32
+    // mask bits are left out (their pixels trace nothing and stay lit).
+    struct CellRange { size_t keyBegin, keyEnd; const float* rect; };
+    std::vector<CellRange> cells;
+    const bool gridBuild = !_rtFrameCells.empty();
+    static const float kFullRect[4] = {0.f, 0.f, 1.f, 1.f};
+    const size_t nKeys = _rtFrameKeys.size();
+    if (!gridBuild) {
+      cells.push_back({0, nKeys, kFullRect});
+    } else {
+      const size_t nCells = std::min<size_t>(_rtFrameCells.size(), kRTMaxGridCells);
+      for (size_t c = 0; c < nCells; ++c) {
+        size_t b = std::min(_rtFrameCells[c].firstKey, nKeys);
+        size_t e = c + 1 < _rtFrameCells.size()
+            ? std::min(_rtFrameCells[c + 1].firstKey, nKeys) : nKeys;
+        cells.push_back({b, std::max(b, e), _rtFrameCells[c].rect});
+      }
+    }
+    auto cellMask = [&](size_t c) -> uint32_t {
+      return gridBuild ? (1u << (uint32_t)c) : 0xFFFFFFFFu;
+    };
+    std::vector<RTBuiltCell> built(cells.size());
+    for (size_t c = 0; c < cells.size(); ++c)
+      std::memcpy(built[c].rect, cells[c].rect, 4 * sizeof(float));
+
+    // (Re)build the world-triangle primitive AS (sticks + cartoon/surface):
+    // one per cell, each covering that cell's contiguous range of the shared
+    // vertex buffer.
+    for (id<MTLAccelerationStructure> as : _rtTriProtoASs) [as release];  // MRC (+1 each)
+    _rtTriProtoASs.clear();
     // Written entry by entry straight into the shared buffer: the old per-frame
     // std::vector<float> _rtTris only ever existed as an intermediate copy.
     id<MTLBuffer> tb = nTris > 0
@@ -2607,117 +3110,211 @@ void RendererMetal::ensureRayTracingAS()
                                options:MTLResourceStorageModeShared]
         : nil;
     if (!tb) nTris = 0;
+    // Traced reflections: parallel per-triangle colour buffer (3 floats / kept triangle).
+    id<MTLBuffer> cb = nTris > 0
+        ? [_device newBufferWithLength:(nTriFloats / 3) * sizeof(float)
+                               options:MTLResourceStorageModeShared]
+        : nil;
+    id<MTLBuffer> nb = nTris > 0
+        ? [_device newBufferWithLength:nTriFloats * sizeof(float)
+                               options:MTLResourceStorageModeShared]
+        : nil;
+    id<MTLBuffer> mb = nTris > 0
+        ? [_device newBufferWithLength:(nTriFloats / 9) * sizeof(uint32_t)
+                               options:MTLResourceStorageModeShared]
+        : nil;
     size_t actualTris = 0;   // triangles kept after pose-baking + clip drop
     if (nTris > 0) {
       float* dst = static_cast<float*>(tb.contents);
-      for (size_t ki = 0; ki < _rtFrameKeys.size(); ++ki) {
-        auto it = _rtGeomCache.find(_rtFrameKeys[ki]);
-        if (it == _rtGeomCache.end() || it->second.tris.empty()) continue;
-        const std::vector<float>& tr = it->second.tris;
-        const Mat4& xf = ki < _rtFrameXform.size() ? _rtFrameXform[ki] : kIdentity;
-        const float cf = ki < _rtFrameClip.size() ? _rtFrameClip[ki][0] : -1.0f;
-        const float cb = ki < _rtFrameClip.size() ? _rtFrameClip[ki][1] : 1e6f;
-        const bool clipOn = cf >= 0.0f;
-        for (size_t t = 0; t + 8 < tr.size(); t += 9) {
-          float w[3][3];
-          xformPt(xf, tr[t + 0], tr[t + 1], tr[t + 2], w[0]);
-          xformPt(xf, tr[t + 3], tr[t + 4], tr[t + 5], w[1]);
-          xformPt(xf, tr[t + 6], tr[t + 7], tr[t + 8], w[2]);
-          if (clipOn) {
-            float d0 = eyeDepth(w[0]), d1 = eyeDepth(w[1]), d2 = eyeDepth(w[2]);
-            // Drop only triangles fully outside the slab, so the clip cut edge
-            // (partially-inside tris) still casts and the cavity walls stay lit.
-            if ((d0 < cf && d1 < cf && d2 < cf) ||
-                (d0 > cb && d1 > cb && d2 > cb))
-              continue;
+      float* cdst = cb ? static_cast<float*>(cb.contents) : nullptr;
+      float* ndst = nb ? static_cast<float*>(nb.contents) : nullptr;
+      uint32_t* mdst = mb ? static_cast<uint32_t*>(mb.contents) : nullptr;
+      for (size_t c = 0; c < cells.size(); ++c) {
+        built[c].triBase = (uint32_t)actualTris;
+        for (size_t ki = cells[c].keyBegin; ki < cells[c].keyEnd; ++ki) {
+          auto it = _rtGeomCache.find(_rtFrameKeys[ki]);
+          if (it == _rtGeomCache.end() || it->second.tris.empty()) continue;
+          const std::vector<float>& tr = it->second.tris;
+          const std::vector<float>& tc = it->second.triCols;
+          const bool haveCols = tc.size() * 3 == tr.size();
+          const std::vector<float>& tn = it->second.triNrms;
+          const bool haveNrms = tn.size() == tr.size();
+          const Mat4& xf = ki < _rtFrameXform.size() ? _rtFrameXform[ki] : kIdentity;
+          const float cf = ki < _rtFrameClip.size() ? _rtFrameClip[ki][0] : -1.0f;
+          const float cb = ki < _rtFrameClip.size() ? _rtFrameClip[ki][1] : 1e6f;
+          const bool clipOn = cf >= 0.0f;
+          for (size_t t = 0; t + 8 < tr.size(); t += 9) {
+            float w[3][3];
+            xformPt(xf, tr[t + 0], tr[t + 1], tr[t + 2], w[0]);
+            xformPt(xf, tr[t + 3], tr[t + 4], tr[t + 5], w[1]);
+            xformPt(xf, tr[t + 6], tr[t + 7], tr[t + 8], w[2]);
+            if (clipOn) {
+              float d0 = eyeDepth(w[0]), d1 = eyeDepth(w[1]), d2 = eyeDepth(w[2]);
+              // Drop only triangles fully outside the slab, so the clip cut edge
+              // (partially-inside tris) still casts and the cavity walls stay lit.
+              if ((d0 < cf && d1 < cf && d2 < cf) ||
+                  (d0 > cb && d1 > cb && d2 > cb))
+                continue;
+            }
+            std::memcpy(dst + 0, w[0], 3 * sizeof(float));
+            std::memcpy(dst + 3, w[1], 3 * sizeof(float));
+            std::memcpy(dst + 6, w[2], 3 * sizeof(float));
+            dst += 9;
+            if (cdst) {
+              if (haveCols) std::memcpy(cdst, tc.data() + t / 3, 3 * sizeof(float));
+              else { cdst[0] = cdst[1] = cdst[2] = 0.8f; }
+              cdst += 3;
+            }
+            if (ndst) {
+              for (int v = 0; v < 3; ++v) {
+                float nx, ny, nz;
+                if (haveNrms) { nx = tn[t + 3*v]; ny = tn[t + 3*v + 1]; nz = tn[t + 3*v + 2]; }
+                else {   // facet normal from the world positions
+                  float e1[3] = {w[1][0]-w[0][0], w[1][1]-w[0][1], w[1][2]-w[0][2]};
+                  float e2[3] = {w[2][0]-w[0][0], w[2][1]-w[0][1], w[2][2]-w[0][2]};
+                  nx = e1[1]*e2[2]-e1[2]*e2[1]; ny = e1[2]*e2[0]-e1[0]*e2[2]; nz = e1[0]*e2[1]-e1[1]*e2[0];
+                }
+                // rotate by the pose delta (rotation part of xf)
+                ndst[0] = xf[0]*nx + xf[4]*ny + xf[8]*nz;
+                ndst[1] = xf[1]*nx + xf[5]*ny + xf[9]*nz;
+                ndst[2] = xf[2]*nx + xf[6]*ny + xf[10]*nz;
+                ndst += 3;
+              }
+            }
+            if (mdst) *mdst++ = (uint32_t)ki;   // occurrence -> material table row
+            ++actualTris;
           }
-          std::memcpy(dst + 0, w[0], 3 * sizeof(float));
-          std::memcpy(dst + 3, w[1], 3 * sizeof(float));
-          std::memcpy(dst + 6, w[2], 3 * sizeof(float));
-          dst += 9;
-          ++actualTris;
         }
+        built[c].triCount = (uint32_t)(actualTris - built[c].triBase);
       }
     }
     nTris = actualTris;
+    std::vector<int> triProto(cells.size(), -1);   // index into _rtTriProtoASs
     if (nTris > 0) {
-      MTLAccelerationStructureTriangleGeometryDescriptor* tgeo =
-          [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
-      tgeo.vertexBuffer = tb;
-      tgeo.vertexStride = 3 * sizeof(float);
-      tgeo.vertexFormat = MTLAttributeFormatFloat3;
-      tgeo.triangleCount = nTris;
-      tgeo.opaque = YES;
-      MTLPrimitiveAccelerationStructureDescriptor* pd =
-          [MTLPrimitiveAccelerationStructureDescriptor descriptor];
-      pd.geometryDescriptors = @[tgeo];
-      _rtTriProtoAS = buildAccelStructure(pd);
-      // MRC: keep the (+1) vertex buffer alive as _rtTriBuffer — the AS holds
-      // its own compacted geometry, but rt_ao reads the hit triangle's vertices
-      // from this buffer to reject grazing self-hits of the shadow ray.
+      for (size_t c = 0; c < cells.size(); ++c) {
+        if (built[c].triCount == 0) continue;
+        MTLAccelerationStructureTriangleGeometryDescriptor* tgeo =
+            [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
+        tgeo.vertexBuffer = tb;
+        tgeo.vertexBufferOffset = (NSUInteger)built[c].triBase * 9 * sizeof(float);
+        tgeo.vertexStride = 3 * sizeof(float);
+        tgeo.vertexFormat = MTLAttributeFormatFloat3;
+        tgeo.triangleCount = built[c].triCount;
+        tgeo.opaque = YES;
+        MTLPrimitiveAccelerationStructureDescriptor* pd =
+            [MTLPrimitiveAccelerationStructureDescriptor descriptor];
+        pd.geometryDescriptors = @[tgeo];
+        id<MTLAccelerationStructure> as = buildAccelStructure(pd);
+        if (!as) continue;
+        triProto[c] = (int)_rtTriProtoASs.size();
+        _rtTriProtoASs.push_back(as);
+      }
+      // MRC: keep the (+1) vertex buffer alive as _rtTriBuffer — the ASs hold
+      // their own compacted geometry, but rt_ao reads the hit triangle's
+      // vertices from this buffer to reject grazing self-hits of the shadow ray.
       [_rtTriBuffer release];
       _rtTriBuffer = tb;
+      [_rtTriColBuffer release];
+      _rtTriColBuffer = cb;
+      [_rtTriNrmBuffer release];
+      _rtTriNrmBuffer = nb;
+      [_rtTriMatBuffer release];
+      _rtTriMatBuffer = mb;
     } else {
+      [cb release];  [nb release];  [mb release];
+      [_rtTriMatBuffer release];
+      _rtTriMatBuffer = nil;
+      [_rtTriColBuffer release];
+      _rtTriColBuffer = nil;
+      [_rtTriNrmBuffer release];
+      _rtTriNrmBuffer = nil;
       // No triangles survived (none present, or all clipped away). Release the
       // upper-bound buffer we may have allocated so it does not leak (#425).
       [tb release];
       [_rtTriBuffer release];
       _rtTriBuffer = nil;
     }
-    _rtTriInstance = -1;
 
-    // Top-level instance AS: N icosphere instances (atoms) + 1 world-tri
-    // instance (identity). instancedAccelerationStructures indexes the protos.
+    // Top-level instance AS: N icosphere instances (atoms) + one world-tri
+    // instance (identity) per cell that has triangles.
+    // instancedAccelerationStructures indexes the protos.
     NSMutableArray* protos = [NSMutableArray array];
-    int sphereIdx = -1, triIdx = -1;
+    int sphereIdx = -1;
     if (nSph > 0 && _rtSphereProtoAS) { sphereIdx = (int)protos.count; [protos addObject:_rtSphereProtoAS]; }
-    if (_rtTriProtoAS) { triIdx = (int)protos.count; [protos addObject:_rtTriProtoAS]; }
-    size_t nInst = (sphereIdx >= 0 ? nSph : 0) + (triIdx >= 0 ? 1 : 0);
-    if (nInst == 0 || protos.count == 0) { _rtTriCount = 0; _rtReady = false; return; }
+    const int triProtoBase = (int)protos.count;
+    for (id<MTLAccelerationStructure> as : _rtTriProtoASs) [protos addObject:as];
+    size_t nInst = (sphereIdx >= 0 ? nSph : 0) + _rtTriProtoASs.size();
+    if (nInst == 0 || protos.count == 0) {
+      _rtTriCount = 0;
+      _rtBuiltCells.clear();
+      _rtReady = false;
+      return;
+    }
 
     id<MTLBuffer> instBuf =
         [_device newBufferWithLength:nInst * sizeof(MTLAccelerationStructureInstanceDescriptor)
                             options:MTLResourceStorageModeShared];
     auto* inst = (MTLAccelerationStructureInstanceDescriptor*)instBuf.contents;
     size_t ii = 0;
+    // Traced reflections: per sphere instance {cx,cy,cz,r, r,g,b,0} in instance order.
+    [_rtSphereBuffer release];
+    _rtSphereBuffer = (sphereIdx >= 0 && nSph > 0)
+        ? [_device newBufferWithLength:nSph * 8 * sizeof(float)
+                               options:MTLResourceStorageModeShared]
+        : nil;
+    float* srec = _rtSphereBuffer ? static_cast<float*>(_rtSphereBuffer.contents) : nullptr;
     if (sphereIdx >= 0) {
-      for (size_t ki = 0; ki < _rtFrameKeys.size(); ++ki) {
-        auto git = _rtGeomCache.find(_rtFrameKeys[ki]);
-        if (git == _rtGeomCache.end()) continue;
-        const std::vector<float>& sp = git->second.spheres;
-        const Mat4& xf = ki < _rtFrameXform.size() ? _rtFrameXform[ki] : kIdentity;
-        const float cf = ki < _rtFrameClip.size() ? _rtFrameClip[ki][0] : -1.0f;
-        const float cb = ki < _rtFrameClip.size() ? _rtFrameClip[ki][1] : 1e6f;
-        const bool clipOn = cf >= 0.0f;
-        for (size_t i = 0; i * 4 + 3 < sp.size(); ++i) {
-          float x = sp[i * 4], y = sp[i * 4 + 1],
-                z = sp[i * 4 + 2], r = sp[i * 4 + 3];
-          if (r <= 0.0f) r = 0.001f;
-          // Bake the pose delta: world center = xf·center, and the sphere's
-          // linear block is xf's rotation scaled by r (a rotation keeps it a
-          // sphere), so the instance transform is xf · (scale(r)·translate(c)).
-          float wc[3];
-          xformPt(xf, x, y, z, wc);
-          if (clipOn) {
-            float d = eyeDepth(wc);
-            if (d + r < cf || d - r > cb) continue;  // sphere fully outside slab
+      for (size_t c = 0; c < cells.size(); ++c) {
+        const uint32_t mask = cellMask(c);
+        for (size_t ki = cells[c].keyBegin; ki < cells[c].keyEnd; ++ki) {
+          auto git = _rtGeomCache.find(_rtFrameKeys[ki]);
+          if (git == _rtGeomCache.end()) continue;
+          const std::vector<float>& sp = git->second.spheres;
+          const std::vector<float>& sc = git->second.sphereCols;
+          const bool haveSC = sc.size() * 4 == sp.size() * 3;
+          const Mat4& xf = ki < _rtFrameXform.size() ? _rtFrameXform[ki] : kIdentity;
+          const float cf = ki < _rtFrameClip.size() ? _rtFrameClip[ki][0] : -1.0f;
+          const float cb = ki < _rtFrameClip.size() ? _rtFrameClip[ki][1] : 1e6f;
+          const bool clipOn = cf >= 0.0f;
+          for (size_t i = 0; i * 4 + 3 < sp.size(); ++i) {
+            float x = sp[i * 4], y = sp[i * 4 + 1],
+                  z = sp[i * 4 + 2], r = sp[i * 4 + 3];
+            if (r <= 0.0f) r = 0.001f;
+            // Bake the pose delta: world center = xf·center, and the sphere's
+            // linear block is xf's rotation scaled by r (a rotation keeps it a
+            // sphere), so the instance transform is xf · (scale(r)·translate(c)).
+            float wc[3];
+            xformPt(xf, x, y, z, wc);
+            if (clipOn) {
+              float d = eyeDepth(wc);
+              if (d + r < cf || d - r > cb) continue;  // sphere fully outside slab
+            }
+            MTLPackedFloat4x3 m;
+            m.columns[0].x = xf[0] * r; m.columns[0].y = xf[1] * r; m.columns[0].z = xf[2] * r;
+            m.columns[1].x = xf[4] * r; m.columns[1].y = xf[5] * r; m.columns[1].z = xf[6] * r;
+            m.columns[2].x = xf[8] * r; m.columns[2].y = xf[9] * r; m.columns[2].z = xf[10] * r;
+            m.columns[3].x = wc[0]; m.columns[3].y = wc[1]; m.columns[3].z = wc[2];
+            inst[ii].transformationMatrix = m;
+            inst[ii].options = MTLAccelerationStructureInstanceOptionOpaque;
+            inst[ii].mask = mask;
+            inst[ii].intersectionFunctionTableOffset = 0;
+            inst[ii].accelerationStructureIndex = sphereIdx;
+            if (srec) {
+              float* o = srec + ii * 8;
+              o[0] = wc[0]; o[1] = wc[1]; o[2] = wc[2]; o[3] = r;
+              if (haveSC) { o[4] = sc[i * 3]; o[5] = sc[i * 3 + 1]; o[6] = sc[i * 3 + 2]; }
+              else { o[4] = o[5] = o[6] = 0.8f; }
+              o[7] = (float)ki;   // occurrence -> material table row
+            }
+            ++ii;
           }
-          MTLPackedFloat4x3 m;
-          m.columns[0].x = xf[0] * r; m.columns[0].y = xf[1] * r; m.columns[0].z = xf[2] * r;
-          m.columns[1].x = xf[4] * r; m.columns[1].y = xf[5] * r; m.columns[1].z = xf[6] * r;
-          m.columns[2].x = xf[8] * r; m.columns[2].y = xf[9] * r; m.columns[2].z = xf[10] * r;
-          m.columns[3].x = wc[0]; m.columns[3].y = wc[1]; m.columns[3].z = wc[2];
-          inst[ii].transformationMatrix = m;
-          inst[ii].options = MTLAccelerationStructureInstanceOptionOpaque;
-          inst[ii].mask = 0xFF;
-          inst[ii].intersectionFunctionTableOffset = 0;
-          inst[ii].accelerationStructureIndex = sphereIdx;
-          ++ii;
         }
       }
     }
-    if (triIdx >= 0) {
-      _rtTriInstance = (int)ii;   // instance_id the shadow ray sees for world tris
+    _rtSphereInstCount = ii;   // sphere instances occupy ids [0, ii)
+    for (size_t c = 0; c < cells.size(); ++c) {
+      if (triProto[c] < 0) continue;
+      built[c].triInstance = (int)ii;   // instance_id the shadow ray sees for this cell's tris
       MTLPackedFloat4x3 m;
       m.columns[0].x = 1; m.columns[0].y = 0; m.columns[0].z = 0;
       m.columns[1].x = 0; m.columns[1].y = 1; m.columns[1].z = 0;
@@ -2725,9 +3322,9 @@ void RendererMetal::ensureRayTracingAS()
       m.columns[3].x = 0; m.columns[3].y = 0; m.columns[3].z = 0;
       inst[ii].transformationMatrix = m;
       inst[ii].options = MTLAccelerationStructureInstanceOptionOpaque;
-      inst[ii].mask = 0xFF;
+      inst[ii].mask = cellMask(c);
       inst[ii].intersectionFunctionTableOffset = 0;
-      inst[ii].accelerationStructureIndex = triIdx;
+      inst[ii].accelerationStructureIndex = (NSUInteger)(triProtoBase + triProto[c]);
       ++ii;
     }
 
@@ -2736,6 +3333,7 @@ void RendererMetal::ensureRayTracingAS()
     if (ii == 0) {
       [instBuf release];
       _rtTriCount = 0;
+      _rtBuiltCells.clear();
       _rtReady = false;
       return;
     }
@@ -2751,11 +3349,16 @@ void RendererMetal::ensureRayTracingAS()
     _rtSphereHash = h;
     _rtBuiltCount = nSph;
     _rtTriCount = nTris;
+    _rtBuiltCells = std::move(built);
+    _rtBuiltGrid = gridBuild;
+    _rtBuiltMat = _rtFrameMat;
+    uploadRTMaterials();
     _rtReady = (_rtInstanceAS != nil);
 
     static int once = 0;
     if (_rtReady && once++ < 5)
-      NSLog(@"RendererMetal RT: AS rebuilt — %zu spheres + %zu triangles", nSph, nTris);
+      NSLog(@"RendererMetal RT: AS rebuilt — %zu spheres + %zu triangles in %zu cell(s)%s",
+            nSph, nTris, cells.size(), gridBuild ? " (grid_mode)" : "");
   }
 
   // Lazily compile the RT resolve pipeline (separate library so the raytracing
@@ -2808,6 +3411,10 @@ void RendererMetal::runPostChain()
   bool doAO = _ssaoPipeline && _aoEnabled && !noAO;
   bool doFog = _ssaoPipeline && _postFogEnabled;
   bool doShadow = _ssaoPipeline && _shadowEnabled && !noShadow;
+  // The shadow MAP may only be sampled when this frame rendered it. In
+  // grid_mode the pre-pass is skipped, so the raster path renders unshadowed
+  // and the RT path keeps only its traced shadow (metal_rt_shadows).
+  bool doShadowMap = doShadow && _shadowMapValid;
   if (_rtEnabled) ensureRTAOTargets(_rtW, _rtH);   // metal_rt_scale may have changed
   bool doRT = _rtEnabled && _rtReady && _rtResolvePipeline && _rtAOPipeline &&
               _rtInstanceAS && _postColor && _rtAO;
@@ -2827,13 +3434,16 @@ void RendererMetal::runPostChain()
       float shadowRadius;        // matches MSL RTU: shadow ortho half-extent
       float shadowBias;          // matches MSL RTU: metal_shadow_bias multiplier
       float projOrtho;           // matches MSL RTU: 1 = orthographic (#139)
-      float triInstance;         // matches MSL RTU: world-tri instance id (-1 = none)
-      float triCount;            // matches MSL RTU: world-tri triangle count
+      float gridActive;          // matches MSL RTU: >0.5 = per-cell masks (grid_mode, #478)
+      float cellCount;           // matches MSL RTU: entries in the RTGridU table
       float klx, kly, klz;       // matches MSL RTU: key-light dir (toward light, eye space)
       float aoCrease;            // matches MSL RTU: crease-term intensity (0 = off)
       float aoCreaseRadiusPx;    // matches MSL RTU: crease ring radius (px)
       float aoExemptEnabled;     // matches MSL RTU: cartoon mask bound at texture(4)
       float pad3;                // matches MSL RTU padding (16-byte multiple)
+      float reflEnv, reflSamples, sphereCount, matCount;   // traced reflections (see MSL RTU)
+      float lAmbient, lDirect, lReflect, lSpec;
+      float lShin, pad4, pad5, pad6;
     } u;
     std::memcpy(u.invModelview, _modelviewInv.data(), 16 * sizeof(float));
     simd_float4x4 inv;
@@ -2852,7 +3462,8 @@ void RendererMetal::runPostChain()
     u.projOrtho = _projOrtho;
     u.fogStart = _fogStart; u.fogEnd = _fogEnd;
     u.aoRadius = _rtAORadius; u.aoIntensity = _rtAOIntensity;
-    u.shadowIntensity = doShadow ? _rtShadowIntensity : 0.0f;
+    u.shadowIntensity =
+        (doShadow && (_rtShadowEnabled || _shadowMapValid)) ? _rtShadowIntensity : 0.0f;
     // AO rays/pixel: the live view uses metal_rt_samples (_rtSamples, default 16
     // stratified Hammersley samples — clean and shimmer-free with the composite
     // blur); the single-shot offscreen PNG (no temporal smoothing) traces more
@@ -2873,8 +3484,22 @@ void RendererMetal::runPostChain()
     std::memcpy(u.lightViewProj, _lightViewProjEye, 16 * sizeof(float));
     u.shadowRadius = _shadowRadius;
     u.shadowBias = _shadowBias;
-    u.triInstance = (_rtTriBuffer && _rtTriInstance >= 0) ? (float)_rtTriInstance : -1.0f;
-    u.triCount = (float)_rtTriCount;
+    u.gridActive = _rtBuiltGrid ? 1.0f : 0.0f;
+    u.cellCount = (float)std::min<size_t>(_rtBuiltCells.size(), kRTMaxGridCells);
+    // Per-cell table (#478): cell rects for the pixel -> mask lookup, and each
+    // cell's slice of the world-tri buffer + the instance id of its tri mesh.
+    // Matches MSL RTGridU exactly (32 x {float4 rect; uint4 tri}).
+    struct RTCellU { float rect[4]; uint32_t tri[4]; };
+    struct RTGridU { RTCellU cell[32]; } gu;
+    static_assert(sizeof(gu) == 32 * 32, "RTGridU must match the MSL layout");
+    std::memset(&gu, 0, sizeof(gu));
+    for (size_t c = 0; c < _rtBuiltCells.size() && c < (size_t)kRTMaxGridCells; ++c) {
+      std::memcpy(gu.cell[c].rect, _rtBuiltCells[c].rect, 4 * sizeof(float));
+      gu.cell[c].tri[0] = _rtBuiltCells[c].triBase;
+      gu.cell[c].tri[1] = _rtBuiltCells[c].triCount;
+      gu.cell[c].tri[2] = (uint32_t)_rtBuiltCells[c].triInstance;  // -1 -> 0xFFFFFFFF
+      gu.cell[c].tri[3] = 0u;
+    }
     u.klx = _keyLightEye[0]; u.kly = _keyLightEye[1]; u.klz = _keyLightEye[2];
     // Screen-space crease term under RT (#436): gated by the Ambient-occlusion
     // toggle exactly like the raster pass, with the same cartoon/ribbon exemption
@@ -2884,6 +3509,19 @@ void RendererMetal::runPostChain()
     u.aoCreaseRadiusPx = (float)_rtH * kSSAORadiusFrac;
     u.aoExemptEnabled = aoMaskReady ? 1.0f : 0.0f;
     u.pad3 = 0.0f;
+    // Traced self-reflections: materials come from the per-occurrence table
+    // (metal_rt_reflect/_tint/_rough per object); only the global knobs and the
+    // hit-shading light model travel in the uniform. matCount 0 = nothing
+    // reflective this frame -> the composite skips the reflection block.
+    bool anyReflective = false;
+    for (const auto& m : _rtBuiltMat) if (m[0] > 0.001f) { anyReflective = true; break; }
+    u.reflEnv = (float)_reflEnv;
+    u.reflSamples = _offscreen ? (float)_reflSamples : 1.0f;
+    u.sphereCount = (float)_rtSphereInstCount;
+    u.matCount = anyReflective ? (float)_rtBuiltMat.size() : 0.0f;
+    u.lAmbient = _lightAmbient; u.lDirect = _lightDirect; u.lReflect = _lightReflect;
+    u.lSpec = _lightSpecular; u.lShin = _lightShininess;
+    u.pad4 = u.pad5 = u.pad6 = 0.0f;
 
     // Pass A: trace AO -> _rtAO (R16Float).
     // MRC: all per-frame render-pass descriptors in runPostChain use the
@@ -2900,18 +3538,19 @@ void RendererMetal::runPostChain()
     [ea setRenderPipelineState:_rtAOPipeline];
     if (_rtSphereProtoAS)
       [ea useResource:_rtSphereProtoAS usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
-    if (_rtTriProtoAS)
-      [ea useResource:_rtTriProtoAS usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
+    for (id<MTLAccelerationStructure> as : _rtTriProtoASs)
+      [ea useResource:as usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
     [ea setFragmentTexture:_sceneDepth atIndex:1];
     [ea setFragmentSamplerState:_postSampler atIndex:0];
     [ea setFragmentAccelerationStructure:_rtInstanceAS atBufferIndex:0];
     [ea setFragmentBytes:&u length:sizeof(u) atIndex:1];
-    if (_rtTriBuffer && _rtTriInstance >= 0) {
+    if (_rtTriBuffer) {
       [ea setFragmentBuffer:_rtTriBuffer offset:0 atIndex:2];
     } else {
-      float dummyTri[9] = {0};   // never read: triInstance = -1 gates the lookup
+      float dummyTri[9] = {0};   // never read: every cell's triInstance is -1
       [ea setFragmentBytes:dummyTri length:sizeof(dummyTri) atIndex:2];
     }
+    [ea setFragmentBytes:&gu length:sizeof(gu) atIndex:3];
     [ea drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [ea endEncoding];
 
@@ -2969,18 +3608,42 @@ void RendererMetal::runPostChain()
     [er setFragmentSamplerState:_postSampler atIndex:0];
     [er setFragmentSamplerState:_shadowSampler atIndex:1];
     [er setFragmentBytes:&u length:sizeof(u) atIndex:1];
+    [er setFragmentBytes:&gu length:sizeof(gu) atIndex:3];   // cell table (#478)
+    // Traced self-reflections: the composite traces one reflection ray per
+    // reflective pixel, so it needs the AS + the geometry/colour/normal/material
+    // buffers built beside it.
+    if (_rtSphereProtoAS)
+      [er useResource:_rtSphereProtoAS usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
+    for (id<MTLAccelerationStructure> as : _rtTriProtoASs)
+      [er useResource:as usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
+    [er setFragmentAccelerationStructure:_rtInstanceAS atBufferIndex:0];
+    {
+      static const float kDummy[16] = {0};
+      if (_rtTriBuffer) [er setFragmentBuffer:_rtTriBuffer offset:0 atIndex:2];
+      else [er setFragmentBytes:kDummy length:sizeof(kDummy) atIndex:2];
+      if (_rtTriColBuffer) [er setFragmentBuffer:_rtTriColBuffer offset:0 atIndex:4];
+      else [er setFragmentBytes:kDummy length:sizeof(kDummy) atIndex:4];
+      if (_rtSphereBuffer) [er setFragmentBuffer:_rtSphereBuffer offset:0 atIndex:5];
+      else [er setFragmentBytes:kDummy length:sizeof(kDummy) atIndex:5];
+      if (_rtTriNrmBuffer) [er setFragmentBuffer:_rtTriNrmBuffer offset:0 atIndex:6];
+      else [er setFragmentBytes:kDummy length:sizeof(kDummy) atIndex:6];
+      if (_rtTriMatBuffer) [er setFragmentBuffer:_rtTriMatBuffer offset:0 atIndex:7];
+      else [er setFragmentBytes:kDummy length:sizeof(kDummy) atIndex:7];
+      if (_rtMatBuffer) [er setFragmentBuffer:_rtMatBuffer offset:0 atIndex:8];
+      else [er setFragmentBytes:kDummy length:sizeof(kDummy) atIndex:8];
+    }
     [er drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [er endEncoding];
     sceneSrc = _postColor;
   }
 
   // Pass 1: SSAO + screen-space shadows + depth-cue/fog (color+depth -> post).
-  else if ((doAO || doFog || doShadow) && _postColor) {
+  else if ((doAO || doFog || doShadowMap) && _postColor) {
     // Per-rep AO/shadow exemption (#79): rasterize the stashed cartoon/ribbon
     // draws (depth-tested vs the scene) into _aoExemptMaskTex BEFORE the SSAO
     // pass, so post_ssao_fog can skip the contour terms on those pixels. Only
     // meaningful when AO or shadow is actually running.
-    bool aoMaskReady = (doAO || doShadow) ? renderAOExemptMask() : false;
+    bool aoMaskReady = (doAO || doShadowMap) ? renderAOExemptMask() : false;
 
     struct {
       float projA, projB, fogStart, fogEnd;
@@ -3004,7 +3667,7 @@ void RendererMetal::runPostChain()
     u.aoIntensity = kSSAOIntensity;
     u.aoRadiusPx = (float)_rtH * kSSAORadiusFrac;
     u.projX = _projX; u.projY = _projY;
-    u.shadowEnabled = doShadow ? 1.0f : 0.0f;
+    u.shadowEnabled = doShadowMap ? 1.0f : 0.0f;
     u.shadowIntensity = 0.45f;
     u.aoExemptEnabled = aoMaskReady ? 1.0f : 0.0f;
     std::memcpy(u.lightViewProj, _lightViewProjEye, 16 * sizeof(float));
@@ -3056,7 +3719,9 @@ void RendererMetal::runPostChain()
   // Pass 2.5: depth-of-field — CoC blur by distance from the focal plane. Runs
   // on the fully-composited (opaque + OIT) color, before outlines. Default off
   // (_dofEnabled) => skipped entirely, so the default render is unchanged.
-  if (_dofEnabled && _dofPipeline && _sceneDepth) {
+  // A zero aperture is a closed aperture: no blur radius, so the pass would be an
+  // expensive no-op — skip it and leave sceneSrc alone (#472).
+  if (_dofEnabled && _dofPipeline && _sceneDepth && _dofAperture != 0.0f) {
     id<MTLTexture> dst = (sceneSrc == _sceneColor) ? _postColor : _sceneColor;
     struct {
       float projA, projB, invW, invH;
@@ -3066,11 +3731,16 @@ void RendererMetal::runPostChain()
     u.invW = (_rtW > 0) ? 1.0f / (float)_rtW : 0.0f;
     u.invH = (_rtH > 0) ? 1.0f / (float)_rtH : 0.0f;
     u.focusDist = _dofFocus;
-    u.focusRange = (_dofRange > 0.01f) ? _dofRange : 14.0f;
+    // The "unset" sentinel is NEGATIVE, not 0: aperture 0 is a closed aperture
+    // (zero blur radius) and range 0 is an infinitely sharp falloff, both of them
+    // meaningful values a user can dial in. Testing > 0 instead made 0 fall
+    // through to the 14.0 default — so dragging the aperture slider to its own
+    // minimum produced MAXIMUM blur (#472).
+    u.focusRange = (_dofRange >= 0.0f) ? _dofRange : 14.0f;
     // Resolution-relative: the aperture is authored in px at the live resolution,
     // so scale it for hi-res exports (pixelRadiusScale()==1 on the live view) —
     // otherwise the bokeh nearly vanishes in 2x/4K Copy/Save output (#48).
-    u.maxRadiusPx = ((_dofAperture > 0.0f) ? _dofAperture : 14.0f) * pixelRadiusScale();
+    u.maxRadiusPx = ((_dofAperture >= 0.0f) ? _dofAperture : 14.0f) * pixelRadiusScale();
 
     // metal_dof_quality (1..4): higher = more gather samples for denser, cleaner
     // bokeh. Levels >=2 also run the de-noise smoothing pass (two-pass); level 1
@@ -3306,8 +3976,8 @@ void RendererMetal::runPostChain()
     au.invW = (_rtW > 0) ? 1.0f / (float)_rtW : 0.0f;
     au.invH = (_rtH > 0) ? 1.0f / (float)_rtH : 0.0f;
     au.focusDist = _dofFocus;
-    au.focusRange = (_dofRange > 0.01f) ? _dofRange : 14.0f;
-    au.maxRadiusPx = ((_dofAperture > 0.0f) ? _dofAperture : 14.0f) * pixelRadiusScale();
+    au.focusRange = (_dofRange >= 0.0f) ? _dofRange : 14.0f;   // negative = unset, see #472
+    au.maxRadiusPx = ((_dofAperture >= 0.0f) ? _dofAperture : 14.0f) * pixelRadiusScale();
     au.dofOn = _dofEnabled ? 1.0f : 0.0f;
     [ea setFragmentBytes:&au length:sizeof(au) atIndex:0];
     [ea drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
@@ -3405,6 +4075,19 @@ void RendererMetal::runPostChain()
   }
 }
 
+id<MTLDepthStencilState> RendererMetal::oitDepthPeelAwareState()
+{
+  // A draw whose pre-pass could not run wrote no depth to match, so testing it
+  // for equality would reject it everywhere. Degrade to the ordinary
+  // depth-tested transparent blend for that draw instead of losing it.
+  if (_peelUnseeded) return oitDepthState();
+  // Which depth test a transparent draw uses. Every draw path re-applies its
+  // own depth state after setting a pipeline, so the state beginTransparentOIT
+  // put on the encoder does not survive to the draw -- this is the one place
+  // that decides, and it has to agree with the pass that is open.
+  return _oitPeelTest ? peelTestState() : oitDepthState();
+}
+
 id<MTLDepthStencilState> RendererMetal::oitDepthState()
 {
   // Transparent/OIT draws: depth-test vs opaque (LessEqual), never write depth.
@@ -3434,25 +4117,219 @@ id<MTLDepthStencilState> RendererMetal::bezierDepthState()
   return _bezierDepthState;
 }
 
-void RendererMetal::beginTransparentOIT()
+bool RendererMetal::ensurePeelTargets()
+{
+  // Created on the first peel request, not with the other post targets: a
+  // session that never peels should not carry a full-res depth-stencil texture
+  // (8 B/px) for a feature that never runs -- which is every session today,
+  // since no material sets wantsPeel yet.
+  if (_peelDepth) return true;
+  if (!_device || !_sceneDepth || _rtW == 0 || _rtH == 0) return false;
+  MTLTextureDescriptor* pd = [MTLTextureDescriptor
+      texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float_Stencil8
+                                   width:_rtW height:_rtH mipmapped:NO];
+  pd.usage = MTLTextureUsageRenderTarget;
+  pd.storageMode = MTLStorageModePrivate;
+  _peelDepth = [_device newTextureWithDescriptor:pd];
+  if (!_peelDepth) return false;
+  _peelPassDesc.depthAttachment.texture = _peelDepth;
+  _oitPeelPassDesc.depthAttachment.texture = _peelDepth;
+  return true;
+}
+
+bool RendererMetal::peelSupported() const
+{
+  // Everything the peel path needs, checked in one place so the scene loop can
+  // ask BEFORE it reorders the transparent pass. Missing anything, the caller
+  // draws every transparent object in one ordinary OIT pass -- the pre-#488
+  // look, rather than nothing at all.
+  // _peelDepth is NOT required here: it is created on demand by
+  // ensurePeelTargets(). What must exist is everything that cannot be created
+  // later -- the descriptors, the opaque depth to seed from, and the VBO peel
+  // pipelines. The impostor peel pipelines are deliberately not required: they
+  // are built lazily per layout, and a draw that cannot seed the depth falls
+  // back to an unpeeled LessEqual test rather than disappearing.
+  return _peelPassDesc && _oitPeelPassDesc && _sceneDepth && _rtW && _rtH &&
+      _vboPeelPipelineUByte && _vboPeelPipelineFloat;
+}
+
+void RendererMetal::resetTransparentOIT()
+{
+  // Called once per frame, before the first transparent pass. The peel path
+  // opens several transparent encoders per frame and only the first may CLEAR
+  // the accumulation and reveal targets; every later one loads what is there.
+  _oitCleared = false;
+}
+
+id<MTLDepthStencilState> RendererMetal::peelWriteState()
+{
+  // Pre-pass: ordinary depth test and WRITE, so the texture ends holding the
+  // object's nearest surface wherever that is in front of the opaque depth the
+  // blit seeded it with, and the opaque depth everywhere else.
+  if (!_peelWriteState) {
+    MTLDepthStencilDescriptor* d = [[MTLDepthStencilDescriptor alloc] init];
+    d.depthCompareFunction = MTLCompareFunctionLess;
+    d.depthWriteEnabled = YES;
+    _peelWriteState = [_device newDepthStencilStateWithDescriptor:d];
+    [d release];
+  }
+  return _peelWriteState;
+}
+
+id<MTLDepthStencilState> RendererMetal::peelTestState()
+{
+  // The peeled object's OIT draw: EQUAL, no write. Only the fragments whose
+  // depth is exactly what the pre-pass recorded survive -- one shell per pixel.
+  // Exactness is not luck: the pre-pass and this draw compute depth with the
+  // same shader code (the shadow vertex/fragment functions for VBOs, the same
+  // ray-cast intersection for impostors) under the same camera matrices.
+  // A fragment hidden behind opaque geometry lost the pre-pass test, so the
+  // texture still holds the OPAQUE depth there and the fragment cannot match:
+  // occlusion falls out of the same comparison.
+  if (!_peelTestState) {
+    MTLDepthStencilDescriptor* d = [[MTLDepthStencilDescriptor alloc] init];
+    d.depthCompareFunction = MTLCompareFunctionEqual;
+    d.depthWriteEnabled = NO;
+    _peelTestState = [_device newDepthStencilStateWithDescriptor:d];
+    [d release];
+  }
+  return _peelTestState;
+}
+
+void RendererMetal::beginPeelPrepass()
+{
+  if (!_cmdBuffer || !peelSupported() || !ensurePeelTargets()) return;
+  if (_encoder) { [_encoder endEncoding]; _encoder = nil; }
+
+  // Seed the peel depth with the opaque depth. This is what makes a transparent
+  // fragment behind opaque geometry fail here and therefore never match in the
+  // OIT pass that follows.
+  id<MTLBlitCommandEncoder> blit = [_cmdBuffer blitCommandEncoder];
+  if (!blit) { resumeScenePass(); return; }
+  [blit copyFromTexture:_sceneDepth toTexture:_peelDepth];
+  [blit endEncoding];
+
+  _passDesc = _peelPassDesc;
+  _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:_peelPassDesc];
+  if (!_encoder) { resumeScenePass(); return; }
+  bindNeutralMaterialU(_encoder);
+  // Depth-only, so nothing here samples the cubemap -- bound anyway so the
+  // "every encoder carries the environment" invariant has no exceptions to
+  // remember. Two setFragment* calls per peeled object.
+  bindEnvironment(_encoder);
+  [_encoder setViewport:_viewport];
+  if (_scissorEnabled) [_encoder setScissorRect:_scissorRect];
+  [_encoder setDepthStencilState:peelWriteState()];
+  // No culling: a transparent object's nearest surface can be a back face
+  // (an open surface, a stick cap), and missing it would peel to the shell
+  // behind it.
+  [_encoder setCullMode:MTLCullModeNone];
+  _peelMode = true;
+  _peelUnseeded = false;
+}
+
+void RendererMetal::endPeelPrepass()
+{
+  if (!_peelMode) return;
+  if (_encoder) { [_encoder endEncoding]; _encoder = nil; }
+  _peelMode = false;
+  _passDesc = _scenePassDesc;
+  // Disarm the frame's CLEAR here, not just in resumeScenePass().
+  //
+  // This normally hands straight over to beginTransparentOIT, but that function
+  // guards on a DIFFERENT capability set than peelSupported() does: a device
+  // where the OIT resolve pipeline failed to build while the peel pipelines
+  // succeeded returns from it with no encoder. The next transparent draw's
+  // ensureEncoder() would then re-open the scene pass with CLEAR still armed
+  // and wipe the frame's opaque colour and depth. The pre-pass is the first
+  // thing that ever ends the scene encoder mid-frame, so this window is new.
+  _scenePassDesc.colorAttachments[0].loadAction = MTLLoadActionLoad;
+  _scenePassDesc.depthAttachment.loadAction = MTLLoadActionLoad;
+  _scenePassDesc.stencilAttachment.loadAction = MTLLoadActionLoad;
+  // The pre-pass programmed peelWriteState (depth WRITE on) straight onto its
+  // own encoder without going through the cached flags, so on the fallback
+  // above the next ensureEncoder() would apply that stale state and let the
+  // transparent draws write depth. resumeScenePass() is what normally resets
+  // these; doing it here costs nothing and does not create an encoder.
+  _depthStencilDirty = true;
+}
+
+void RendererMetal::resumeScenePass()
+{
+  // Re-open the scene pass LOADING what is already there.
+  //
+  // Not politeness. beginFrame arms _scenePassDesc with a CLEAR load action and
+  // nothing disarms it until the first endTransparentOIT. Before #488 nothing
+  // ended the scene encoder in between, so there was no window -- but the peel
+  // pre-pass does, and any early return that left _encoder nil with CLEAR still
+  // armed would have the next draw's ensureEncoder() recreate the encoder and
+  // WIPE the frame's opaque colour and depth.
+  _passDesc = _scenePassDesc;
+  _scenePassDesc.colorAttachments[0].loadAction = MTLLoadActionLoad;
+  _scenePassDesc.depthAttachment.loadAction = MTLLoadActionLoad;
+  _scenePassDesc.stencilAttachment.loadAction = MTLLoadActionLoad;
+  if (!_cmdBuffer) return;
+  _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:_scenePassDesc];
+  if (!_encoder) return;
+  bindNeutralMaterialU(_encoder);
+  // This re-opens the SCENE pass, which draws ordinary lit geometry, so it
+  // needs the environment exactly as beginFrame does (#493 + #488). The
+  // fragments declare the cubemap unconditionally; a reflective draw with slot
+  // 6 empty is a hard Metal assertion.
+  bindEnvironment(_encoder);
+  [_encoder setViewport:_viewport];
+  if (_scissorEnabled) [_encoder setScissorRect:_scissorRect];
+  _depthTestEnabled = true;
+  _depthWriteEnabled = true;
+  _depthStencilDirty = true;
+  applyDepthStencilState();
+  [_encoder setCullMode:_cullFaceEnabled ? MTLCullModeBack : MTLCullModeNone];
+}
+
+void RendererMetal::beginTransparentOIT(bool peel)
 {
   // OIT requires its targets + pipelines; if any are missing, leave the scene
   // encoder active so transparent draws fall back to normal blending.
-  if (!_cmdBuffer || !_oitPassDesc || !_vboOitPipelineUByte ||
-      !_oitResolvePipeline)
+  // The default family is the one that always exists; testing the array itself
+  // would test its ADDRESS, which is never null, and silently disable the guard.
+  if (!_cmdBuffer || !_oitPassDesc ||
+      !_vboOitPipelineUByte[cMaterialFamily_default] || !_oitResolvePipeline)
     return;
+  if (peel && (!peelSupported() || !_peelDepth)) peel = false;
   if (_encoder) { [_encoder endEncoding]; _encoder = nil; }
 
-  _passDesc = _oitPassDesc;
-  _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:_oitPassDesc];
-  if (!_encoder) { _passDesc = _scenePassDesc; return; }
+  MTLRenderPassDescriptor* desc = peel ? _oitPeelPassDesc : _oitPassDesc;
+  // Only the frame's FIRST transparent encoder clears the accumulation and
+  // reveal targets; the peel path opens one pass per peeled object plus one for
+  // the rest, and each must add to the same image rather than wipe it.
+  MTLLoadAction load = _oitCleared ? MTLLoadActionLoad : MTLLoadActionClear;
+  desc.colorAttachments[0].loadAction = load;
+  desc.colorAttachments[1].loadAction = load;
+
+  _passDesc = desc;
+  _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:desc];
+  if (!_encoder) { resumeScenePass(); return; }
+  bindNeutralMaterialU(_encoder);
+  // The environment every reflective material samples (#493). Bound with the
+  // neutral material so no encoder can exist without it, and identical on the
+  // scene, shadow, peel and OIT passes -- a reflective object must reflect the
+  // same room whichever one draws it.
+  bindEnvironment(_encoder);
+  _oitCleared = true;
   [_encoder setViewport:_viewport];
+  // Grid mode sets the cell scissor BEFORE this encoder exists -- the
+  // transparent pass is opened per cell now, not once around the loop -- so it
+  // has to be re-applied, or every transparent draw runs with the full-frame
+  // scissor and a cell's geometry can bleed into its neighbour.
+  if (_scissorEnabled) [_encoder setScissorRect:_scissorRect];
   // Depth-test against opaque depth (LEQUAL), but DO NOT write depth, so
   // transparent fragments occlude/are-occluded by opaque geometry yet never
-  // hide each other.
-  [_encoder setDepthStencilState:oitDepthState()];
+  // hide each other. With peel on, EQUAL against the pre-pass depth instead,
+  // which keeps only the object's front-most shell.
+  [_encoder setDepthStencilState:peel ? peelTestState() : oitDepthState()];
   [_encoder setCullMode:MTLCullModeNone];
   _oitActive = true;
+  _oitPeelTest = peel;
   _oitHasContent = true;
 }
 
@@ -3461,6 +4338,7 @@ void RendererMetal::endTransparentOIT()
   if (!_oitActive) return;
   if (_encoder) { [_encoder endEncoding]; _encoder = nil; }
   _oitActive = false;
+  _oitPeelTest = false;
 
   // Resume rendering into the scene color (LOAD, don't clear) so any
   // post-transparent draws (e.g. selection indicators) land on the opaque
@@ -3470,6 +4348,12 @@ void RendererMetal::endTransparentOIT()
   _scenePassDesc.depthAttachment.loadAction = MTLLoadActionLoad;
   _scenePassDesc.stencilAttachment.loadAction = MTLLoadActionLoad;
   _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:_scenePassDesc];
+  bindNeutralMaterialU(_encoder);
+  // The environment every reflective material samples (#493). Bound with the
+  // neutral material so no encoder can exist without it, and identical on the
+  // scene and OIT passes -- a reflective object must reflect the same room
+  // whichever pass draws it.
+  bindEnvironment(_encoder);
   if (_encoder) {
     [_encoder setViewport:_viewport];
     _depthTestEnabled = true;
@@ -3505,6 +4389,12 @@ void RendererMetal::beginShadowPass()
   _passDesc = _shadowPassDesc;
   _shadowPassDesc.depthAttachment.loadAction = MTLLoadActionClear;
   _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:_shadowPassDesc];
+  bindNeutralMaterialU(_encoder);
+  // The environment every reflective material samples (#493). Bound with the
+  // neutral material so no encoder can exist without it, and identical on the
+  // scene and OIT passes -- a reflective object must reflect the same room
+  // whichever pass draws it.
+  bindEnvironment(_encoder);
   if (!_encoder) { _passDesc = _scenePassDesc; return; }
   MTLViewport vp = {0.0, 0.0, (double)kShadowDim, (double)kShadowDim, 0.0, 1.0};
   [_encoder setViewport:vp];
@@ -3525,6 +4415,7 @@ void RendererMetal::endShadowPass()
   if (!_shadowMode) return;
   if (_encoder) { [_encoder endEncoding]; _encoder = nil; }
   _shadowMode = false;
+  _shadowMapValid = true;
   // Re-open the scene pass with a fresh CLEAR — the shadow pre-pass runs BEFORE
   // the opaque loop, so the scene starts empty (mirrors beginFrame's clear; the
   // earlier beginFrame encoder we ended above did a redundant, harmless clear).
@@ -3537,6 +4428,12 @@ void RendererMetal::endShadowPass()
   _scenePassDesc.stencilAttachment.loadAction = MTLLoadActionClear;
   _scenePassDesc.stencilAttachment.clearStencil = 0;
   _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:_scenePassDesc];
+  bindNeutralMaterialU(_encoder);
+  // The environment every reflective material samples (#493). Bound with the
+  // neutral material so no encoder can exist without it, and identical on the
+  // scene and OIT passes -- a reflective object must reflect the same room
+  // whichever pass draws it.
+  bindEnvironment(_encoder);
   if (_encoder) {
     [_encoder setViewport:_viewport];
     _depthTestEnabled = true;
@@ -3583,6 +4480,37 @@ bool RendererMetal::getViewportRect(int& x, int& y, int& w, int& h) const
   return true;
 }
 
+// grid_mode (#478): open a new cell in this frame's RT geometry record. Every
+// draw noted from here until the next call belongs to `slot`, and the cell
+// rect is the viewport SceneSetMetalGridCell just set, in scene-texture uv
+// (same top-left origin as the post-pass uv). The OIT and selection replays
+// visit each slot again after the opaque pass; they note no RT geometry, so a
+// slot already recorded this frame is ignored rather than opened twice. Slot 0
+// (end of the grid loop) records nothing.
+void RendererMetal::setGridSlot(int slot)
+{
+  if (slot <= 0) return;
+  for (const RTFrameCell& c : _rtFrameCells)
+    if (c.slot == slot) return;
+  RTFrameCell cell;
+  cell.slot = slot;
+  cell.firstKey = _rtFrameKeys.size();
+  const double tw = _rtW > 0 ? (double)_rtW : 1.0;
+  const double th = _rtH > 0 ? (double)_rtH : 1.0;
+  cell.rect[0] = (float)(_viewport.originX / tw);
+  cell.rect[1] = (float)(_viewport.originY / th);
+  cell.rect[2] = (float)((_viewport.originX + _viewport.width) / tw);
+  cell.rect[3] = (float)((_viewport.originY + _viewport.height) / th);
+  _rtFrameCells.push_back(cell);
+  // Fold the cell boundary into the frame signature: an object moving to
+  // another slot, or grid_mode toggling, changes the per-cell masks and so
+  // must rebuild the acceleration structure even though the geometry is the
+  // same. (The rect is NOT folded — a resize only changes the lookup table.)
+  _rtFrameSig = (_rtFrameSig ^ (0x9E3779B97F4A7C15ULL + (uint64_t)slot)) *
+                1099511628211ULL;
+  _rtFrameSig = (_rtFrameSig ^ (uint64_t)cell.firstKey) * 1099511628211ULL;
+}
+
 void RendererMetal::clear(bool color, bool depth, bool stencil)
 {
   // In Metal, clears happen via the render pass descriptor's load actions.
@@ -3618,6 +4546,224 @@ void RendererMetal::clear(bool color, bool depth, bool stencil)
 
   // The next ensureEncoder() call will create a new encoder with these
   // load actions, effectively performing the clear.
+}
+
+// float -> IEEE half, for the RGBA16Float environment faces. The file's other
+// f16() lives ~4000 lines below with the tessellation code; duplicating three
+// lines here beats moving a helper other code depends on.
+static inline uint16_t envHalf(float v)
+{
+  _Float16 h = (_Float16) v;
+  uint16_t bits;
+  std::memcpy(&bits, &h, sizeof(bits));
+  return bits;
+}
+
+void RendererMetal::setEnvironment(int mode, float bgR, float bgG, float bgB)
+{
+  // Called every frame; only a CHANGE costs anything. The cubemap depends on
+  // exactly two inputs, so comparing them is the whole invalidation rule.
+  if (mode == _envMode && bgR == _envBg[0] && bgG == _envBg[1] && bgB == _envBg[2])
+    return;
+  _envMode = mode;
+  _envBg[0] = bgR; _envBg[1] = bgG; _envBg[2] = bgB;
+  _envDirty = true;
+}
+
+// Build the environment cubemap (#493), or keep the one we have.
+//
+// Six 128px RGBA16F faces + mipmaps, filled on the CPU: at this size the whole
+// thing is 6 * 128 * 128 * 8 B = 768 KB before mips, and it is rebuilt only
+// when material_env or the background colour changes, so generating it on the
+// GPU would buy nothing but complexity.
+//
+// The three modes are material_env:
+//   0 background -- a flat room the colour of the backdrop, so a reflective
+//                   object on a white page reflects white rather than a room
+//                   that is not there.
+//   1 studio     -- a soft overhead key with a dimmer fill below, the classic
+//                   product-shot rig, which is what makes metal read as metal.
+//   2 none       -- black; the material keeps its Fresnel rim and its
+//                   highlight but reflects nothing.
+//
+// Studio brightness is scaled by the background's luminance so glass does not
+// frost on a light backdrop: a fixed-brightness room reflected on a white page
+// washes the object out.
+bool RendererMetal::ensureEnvironmentMap()
+{
+  if (_envCubemap && !_envDirty)
+    return true;
+  if (!_device)
+    return false;
+  // setEnvironment() arrives from SceneRenderMetal, which runs AFTER
+  // beginFrame has already opened the frame's first encoder -- so on frame 1
+  // this would otherwise run with the {-1,-1,-1} sentinel and fill all six
+  // faces with NEGATIVE radiance, then mip-average it. Wait for a real value;
+  // until then bindEnvironment falls back to the black map below, which is a
+  // legitimate environment (material_env 2) rather than a broken one.
+  if (_envMode < 0)
+    return false;
+
+  if (!_envCubemap) {
+    MTLTextureDescriptor* d = [MTLTextureDescriptor
+        textureCubeDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
+                                        size:kEnvFaceDim
+                                   mipmapped:YES];
+    d.usage = MTLTextureUsageShaderRead;
+    d.storageMode = MTLStorageModeShared;   // written from the CPU
+    _envCubemap = [_device newTextureWithDescriptor:d];
+    if (!_envCubemap)
+      return false;
+  }
+  if (!ensureEnvironmentSampler())
+    return false;
+
+  // Luminance of the backdrop, used to keep the studio in proportion to it.
+  const float bgLum = 0.299f * _envBg[0] + 0.587f * _envBg[1] + 0.114f * _envBg[2];
+  const float studioScale = 0.35f + 0.65f * std::min(1.0f, std::max(0.0f, bgLum));
+
+  std::vector<uint16_t> face(kEnvFaceDim * kEnvFaceDim * 4);
+  for (int f = 0; f < 6; ++f) {
+    for (NSUInteger y = 0; y < kEnvFaceDim; ++y) {
+      for (NSUInteger x = 0; x < kEnvFaceDim; ++x) {
+        // Face-local direction, so the gradient follows world up rather than
+        // the face, and the six faces meet without a seam.
+        const float u = 2.0f * (x + 0.5f) / kEnvFaceDim - 1.0f;
+        const float v = 1.0f - 2.0f * (y + 0.5f) / kEnvFaceDim;
+        float dir[3];
+        switch (f) {
+        case 0: dir[0] =  1; dir[1] =  v; dir[2] = -u; break;  // +X
+        case 1: dir[0] = -1; dir[1] =  v; dir[2] =  u; break;  // -X
+        case 2: dir[0] =  u; dir[1] =  1; dir[2] = -v; break;  // +Y
+        case 3: dir[0] =  u; dir[1] = -1; dir[2] =  v; break;  // -Y
+        case 4: dir[0] =  u; dir[1] =  v; dir[2] =  1; break;  // +Z
+        default: dir[0] = -u; dir[1] = v; dir[2] = -1; break;  // -Z
+        }
+        const float len = std::sqrt(dir[0]*dir[0] + dir[1]*dir[1] + dir[2]*dir[2]);
+        const float up = dir[1] / (len > 0.0f ? len : 1.0f);   // -1 down .. +1 up
+
+        float r, g, b;
+        if (_envMode == 2) {                 // none
+          r = g = b = 0.0f;
+        } else if (_envMode == 1) {          // studio
+          // Soft overhead key: bright above, mid at the horizon, dim below,
+          // with a broad highlight straight up. No hard edges -- a sharp light
+          // shape would show as a recognisable rectangle in every sphere.
+          const float t = 0.5f * (up + 1.0f);
+          const float key = std::pow(std::max(0.0f, up), 3.0f);
+          const float base = 0.18f + 0.55f * t + 0.75f * key;
+          r = g = b = base * studioScale;
+          // A touch cooler above and warmer below, so a mirror shows some
+          // orientation rather than a flat grey.
+          r *= 0.97f + 0.06f * (1.0f - t);
+          b *= 0.97f + 0.06f * t;
+        } else {                              // 0 = the background colour
+          r = _envBg[0]; g = _envBg[1]; b = _envBg[2];
+        }
+        const NSUInteger i = (y * kEnvFaceDim + x) * 4;
+        face[i + 0] = envHalf(r);
+        face[i + 1] = envHalf(g);
+        face[i + 2] = envHalf(b);
+        face[i + 3] = envHalf(1.0f);
+      }
+    }
+    [_envCubemap replaceRegion:MTLRegionMake2D(0, 0, kEnvFaceDim, kEnvFaceDim)
+                   mipmapLevel:0
+                         slice:static_cast<NSUInteger>(f)
+                     withBytes:face.data()
+                   bytesPerRow:kEnvFaceDim * 4 * sizeof(uint16_t)
+                 bytesPerImage:0];
+  }
+
+  // Mips are the roughness axis, so they have to exist before anything samples
+  // a rough material. A blit on its own command buffer, committed and NOT
+  // waited on: this buffer is created and committed while the frame's own
+  // buffer is still open, so Metal orders it ahead of the frame regardless --
+  // and the wait cost 5.45 ms measured, on every bg_rgb change, i.e. on every
+  // step of an interactive colour drag. beginFrame makes the same argument
+  // about the RT acceleration structure a few hundred lines up.
+  if (_queue) {
+    id<MTLCommandBuffer> cb = [_queue commandBuffer];
+    id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+    [blit generateMipmapsForTexture:_envCubemap];
+    [blit endEncoding];
+    [cb commit];
+  }
+
+  _envDirty = false;
+  return true;
+}
+
+// A 1x1 black cubemap + default sampler, so slot 6 is NEVER empty.
+//
+// The fragments declare the texture and sampler unconditionally; a
+// reflective-family draw with either missing is a hard Metal assertion
+// ("missing Sampler binding at index 6"). Every path that could leave the real
+// map unbuilt -- a nil device, a failed allocation, or simply the first
+// encoder of frame 1 before setEnvironment has been called -- lands here
+// instead. Black is also a MEANINGFUL environment (material_env 2 = none), so
+// the fallback degrades to a defined look rather than to garbage.
+bool RendererMetal::ensureEnvironmentFallback()
+{
+  if (_envFallbackCube && _envSampler)
+    return true;
+  if (!_device)
+    return false;
+  if (!_envFallbackCube) {
+    MTLTextureDescriptor* d = [MTLTextureDescriptor
+        textureCubeDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
+                                        size:1
+                                   mipmapped:NO];
+    d.usage = MTLTextureUsageShaderRead;
+    d.storageMode = MTLStorageModeShared;
+    _envFallbackCube = [_device newTextureWithDescriptor:d];
+    if (!_envFallbackCube)
+      return false;
+    const uint16_t black[4] = {0, 0, 0, envHalf(1.0f)};
+    for (NSUInteger f = 0; f < 6; ++f)
+      [_envFallbackCube replaceRegion:MTLRegionMake2D(0, 0, 1, 1)
+                          mipmapLevel:0
+                                slice:f
+                            withBytes:black
+                          bytesPerRow:4 * sizeof(uint16_t)
+                        bytesPerImage:0];
+  }
+  return ensureEnvironmentSampler();
+}
+
+bool RendererMetal::ensureEnvironmentSampler()
+{
+  if (_envSampler)
+    return true;
+  if (!_device)
+    return false;
+  MTLSamplerDescriptor* sd = [[MTLSamplerDescriptor alloc] init];
+  sd.minFilter = MTLSamplerMinMagFilterLinear;
+  sd.magFilter = MTLSamplerMinMagFilterLinear;
+  // Trilinear: the mip level IS the roughness axis, so blending between levels
+  // is what keeps a roughness slider smooth instead of stepped.
+  sd.mipFilter = MTLSamplerMipFilterLinear;
+  sd.sAddressMode = MTLSamplerAddressModeClampToEdge;
+  sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
+  _envSampler = [_device newSamplerStateWithDescriptor:sd];
+  [sd release];
+  return _envSampler != nil;
+}
+
+void RendererMetal::bindEnvironment(id<MTLRenderCommandEncoder> enc)
+{
+  if (!enc)
+    return;
+  id<MTLTexture> cube = ensureEnvironmentMap() ? _envCubemap : nil;
+  if (!cube) {
+    if (!ensureEnvironmentFallback())
+      return;    // no device: nothing can draw anyway
+    cube = _envFallbackCube;
+  }
+  if (!_envSampler && !ensureEnvironmentSampler())
+    return;
+  [enc setFragmentTexture:cube atIndex:kEnvTextureIndex];
+  [enc setFragmentSamplerState:_envSampler atIndex:kEnvTextureIndex];
 }
 
 void RendererMetal::clearColor(float r, float g, float b, float a)
@@ -4413,37 +5559,544 @@ void RendererMetal::pixelStorei(int /*pname*/, int /*param*/)
 #pragma mark - VBO Pipeline
 // ---------------------------------------------------------------------------
 
-void RendererMetal::buildVBOPipelines()
-{
-  // MRC: release the previous build's owned objects before this call rebuilds
-  // them (e.g. on an MSAA sample-count change via setSampleCount). On the first
-  // call (from the ctor) every ivar is nil, so each release is a no-op. The
-  // _vboShadowPipeline* are NOT included — buildShadowPipelines() guards against
-  // a second build, so this function never overwrites them.
-  [_vboVertexFunc release];           _vboVertexFunc = nil;
-  [_vboFragmentFunc release];         _vboFragmentFunc = nil;
-  [_vboVertexUnlitFunc release];      _vboVertexUnlitFunc = nil;
-  [_vboFragmentUnlitFunc release];    _vboFragmentUnlitFunc = nil;
-  [_vboVertexUnlitFlatFunc release];  _vboVertexUnlitFlatFunc = nil;
-  [_vboFragmentShadowFunc release];   _vboFragmentShadowFunc = nil;
-  [_capMarkVtxFunc release];          _capMarkVtxFunc = nil;
-  [_capMarkFragFunc release];         _capMarkFragFunc = nil;
-  [_capFillVtxFunc release];          _capFillVtxFunc = nil;
-  [_capFillFragFunc release];         _capFillFragFunc = nil;
-  [_lineAAVtxFunc release];           _lineAAVtxFunc = nil;
-  [_lineAAFragFunc release];          _lineAAFragFunc = nil;
-  [_vboFragmentOitFunc release];      _vboFragmentOitFunc = nil;
-  [_capMarkDSS release];              _capMarkDSS = nil;
-  [_capFillDSS release];              _capFillDSS = nil;
-  [_capFillPipeline release];         _capFillPipeline = nil;
-  [_vboPipelineUByte release];        _vboPipelineUByte = nil;
-  [_vboPipelineFloat release];        _vboPipelineFloat = nil;
-  [_vboOitPipelineUByte release];     _vboOitPipelineUByte = nil;
-  [_vboOitPipelineFloat release];     _vboOitPipelineFloat = nil;
+// Shared material shading (#503), prepended to every lit MSL library.
+//
+// Metal does no cross-library linking, so each library ends up with its own
+// compiled copy of these helpers -- but there is exactly ONE source for them,
+// which is the point. The prototype hand-copied its noise into three libraries
+// and they had already drifted: the cylinder's rubber grain had lost an octave,
+// and marble existed only on the lit-VBO path because the impostor copies never
+// got fBm at all.
+//
+// The three libraries have incompatible uniform structs (LightU vs SphereU vs
+// CylU), so everything here takes explicit scalars instead of any one of them.
+// Every function is a pure function of its inputs: no material writes a
+// setting, and none touches the user's colour except as the `base` handed in.
+//
+// The mode constants mirror the ids in layer1/Material.h; material_modes.py
+// fails if they drift.
+static NSString* const kMaterialSrc = @R"(
+#include <metal_stdlib>
+using namespace metal;
 
-  // Metal shader for VBO-based molecular geometry (cartoons, surfaces, etc.)
-  // Supports position + normal + color with basic Lambertian lighting.
-  NSString* vboSrc = @R"(
+// Specialised per PIPELINE, not tested per draw. The default family compiles
+// with every material branch below eliminated at compile time, which is what
+// makes a `default` render byte-identical to the build before materials
+// existed rather than merely equal to it.
+constant int kMatFamily [[function_constant(0)]];
+constant bool kMatProcedural = (kMatFamily == 1);
+constant bool kMatReflective = (kMatFamily == 2);
+constant bool kMatGlass = (kMatFamily == 3);
+
+constant int kMatMode_frosted_glass = 5;
+constant int kMatMode_jelly = 6;
+
+// Attenuates the object's own COLOUR under glass, so the tint reads as seen
+// THROUGH something rather than painted on. It is deliberately not the coverage
+// of the surface: coverage is `reveal`, driven by the baked vertex alpha the
+// material implies (0.15 / 0.2), and this constant cannot change how much of
+// the scene behind the glass shows through. It was named kMatGlassCoverage,
+// which invited exactly that misreading -- the next person to tune transparency
+// would have reached for this and moved the colour instead.
+constant float kMatGlassBaseAttenuation = 0.82;
+
+// Glass glints (#535): the key light's and the headlight's specular, with the
+// exponent they share. Tight on purpose -- clear glass reads as small sharp
+// points of light, not as a sheen.
+constant float kMatGlassKeyGlint = 1.2;
+constant float kMatGlassHeadGlint = 0.9;
+constant float kMatGlassGlintExp = 60.0;
+
+// Marble's light wrap: the waxy translucent diffusion of real stone. Applied on
+// BOTH the lit VBO path and the impostors so one object's cartoon and spheres
+// are lit the same way.
+constant float kMatMarbleWrap = 0.35;
+
+// --- Environment reflection (#493) ------------------------------------------
+// One cubemap, one sampler, shared by every reflective material. The prototype
+// carried three hand-written studios inline in the shader; a sampled cubemap
+// replaces all of them and lets the environment follow the background colour
+// without a recompile.
+//
+// Roughness is the MIP LEVEL: a mirror reads level 0, a rough metal a coarser
+// one. That is why the texture is mipmapped and the sampler trilinear -- it is
+// a one-texture stand-in for a pre-convolved radiance map, which is what makes
+// a roughness slider smooth instead of stepped.
+// Soft knee on specular + reflection (#494), Reinhard above a threshold.
+//
+// The 8-bit target hard-clips anything over 1.0, and a clip is per CHANNEL --
+// so a bright highlight on a red object clips red first and the pixel slides
+// toward white, taking the hue with it. That is the "flat-white hue-shifted
+// highlight" a gold sphere set shows without this, and why a plain clamp() is
+// no fix: clamp IS the hard clip.
+//
+// Below the knee nothing changes at all, which is what keeps `default`
+// byte-identical: its specular rarely reaches 0.8, and where it does the curve
+// is continuous and C1 at the knee.
+static float3 mat_soft_knee(float3 c) {
+  const float knee = 0.8;
+  float3 over = max(c - float3(knee), float3(0.0));
+  // Reinhard on the excess only: x/(1+x) asymptotes to 1, so a very bright
+  // reflection compresses toward white instead of arriving there and staying.
+  return min(c, float3(knee)) + over / (float3(1.0) + over) * (1.0 - knee);
+}
+
+// Schlick's Fresnel: how much the surface reflects at this grazing angle. f0 is
+// the head-on reflectance -- what makes a metal reflect strongly everywhere and
+// a dielectric only at the rim.
+static float3 mat_fresnel(float3 f0, float vdoth) {
+  return f0 + (float3(1.0) - f0) * pow(1.0 - saturate(vdoth), 5.0);
+}
+
+// Glass shading (#495): a Fresnel-weighted environment reflection over a
+// mostly-transparent body.
+//
+// Deliberately NOT refraction. A real refractive glass needs the scene behind
+// it, which inside an OIT pass is not available -- the accumulation buffer has
+// no depth-ordered layer behind to bend. What IS available is the environment
+// cubemap (#493) and the fragment's own alpha, and a Fresnel rim over a
+// see-through body is what actually reads as glass at molecular scale, where
+// the geometry is thousands of small curved surfaces rather than one slab.
+//
+// `frost` spreads the environment samples around the reflection direction, so
+// frosted glass blurs the room rather than mirroring it. The taps are tiny
+// fixed offsets rather than a real cone: at this sample count a proper
+// distribution would alias worse than the offsets do.
+static float3 mat_glass_shade(float3 base, float3 N, float3 V, float rough,
+    int taps, float3 keyDir, texturecube<float> envMap, sampler envSmp,
+    thread float3& hi) {
+  float3 R = reflect(-V, N);
+  float lod = sqrt(saturate(rough)) * 7.0;
+  float3 room = float3(0.0);
+  if (taps <= 1) {
+    room = envMap.sample(envSmp, R, level(lod)).rgb;
+  } else {
+    // Offsets in the plane perpendicular to R, scaled by roughness.
+    float3 up = abs(R.z) < 0.9 ? float3(0.0, 0.0, 1.0) : float3(1.0, 0.0, 0.0);
+    float3 t = normalize(cross(up, R));
+    float3 b = cross(R, t);
+    float spread = 0.08 + 0.35 * saturate(rough);
+    room = envMap.sample(envSmp, R, level(lod)).rgb;
+    float w = 1.0;
+    // Ring starts at 0: with i/(taps-1) the last tap landed on 2*PI, a repeat of
+    // angle 0, and at the live tap count that left exactly ONE offset sample --
+    // a one-sided smear along t rather than a blur. Symmetric pairs also keep
+    // the result stable across the `up` basis flip below.
+    for (int i = 1; i < taps; ++i) {
+      float a = 6.2831853 * float(i - 1) / float(taps - 1);
+      float3 d = normalize(R + spread * (cos(a) * t + sin(a) * b));
+      room += envMap.sample(envSmp, d, level(lod + 1.0)).rgb;
+      w += 1.0;
+    }
+    room /= w;
+  }
+  // Glass is almost all rim: F0 is low, so the reflection appears at grazing
+  // angles and the face-on view stays clear.
+  float ndotv = saturate(dot(N, V));
+  float3 F = mat_fresnel(float3(0.04), ndotv);
+
+  // ...plus the scene's lights, glinting off the surface (#535). The first
+  // version had none: glass was the only lit material with no highlight at
+  // all, which on a light background left a flat tinted silhouette. Two
+  // glints, as the prototype's glass had: the key light, and the headlight --
+  // whose half-vector is V itself, so it catches every face turned toward the
+  // viewer, which on a molecular surface is hundreds of small bright points.
+  // Roughness (frosted_glass) widens and dims them.
+  float3 L1 = normalize(keyDir);
+  float3 halfVec = L1 + V;
+  float ndoth1 = dot(halfVec, halfVec) > 1e-8
+                   ? max(dot(N, normalize(halfVec)), 0.0) : 0.0;
+  // frosted_glass (rough 0.6) lands at 46% of the exponent (27.6 of 60) and
+  // about half the strength: a soft bloom where clear glass has a sharp point.
+  float expo = mix(kMatGlassGlintExp, kMatGlassGlintExp * 0.1, saturate(rough));
+  float glint = (1.0 - 0.8 * saturate(rough)) *
+                (kMatGlassKeyGlint * pow(ndoth1, expo) +
+                 kMatGlassHeadGlint * pow(ndotv, expo));
+
+  // What the SURFACE reflects is returned apart from what the BODY transmits:
+  // under weighted-blended OIT everything a fragment emits is scaled by its
+  // coverage, and glass's coverage is the body's (0.15), so a highlight folded
+  // into the colour reached the screen at 15% of its strength. mat_glass_cover
+  // puts it back on top at full strength.
+  //
+  // The glints go through a soft saturation, 1 - exp(-2g), rather than being
+  // added raw. Their peak sum is 2.1, so added raw they hard-clipped into flat
+  // white plateaus with faceted triangle edges on a dark background; this
+  // way a peak still reaches ~0.99 (enough to stand out on the 0.85 light
+  // background) and the edge of every glint tapers. The curve's slope at 0 is
+  // 2, so faint glint tails come out about twice as bright as added raw, and
+  // frosted glass's broad glints (peak 0.52 * 2.1 = 1.09) top out near 0.89
+  // instead of clipping to white -- a softer bloom, which is the point.
+  hi = room * F + float3(1.0 - exp(-2.0 * glint));
+  return base * kMatGlassBaseAttenuation;
+}
+
+// Composite glass for the OIT pass (#535): the see-through body at its own
+// coverage `a`, and the surface reflection `hi` on top of it at full strength.
+//
+// Premultiplied, that is body*a + hi. Weighted-blended OIT stores a colour and
+// ONE coverage per fragment, so the reflection has to buy coverage to be
+// seen: a' = a + (1 - a) * max(hi). Where there is no highlight a' is a and
+// the fragment is exactly the body; under a full-strength highlight a' is 1
+// and the pixel is the highlight. In between, the transmitted background is
+// dimmed by the highlight's share -- an approximation, but the one that keeps
+// a single colour and coverage per fragment.
+// Marked unused: this block is shared by every material library, and the
+// sphere impostors -- where glass degrades to `default` -- never call it.
+// Without the attribute that is a new -Wunused-function in the sphere library
+// (the VBO and cylinder libraries both call it).
+__attribute__((unused)) static float4 mat_glass_cover(float3 body, float3 hi, float a) {
+  float h = saturate(max(hi.r, max(hi.g, hi.b)));
+  float cover = saturate(a + (1.0 - a) * h);
+  // The soft knee (#494) is for the BODY only. It exists to keep a coloured
+  // highlight from clipping toward white and taking the hue with it; a glint
+  // on glass IS white, and the knee would squeeze it toward the 0.85 light
+  // background, which is where clear glass most needs one: a unit glint lands
+  // at ~0.83, and the knee only approaches 1.0 asymptotically.
+  float3 rgb = (mat_soft_knee(body) * a + hi) / max(cover, 1e-4);
+  return float4(saturate(rgb), cover);
+}
+
+// Environment specular for the reflective family: one GGX lobe against the
+// cubemap, with roughness selecting the mip level.
+//
+// This is the base every reflective material shares, and it works on EVERY GPU
+// -- the traced reflection in #494 is an upgrade on top of it, not a
+// replacement, which is what makes toggling metal_raytrace leave the
+// environment reflection alone.
+//
+// `N` and `V` are EYE space, which is the space both the lit VBO path and the
+// impostors already have a normal in, and the cubemap is sampled with the
+// eye-space reflection vector directly.
+//
+// That anchors the room to the CAMERA, not to the world: a sphere's eye-space
+// normal does not change as you orbit, so its reflection stays put -- the
+// classic matcap behaviour, not the sweep a real room would give. That is a
+// deliberate trade. The alternative (transforming R into world space) makes the
+// reflection swim during the smallest camera move, which on molecular geometry
+// -- thousands of small curved surfaces -- reads as noise rather than as
+// realism. Stability wins here; #501 can revisit it with a real room.
+static float3 mat_env_specular(float3 N, float3 V, float rough, float3 f0,
+    texturecube<float> envMap, sampler envSmp) {
+  float3 R = reflect(-V, N);
+  // Roughness -> mip. The cube is 128px, i.e. 8 levels; a mirror takes 0.
+  float lod = sqrt(saturate(rough)) * 7.0;
+  float3 room = envMap.sample(envSmp, R, level(lod)).rgb;
+  float ndotv = saturate(dot(N, V));
+  // Split-sum approximation: the Fresnel term carries the angle dependence and
+  // the pre-filtered sample carries the lobe, which is what keeps this one
+  // texture fetch instead of an integral per fragment.
+  float3 F = mat_fresnel(f0, ndotv);
+  return mat_soft_knee(room * F);
+}
+
+constant int kMatMode_matte  = 1;
+constant int kMatMode_marble = 7;
+constant int kMatMode_clay   = 8;
+constant int kMatMode_rubber = 9;
+
+struct MaterialU {
+  float4x4 invModelview;
+  int family;
+  int mode;
+  int wantsPeel;
+  int _pad0;
+  float reflect;
+  float tint;
+  float rough;
+  float _pad1;
+  float p[6];
+  float _pad2[2];
+};
+
+// Jelly (#496): a gummy -- a dense scattering BODY under a sharp wet skin. It
+// shares the glass family's pipeline and its peel, and is otherwise the
+// opposite material: glass is a clear body under a Fresnel rim and glints.
+//
+// The prototype got here by REFRACTING the resolved opaque scene through a
+// 12-tap frosted disc and filtering it Beer-Lambert toward the base colour.
+// None of that survives the move into the OIT pass -- there is no opaque
+// texture to sample (the reason is spelled out on mat_glass_shade). What
+// replaces it is coverage: jelly's implied alpha is 0.85, roughly six times
+// clear glass's 0.15, so this fragment dominates the blend and the body is
+// something you look INTO rather than through. See layer1/Material.cpp for why
+// that number is 0.85 and not the 0.45 the ticket specifies. So the port keeps
+// the three things that made it read as a gummy and not as glass:
+//
+//   * absorption -- the body deepens toward the silhouette, where the path
+//     through it is longest. p[0] is the Beer-Lambert strength.
+//   * a scattered inner glow -- light diffused inside the body, lit through a
+//     wide wrap so it has no terminator. p[1]. Note THINNEST at the rim, the
+//     opposite of the prototype's: see the comment on the mix() below, which
+//     is where that inversion is explained rather than merely stated.
+//   * a WET skin -- unlike frosted_glass the surface is smooth: a full Fresnel
+//     reflection of an unblurred room plus a tight near-white highlight.
+//     p[2] is its strength. This is why jelly's `rough` is near zero while
+//     frosted_glass's is 0.6 -- the frost belongs to the body, and the body is
+//     not the thing that reflects.
+static float3 mat_jelly_shade(float3 base, float3 N, float3 V,
+    float ambient, float direct, float reflectAmt, float3 keyDir,
+    constant MaterialU& m, texturecube<float> envMap, sampler envSmp) {
+  float ndotv = saturate(dot(N, V));
+  float rim = 1.0 - ndotv;              // thickness proxy: longest path at the edge
+  float3 L1 = normalize(keyDir);
+
+  // What the body TRANSMITS: light from the room, FILTERED by the material.
+  //
+  // The filter is Beer-Lambert. Its exponent starts at 1 -- a face-on gummy is
+  // the colour the user chose -- and climbs with the path length, so the
+  // silhouette goes deep and saturated. The prototype's exponent was
+  // p[0] * (0.35 + 1.4 * rim), i.e. 0.77 face-on, which is right THERE and
+  // wrong here: it multiplied the refracted BACKGROUND, where an exponent
+  // below 1 means little absorption. Applied to a body colour it means the
+  // opposite -- pow(c, 0.77) lifts every channel toward white.
+  //
+  // The room is deliberately NOT multiplied in here, though transmitted light
+  // physically is. Tried: the cube's coarsest mip is its average radiance, and
+  // on the reference scene that average is ~0.5 while the background it stands
+  // for is 0.85, so the gummy came out brown -- measured mean red 0.405 against
+  // the reference's 0.796. Getting it back would mean inventing a gain
+  // constant, and the honest version of "lit by what is behind it" is the
+  // refracted sample this pass does not have (see mat_glass_shade, and #499).
+  // Every other material in this epic lights its base colour from the scene
+  // LIGHTS, which is what the scatter term below does.
+  float3 body = pow(saturate(base), float3(1.0 + m.p[0] * rim));
+
+  // Light scattered INSIDE the body: a wide wrap, so it glows through the
+  // terminator instead of shading across it.
+  //
+  // Thinnest at the rim, where the prototype's was thickest -- the same swap.
+  // There the mix ran from a bright refracted background TOWARD the body, so
+  // more of it at the rim meant denser; here it runs from the absorbed body
+  // toward a LIGHT glow, so more of it at the rim would undo the absorption
+  // that the silhouette is made of.
+  float wrapLit = ambient + reflectAmt * saturate((dot(N, L1) + 0.6) / 1.6)
+                          + direct * saturate((ndotv + 0.6) / 1.6);
+  float3 glow = saturate(base * 1.15) * min(wrapLit, 1.0);
+  float3 col = mix(body, glow, saturate(m.p[1] * (1.0 - 0.6 * rim)));
+
+  // The wet skin: the room, unblurred, at a full dielectric Fresnel.
+  float3 R = reflect(-V, N);
+  float3 room = envMap.sample(envSmp, R, level(sqrt(saturate(m.rough)) * 7.0)).rgb;
+  float F = saturate(0.04 + 0.96 * pow(rim, 5.0));
+  col += room * F * 0.8;
+
+  // Two highlights, not one: a tight near-white glint and a broad soft sheen.
+  // The pair is what the prototype's gummy-bear reference was tuned against --
+  // the tight one alone reads as polished plastic.
+  //
+  // The half-vector is guarded because L1 + V cancels exactly when the key
+  // light is antiparallel to the view (`set light, [0,0,1]` reaches it), and
+  // normalize(0) is 0/0. This GPU returns 0 from max(NaN, 0.0) so today it
+  // survives, but a NaN in the OIT accumulation buffer does not stay local --
+  // it contaminates the whole resolve for that pixel. The branch costs nothing
+  // on the path that matters and is bit-identical there, since normalize() is
+  // still what computes the unit vector.
+  float3 halfVec = L1 + V;
+  float ndoth = dot(halfVec, halfVec) > 1e-8
+                  ? max(dot(N, normalize(halfVec)), 0.0) : 0.0;
+  col += (m.p[2] * pow(ndoth, 70.0) + 0.12 * pow(ndoth, 8.0))
+         * mix(float3(1.0), saturate(base * 1.3), 0.25);
+  return mat_soft_knee(col);
+}
+
+// --- value noise -----------------------------------------------------------
+static float mat_hash(float3 p) {
+  p = fract(p * 0.3183099 + float3(0.1, 0.2, 0.3));
+  p *= 17.0;
+  return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+static float mat_noise(float3 x) {
+  float3 i = floor(x), f = fract(x);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mix(mat_hash(i + float3(0, 0, 0)), mat_hash(i + float3(1, 0, 0)), f.x),
+                 mix(mat_hash(i + float3(0, 1, 0)), mat_hash(i + float3(1, 1, 0)), f.x), f.y),
+             mix(mix(mat_hash(i + float3(0, 0, 1)), mat_hash(i + float3(1, 0, 1)), f.x),
+                 mix(mat_hash(i + float3(0, 1, 1)), mat_hash(i + float3(1, 1, 1)), f.x), f.y), f.z);
+}
+static float mat_fbm(float3 p) {   // 5 octaves, 0..~1
+  float a = 0.5, s = 0.0;
+  for (int i = 0; i < 5; ++i) { s += a * mat_noise(p); p = p * 2.03 + float3(1.7, 9.2, 3.1); a *= 0.5; }
+  return s;
+}
+static float mat_turb(float3 p) {  // turbulence: sum of |noise - 0.5|
+  float a = 0.5, s = 0.0;
+  for (int i = 0; i < 5; ++i) { s += a * abs(mat_noise(p) * 2.0 - 1.0); p = p * 2.03 + float3(3.1, 1.7, 9.2); a *= 0.5; }
+  return s;
+}
+
+// Two octaves of model-space grain, centred on 1.0. Every grainy material uses
+// the same shape so they differ only by amplitude and frequency.
+static float mat_grain(float3 pModel, float amount, float freq, float harmonic, float offset) {
+  if (amount <= 0.0) return 1.0;
+  return 1.0 + amount * (mat_noise(pModel * freq) * 2.0 - 1.0)
+             + 0.5 * amount * (mat_noise(pModel * freq * harmonic + offset) * 2.0 - 1.0);
+}
+
+// --- marble ----------------------------------------------------------------
+// Veined albedo, applied BEFORE lighting: marble is the one procedural material
+// that keeps the default two-light model, so the caller multiplies the base
+// colour through this and then shades normally.
+//
+// p[1] vein scale, p[4] vein contrast, p[5] vein sharpness.
+static float3 mat_marble_albedo(float3 base, float3 pModel, constant MaterialU& m) {
+  float3 p = pModel * max(m.p[1], 1e-3);
+  float turb = mat_turb(p * 0.9);
+  // Primary veins: one dominant direction with a second, weaker crossing set.
+  float v1 = sin((p.x + 0.55 * p.y + 0.35 * p.z) * 1.0 + turb * 6.5);
+  float v2 = sin((0.4 * p.x - p.y + 0.6 * p.z) * 0.7 + turb * 4.0 + 2.1);
+  float sharp = max(m.p[5], 1.0);
+  float vein = saturate(pow(1.0 - abs(v1), sharp) + 0.45 * pow(1.0 - abs(v2), sharp * 1.4));
+  // Mottling: slow fbm moves the stone between slightly lighter and darker.
+  float mottle = mat_fbm(p * 0.35 + 11.0);
+  float3 stone = base * mix(0.88, 1.06, mottle);
+  // Vein colour is DERIVED from the base, never replaces it: a rainbow cartoon
+  // in marble stays a rainbow.
+  float3 veinCol = base * 0.42 + float3(0.06, 0.055, 0.05);
+  // A soft halo around each vein reads as the translucent diffusion of stone.
+  float halo = pow(1.0 - abs(v1), max(sharp * 0.25, 1.0)) * 0.25;
+  stone = mix(stone, base * 0.8 + float3(0.02), halo * m.p[4]);
+  return mix(stone, veinCol, vein * m.p[4]);
+}
+
+// --- matte / clay / rubber -------------------------------------------------
+// One shading model with three parameter sets, replacing the default two-light
+// result entirely. `expo` compresses the diffuse falloff: 1.0 is plain Lambert
+// (matte), below that lifts the low end the way a scattering body does.
+//
+// p[0] grain amplitude, p[1] grain frequency, p[2] grazing darkening
+// (rubber: specular strength), p[3] velvet sheen.
+static float3 mat_body_shade(float3 base, float3 N, float3 pModel,
+    float ambient, float direct, float reflectAmt, float3 keyDir,
+    constant MaterialU& m, float expo, float harmonic, float offset) {
+  const float3 L0 = float3(0.0, 0.0, 1.0);
+  float3 L1 = normalize(keyDir);
+  float grain = mat_grain(pModel, m.p[0], m.p[1], harmonic, offset);
+  float n0 = max(dot(N, L0), 0.0), n1 = max(dot(N, L1), 0.0);
+  float diff = ambient + direct * pow(n0, expo) + reflectAmt * pow(n1, expo);
+  return base * min(diff, 1.0) * grain;
+}
+
+static float3 mat_matte_shade(float3 base, float3 N, float3 pModel,
+    float ambient, float direct, float reflectAmt, float3 keyDir,
+    constant MaterialU& m) {
+  return mat_body_shade(base, N, pModel, ambient, direct, reflectAmt,
+                        keyDir, m, 1.0, 1.0, 0.0);
+}
+
+static float3 mat_shade_procedural(float3 base, float3 N, float3 pModel,
+    float ambient, float direct, float reflectAmt, float3 keyDir,
+    constant MaterialU& m) {
+  if (m.mode == kMatMode_matte) {
+    return mat_matte_shade(base, N, pModel, ambient, direct, reflectAmt, keyDir, m);
+  }
+  if (m.mode == kMatMode_rubber) {
+    // Matte and grainy, with a broad dim highlight and a velvet sheen at
+    // grazing angles. Both are tinted toward the base so they never read as a
+    // glossy clear coat -- that is plastic, not rubber.
+    float3 col = mat_body_shade(base, N, pModel, ambient, direct, reflectAmt,
+                                keyDir, m, 0.85, 3.1, 7.0);
+    float3 L1 = normalize(keyDir);
+    float3 H = normalize(L1 + float3(0.0, 0.0, 1.0));
+    float n1 = max(dot(N, L1), 0.0);
+    float spec = m.p[2] * pow(max(dot(N, H), 0.0), 8.0) * (n1 > 0.0 ? 1.0 : 0.0);
+    float sheen = m.p[3] * pow(1.0 - saturate(N.z), 3.0);
+    return col + (spec + sheen) * mix(float3(1.0), saturate(base * 1.4), 0.7);
+  }
+  if (m.mode == kMatMode_clay) {
+    // Dead-matte ceramic: faint grain, no specular at all, and a dry grazing
+    // darkening that reads as an unglazed porous body.
+    float3 col = mat_body_shade(base, N, pModel, ambient, direct, reflectAmt,
+                                keyDir, m, 0.9, 2.7, 5.0);
+    return col * (1.0 - m.p[2] * pow(1.0 - saturate(N.z), 2.0));
+  }
+  // matte (and any procedural mode this build cannot draw): Lambert and
+  // nothing else. Every knob is zero, so the grain and the grazing terms fold
+  // away -- this is the "kill the highlights" look users ask for first.
+  return mat_matte_shade(base, N, pModel, ambient, direct, reflectAmt, keyDir, m);
+}
+
+)";
+
+// The impostor half of the shared material block: prepended to the sphere and
+// cylinder libraries only, because the lit VBO path gets its model-space
+// position from the vertex stage and has no use for this.
+static NSString* const kMaterialImpostorSrc = @R"(
+// The impostors' two-light diffuse, in ONE place. sphere_shade and cyl_shade
+// each still inline their own copy for the default path; this exists so the
+// marble branch cannot drift from them the way the lit-VBO and impostor paths
+// already drifted once. If that expression ever changes, it changes here too.
+static float mat_impostor_intensity(float3 N, float3 keyDir, float ambient,
+    float direct, float reflectAmt, float wrap) {
+  float n0 = dot(N, float3(0.0, 0.0, 1.0));
+  float n1 = dot(N, normalize(keyDir));
+  return ambient + direct * saturate((n0 + wrap) / (1.0 + wrap))
+                 + reflectAmt * saturate((n1 + wrap) / (1.0 + wrap));
+}
+
+// Final colour for an impostor fragment.
+//
+// Both impostor libraries derive their surface point in EYE space, so the
+// model-space position a procedural pattern needs comes from the inverse
+// modelview -- as a POINT (w = 1), not a direction. The prototype used
+// transpose(modelview) with w = 0, which is the inverse only for a pure
+// rotation and discards the translation outright: its grain slid across the
+// geometry on pan and changed frequency on zoom.
+//
+// Under the default family this collapses to exactly the expression the
+// impostors used before materials existed.
+static float3 mat_impostor_composite(float3 base, float3 N, float3 pEye,
+    float ambient, float direct, float reflectAmt, float3 keyDir,
+    constant MaterialU& m, float defaultIntensity, float defaultSpecular,
+    float sceneWrap, texturecube<float> envMap, sampler envSmp) {
+  if (kMatGlass) {
+    float3 V = float3(0.0, 0.0, 1.0);
+    if (m.mode == kMatMode_jelly) {
+      return mat_jelly_shade(base, N, V, ambient, direct, reflectAmt, keyDir, m,
+                             envMap, envSmp);
+    }
+    int taps = (m.mode == kMatMode_frosted_glass)
+                 ? int(max(1.0, m.p[5])) : 1;
+    // Outside the OIT pass there is no coverage to separate the reflection
+    // from, so it is simply added; the OIT fragment uses mat_glass_cover.
+    float3 hi;
+    float3 body = mat_glass_shade(base, N, V, m.rough, taps, keyDir, envMap,
+                                  envSmp, hi);
+    return mat_soft_knee(body + hi);
+  }
+  if (kMatReflective) {
+    // Same base as the lit VBO path, so one object's surface and its spheres
+    // reflect the same room -- the drift that bit marble in #487.
+    float3 V = float3(0.0, 0.0, 1.0);
+    float3 f0 = mix(float3(m.reflect), base * m.reflect, m.tint);
+    return mat_soft_knee(base * min(defaultIntensity, 1.0) + defaultSpecular
+                       + mat_env_specular(N, V, m.rough, f0, envMap, envSmp));
+  }
+  if (kMatProcedural) {
+    float3 pModel = (m.invModelview * float4(pEye, 1.0)).xyz;
+    if (m.mode == kMatMode_marble) {
+      // Marble keeps the default two-light model and only re-colours it, but it
+      // also lifts the light WRAP -- the translucent diffusion real stone has.
+      // The lit VBO path gets that from vbo_shade; here the impostor's own
+      // intensity was computed with the scene wrap, so it is recomputed with
+      // marble's. Without this a marble cartoon and the marble spheres of the
+      // same object are lit differently along the terminator.
+      float intensity = mat_impostor_intensity(N, keyDir, ambient, direct,
+                                               reflectAmt,
+                                               max(sceneWrap, kMatMarbleWrap));
+      return mat_marble_albedo(base, pModel, m) * min(intensity, 1.0)
+             + defaultSpecular;
+    }
+    return mat_shade_procedural(base, N, pModel, ambient, direct, reflectAmt,
+                                keyDir, m);
+  }
+  return base * min(defaultIntensity, 1.0) + defaultSpecular;
+}
+)";
+
+// Metal shader for VBO-based molecular geometry (cartoons, surfaces, etc.)
+// Supports position + normal + color with basic Lambertian lighting.
+static NSString* const kVBOSrc = @R"(
 #include <metal_stdlib>
 using namespace metal;
 
@@ -4464,7 +6117,11 @@ struct VBOVertexOut {
   float4 color;
   float3 normalEye;   // eye-space normal, interpolated → per-fragment (Phong)
   float  eyeDist;     // distance from camera (-eyeZ), for per-rep clipping
+  float3 posModel;    // model-space position: procedural patterns are evaluated
+                      // here so the grain stays glued to the molecule instead
+                      // of swimming when the camera moves
 };
+
 
 // Per-representation clip planes (eye-space distances from the camera). Lets one
 // rep (e.g. the surface) clip tighter than the global slab so the user can peek
@@ -4525,6 +6182,69 @@ struct VBOVertexInUnlit {
   float4 color    [[attribute(2)]];
 };
 
+// Material dispatch for the lit VBO path. Under the default family the
+// compiler drops this whole block and the call collapses to vbo_shade.
+//
+// Marble is the one procedural material that KEEPS the default two-light
+// model: it only replaces the albedo (and lifts the light wrap, the waxy
+// diffusion real stone has), so it reads as the same scene lit the same way.
+// Matte, clay and rubber replace the shading outright.
+static float3 vbo_material_shade(float3 baseColor, float3 nEye, float3 pModel,
+    LightU lt, constant MaterialU& mat,
+    texturecube<float> envMap, sampler envSmp) {
+  if (kMatGlass) {
+    // Glass: a Fresnel rim and light glints over a mostly see-through body.
+    // The frost tap count is capped in the live view (mat.p[5] carries it) --
+    // this runs per fragment on geometry that can cover the viewport.
+    float3 N = normalize(nEye);
+    if (N.z < 0.0) N = -N;
+    float3 V = float3(0.0, 0.0, 1.0);
+    if (mat.mode == kMatMode_jelly) {
+      // Jelly needs the scene's full LIGHTING -- ambient, direct, the wrap --
+      // because its body glows rather than transmitting; glass takes only the
+      // key light's direction, for its glints.
+      return mat_jelly_shade(baseColor, N, V, lt.ambient, lt.direct, lt.reflect,
+                             float3(lt.klx, lt.kly, lt.klz), mat, envMap, envSmp);
+    }
+    int taps = (mat.mode == kMatMode_frosted_glass)
+                 ? int(max(1.0, mat.p[5])) : 1;
+    // Outside the OIT pass the reflection is simply added; vbo_fragment_oit
+    // composites it over the body with mat_glass_cover instead.
+    float3 hi;
+    float3 body = mat_glass_shade(baseColor, N, V, mat.rough, taps,
+                                  float3(lt.klx, lt.kly, lt.klz), envMap,
+                                  envSmp, hi);
+    return mat_soft_knee(body + hi);
+  }
+  if (kMatReflective) {
+    // The reflective family's BASE: the default shading plus one GGX lobe
+    // against the environment cubemap. Works on every GPU; #494's traced
+    // reflection refines this rather than replacing it, which is what keeps
+    // toggling metal_raytrace from changing the environment reflection.
+    float3 N = normalize(nEye);
+    if (N.z < 0.0) N = -N;
+    float3 V = float3(0.0, 0.0, 1.0);          // eye space: the camera looks -Z
+    // f0 from the material's reflect/tint: tint pulls the reflection toward the
+    // object's own colour, which is what separates a coloured metal from a
+    // clear coat over it.
+    float3 f0 = mix(float3(mat.reflect), baseColor * mat.reflect, mat.tint);
+    return mat_soft_knee(vbo_shade(baseColor, nEye, lt)
+                       + mat_env_specular(N, V, mat.rough, f0, envMap, envSmp));
+  }
+  if (kMatProcedural) {
+    float3 N = normalize(nEye);
+    if (N.z < 0.0) N = -N;   // two-sided, as the default model is
+    if (mat.mode == kMatMode_marble) {
+      LightU waxy = lt;
+      waxy.wrap = max(lt.wrap, kMatMarbleWrap);
+      return vbo_shade(mat_marble_albedo(baseColor, pModel, mat), nEye, waxy);
+    }
+    return mat_shade_procedural(baseColor, N, pModel, lt.ambient, lt.direct,
+                                lt.reflect, float3(lt.klx, lt.kly, lt.klz), mat);
+  }
+  return vbo_shade(baseColor, nEye, lt);
+}
+
 struct VBOVertexOutUnlit {
   float4 position [[position]];
   float4 color;
@@ -4553,15 +6273,21 @@ vertex VBOVertexOut vbo_vertex(
   // Eye-space distance from the camera (eyePos.z is negative in front), used by
   // the fragment stage to discard fragments outside this rep's clip planes.
   out.eyeDist = -eyePos.z;
+  // The raw vertex attribute IS model space; no transform needed on this path.
+  out.posModel = in.position;
   return out;
 }
 
 fragment float4 vbo_fragment(VBOVertexOut in [[stage_in]],
+    texturecube<float> envMap [[texture(6)]],
+    sampler envSmp [[sampler(6)]],
     constant LightU& lt [[buffer(0)]],
-    constant ClipU& clip [[buffer(1)]])
+    constant ClipU& clip [[buffer(1)]],
+    constant MaterialU& mat [[buffer(2)]])
 {
   apply_rep_clip(clip, in.eyeDist);
-  return float4(vbo_shade(in.color.rgb, in.normalEye, lt), in.color.a);
+  return float4(vbo_material_shade(in.color.rgb, in.normalEye, in.posModel, lt, mat, envMap, envSmp),
+                in.color.a);
 }
 
 // Unlit: flat color, no lighting. Used for lines/ribbon (GL_LINES) and dots
@@ -4685,11 +6411,32 @@ static float oit_weight(float a, float z) {
                pow(1.0 - z * 0.9, 3.0), 1e-2, 3e3);
 }
 fragment OITFragOut vbo_fragment_oit(VBOVertexOut in [[stage_in]],
+    texturecube<float> envMap [[texture(6)]],
+    sampler envSmp [[sampler(6)]],
     constant LightU& lt [[buffer(0)]],
-    constant ClipU& clip [[buffer(1)]])
+    constant ClipU& clip [[buffer(1)]],
+    constant MaterialU& mat [[buffer(2)]])
 {
   apply_rep_clip(clip, in.eyeDist);
-  float4 c = float4(vbo_shade(in.color.rgb, in.normalEye, lt), in.color.a);
+  float4 c;
+  if (kMatGlass && mat.mode != kMatMode_jelly) {
+    // Clear and frosted glass: body at its coverage, reflection on top (#535).
+    // Jelly is dense enough (0.85) that its highlights survive the coverage
+    // as they are, so it keeps the shared path.
+    float3 N = normalize(in.normalEye);
+    if (N.z < 0.0) N = -N;
+    int taps = (mat.mode == kMatMode_frosted_glass)
+                 ? int(max(1.0, mat.p[5])) : 1;
+    float3 hi;
+    float3 body = mat_glass_shade(in.color.rgb, N, float3(0.0, 0.0, 1.0),
+                                  mat.rough, taps,
+                                  float3(lt.klx, lt.kly, lt.klz), envMap,
+                                  envSmp, hi);
+    c = mat_glass_cover(body, hi, in.color.a);
+  } else {
+    c = float4(vbo_material_shade(in.color.rgb, in.normalEye, in.posModel, lt, mat, envMap, envSmp),
+               in.color.a);
+  }
   float w = oit_weight(c.a, in.position.z);
   OITFragOut o;
   o.accum = float4(c.rgb * c.a, c.a) * w;
@@ -4702,6 +6449,19 @@ fragment OITFragOut vbo_fragment_oit(VBOVertexOut in [[stage_in]],
 // (which in shadow mode is light-clip). Used by the depth-only VBO pipelines.
 fragment void vbo_fragment_shadow(VBOVertexOut in [[stage_in]])
 {
+}
+
+// Depth-only fragment for the PEEL pre-pass (#488). NOT the shadow one: the
+// peel depth is compared for EQUALITY against what vbo_fragment_oit writes, so
+// the two have to discard the same fragments. vbo_fragment_oit applies the
+// per-rep clip, so a surface with surface_clip_front set would otherwise record
+// the depth of the shell the OIT pass throws away; the surviving fragments
+// would then fail the equality test and the clipped region would render
+// NOTHING. Same discard, same depth.
+fragment void vbo_fragment_peel(VBOVertexOut in [[stage_in]],
+    constant ClipU& clip [[buffer(1)]])
+{
+  apply_rep_clip(clip, in.eyeDist);
 }
 
 // --- Anti-aliased screen-space line quads ("trilines"). The CPU expands each
@@ -4737,8 +6497,65 @@ fragment float4 line_aa_fragment(LineAAOut in [[stage_in]],
 }
 )";
 
+// One fragment function compiled with kMatFamily fixed to `family` (#503).
+//
+// Returns nil when the family has no implemented material, so callers simply
+// skip building its pipelines. Unlike -newFunctionWithName:, the specialising
+// form can FAIL AT RUNTIME (a missing constant, a wrong MTLDataType), so the
+// error is checked and logged rather than trapping: a failure degrades to "no
+// pipeline for this family", which draws `default`.
+id<MTLFunction> RendererMetal::materialFragmentFunction(
+    id<MTLLibrary> lib, NSString* name, int family)
+{
+  if (!lib || !MaterialFamilyIsImplemented(family)) {
+    return nil;
+  }
+  MTLFunctionConstantValues* cv = [[MTLFunctionConstantValues alloc] init];
+  int fam = family;
+  [cv setConstantValue:&fam type:MTLDataTypeInt atIndex:0];
+  NSError* err = nil;
+  id<MTLFunction> fn = [lib newFunctionWithName:name constantValues:cv error:&err];
+  [cv release];   // MRC: MTLFunctionConstantValues alloc/init is +1
+  if (!fn) {
+    NSLog(@"RendererMetal: specialising %@ for material family %d failed: %@",
+          name, family, err);
+  }
+  return fn;      // +1, caller owns
+}
+
+void RendererMetal::buildVBOPipelines()
+{
+  // MRC: release the previous build's owned objects before this call rebuilds
+  // them (e.g. on an MSAA sample-count change via setSampleCount). On the first
+  // call (from the ctor) every ivar is nil, so each release is a no-op. The
+  // _vboShadowPipeline* are NOT included — buildShadowPipelines() guards against
+  // a second build, so this function never overwrites them.
+  [_vboVertexFunc release];           _vboVertexFunc = nil;
+  for (int f = 0; f < cMaterialFamily_count; ++f) {
+    [_vboFragmentFunc[f] release];      _vboFragmentFunc[f] = nil;
+    [_vboFragmentOitFunc[f] release];   _vboFragmentOitFunc[f] = nil;
+    [_vboPipelineUByte[f] release];     _vboPipelineUByte[f] = nil;
+    [_vboPipelineFloat[f] release];     _vboPipelineFloat[f] = nil;
+    [_vboOitPipelineUByte[f] release];  _vboOitPipelineUByte[f] = nil;
+    [_vboOitPipelineFloat[f] release];  _vboOitPipelineFloat[f] = nil;
+  }
+  [_vboVertexUnlitFunc release];      _vboVertexUnlitFunc = nil;
+  [_vboFragmentUnlitFunc release];    _vboFragmentUnlitFunc = nil;
+  [_vboVertexUnlitFlatFunc release];  _vboVertexUnlitFlatFunc = nil;
+  [_vboFragmentShadowFunc release];   _vboFragmentShadowFunc = nil;
+  [_vboFragmentPeelFunc release];     _vboFragmentPeelFunc = nil;
+  [_capMarkVtxFunc release];          _capMarkVtxFunc = nil;
+  [_capMarkFragFunc release];         _capMarkFragFunc = nil;
+  [_capFillVtxFunc release];          _capFillVtxFunc = nil;
+  [_capFillFragFunc release];         _capFillFragFunc = nil;
+  [_lineAAVtxFunc release];           _lineAAVtxFunc = nil;
+  [_lineAAFragFunc release];          _lineAAFragFunc = nil;
+  [_capMarkDSS release];              _capMarkDSS = nil;
+  [_capFillDSS release];              _capFillDSS = nil;
+  [_capFillPipeline release];         _capFillPipeline = nil;
+
   NSError* error = nil;
-  id<MTLLibrary> lib = [_device newLibraryWithSource:vboSrc
+  id<MTLLibrary> lib = [_device newLibraryWithSource:[kMaterialSrc stringByAppendingString:kVBOSrc]
                                              options:nil
                                                error:&error];
   if (!lib) {
@@ -4747,11 +6564,16 @@ fragment float4 line_aa_fragment(LineAAOut in [[stage_in]],
   }
 
   _vboVertexFunc = [lib newFunctionWithName:@"vbo_vertex"];
-  _vboFragmentFunc = [lib newFunctionWithName:@"vbo_fragment"];
+  for (int f = 0; f < cMaterialFamily_count; ++f) {
+    _vboFragmentFunc[f] = materialFragmentFunction(lib, @"vbo_fragment", f);
+    _vboFragmentOitFunc[f] =
+        materialFragmentFunction(lib, @"vbo_fragment_oit", f);
+  }
   _vboVertexUnlitFunc = [lib newFunctionWithName:@"vbo_vertex_unlit"];
   _vboFragmentUnlitFunc = [lib newFunctionWithName:@"vbo_fragment_unlit"];
   _vboVertexUnlitFlatFunc = [lib newFunctionWithName:@"vbo_vertex_unlit_flat"];
   _vboFragmentShadowFunc = [lib newFunctionWithName:@"vbo_fragment_shadow"];
+  _vboFragmentPeelFunc = [lib newFunctionWithName:@"vbo_fragment_peel"];
   _capMarkVtxFunc = [lib newFunctionWithName:@"cap_mark_vertex"];
   _capMarkFragFunc = [lib newFunctionWithName:@"cap_mark_fragment"];
   _capFillVtxFunc = [lib newFunctionWithName:@"cap_fill_vertex"];
@@ -4760,7 +6582,7 @@ fragment float4 line_aa_fragment(LineAAOut in [[stage_in]],
   _coverageFragFunc = [lib newFunctionWithName:@"coverage_fragment"];
   _lineAAVtxFunc = [lib newFunctionWithName:@"line_aa_vertex"];
   _lineAAFragFunc = [lib newFunctionWithName:@"line_aa_fragment"];
-  if (!_vboVertexFunc || !_vboFragmentFunc) {
+  if (!_vboVertexFunc || !_vboFragmentFunc[cMaterialFamily_default]) {
     NSLog(@"RendererMetal: VBO shader functions not found");
     [lib release];  // MRC: library (+1) consumed
     return;
@@ -4832,7 +6654,6 @@ fragment float4 line_aa_fragment(LineAAOut in [[stage_in]],
     MTLRenderPipelineDescriptor* psd =
         [[MTLRenderPipelineDescriptor alloc] init];
     psd.vertexFunction = _vboVertexFunc;
-    psd.fragmentFunction = _vboFragmentFunc;
     psd.vertexDescriptor = vd;
     psd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
     psd.colorAttachments[0].blendingEnabled = YES;
@@ -4846,10 +6667,14 @@ fragment float4 line_aa_fragment(LineAAOut in [[stage_in]],
     psd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
     psd.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
 
-    _vboPipelineUByte = [_device newRenderPipelineStateWithDescriptor:psd
-                                                                error:&error];
-    if (!_vboPipelineUByte) {
-      NSLog(@"RendererMetal: failed to create VBO UByte pipeline: %@", error);
+    for (int f = 0; f < cMaterialFamily_count; ++f) {
+      if (!_vboFragmentFunc[f]) continue;   // family has nothing to draw
+      psd.fragmentFunction = _vboFragmentFunc[f];
+      _vboPipelineUByte[f] = [_device newRenderPipelineStateWithDescriptor:psd error:&error];
+      if (!_vboPipelineUByte[f]) {
+        NSLog(@"RendererMetal: failed to create VBO UByte pipeline (family %d): %@",
+              f, error);
+      }
     }
     [psd release];  // MRC: descriptor (+1) consumed by pipeline creation
   }
@@ -4874,7 +6699,6 @@ fragment float4 line_aa_fragment(LineAAOut in [[stage_in]],
     MTLRenderPipelineDescriptor* psd =
         [[MTLRenderPipelineDescriptor alloc] init];
     psd.vertexFunction = _vboVertexFunc;
-    psd.fragmentFunction = _vboFragmentFunc;
     psd.vertexDescriptor = vd;
     psd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
     psd.colorAttachments[0].blendingEnabled = YES;
@@ -4888,10 +6712,14 @@ fragment float4 line_aa_fragment(LineAAOut in [[stage_in]],
     psd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
     psd.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
 
-    _vboPipelineFloat = [_device newRenderPipelineStateWithDescriptor:psd
-                                                                error:&error];
-    if (!_vboPipelineFloat) {
-      NSLog(@"RendererMetal: failed to create VBO Float pipeline: %@", error);
+    for (int f = 0; f < cMaterialFamily_count; ++f) {
+      if (!_vboFragmentFunc[f]) continue;   // family has nothing to draw
+      psd.fragmentFunction = _vboFragmentFunc[f];
+      _vboPipelineFloat[f] = [_device newRenderPipelineStateWithDescriptor:psd error:&error];
+      if (!_vboPipelineFloat[f]) {
+        NSLog(@"RendererMetal: failed to create VBO Float pipeline (family %d): %@",
+              f, error);
+      }
     }
     [psd release];  // MRC: descriptor (+1) consumed by pipeline creation
   }
@@ -4901,8 +6729,7 @@ fragment float4 line_aa_fragment(LineAAOut in [[stage_in]],
   // for order-independent transparency. Prebuild the two common layouts; other
   // layouts (e.g. the surface's stride-44 layout) get a one-off via
   // oitPipelineForVD() at draw time.
-  _vboFragmentOitFunc = [lib newFunctionWithName:@"vbo_fragment_oit"];
-  if (_vboFragmentOitFunc) {
+  if (_vboFragmentOitFunc[cMaterialFamily_default]) {
     auto mkvd = [](MTLVertexFormat colorFmt,
                    NSUInteger strideBytes) -> MTLVertexDescriptor* {
       MTLVertexDescriptor* vd = [MTLVertexDescriptor vertexDescriptor];
@@ -4916,9 +6743,13 @@ fragment float4 line_aa_fragment(LineAAOut in [[stage_in]],
       vd.layouts[0].stepFunction = MTLVertexStepFunctionPerVertex;
       return vd;
     };
-    _vboOitPipelineUByte =
-        oitPipelineForVD(mkvd(MTLVertexFormatUChar4Normalized, 28));
-    _vboOitPipelineFloat = oitPipelineForVD(mkvd(MTLVertexFormatFloat4, 40));
+    for (int f = 0; f < cMaterialFamily_count; ++f) {
+      if (!_vboFragmentOitFunc[f]) continue;
+      _vboOitPipelineUByte[f] =
+          oitPipelineForVD(mkvd(MTLVertexFormatUChar4Normalized, 28), f);
+      _vboOitPipelineFloat[f] =
+          oitPipelineForVD(mkvd(MTLVertexFormatFloat4, 40), f);
+    }
   }
   [lib release];  // MRC: library (+1) no longer needed once functions are created
 
@@ -4948,6 +6779,33 @@ id<MTLRenderPipelineState> RendererMetal::shadowPipelineForVD(
   return ps;
 }
 
+// Depth-only VBO pipeline for the PEEL pre-pass (#488). Two things differ from
+// the shadow variant. The attachment: the peel depth is
+// Depth32Float_Stencil8 (a copy of _sceneDepth), not the shadow map's plain
+// Depth32Float, and a pipeline fixes its attachment formats at build time. And
+// the fragment: vbo_fragment_peel applies the per-rep clip, because the depth
+// it records is compared for EQUALITY against what vbo_fragment_oit writes and
+// the two must discard the same fragments (see the shader).
+id<MTLRenderPipelineState> RendererMetal::peelPipelineForVD(
+    MTLVertexDescriptor* vd)
+{
+  if (!_vboVertexFunc || !_vboFragmentPeelFunc) return nil;
+  MTLRenderPipelineDescriptor* p = [[MTLRenderPipelineDescriptor alloc] init];
+  p.vertexFunction = _vboVertexFunc;
+  p.fragmentFunction = _vboFragmentPeelFunc;
+  p.vertexDescriptor = vd;
+  p.rasterSampleCount = 1;  // _peelDepth is single-sample, like the OIT targets
+  p.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+  p.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+  // No colorAttachments[0] pixel format: depth-only pass.
+  NSError* e = nil;
+  id<MTLRenderPipelineState> ps =
+      [_device newRenderPipelineStateWithDescriptor:p error:&e];
+  if (!ps) NSLog(@"RendererMetal: VBO peel pipeline failed: %@", e);
+  [p release];  // MRC: descriptor (+1) consumed by pipeline creation
+  return ps;
+}
+
 void RendererMetal::buildShadowPipelines()
 {
   if (_vboShadowPipelineUByte) return;
@@ -4968,6 +6826,11 @@ void RendererMetal::buildShadowPipelines()
   _vboShadowPipelineUByte =
       shadowPipelineForVD(mkvd(MTLVertexFormatUChar4Normalized, 28));
   _vboShadowPipelineFloat = shadowPipelineForVD(mkvd(MTLVertexFormatFloat4, 40));
+  // The peel pre-pass reuses the same two functions against the peel depth's
+  // format; built here so the two depth-only families cannot drift apart.
+  _vboPeelPipelineUByte =
+      peelPipelineForVD(mkvd(MTLVertexFormatUChar4Normalized, 28));
+  _vboPeelPipelineFloat = peelPipelineForVD(mkvd(MTLVertexFormatFloat4, 40));
 }
 
 // ---------------------------------------------------------------------------
@@ -5126,20 +6989,28 @@ void RendererMetal::drawLinesAA(PrimitiveType mode, int vertexCount,
   const NSUInteger emitVerts = (NSUInteger)(_lineExpand.size() / 9);
   if (emitVerts == 0) return;
   const size_t bytes = _lineExpand.size() * sizeof(float);
-  if (!_lineBuffer || _lineBufferSize < bytes) {
-    [_lineBuffer release];
-    _lineBuffer = [_device newBufferWithLength:std::max(bytes, (size_t)65536)
-                                       options:MTLResourceStorageModeShared];
-    _lineBufferSize = _lineBuffer ? _lineBuffer.length : 0;
-  }
-  if (!_lineBuffer) return;
-  std::memcpy(_lineBuffer.contents, _lineExpand.data(), bytes);
+  // One frame issues one line draw PER enabled object showing `lines`. The draw
+  // is only RECORDED here; the GPU reads the vertex buffer when the command
+  // buffer executes at commit. A single shared buffer rewritten at offset 0
+  // therefore leaves every draw reading the LAST object's vertices, so only the
+  // last object's lines appear and the others' silently vanish (#462; the same
+  // trap endBatch documents for the immediate-mode batch VBO). Allocate a fresh
+  // transient buffer per draw -- the encoder retains it until the frame
+  // completes, so each draw reads its own vertices. This also removes the
+  // cross-frame version of the hazard, where the next frame's memcpy landed on
+  // a buffer the previous frame's GPU work could still be reading.
+  id<MTLBuffer> lineVBO =
+      [_device newBufferWithLength:bytes
+                           options:MTLResourceStorageModeShared];
+  if (!lineVBO) return;
+  std::memcpy(lineVBO.contents, _lineExpand.data(), bytes);
 
   [_encoder setRenderPipelineState:_vboLinePipeline];
   // Lines depth-test/write like normal scene geometry.
   applyDepthStencilState();
   if (_depthStencilState) [_encoder setDepthStencilState:_depthStencilState];
-  [_encoder setVertexBuffer:_lineBuffer offset:0 atIndex:0];
+  [_encoder setVertexBuffer:lineVBO offset:0 atIndex:0];
+  [lineVBO release];  // MRC: the encoder holds its own reference for the frame
   struct LineAAU { float halfWidth; float feather; } u = {lw * 0.5f, feather};
   [_encoder setFragmentBytes:&u length:sizeof(u) atIndex:0];
   [_encoder drawPrimitives:MTLPrimitiveTypeTriangle
@@ -5148,12 +7019,13 @@ void RendererMetal::drawLinesAA(PrimitiveType mode, int vertexCount,
 }
 
 id<MTLRenderPipelineState> RendererMetal::oitPipelineForVD(
-    MTLVertexDescriptor* vd)
+    MTLVertexDescriptor* vd, int family)
 {
-  if (!_vboVertexFunc || !_vboFragmentOitFunc) return nil;
+  if (family < 0 || family >= cMaterialFamily_count) family = cMaterialFamily_default;
+  if (!_vboVertexFunc || !_vboFragmentOitFunc[family]) return nil;
   MTLRenderPipelineDescriptor* p = [[MTLRenderPipelineDescriptor alloc] init];
   p.vertexFunction = _vboVertexFunc;
-  p.fragmentFunction = _vboFragmentOitFunc;
+  p.fragmentFunction = _vboFragmentOitFunc[family];
   p.vertexDescriptor = vd;
   p.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
   p.colorAttachments[0].blendingEnabled = YES;
@@ -5198,14 +7070,27 @@ id<MTLRenderPipelineState> RendererMetal::cachedVBOPipeline(
   mix((uint32_t)colorOffset);
   mix((uint64_t)colorType);
   mix((uint64_t)_sampleCount);
+  // Without the family a marble surface and a default surface at the same
+  // stride would share one cached pipeline, and whichever drew first would
+  // decide how both looked.
+  int family = _repMatParams.family;
+  if (family < 0 || family >= cMaterialFamily_count ||
+      (variant != VBOPipelineVariant::Lit && variant != VBOPipelineVariant::Oit)) {
+    family = cMaterialFamily_default;   // only the lit variants read a material
+  }
+  mix((uint64_t)family);
   auto it = _vboPipelineCache.find(key);
   if (it != _vboPipelineCache.end()) return it->second;  // borrowed (cache-owned)
 
   id<MTLRenderPipelineState> ps = nil;
   if (variant == VBOPipelineVariant::Oit) {
-    ps = oitPipelineForVD(vd);       // +1
+    ps = oitPipelineForVD(vd, family);   // +1
+    if (!ps && family != cMaterialFamily_default)
+      ps = oitPipelineForVD(vd, cMaterialFamily_default);   // draw default, not nothing
   } else if (variant == VBOPipelineVariant::Shadow) {
     ps = shadowPipelineForVD(vd);    // +1
+  } else if (variant == VBOPipelineVariant::Peel) {
+    ps = peelPipelineForVD(vd);      // +1
   } else {
     // Opaque pass fallback for a non-prebuilt layout (mirrors the former inline
     // fallback): Lit uses the per-fragment shader, Unlit/UnlitFlat the flat ones.
@@ -5213,8 +7098,14 @@ id<MTLRenderPipelineState> RendererMetal::cachedVBOPipeline(
         ? _vboVertexUnlitFlatFunc
         : (variant == VBOPipelineVariant::Unlit ? _vboVertexUnlitFunc
                                                 : _vboVertexFunc);
-    id<MTLFunction> ffn = (variant == VBOPipelineVariant::Lit)
-        ? _vboFragmentFunc : _vboFragmentUnlitFunc;
+    // A family whose specialisation failed must draw as `default`, not vanish:
+    // this cache serves the non-prebuilt lit layouts, the molecular surface
+    // among them, and returning nil here hides the geometry outright.
+    id<MTLFunction> ffn = _vboFragmentUnlitFunc;
+    if (variant == VBOPipelineVariant::Lit) {
+      ffn = _vboFragmentFunc[family] ? _vboFragmentFunc[family]
+                                     : _vboFragmentFunc[cMaterialFamily_default];
+    }
     if (vfn && ffn) {
       MTLRenderPipelineDescriptor* psd =
           [[MTLRenderPipelineDescriptor alloc] init];
@@ -5276,12 +7167,13 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
 
   // Ray tracing: capture solid triangle meshes (cartoon/surface) once per CPU
   // buffer — the frame only records that this buffer contributed.
-  if (_rtEnabled && !_shadowMode && !_oitActive) {
+  if (_rtEnabled && !_shadowMode && !_peelMode && !_oitActive) {
     rtNoteGeometry(data, nullptr,
         rtMixParams({(uint64_t)mode, (uint64_t)vertexCount, (uint64_t)stride,
-                     (uint64_t)posOffset}),
+                     (uint64_t)posOffset, (uint64_t)(colorOffset + 1), (uint64_t)colorType}),
         [&](RTGeom& g) {
-          rtAppendVBOTris(g.tris, mode, vertexCount, data, stride, posOffset, nullptr);
+          rtAppendVBOTris(g.tris, g.triCols, g.triNrms, normalOffset, colorOffset, colorType,
+                          mode, vertexCount, data, stride, posOffset, nullptr);
         });
   }
 
@@ -5341,7 +7233,7 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
   // 1px MTLPrimitiveTypeLine. Lines still cast no shadows (the shadow branch
   // below early-returns for `unlit`) and are skipped in the transparent pass.
   if ((mode == PrimitiveType::Lines || mode == PrimitiveType::LineStrip) &&
-      !_shadowMode && !_oitActive) {
+      !_shadowMode && !_peelMode && !_oitActive) {
     bool flatLine = (colorOffset < 0);
     drawLinesAA(mode, vertexCount, data, stride, posOffset, colorOffset,
         colorType, flatLine);
@@ -5364,17 +7256,46 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
     if (!pipeline) return;
   }
 
+  // Peel pre-pass (#488): the same depth-only replay as the shadow branch
+  // above, under the CAMERA matrices rather than the light's, writing into the
+  // peel depth. Identical routing on purpose -- the depth this records has to
+  // be computed by the same code that computes the depth the peeled object's
+  // OIT draw then compares for equality, or nothing would ever match.
+  if (_peelMode) {
+    if (unlit) return;
+    if (posOffset == 0 && normalOffset == 12 && colorOffset == 24) {
+      if (colorType == 0 && stride == 28) pipeline = _vboPeelPipelineUByte;
+      else if (colorType == 1 && stride == 40) pipeline = _vboPeelPipelineFloat;
+    }
+    if (!pipeline)  // e.g. surface stride 44 — build-once via the layout cache
+      pipeline = cachedVBOPipeline(VBOPipelineVariant::Peel, stride,
+          posOffset, normalOffset, colorOffset, colorType, vd);
+    // Could not seed the peel depth: mark it so the OIT draw falls back to the
+    // ordinary LessEqual test rather than being EQUAL-tested against a depth
+    // this geometry never wrote, which would reject it at every pixel.
+    if (!pipeline) { _peelUnseeded = true; return; }
+  }
+
   // Check if layout matches pre-built pipelines
-  if (!_shadowMode && !unlit && posOffset == 0 && normalOffset == 12 &&
+  if (!_shadowMode && !_peelMode && !unlit && posOffset == 0 && normalOffset == 12 &&
       colorOffset == 24) {
+    int fam = _repMatParams.family;
+    if (fam < 0 || fam >= cMaterialFamily_count) fam = cMaterialFamily_default;
+    // A family with no pipeline -- nothing implemented draws with it, or its
+    // specialisation failed -- falls back to `default`, which is always built.
     if (_oitActive) {
-      // Transparent pass: route lit common layouts to the OIT MRT pipelines.
-      if (colorType == 0 && stride == 28) pipeline = _vboOitPipelineUByte;
-      else if (colorType == 1 && stride == 40) pipeline = _vboOitPipelineFloat;
-    } else if (colorType == 0 && stride == 28 && _vboPipelineUByte) {
-      pipeline = _vboPipelineUByte;
-    } else if (colorType == 1 && stride == 40 && _vboPipelineFloat) {
-      pipeline = _vboPipelineFloat;
+      if (colorType == 0 && stride == 28)
+        pipeline = _vboOitPipelineUByte[fam] ? _vboOitPipelineUByte[fam]
+                                             : _vboOitPipelineUByte[cMaterialFamily_default];
+      else if (colorType == 1 && stride == 40)
+        pipeline = _vboOitPipelineFloat[fam] ? _vboOitPipelineFloat[fam]
+                                             : _vboOitPipelineFloat[cMaterialFamily_default];
+    } else if (colorType == 0 && stride == 28 && _vboPipelineUByte[cMaterialFamily_default]) {
+      pipeline = _vboPipelineUByte[fam] ? _vboPipelineUByte[fam]
+                                        : _vboPipelineUByte[cMaterialFamily_default];
+    } else if (colorType == 1 && stride == 40 && _vboPipelineFloat[cMaterialFamily_default]) {
+      pipeline = _vboPipelineFloat[fam] ? _vboPipelineFloat[fam]
+                                        : _vboPipelineFloat[cMaterialFamily_default];
     }
   }
   // In the OIT pass only MRT pipelines can render; build a one-off OIT
@@ -5409,8 +7330,13 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
     // a thin cartoon/surface slab cannot self-shadow its own light-facing side
     // (genuine fold occlusion is preserved). Restored to back/none after.
     [_encoder setCullMode:MTLCullModeFront];
+  } else if (_peelMode) {
+    // The pre-pass set its own state on the encoder; this generic block would
+    // otherwise overwrite it with the scene's (and re-enable culling).
+    [_encoder setDepthStencilState:peelWriteState()];
+    [_encoder setCullMode:MTLCullModeNone];
   } else if (_oitActive) {
-    [_encoder setDepthStencilState:oitDepthState()];
+    [_encoder setDepthStencilState:oitDepthPeelAwareState()];
   } else {
     applyDepthStencilState();
     if (_depthStencilState) {
@@ -5445,6 +7371,9 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
   { struct { float front, back, enabled, pad; } _cl = { _repClipFront, _repClipBack,
       _repClipFront >= 0.0f ? 1.0f : 0.0f, 0.0f };
     [_encoder setFragmentBytes:&_cl length:sizeof(_cl) atIndex:1]; }
+  // Material of THIS rep (#503). Bound per draw, like the clip above, so a
+  // material cannot leak onto the rep drawn next.
+  bindMaterialU(_encoder, _repMatParams, _modelviewInv.data());
 
   // Flat (uniform-colored) geometry: supply the color the flat shader reads
   // from buffer 2. No per-vertex color is available here (the GL path would set
@@ -5463,7 +7392,7 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
   // --- Surface interior cap (stencil) — non-indexed (opaque surface) path.
   // MARK the slab's interior cross-section via stencil parity over the surface's
   // not-clipped faces, then FILL it flat at the near-plane sentinel depth.
-  if (interiorCap && !_shadowMode && !_oitActive && _capFillPipeline &&
+  if (interiorCap && !_shadowMode && !_peelMode && !_oitActive && _capFillPipeline &&
       _capMarkVtxFunc && _capMarkFragFunc) {
     if (!_capMarkPipeline || _capMarkStride != stride) {
       MTLVertexDescriptor* mvd = [[MTLVertexDescriptor alloc] init];
@@ -5530,7 +7459,7 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
 
   // Surface outer-contour: stash this (non-shadow) surface draw to be rendered
   // into the coverage mask after the scene (see runPostChain).
-  if (_repContourEnabled && !_shadowMode) {
+  if (_repContourEnabled && !_shadowMode && !_peelMode) {
     CoverageDraw cd;
     cd.vbo = vbo; cd.ibo = nil; cd.count = vertexCount;
     cd.stride = stride; cd.posOffset = posOffset;
@@ -5543,7 +7472,7 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
 
   // Per-rep AO/shadow exemption (#79): stash this cartoon/ribbon draw to be
   // rasterized into the AO-exempt mask after the scene (see renderAOExemptMask).
-  if (_repAOExempt && !_shadowMode) {
+  if (_repAOExempt && !_shadowMode && !_peelMode) {
     CoverageDraw cd;
     cd.vbo = vbo; cd.ibo = nil; cd.count = vertexCount;
     cd.stride = stride; cd.posOffset = posOffset;
@@ -5567,14 +7496,14 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
   // Ray tracing: capture solid triangle meshes (cartoon/surface) once per CPU
   // buffer. Keyed on the vertex data, with the index buffer as an alias so
   // freeing either one drops the cached triangles.
-  if (_rtEnabled && !_shadowMode && !_oitActive) {
+  if (_rtEnabled && !_shadowMode && !_peelMode && !_oitActive) {
     rtNoteGeometry(vertexData, indexData,
         rtMixParams({(uint64_t)mode, (uint64_t)indexCount, (uint64_t)stride,
-                     (uint64_t)posOffset,
+                     (uint64_t)posOffset, (uint64_t)(colorOffset + 1), (uint64_t)colorType,
                      (uint64_t)reinterpret_cast<uintptr_t>(indexData)}),
         [&](RTGeom& g) {
-          rtAppendVBOTris(g.tris, mode, indexCount, vertexData, stride, posOffset,
-              indexData);
+          rtAppendVBOTris(g.tris, g.triCols, g.triNrms, normalOffset, colorOffset, colorType,
+              mode, indexCount, vertexData, stride, posOffset, indexData);
         });
   }
 
@@ -5634,15 +7563,45 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
           posOffset, normalOffset, colorOffset, colorType, vd);
     if (!pipeline) return;
   }
-  if (!_shadowMode && !unlit && posOffset == 0 && normalOffset == 12 &&
+
+  // Peel pre-pass (#488): the same depth-only replay as the shadow branch
+  // above, under the CAMERA matrices rather than the light's, writing into the
+  // peel depth. Identical routing on purpose -- the depth this records has to
+  // be computed by the same code that computes the depth the peeled object's
+  // OIT draw then compares for equality, or nothing would ever match.
+  if (_peelMode) {
+    if (unlit) return;
+    if (posOffset == 0 && normalOffset == 12 && colorOffset == 24) {
+      if (colorType == 0 && stride == 28) pipeline = _vboPeelPipelineUByte;
+      else if (colorType == 1 && stride == 40) pipeline = _vboPeelPipelineFloat;
+    }
+    if (!pipeline)  // e.g. surface stride 44 — build-once via the layout cache
+      pipeline = cachedVBOPipeline(VBOPipelineVariant::Peel, stride,
+          posOffset, normalOffset, colorOffset, colorType, vd);
+    // Could not seed the peel depth: mark it so the OIT draw falls back to the
+    // ordinary LessEqual test rather than being EQUAL-tested against a depth
+    // this geometry never wrote, which would reject it at every pixel.
+    if (!pipeline) { _peelUnseeded = true; return; }
+  }
+  if (!_shadowMode && !_peelMode && !unlit && posOffset == 0 && normalOffset == 12 &&
       colorOffset == 24) {
+    int fam = _repMatParams.family;
+    if (fam < 0 || fam >= cMaterialFamily_count) fam = cMaterialFamily_default;
+    // A family with no pipeline -- nothing implemented draws with it, or its
+    // specialisation failed -- falls back to `default`, which is always built.
     if (_oitActive) {
-      if (colorType == 0 && stride == 28) pipeline = _vboOitPipelineUByte;
-      else if (colorType == 1 && stride == 40) pipeline = _vboOitPipelineFloat;
-    } else if (colorType == 0 && stride == 28 && _vboPipelineUByte) {
-      pipeline = _vboPipelineUByte;
-    } else if (colorType == 1 && stride == 40 && _vboPipelineFloat) {
-      pipeline = _vboPipelineFloat;
+      if (colorType == 0 && stride == 28)
+        pipeline = _vboOitPipelineUByte[fam] ? _vboOitPipelineUByte[fam]
+                                             : _vboOitPipelineUByte[cMaterialFamily_default];
+      else if (colorType == 1 && stride == 40)
+        pipeline = _vboOitPipelineFloat[fam] ? _vboOitPipelineFloat[fam]
+                                             : _vboOitPipelineFloat[cMaterialFamily_default];
+    } else if (colorType == 0 && stride == 28 && _vboPipelineUByte[cMaterialFamily_default]) {
+      pipeline = _vboPipelineUByte[fam] ? _vboPipelineUByte[fam]
+                                        : _vboPipelineUByte[cMaterialFamily_default];
+    } else if (colorType == 1 && stride == 40 && _vboPipelineFloat[cMaterialFamily_default]) {
+      pipeline = _vboPipelineFloat[fam] ? _vboPipelineFloat[fam]
+                                        : _vboPipelineFloat[cMaterialFamily_default];
     }
   }
   if (_oitActive && !pipeline) {
@@ -5670,8 +7629,13 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
     // its own light-facing front — without this the surface stored its near
     // faces and the front-center read as a dark "lit from below" band.
     [_encoder setCullMode:MTLCullModeFront];
+  } else if (_peelMode) {
+    // The pre-pass set its own state on the encoder; this generic block would
+    // otherwise overwrite it with the scene's (and re-enable culling).
+    [_encoder setDepthStencilState:peelWriteState()];
+    [_encoder setCullMode:MTLCullModeNone];
   } else if (_oitActive) {
-    [_encoder setDepthStencilState:oitDepthState()];
+    [_encoder setDepthStencilState:oitDepthPeelAwareState()];
   } else {
     applyDepthStencilState();
     if (_depthStencilState) {
@@ -5704,6 +7668,9 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
   { struct { float front, back, enabled, pad; } _cl = { _repClipFront, _repClipBack,
       _repClipFront >= 0.0f ? 1.0f : 0.0f, 0.0f };
     [_encoder setFragmentBytes:&_cl length:sizeof(_cl) atIndex:1]; }
+  // Material of THIS rep (#503). Bound per draw, like the clip above, so a
+  // material cannot leak onto the rep drawn next.
+  bindMaterialU(_encoder, _repMatParams, _modelviewInv.data());
 
   // Flat (uniform-colored) geometry reads its color from buffer 2 — see drawVBO.
   if (flat) {
@@ -5722,7 +7689,7 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
   // interior cross-section (stencil parity over the not-clipped faces), then FILL
   // it with a flat darkened color at the near-plane sentinel depth (which the
   // post passes already exclude from SSAO/shadows). Opaque pass only.
-  if (interiorCap && !_shadowMode && !_oitActive && _capFillPipeline &&
+  if (interiorCap && !_shadowMode && !_peelMode && !_oitActive && _capFillPipeline &&
       _capMarkVtxFunc && _capMarkFragFunc) {
     if (!_capMarkPipeline || _capMarkStride != stride) {
       MTLVertexDescriptor* mvd = [[MTLVertexDescriptor alloc] init];
@@ -5785,7 +7752,7 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
 
   // Surface outer-contour: stash this (non-shadow) surface draw to be rendered
   // into the coverage mask after the scene (see runPostChain).
-  if (_repContourEnabled && !_shadowMode) {
+  if (_repContourEnabled && !_shadowMode && !_peelMode) {
     CoverageDraw cd;
     cd.vbo = vbo; cd.ibo = ibo; cd.count = indexCount;
     cd.stride = stride; cd.posOffset = posOffset;
@@ -5798,7 +7765,7 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
 
   // Per-rep AO/shadow exemption (#79): stash this cartoon/ribbon draw to be
   // rasterized into the AO-exempt mask after the scene (see renderAOExemptMask).
-  if (_repAOExempt && !_shadowMode) {
+  if (_repAOExempt && !_shadowMode && !_peelMode) {
     CoverageDraw cd;
     cd.vbo = vbo; cd.ibo = ibo; cd.count = indexCount;
     cd.stride = stride; cd.posOffset = posOffset;
@@ -5874,6 +7841,7 @@ struct SphereIn {
   float4 color         [[attribute(1)]];  // UByte4Norm -> float4
   float  rightUpFlags  [[attribute(2)]];
 };
+
 struct SphereU {
   float4x4 modelview;
   float4x4 projection;
@@ -5949,8 +7917,19 @@ static float sph_oit_weight(float a, float z) {
 
 // Shared ray-sphere intersection + PyMOL two-light shading. Discards on miss /
 // out-of-range depth. Returns lit rgb, alpha, and window depth.
+// Geometry, depth and the DEFAULT two-light result. Deliberately material-free
+// so the shadow pass -- which only needs depth -- does not have to bind a
+// material or be specialised per family. Colour fragments hand the extras to
+// mat_impostor_composite.
 static void sphere_shade(SphereVOut in, constant SphereU& u,
-    thread float3& rgb, thread float& alpha, thread float& depth) {
+    thread float3& rgb, thread float& alpha, thread float& depth,
+    thread float3& nOut, thread float3& pOut,
+    thread float& intensityOut, thread float& specularOut,
+    thread bool& litOut) {
+  // litOut == false means this fragment took a path that produced a FINAL
+  // colour -- the interior cap at the slab plane -- rather than a lit surface.
+  // A material must leave those alone, or the cap loses its darkening.
+  litOut = true;
   float3 ray_origin, ray_dir, sphere_dir;
   if (u.ortho >= 0.5) {
     ray_origin = in.point; ray_dir = float3(0.0,0.0,-1.0);
@@ -5984,6 +7963,8 @@ static void sphere_shade(SphereVOut in, constant SphereU& u,
     rgb = (u.interiorColor.a > 0.5) ? u.interiorColor.rgb  // ray_interior_color
                                     : in.color.rgb * 0.45; // else atom darkened
     alpha = in.color.a;
+    nOut = float3(0.0, 0.0, 1.0); pOut = ipoint;
+    intensityOut = 1.0; specularOut = 0.0; litOut = false;
     return;
   }
   float3 normal = normalize(ipoint - in.sphere_center);
@@ -6009,12 +7990,31 @@ static void sphere_shade(SphereVOut in, constant SphereU& u,
   }
   rgb = in.color.rgb * min(intensity, 1.0) + specular;
   alpha = in.color.a;
+  nOut = normal; pOut = ipoint;
+  intensityOut = intensity; specularOut = specular;
+}
+
+// The material-aware entry point the colour fragments use.
+static void sphere_shade_material(SphereVOut in, constant SphereU& u,
+    constant MaterialU& mat, texturecube<float> envMap, sampler envSmp,
+    thread float3& rgb, thread float& alpha, thread float& depth) {
+  float3 n = float3(0.0), pt = float3(0.0);
+  float intensity = 0.0, specular = 0.0;
+  bool lit = true;
+  sphere_shade(in, u, rgb, alpha, depth, n, pt, intensity, specular, lit);
+  if (!lit) return;   // interior cap: already a final colour
+  rgb = mat_impostor_composite(in.color.rgb, n, pt, u.lAmbient, u.lDirect,
+                               u.lReflect, float3(u.klx, u.kly, u.klz), mat,
+                               intensity, specular, u.lSSSWrap, envMap, envSmp);
 }
 
 fragment SphereFOut sphere_impostor_fragment(SphereVOut in [[stage_in]],
-    constant SphereU& u [[buffer(1)]]) {
+    texturecube<float> envMap [[texture(6)]],
+    sampler envSmp [[sampler(6)]],
+    constant SphereU& u [[buffer(1)]],
+    constant MaterialU& mat [[buffer(2)]]) {
   float3 rgb; float a; float depth;
-  sphere_shade(in, u, rgb, a, depth);
+  sphere_shade_material(in, u, mat, envMap, envSmp, rgb, a, depth);
   SphereFOut out;
   out.color = float4(rgb, a);
   out.depth = depth;
@@ -6022,9 +8022,12 @@ fragment SphereFOut sphere_impostor_fragment(SphereVOut in [[stage_in]],
 }
 
 fragment SphereOITOut sphere_impostor_fragment_oit(SphereVOut in [[stage_in]],
-    constant SphereU& u [[buffer(1)]]) {
+    texturecube<float> envMap [[texture(6)]],
+    sampler envSmp [[sampler(6)]],
+    constant SphereU& u [[buffer(1)]],
+    constant MaterialU& mat [[buffer(2)]]) {
   float3 rgb; float a; float depth;
-  sphere_shade(in, u, rgb, a, depth);
+  sphere_shade_material(in, u, mat, envMap, envSmp, rgb, a, depth);
   float w = sph_oit_weight(a, depth);
   SphereOITOut out;
   out.accum = float4(rgb * a, a) * w;
@@ -6041,20 +8044,23 @@ struct SphereShadowOut { float depth [[depth(any)]]; };
 fragment SphereShadowOut sphere_impostor_fragment_shadow(
     SphereVOut in [[stage_in]], constant SphereU& u [[buffer(1)]]) {
   float3 rgb; float a; float depth;
-  sphere_shade(in, u, rgb, a, depth);  // discards on ray miss
+  float3 n; float3 pt; float intensity, specular; bool lit;
+  sphere_shade(in, u, rgb, a, depth, n, pt, intensity, specular, lit);  // discards on ray miss
   SphereShadowOut out; out.depth = depth; return out;
 }
 )";
 
 void RendererMetal::buildImpostorPipelines()
 {
-  if (_sphereImpostorPipeline) return;
+  if (_sphereImpostorPipeline[cMaterialFamily_default]) return;
   NSError* err = nil;
-  id<MTLLibrary> lib = [_device newLibraryWithSource:kSphereImpostorSrc
+  id<MTLLibrary> lib = [_device newLibraryWithSource:[[kMaterialSrc stringByAppendingString:kMaterialImpostorSrc]
+                                                   stringByAppendingString:kSphereImpostorSrc]
                                              options:nil error:&err];
   if (!lib) { NSLog(@"RendererMetal: sphere impostor compile failed: %@", err); return; }
   id<MTLFunction> vfn = [lib newFunctionWithName:@"sphere_impostor_vertex"];
-  id<MTLFunction> ffn = [lib newFunctionWithName:@"sphere_impostor_fragment"];
+  id<MTLFunction> ffn =
+      materialFragmentFunction(lib, @"sphere_impostor_fragment", cMaterialFamily_default);
   if (!vfn || !ffn) { NSLog(@"RendererMetal: sphere impostor funcs missing"); return; }
 
   MTLVertexDescriptor* vd = [MTLVertexDescriptor vertexDescriptor];
@@ -6078,13 +8084,23 @@ void RendererMetal::buildImpostorPipelines()
   psd.rasterSampleCount = _sampleCount;
   psd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
   psd.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
-  _sphereImpostorPipeline = [_device newRenderPipelineStateWithDescriptor:psd error:&err];
-  if (!_sphereImpostorPipeline)
-    NSLog(@"RendererMetal: sphere impostor pipeline failed: %@", err);
+  for (int f = 0; f < cMaterialFamily_count; ++f) {
+    id<MTLFunction> fn = (f == cMaterialFamily_default)
+        ? [ffn retain]
+        : materialFragmentFunction(lib, @"sphere_impostor_fragment", f);
+    if (!fn) continue;
+    psd.fragmentFunction = fn;
+    _sphereImpostorPipeline[f] =
+        [_device newRenderPipelineStateWithDescriptor:psd error:&err];
+    [fn release];   // MRC: the pipeline holds its own reference
+    if (!_sphereImpostorPipeline[f])
+      NSLog(@"RendererMetal: sphere impostor pipeline failed (family %d): %@", f, err);
+  }
 
   // Transparent sphere OIT variant: same vertex shader + geometry, MRT
   // accum/reveal output, ray-cast depth retained for occlusion.
-  id<MTLFunction> offn = [lib newFunctionWithName:@"sphere_impostor_fragment_oit"];
+  id<MTLFunction> offn = materialFragmentFunction(
+      lib, @"sphere_impostor_fragment_oit", cMaterialFamily_default);
   if (offn) {
     MTLRenderPipelineDescriptor* op = [[MTLRenderPipelineDescriptor alloc] init];
     op.vertexFunction = vfn; op.fragmentFunction = offn; op.vertexDescriptor = vd;
@@ -6102,8 +8118,18 @@ void RendererMetal::buildImpostorPipelines()
     op.colorAttachments[1].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceColor;
     op.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
     op.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
-    _sphereOitPipeline = [_device newRenderPipelineStateWithDescriptor:op error:&err];
-    if (!_sphereOitPipeline)
+    for (int f = 0; f < cMaterialFamily_count; ++f) {
+      id<MTLFunction> fn = (f == cMaterialFamily_default)
+          ? [offn retain]
+          : materialFragmentFunction(lib, @"sphere_impostor_fragment_oit", f);
+      if (!fn) continue;
+      op.fragmentFunction = fn;
+      _sphereOitPipeline[f] = [_device newRenderPipelineStateWithDescriptor:op error:&err];
+      [fn release];
+      if (!_sphereOitPipeline[f])
+        NSLog(@"RendererMetal: sphere OIT pipeline failed (family %d): %@", f, err);
+    }
+    if (!_sphereOitPipeline[cMaterialFamily_default])
       NSLog(@"RendererMetal: sphere OIT pipeline failed: %@", err);
   }
 
@@ -6117,6 +8143,19 @@ void RendererMetal::buildImpostorPipelines()
     _sphereShadowPipeline = [_device newRenderPipelineStateWithDescriptor:sp error:&err];
     if (!_sphereShadowPipeline)
       NSLog(@"RendererMetal: sphere shadow pipeline failed: %@", err);
+    // Peel pre-pass variant (#488): the same depth-only fragment -- it ray-casts
+    // the sphere and writes the intersection depth, which is precisely what the
+    // peel records -- against the peel depth's Depth32Float_Stencil8 instead of
+    // the shadow map's plain Depth32Float.
+    MTLRenderPipelineDescriptor* pp = [[MTLRenderPipelineDescriptor alloc] init];
+    pp.vertexFunction = vfn; pp.fragmentFunction = sfn; pp.vertexDescriptor = vd;
+    pp.rasterSampleCount = 1;
+    pp.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+    pp.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+    _spherePeelPipeline = [_device newRenderPipelineStateWithDescriptor:pp error:&err];
+    if (!_spherePeelPipeline)
+      NSLog(@"RendererMetal: sphere peel pipeline failed: %@", err);
+    [pp release];
   }
 }
 
@@ -6126,9 +8165,21 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
   ensureEncoder();
   if (!_encoder) return;
   buildImpostorPipelines();
-  if (!_sphereImpostorPipeline) return;
-  if (_oitActive && !_sphereOitPipeline) return; // no OIT variant: skip
+  int sphereFam = _repMatParams.family;
+  if (sphereFam < 0 || sphereFam >= cMaterialFamily_count) sphereFam = cMaterialFamily_default;
+  if (!_sphereImpostorPipeline[sphereFam]) sphereFam = cMaterialFamily_default;
+  if (!_sphereImpostorPipeline[sphereFam]) return;
+  // Fall back to `default` rather than skipping: a missing OIT variant for one
+  // family must not make the transparent spheres disappear.
+  if (_oitActive && !_sphereOitPipeline[sphereFam])
+    sphereFam = cMaterialFamily_default;
+  if (_oitActive && !_sphereOitPipeline[sphereFam]) return; // no OIT variant at all
   if (_shadowMode && !_sphereShadowPipeline) return; // can't cast: skip safely
+  // No peel pipeline for the spheres: they cannot seed the peel depth, so they
+  // must not be EQUAL-tested against it either -- that rejected them at every
+  // pixel and the impostors VANISHED. _peelUnseeded makes the OIT draw below
+  // fall back to the ordinary LessEqual test, which is the pre-#488 look.
+  if (_peelMode && !_spherePeelPipeline) { _peelUnseeded = true; return; }
 
   // Only the canonical packing (pos@0, color@16, rightUp@20 Float, stride 24)
   // is handled by the prebuilt pipeline. Log and bail otherwise (revisit if hit).
@@ -6160,7 +8211,7 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
   // consecutive verts sharing the same a_vertex_radius (float4 @ offset 0).
   // sphereSizeScale is baked into the stored radius, so it is part of the
   // params signature: changing sphere_scale re-extracts.
-  if (_rtEnabled && !_shadowMode && !_oitActive) {
+  if (_rtEnabled && !_shadowMode && !_peelMode && !_oitActive) {
     rtNoteGeometry(call.data, nullptr,
         rtMixParams({(uint64_t)vertexCount, (uint64_t)call.stride,
                      (uint64_t)call.posRadiusOff,
@@ -6176,6 +8227,15 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
             g.spheres.push_back(c[1]);
             g.spheres.push_back(c[2]);
             g.spheres.push_back(c[3] * call.sphereSizeScale);
+            // Traced reflections: sphere colour (a_Color UByte4Norm) for reflection shading.
+            if (call.colorOff >= 0) {
+              const uint8_t* cp = base + (6 * k) * call.stride + call.colorOff;
+              g.sphereCols.push_back(cp[0] / 255.f);
+              g.sphereCols.push_back(cp[1] / 255.f);
+              g.sphereCols.push_back(cp[2] / 255.f);
+            } else {
+              g.sphereCols.push_back(0.8f); g.sphereCols.push_back(0.8f); g.sphereCols.push_back(0.8f);
+            }
           }
         });
   }
@@ -6184,11 +8244,19 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
     [_encoder setRenderPipelineState:_sphereShadowPipeline];
     [_encoder setDepthStencilState:_shadowDepthState]; // LESS + write (light POV)
     [_encoder setCullMode:MTLCullModeNone]; // billboards: don't inherit VBO cull-front
+  } else if (_peelMode) {
+    // Depth-only replay under the camera: the SHADOW pipeline computes the ray
+    // intersection and writes its depth, which is exactly what the peel needs,
+    // and is the same computation the OIT draw below will produce -- so the
+    // equality test matches.
+    [_encoder setRenderPipelineState:_spherePeelPipeline];
+    [_encoder setDepthStencilState:peelWriteState()];
+    [_encoder setCullMode:MTLCullModeNone];
   } else if (_oitActive) {
-    [_encoder setRenderPipelineState:_sphereOitPipeline];
-    [_encoder setDepthStencilState:oitDepthState()];
+    [_encoder setRenderPipelineState:_sphereOitPipeline[sphereFam]];
+    [_encoder setDepthStencilState:oitDepthPeelAwareState()];
   } else {
-    [_encoder setRenderPipelineState:_sphereImpostorPipeline];
+    [_encoder setRenderPipelineState:_sphereImpostorPipeline[sphereFam]];
     applyDepthStencilState();
     if (_depthStencilState) [_encoder setDepthStencilState:_depthStencilState];
   }
@@ -6219,7 +8287,7 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
   // fragment depth (matches the GL sphere.fs `0.5 + 0.5 * clipZ/clipW`).
   u.depthZeroToOne = 0.0f;
   // Cap the slab cross-section only in the opaque pass (not shadow/OIT).
-  u.interiorCap = (call.interiorCap && !_shadowMode && !_oitActive) ? 1.0f : 0.0f;
+  u.interiorCap = (call.interiorCap && !_shadowMode && !_peelMode && !_oitActive) ? 1.0f : 0.0f;
   // ray_interior_color: .a>0.5 => use this rgb for the cap (else atom*0.45).
   u.interiorColor[0] = _capColor[0]; u.interiorColor[1] = _capColor[1];
   u.interiorColor[2] = _capColor[2]; u.interiorColor[3] = _capColorOverride ? 1.0f : 0.0f;
@@ -6229,6 +8297,7 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
   // reads zero and clip.z/clip.w = 0/0 = NaN (all fragments fail the depth
   // range test / produce garbage depth).
   [_encoder setFragmentBytes:&u length:sizeof(u) atIndex:1];
+  bindMaterialU(_encoder, _repMatParams, _modelviewInv.data());
 
   [_encoder drawPrimitives:MTLPrimitiveTypeTriangle
                vertexStart:0
@@ -6260,6 +8329,7 @@ struct CylIn {
   uchar  flags   [[attribute(5)]];
   uchar  cap     [[attribute(6)]];
 };
+
 struct CylU {
   float4x4 modelview;
   float4x4 projection;
@@ -6376,8 +8446,15 @@ static float cyl_oit_weight(float a, float z) {
 
 // Shared ray-cylinder intersection (caps + two-color interp) + PyMOL shading.
 // Discards on miss; returns lit rgb, alpha, window depth.
+// Geometry, depth and the DEFAULT two-light result; material-free for the same
+// reason as sphere_shade.
 static void cyl_shade(CylVOut in, constant CylU& u,
-    thread float3& rgb, thread float& alpha, thread float& depth) {
+    thread float3& rgb, thread float& alpha, thread float& depth,
+    thread float3& nOut, thread float3& pOut, thread float3& baseOut,
+    thread float& intensityOut, thread float& specularOut,
+    thread bool& litOut) {
+  // See sphere_shade: false means the fragment is already a final colour.
+  litOut = true;
   float3 ray_target = in.surface_point;
   float3 ray_origin, ray_dir;
   if (u.ortho >= 0.5) { ray_origin = in.surface_point; ray_dir = float3(0.0,0.0,1.0); }
@@ -6459,6 +8536,7 @@ static void cyl_shade(CylVOut in, constant CylU& u,
     rgb = (u.interiorColor.a > 0.5) ? u.interiorColor.rgb  // ray_interior_color
                                     : color.rgb * 0.45;    // else bond darkened
     alpha = color.a;
+    litOut = false;
     return;
   }
 
@@ -6482,12 +8560,31 @@ static void cyl_shade(CylVOut in, constant CylU& u,
   }
   rgb = color.rgb * min(intensity, 1.0) + specular;
   alpha = color.a;
+  nOut = normal; pOut = new_point; baseOut = color.rgb;
+  intensityOut = intensity; specularOut = specular;
+}
+
+// The material-aware entry point the colour fragments use.
+static void cyl_shade_material(CylVOut in, constant CylU& u,
+    constant MaterialU& mat, texturecube<float> envMap, sampler envSmp,
+    thread float3& rgb, thread float& alpha, thread float& depth) {
+  float3 n = float3(0.0), pt = float3(0.0), base = float3(0.0);
+  float intensity = 0.0, specular = 0.0;
+  bool lit = true;
+  cyl_shade(in, u, rgb, alpha, depth, n, pt, base, intensity, specular, lit);
+  if (!lit) return;   // interior cap: already a final colour
+  rgb = mat_impostor_composite(base, n, pt, u.lAmbient, u.lDirect, u.lReflect,
+                               float3(u.klx, u.kly, u.klz), mat,
+                               intensity, specular, u.lSSSWrap, envMap, envSmp);
 }
 
 fragment CylFOut cyl_impostor_fragment(CylVOut in [[stage_in]],
-    constant CylU& u [[buffer(1)]]) {
+    texturecube<float> envMap [[texture(6)]],
+    sampler envSmp [[sampler(6)]],
+    constant CylU& u [[buffer(1)]],
+    constant MaterialU& mat [[buffer(2)]]) {
   float3 rgb; float a; float depth;
-  cyl_shade(in, u, rgb, a, depth);
+  cyl_shade_material(in, u, mat, envMap, envSmp, rgb, a, depth);
   CylFOut o;
   o.color = float4(rgb, a);
   o.depth = depth;
@@ -6495,9 +8592,32 @@ fragment CylFOut cyl_impostor_fragment(CylVOut in [[stage_in]],
 }
 
 fragment CylOITOut cyl_impostor_fragment_oit(CylVOut in [[stage_in]],
-    constant CylU& u [[buffer(1)]]) {
+    texturecube<float> envMap [[texture(6)]],
+    sampler envSmp [[sampler(6)]],
+    constant CylU& u [[buffer(1)]],
+    constant MaterialU& mat [[buffer(2)]]) {
   float3 rgb; float a; float depth;
-  cyl_shade(in, u, rgb, a, depth);
+  if (kMatGlass && mat.mode != kMatMode_jelly) {
+    // Glass sticks: the body at its coverage, the reflection on top (#535);
+    // see mat_glass_cover and vbo_fragment_oit.
+    float3 n = float3(0.0), pt = float3(0.0), base = float3(0.0);
+    float intensity = 0.0, specular = 0.0;
+    bool lit = true;
+    cyl_shade(in, u, rgb, a, depth, n, pt, base, intensity, specular, lit);
+    if (lit) {
+      int taps = (mat.mode == kMatMode_frosted_glass)
+                   ? int(max(1.0, mat.p[5])) : 1;
+      float3 hi;
+      float3 body = mat_glass_shade(base, n, float3(0.0, 0.0, 1.0), mat.rough,
+                                    taps, float3(u.klx, u.kly, u.klz), envMap,
+                                    envSmp, hi);
+      float4 g = mat_glass_cover(body, hi, a);
+      rgb = g.rgb;
+      a = g.a;
+    }
+  } else {
+    cyl_shade_material(in, u, mat, envMap, envSmp, rgb, a, depth);
+  }
   float w = cyl_oit_weight(a, depth);
   CylOITOut o;
   o.accum = float4(rgb * a, a) * w;
@@ -6512,7 +8632,9 @@ struct CylShadowOut { float depth [[depth(any)]]; };
 fragment CylShadowOut cyl_impostor_fragment_shadow(CylVOut in [[stage_in]],
     constant CylU& u [[buffer(1)]]) {
   float3 rgb; float a; float depth;
-  cyl_shade(in, u, rgb, a, depth);  // discards on ray miss
+  float3 n; float3 pt; float intensity, specular;
+  float3 base; bool lit;
+  cyl_shade(in, u, rgb, a, depth, n, pt, base, intensity, specular, lit);  // discards on ray miss
   CylShadowOut o; o.depth = depth; return o;
 }
 )";
@@ -6525,27 +8647,49 @@ void RendererMetal::buildCylinderImpostorPipeline(
   // pipelines even at the same stride — and Move mode draws both every frame, so
   // a single slot would recompile the MSL library twice per frame and (MRC) leak
   // the displaced pipelines. Point the ivars at this layout's entry instead.
-  const auto layout = std::make_pair(
-      static_cast<NSUInteger>(call.stride), call.capOff);
+  int cylFam = _repMatParams.family;
+  if (cylFam < 0 || cylFam >= cMaterialFamily_count ||
+      !MaterialFamilyIsImplemented(cylFam)) {
+    cylFam = cMaterialFamily_default;
+  }
+  // Keyed on the family that was ASKED for, not the one that may be fallen back
+  // to below, so a family whose specialisation fails caches its default-family
+  // pipeline here and is not recompiled on every later frame.
+  const auto layout = std::make_tuple(
+      static_cast<NSUInteger>(call.stride), call.capOff, cylFam);
   {
     auto it = _cylinderPipelines.find(layout);
     if (it != _cylinderPipelines.end()) {
       _cylinderImpostorPipeline = it->second.opaque;
       _cylinderOitPipeline = it->second.oit;
       _cylinderShadowPipeline = it->second.shadow;
+      _cylinderPeelPipeline = it->second.peel;
       return;
     }
   }
   _cylinderImpostorPipeline = nil;
   _cylinderOitPipeline = nil;
   _cylinderShadowPipeline = nil;
+  _cylinderPeelPipeline = nil;
 
   NSError* err = nil;
-  id<MTLLibrary> lib = [_device newLibraryWithSource:kCylinderImpostorSrc
+  id<MTLLibrary> lib = [_device newLibraryWithSource:[[kMaterialSrc stringByAppendingString:kMaterialImpostorSrc]
+                                                   stringByAppendingString:kCylinderImpostorSrc]
                                              options:nil error:&err];
   if (!lib) { NSLog(@"RendererMetal: cyl impostor compile failed: %@", err); return; }
   id<MTLFunction> vfn = [lib newFunctionWithName:@"cyl_impostor_vertex"];
-  id<MTLFunction> ffn = [lib newFunctionWithName:@"cyl_impostor_fragment"];
+  // The cylinder fragments read the kMatFamily function constant, so they MUST
+  // be specialised: -newFunctionWithName: alone fails at runtime for a function
+  // with an unset constant, and sticks would silently stop drawing.
+  id<MTLFunction> ffn =
+      materialFragmentFunction(lib, @"cyl_impostor_fragment", cylFam);
+  if (!ffn && cylFam != cMaterialFamily_default) {
+    // Draw as `default` rather than not at all. Returning here would also leave
+    // the layout UNCACHED, so the MSL library would be recompiled on every
+    // frame that tried this material.
+    cylFam = cMaterialFamily_default;
+    ffn = materialFragmentFunction(lib, @"cyl_impostor_fragment", cylFam);
+  }
   if (!vfn || !ffn) { NSLog(@"RendererMetal: cyl impostor funcs missing"); return; }
 
   MTLVertexDescriptor* vd = [MTLVertexDescriptor vertexDescriptor];
@@ -6589,7 +8733,20 @@ void RendererMetal::buildCylinderImpostorPipeline(
     NSLog(@"RendererMetal: cyl impostor pipeline failed: %@", err);
 
   // Transparent cylinder OIT variant (MRT accum/reveal, ray-cast depth kept).
-  id<MTLFunction> offn = [lib newFunctionWithName:@"cyl_impostor_fragment_oit"];
+  // Same fallback as the opaque variant above. It runs AFTER that one, on
+  // whatever family the opaque pipeline settled on, and then falls back again
+  // on its own -- so the two always agree, and the OIT half can still drop to
+  // `default` when only its specialisation is the one that fails. Without this
+  // second fallback a failed OIT specialisation left _cylinderOitPipeline nil,
+  // the layout was cached that way because the OPAQUE pipeline had compiled,
+  // and transparent sticks disappeared permanently for that layout.
+  int cylOitFam = cylFam;
+  id<MTLFunction> offn =
+      materialFragmentFunction(lib, @"cyl_impostor_fragment_oit", cylOitFam);
+  if (!offn && cylOitFam != cMaterialFamily_default) {
+    cylOitFam = cMaterialFamily_default;
+    offn = materialFragmentFunction(lib, @"cyl_impostor_fragment_oit", cylOitFam);
+  }
   if (offn) {
     MTLRenderPipelineDescriptor* op = [[MTLRenderPipelineDescriptor alloc] init];
     op.vertexFunction = vfn; op.fragmentFunction = offn; op.vertexDescriptor = vd;
@@ -6622,17 +8779,42 @@ void RendererMetal::buildCylinderImpostorPipeline(
     _cylinderShadowPipeline = [_device newRenderPipelineStateWithDescriptor:sp error:&err];
     if (!_cylinderShadowPipeline)
       NSLog(@"RendererMetal: cyl shadow pipeline failed: %@", err);
+    // Peel pre-pass variant (#488): the same depth-only fragment -- it ray-casts
+    // the cylinder and writes the intersection depth, the exact value the peeled
+    // object's OIT draw will compare against -- built for the peel depth's
+    // Depth32Float_Stencil8 rather than the shadow map's Depth32Float.
+    MTLRenderPipelineDescriptor* pp = [[MTLRenderPipelineDescriptor alloc] init];
+    pp.vertexFunction = vfn; pp.fragmentFunction = sfn; pp.vertexDescriptor = vd;
+    pp.rasterSampleCount = 1;
+    pp.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+    pp.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+    _cylinderPeelPipeline = [_device newRenderPipelineStateWithDescriptor:pp error:&err];
+    if (!_cylinderPeelPipeline)
+      NSLog(@"RendererMetal: cyl peel pipeline failed: %@", err);
+    [pp release];
   }
 
   // The map takes ownership of the +1 pipelines; the ivars stay as aliases.
   // Only cache a layout whose opaque pipeline compiled, so a transient failure
   // is retried rather than cached forever.
+  //
+  // Deliberately NOT extended to the OIT pipeline. Caching a layout whose OIT
+  // half failed to CREATE (as opposed to failing to specialise, which the
+  // fallback above handles) does pin transparent sticks off for that layout --
+  // but refusing to cache would re-run this whole builder every frame instead,
+  // which is the worse failure. A create failure here is descriptor-level and
+  // family-independent, so a retry could not succeed anyway: the descriptor is
+  // structurally the same as the sphere and VBO ones, and beginTransparentOIT
+  // already gates the entire OIT pass on the default VBO OIT pipeline, so the
+  // pass would be off before this could bite.
   if (_cylinderImpostorPipeline) {
     _cylinderPipelines[layout] = CylinderPipelines{
-        _cylinderImpostorPipeline, _cylinderOitPipeline, _cylinderShadowPipeline};
+        _cylinderImpostorPipeline, _cylinderOitPipeline, _cylinderShadowPipeline,
+        _cylinderPeelPipeline};
   } else {
     [_cylinderOitPipeline release];    _cylinderOitPipeline = nil;
     [_cylinderShadowPipeline release]; _cylinderShadowPipeline = nil;
+    [_cylinderPeelPipeline release];   _cylinderPeelPipeline = nil;
   }
 }
 
@@ -6644,11 +8826,13 @@ void RendererMetal::releaseCylinderPipelines()
     [kv.second.opaque release];
     [kv.second.oit release];
     [kv.second.shadow release];
+    [kv.second.peel release];
   }
   _cylinderPipelines.clear();
   _cylinderImpostorPipeline = nil;
   _cylinderOitPipeline = nil;
   _cylinderShadowPipeline = nil;
+  _cylinderPeelPipeline = nil;
 }
 
 void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
@@ -6669,6 +8853,9 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
   if (!_cylinderImpostorPipeline) return;
   if (_oitActive && !_cylinderOitPipeline) return; // no OIT variant: skip
   if (_shadowMode && !_cylinderShadowPipeline) return; // can't cast: skip safely
+  // Same for the cylinders: unable to seed the peel depth means the OIT draw
+  // must not be EQUAL-tested against it, or the sticks vanish outright.
+  if (_peelMode && !_cylinderPeelPipeline) { _peelUnseeded = true; return; }
 
   id<MTLBuffer> vbo = nil, ibo = nil;
   { auto it = _vboCache.find(call.vdata);
@@ -6687,7 +8874,7 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
   // once per CPU buffer (opaque pass only) — this used to be 24 triangles per
   // stick regenerated on every frame, including pure camera moves. 8
   // verts/cylinder share v1/v2/radius.
-  if (_rtEnabled && !_shadowMode && !_oitActive && call.cylinderCount > 0) {
+  if (_rtEnabled && !_shadowMode && !_peelMode && !_oitActive && call.cylinderCount > 0) {
     rtNoteGeometry(call.vdata, nullptr,
         rtMixParams({(uint64_t)call.cylinderCount, (uint64_t)call.stride,
                      (uint64_t)call.v1Off, (uint64_t)call.v2Off,
@@ -6702,7 +8889,13 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
             float r = call.uniRadius > 0.0f
                           ? call.uniRadius
                           : *reinterpret_cast<const float*>(vb + bptr + call.radiusOff);
-            rtAppendCylinder(g.tris, simd_make_float3(p1[0], p1[1], p1[2]),
+            simd_float3 rgb = simd_make_float3(0.8f, 0.8f, 0.8f);
+            if (call.colorOff >= 0) {   // Traced reflections: stick colour (first half)
+              const uint8_t* cp = vb + bptr + call.colorOff;
+              if (call.colorIsFloat) { const float* f = reinterpret_cast<const float*>(cp); rgb = simd_make_float3(f[0], f[1], f[2]); }
+              else rgb = simd_make_float3(cp[0] / 255.f, cp[1] / 255.f, cp[2] / 255.f);
+            }
+            rtAppendCylinder(g.tris, g.triCols, g.triNrms, rgb, simd_make_float3(p1[0], p1[1], p1[2]),
                              simd_make_float3(p2[0], p2[1], p2[2]), r);
           }
         });
@@ -6712,9 +8905,13 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
     [_encoder setRenderPipelineState:_cylinderShadowPipeline];
     [_encoder setDepthStencilState:_shadowDepthState]; // LESS + write (light POV)
     [_encoder setCullMode:MTLCullModeNone]; // boxes: don't inherit VBO cull-front
+  } else if (_peelMode) {
+    [_encoder setRenderPipelineState:_cylinderPeelPipeline];
+    [_encoder setDepthStencilState:peelWriteState()];
+    [_encoder setCullMode:MTLCullModeNone];
   } else if (_oitActive) {
     [_encoder setRenderPipelineState:_cylinderOitPipeline];
-    [_encoder setDepthStencilState:oitDepthState()];
+    [_encoder setDepthStencilState:oitDepthPeelAwareState()];
   } else {
     [_encoder setRenderPipelineState:_cylinderImpostorPipeline];
     applyDepthStencilState();
@@ -6756,12 +8953,13 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
   u.half_bond = 0.0f;      // smooth_half_bonds default off
   u.inv_height = 1.0f;     // only used when half_bond != 0
   // Cap the slab cross-section only in the opaque pass (not shadow/OIT).
-  u.interiorCap = (call.interiorCap && !_shadowMode && !_oitActive) ? 1.0f : 0.0f;
+  u.interiorCap = (call.interiorCap && !_shadowMode && !_peelMode && !_oitActive) ? 1.0f : 0.0f;
   // ray_interior_color: .a>0.5 => use this rgb for the cap (else bond*0.45).
   u.interiorColor[0] = _capColor[0]; u.interiorColor[1] = _capColor[1];
   u.interiorColor[2] = _capColor[2]; u.interiorColor[3] = _capColorOverride ? 1.0f : 0.0f;
   [_encoder setVertexBytes:&u length:sizeof(u) atIndex:1];
   [_encoder setFragmentBytes:&u length:sizeof(u) atIndex:1];
+  bindMaterialU(_encoder, _repMatParams, _modelviewInv.data());
 
   [_encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
                        indexCount:call.indexCount
@@ -6907,6 +9105,9 @@ void RendererMetal::drawBezierTubes(const void* cp, size_t dataSize,
   // The tube has no depth-only shadow pipeline yet; skip casting in shadow mode
   // (it still receives shadows). Avoids a pipeline/attachment mismatch crash.
   if (_shadowMode) return;
+  // Same reason for the peel pre-pass (#488), which has ZERO colour
+  // attachments -- exactly the mismatch this guard exists to prevent.
+  if (_peelMode) return;
   ensureEncoder();
   if (!_encoder) return;
   buildBezierTubePipeline();
@@ -7187,6 +9388,15 @@ void RendererMetal::ensureLabelAtlas(const unsigned char* pixels, int w, int h,
 void RendererMetal::drawLabels(const LabelDrawCall& call)
 {
   if (!call.data || call.dataSize == 0 || call.vertexCount <= 0)
+    return;
+  // ...and never into the PEEL pre-pass (#488). It replays the TRANSPARENT
+  // pass, which is where labels and their connectors draw -- unlike the shadow
+  // pass, which replays Opaque and so never saw them. The pre-pass has ZERO
+  // colour attachments and a single-sample depth, so a colour pipeline is an
+  // attachment/sample-count mismatch; and a depth write here would punch this
+  // geometry's depth into the peeled object's own shell, making the object
+  // vanish wherever a label sits in front of it.
+  if (_peelMode)
     return;
   ensureEncoder();
   if (!_encoder)
@@ -7714,6 +9924,15 @@ void RendererMetal::drawConnectors(const ConnectorDrawCall& call)
     return;
   if (_shadowMode)
     return; // screen-space label decoration: never a shadow caster
+  // ...and never into the PEEL pre-pass (#488). It replays the TRANSPARENT
+  // pass, which is where labels and their connectors draw -- unlike the shadow
+  // pass, which replays Opaque and so never saw them. The pre-pass has ZERO
+  // colour attachments and a single-sample depth, so a colour pipeline is an
+  // attachment/sample-count mismatch; and a depth write here would punch this
+  // geometry's depth into the peeled object's own shell, making the object
+  // vanish wherever a label sits in front of it.
+  if (_peelMode)
+    return;
   ensureEncoder();
   if (!_encoder)
     return;
@@ -7721,17 +9940,17 @@ void RendererMetal::drawConnectors(const ConnectorDrawCall& call)
   if (!_connectorPipeline)
     return;
 
-  // Re-upload every draw (see _connectorBuffer: no pointer-keyed caching).
-  if (!_connectorBuffer || _connectorBufferSize < call.dataSize) {
-    [_connectorBuffer release];
-    _connectorBuffer =
-        [_device newBufferWithLength:std::max(call.dataSize, (size_t) 4096)
-                             options:MTLResourceStorageModeShared];
-    _connectorBufferSize = _connectorBuffer ? _connectorBuffer.length : 0;
-  }
-  if (!_connectorBuffer)
+  // Re-upload every draw (no pointer-keyed caching), into a transient buffer:
+  // a frame issues one connector draw per labelled object, and a shared buffer
+  // rewritten at offset 0 would leave every recorded draw reading the last
+  // call's data once the command buffer executes -- the same defect fixed for
+  // the line-AA path in #462. The encoder retains the buffer for the frame.
+  id<MTLBuffer> connVBO =
+      [_device newBufferWithLength:std::max(call.dataSize, (size_t) 4096)
+                           options:MTLResourceStorageModeShared];
+  if (!connVBO)
     return;
-  std::memcpy(_connectorBuffer.contents, call.data, call.dataSize);
+  std::memcpy(connVBO.contents, call.data, call.dataSize);
 
   [_encoder setRenderPipelineState:_connectorPipeline];
   applyDepthStencilState();
@@ -7739,7 +9958,8 @@ void RendererMetal::drawConnectors(const ConnectorDrawCall& call)
     [_encoder setDepthStencilState:_depthStencilState];
   // Screen-aligned quads with no reliable winding: don't inherit a cull mode.
   [_encoder setCullMode:MTLCullModeNone];
-  [_encoder setVertexBuffer:_connectorBuffer offset:0 atIndex:0];
+  [_encoder setVertexBuffer:connVBO offset:0 atIndex:0];
+  [connVBO release];  // MRC: the encoder holds its own reference for the frame
 
   struct {
     float modelview[16];

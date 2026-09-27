@@ -3,6 +3,7 @@
 
 import Foundation
 import Combine
+import SwiftUI
 import MetalKit
 #if os(iOS)
 import UIKit
@@ -365,6 +366,26 @@ final class PyMOLEngine: ObservableObject {
     // Per-object active representations + their current setting values + color
     // override, populated by pollDetails()/parseObjectDetailFeedback().
     @Published var objectDetails: [String: [RepState]] = [:]
+
+    /// Materials the Inspector may offer, `default` first (#490). Delivered once
+    /// by the core rather than compiled in: the table lives in
+    /// layer1/Material.cpp, and a hard-coded copy would drift from it and offer
+    /// looks this build cannot draw. Only the IMPLEMENTED rows arrive here --
+    /// the rest are real ids that still work by name from the command line.
+    @Published var materialNames: [(id: Int, name: String)] = []
+    /// How many times the material table has been asked for; see
+    /// requestMaterialsIfNeeded().
+    private var materialRequests = 0
+
+    /// The `pymol.materials` look bundles (#498), as (attr, label, material).
+    ///
+    /// A material is half a look; the bundle sets the lighting that flatters
+    /// it. The Inspector offers one beside a material dropdown when the chosen
+    /// material has a bundle, and the join key -- the material the bundle
+    /// applies -- comes from `materials.BUNDLES` rather than from a copy here,
+    /// which would go stale the moment a bundle changed what it applies.
+    @Published var materialBundles: [(attr: String, label: String, material: String)] = []
+    private var bundleRequests = 0
     // Global "Scene" parameters (metal_*, depth_cue, fog, fov, surface_quality, bg).
     @Published var sceneState = SceneState()
     // Per-object state metadata (effective current state + overlay-all) for the
@@ -382,6 +403,10 @@ final class PyMOLEngine: ObservableObject {
     // Request channel for "New Group…" (#255): the object to put in a new group.
     // ObjectPanel presents the name-entry alert, mirroring pendingRename.
     @Published var pendingGroupFor: String? = nil
+    // Request channel for "Copy to Object ▸ New Object…" (#461): the selection to
+    // copy into a brand-new object. Same shape as pendingGroupFor — ObjectPanel
+    // presents the name-entry alert, prefilled with PyMOL's own objNN default.
+    @Published var pendingCopyToNew: String? = nil
     // Pick-debug instrumentation (active when PYMOL_PICKDEBUG is set): the last
     // click point in viewport (top-down, SwiftUI) points, drawn as a crosshair so
     // a screenshot shows click-vs-selection alignment. Set by MetalViewport.
@@ -611,9 +636,15 @@ final class PyMOLEngine: ObservableObject {
     private var didRestoreAutosave = false
     // A snapshot of the viewport captured alongside the autosave, shown over the
     // viewport while the session reloads on cold launch so the user sees their
-    // last scene instead of the empty "open a file" state flashing. Cleared once
-    // the restored scene has had time to render.
+    // last scene instead of the empty "open a file" state flashing. Preloaded in
+    // init() so it is in place for the very FIRST SwiftUI frame (#480), cleared
+    // once the restored scene has actually presented (restoreRenderTick).
     @Published var restoreSnapshot: UIImage?
+    // Frames the restored scene still has to present before the snapshot hands
+    // off. nil = no handoff armed (nothing restored yet, or already done).
+    private var restoreFramesToPresent: Int?
+    // Backstop that drops a stuck snapshot if the render loop never presents.
+    private var restoreBackstop: DispatchWorkItem?
     #endif
 
     // Set by .onOpenURL (iOS) and by NSApplicationDelegate.application(_:open:)
@@ -633,6 +664,11 @@ final class PyMOLEngine: ObservableObject {
             recoveryAnswered = true
             recoveryOffer = nil
             recoveryCount = 0
+            #if os(iOS)
+            // #480: a launch-to-open arriving before the engine is up must also drop
+            // the snapshot preloaded in init(), or the old scene shows over the file.
+            clearRestoreSnapshot(animated: false)
+            #endif
         }
     }
 
@@ -641,7 +677,11 @@ final class PyMOLEngine: ObservableObject {
     // later `load` happens to reprint it.
     var recoveryAnswered = false
 
-    private init() {}
+    private init() {
+        #if os(iOS)
+        preloadRestoreSnapshot()
+        #endif
+    }
 
     // MARK: - Lifecycle
 
@@ -875,6 +915,22 @@ final class PyMOLEngine: ObservableObject {
             }
         }
 
+        // Material table for the Inspector dropdowns (#490). The table is
+        // static in layer1/Material.cpp, so this is a one-shot rather than a
+        // poll, and compiling a copy into Swift would let the two drift and
+        // offer looks this build cannot draw.
+        //
+        // Issued synchronously, not on a timer. The Python layer is
+        // demonstrably up by here -- initialize() already made a synchronous
+        // runPython call above -- so a deferral was a guess with nothing behind
+        // it, and if the guess were ever wrong the single shot would be lost
+        // and every Material row would sit dead and reading "default" for the
+        // whole session. requestMaterialsIfNeeded() also re-asks from the
+        // object poll while the table is still empty, so a lost line costs one
+        // tick rather than the session.
+        requestMaterialsIfNeeded()
+        requestBundlesIfNeeded()
+
         // Test affordance: seed the inspector's expanded object cards so the
         // expanded representation grid can be screenshotted without a click.
         // Format: comma-separated object names.
@@ -938,11 +994,9 @@ final class PyMOLEngine: ObservableObject {
         // Cold-launch resume: reload the session iOS purged when the app was
         // backgrounded. Skipped when a test affordance scripts the scene
         // (PYMOL_AUTOLOAD/PYMOL_AUTOCMD imply deterministic screenshot content)
-        // and when launched to open a specific file (handled by .onOpenURL).
-        let env = ProcessInfo.processInfo.environment
-        if env["PYMOL_AUTOLOAD"] == nil && env["PYMOL_AUTOCMD"] == nil {
-            restoreAutosaveIfAvailable()
-        }
+        // and when launched to open a specific file (handled by .onOpenURL) —
+        // both checked inside (autosaveIsRestorable).
+        restoreAutosaveIfAvailable()
         #endif
 
         #if os(macOS)
@@ -965,6 +1019,11 @@ final class PyMOLEngine: ObservableObject {
             self.pollFeedback()
             self.drainMCPMainQueue()
             self.pollObjects()
+            #if os(iOS)
+            // The restore handoff may be waiting only on the object list, which
+            // pollFeedback just parsed.
+            self.finishRestoreHandoffIfReady()
+            #endif
             // While the core is advancing frames, mirror the frame counter at
             // the full 100ms tick so the scrubber tracks playback smoothly.
             // When idle, the cheaper 500ms pollObjects() discovery suffices.
@@ -1082,13 +1141,49 @@ final class PyMOLEngine: ObservableObject {
         // the time scenePhase hits .inactive, so reading it yields nothing.
         // renderHiResPNG builds its own offscreen target — and .inactive is still
         // foreground, so the GPU submit is permitted (it isn't in .background).
-        // Half-screen resolution keeps the one-off render cheap; it's only a
-        // placeholder shown briefly during the cold-launch reload.
-        let scale = UIScreen.main.scale
-        let sz = UIScreen.main.bounds.size
-        let w = max(Int(sz.width * scale / 2), 1)
-        let h = max(Int(sz.height * scale / 2), 1)
+        // Rendered at the VIEWPORT's aspect (half its drawable size), not the
+        // screen's: the placeholder stands in for the viewport, and a
+        // screen-aspect render of a letterboxed viewport is a ~2× crop of the
+        // scene once scaled to fill it (#480). Half resolution keeps the one-off
+        // render cheap. Falls back to the screen only before the first reshape.
+        var sz = viewportPixelSize
+        if sz.width < 2 || sz.height < 2 {
+            let scale = UIScreen.main.scale
+            sz = CGSize(width: UIScreen.main.bounds.width * scale,
+                        height: UIScreen.main.bounds.height * scale)
+        }
+        let w = max(Int(sz.width / 2), 1)
+        let h = max(Int(sz.height / 2), 1)
         renderHiResPNG(img.path, width: w, height: h, rayTraced: 0)
+    }
+
+    /// True when this launch will resume the autosave: the flag is set, the .pse
+    /// exists, no test affordance scripts the scene (PYMOL_AUTOLOAD/PYMOL_AUTOCMD
+    /// imply deterministic screenshot content), and the launch isn't opening a
+    /// specific file. Shared by the init()-time snapshot preload and the restore
+    /// itself so the two can't disagree.
+    private var autosaveIsRestorable: Bool {
+        guard !launchOpenRequested else { return false }
+        let env = ProcessInfo.processInfo.environment
+        guard env["PYMOL_AUTOLOAD"] == nil, env["PYMOL_AUTOCMD"] == nil else { return false }
+        guard UserDefaults.standard.bool(forKey: Self.autosaveDefaultsKey),
+              let url = autosaveURL,
+              FileManager.default.fileExists(atPath: url.path) else { return false }
+        return true
+    }
+
+    /// Put the last-scene snapshot in place BEFORE the first SwiftUI body
+    /// evaluation (#480). The engine is the App's @StateObject, so it exists
+    /// before ContentView renders: with the snapshot already set, the very first
+    /// frame shows the previous scene instead of the empty "open a file" CTA —
+    /// which the synchronous restore in initialize() would otherwise freeze on
+    /// screen, half laid out, for the whole .pse load. Cheap (one PNG decode).
+    private func preloadRestoreSnapshot() {
+        guard restoreSnapshot == nil, autosaveIsRestorable,
+              let img = autosaveImageURL,
+              let data = try? Data(contentsOf: img),
+              let snap = UIImage(data: data) else { return }
+        restoreSnapshot = snap
     }
 
     /// Reload the autosaved session on cold launch. One-shot per process, and
@@ -1100,26 +1195,53 @@ final class PyMOLEngine: ObservableObject {
     /// override the saved scene and the goal is to resume it exactly. Loading
     /// into the empty cold-launch scene reproduces the prior session exactly.
     func restoreAutosaveIfAvailable() {
-        guard isReady, !didRestoreAutosave, !launchOpenRequested else { return }
-        guard UserDefaults.standard.bool(forKey: Self.autosaveDefaultsKey),
-              let url = autosaveURL,
-              FileManager.default.fileExists(atPath: url.path) else { return }
-        didRestoreAutosave = true
-        // Show the last-scene snapshot over the viewport immediately so the
-        // empty "open a file" state never flashes while the .pse reloads.
-        if let img = autosaveImageURL,
-           let data = try? Data(contentsOf: img),
-           let snap = UIImage(data: data) {
-            restoreSnapshot = snap
+        guard isReady, !didRestoreAutosave else { return }
+        guard autosaveIsRestorable, let url = autosaveURL else {
+            // Nothing to resume (or a file open won): drop any preloaded snapshot
+            // so the empty state / opened document shows instead.
+            clearRestoreSnapshot(animated: false)
+            return
         }
+        didRestoreAutosave = true
+        preloadRestoreSnapshot()   // no-op when init() already loaded it
         runCommand("load \(url.path)")
         refreshAfterRestore()
-        // Clear the snapshot once the restored scene has had time to build and
-        // render its first frame; cross-fade so the handoff is seamless.
+        // Hand the snapshot off once the restored scene has actually presented
+        // (restoreRenderTick) AND the object list has landed (so the empty-state
+        // CTA can't flash in between) — not after a fixed delay, which either
+        // cut the snapshot before the first frame or held it over a live scene.
         if restoreSnapshot != nil {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in
-                self?.restoreSnapshot = nil   // ContentView fades it via .animation(value:)
-            }
+            restoreFramesToPresent = 2   // the first frame builds the rep geometry
+            let bs = DispatchWorkItem { [weak self] in self?.clearRestoreSnapshot(animated: true) }
+            restoreBackstop = bs
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0, execute: bs)
+        }
+    }
+
+    /// Called once per PRESENTED Metal frame (from heavyRenderTick). Counts the
+    /// restored scene's presented frames down; the handoff itself waits for the
+    /// object list too (finishRestoreHandoffIfReady, also polled by the timer).
+    private func restoreRenderTick() {
+        guard let left = restoreFramesToPresent, left > 0 else { return }
+        restoreFramesToPresent = left - 1
+        finishRestoreHandoffIfReady()
+    }
+
+    private func finishRestoreHandoffIfReady() {
+        guard restoreFramesToPresent == 0, !objects.isEmpty else { return }
+        clearRestoreSnapshot(animated: true)
+    }
+
+    /// Drop the restore snapshot; ContentView's `.transition(.opacity)` fades it
+    /// when the change is animated.
+    private func clearRestoreSnapshot(animated: Bool) {
+        restoreBackstop?.cancel(); restoreBackstop = nil
+        restoreFramesToPresent = nil
+        guard restoreSnapshot != nil else { return }
+        if animated {
+            withAnimation(.easeOut(duration: 0.35)) { restoreSnapshot = nil }
+        } else {
+            restoreSnapshot = nil
         }
     }
     #endif
@@ -1290,7 +1412,13 @@ final class PyMOLEngine: ObservableObject {
     // Called once per completed Metal frame (from MetalViewport.draw, main thread).
     // Clears the "Calculating…" overlay after the render frame that actually built
     // the deferred rep geometry, so the overlay spans the real build work.
-    func heavyRenderTick() {
+    // `presented` is false when the frame rendered but no drawable was
+    // available, so nothing reached the screen; the restore handoff must not
+    // count those (the snapshot would clear over a still-blank viewport).
+    func heavyRenderTick(presented: Bool = true) {
+        #if os(iOS)
+        if presented { restoreRenderTick() }
+        #endif
         guard pendingHeavyClearFrames > 0 else { return }
         pendingHeavyClearFrames -= 1
         if pendingHeavyClearFrames == 0 {
@@ -3957,6 +4085,10 @@ final class PyMOLEngine: ObservableObject {
                     parseMeasureFeedback(line)
                 } else if line.hasPrefix("MEASURE_ERR:") {
                     // swallow
+                } else if line.hasPrefix("MATERIALS:") {
+                    parseMaterialsFeedback(line)
+                } else if line.hasPrefix("BUNDLES:") {
+                    parseBundlesFeedback(line)
                 } else if line.hasPrefix("SETTINGS:ready") {
                     loadSettingsCatalogFile()
                 } else if line.hasPrefix("SETTINGS:err") {
@@ -4059,6 +4191,13 @@ final class PyMOLEngine: ObservableObject {
         objectPollCounter += 1
         guard objectPollCounter % 5 == 0 else { return }
 
+        // Re-ask for the material table if the startup request never landed.
+        // AFTER the tick guard on purpose: the retries want to be spread over a
+        // couple of seconds, which is the timescale a slow Python layer would
+        // need, not crammed into the first 500ms. A no-op once the table is in.
+        requestMaterialsIfNeeded()
+        requestBundlesIfNeeded()
+
         // Keep the sequence-panel selection highlight in sync with the active
         // selection (3D-view picks/selects reflect in the sequence).
         if wantsSequences {
@@ -4133,6 +4272,106 @@ final class PyMOLEngine: ObservableObject {
     }
 
     // Parse the inspector JSON (written by appkit_inspector.poll to a temp file;
+    /// `MATERIALS:[[id,name],...]` — the material table, once per session.
+    ///
+    /// Static and pure so it can be tested without standing up an engine (which
+    /// starts the core). Returns nil for anything it cannot use, and the caller
+    /// then keeps the table it already has: emptying the dropdowns mid-session
+    /// because one payload was malformed would be worse than ignoring it.
+    static func parseMaterials(_ line: String) -> [(id: Int, name: String)]? {
+        let json = String(line.dropFirst("MATERIALS:".count))
+        guard let data = json.data(using: .utf8),
+              let rows = try? JSONSerialization.jsonObject(with: data) as? [[Any]]
+        else { return nil }
+        var out: [(id: Int, name: String)] = []
+        for r in rows where r.count >= 2 {
+            // Ids are table rows, not positions: `marble` is 7. A row that is
+            // not an (Int, String) pair is dropped rather than guessed at.
+            if let i = r[0] as? Int, let n = r[1] as? String { out.append((id: i, name: n)) }
+        }
+        return out.isEmpty ? nil : out
+    }
+
+    /// One object's `objmeta` entry -> ObjStateMeta.
+    ///
+    /// Static so a test can exercise it without an engine, the way
+    /// parseMaterials/parseBundles are. The DEFAULTS are the point: they match
+    /// each setting's own, so a payload from a build that predates a key reads
+    /// as "not set" rather than as a value the user chose. `peel` in
+    /// particular defaults to -1 (AUTO) and not 0 — 0 means the user turned
+    /// peeling off, which is a different claim.
+    static func parseObjMeta(_ m: [String: Any]) -> ObjStateMeta {
+        ObjStateMeta(
+            state: (m["state"] as? NSNumber)?.intValue ?? 1,
+            overlayAll: ((m["all"] as? NSNumber)?.intValue ?? 0) != 0,
+            titles: (m["titles"] as? [Any])?.map { $0 as? String ?? "" } ?? [],
+            peel: (m["peel"] as? NSNumber)?.intValue ?? -1,
+            peelResolved: ((m["peel_resolved"] as? NSNumber)?.intValue ?? 0) != 0,
+            reflect: (m["refl"] as? [Any])?.map { ($0 as? NSNumber)?.doubleValue ?? 0 }
+                ?? [0, 0, 0],
+            legacyReflectionDead: ((m["legacy_dead"] as? NSNumber)?.intValue ?? 0) != 0,
+            // These two break the "default to the setting's own" rule above, on
+            // purpose: they are GATES, not values. A payload that predates them
+            // renders no rows rather than rendering rows in a neutral state,
+            // which is the safe direction — an inert control on an object it
+            // does not apply to is worse than a missing one.
+            hasMaterialRows: ((m["material_rows"] as? NSNumber)?.intValue ?? 0) != 0,
+            hasPeelRow: ((m["peel_row"] as? NSNumber)?.intValue ?? 0) != 0)
+    }
+
+    /// Ask the core for the material table, unless we already have it.
+    ///
+    /// Bounded: the table cannot change within a session, so after a handful of
+    /// silent failures something is wrong in a way re-asking will not fix, and
+    /// re-asking forever would put a Python call on every poll tick.
+    func requestMaterialsIfNeeded() {
+        guard materialNames.isEmpty, materialRequests < 5 else { return }
+        materialRequests += 1
+        runPythonQuiet("from pymol import appkit_inspector as _ai\n_ai.poll_materials()")
+    }
+
+    /// Ask the core for the look bundles, unless we already have them. Same
+    /// bounded shape as the material table above, and for the same reason:
+    /// neither can change within a session.
+    func requestBundlesIfNeeded() {
+        guard materialBundles.isEmpty, bundleRequests < 5 else { return }
+        bundleRequests += 1
+        runPythonQuiet("from pymol import appkit_inspector as _ai\n_ai.poll_bundles()")
+    }
+
+    /// `BUNDLES:[[attr, label, material], ...]` -> the published list.
+    ///
+    /// Static so a test can exercise the parse without an engine; mirrors
+    /// parseMaterials. A row that is not three strings is DROPPED rather than
+    /// guessed at -- a bundle whose attr did not resolve would be a button
+    /// that runs nothing.
+    static func parseBundles(_ line: String)
+            -> [(attr: String, label: String, material: String)]? {
+        guard let r = line.range(of: "BUNDLES:") else { return nil }
+        let json = String(line[r.upperBound...])
+        guard let data = json.data(using: .utf8),
+              let rows = (try? JSONSerialization.jsonObject(with: data)) as? [[Any]]
+        else { return nil }
+        var out: [(attr: String, label: String, material: String)] = []
+        for row in rows where row.count >= 3 {
+            if let a = row[0] as? String, let l = row[1] as? String,
+               let m = row[2] as? String, !a.isEmpty, !m.isEmpty {
+                out.append((attr: a, label: l, material: m))
+            }
+        }
+        return out.isEmpty ? nil : out
+    }
+
+    private func parseBundlesFeedback(_ line: String) {
+        guard let out = PyMOLEngine.parseBundles(line) else { return }
+        DispatchQueue.main.async { self.materialBundles = out }
+    }
+
+    private func parseMaterialsFeedback(_ line: String) {
+        guard let out = PyMOLEngine.parseMaterials(line) else { return }
+        DispatchQueue.main.async { self.materialNames = out }
+    }
+
     // the feedback line is just the "OBJDETAIL:ready" trigger) → objectDetails +
     // sceneState. File-based to avoid the ~1KB feedback-line cap splitting the
     // payload and leaking continuation lines into the terminal log.
@@ -4191,10 +4430,7 @@ final class PyMOLEngine: ObservableObject {
         if let om = root["objmeta"] as? [String: Any] {
             for (obj, mAny) in om {
                 guard let m = mAny as? [String: Any] else { continue }
-                meta[obj] = ObjStateMeta(
-                    state: (m["state"] as? NSNumber)?.intValue ?? 1,
-                    overlayAll: ((m["all"] as? NSNumber)?.intValue ?? 0) != 0,
-                    titles: (m["titles"] as? [Any])?.map { $0 as? String ?? "" } ?? [])
+                meta[obj] = PyMOLEngine.parseObjMeta(m)
             }
         }
 

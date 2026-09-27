@@ -78,6 +78,9 @@ typedef struct {
   cCylCap cap1, cap2;
   int cull;
   char wobble, ramped, no_lighting;
+  /* material id (#499), 0 = default; fits the padding after the three
+     chars above, so the struct does not grow */
+  char material;
   /* float wobble_param[3] eliminated to save space */
 } CPrimitive;                   /* currently 172 bytes -> appoximately 6.5 million primitives per gigabyte */
 

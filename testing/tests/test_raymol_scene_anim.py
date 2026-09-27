@@ -142,15 +142,13 @@ class TestHelpers(unittest.TestCase):
         self.assertTrue(a.interpolatable("metal_dof_focus", 12.0, 0.0))
         self.assertTrue(a.interpolatable("metal_dof_focus", 8.0, 12.0))
 
-    def test_value_at_clamps_sentinel_floor(self):
+    def test_value_at_lerps_every_setting_including_down_to_zero(self):
         a = self.anim
-        # aperture <= 0 is a sentinel meaning MAX blur (14) — a fade to 0 must not
-        # reach it; the floor keeps the ramp in real territory.
-        self.assertGreaterEqual(a.value_at("metal_dof_aperture", 5.0, 0.0, 1.0),
-                                a._FLOOR["metal_dof_aperture"])
-        self.assertGreaterEqual(a.value_at("metal_dof_range", 5.0, 0.0, 1.0),
-                                a._FLOOR["metal_dof_range"])
-        # An unfloored setting interpolates plainly.
+        # Since #472 zero is no longer the renderer's "unset" sentinel: aperture 0
+        # is a closed aperture and range 0 an instant falloff, so a fade to 0 is
+        # honest and no setting needs clamping off its own minimum any more.
+        self.assertAlmostEqual(a.value_at("metal_dof_aperture", 5.0, 0.0, 1.0), 0.0)
+        self.assertAlmostEqual(a.value_at("metal_dof_range", 5.0, 0.0, 1.0), 0.0)
         self.assertAlmostEqual(a.value_at("ambient", 0.0, 1.0, 0.25), 0.25)
 
 
@@ -613,7 +611,7 @@ class TestDofFade(unittest.TestCase):
     def setUp(self):
         self.scenes, self.anim = load_modules()
         self.scenes.clear_all()
-        self.floor = self.anim._FLOOR['metal_dof_aperture']
+        self.off = self.anim._OFF_APERTURE
 
     def _store(self, name, **settings):
         self.scenes._scene_settings[name] = {k: str(v)
@@ -625,18 +623,18 @@ class TestDofFade(unittest.TestCase):
         self._store('ON', metal_dof='on', metal_dof_aperture=6,
                     metal_dof_focus=30, metal_dof_autofocus='off')
 
-    def test_fade_in_ramps_the_aperture_up_from_the_floor(self):
+    def test_fade_in_ramps_the_aperture_up_from_zero(self):
         self._pair()
         out = self.anim.build_dof_transition([(1, 'OFF', 0.0), (11, 'ON', 0.0)],
                                              _self=ViewCmd())
         self.assertEqual(sorted(out), list(range(2, 11)))
         aps = [out[f]['metal_dof_aperture'] for f in range(2, 11)]
         self.assertEqual(aps, sorted(aps))                     # monotone up
-        # NEVER <= 0: that is the renderer's MAXIMUM-blur sentinel
-        # (RendererMetal.mm:2528), so a fade that reached it would flash full blur.
-        self.assertTrue(all(v > 0.0 for v in aps), aps)
-        self.assertTrue(all(v >= self.floor for v in aps), aps)
-        # Starts at the FLOOR (no blur), not at either scene's captured aperture.
+        # Never negative — that is the renderer's "unset" sentinel, which resolves
+        # to 14 (MAXIMUM blur), so a fade reaching it would flash full blur (#472).
+        self.assertTrue(all(v >= 0.0 for v in aps), aps)
+        # Starts from a closed aperture (no blur), not from either scene's
+        # captured aperture.
         self.assertLess(aps[0], 1.0)
         self.assertLess(aps[-1], 6.0)
         self.assertGreater(aps[-1], 5.0)
@@ -647,7 +645,7 @@ class TestDofFade(unittest.TestCase):
             self.assertAlmostEqual(out[f]['metal_dof_focus'], 30.0)
             self.assertEqual(out[f]['metal_dof_autofocus'], 0.0)
 
-    def test_fade_ramp_hits_the_floor_and_the_enabled_aperture_exactly(self):
+    def test_fade_ramp_hits_zero_and_the_enabled_aperture_exactly(self):
         # With a LINEAR power the ramp's own endpoints can be recovered by
         # extrapolating one step past each interior frame — pinning them without
         # re-deriving the eased values the code under test computes.
@@ -656,7 +654,8 @@ class TestDofFade(unittest.TestCase):
                                              _self=ViewCmd(), power=1.0)
         aps = [out[f]['metal_dof_aperture'] for f in range(2, 11)]
         step = aps[1] - aps[0]
-        self.assertAlmostEqual(aps[0] - step, self.floor)      # t=0 -> floor
+        self.assertAlmostEqual(aps[0] - step, self.off)        # t=0 -> aperture 0
+        self.assertAlmostEqual(self.off, 0.0)                  # ...which IS zero
         self.assertAlmostEqual(aps[-1] + step, 6.0)            # t=1 -> ON's value
 
     def test_fade_out_is_the_mirror_image(self):
@@ -668,9 +667,9 @@ class TestDofFade(unittest.TestCase):
         self.assertEqual(sorted(fout), list(range(2, 11)))
         aps = [fout[f]['metal_dof_aperture'] for f in range(2, 11)]
         self.assertEqual(aps, sorted(aps, reverse=True))       # monotone down
-        self.assertTrue(all(v > 0.0 for v in aps), aps)
+        self.assertTrue(all(v >= 0.0 for v in aps), aps)
         self.assertGreater(aps[0], 5.0)                        # starts at ON's 6
-        self.assertLess(aps[-1], 1.0)                          # ends at the floor
+        self.assertLess(aps[-1], 1.0)                          # ends closed
         # The easing is symmetric (ease(t) + ease(1-t) == 1), so frame f of the
         # fade-out must equal frame 12-f of the fade-in exactly.
         for f in range(2, 11):
@@ -890,6 +889,71 @@ class TestAuthorAndSession(unittest.TestCase):
         self.assertEqual(self.anim._track, saved_track)
         self.assertEqual(sorted(self.anim._scene_marks), [(1, 'A'), (6, 'B')])
         self.assertTrue(fake.appended)           # commands regenerated, not replayed
+
+    def test_session_restore_refuses_to_ramp_a_material_id(self):
+        """A track value is validated as "a name in CAPTURE + parses as a
+        float". The material settings joined CAPTURE, but they hold table ROWS,
+        not quantities: `author()` can never emit one, and each write
+        invalidates every representation. A .pse carrying one must be dropped,
+        not replayed at a rebuild per frame."""
+        self._two_scenes()
+        sess = {'raymol_movie_anim': {
+            'track': {'3': {'cartoon_material': 8.0, 'ambient': 0.25}},
+            'marks': []}}
+        self.anim.session_restore(sess, _self=FakeCmd())
+        self.assertNotIn('cartoon_material', self.anim._track.get(3, {}))
+        # ...and a legitimate neighbour on the same frame still survives.
+        self.assertEqual(self.anim._track[3]['ambient'], 0.25)
+
+    def test_session_restore_accepts_only_what_author_can_emit(self):
+        """The filter is an allowlist of what `author()` produces, not the whole
+        CAPTURE list minus whatever looked dangerous at the time. CAPTURE is the
+        set a scene SNAPSHOTS and is much larger; `surface_quality` lives there
+        and is worse than any material -- cRepInvRep, a full surface
+        re-tessellation on every write -- and `author()` can never emit it."""
+        self._two_scenes()
+        sess = {'raymol_movie_anim': {
+            'track': {'3': {'surface_quality': 4.0, 'metal_msaa': 8.0,
+                            'material_env': 1.0, 'ambient': 0.25}},
+            'marks': []}}
+        self.anim.session_restore(sess, _self=FakeCmd())
+        for name in ('surface_quality', 'metal_msaa', 'material_env'):
+            self.assertNotIn(name, self.anim._track.get(3, {}), name)
+        self.assertEqual(self.anim._track[3]['ambient'], 0.25)
+
+    def test_the_restore_filter_accepts_every_allowlisted_name(self):
+        """Direct coverage of the allowlist itself. The test below exercises
+        only the handful of names a two-scene FakeCmd movie happens to emit --
+        `metal_dof_focus` and `metal_dof_autofocus` never appear there, so
+        deleting either from _DOF_EMITTED would slip past it. This feeds every
+        name in the allowlist through session_restore instead."""
+        self._two_scenes()
+        allowed = set(self.anim.INTERPOLATE) | set(self.anim._DOF_EMITTED)
+        self.assertIn('metal_dof_focus', allowed)
+        self.assertIn('metal_dof_autofocus', allowed)
+        sess = {'raymol_movie_anim': {
+            'track': {'3': {n: 0.5 for n in allowed}}, 'marks': []}}
+        self.anim.session_restore(sess, _self=FakeCmd())
+        self.assertEqual(set(self.anim._track[3]), allowed)
+
+    def test_every_setting_author_emits_survives_the_restore_filter(self):
+        """The allowlist has to stay in step with the two builders, or a movie
+        silently loses keyframe data on reload. Asserted against what `author()`
+        actually put on the track, not against a hand-written list -- which
+        under FakeCmd is only a few of the allowlisted names, hence the direct
+        test above."""
+        self._two_scenes()
+        self.anim.author([(1, 'A', 0.0), (6, 'B', 0.0)], _self=FakeCmd())
+        emitted = set()
+        for vals in self.anim._track.values():
+            emitted.update(vals)
+        self.assertTrue(emitted, 'author() emitted nothing; test proves nothing')
+        sess = {}
+        self.anim.session_save(sess, _self=FakeCmd())
+        saved = dict(self.anim._track)
+        self.anim._track.clear()
+        self.anim.session_restore(sess, _self=FakeCmd())
+        self.assertEqual(self.anim._track, saved)
 
     def test_session_save_blanks_only_our_own_commands(self):
         self._two_scenes()

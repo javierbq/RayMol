@@ -8,7 +8,9 @@
 #include "Feedback.h"
 #include "GLVertexBuffer.h"
 #include "GraphicsUtil.h"
+#include "Material.h"
 #include "PyMOLGlobals.h"
+#include "Rep.h"
 #include "Renderer.h"
 #include "RendererGL.h"
 #include "Scene.h"
@@ -60,6 +62,31 @@ static int metalSurfaceInteriorCap(CCGORenderer* I)
   return 1;
 }
 
+// Material of the rep about to be drawn (#503). Programs the renderer for the
+// NEXT draw; EVERY Metal draw path calls it -- including the reps that have no
+// material of their own, which pass `default` -- so a reflective surface cannot
+// leak its material onto the cartoon drawn after it.
+static void metalApplyRepMaterial(CCGORenderer* I)
+{
+  auto* G = I->G;
+  if (!G->Renderer) return;
+  CSetting *s1 = (I->rep && I->rep->cs) ? I->rep->cs->Setting.get() : nullptr;
+  CSetting *s2 = (I->rep && I->rep->obj) ? I->rep->obj->Setting.get() : nullptr;
+  // The rep's OWN material setting: cartoon_material for a cartoon,
+  // stick_material for a stick -- and for the stick_ball spheres the stick rep
+  // emits, which arrive here as cRepCyl. Object value first, then the rep's
+  // global value, then material_default.
+  int const repType = I->rep ? I->rep->type() : cRepNone;
+  // Every rule -- the per-rep degradations, the stick_ball one, and which
+  // families read the legacy metal_rt_reflect* triple (including #497's
+  // explicit per-object override for reflective materials) -- lives in
+  // MaterialDrawParams, so this is a thin caller and the rules stay testable
+  // from Python without a Metal context.
+  MaterialParams params = MaterialDrawParamsCached(G, s1, s2, repType,
+      (I->rep && I->rep->emitsStickBalls()));
+  G->Renderer->setRepMaterial(params);
+}
+
 // Per-representation clipping: program the renderer's per-rep clip planes for
 // the lit VBO draw that follows. Only the surface rep carries clip fractions
 // (surface_clip_front/back); every other lit draw (cartoon/lines) must reset to
@@ -75,6 +102,7 @@ static void metalApplyRepClip(CCGORenderer* I)
 {
   auto* G = I->G;
   if (!G->Renderer) return;
+  metalApplyRepMaterial(I);
   // Gate on the ACTUAL rep type, not the metalIsSurfaceShader flag (that flag is
   // set on GL_SURFACE_SHADER enable; it must not leak the clip onto a later rep).
   pymol::CObject* obj = I->rep ? I->rep->obj : nullptr;
@@ -105,7 +133,12 @@ static void metalApplyRepClip(CCGORenderer* I)
         rgba[0] = c[0]; rgba[1] = c[1]; rgba[2] = c[2];
       }
       if (!SettingGet_b(G, s1, s2, cSetting_surface_contour_opaque)) {
-        float tr = SettingGet_f(G, s1, s2, cSetting_transparency);
+        // The setting's purpose is "the contour picks up the surface's
+        // transparency", so it has to see a material's implied one too (#495) --
+        // otherwise an opaque line rides on a glass surface.
+        float tr = MaterialEffectiveTransparency(G, s1, s2, cRepSurface,
+            SettingGet_f(G, s1, s2, cSetting_transparency),
+            (I->rep ? I->rep->cs : nullptr));
         rgba[3] = 1.0f - (tr < 0.0f ? 0.0f : (tr > 1.0f ? 1.0f : tr));
       }
       G->Renderer->setRepContour(true, rgba, width);
@@ -258,6 +291,7 @@ static void drawSphereImpostorsViaMetal(
     call.interiorCap = SettingGet_b(G, s1, s2, cSetting_metal_interior_cap) ? 1 : 0;
     if (call.interiorCap) metalApplyInteriorCapColor(I);
   }
+  metalApplyRepMaterial(I);
 
   G->Renderer->drawSphereImpostors(call);
 }
@@ -341,6 +375,7 @@ static void drawCylinderImpostorsViaMetal(CCGORenderer* I, VertexBufferGL* vbo,
     call.interiorCap = SettingGet_b(G, s1, s2, cSetting_metal_interior_cap) ? 1 : 0;
     if (call.interiorCap) metalApplyInteriorCapColor(I);
   }
+  metalApplyRepMaterial(I);
 
   G->Renderer->drawCylinderImpostors(call);
 }
@@ -1136,6 +1171,7 @@ static void CGO_gl_draw_bezier_buffers(CCGORenderer* I, CGO_op_data cgo_data)
     // Metal: GPU-tessellate the cubic Bezier control points into a smooth tube
     // (the GL "bezier" tessellation shader is absent in NO_OPENGL builds).
     if (I->isPicking) return;
+    metalApplyRepMaterial(I);
     auto* vbo = I->G->ShaderMgr->getGPUBuffer<VertexBufferGL>(bezier->vboid);
     if (vbo && vbo->hasCPUData()) {
       float radius =
