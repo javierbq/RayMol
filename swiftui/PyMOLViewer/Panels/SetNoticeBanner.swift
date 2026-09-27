@@ -62,7 +62,7 @@ struct SetNoticeModel: Equatable {
         // Only for a set whose entries have structures: a sequences set has nothing
         // `set_stage` could put in the scene.
         let starred = set.kind == "sequences" ? 0
-            : rows.filter { $0.starred && !$0.isStaged && $0.nChains > 0 }.count
+            : rows.filter { $0.starred && !$0.isStaged && $0.hasStructure }.count
         let budget = SetTableModel(set: set, rows: rows)
         return SetNoticeModel(text: text, starredToStage: starred,
                               stageRefusal: starred > 0 ? budget.stageRefusal(starred) : nil,

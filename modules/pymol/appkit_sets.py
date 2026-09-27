@@ -341,7 +341,10 @@ def open_set(name, _self=cmd):
     row = _set_row(name)
     _active_set_id = row['id']
     # Remembered IN THE FILE, as the set a recovery of this document should point at
-    # (#547). Only when it moves, so re-opening the same set writes nothing.
+    # (#547). Here, on navigation, rather than on close or save: the case it exists for
+    # is a crash, which runs neither. Only when it moves, so re-opening the same set
+    # writes nothing; one meta row and a version bump per set change is noise next to
+    # a delivery.
     try:
         from pymol.sets import binding
         c = _store().active()
@@ -431,16 +434,29 @@ def toggle_stage(name, entries, _self=cmd):
 
 def stage_entries(name, entries, _self=cmd):
     """Stage `entries` (a selector) of set `name` -- the recovery notice's "Stage N
-    starred" (#547) sends `starred`. `set_stage` itself, so the budget is the one every
-    other path answers to; a refusal is one warning line naming what would have to be
-    unstaged, not a traceback, and the notice stays up so the user can act on it."""
+    starred" (#547) sends `starred`. Through `set_stage`, so the budget is the one every
+    other path answers to. Only the named entries that HAVE a structure and are not
+    staged yet are sent -- the same ones the drawer counts -- so a starred sequence
+    entry cannot fail the whole click. A refusal, or any other failure, is one warning
+    line rather than a traceback, and the notice stays up so the user can act on it."""
+    from pymol.sets import selectors
     from pymol.sets.errors import SetError
-    row = _set_row(name)
     try:
-        return _self.set_stage(row['name'], entries, quiet=1)
+        row = _set_row(name)
+        found = selectors.resolve(_store().active(), row, entries)
+        # Structure = a stored chain; `n_chains` counts a sequence entry's chains too.
+        c = _store().active()
+        names = [e['name'] for e in found
+                 if not e.get('staged_object') and c.chain_blobs(e['id'])]
+        if not names:
+            return []
+        return _self.set_stage(row['name'], '+'.join(names), quiet=1)
     except SetError as exc:
         colorprinting.warning(' sets: %s' % exc)
-        return []
+    except Exception as exc:
+        colorprinting.warning(' sets: could not stage %s of %s (%s: %s)'
+                              % (entries, name, type(exc).__name__, exc))
+    return []
 
 
 # -- The filter channel (#418) ------------------------------------------------------------

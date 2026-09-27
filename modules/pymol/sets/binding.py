@@ -1204,6 +1204,11 @@ def _tool_ranking_keys(tool):
     return ()
 
 
+#: An entry with a STRUCTURE to stage: a stored chain. Not `n_chains`, which counts the
+#: chains of a sequence-only entry too.
+HAS_STRUCTURE = 'EXISTS (SELECT 1 FROM chains ch WHERE ch.entry_id = e.id)'
+
+
 def _candidates_sql(c, set_row, column):
     """(where, params) for the entries a restage may put in the scene, ranked on
     `column`: a value for it, not rejected, a structure, past the active filter (the
@@ -1211,7 +1216,7 @@ def _candidates_sql(c, set_row, column):
     from . import filter as _filter, selectors
     columns = selectors._columns_map(c, set_row['id'])
     where, params = _filter.compile(set_row.get('filter') or '', columns)
-    clauses = ['%s IS NOT NULL' % column, 'e.rejected = 0', 'e.n_chains > 0',
+    clauses = ['%s IS NOT NULL' % column, 'e.rejected = 0', HAS_STRUCTURE,
                'NOT (e.staged_by = ? AND e.staged_object IS NULL)']
     params = list(params) + [schema.STAGED_USER]
     if where:
@@ -1738,10 +1743,11 @@ def load_raymol(filename, partial=0, quiet=1, *, _self=cmd):
     return r
 
 
-#: `meta` key set once a recovered container has shown its "Scene not recovered"
-#: notice (#547). The notice itself is the set's (`set_notice:<id>`) and goes with the
-#: next staging action or Dismiss; this is what keeps it from coming back when the
-#: same recovered file is opened again.
+#: `meta` key set when the user DISMISSES a recovered container's "Scene not
+#: recovered" notice (#547, `set_notice <set>, 1`). Not written when the notice is
+#: shown, nor when a staging action clears it: staging and then crashing again before
+#: a save is the same dead end, and the next Open must say so again (review round 1).
+#: The trigger itself already requires a session-less open.
 RECOVERY_NOTICE_KEY = 'recovery_notice'
 
 #: `meta` key naming the set the drawer was last opened on -- "the most recently
@@ -1777,8 +1783,7 @@ def after_recovery(_self=cmd):
     on the most recently active set -- the drawer draws it as `Scene not recovered.
     [Stage N starred] [Apply <view>] [Dismiss]` -- open the drawer on that set, and
     say the same on the console, with the command, for an agent or a user without
-    the drawer. Once per container: `RECOVERY_NOTICE_KEY` is written with the notice.
-    Returns the set's name, or '' when there was nothing to point at."""
+    the drawer. Not after an explicit Dismiss (`RECOVERY_NOTICE_KEY`). Returns the set's name, or '' when there was nothing to point at."""
     c = container()
     if c.meta_get(RECOVERY_NOTICE_KEY):
         return ''
@@ -1786,21 +1791,30 @@ def after_recovery(_self=cmd):
     if row is None:
         return ''
     c.set_notice(row['id'], {'kind': 'recovered', 'text': RECOVERY_TEXT})
-    c.meta_set(RECOVERY_NOTICE_KEY, '1')
     try:
         from pymol import appkit_sets
         appkit_sets.open_set(row['name'], _self=_self)
     except Exception:
         pass
-    starred = c.count(row['id'], where='e.starred = 1 AND e.staged_object IS NULL')
+    # The same entries the drawer's "Stage N starred" counts: starred, unstaged, with a
+    # structure to stage.
+    starred = c.count(row['id'], where='e.starred = 1 AND e.staged_object IS NULL'
+                                       ' AND ' + HAS_STRUCTURE)
     views = c.views(row['id'])
     hints = []
     if starred:
         hints.append('"set_stage %s, starred" puts its %d starred entr%s back'
                      % (row['name'], starred, 'y' if starred == 1 else 'ies'))
     if views:
-        hints.append('"set_stage %s, view:%s" stages a saved view'
-                     % (row['name'], views[-1]['name']))
+        # What the drawer's "Apply <view>" does: the view's filter and sort become the
+        # set's. Not `set_stage ..., view:`, which would usually be over budget.
+        view = views[-1]
+        steps = ['"set_filter %s, %s"' % (row['name'], view['filter'])
+                 if view.get('filter') else '"set_filter %s"' % row['name']]
+        if view.get('sort_key'):
+            steps.append('"set_sort %s, %s, %d"' % (row['name'], view['sort_key'],
+                                                     int(view.get('sort_desc', 1))))
+        hints.append('its view %s applies with %s' % (view['name'], ' and '.join(steps)))
     colorprinting.parrot(' sets: %s -- the sets came back, the scene did not.%s'
                          % (row['name'], (' ' + '; '.join(hints) + '.') if hints else ''))
     return row['name']

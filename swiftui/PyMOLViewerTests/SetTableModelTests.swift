@@ -696,6 +696,21 @@ final class SetsStoreTests: XCTestCase {
         XCTAssertEqual(model.text, "Scene not recovered.", "the line and Dismiss remain")
     }
 
+    func testAStarredEntryWithNoStructureIsNotCountedToStage() throws {
+        // A `chains` table naming only e2: e1 is starred and unstaged but has only a
+        // sequence, which `set_stage` cannot load -- the same rule Python counts by.
+        try exec("""
+            CREATE TABLE chains (entry_id TEXT NOT NULL, chain TEXT NOT NULL,
+                                 ord INTEGER NOT NULL, blob TEXT NOT NULL,
+                                 PRIMARY KEY (entry_id, chain));
+            INSERT INTO chains VALUES ('e2', 'A', 0, 'h');
+            """)
+        let (set, rows) = try recovered()
+        XCTAssertEqual(rows.map(\.hasStructure), [false, true, false])
+        let model = try XCTUnwrap(SetNoticeModel.make(set: set, rows: rows))
+        XCTAssertFalse(model.showsStage)
+    }
+
     func testStagingTheStarredPastTheBudgetIsRefusedOnTheButton() throws {
         try exec("UPDATE meta SET value = '1' WHERE key = 'stage_budget'")
         let (set, rows) = try recovered()

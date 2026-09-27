@@ -641,6 +641,15 @@ class TestRecovery(AppkitSetsTestCase):
             cmd.load(path)
         return out.getvalue()
 
+    def crash_and_reopen(self, path):
+        """Die again without saving -- the file keeps no session -- and Open it."""
+        appkit_sets.close_set()
+        store.reset()
+        cmd.reinitialize()
+        self.assertIsNone(store.Container(path).read_session() or None,
+                          'the reopened file must be session-less, or nothing is tested')
+        return self.open_recovered(path)
+
     def test_a_recovery_open_points_at_the_set_and_its_starred_entries(self):
         path = self.crashed_campaign()
         printed = self.open_recovered(path)
@@ -652,7 +661,8 @@ class TestRecovery(AppkitSetsTestCase):
         self.assertEqual(appkit_sets.active_set_id(), camp['id'],
                          'the drawer opens on the set the notice is on')
         self.assertIn('"set_stage camp, starred" puts its 2 starred entries back', printed)
-        self.assertIn('view:top50', printed)
+        self.assertIn('its view top50 applies with "set_filter camp"', printed)
+        self.assertNotIn('view:top50', printed, 'Apply is set_filter + set_sort, not a stage')
         # One click: the banner's Stage button sends exactly this.
         with captured():
             names = appkit_sets.stage_entries('camp', 'starred')
@@ -662,13 +672,50 @@ class TestRecovery(AppkitSetsTestCase):
         self.assertTrue(all(e['staged_by'] == 'user' for e in c.entries(camp['id'])
                             if e.get('staged_object')))
         self.assertIsNone(c.notice(camp['id']), 'a staging action answers the notice')
-        # And it does not come back for this container.
-        with captured():
-            cmd.save(path)
-        store.reset()
-        cmd.reinitialize()
+
+    def test_a_second_crash_after_staging_brings_the_notice_back(self):
+        path = self.crashed_campaign()
         self.open_recovered(path)
-        self.assertIsNone(store.active().notice(store.active().get_set('camp')['id']))
+        with captured():
+            appkit_sets.stage_entries('camp', 'starred')
+        printed = self.crash_and_reopen(path)
+        c = store.active()
+        self.assertEqual(c.notice(c.get_set('camp')['id'])['kind'], 'recovered',
+                         'staging then dying again is the same dead end')
+        self.assertIn('puts its 2 starred entries back', printed)
+
+    def test_dismissing_silences_the_notice_for_this_container(self):
+        path = self.crashed_campaign()
+        self.open_recovered(path)
+        cmd.set_notice('camp', 1)
+        self.crash_and_reopen(path)
+        c = store.active()
+        self.assertEqual([c.notice(s['id']) for s in c.sets()], [None, None])
+        # And it is the Dismiss that does it: the same file without that answer shows
+        # the notice again.
+        c.meta_set(binding.RECOVERY_NOTICE_KEY, '')
+        self.crash_and_reopen(path)
+        c = store.active()
+        self.assertEqual(c.notice(c.get_set('camp')['id'])['kind'], 'recovered')
+
+    def test_stage_entries_skips_what_has_no_structure_and_never_raises(self):
+        path = self.crashed_campaign()
+        self.open_recovered(path)
+        c = store.active()
+        camp = c.get_set('camp')
+        seq_id = c.add_entry(camp['id'], 'seq_only', sequences={'A': 'ACDE'})
+        c.update_entry(seq_id, starred=1)
+        with captured():
+            names = appkit_sets.stage_entries('camp', 'starred')
+        self.assertEqual(sorted(names), ['m1', 'm3'])
+        with captured() as out:
+            self.assertEqual(appkit_sets.stage_entries('camp', 'no_such_entry'), [])
+        self.assertIn('sets:', out.getvalue())
+        from unittest import mock
+        with mock.patch.object(cmd, 'set_stage', side_effect=RuntimeError('boom')), \
+                captured() as out:
+            self.assertEqual(appkit_sets.stage_entries('camp', 'm2'), [])
+        self.assertIn('could not stage m2 of camp (RuntimeError: boom)', out.getvalue())
 
     def test_staging_the_starred_respects_the_budget_and_keeps_the_notice(self):
         path = self.crashed_campaign(starred=('m1', 'm2', 'm3'))
