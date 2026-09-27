@@ -905,7 +905,9 @@ class SharedTarget(BatchTestCase):
         for n in shared:
             self.assertEqual(cmd.get_chains(n), ['B'])
             self.assertEqual(self.metrics_of(n), before[n])
-            self.assertEqual(cmd.get_coords(n).tolist(), coords[n].tolist())
+            # The first is superposed on the reference as before; the rest are FIT onto
+            # the target it made, which agrees to float precision.
+            self.assertLess(abs(cmd.get_coords(n) - coords[n]).max(), 1e-3)
         # The target is the complex's chain A, where the complex put it.
         probe = binding.container().entry(row['id'], names[0])
         binding._load_entry_into(binding.container(), probe, 'probe')
@@ -1023,6 +1025,233 @@ class SharedTarget(BatchTestCase):
         cmd.delete(' or '.join(j.spec.name for j in jobs))
         self.assertNotIn('renamed_target', cmd.get_names('all'))
         self.assertIsNone(c.shared_target(row['id']))
+
+    # -- review round 1 ------------------------------------------------------------
+
+    def assertOnTarget(self, row, entry_name):
+        """The staged binder sits where its own complex puts it relative to the shared
+        target: fit the stored complex onto the target by its target chain, and chain
+        B must land on the staged binder."""
+        c = store.active()
+        e = c.entry(row['id'], entry_name)
+        target = self.target(row)
+        self.assertTrue(target)
+        probe = cmd.get_unused_name('_probe')
+        binding._load_entry_into(c, e, probe)
+        try:
+            cmd.fit('%s and chain A' % probe, target)
+            got = cmd.get_coords(e['staged_object'])
+            want = cmd.get_coords('%s and chain B' % probe)
+            self.assertEqual(got.shape, want.shape)
+            self.assertLess(abs(got - want).max(), 1e-2, entry_name)
+        finally:
+            cmd.delete(probe)
+
+    def testTheBinderStaysOnTheTargetWhenTheReferenceMovesOrChanges(self):
+        jobs = self.design(3)
+        deliver_designs(jobs)
+        row = self.only_set()
+        names = [e['name'] for e in self.staged(row)]
+        for name in names:
+            self.assertOnTarget(row, name)
+        # The user moves their target (or a runtime recentred it), then restages.
+        cmd.translate([15, 0, 0], row['reference'], camera=0)
+        cmd.set_unstage(row['name'], names[0])
+        cmd.set_stage(row['name'], names[0])
+        self.assertOnTarget(row, names[0])
+        # A different reference altogether, far away.
+        cmd.create('far', row['reference'])
+        cmd.translate([0, 126, 0], 'far', camera=0)
+        cmd.set_reference(row['name'], 'far')
+        cmd.set_unstage(row['name'], names[1])
+        cmd.set_stage(row['name'], names[1])
+        for name in names:
+            self.assertOnTarget(row, name)
+
+    def testDeliveryAndLaterStagingAgreeOnPlacement(self):
+        cmd.set_budget(2)
+        jobs = self.design(4)
+        deliver_designs(jobs)
+        row = self.only_set()
+        cmd.translate([7, -3, 2], row['reference'], camera=0)
+        cmd.set_budget(4)
+        rest = [e['name'] for e in store.active().entries(row['id'])
+                if not e.get('staged_object')]
+        self.assertEqual(len(rest), 2)
+        cmd.set_stage(row['name'], '+'.join(rest))
+        self.assertEqual(len(self.staged(row)), 4)
+        for e in self.staged(row):
+            self.assertOnTarget(row, e['name'])
+
+    def testTheTargetIsVisibleWhicheverPathMadeIt(self):
+        jobs = self.design(2)
+        deliver_designs(jobs)
+        row = self.only_set()
+        target = self.target(row)
+        n = cmd.count_atoms(target)
+        self.assertGreater(n, 0)
+        self.assertEqual(cmd.count_atoms('%s and rep cartoon' % target), n,
+                         'made at delivery, from a design whose target copy is hidden')
+        cmd.set_unstage(row['name'], 'all')
+        cmd.set_stage(row['name'], 'all')
+        target = self.target(row)
+        self.assertEqual(cmd.count_atoms('%s and rep cartoon' % target), n)
+
+    def testSetDeleteTakesTheTargetAndReconcileForgetsAStaleRecord(self):
+        jobs = self.design(2)
+        deliver_designs(jobs)
+        row = self.only_set()
+        target = self.target(row)
+        cmd.set_delete(row['name'])
+        self.assertNotIn(target, cmd.get_names('all'))
+        c = store.active()
+        self.assertEqual(c.shared_targets(), {})
+        # A record whose set is gone (written by an older build, say) is dropped.
+        c.set_shared_target('gone1234', {'object': 'x', 'signature': [], 'entries': ['e']})
+        binding.reconcile()
+        self.assertEqual(c.shared_targets(), {})
+
+    def testTheTargetNameIsNeverAPrefixMatchForItsGroup(self):
+        for group in ('t', 'ta', 'tar', 'target', 'target_t', 's', 'rfd3_a1'):
+            name = binding.target_name(group)
+            self.assertFalse(name.startswith(group), (group, name))
+        self.assertEqual(binding.target_name('rfd3_a1'), 'target_rfd3_a1')
+        row = self._manual_run([self._complex('ta1'), self._complex('ta2', binder='WYVRS')],
+                               name='ta')
+        cmd.delete('ta1 or ta2')
+        cmd.set_stage('ta', 'all')
+        self.assertEqual(self.target(row), 'shared_ta')
+        self.assertEqual(sorted(cmd.get_object_list('ta')), ['shared_ta', 'ta1', 'ta2'])
+
+    def testAUnitCellDoesNotMakeEveryChainItsOwnBlob(self):
+        objs = [self._complex('u1'), self._complex('u2', binder='WYVRS')]
+        for obj in objs:
+            cmd.set_symmetry(obj, 50.0, 60.0, 70.0, 90.0, 90.0, 90.0, 'P 1')
+        self.assertIn('_cell.entry_id', cmd.get_cifstr('u1 and chain A'))
+        row = self._manual_run(objs, name='cells')
+        cmd.delete('u1 or u2')
+        c = store.active()
+        hashes = {dict(c.chain_blobs(e['id']))['A'] for e in c.entries(row['id'])}
+        self.assertEqual(len(hashes), 1, 'one target blob, whatever the objects were called')
+        cmd.set_stage('cells', 'all')
+        self.assertEqual(self.target(row), 'target_cells')
+
+    def testAPseWarnsWhenTheBindersWouldGoWithoutTheirTarget(self):
+        jobs = self.design(2)
+        deliver_designs(jobs)
+        row = self.only_set()
+        self.assertFalse(binding.warn_if_pse_leaves_sets(),
+                         'every entry staged, target present: nothing is lost')
+        cmd.delete(self.target(row))
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertTrue(binding.warn_if_pse_leaves_sets())
+        self.assertIn(row['name'], out.getvalue())
+
+    def testRenamingTheSetRenamesItsTarget(self):
+        jobs = self.design(2)
+        deliver_designs(jobs)
+        row = self.only_set()
+        cmd.set_rename(row['name'], 'renamed')
+        self.assertIn('target_renamed', cmd.get_names('objects'))
+        self.assertEqual(store.active().shared_target(row['id'])['object'],
+                         'target_renamed')
+
+    def testAFailureAfterTheTargetIsMadeLeavesNoOrphan(self):
+        jobs = self.design(2)
+        deliver_designs(jobs)
+        row = self.only_set()
+        cmd.set_unstage(row['name'], 'all')
+        self.assertEqual(self.target(row), '')
+        before = set(cmd.get_names('all'))
+        with patch.object(binding, '_adopt_target', side_effect=RuntimeError('boom')):
+            self.assertRaises(Exception, cmd.set_stage, row['name'], jobs[0].spec.name)
+        leaked = {n for n in set(cmd.get_names('all')) - before
+                  if not n.startswith('_')} - {jobs[0].spec.name, row['name']}
+        self.assertEqual(leaked, set(), 'no orphan target')
+        self.assertNotIn(binding.target_name(row['name']), cmd.get_names('all'))
+
+    def testObjectToolsSeeTheComplexNotTheHalfOnDisplay(self):
+        jobs = self.design(2)
+        deliver_designs(jobs)
+        row = self.only_set()
+        binder = self.staged(row)[0]['staged_object']
+        target = self.target(row)
+        self.assertEqual(binding.split_context(binder), target)
+        self.assertEqual(binding.split_context(target), '')
+        # set_add captures the complex, with the design chain still known.
+        cmd.set_create('picked')
+        cmd.set_add('picked', binder)
+        c = store.active()
+        e = c.entries(c.get_set('picked')['id'])[0]
+        self.assertEqual([ch for ch, _ in c.chain_cifs(e['id'])], ['A', 'B'])
+        self.assertEqual(e['design_chains'], ['B'])
+        # predict folds the complex.
+        from pymol import predicting
+        with redirect_stdout(io.StringIO()):
+            seq, sources = predicting.resolve_input(binder)
+        self.assertEqual(sorted(chain for _, chain in sources), ['A', 'B'])
+        self.assertEqual(len(seq.split('/')), 2)
+        # And nothing was left in the scene by reading it.
+        self.assertFalse([n for n in cmd.get_names('all') if n.startswith('_raymol_')])
+
+    def testAFoldWithItsOwnTargetIsGhostedWhole(self):
+        jobs = self.design(2)
+        deliver_designs(jobs)
+        parent = self.only_set()
+        deliver_models(cmd.predict(PRED, 'set:%s' % parent['name']))
+        c = store.active()
+        child = c.get_set('%s_1' % PRED)
+        entry = c.entries(child['id'])[0]
+        self.assertEqual(entry['design_chains'], ['B'])
+        cmd.set_peek(child['name'], entry['name'])
+        self.assertEqual(sorted(cmd.get_chains(binding.PEEK)), ['A', 'B'])
+
+    def testAFailedMigrationRollsBackAndAnUnreadableSessionIsRefusedUnmigrated(self):
+        import sqlite3
+        from pymol.sets import schema
+        from pymol.sets.errors import SetFormatError
+        jobs = self.design(1)
+        deliver_designs(jobs)
+        path = os.path.join(_RESULTS['dir'], 'v1.raymol')
+        with redirect_stdout(io.StringIO()):
+            cmd.save(path)
+            cmd.reinitialize()
+
+        def to_v1(extra=''):
+            conn = sqlite3.connect(path)
+            conn.execute("UPDATE meta SET value = '1' WHERE key = 'format_version'")
+            if extra:
+                conn.execute(extra)
+            conn.commit()
+            conn.close()
+
+        def version():
+            conn = sqlite3.connect(path)
+            try:
+                return conn.execute("SELECT value FROM meta WHERE key ="
+                                    " 'format_version'").fetchone()[0]
+            finally:
+                conn.close()
+
+        to_v1()
+        with patch.dict(schema.MIGRATIONS, {1: lambda conn: [][0]}):
+            self.assertRaises(SetFormatError, store.Container, path)
+        self.assertEqual(version(), '1', 'rolled back, not half-migrated')
+        # A session this build cannot unpickle is refused BEFORE the file is migrated.
+        to_v1("UPDATE session SET pse = X'00ff00ff'")
+        self.assertRaises(Exception, cmd.load, path)
+        self.assertEqual(version(), '1')
+        # A good one migrates, and stamps this build as the writer.
+        to_v1("UPDATE session SET pse = X'00ff00ff'")
+        conn = sqlite3.connect(path)
+        conn.execute('DELETE FROM session')
+        conn.commit()
+        conn.close()
+        c = store.Container(path)
+        self.assertEqual(c.meta_get('format_version'), str(schema.FORMAT_VERSION))
+        self.assertTrue(c.meta_get('app_version'))
+        c.close()
 
     def testAVersionOneFileIsBackfilledFromItsMetricsAndItsRuns(self):
         import sqlite3

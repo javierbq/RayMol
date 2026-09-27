@@ -443,6 +443,37 @@ class ObjectPath(SequenceDesignTestCase):
         self.assertEqual(job.spec.fixed, [])
         self.assertEqual(job.spec.n_designable, 10)
 
+    def testABinderStagedOverASharedTargetIsDesignedInContext(self):
+        """#545 review: the staged object holds only the binder, but the design needs
+        the target -- it is read from the complex, and the target is held."""
+        self.helix('_tpl', length=8)
+        c = store.active()
+        row = c.create_set('camp', tool='gen', group_name='camp')
+        run = c.add_run(row['id'], 'gen', inputs={'design_chain': 'B'})
+        for name in ('d1', 'd2'):
+            cmd.create('_t', '_tpl')
+            cmd.fab('GGGGGG', '_b', chain='B', ss=1)
+            cmd.translate([10.0, 0, 0], '_b', camera=0)
+            cmd.create(name, '_t or _b')
+            cmd.delete('_t or _b')
+            binding.capture_object(row['id'], name, run_id=run)
+            cmd.delete(name)
+        cmd.set_stage('camp', 'all')
+        self.assertEqual(cmd.get_chains('d1'), ['B'])
+        self.assertTrue(binding.split_context('d1'))
+        with contextlib.redirect_stdout(io.StringIO()):
+            job = cmd.design_sequences(DESIGNER, 'd1', n_sequences=1, seed=3)
+        chains = [r['chain'] for r in job.spec.residues]
+        self.assertEqual(sorted(set(chains)), ['A', 'B'])
+        self.assertEqual(job.spec.n_designable, 6, 'the binder, not the target')
+        self.assertEqual(len(job.spec.fixed), 8, 'the target is held')
+        deliver_sequences(job)
+        runs = mstore.runs(object='d1')
+        self.assertEqual(len(runs), 1, 'recorded against the binder')
+        native = [v for v in runs[0].values if v.key == 'native_fit'][0]
+        self.assertEqual({chain for chain, _ in native.index}, {'B'})
+        self.assertFalse([n for n in cmd.get_names('all') if n.startswith('_raymol_')])
+
     def testTwoObjectsAreRefusedRatherThanRunTwice(self):
         self.helix('one', length=6)
         self.helix('two', length=6)

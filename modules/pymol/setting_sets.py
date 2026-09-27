@@ -112,6 +112,18 @@ USAGE
         except Exception as exc:
             colorprinting.warning(' set_rename: group %s kept its name (%s)' % (group, exc))
             _c().update_set(row['id'], group_name=group)
+    # The shared target follows its set's name when it still has the name the set gave
+    # it (#545 review); `set_name` fires `on_object_renamed`, which updates the record.
+    record = _c().shared_target(row['id'])
+    if record and record.get('object') == binding.target_name(group):
+        new_target = binding.target_name(new_name)
+        if record['object'] in (_self.get_names('objects') or []) and \
+                new_target not in (_self.get_names('all') or []):
+            try:
+                _self.set_name(record['object'], new_target)
+            except Exception as exc:
+                colorprinting.warning(' set_rename: %s kept its name (%s)'
+                                      % (record['object'], exc))
     return new_name
 
 

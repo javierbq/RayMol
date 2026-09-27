@@ -749,7 +749,11 @@ struct SequenceRowModel: Equatable {
                 widths[key] = [:]
                 order.append(key)
             }
-            for chain in entry.chainOrder where visible?.contains(chain) ?? true {
+            // An entry that has none of the visible chains (a row with no designed
+            // chain in a set whose other rows have one) shows all of its own chains
+            // rather than an empty row (#545 review).
+            let own = visible.flatMap { v in entry.chainOrder.contains(where: v.contains) ? v : nil }
+            for chain in entry.chainOrder where own?.contains(chain) ?? true {
                 if !(chainOrders[key] ?? []).contains(chain) {
                     chainOrders[key, default: []].append(chain)
                 }

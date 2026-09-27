@@ -433,18 +433,12 @@ def _stage_or_discard(batch, c, entry_id, entry_name, object_name, _self=cmd):
         except Exception as exc:
             colorprinting.warning(' sets: could not add %s to the group %s (%s); it is'
                                   ' at the top level instead' % (object_name, group, exc))
-    if batch.superpose and set_row.get('reference'):
-        binding._superpose(object_name, set_row['reference'], _self=_self,
-                           ref_sel=binding._reference_selection(c, set_row, _self=_self))
-    # A grouped member whose target is the run's one shared target keeps only its
-    # design chain(s); the target is staged once for the set (#545). A single design
-    # (no group) stays whole, exactly as it looks without sets.
-    plan = binding.split_plan(c, c.entry_by_id(entry_id)) if batch.group else None
-    target = binding._share_target(c, set_row, object_name, plan,
-                                   _self=_self) if plan else ''
-    c.update_entry(entry_id, staged_object=object_name)
-    if plan:
-        binding._adopt_target(c, set_row, entry_id, target, plan[1])
+    # Placed and linked by the same rule `binding.stage` uses (#545): a grouped member
+    # whose target is the run's one shared target keeps only its design chain(s), FIT
+    # onto that target; otherwise superposed on the reference when this batch
+    # superposes. A single design (no group) stays whole, as it looks without sets.
+    binding.place(c, set_row, c.entry_by_id(entry_id), object_name,
+                  superpose=batch.superpose, allow_split=batch.group, _self=_self)
     return True
 
 

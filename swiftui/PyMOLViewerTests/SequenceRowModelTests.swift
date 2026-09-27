@@ -500,6 +500,17 @@ final class SequenceRowModelTests: XCTestCase {
         XCTAssertTrue(whole.consensus.prefix(8).allSatisfy(\.isInvariant))
     }
 
+    func testARowWithoutTheDesignedChainShowsItsOwnChainsNotNothing() {
+        var entries = binderRun()
+        entries.append(SequenceEntryInput(id: "x", name: "x", ord: 9,
+                                          sequences: ["C": "GGG"], runID: "r2"))
+        let chains = SequenceRowModel.visibleChains(scope: .designed, entries: entries)
+        XCTAssertEqual(chains, ["B"])
+        let model = SequenceRowModel(entries: entries, chains: chains)
+        XCTAssertEqual(letters(model.rows.last!), "GGG")
+        XCTAssertEqual(letters(model.rows[0]), "KVL")
+    }
+
     func testThePickerOffersEveryChainAndFallsBackRatherThanEmptyTheTab() {
         let entries = binderRun()
         XCTAssertEqual(SequenceRowModel.availableChains(entries), ["A", "B"])

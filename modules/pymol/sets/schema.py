@@ -196,7 +196,7 @@ def _migrate_1_to_2(conn):
         have = set(chains.get(eid, ())) | set(_json_or(sequences, {}))
         inherited = []
         for parent in _json_or(parents, []):
-            inherited.extend(done.get(parent, ()))
+            inherited.extend(done.get(str(parent), ()))
         picked = resolve_design_chains(have, metric=metric.get(eid),
                                        run_inputs=runs.get(run_id),
                                        parent_chains=inherited)
@@ -315,8 +315,31 @@ def open_or_migrate(conn):
             found += 1
             conn.execute("UPDATE meta SET value = ? WHERE key = 'format_version'",
                          (str(found),))
+        # The file is now THIS build's format, so an older build's refusal must name
+        # this build, not the one that first wrote it (#545 review).
+        conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('app_version', ?)",
+                     (app_version() or 'format %d reader' % FORMAT_VERSION,))
         conn.execute('COMMIT')
-    except (sqlite3.Error, SetFormatError):
+    except SetFormatError:
         conn.execute('ROLLBACK')
         raise
+    except Exception as exc:
+        # Anything else a migration trips over -- a malformed JSON field is a
+        # TypeError, not an sqlite3.Error -- must not leave the transaction open.
+        try:
+            conn.execute('ROLLBACK')
+        except sqlite3.Error:
+            pass
+        raise SetFormatError('could not migrate this file from format version %d: %s'
+                             % (found, exc))
     return found
+
+
+def app_version():
+    """This build's version string, or '' when it cannot be read. Imported lazily: the
+    store is session-free, and only a migration needs to know."""
+    try:
+        from pymol import cmd
+        return str(cmd.get_version()[0])
+    except Exception:
+        return ''

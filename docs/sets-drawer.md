@@ -31,7 +31,14 @@ page is about the UI that sits on top of them (#417, #418, #419, tracking #421).
   against the stage budget, goes into a `.pse` as a plain object, and leaves with the
   last entry staged over it. It is `target_<set>` rather than `<set>_target` because
   PyMOL resolves a selection word by unique prefix before it expands groups, so a
-  lone `<set>_target` would make `hide <set>` hide only the target.
+  lone `<set>_target` would make `hide <set>` hide only the target (a set whose name
+  is itself a prefix of `target_…`, such as `ta`, gets `shared_<set>`).
+  A binder staged over the target is **fit onto it** by the target chains, wherever
+  the target or the reference has moved; the target itself is placed once, when it is
+  made (superposed on the reference when staged from the drawer). `set_add`,
+  `predict` and `design_sequences` on a staged binder read it together with its target
+  (`design_sequences` holds the target). A plain `save x.pdb` of the binder object
+  writes the binder only — select `binder or target_<set>` to write the complex.
 - **Data drawer** (macOS; `View ▸ Show Data Drawer`, ⌘4). A band below the viewport
   with a header naming the set, the tab bar with the filter beside it, and the active
   tab. All four tabs — Table, Plot, Sequences, Lineage — are live since #419. Drag the
