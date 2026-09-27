@@ -284,6 +284,11 @@ class BatchTestCase(testing.PyMOLTestCase):
         return [e for e in store.active().entries(set_row['id'])
                 if e.get('staged_object')]
 
+    @staticmethod
+    def target(set_row):
+        """The set's shared target object (#545), or ''."""
+        return binding.shared_target_object(store.active(), set_row['id'])
+
 
 class FiftyDesigns(BatchTestCase):
 
@@ -316,13 +321,23 @@ class FiftyDesigns(BatchTestCase):
         self.assertEqual(len(staged), binding.DEFAULT_BUDGET)
         group = row['group_name']
         self.assertEqual(self.groups(), [group])
+        # Six binders over ONE shared target (#545), not six complexes.
+        target = self.target(row)
+        self.assertEqual(target, 'target_%s' % group)
+        # And the group's name still selects the whole group, not the target alone:
+        # `<set>_target` would be a unique prefix match for it (see `target_name`).
+        self.assertEqual(sorted(cmd.get_object_list(group)),
+                         sorted([e['staged_object'] for e in staged] + [target]))
         self.assertEqual(sorted(self.children(group)),
-                         sorted(e['staged_object'] for e in staged))
-        # The Objects panel never saw more than the footprint: target, group, 6 designs.
+                         sorted([e['staged_object'] for e in staged] + [target]))
+        # The Objects panel never saw more than the footprint: the design target, the
+        # group, 6 designs and their shared target.
         molecules = [n for n in cmd.get_names('objects') if n not in self.groups()]
-        self.assertEqual(len(molecules), 1 + binding.DEFAULT_BUDGET, molecules)
+        self.assertEqual(len(molecules), 2 + binding.DEFAULT_BUDGET, molecules)
         for e in staged:
-            self.assertEqual(sorted(cmd.get_chains(e['staged_object'])), ['A', 'B'])
+            self.assertEqual(cmd.get_chains(e['staged_object']), ['B'])
+            self.assertEqual(e['design_chains'], ['B'])
+        self.assertEqual(cmd.get_chains(target), ['A'])
         # The target chain is ONE blob; every designed chain its own.
         stats = c.blob_stats()
         print(' sets_batch: blob_stats after 50 designs: %r' % (stats,))
@@ -363,8 +378,9 @@ class FiftyDesigns(BatchTestCase):
         self.assertEqual(c.blob_stats()['count'], 51)
         self.assertEqual(sorted(e['staged_object'] for e in self.staged(again)),
                          sorted(e['staged_object'] for e in staged))
+        self.assertEqual(self.target(again), target)
         self.assertEqual(sorted(self.children(group)),
-                         sorted(e['staged_object'] for e in staged))
+                         sorted([e['staged_object'] for e in staged] + [target]))
 
     def testTheBudgetIsReadFromTheStoreAndCountsLiveLinks(self):
         cmd.set_budget(2)
@@ -382,15 +398,18 @@ class FiftyDesigns(BatchTestCase):
         self.assertEqual(c.count(row['id']), 5)
         self.assertEqual(len(self.staged(row)), 2)
         self.assertEqual(sorted(self.children(row['group_name'])),
-                         sorted(e['staged_object'] for e in self.staged(row)))
+                         sorted([e['staged_object'] for e in self.staged(row)]
+                                + [self.target(row)]))
         # An unstaged entry comes back by hand, and staging refuses past the budget.
         unstaged = [e for e in c.entries(row['id']) if not e.get('staged_object')]
         self.assertEqual(len(unstaged), 3)
         from pymol.sets.errors import SetBudgetExceeded
         self.assertRaises(SetBudgetExceeded, cmd.set_stage, row['name'], unstaged[0]['name'])
         cmd.set_unstage(row['name'])
+        self.assertEqual(self.target(row), '', 'the last unstage takes the target')
         names = cmd.set_stage(row['name'], unstaged[0]['name'])
-        self.assertEqual(sorted(cmd.get_chains(names[0])), ['A', 'B'])
+        self.assertEqual(cmd.get_chains(names[0]), ['B'])
+        self.assertEqual(cmd.get_chains(self.target(row)), ['A'])
 
     def testAFailedMemberFreesItsSlotAndSettles(self):
         jobs = self.design(3)
@@ -610,9 +629,13 @@ class PredictOverASet(BatchTestCase):
         self.assertEqual([e['name'] for e in entries],
                          [e['name'] for e in c.entries(parent['id'])])
         self.assertEqual(len(self.staged(child)), 2)
-        # Objects in the session: target, the parent's two staged, the child's two.
+        # Objects in the session: target, the parent's two staged binders and their
+        # shared target, the child's two -- whole: a fold is never split (#545).
         molecules = [n for n in cmd.get_names('objects') if n not in self.groups()]
-        self.assertEqual(len(molecules), 5, molecules)
+        self.assertEqual(len(molecules), 6, molecules)
+        self.assertEqual(self.target(child), '')
+        for e in self.staged(child):
+            self.assertEqual(sorted(cmd.get_chains(e['staged_object'])), ['A', 'B'])
 
     def testASecondPredictNumbersItsChildSetAndNameIsHonoured(self):
         parent = self.parent(2)
@@ -745,8 +768,11 @@ class GenerationCheck(BatchTestCase):
         self.assertIn(row['name'], out.getvalue())
         with redirect_stdout(io.StringIO()):
             cmd.load(path)
+        # The shared target goes into the .pse as the plain object it is (#545).
         molecules = [n for n in cmd.get_names('objects') if n not in self.groups()]
-        self.assertEqual(sorted(molecules), sorted(['tgt', jobs[0].spec.name]))
+        self.assertEqual(sorted(molecules), sorted(['tgt', jobs[0].spec.name,
+                                                    'target_%s' % row['name']]))
+        self.assertEqual(cmd.get_chains(jobs[0].spec.name), ['B'])
         self.assertEqual(store.active().sets(), [])
 
     def testAPseSaveIsQuietWhenEverySetEntryIsStaged(self):
@@ -784,7 +810,7 @@ class GenerationCheck(BatchTestCase):
         self.assertEqual(c.count(row['id']), 4)
         self.assertEqual(len(self.staged(row)), 4)
         self.assertEqual(sorted(self.children(row['name'])),
-                         sorted(j.spec.name for j in jobs))
+                         sorted([j.spec.name for j in jobs] + [self.target(row)]))
 
     def testLandSurvivesAStagingFailureAsWrittenNotStaged(self):
         # Review fix 5: once add_entry has committed, a failure is "written, not
@@ -804,6 +830,226 @@ class GenerationCheck(BatchTestCase):
         self.assertEqual(batch.running()[row['id']]['done'], 1)
         deliver_designs(jobs[1:])
         self.assertEqual(len(self.staged(row)), 1)
+
+
+class SharedTarget(BatchTestCase):
+    """#545: a design run's entries share one target; the designed chain is the subject."""
+
+    @staticmethod
+    def metrics_of(obj):
+        """Every value the metrics store holds on `obj`, in a comparable shape."""
+        out = []
+        for run in mstore.runs(object=obj):
+            for v in run.values:
+                out.append((run.tool, v.key, v.scope, v.chain, v.state,
+                            None if v.is_array else v.value,
+                            tuple(map(tuple, v.index)) if v.is_array else None,
+                            tuple(v.values) if v.is_array else None))
+        return sorted(out, key=repr)
+
+    def testSixDesignsAreSevenObjectsAndTheTargetIsNotCharged(self):
+        jobs = self.design(8)
+        deliver_designs(jobs)
+        row = self.only_set()
+        c = store.active()
+        staged = self.staged(row)
+        target = self.target(row)
+        self.assertEqual(len(staged), binding.DEFAULT_BUDGET)
+        children = self.children(row['group_name'])
+        self.assertEqual(len(children), binding.DEFAULT_BUDGET + 1, children)
+        self.assertIn(target, children)
+        # Every entry records its designed chain, from the run's DesignSpec.
+        self.assertTrue(all(e['design_chains'] == ['B'] for e in c.entries(row['id'])))
+        self.assertEqual(c.shared_target(row['id'])['entries'],
+                         [e['id'] for e in staged])
+        # The delivered binders keep the metrics run filed on them, current.
+        from pymol.metrics import binding as mbinding
+        for e in staged:
+            runs = mstore.runs(object=e['staged_object'])
+            self.assertTrue(runs)
+            self.assertEqual([mbinding.stale_reason(r) for r in runs], [''] * len(runs))
+        # The budget counts ENTRIES: six binders fill it; the target is not a seventh.
+        from pymol.sets.errors import SetBudgetExceeded
+        spare = [e for e in c.entries(row['id']) if not e.get('staged_object')][0]
+        self.assertRaises(SetBudgetExceeded, cmd.set_stage, row['name'], spare['name'])
+        # Unstaging some keeps the target; the last one takes it, and the group.
+        cmd.set_unstage(row['name'], '+'.join(e['name'] for e in staged[:5]))
+        self.assertEqual(self.target(row), target)
+        self.assertEqual(sorted(self.children(row['group_name'])),
+                         sorted([staged[5]['staged_object'], target]))
+        cmd.set_unstage(row['name'], staged[5]['name'])
+        self.assertNotIn(target, cmd.get_names('all'))
+        self.assertIsNone(c.shared_target(row['id']))
+        self.assertEqual(self.groups(), [])
+
+    def testSharedStagingKeepsTheMetricsAndTheBinderWhereTheComplexPutIt(self):
+        jobs = self.design(3)
+        deliver_designs(jobs)
+        row = self.only_set()
+        names = [e['name'] for e in self.staged(row)]
+        cmd.set_unstage(row['name'], 'all')
+        # Today's behaviour, forced: every entry staged whole.
+        with patch.object(binding, 'split_plan', return_value=None):
+            whole = cmd.set_stage(row['name'], '+'.join(names))
+        self.assertEqual(self.target(row), '')
+        before = {n: self.metrics_of(n) for n in whole}
+        coords = {n: cmd.get_coords('%s and chain B' % n) for n in whole}
+        for n in whole:
+            self.assertEqual(sorted(cmd.get_chains(n)), ['A', 'B'])
+            self.assertTrue(before[n], 'the entry wrote metrics back')
+        cmd.set_unstage(row['name'], 'all')
+        shared = cmd.set_stage(row['name'], '+'.join(names))
+        self.assertEqual(sorted(shared), sorted(whole))
+        target = self.target(row)
+        self.assertTrue(target)
+        for n in shared:
+            self.assertEqual(cmd.get_chains(n), ['B'])
+            self.assertEqual(self.metrics_of(n), before[n])
+            self.assertEqual(cmd.get_coords(n).tolist(), coords[n].tolist())
+        # The target is the complex's chain A, where the complex put it.
+        probe = binding.container().entry(row['id'], names[0])
+        binding._load_entry_into(binding.container(), probe, 'probe')
+        binding._superpose('probe', row['reference'])
+        self.assertEqual(cmd.get_coords(target).tolist(),
+                         cmd.get_coords('probe and chain A').tolist())
+
+    def _manual_run(self, objects, design_chain='B', name='manual'):
+        """A set filled through the store API, with a run that says what it designed."""
+        c = store.active()
+        row = c.create_set(name, tool=GEN, group_name=name)
+        run = c.add_run(row['id'], GEN, inputs={'design_chain': design_chain})
+        for obj in objects:
+            binding.capture_object(row['id'], obj, run_id=run)
+        return c.get_set(row['id'])
+
+    def _complex(self, name, target_shift=0.0, binder='KLMNP'):
+        # One template target: `fab` places each new peptide away from what is already
+        # in the scene, so two `fab`s of the same sequence are NOT the same chain.
+        if '_tpl' not in cmd.get_names('all'):
+            cmd.fab('ACDEFGHIK', '_tpl', chain='A')
+            cmd.disable('_tpl')
+        cmd.create('_t', '_tpl', zoom=0)
+        cmd.fab(binder, '_b', chain='B')
+        cmd.translate([12.0, 0, 0], '_b', camera=0)
+        if target_shift:
+            cmd.translate([0, target_shift, 0], '_t', camera=0)
+        cmd.create(name, '_t or _b')
+        cmd.delete('_t or _b')
+        return name
+
+    def testAnIdenticalTargetIsSharedByContentAndADifferingOneIsStagedWhole(self):
+        same = self._manual_run([self._complex('s1'), self._complex('s2', binder='WYVRS')],
+                                name='same')
+        differ = self._manual_run([self._complex('d1'),
+                                   self._complex('d2', target_shift=3.0)], name='differ')
+        cmd.delete('s1 or s2 or d1 or d2')
+        cmd.set_stage('same', 'all')
+        cmd.set_stage('differ', 'all')
+        self.assertEqual(sorted(self.children('same')), ['s1', 's2', 'target_same'])
+        self.assertEqual(sorted(self.children('differ')), ['d1', 'd2'])
+        for obj in ('d1', 'd2'):
+            self.assertEqual(sorted(cmd.get_chains(obj)), ['A', 'B'])
+        self.assertEqual(self.target(differ), '')
+        self.assertEqual(self.target(same), 'target_same')
+
+    def testAMetricOnTheTargetChainKeepsTheEntryWhole(self):
+        c = store.active()
+        row = c.create_set('m', tool=GEN, group_name='m')
+        run = c.add_run(row['id'], GEN, inputs={'design_chain': 'B'})
+        binding.capture_object(row['id'], self._complex('m1'), run_id=run,
+                               scalars={('contact', 'A'): 3.0},
+                               specs=[{'key': 'contact', 'scope': 'chain', 'chain': 'A',
+                                       'dtype': 'float', 'tool': 'import'}])
+        cmd.delete('m1')
+        cmd.set_stage('m', 'all')
+        self.assertEqual(sorted(cmd.get_chains('m1')), ['A', 'B'])
+        self.assertEqual(self.target(c.get_set('m')), '')
+
+    def testAFoldOfTheDesignsInheritsTheDesignChainAndStagesWhole(self):
+        jobs = self.design(2)
+        deliver_designs(jobs)
+        parent = self.only_set()
+        deliver_models(cmd.predict(PRED, 'set:%s' % parent['name']))
+        c = store.active()
+        child = c.get_set('%s_1' % PRED)
+        for e in c.entries(child['id']):
+            self.assertEqual(e['design_chains'], ['B'])
+        for e in self.staged(child):
+            self.assertEqual(sorted(cmd.get_chains(e['staged_object'])), ['A', 'B'])
+        self.assertEqual(self.target(child), '')
+
+    def testPeekGhostsOnlyTheDesignChain(self):
+        jobs = self.design(8)
+        deliver_designs(jobs)
+        row = self.only_set()
+        spare = [e for e in store.active().entries(row['id'])
+                 if not e.get('staged_object')][0]
+        cmd.set_peek(row['name'], spare['name'])
+        self.assertEqual(cmd.get_chains(binding.PEEK), ['B'])
+        # An entry with no designed chain still ghosts whole.
+        other = self._manual_run([self._complex('x1')], design_chain='', name='plain')
+        cmd.delete('x1')
+        entry = store.active().entries(other['id'])[0]
+        self.assertEqual(entry['design_chains'], [])
+        cmd.set_peek('plain', entry['name'])
+        self.assertEqual(sorted(cmd.get_chains(binding.PEEK)), ['A', 'B'])
+
+    def testTheSharedTargetSurvivesASessionRoundTripAndItsOwnDeletion(self):
+        jobs = self.design(3)
+        deliver_designs(jobs)
+        row = self.only_set()
+        target = self.target(row)
+        path = os.path.join(_RESULTS['dir'], 'shared.raymol')
+        with redirect_stdout(io.StringIO()):
+            cmd.save(path)
+            cmd.reinitialize()
+            self.assertNotIn(target, cmd.get_names('all'))
+            cmd.load(path)
+        c = store.active()
+        self.assertEqual(self.target(row), target)
+        self.assertEqual(sorted(self.children(row['name'])),
+                         sorted([j.spec.name for j in jobs] + [target]))
+        self.assertEqual(len(c.shared_target(row['id'])['entries']), 3)
+        # The user deletes the target: the binders stay linked, and the next stage
+        # brings it back under the same name.
+        cmd.delete(target)
+        self.assertEqual(len(self.staged(row)), 3)
+        cmd.set_unstage(row['name'], jobs[0].spec.name)
+        cmd.set_stage(row['name'], jobs[0].spec.name)
+        self.assertIn(target, cmd.get_names('objects'))
+        # Renamed, it keeps its record; deleting every binder takes it with them.
+        cmd.set_name(target, 'renamed_target')
+        self.assertEqual(c.shared_target(row['id'])['object'], 'renamed_target')
+        cmd.delete(' or '.join(j.spec.name for j in jobs))
+        self.assertNotIn('renamed_target', cmd.get_names('all'))
+        self.assertIsNone(c.shared_target(row['id']))
+
+    def testAVersionOneFileIsBackfilledFromItsMetricsAndItsRuns(self):
+        import sqlite3
+        jobs = self.design(2)
+        deliver_designs(jobs)
+        row = self.only_set()
+        path = os.path.join(_RESULTS['dir'], 'old.raymol')
+        with redirect_stdout(io.StringIO()):
+            cmd.save(path)
+            cmd.reinitialize()
+        conn = sqlite3.connect(path)
+        conn.execute('ALTER TABLE entries DROP COLUMN design_chains')
+        # One entry keeps its `design_chain` metric; the other must fall back to the
+        # run's inputs.
+        first = conn.execute('SELECT id FROM entries ORDER BY ord').fetchone()[0]
+        conn.execute('UPDATE "m_%s" SET design_chain = NULL WHERE entry_id = ?'
+                     % row['id'], (first,))
+        conn.execute("UPDATE meta SET value = '1' WHERE key = 'format_version'")
+        conn.commit()
+        conn.close()
+        with redirect_stdout(io.StringIO()):
+            cmd.load(path)
+        c = store.active()
+        from pymol.sets import schema
+        self.assertEqual(c.meta_get('format_version'), str(schema.FORMAT_VERSION))
+        self.assertEqual([e['design_chains'] for e in c.entries(row['id'])],
+                         [['B'], ['B']])
 
 
 class Running(BatchTestCase):

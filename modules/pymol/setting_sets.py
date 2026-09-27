@@ -300,7 +300,7 @@ USAGE
 NOTES
 
     Without a key: {entry name: {column: value, plus id, run_id, parents, sequences,
-    starred, rejected, pinned, tags, note, staged}}. With an array key: {entry name:
+    starred, rejected, pinned, tags, note, staged, design_chains}}. With an array key: {entry name:
     (index, values)}; with a scalar key or one of the fields above: {entry name: value}.
     """
     c = _c()
@@ -313,7 +313,8 @@ NOTES
         fields = dict(id=e['id'], run_id=e.get('run_id'), parents=e.get('parents') or [],
                       sequences=e.get('sequences') or {}, starred=e.get('starred'),
                       rejected=e.get('rejected'), pinned=e.get('pinned'),
-                      tags=e.get('tags'), note=e.get('note'), staged=e.get('staged_object'))
+                      tags=e.get('tags'), note=e.get('note'), staged=e.get('staged_object'),
+                      design_chains=e.get('design_chains') or [])
         if not key:
             out[e['name']] = dict(scalars, **fields)
         elif key in scalars:

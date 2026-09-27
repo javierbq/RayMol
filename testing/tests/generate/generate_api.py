@@ -218,14 +218,17 @@ class BinderDesignTest(GeneratorTestCase):
         deliver(jobs)
         self.assertEqual(len(self.groups()), 1, self.groups())
         group = self.groups()[0]
+        # Plus the run's ONE shared target (#545): the designs are binders over it.
         self.assertEqual(sorted(cmd.get_object_list(group)),
-                         sorted(job.spec.name for job in jobs))
+                         sorted([job.spec.name for job in jobs] + ['target_' + group]))
         # And they are still THERE, enabled, with their atoms -- grouping is organisation,
         # not a move into a drawer that turns them off.
         enabled = set(cmd.get_names('objects', enabled_only=1))
         for job in jobs:
             self.assertIn(job.spec.name, enabled)
-            self.assertEqual(sorted(cmd.get_chains(job.spec.name)), ['A', 'B'])
+            self.assertEqual(cmd.get_chains(job.spec.name), ['B'])
+        self.assertIn('target_' + group, enabled)
+        self.assertEqual(cmd.get_chains('target_' + group), ['A'])
 
     def testTheGroupIsNamedForTheBatchAndNeverCallsAnythingABinder(self):
         jobs = self._batch(2, seed=11)
@@ -268,7 +271,7 @@ class BinderDesignTest(GeneratorTestCase):
             self.assertIsNotNone(designing.pending_info(job.spec.name))
         deliver(jobs)
         self.assertEqual(sorted(self.children(group)),
-                         sorted(job.spec.name for job in jobs))
+                         sorted([job.spec.name for job in jobs] + ['target_' + group]))
 
     def testAnEmptyPLACEHOLDERGroupIsNotVisibleToGetObjectList(self):
         # Why the teardown reads the session record instead. `get_object_list` reports a
@@ -309,7 +312,8 @@ class BinderDesignTest(GeneratorTestCase):
         designing.discard_pending(jobs[1].spec.name)
         self.assertEqual(self.groups(), [group])
         self.assertEqual(sorted(self.children(group)),
-                         sorted([jobs[0].spec.name, jobs[2].spec.name]))
+                         sorted([jobs[0].spec.name, jobs[2].spec.name,
+                                 'target_' + group]))
         for job in (jobs[0], jobs[2]):
             self.assertGreater(cmd.count_atoms(job.spec.name), 0)
 
@@ -425,7 +429,7 @@ class BinderDesignTest(GeneratorTestCase):
         deliver(jobs)
         self.assertEqual(self.groups(), ['several'])
         self.assertEqual(sorted(cmd.get_object_list('several')),
-                         ['several_01', 'several_02'])
+                         ['several_01', 'several_02', 'target_several'])
 
     def testAGroupNameAlreadyTakenByAMoleculeMovesAside(self):
         # `cmd.group` on a name that is already a molecule RAISES -- measured, not
@@ -440,7 +444,7 @@ class BinderDesignTest(GeneratorTestCase):
         deliver(jobs)
         self.assertEqual(self.groups(), ['several_2'])
         self.assertEqual(sorted(cmd.get_object_list('several_2')),
-                         ['several_01', 'several_02'])
+                         ['several_01', 'several_02', 'target_several_2'])
         # And the object that was in the way is untouched.
         self.assertEqual(cmd.count_atoms('several'), 40)
 
@@ -575,7 +579,8 @@ class BinderDesignTest(GeneratorTestCase):
         landed = jobs[0].spec.name
         # The finished design stays, in the group, with its atoms.
         self.assertIn(landed, cmd.get_names('objects'))
-        self.assertEqual(cmd.get_object_list(batch), [landed])
+        self.assertEqual(sorted(cmd.get_object_list(batch)),
+                         sorted([landed, 'target_' + batch]))
         self.assertGreater(cmd.count_atoms(landed), 0)
         # The two that never finished leave NOTHING -- their placeholders go with them,
         # which is the cancellation rule this branch already settled: the name means the
@@ -625,7 +630,8 @@ class BinderDesignTest(GeneratorTestCase):
         self.assertEqual(retained['batch'], batch)
         self.assertEqual(retained['batch_total'], 3)
         self.assertEqual(sorted(cmd.get_object_list(batch)),
-                         sorted([jobs[0].spec.name, jobs[2].spec.name]))
+                         sorted([jobs[0].spec.name, jobs[2].spec.name,
+                                 'target_' + batch]))
         self.assertNotIn(bad.spec.name, cmd.get_names('objects'))
 
     def testDismissingTheBatchClearsEveryCardItStoodFor(self):

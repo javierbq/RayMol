@@ -237,6 +237,34 @@ final class SequenceLazyLoadTests: XCTestCase {
         XCTAssertEqual(SetsStore.sequenceWindow(around: "e0", in: []), ["e0"])
     }
 
+    /// `entries.design_chains` (#545) reaches `SetRow`, and a file from before the
+    /// column still reads -- as "no designed chain", not as an empty table.
+    func testDesignChainsAreReadAndAFileWithoutTheColumnStillReads() throws {
+        var db: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(path, &db), SQLITE_OK)
+        func exec(_ sql: String) {
+            XCTAssertEqual(sqlite3_exec(db, sql, nil, nil, nil), SQLITE_OK, sql)
+        }
+        exec("CREATE TABLE m_s1 (entry_id TEXT PRIMARY KEY)")
+        do {
+            let store = try XCTUnwrap(SetsStore(path: path))
+            XCTAssertFalse(store.entriesHasColumn("design_chains"))
+            let rows = store.rows(setID: "s1", columns: [])
+            XCTAssertEqual(rows.count, Self.entryCount, "a format-1 file still lists")
+            XCTAssertTrue(rows.allSatisfy { $0.designChains.isEmpty })
+            store.close()
+        }
+        exec("ALTER TABLE entries ADD COLUMN design_chains TEXT NOT NULL DEFAULT '[]'")
+        exec("UPDATE entries SET design_chains = '[\"B\"]' WHERE id = 'e0'")
+        sqlite3_close(db)
+        let store = try XCTUnwrap(SetsStore(path: path))
+        defer { store.close() }
+        XCTAssertTrue(store.entriesHasColumn("design_chains"))
+        let rows = store.rows(setID: "s1", columns: [])
+        XCTAssertEqual(rows.first { $0.id == "e0" }?.designChains, ["B"])
+        XCTAssertEqual(rows.first { $0.id == "e1" }?.designChains, [])
+    }
+
     /// A container with `entries` rows, each with one three-value residue array.
     /// Written with raw SQL rather than through Python: this test is about the
     /// READ side's cost, and the shape of the schema is already pinned by
@@ -439,6 +467,53 @@ final class SequenceRowModelTests: XCTestCase {
     }
 
     // MARK: consensus
+
+    // MARK: the designed chain is the subject (#545)
+
+    /// A binder run: target chain A identical everywhere, designed chain B varying.
+    private func binderRun() -> [SequenceEntryInput] {
+        ["KVL", "RVL", "KWL"].enumerated().map { i, binder in
+            SequenceEntryInput(id: "d\(i)", name: "d\(i)", ord: i,
+                               sequences: ["A": "MSTARGET", "B": binder],
+                               runID: "r1", designChains: ["B"])
+        }
+    }
+
+    func testTheDesignedChainIsTheDefaultAndTheBandIsItsConsensus() {
+        let entries = binderRun()
+        let chains = SequenceRowModel.visibleChains(scope: .designed, entries: entries)
+        XCTAssertEqual(chains, ["B"])
+        let model = SequenceRowModel(entries: entries, chains: chains)
+        XCTAssertEqual(model.rows.map(letters), ["KVL", "RVL", "KWL"],
+                       "the rows are the binder, not the target it shares")
+        let band = model.consensus
+        XCTAssertEqual(band.count, 3)
+        XCTAssertEqual(band[0].letter, "K")
+        XCTAssertFalse(band[0].isInvariant, "the binder's position 1 varies")
+        XCTAssertTrue(band[2].isInvariant)
+
+        // What the band used to say: eight invariant target columns, then a stub.
+        let whole = SequenceRowModel(entries: entries,
+                                     chains: SequenceRowModel.visibleChains(scope: .all,
+                                                                            entries: entries))
+        XCTAssertEqual(whole.consensus.count, 8 + 1 + 3)
+        XCTAssertTrue(whole.consensus.prefix(8).allSatisfy(\.isInvariant))
+    }
+
+    func testThePickerOffersEveryChainAndFallsBackRatherThanEmptyTheTab() {
+        let entries = binderRun()
+        XCTAssertEqual(SequenceRowModel.availableChains(entries), ["A", "B"])
+        XCTAssertEqual(SequenceRowModel.designedChains(entries), ["B"])
+        XCTAssertEqual(SequenceRowModel.visibleChains(scope: .chain("A"), entries: entries),
+                       ["A"])
+        XCTAssertNil(SequenceRowModel.visibleChains(scope: .chain("Z"), entries: entries),
+                     "a chain no row has shows everything, not nothing")
+        let plain = [make("a", ["A": "MKV", "B": "GG"])]
+        XCTAssertNil(SequenceRowModel.visibleChains(scope: .designed, entries: plain),
+                     "no designed chain: every chain, as before")
+        let model = SequenceRowModel(entries: plain, chains: nil)
+        XCTAssertEqual(letters(model.rows[0]), "MKV|GG")
+    }
 
     func testTheBandCountsWhatIsThereAndMarksWhatNeverVaries() {
         let model = SequenceRowModel(entries: [

@@ -178,15 +178,18 @@ def _spec_or_none(tool, key):
         return None
 
 
-def _superpose(obj, ref, _self=cmd):
-    """`super` obj onto ref; a failure is a warning, never an error."""
+def _superpose(obj, ref, _self=cmd, ref_sel=None):
+    """`super` obj onto ref; a failure is a warning, never an error. `ref_sel` is the
+    selection to superpose onto when it is more than the reference object itself -- a
+    reference staged as its design chain over a shared target (#545)."""
     if not ref or ref == obj or not _exists(ref, _self=_self):
         return False
+    target = ref_sel or ref
     try:
         if _self.count_atoms('(%s) and polymer' % obj) == 0 or \
-                _self.count_atoms('(%s) and polymer' % ref) == 0:
+                _self.count_atoms('(%s) and polymer' % target) == 0:
             return False
-        _self.super(obj, ref, quiet=1)
+        _self.super(obj, target, quiet=1)
         return True
     except Exception as exc:
         colorprinting.warning(' sets: could not superpose %s onto %s (%s)' % (obj, ref, exc))
@@ -464,6 +467,202 @@ def _ensure_group(group, _self=cmd):
     _self.group(group, quiet=1)
 
 
+# -- The shared target (#545) -----------------------------------------------------------
+#
+# A binder-design run holds its target fixed, so every entry carries the same target
+# chain -- ONE blob (see `canonical_cif`) -- and staging six of them used to put six
+# copies of it in the scene. Instead, an entry whose non-design chains are that one
+# blob stages as its design chain(s) only, over a single `target_<set>` object in the
+# set's group (see `target_name`), loaded once. Identity is decided by content hash, never assumed:
+#
+#   * the entry names its design chains, has at least one other chain, and
+#   * its run HELD THE REST FIXED -- a design run, whose inputs name the `design_chain`
+#     it generated against a given target. A fold predicts every chain, and its first
+#     model to land cannot know the second will differ, so hash identity alone would
+#     split one model of a Boltz run and stage the rest whole -- and
+#   * every entry of its RUN holds the same blob for each of those other chains, and
+#   * that is the blob the set's shared target already holds (or there is none yet), and
+#   * no metric of the entry is tied to a non-design chain (a chain scalar, or a residue
+#     array indexed on the target), because those could not be written back onto a
+#     binder-only object -- such an entry is staged whole, so no metric is ever dropped.
+#
+# Anything else is staged whole, exactly as before (a fold predicts every chain, so its
+# target differs per entry). The target is an Object, not an Entry: it is never counted
+# against the budget, it goes into a .pse as a plain object, and it is removed when the
+# last entry staged over it leaves the scene. Its record lives in the container
+# (`Container.shared_target`), so a saved or recovered session keeps the link.
+
+
+def target_name(group):
+    """`target_<set>`, the shared target's object name.
+
+    NOT `<set>_target`, which is what #545 first asked for: PyMOL resolves a selection
+    word that names no object by UNIQUE PREFIX (`SelectGetInfoIter`) before it expands
+    groups, so a lone `rfd3_a1_target` inside the group `rfd3_a1` made `hide rfd3_a1`,
+    `color red, rfd3_a1` and `get_object_list('rfd3_a1')` act on the target alone and
+    never reach the binders (measured). A name the group's name is not a prefix of
+    cannot shadow it."""
+    return 'target_%s' % group
+
+
+def _target_record(c, set_id):
+    record = c.shared_target(set_id)
+    if record is None:
+        return None
+    record = dict(record)
+    record['entries'] = [str(e) for e in record.get('entries') or ()]
+    record['signature'] = [list(p) for p in record.get('signature') or ()]
+    return record
+
+
+def _chains_of_index(index):
+    """Chain ids an array's `index` names: [[chain, resi], ...], or nested pairs."""
+    out = set()
+    for item in index or ():
+        if isinstance(item, (list, tuple)) and len(item) == 2 and \
+                not isinstance(item[0], (list, tuple)):
+            out.add(str(item[0]))
+        elif isinstance(item, (list, tuple)):
+            out |= _chains_of_index(item)
+    return out
+
+
+def _metrics_touch_other_chains(c, entry, designed):
+    """True when a metric of `entry` is tied to a chain outside `designed`."""
+    designed = {str(ch) for ch in designed}
+    scalars = entry.get('scalars') or {}
+    for col in c.columns(entry['set_id']):
+        chain = col.get('chain')
+        if col.get('column') and chain not in (None, '') and str(chain) not in designed \
+                and scalars.get(col['column']) is not None:
+            return True
+    for row in c.arrays_of(entry['id']):
+        chain = row.get('chain')
+        if chain not in (None, '') and str(chain) not in designed:
+            return True
+        if _chains_of_index(row.get('index')) - designed:
+            return True
+    return False
+
+
+def split_plan(c, entry):
+    """(design chains, target signature) when `entry` may stage as its design chains
+    over the set's shared target, else None. See the block comment above."""
+    designed = [str(ch) for ch in entry.get('design_chains') or ()]
+    if not designed:
+        return None
+    held = c.chain_blobs(entry['id'])
+    chains = [ch for ch, _ in held]
+    if not set(designed) <= set(chains):
+        return None
+    signature = sorted([ch, h] for ch, h in held if ch not in designed)
+    if not signature:
+        return None
+    if not entry.get('run_id'):
+        return None
+    try:
+        inputs = c.run(entry['run_id']).get('inputs') or {}
+    except Exception:
+        return None
+    if not isinstance(inputs, dict) or not inputs.get('design_chain'):
+        return None
+    per_chain = c.run_chain_blobs(entry['run_id'], [ch for ch, _ in signature])
+    if any(len(hashes) != 1 for hashes in per_chain.values()):
+        return None
+    record = _target_record(c, entry['set_id'])
+    if record is not None and record['entries'] and record['signature'] != signature:
+        return None
+    if _metrics_touch_other_chains(c, entry, designed):
+        return None
+    return designed, signature
+
+
+def _chains_sel(obj, chains):
+    return '(%s) and (%s)' % (obj, ' or '.join('chain %s' % (ch if ch else '""')
+                                               for ch in chains))
+
+
+def _share_target(c, set_row, obj, plan, _self=cmd):
+    """Reduce the whole complex in `obj` to its design chains, putting the rest in the
+    set's shared target (made from `obj`'s own atoms, so it sits exactly where this
+    complex was placed, when there is none yet). Returns the target's object name.
+
+    The entry's link and the target's user list are written by the caller AFTER this
+    returns, and the target object exists before its record names it: a `delete` in
+    here runs `reconcile`, which must never see a record with no live user."""
+    designed, signature = plan
+    group = set_row.get('group_name') or set_row['name']
+    record = _target_record(c, set_row['id'])
+    target = record['object'] if record else ''
+    if not target or not _exists(target, _self=_self):
+        # A record whose object the user deleted gets it back under the same name.
+        target = target or _free_object_name(target_name(group), _self=_self)
+        state = max(1, int(_self.count_states(obj) or 1))
+        _self.create(target, '(%s) and not (%s)' % (obj, _chains_sel(obj, designed)),
+                     source_state=state, target_state=1, zoom=0, quiet=1)
+        if group in (_self.get_names('public_group_objects') or []):
+            try:
+                _self.group(group, target, 'add', quiet=1)
+            except Exception as exc:
+                colorprinting.warning(' sets: could not add %s to group %s (%s)'
+                                      % (target, group, exc))
+    _self.remove('(%s) and not (%s)' % (obj, _chains_sel(obj, designed)))
+    return target
+
+
+def _adopt_target(c, set_row, entry_id, target, signature):
+    record = _target_record(c, set_row['id']) or {'entries': []}
+    users = [e for e in record['entries'] if e != entry_id] + [entry_id]
+    c.set_shared_target(set_row['id'], {'object': target, 'signature': signature,
+                                        'entries': users})
+
+
+def _settle_target(c, set_id, _self=cmd):
+    """Drop users of the set's shared target that are no longer staged; when none is
+    left, delete the target object and its record. Links are read as `_staged` leaves
+    them, so call it after that."""
+    record = _target_record(c, set_id)
+    if record is None:
+        return
+    staged = {e['id'] for e in c.entries(set_id, where='e.staged_object IS NOT NULL')}
+    users = [e for e in record['entries'] if e in staged]
+    if users == record['entries']:
+        return
+    if users:
+        c.set_shared_target(set_id, dict(record, entries=users))
+        return
+    c.set_shared_target(set_id, None)
+    target = record['object']
+    if _exists(target, _self=_self):
+        try:
+            mstore.forget_object(target)
+        except Exception:
+            pass
+        _self.delete(target)
+
+
+def shared_target_object(c, set_id, _self=cmd):
+    """The set's shared target object's name when it is in the scene, else ''."""
+    record = _target_record(c, set_id)
+    if record and record['entries'] and _exists(record['object'], _self=_self):
+        return record['object']
+    return ''
+
+
+def _reference_selection(c, set_row, _self=cmd):
+    """What to superpose onto: the reference, plus the shared target when the reference
+    is an entry staged as its design chains over it (it holds only a binder)."""
+    ref = set_row.get('reference') or ''
+    record = _target_record(c, set_row['id'])
+    if not ref or record is None or not _exists(record['object'], _self=_self):
+        return None
+    users = set(record['entries'])
+    if any(e['staged_object'] == ref and e['id'] in users
+           for e in c.entries(set_row['id'], where='e.staged_object IS NOT NULL')):
+        return '(%s) or (%s)' % (ref, record['object'])
+    return None
+
+
 def _write_back_metrics(c, entry, obj, _self=cmd):
     """The entry's columns and arrays as metrics-store runs on the staged object, one run
     per tool this build declares. Undeclared tools and keys are skipped: the numbers stay
@@ -528,6 +727,7 @@ def stage(set_row, entries, budget_override=None, _self=cmd):
     c = container()
     set_id = set_row['id']
     staged = _staged(c, set_id, _self=_self)
+    _settle_target(c, set_id, _self=_self)      # a record naming only dead links
     already = {e['id'] for e in staged}
     todo = [e for e in entries if e['id'] not in already]
     limit = int(budget_override) if budget_override else budget(set_row)
@@ -546,13 +746,21 @@ def stage(set_row, entries, budget_override=None, _self=cmd):
     ref = set_row.get('reference') or ''
     for e in todo:
         obj = _free_object_name(e['name'], _self=_self)
+        # Whole first, superposed as a whole, and only THEN reduced to its design
+        # chains: the transform is the complex's, as it always was, so a binder staged
+        # over the shared target sits exactly where it sat in its own complex.
         _load_entry_into(c, e, obj, _self=_self)
         try:
             _self.group(group, obj, 'add', quiet=1)
         except Exception as exc:
             colorprinting.warning(' sets: could not add %s to group %s (%s)' % (obj, group, exc))
-        _superpose(obj, ref, _self=_self)
+        _superpose(obj, ref, _self=_self,
+                   ref_sel=_reference_selection(c, set_row, _self=_self))
+        plan = split_plan(c, e)
+        target = _share_target(c, set_row, obj, plan, _self=_self) if plan else ''
         c.update_entry(e['id'], staged_object=obj)
+        if plan:
+            _adopt_target(c, set_row, e['id'], target, plan[1])
         _write_back_metrics(c, dict(e, staged_object=obj), obj, _self=_self)
         names.append(obj)
     return names
@@ -577,6 +785,7 @@ def unstage(set_row, entries, include_pinned=False, _self=cmd):
             _self.delete(obj)
             removed.append(obj)
         c.update_entry(e['id'], staged_object=None, pinned=0)
+    _settle_target(c, set_row['id'], _self=_self)
     _drop_empty_group(set_row, _self=_self)
     return removed
 
@@ -610,6 +819,9 @@ def on_object_renamed(old, new, _self=cmd):
     for s in c.sets():
         for e in c.entries(s['id'], where='e.staged_object = ?', params=(old,)):
             c.update_entry(e['id'], staged_object=new)
+    for set_id, record in c.shared_targets().items():
+        if record.get('object') == old:
+            c.set_shared_target(set_id, dict(record, object=new))
 
 
 def reconcile(_self=cmd):
@@ -618,8 +830,13 @@ def reconcile(_self=cmd):
     if not store.is_open():
         return
     c = container()
+    targets = c.shared_targets()
     for s in c.sets():
         _staged(c, s['id'], _self=_self)
+        if s['id'] in targets:
+            _settle_target(c, s['id'], _self=_self)
+    for set_id in set(targets) - {s['id'] for s in c.sets()}:
+        c.set_shared_target(set_id, None)        # its set is gone
 
 
 # -- Peek ------------------------------------------------------------------------------
@@ -636,7 +853,14 @@ def peek(set_row, entry, _self=cmd):
     c = container()
     clear_peek(_self=_self)
     _load_entry_into(c, entry, PEEK, _self=_self)
-    _superpose(PEEK, set_row.get('reference') or '', _self=_self)
+    _superpose(PEEK, set_row.get('reference') or '', _self=_self,
+               ref_sel=_reference_selection(c, set_row, _self=_self))
+    # Only the designed chain(s) (#545): the target is already on screen, and a ghost
+    # of it drawn over itself is 141 residues of noise around a 60-residue binder.
+    # Superposed WHOLE first, so the binder lands where its complex puts it.
+    designed = [str(ch) for ch in entry.get('design_chains') or ()]
+    if designed and set(designed) < set(_chains(PEEK, _self=_self)):
+        _self.remove('(%s) and not (%s)' % (PEEK, _chains_sel(PEEK, designed)))
     try:
         _self.hide('everything', PEEK)
         _self.show('cartoon', PEEK)
