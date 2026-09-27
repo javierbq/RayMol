@@ -401,10 +401,10 @@ struct SetPlotView: View {
 
     /// Room for the y tick labels on the left and the x ones underneath.
     private static let leftGutter: CGFloat = 46
-    private static let bottomGutter: CGFloat = 16
-    private static let topGutter: CGFloat = 8
+    private static let bottomGutter: CGFloat = PanelLayout.macPlotBottomGutter
+    private static let topGutter: CGFloat = PanelLayout.macPlotTopGutter
     private static let rightGutter: CGFloat = 10
-    private static let cardSize = CGSize(width: 150, height: 58)
+    private static let cardSize = CGSize(width: 150, height: PanelLayout.macPlotHoverCardHeight)
 
     private var numericColumns: [MetricColumn] {
         // `self.` because a computed property whose body opens with `set` is parsed
@@ -453,10 +453,10 @@ struct SetPlotView: View {
                     onBrush: { brush, commit in
                         engine.updateBrush(set, brush, column: xKey, commit: commit)
                     })
-                    .frame(height: 18)
+                    .frame(height: PanelLayout.macPlotAxisBrushHeight)
                     .padding(.leading, Self.leftGutter)
                     .padding(.trailing, Self.rightGutter)
-                    .padding(.bottom, 2)
+                    .padding(.bottom, PanelLayout.macPlotAxisBrushBottomPadding)
             }
             Rectangle().fill(hairline).frame(height: 1)
             footer
@@ -602,7 +602,7 @@ struct SetPlotView: View {
             if case .category = colorChoice { legend }
         }
         .padding(.horizontal, 10)
-        .frame(height: 24)
+        .frame(height: PanelLayout.macPlotControlsHeight)
     }
 
     private func axisMenu(_ label: String, key: Binding<String>) -> some View {
@@ -847,7 +847,7 @@ struct SetPlotView: View {
                 .help("Deselect every point; the table follows")
         }
         .padding(.horizontal, 8)
-        .frame(height: 22)
+        .frame(height: PanelLayout.macPlotFooterHeight)
     }
 
     /// The selected points' bounding box, as two range brushes. Goes through

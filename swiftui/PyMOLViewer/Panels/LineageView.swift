@@ -268,8 +268,8 @@ struct LineageView: View {
     /// Column pitch and row pitch. Small enough that a few hundred entries fit a
     /// drawer, large enough that a dot is clickable.
     private static let columnWidth: CGFloat = 130
-    private static let rowHeight: CGFloat = 16
-    private static let margin: CGFloat = 18
+    private static let rowHeight: CGFloat = PanelLayout.macLineageRowPitch
+    private static let margin: CGFloat = PanelLayout.macLineageMargin
     private static let maxRadius: CGFloat = 5
 
     private var model: LineageModel { engine.lineageModel }
@@ -336,7 +336,7 @@ struct LineageView: View {
                       + " Faint nodes are in another set and cannot be selected here.")
         }
         .padding(.horizontal, 10)
-        .frame(height: 20)
+        .frame(height: PanelLayout.macLineageHeaderHeight)
     }
 
     private var emptyState: some View {
