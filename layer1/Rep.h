@@ -237,6 +237,12 @@ struct Rep {
   //! runs per draw op, per pass, per frame. Scanning there made it O(atoms)
   //! every time, worst case on exactly the configuration the rule targets.
   bool emitsStickBalls() const { return m_emits_stick_balls; }
+  /* True once invalidate() has been called, at ANY level, and the rep awaits
+     update(). Conservative for callers that trust cached build answers
+     (emitsStickBalls, hasTransparency): a colour-only invalidation leaves
+     those answers correct but still reads as invalidated, so such a caller
+     falls back to recomputing until the next frame (#530). */
+  bool isInvalidated() const { return MaxInvalid != cRepInvNone; }
   //! Records the answer at build time; see above.
   void setEmitsStickBalls(bool v) { m_emits_stick_balls = v; }
 
@@ -249,6 +255,10 @@ struct Rep {
   //! writing `stick_transparency`. That rule had no test anywhere in the tree:
   //! a test written against the setting stays green with the rule reverted,
   //! and the geometry it suppresses is not otherwise visible from Python.
+  //!
+  //! It is the OBJECT-level decision (#527): a bond with its own
+  //! `stick_transparency` is decided from that value, so a rep recording 1
+  //! can still keep the lines under its see-through bonds.
   int builtLineStickHelper() const { return m_built_line_stick_helper; }
   //! Records the decision at build time; see above.
   void setBuiltLineStickHelper(int v) { m_built_line_stick_helper = v; }

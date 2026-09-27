@@ -56,6 +56,14 @@ struct SceneRenderInfo
 void SceneRender(PyMOLGlobals* G, const SceneRenderInfo& renderInfo);
 void SceneRenderMetal(PyMOLGlobals* G);
 void SceneRenderMetalSelections(PyMOLGlobals* G);
+
+namespace pymol { struct CObject; }
+/** Objects the scene loop depth-peels (#488), in draw order and capped, when
+ * the renderer can peel; see SceneRender.cpp. Together with
+ * SceneRendererCanPeel this is the frame's peel decision. */
+std::vector<pymol::CObject*> SceneCollectPeelCandidates(PyMOLGlobals* G);
+/** False on the GL path and wherever the Metal peel targets are missing. */
+bool SceneRendererCanPeel(PyMOLGlobals* G);
 /**
  * @param only_object when non-null, render ONLY this object and skip every
  *   other one. Used by the per-object transparent depth peel (#488), which has

@@ -22,6 +22,7 @@
 #include"Base.h"
 #include"Err.h"
 #include"RepSphere.h"
+#include "Material.h"
 #include"RepSphereImmediate.h"
 #include"RepSphereGenerate.h"
 #include"Color.h"
@@ -509,7 +510,13 @@ Rep *RepSphereNew(CoordSet * cs, int state)
       SettingGet_b(G, cs->Setting.get(), obj->Setting.get(), cSetting_cartoon_side_chain_helper);
     ribbon_side_chain_helper =
       SettingGet_b(G, cs->Setting.get(), obj->Setting.get(), cSetting_ribbon_side_chain_helper);
-    transp = SettingGet_f(G, cs->Setting.get(), obj->Setting.get(), cSetting_sphere_transparency);
+    // Through the material, as RepCylBond's is: a jelly sphere rep builds
+    // with jelly's implied alpha when the slider is at 0 (#526).
+    transp = MaterialEffectiveTransparency(G, cs->Setting.get(),
+        obj->Setting.get(), cRepSphere,
+        SettingGet_f(G, cs->Setting.get(), obj->Setting.get(),
+            cSetting_sphere_transparency), cs);
+    I->setBuiltTransparency(transp);   // what the build used (tests read it)
     sphere_scale = SettingGet_f(G, cs->Setting.get(), obj->Setting.get(), cSetting_sphere_scale);
   }
 

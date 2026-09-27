@@ -1266,7 +1266,9 @@ final class PyMOLEngine: ObservableObject {
         } else {
             DispatchQueue.main.async { self.applyEnabledOptimistically(name, enabled) }
         }
-        runCommand(enabled ? "enable \(name)" : "disable \(name)")
+        // Guarded like the Inspector's builders (#531): the visibility
+        // checkbox is the most-used of them.
+        runCommand(enabled ? "enable \(name)" : "disable \(name)", naming: name)
         // The sequence panel only lists ENABLED objects (issue #380), so a toggle
         // changes its rows. SequencePanel does re-fetch on `objects` change, but
         // that fires from SwiftUI's next update pass — after the optimistic flip
@@ -2070,7 +2072,7 @@ final class PyMOLEngine: ObservableObject {
         let t = Timer(timeInterval: 1.0 / max(fps, 0.1), repeats: true) { [weak self] _ in
             guard let self else { return }
             k = k >= total ? 1 : k + 1
-            self.runCommand("set state, \(k), \(name)")
+            self.runCommand("set state, \(k), \(name)", naming: name)   // #531
         }
         RunLoop.main.add(t, forMode: .common)   // keeps ticking during scroll/interaction
         objectStateTimers[name] = t
@@ -2092,7 +2094,7 @@ final class PyMOLEngine: ObservableObject {
         let cur = min(max(objectMeta[name]?.state ?? 1, 1), total)
         var n = cur + delta
         if n < 1 { n = total } else if n > total { n = 1 }
-        runCommand("set state, \(n), \(name)")
+        runCommand("set state, \(n), \(name)", naming: name)
     }
 
     // Live scrub: clamp, set immediately for snappy UI, throttle the core call.

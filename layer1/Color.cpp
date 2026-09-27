@@ -1776,8 +1776,11 @@ void ColorUpdateFrontFromSettings(PyMOLGlobals * G){
       ColorUpdateFront(G, v);
     }
   } else {
-    float vv[3];
-    const float *v = ColorGet(G, SettingGet_color(G, nullptr, nullptr, cSetting_bg_rgb_bottom));
+    // Copied before the second lookup (#542): for two 24-bit RGB colours
+    // ColorGet returns the same scratch buffer twice, so the second call
+    // overwrote the first and the "average" was just the top colour.
+    float vv[3], v[3];
+    copy3f(ColorGet(G, SettingGet_color(G, nullptr, nullptr, cSetting_bg_rgb_bottom)), v);
     const float *vb = ColorGet(G, SettingGet_color(G, nullptr, nullptr, cSetting_bg_rgb_top));
     average3f(v, vb, vv);
     ColorUpdateFront(G, vv);    

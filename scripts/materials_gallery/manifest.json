@@ -1,0 +1,129 @@
+{
+  "comment": "Checklist B of #503: every implemented material on every material-bearing representation, light and dark background, Metal ray tracing off and on. Regenerate with render.py; build the page with gallery.py. See docs/materials.md.",
+  "structure": "testing/data/1rx1.pdb",
+  "size": [
+    700,
+    500
+  ],
+  "materials": [
+    "default",
+    "matte",
+    "plastic",
+    "metallic",
+    "glass",
+    "frosted_glass",
+    "jelly",
+    "marble",
+    "clay",
+    "rubber"
+  ],
+  "reps": {
+    "cartoon": {
+      "setting": "cartoon_material",
+      "show": [
+        "cartoon",
+        "m and polymer"
+      ],
+      "colour": [
+        "cmd.spectrum('count', 'rainbow', 'm and name CA')"
+      ],
+      "extra": [
+        "cmd.set('cartoon_flat_sheets', 1)"
+      ]
+    },
+    "surface": {
+      "setting": "surface_material",
+      "show": [
+        "surface",
+        "m and polymer"
+      ],
+      "colour": [
+        "cmd.color('grey80', 'm')",
+        "cmd.color('marine', 'm and resn LYS+ARG')",
+        "cmd.color('red', 'm and resn ASP+GLU')"
+      ],
+      "extra": []
+    },
+    "sticks": {
+      "setting": "stick_material",
+      "show": [
+        "sticks",
+        "m and polymer and not hydro"
+      ],
+      "colour": [
+        "util.cbag('m')"
+      ],
+      "extra": [
+        "cmd.set('stick_radius', 0.3)"
+      ]
+    },
+    "spheres": {
+      "setting": "sphere_material",
+      "show": [
+        "spheres",
+        "m and polymer and not hydro"
+      ],
+      "colour": [
+        "util.cbac('m')"
+      ],
+      "extra": []
+    }
+  },
+  "backgrounds": {
+    "light": [
+      0.84,
+      0.85,
+      0.87
+    ],
+    "dark": [
+      0.06,
+      0.06,
+      0.08
+    ]
+  },
+  "raytrace": {
+    "rt0": 0,
+    "rt1": 1
+  },
+  "lock_check": {
+    "comment": "Procedural patterns must stay locked to the object. Rendered orthoscopic at a view and at the same view panned; a locked pattern moves with the silhouette, a swimming one does not.",
+    "materials": [
+      "default",
+      "marble",
+      "clay",
+      "rubber"
+    ],
+    "reps": [
+      "surface",
+      "cartoon"
+    ],
+    "pan_angstrom": 4.0
+  },
+  "comment_colour": "colour and extra are Python statements run with cmd and util in scope.",
+  "degrades_to_default": {
+    "spheres": [
+      "glass",
+      "frosted_glass"
+    ],
+    "comment": "Clear and frosted glass are excluded from sphere impostors by a deliberate scope line (Material.cpp, MaterialResolve) and draw as default there; jelly draws (#526). The gallery shows them and does not flag them."
+  },
+  "rt_invariant": {
+    "materials": [
+      "glass",
+      "frosted_glass",
+      "jelly"
+    ],
+    "comment": "Transparent geometry is not in the Metal ray-traced scene unless metal_rt_transparent is on (#532; off by default and in the gallery), so these render identically with metal_raytrace 0 and 1; expected, not flagged."
+  },
+  "expected_identical_pairs": [
+    {
+      "materials": [
+        "plastic",
+        "metallic"
+      ],
+      "background": "dark",
+      "raytrace": "rt0",
+      "comment": "Under material_env 0 the room IS the background; a near-black room reflects nothing, and reflection is the only term in which plastic and metallic differ. With ray tracing on, or on a light background, or under material_env 1, they differ. Documented in docs/materials.md."
+    }
+  ]
+}

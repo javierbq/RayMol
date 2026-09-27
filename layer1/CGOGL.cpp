@@ -1,3 +1,4 @@
+#include <cassert>
 #include "CGOGL.h"
 
 #include "CGO.h"
@@ -202,6 +203,11 @@ static bool drawVBOViaMetal(CCGORenderer* I, VertexBufferGL* vbo,
     if (d.attr_name == "a_Vertex") {
       posOffset = static_cast<int>(d.offset);
     } else if (d.attr_name == "a_Normal") {
+      // RendererMetal binds attribute 1 as Float3 unconditionally (for the
+      // raster AND the RT per-vertex normals). CGOPackedNormals
+      // (CGO.cpp) never packs normals on the Metal path, so this holds by
+      // construction.
+      assert(d.m_format == VertexFormat::Float3);
       normalOffset = static_cast<int>(d.offset);
     } else if (d.attr_name == "a_Color") {
       colorOffset = static_cast<int>(d.offset);
@@ -236,6 +242,11 @@ static bool drawVBOIndexedViaMetal(CCGORenderer* I,
     if (d.attr_name == "a_Vertex") {
       posOffset = static_cast<int>(d.offset);
     } else if (d.attr_name == "a_Normal") {
+      // RendererMetal binds attribute 1 as Float3 unconditionally (for the
+      // raster AND the RT per-vertex normals). CGOPackedNormals
+      // (CGO.cpp) never packs normals on the Metal path, so this holds by
+      // construction.
+      assert(d.m_format == VertexFormat::Float3);
       normalOffset = static_cast<int>(d.offset);
     } else if (d.attr_name == "a_Color") {
       colorOffset = static_cast<int>(d.offset);

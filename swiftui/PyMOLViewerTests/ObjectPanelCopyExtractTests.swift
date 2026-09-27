@@ -220,6 +220,24 @@ final class ObjectPanelCopyExtractTests: XCTestCase {
     func testACommaInTheNameIsRejected() {
         XCTAssertFalse(isLegalObjectName("foo, bar"))
         XCTAssertFalse(isLegalObjectName("foo,bar"))
+        // #531: everything that could split an Inspector command is outside
+        // the alphabet, so engine.runCommand(_:naming:) refuses it -- line
+        // breaks of every kind cmd.do splits on, the command separator, and
+        // non-ASCII.
+        for bad in ["a\nb", "a\rb", "a\u{2028}b", "a\u{85}b", "a;b", "a b",
+                    "a'b", "a\"b", "a(b)", "é"] {
+            XCTAssertFalse(isLegalObjectName(bad), "'\(bad)' must be refused")
+        }
+        // Non-object tokens (MSA names, scene names, a typed group name) are
+        // looser: the MSA store allows these, and they must keep working...
+        for ok in ["données", "aln:1", "run#2", "x|y", "my scene", "001"] {
+            XCTAssertTrue(isCommandSafeToken(ok), "'\(ok)' must pass")
+        }
+        // ...but nothing that can end or split a command gets through.
+        for bad in ["a\nb", "a\rb", "a\u{2028}b", "a\u{2029}b", "a\u{85}b",
+                    "a\u{0B}b", "a;b", "a,b", "aln\\", ""] {
+            XCTAssertFalse(isCommandSafeToken(bad), "'\(bad)' must be refused")
+        }
     }
 
     /// `create` against an existing name does nothing at all — no object, no

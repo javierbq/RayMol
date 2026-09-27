@@ -17,8 +17,10 @@ below were written against a resolution that was off for everything.)
 
 What the resolution does NOT tell you is whether the frame actually peels the
 object: the scene loop additionally requires `obj->Enabled`, a renderer that
-supports peeling, and a place within `kMaxPeeledObjects`. See the comment on
-CmdGetObjectPeel.
+supports peeling, and a place within `kMaxPeeledObjects`. `_cmd.get_frame_peel`
+reports that decision -- the renderer's capability and the capped, ordered
+list -- and TestTheFramesDecision pins it. See the comments on CmdGetObjectPeel
+and CmdGetFramePeel.
 
 Runs on a RayMol --testing build:
     pymol -ckqy testing/testing.py --run testing/tests/raymol/transparency_peel.py
@@ -31,6 +33,11 @@ def resolved_peel(obj, state=0):
     """Whether the renderer would peel `obj` -- the same call the scene loop
     makes, not the setting value."""
     return pymol._cmd.get_object_peel(cmd._COb, obj, state)
+
+
+def frame_peel():
+    """(renderer_can_peel, [names the scene loop peels when it can])."""
+    return pymol._cmd.get_frame_peel(cmd._COb)
 
 
 class TestTransparencyPeel(testing.PyMOLTestCase):
@@ -119,3 +126,55 @@ class TestTransparencyPeel(testing.PyMOLTestCase):
 
     def testAnUnknownObjectIsAnError(self):
         self.assertIsNone(resolved_peel('no_such_object'))
+
+
+
+class TestTheFramesDecision(testing.PyMOLTestCase):
+    """What the frame peels, as opposed to what each object asks for."""
+
+    def setUp(self):
+        super().setUp()
+        cmd.reinitialize()
+        # four jelly objects, one more than kMaxPeeledObjects
+        for name in ('j1', 'j2', 'j3', 'j4'):
+            cmd.fragment('ala', name)
+            cmd.show_as('sticks', name)
+            cmd.set('stick_material', 'jelly', name)
+        cmd.rebuild()
+        cmd.refresh()
+
+    def testEveryObjectAsksButOnlyThreeArePeeled(self):
+        """The discrepancy get_object_peel documents: four identical requests,
+        three peeled, the fourth chosen by draw order alone."""
+        self.assertEqual([resolved_peel(n) for n in ('j1', 'j2', 'j3', 'j4')],
+                         [1, 1, 1, 1])
+        self.assertEqual(frame_peel()[1], ['j1', 'j2', 'j3'])
+
+    def testADisabledObjectDoesNotTakeASlot(self):
+        cmd.disable('j1')
+        self.assertEqual(frame_peel()[1], ['j2', 'j3', 'j4'])
+
+    def testAnObjectThatDoesNotAskIsNotPeeled(self):
+        cmd.set('transparency_peel', 0, 'j2')
+        # j4 goes, so the cap is not what keeps 'plain' off the list: with
+        # j1 and j3 there is a slot left for it
+        cmd.delete('j4')
+        cmd.fragment('gly', 'plain')
+        cmd.show_as('sticks', 'plain')
+        cmd.set('stick_transparency', 0.5, 'plain')   # translucent, no ask
+        cmd.rebuild()
+        cmd.refresh()
+        self.assertEqual(frame_peel()[1], ['j1', 'j3'])
+        # the control: once 'plain' does ask, it takes that slot
+        cmd.set('stick_material', 'jelly', 'plain')
+        cmd.rebuild()
+        cmd.refresh()
+        self.assertEqual(frame_peel()[1], ['j1', 'j3', 'plain'])
+
+    def testNothingPeelsWithoutAPeelingRenderer(self):
+        """The embedded core draws with no Metal renderer, so the frame peels
+        nothing whatever the list says -- reported, not folded into an empty
+        list, so the rest of this class can run here at all."""
+        can_peel, names = frame_peel()
+        self.assertIs(can_peel, False)
+        self.assertEqual(len(names), 3)

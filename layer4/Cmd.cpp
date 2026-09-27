@@ -2514,8 +2514,33 @@ static PyObject* CmdGetMaterialDrawParams(PyObject* self, PyObject* args)
     int const resolved =
         (state == 0) ? objmol->getCurrentState() : (state < 0 ? 0 : state - 1);
     CoordSet* cs = objmol->getCoordSet(resolved);
-    MaterialParams const p = MaterialDrawParams(G,
-        cs ? cs->Setting.get() : nullptr, objmol->Setting.get(), repType, cs);
+    /* A BUILT rep carries the stick_ball answer it was built with, which is
+       what the draw path uses (CGOGL.cpp -> MaterialDrawParamsCached). Read it
+       rather than rescanning every atom: the Inspector polls this about twice
+       a second (#530), and for a glass stick rep the scan is O(atoms).
+
+       Only a rep that is built, VALID and shown is trusted. An invalidated one
+       (MaxInvalid set -- e.g. `stick_ball` just changed on some atoms) still
+       holds the answer it was built with, which the next frame's rebuild will
+       replace. For that, and for a rep not built yet, fall back to the scan:
+       the answer the next build would cache. So the two paths agree.
+
+       The Active[] check is defensive. Today hiding a rep invalidates it, so
+       the MaxInvalid test already catches a hidden one (mutation-tested:
+       dropping Active[] alone changes no result); it stays so that a future
+       change that keeps a valid rep around while hidden cannot make this
+       report atoms nothing draws. */
+    const ::Rep* rep = (cs && repType >= 0 && repType < cRepCnt &&
+                        cs->Active[repType])
+                           ? cs->Rep[repType] : nullptr;
+    if (rep && rep->isInvalidated()) {
+      rep = nullptr;
+    }
+    MaterialParams const p = rep
+        ? MaterialDrawParamsCached(G, cs->Setting.get(), objmol->Setting.get(),
+              repType, rep->emitsStickBalls())
+        : MaterialDrawParams(G, cs ? cs->Setting.get() : nullptr,
+              objmol->Setting.get(), repType, cs);
     /* The per-material KNOBS are part of "what this draw uses" too, and until
        #496 nothing could see them from Python. They are the half of a material
        that fails QUIETLY: zeroing jelly's absorption renders a white body,
@@ -2586,7 +2611,11 @@ static PyObject* CmdGetMaterialRayParams(PyObject* self, PyObject* args)
    without the material ever writing `stick_transparency` -- so a test written
    against the setting stays green with that rule reverted, and the geometry the
    helper suppresses is not otherwise visible from Python. It had no test
-   anywhere in the tree until this. */
+   anywhere in the tree until this.
+
+   It is the OBJECT-level decision (#527): a bond with its own
+   stick_transparency is decided from that value, so a 1 here can still keep
+   the lines under see-through bonds. */
 static PyObject* CmdGetBuiltLineStickHelper(PyObject* self, PyObject* args)
 {
   PyMOLGlobals* G = nullptr;
@@ -2704,7 +2733,8 @@ static PyObject* CmdGetBuiltTransparency(PyObject* self, PyObject* args)
  * because a jelly object's implied alpha was measured peeled and an unpeeled
  * one is denser (see the table comment in layer1/Material.cpp). Bounding this
  * by the cap would be worse, not better: the cap is per frame and depends on
- * object order, so it is not a property of the object being asked about.
+ * object order, so it is not a property of the object being asked about --
+ * that is what _cmd.get_frame_peel answers.
  *
  * _cmd.get_object_peel(object_name_or_empty[, state=0])
  */
@@ -2746,6 +2776,43 @@ static PyObject* CmdGetObjectPeel(PyObject* self, PyObject* args)
     result = PyInt_FromLong(
         MaterialObjectWantsPeel(G, stateSetting, objSetting, obj) ? 1 : 0);
   }
+  APIExitBlocked(G);
+  return APIAutoNone(result);
+}
+
+/**
+ * The FRAME's peel decision, as the scene loop makes it: which objects are
+ * depth-peeled, after the gates get_object_peel does not apply -- Enabled,
+ * kMaxPeeledObjects, draw order -- and whether the renderer can peel at all.
+ * Same functions the loop calls (SceneRender.cpp), so the two cannot drift.
+ *
+ * Returns (renderer_can_peel, [object names]). The names are the candidates
+ * the loop peels when renderer_can_peel is true; when it is false (the GL path,
+ * a headless core, missing Metal peel targets) nothing peels this frame.
+ * Reported separately rather than as an empty list so the Enabled / cap / order
+ * part stays observable without a Metal renderer.
+ *
+ * _cmd.get_frame_peel()
+ */
+static PyObject* CmdGetFramePeel(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  if (!PyArg_ParseTuple(args, "O", &self)) {
+    API_HANDLE_ERROR;
+    return APIAutoNone(nullptr);
+  }
+  API_SETUP_PYMOL_GLOBALS;
+  if (!G) {
+    return APIAutoNone(nullptr);
+  }
+  APIEnterBlocked(G);
+  auto const candidates = SceneCollectPeelCandidates(G);
+  PyObject* names = PyList_New(candidates.size());
+  for (size_t i = 0; i < candidates.size(); ++i) {
+    PyList_SetItem(names, i, PyUnicode_FromString(candidates[i]->Name));
+  }
+  PyObject* result = Py_BuildValue("(ON)",
+      SceneRendererCanPeel(G) ? Py_True : Py_False, names);
   APIExitBlocked(G);
   return APIAutoNone(result);
 }
@@ -6993,6 +7060,7 @@ static PyMethodDef Cmd_methods[] = {
   {"get_material_draw_params", CmdGetMaterialDrawParams, METH_VARARGS},
   {"get_material_ray_params", CmdGetMaterialRayParams, METH_VARARGS},
   {"get_object_peel", CmdGetObjectPeel, METH_VARARGS},
+  {"get_frame_peel", CmdGetFramePeel, METH_VARARGS},
   {"get_origin", CmdGetOrigin, METH_VARARGS},
   {"get_position", CmdGetPosition, METH_VARARGS},
   {"get_povray", CmdGetPovRay, METH_VARARGS},

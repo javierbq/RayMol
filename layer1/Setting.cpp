@@ -2227,8 +2227,9 @@ void SettingGenerateSideEffects(PyMOLGlobals * G, int index, const char *sele, i
     /* The stick rep also emits the stick_ball spheres. */
     ExecutiveInvalidateRep(G, inv_sele, cRepCyl, cRepInvColor);
     /* And the LINE rep: line_stick_helper suppresses lines where sticks are,
-       but only while the sticks are opaque -- and a glass stick is translucent
-       without ever writing stick_transparency (#495). Without this the already
+       but only while the sticks are at most half transparent (#527) -- and a
+       glass stick is translucent without ever writing stick_transparency
+       (#495). Without this the already
        built line rep keeps the old decision, so the fix in RepWireBond never
        fires for the flow it exists for and the user gets see-through sticks
        with nothing behind them. cRepInvRep because the helper changes which

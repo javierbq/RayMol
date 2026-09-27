@@ -319,6 +319,18 @@ class TestMetalShaderSources(testing.PyMOLTestCase):
             self.assertLess(code.index('kMatGlass'), code.index('mat_glass_cover'),
                             fn)
 
+    def testGrainIsBandLimited(self):
+        """Both octaves of the procedural grain fade out below the pixel size,
+        so a zoomed-out rubber or clay surface settles instead of shimmering
+        (clay and rubber were measured at 3-5x less texture change under a
+        sub-pixel pan). A source guard: nothing else can see the fade."""
+        msl = shader_literals(self.source())
+        grain = _function_body(msl['kMaterialSrc'], 'float mat_grain(')
+        self.assertEqual(grain.count('mat_octave_fade('), 2)
+        cells = _function_body(msl['kMaterialSrc'], 'float mat_cells_per_pixel(')
+        self.assertIn('dfdx(', cells)
+        self.assertIn('dfdy(', cells)
+
     def testRTBlurUsesTheSharedOrthoAwareDepth(self):
         """rt_composite's bilateral AO blur must reconstruct the neighbour depth
         with the same ortho-aware inverse as the centre sample (#139), not the

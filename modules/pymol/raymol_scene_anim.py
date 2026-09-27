@@ -650,6 +650,16 @@ def enter_scene(name_b64, _self=cmd):
         _rs.apply_settings(name, _self)
     except Exception as e:
         print('MOVIE_ERR:' + str(e))
+    # ...then the per-object overrides, after the globals so an object's own
+    # value wins over the fallback just written -- the same order a recall
+    # uses (#508). Without this a movie replayed only the GLOBAL half of each
+    # scene: in a marble -> clay movie every object changed material except
+    # the ones the user had styled, which stayed frozen. Same conditional
+    # writes as a recall, so an unchanged override costs nothing per frame.
+    try:
+        _rs.apply_object_settings(name, _self)
+    except Exception as e:
+        print('MOVIE_ERR:' + str(e))
     try:
         _rs.apply_focus_target(name, _self)
     except Exception:

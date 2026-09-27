@@ -175,6 +175,7 @@ public:
   void setRepContour(bool enabled, const float* rgba, float widthPx) override;
   void setRepMaterial(const MaterialParams& params) override;
   void setReflectionParams(int env, int samples) override;
+  void setRTTransparent(bool enabled) override { _rtTransparent = enabled; }
   void setRepScreenAO(bool exempt) override;
   void invalidateVBOCache(uint64_t key) override;
   void invalidateVBOCacheEntry(const void* cpuData) override;
@@ -229,7 +230,6 @@ public:
   void beginPeelPrepass() override;
   void endPeelPrepass() override;
   bool peelSupported() const override;
-  void resetTransparentOIT() override;
   void endTransparentOIT() override;
   void setEnvironment(int mode, float bgR, float bgG, float bgB) override;
   void drawBezierTubes(const void* controlPoints, size_t dataSize, float radius,
@@ -354,6 +354,11 @@ private:
   id<MTLFunction> _vboVertexUnlitFlatFunc;
   // Impostor ray-casting (analytic spheres/cylinders). nil-init (MRC).
   id<MTLRenderPipelineState> _sphereImpostorPipeline[cMaterialFamily_count] = {};
+  // Whether buildImpostorPipelines has run for the current sample count. Its
+  // own flag, not "the default family's pipeline exists": a failing default
+  // specialisation must not stop the other families, nor make every frame
+  // recompile the library to retry it.
+  bool _sphereImpostorsBuilt = false;
   // Cylinder impostor pipelines are cached PER VERTEX LAYOUT — (stride, a_cap
   // offset) — not in a single slot. a_cap's offset is part of the vertex
   // descriptor, so a stick VBO (per-vertex a_cap) and a CGO VBO (one constant
@@ -746,6 +751,16 @@ private:
     std::vector<float> triCols;
     std::vector<float> triNrms;  // 9 floats per triangle: per-vertex normals
     std::vector<float> sphereCols;
+    // metal_rt_transparent (#532): per-triangle / per-sphere ALPHA -- the mean
+    // of the three vertex alphas for a mesh triangle, the (first-half) vertex
+    // alpha for a stick and a sphere. Only a transparent occurrence reads it.
+    std::vector<float> triAlpha;
+    std::vector<float> sphereAlpha;
+    // Which frame record(s) this entry has been noted in, so dropping it
+    // dirties only the structure(s) built from it (#532): a transparent-only
+    // entry must not force a synchronous rebuild of the opaque structure.
+    bool inOpaque = false;
+    bool inTransparent = false;
     uint64_t params = 0;         // draw-call scalars the extraction used
     uint64_t gen = 0;            // bumped on every (re)extraction; 0 = never
   };
@@ -793,6 +808,14 @@ private:
   void rtNoteGeometry(const void* key, const void* alias, uint64_t params,
       Extract&& extract)
   {
+    // metal_rt_transparent (#532): a draw inside the transparent pass goes to
+    // its OWN record, built into a separate acceleration structure, so every
+    // opaque query (and so every default frame) is untouched. grid_mode keeps
+    // transparent geometry out: its per-cell instance masks are not built for
+    // the transparent structure.
+    const bool transparent = _oitActive;
+    if (transparent && (!_rtTransparent || !_rtFrameCells.empty()))
+      return;
     RTGeom& g = _rtGeomCache[key];
     if (g.gen == 0 || g.params != params) {
       g.spheres.clear();
@@ -800,6 +823,8 @@ private:
       g.triCols.clear();
       g.triNrms.clear();
       g.sphereCols.clear();
+      g.triAlpha.clear();
+      g.sphereAlpha.clear();
       extract(g);
       g.params = params;
       g.gen = ++_rtGeomGen;
@@ -812,6 +837,12 @@ private:
     // acceleration-structure rebuild. rtDropGeometry keeps the same rule.
     if (g.spheres.empty() && g.tris.empty())
       return;
+    if (transparent) {
+      g.inTransparent = true;
+      rtNoteTransparent(key, g.gen);
+      return;
+    }
+    g.inOpaque = true;
     _rtFrameKeys.push_back(key);
 
     // Pose delta = base^-1 · M_obj: divides the shared camera out of this draw's
@@ -857,6 +888,36 @@ private:
       _rtFrameSig = (_rtFrameSig ^ bb) * 1099511628211ULL;
     }
   }
+  // The transparent half of rtNoteGeometry: same pose / clip record, into the
+  // transparent frame record and its signature.
+  void rtNoteTransparent(const void* key, uint64_t gen);
+  // metal_rt_transparent (#532). The transparent frame record, parallel to the
+  // opaque one above, and the structure built from it: one primitive AS of
+  // world triangles (spheres tessellated), with per-triangle colour+alpha,
+  // normals and occurrence index for the shaders.
+  bool _rtTransparent = false;
+  std::vector<const void*> _rtTFrameKeys;
+  std::vector<Mat4> _rtTFrameXform;
+  std::vector<std::array<float, 2>> _rtTFrameClip;
+  uint64_t _rtTFrameSig = 0;
+  uint64_t _rtTBuiltSig = 0;
+  bool _rtTReady = false;
+  bool _rtTGeomDirty = false;          // a transparent-record entry was dropped
+  bool _rtTBuiltEmpty = false;         // _rtTBuiltSig built to nothing (all clipped away)
+  size_t _rtTTriCount = 0;
+  id<MTLAccelerationStructure> _rtTransAS = nil;
+  id<MTLBuffer> _rtTColBuffer = nil;   // float4/tri: rgb, alpha
+  id<MTLBuffer> _rtTNrmBuffer = nil;   // 9 floats/tri: world-space vertex normals
+  id<MTLBuffer> _rtTOccBuffer = nil;   // uint32/tri: occurrence (one object's rep)
+  id<MTLLibrary> _rtLib = nil;         // kept to specialise the transparent pipelines
+  id<MTLRenderPipelineState> _rtAOPipelineT = nil;
+  id<MTLRenderPipelineState> _rtResolvePipelineT = nil;
+  bool _rtTCompileTried = false;
+  void ensureRayTracingTransAS();
+  void buildRTPipelines(bool transparent, id<MTLRenderPipelineState>* ao,
+      id<MTLRenderPipelineState>* composite);
+  void releaseRayTracingTransAS();
+
   // Drop the cached RT geometry derived from a CPU buffer that is about to be
   // freed (or whose contents changed). Handles both primary and alias keys.
   void rtDropGeometry(const void* cpuData);

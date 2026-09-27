@@ -957,6 +957,7 @@ enum {
   REC_i( 842, material_default                       , global    , 0 ),     /* Fallback material for every representation that has no material of its own. 0 = default. */
   REC_i( 843, material_env                           , global    , 0 ),     /* Environment reflected by the reflective materials: 0 = background colour, 1 = studio, 2 = none. */
   REC_i( 844, transparency_peel                      , object    , -1 ),    /* Keep only the nearest transparent layer of this object, so a translucent ball-and-stick or a glass shell reads as one skin instead of showing its internal joins. -1 = auto (on for glass-family materials), 0 = off, 1 = on. */
+  REC_b( 845, metal_rt_transparent                   , global    , false ), /* Metal real-time RT: trace transparent geometry too (glass, frosted glass, jelly, any transparency). It casts attenuated shadows and ambient occlusion and appears in reflections; it does not receive traced shadows itself. Off by default: it makes the RT pass about 2.5x slower for one molecular surface. Needs metal_raytrace; not in grid_mode. */
 
 #ifdef SETTINGINFO_IMPLEMENTATION
 #undef SETTINGINFO_IMPLEMENTATION

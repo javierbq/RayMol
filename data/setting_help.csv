@@ -381,7 +381,7 @@ label fonts 5-15: are scalable vector fonts.  Font 15 includes greek characters 
 "line_color","controls how PyMOL colors lines.","color","default","2"
 "line_radius","controls the line width in Angstroms when lines are rendered via the ray tracer.  If this value is equal to 0.0, then the line radius will be calculated based line_width using a pixel size corresponding to the dimensions of the viewer window.","float","0.0","2"
 "line_smooth","controls whether or not lines are antialiased.","boolean","on","0"
-"line_stick_helper","controls whether or not lines will be automatically hidden when sticks are visible and opaque.","boolean","on","2"
+"line_stick_helper","controls whether or not lines will be automatically hidden when sticks are visible and at most half transparent.","boolean","on","2"
 "line_use_shader"," If true, on screen rendering of lines uses the OpenGL shader language (GLSL). If false, OpenGL v1.x style rendering is used.","boolean","on","0"
 "line_width","controls the line width in pixels for the lines representation.  ","float","1.4","2"
 "log_box_selections","controls whether or not \"box\" selections are logged.","boolean","on","0"

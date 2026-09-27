@@ -981,7 +981,10 @@ void SceneRenderAll(PyMOLGlobals* G, SceneUnitContext* context, float* normal,
 
 /**
  * Objects whose transparent geometry should be depth-peeled this frame (#488),
- * in draw order, capped at kMaxPeeledObjects.
+ * in draw order, capped at kMaxPeeledObjects -- if the renderer can peel at
+ * all (SceneRendererCanPeel; SceneCollectPeelObjects applies both). Split so
+ * _cmd.get_frame_peel reports exactly what the scene loop decides, and so the
+ * Enabled / request / cap part is observable where no renderer exists.
  *
  * Each peeled object costs a full-frame depth blit and two encoder boundaries,
  * PER GRID CELL -- and under MSAA the scene pass re-opens between them, which
@@ -993,12 +996,10 @@ void SceneRenderAll(PyMOLGlobals* G, SceneUnitContext* context, float* normal,
  */
 static constexpr int kMaxPeeledObjects = 3;
 
-static std::vector<pymol::CObject*> SceneCollectPeelObjects(PyMOLGlobals* G)
+std::vector<pymol::CObject*> SceneCollectPeelCandidates(PyMOLGlobals* G)
 {
   std::vector<pymol::CObject*> out;
   CScene* I = G->Scene;
-  if (!G->Renderer || !G->Renderer->peelSupported())
-    return out;   // no targets or pipelines: nothing peels, nothing changes
   for (auto obj : I->NonGadgetObjs) {
     if (!obj)
       continue;
@@ -1012,6 +1013,9 @@ static std::vector<pymol::CObject*> SceneCollectPeelObjects(PyMOLGlobals* G)
     // An object nobody can see must not consume one of the cap's slots, nor
     // cost a depth blit and two encoder boundaries per grid cell -- nor pay for
     // resolving whether it wants peeling at all, so this is checked FIRST.
+    // Defence only as things stand: `disable` goes through SceneObjectDel,
+    // which takes the object out of NonGadgetObjs altogether (so reverting
+    // this check fails no test -- TestTheFramesDecision pins the behaviour).
     if (!obj->Enabled)
       continue;
     if (!MaterialObjectWantsPeel(G, nullptr, objSet, obj))
@@ -1021,6 +1025,18 @@ static std::vector<pymol::CObject*> SceneCollectPeelObjects(PyMOLGlobals* G)
       break;
   }
   return out;
+}
+
+bool SceneRendererCanPeel(PyMOLGlobals* G)
+{
+  return G->Renderer && G->Renderer->peelSupported();
+}
+
+static std::vector<pymol::CObject*> SceneCollectPeelObjects(PyMOLGlobals* G)
+{
+  if (!SceneRendererCanPeel(G))
+    return {};   // no targets or pipelines: nothing peels, nothing changes
+  return SceneCollectPeelCandidates(G);
 }
 
 /**
@@ -2264,7 +2280,18 @@ void SceneRenderMetal(PyMOLGlobals* G)
     int fogEnabled =
         (SettingGetGlobal_b(G, cSetting_depth_cue) && fog_density != 0.0f) ? 1
                                                                            : 0;
-    const float* bg = ColorGet(G, SettingGetGlobal_color(G, cSetting_bg_rgb));
+    // COPIED, never held as a pointer (#540, #542). For a 24-bit RGB colour
+    // -- every app theme (`bg_color 0xRRGGBB`) and any `set bg_rgb, [r,g,b]`
+    // -- ColorGet returns its one shared scratch buffer, and the
+    // metal_outline_color lookup below (default "0x000000", also 24-bit RGB)
+    // overwrote it with black. Held as a pointer, everything read after that
+    // -- the post chain's background and fog colour, the RT composite's miss
+    // colour for traced reflections under metal_rt_reflect_env 0, and the
+    // environment the reflective and glass materials reflect -- saw black:
+    // in-app fog faded distant geometry toward black on every themed
+    // background, and traced reflections that missed the molecule were black.
+    float bg[3];
+    copy3f(ColorGet(G, SettingGetGlobal_color(G, cSetting_bg_rgb)), bg);
     // Drive the Metal scene-clear from bg_rgb (the GL path uses glClearColor;
     // the Metal renderer never read the setting, so the background stayed black).
     // Applied to the next beginFrame's clear — imperceptible at 60 fps. The clear
@@ -2280,10 +2307,12 @@ void SceneRenderMetal(PyMOLGlobals* G)
     int tonemapEnabled = SettingGetGlobal_b(G, cSetting_metal_tonemap) ? 1 : 0;
     float exposure = SettingGetGlobal_f(G, cSetting_metal_exposure);
     int rtShadowEnabled = SettingGetGlobal_b(G, cSetting_metal_rt_shadows) ? 1 : 0;
-    // Outline contour color (resolved from the color setting, same ColorGet
-    // pattern as bg_rgb above) and thickness in px — both Scene-panel tunable.
-    const float* outlineCol =
-        ColorGet(G, SettingGetGlobal_color(G, cSetting_metal_outline_color));
+    // Outline contour color and thickness in px — both Scene-panel tunable.
+    // Copied for the same reason as bg above: held as a pointer, any ColorGet
+    // added before setPostParams would silently repaint the outline.
+    float outlineCol[3];
+    copy3f(ColorGet(G, SettingGetGlobal_color(G, cSetting_metal_outline_color)),
+        outlineCol);
     float outlineWidth = SettingGetGlobal_f(G, cSetting_metal_outline_width);
     int dofEnabled = SettingGetGlobal_b(G, cSetting_metal_dof) ? 1 : 0;
     float dofFocus = SettingGetGlobal_f(G, cSetting_metal_dof_focus);
@@ -2359,6 +2388,8 @@ void SceneRenderMetal(PyMOLGlobals* G)
     G->Renderer->setReflectionParams(
         SettingGetGlobal_b(G, cSetting_metal_rt_reflect_env) ? 1 : 0,
         SettingGetGlobal_i(G, cSetting_metal_rt_reflect_samples));
+    G->Renderer->setRTTransparent(
+        SettingGetGlobal_b(G, cSetting_metal_rt_transparent));
     G->Renderer->setDofQuality(
         SettingGetGlobal_i(G, cSetting_metal_dof_quality));
     // Lighting model — the Metal lit shaders read these instead of hard-coded
@@ -2486,14 +2517,13 @@ void SceneRenderMetal(PyMOLGlobals* G)
     }
     // Transparent OIT wraps every cell: all cells accumulate into the
     // full-frame OIT targets, resolved once in endFrame -- so only the frame's
-    // FIRST transparent encoder may clear them, which resetTransparentOIT
-    // arms here and beginTransparentOIT enforces.
+    // FIRST transparent encoder may clear them, which beginFrame arms and
+    // beginTransparentOIT enforces.
     //
     // Peel runs per cell, not once for the frame: the peel depth is a
     // full-frame texture and a second cell's pre-pass would overwrite the
     // first's. SceneSetMetalGridCell's scissor keeps each cell's draws inside
     // its own rectangle, so a cell's peel cannot reach across the border.
-    G->Renderer->resetTransparentOIT();
     for (int slot = I->grid.first_slot; slot <= I->grid.last_slot; ++slot) {
       SceneSetMetalGridCell(G, &I->grid, sceneVP, slot);
       SceneRenderTransparentMetal(G, &context, normal, &I->grid, peeled);
@@ -2511,7 +2541,6 @@ void SceneRenderMetal(PyMOLGlobals* G)
       SceneRenderAll(G, &context, normal, nullptr, pass, false, 0.0f,
           &I->grid, 0, SceneRenderWhich::All, SceneRenderOrder::GadgetsLast);
     }
-    G->Renderer->resetTransparentOIT();
     SceneRenderTransparentMetal(G, &context, normal, &I->grid, peeled);
   }
 

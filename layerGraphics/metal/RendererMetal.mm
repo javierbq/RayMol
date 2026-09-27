@@ -401,9 +401,10 @@ void RendererMetal::setSampleCount(NSUInteger n)
     [_sphereImpostorPipeline[f] release]; _sphereImpostorPipeline[f] = nil;
     [_sphereOitPipeline[f] release];      _sphereOitPipeline[f] = nil;
   }
+  _sphereImpostorsBuilt = false;
   releaseCylinderPipelines();
-  // buildImpostorPipelines' guard is the opaque default-family pipeline nil'd
-  // above, so it re-runs and re-assigns these two over live +1 references.
+  // buildImpostorPipelines' guard is reset above, so it re-runs and
+  // re-assigns these two over live +1 references.
   // Leaked one pipeline state per MSAA toggle; the shadow one pre-dates #488,
   // the peel one would have doubled it.
   [_sphereShadowPipeline release];     _sphereShadowPipeline = nil;
@@ -492,6 +493,9 @@ RendererMetal::~RendererMetal()
   [_dofSmoothPipeline release];
   [_exportAlphaPipeline release];
   [_rtAOPipeline release];            [_rtResolvePipeline release];
+  [_rtAOPipelineT release];           [_rtResolvePipelineT release];
+  [_rtLib release];
+  releaseRayTracingTransAS();
   [_rtAOAccumPipeline release];       [_labelPipeline release];
   [_connectorPipeline release];
 
@@ -871,6 +875,10 @@ void RendererMetal::beginFrame()
   // exists — building (with its own cmd buffer + wait) must not happen while a
   // render command buffer is in flight (that stalls/blackouts the frame).
   // Model-space geometry is stable, so one-frame latency is invisible.
+  // metal_rt_transparent (#532). Called unconditionally so turning RT (or the
+  // setting) off releases it; independent of the opaque build below (it reads
+  // _rtFrameKeys, which neither build modifies, and its own dirty flag).
+  ensureRayTracingTransAS();
   if (_rtEnabled) ensureRayTracingAS();
   // Arm the OIT clear for this frame (#488). The peel path opens several
   // transparent encoders per frame and only the first may CLEAR the
@@ -891,6 +899,10 @@ void RendererMetal::beginFrame()
   _rtFrameMat.clear();
   _rtFrameCells.clear();   // grid_mode cells are re-recorded by setGridSlot
   _rtFrameSig = 1469598103934665603ULL;
+  _rtTFrameKeys.clear();   // metal_rt_transparent (#532): its own record
+  _rtTFrameXform.clear();
+  _rtTFrameClip.clear();
+  _rtTFrameSig = 1469598103934665603ULL;
 
   _cmdBuffer = [_queue commandBuffer];
   _encoder = nil;
@@ -1028,6 +1040,20 @@ void RendererMetal::endOffscreen()
   if (_cmdBuffer) {
     [_cmdBuffer commit];
     [_cmdBuffer waitUntilCompleted];  // completion handler writes the PNG
+    // RAYMOL_GPU_TIMING: one line per OFFSCREEN frame too (#501). The live
+    // path's two-second window never fills for a single export, and an export
+    // is the only frame a headless run -- or a locked screen, which draws no
+    // live frames at all -- can time. Same variable, same file.
+    static const char* offscreenTimingPath = getenv("RAYMOL_GPU_TIMING");
+    if (offscreenTimingPath && *offscreenTimingPath) {
+      if (FILE* f = fopen(offscreenTimingPath, "a")) {
+        fprintf(f, "offscreen %lux%lu gpu_ms=%.2f\n",
+                (unsigned long)_sceneColor.width,
+                (unsigned long)_sceneColor.height,
+                (_cmdBuffer.GPUEndTime - _cmdBuffer.GPUStartTime) * 1000.0);
+        fclose(f);
+      }
+    }
     _cmdBuffer = nil;
   }
   _offscreen = false;
@@ -1927,9 +1953,9 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   _peelPassDesc.depthAttachment.texture = nil;
   _peelPassDesc.depthAttachment.loadAction = MTLLoadActionLoad;
   _peelPassDesc.depthAttachment.storeAction = MTLStoreActionStore;
-  // No stencil attachment: neither peel depth state touches stencil, and on a
-  // tile-based GPU attaching it would load and write out a full-frame stencil
-  // per peeled object per grid cell for nothing.
+  // The stencil attachment is set with the depth in ensurePeelTargets, with
+  // DontCare load and store: the pipelines require it (#538), and DontCare
+  // keeps it from costing any memory traffic.
   _peelPassDesc.stencilAttachment.texture = nil;
 
   // The peeled object's OIT pass: the same MRT targets as _oitPassDesc (so the
@@ -2279,6 +2305,44 @@ static float2 rt_hammersley(uint i, uint n) {
   return float2(float(i) / float(n), rt_radinv2(i));
 }
 
+// metal_rt_transparent (#532). The RT pipelines are specialised on this: the
+// default ones are built with it false, which compiles every use below out, so
+// a frame without the setting runs exactly the shaders it always did.
+constant bool kRTTrans [[function_constant(0)]];
+
+// Transmittance along a ray through the transparent structure: the product of
+// (1 - alpha) over the transparent reps it crosses. Each occurrence (one
+// recorded draw: one rep of one object) counts ONCE however many of its faces
+// the ray passes, so the entry and exit of a closed shell attenuate once -- for
+// a single-rep object, the one skin the peeled raster draws -- rather than a
+// jelly shell going black at its two crossings. An object with several
+// transparent reps attenuates once per rep it crosses.
+static float rt_trans_T(ray r, primitive_acceleration_structure tas,
+                        device const float4* tcols, device const uint* tocc) {
+  intersector<> it;
+  it.assume_geometry_type(geometry_type::triangle);
+  it.accept_any_intersection(false);
+  // Up to 8 DISTINCT reps, over at most 32 hits: repeat hits on a rep already
+  // counted (every face of a sphere rep, every fold of one surface) must not
+  // use up the budget before a second rep behind them is reached.
+  float T = 1.0;
+  uint seen[8];
+  int nSeen = 0;
+  for (int k = 0; k < 32 && nSeen < 8 && T > 0.02; ++k) {
+    auto h = it.intersect(r, tas);
+    if (h.type == intersection_type::none) break;
+    uint o = tocc[h.primitive_id];
+    bool dup = false;
+    for (int j = 0; j < nSeen; ++j) dup = dup || (seen[j] == o);
+    if (!dup) {
+      T *= 1.0 - saturate(tcols[h.primitive_id].a);
+      seen[nSeen++] = o;
+    }
+    r.min_distance = h.distance + 0.01;
+  }
+  return T;
+}
+
 // Pass A: trace ambient-occlusion rays, write the raw AO term to an R16Float
 // target. Deterministic Hammersley directions (frame-stable -> no shimmer) with
 // a cheap per-pixel rotation so residual error is a fine pattern the composite
@@ -2289,7 +2353,10 @@ fragment float4 rt_ao(PostVOut in [[stage_in]],
     instance_acceleration_structure accel [[buffer(0)]],
     constant RTU& u [[buffer(1)]],
     device const packed_float3* tris [[buffer(2)]],
-    constant RTGridU& g [[buffer(3)]]) {
+    constant RTGridU& g [[buffer(3)]],
+    primitive_acceleration_structure tas [[buffer(9), function_constant(kRTTrans)]],
+    device const float4* tcols [[buffer(10), function_constant(kRTTrans)]],
+    device const uint* tocc [[buffer(12), function_constant(kRTTrans)]]) {
   float d = depthTex.sample(s, in.uv);
   if (d >= 0.99999 || d <= 0.0015) return float4(1.0, 1.0, 1.0, 1.0);  // no occlusion
 
@@ -2395,6 +2462,19 @@ fragment float4 rt_ao(PostVOut in [[stage_in]],
     rr.max_distance = u.aoRadius;
     auto res = it.intersect(rr, accel, mask);
     if (res.type != intersection_type::none) occ += 1.0;
+    // Transparent geometry occludes by its coverage (#532). ONE any-hit query,
+    // weighted by that hit's alpha, not the full transmittance walk the shadow
+    // ray takes: within the AO radius a ray practically never crosses two
+    // different transparent reps, and this loop runs nSamples times a pixel
+    // (48+ in an export) -- the walk made the whole RT pass ~3.5x slower.
+    else if (kRTTrans) {
+      intersector<> tit;
+      tit.assume_geometry_type(geometry_type::triangle);
+      tit.accept_any_intersection(true);
+      auto th = tit.intersect(rr, tas);
+      if (th.type != intersection_type::none)
+        occ += saturate(tcols[th.primitive_id].a);
+    }
   }
   float ao = 1.0 - (occ / float(N)) * u.aoIntensity;
 
@@ -2480,6 +2560,15 @@ fragment float4 rt_ao(PostVOut in [[stage_in]],
         sr.min_distance = sres.distance + 0.01;
       }
     }
+    // Transparent casters attenuate what still reaches the light (#532).
+    if (kRTTrans && vis > 0.0) {
+      ray tr;
+      tr.origin = pModel + nSelf * 0.02;
+      tr.direction = Lm;
+      tr.min_distance = 0.05 * u.shadowBias;
+      tr.max_distance = 1.0e4;
+      vis *= rt_trans_T(tr, tas, tcols, tocc);
+    }
   }
   return float4(ao, vis, selfSphere, 1.0);
 }
@@ -2503,7 +2592,10 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
     device const float4* sph [[buffer(5)]],
     device const packed_float3* triNrms [[buffer(6)]],
     device const uint* triMat [[buffer(7)]],
-    device const float4* mats [[buffer(8)]]) {
+    device const float4* mats [[buffer(8)]],
+    primitive_acceleration_structure tas [[buffer(9), function_constant(kRTTrans)]],
+    device const float4* tcols [[buffer(10), function_constant(kRTTrans)]],
+    device const packed_float3* tnrms [[buffer(11), function_constant(kRTTrans)]]) {
   float3 col = colorTex.sample(s, in.uv).rgb;
   float3 colRaw = col;   // lit colour before AO/shadow: tints the reflection
   float d = depthTex.sample(s, in.uv);
@@ -2707,6 +2799,7 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
           envCol += float3(0.5, 0.6, 0.8) * pow(max(dot(Re, normalize(float3(-0.7, 0.2, 0.3))), 0.0), 24.0) * 0.6;
         }
         float3 reflCol = envCol;
+        float hitD = 1.0e4;   // the opaque hit, if any: transparency in front of it shows
         intersector<instancing, triangle_data> it;
         it.assume_geometry_type(geometry_type::triangle);
         it.accept_any_intersection(false);
@@ -2747,7 +2840,37 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
           // Fade distant hits toward the environment so far-off geometry does
           // not read as a hard mirror image (cheap "reflection fog").
           reflCol = mix(reflCol, envCol, saturate(res.distance / 120.0));
+          hitD = res.distance;
           break;
+        }
+        // The nearest transparent surface in front of what the ray hit (or of
+        // the environment) is blended over it by its alpha (#532). One layer:
+        // behind it the opaque hit stands in for everything else.
+        if (kRTTrans) {
+          intersector<triangle_data> tit;
+          tit.assume_geometry_type(geometry_type::triangle);
+          tit.accept_any_intersection(false);
+          ray tr;
+          tr.origin = pModel + nSelf * 0.03;
+          tr.direction = R;
+          tr.min_distance = 0.05;
+          tr.max_distance = hitD;
+          auto th = tit.intersect(tr, tas);
+          if (th.type != intersection_type::none) {
+            uint q = th.primitive_id;
+            float3 hn = rt_interp_normal(tnrms, q, th.triangle_barycentric_coord);
+            if (dot(hn, R) > 0.0) hn = -hn;
+            float4 tc = tcols[q];
+            float inten = u.lAmbient + u.lDirect * max(dot(hn, L0), 0.0) + u.lReflect * max(dot(hn, L1), 0.0);
+            float specv = 0.0;
+            if (dot(hn, L1) > 0.0) {
+              float3 H = normalize(L1 - R);
+              specv = u.lSpec * pow(max(dot(hn, H), 0.0), max(u.lShin, 1.0));
+            }
+            float3 tcol = tc.rgb * min(inten, 1.0) + specv;
+            tcol = mix(tcol, envCol, saturate(th.distance / 120.0));
+            reflCol = mix(reflCol, tcol, saturate(tc.a));
+          }
         }
         reflAcc += reflCol;
       }
@@ -2828,7 +2951,8 @@ static void rtAppendCylinder(std::vector<float>& out, std::vector<float>& cols,
 // float3 position at posOffset. Handles triangle list/strip/fan/quads; indices
 // are UInt32 (matches drawVBOIndexed) or sequential when indexData is null.
 static void rtAppendVBOTris(std::vector<float>& out, std::vector<float>& cols,
-    std::vector<float>& nrms, int normalOffset, int colorOffset, int colorType,
+    std::vector<float>& nrms, std::vector<float>* alphas, int normalOffset,
+    int colorOffset, int colorType,
     PrimitiveType mode, int count, const void* data, size_t stride, int posOffset,
     const void* indexData)
 {
@@ -2848,8 +2972,17 @@ static void rtAppendVBOTris(std::vector<float>& out, std::vector<float>& cols,
     if (colorType == 0) { c[0] = cp[0] / 255.f; c[1] = cp[1] / 255.f; c[2] = cp[2] / 255.f; }
     else { const float* f = reinterpret_cast<const float*>(cp); c[0] = f[0]; c[1] = f[1]; c[2] = f[2]; }
   };
+  // metal_rt_transparent (#532): the triangle's alpha, the mean of its vertices'.
+  auto valpha = [&](uint32_t vi) -> float {
+    if (colorOffset < 0) return 1.0f;
+    const uint8_t* cp = base + (size_t)vi * stride + colorOffset;
+    if (colorType == 0) return cp[3] / 255.f;
+    return reinterpret_cast<const float*>(cp)[3];
+  };
   auto tri = [&](uint32_t i0, uint32_t i1, uint32_t i2) {
     push(i0); push(i1); push(i2);
+    if (alphas)
+      alphas->push_back((valpha(i0) + valpha(i1) + valpha(i2)) / 3.f);
     float a[3], b[3], c[3];
     vcol(i0, a); vcol(i1, b); vcol(i2, c);
     for (int k = 0; k < 3; ++k) cols.push_back((a[k] + b[k] + c[k]) / 3.f);
@@ -3009,6 +3142,240 @@ void RendererMetal::uploadRTMaterials()
   float* dst = static_cast<float*>(_rtMatBuffer.contents);
   if (n == 0) { dst[0] = dst[1] = dst[2] = dst[3] = 0.0f; return; }
   std::memcpy(dst, _rtBuiltMat.data(), n * 4 * sizeof(float));
+}
+
+// metal_rt_transparent (#532): record a transparent draw's use of cached RT
+// geometry. The same pose delta and clip slab as the opaque record, and the
+// same kind of signature, so a camera orbit does not rebuild this structure
+// either.
+void RendererMetal::rtNoteTransparent(const void* key, uint64_t gen)
+{
+  _rtTFrameKeys.push_back(key);
+  simd_float4x4 baseInv, mObj;
+  std::memcpy(&baseInv, _rtBaseModelViewInv.data(), 64);
+  std::memcpy(&mObj, _modelviewMatrix.data(), 64);
+  simd_float4x4 d = simd_mul(baseInv, mObj);
+  Mat4 delta;
+  std::memcpy(delta.data(), &d, 64);
+  _rtTFrameXform.push_back(delta);
+  _rtTFrameClip.push_back({_repClipFront, _repClipBack});
+  uint64_t h = _rtTFrameSig;
+  h = (h ^ (uint64_t)reinterpret_cast<uintptr_t>(key)) * 1099511628211ULL;
+  h = (h ^ gen) * 1099511628211ULL;
+  for (float f : delta) {
+    uint32_t b;
+    std::memcpy(&b, &f, 4);
+    h = (h ^ b) * 1099511628211ULL;
+  }
+  uint32_t bf, bb;
+  std::memcpy(&bf, &_repClipFracFront, 4);
+  std::memcpy(&bb, &_repClipFracBack, 4);
+  h = (h ^ bf) * 1099511628211ULL;
+  h = (h ^ bb) * 1099511628211ULL;
+  _rtTFrameSig = h;
+}
+
+void RendererMetal::releaseRayTracingTransAS()
+{
+  [_rtTransAS release];    _rtTransAS = nil;
+  [_rtTColBuffer release]; _rtTColBuffer = nil;
+  [_rtTNrmBuffer release]; _rtTNrmBuffer = nil;
+  [_rtTOccBuffer release]; _rtTOccBuffer = nil;
+  _rtTTriCount = 0;
+  _rtTBuiltSig = 0;
+  _rtTBuiltEmpty = false;
+  _rtTReady = false;
+}
+
+// Unit icosphere, one subdivision (80 triangles), as 9 floats per triangle:
+// what a TRANSPARENT sphere is tessellated into. Transparent spheres are
+// flattened into the transparent structure's single triangle mesh rather than
+// instanced like the opaque ones, which keeps that structure one primitive AS.
+static const std::vector<float>& rtUnitIcosphereTris()
+{
+  static std::vector<float> tris;
+  if (!tris.empty()) return tris;
+  const float t = (1.0f + std::sqrt(5.0f)) * 0.5f;
+  std::vector<simd_float3> v = {
+      simd_make_float3(-1, t, 0), simd_make_float3(1, t, 0),
+      simd_make_float3(-1, -t, 0), simd_make_float3(1, -t, 0),
+      simd_make_float3(0, -1, t), simd_make_float3(0, 1, t),
+      simd_make_float3(0, -1, -t), simd_make_float3(0, 1, -t),
+      simd_make_float3(t, 0, -1), simd_make_float3(t, 0, 1),
+      simd_make_float3(-t, 0, -1), simd_make_float3(-t, 0, 1)};
+  const uint32_t f[] = {
+      0,11,5, 0,5,1, 0,1,7, 0,7,10, 0,10,11, 1,5,9, 5,11,4, 11,10,2, 10,7,6,
+      7,1,8, 3,9,4, 3,4,2, 3,2,6, 3,6,8, 3,8,9, 4,9,5, 2,4,11, 6,2,10,
+      8,6,7, 9,8,1};
+  auto put = [&](simd_float3 p) {
+    p = simd_normalize(p);
+    tris.push_back(p.x); tris.push_back(p.y); tris.push_back(p.z);
+  };
+  for (size_t i = 0; i < sizeof(f) / sizeof(f[0]); i += 3) {
+    simd_float3 a = v[f[i]], b = v[f[i + 1]], c = v[f[i + 2]];
+    simd_float3 ab = (a + b) * 0.5f, bc = (b + c) * 0.5f, ca = (c + a) * 0.5f;
+    const simd_float3 sub[4][3] = {{a, ab, ca}, {b, bc, ab}, {c, ca, bc}, {ab, bc, ca}};
+    for (auto& tri : sub) { put(tri[0]); put(tri[1]); put(tri[2]); }
+  }
+  return tris;
+}
+
+// metal_rt_transparent (#532): (re)build the transparent structure from this
+// frame's transparent record. Rebuilt only when that record's signature changes;
+// off (or empty) releases it, so the default path carries nothing.
+void RendererMetal::ensureRayTracingTransAS()
+{
+  // No opaque casters means no RT pass to use it (it needs the opaque
+  // structure), so a transparent-only scene builds nothing.
+  if (!_rtEnabled || !_rtSupported || !_rtTransparent || _rtTFrameKeys.empty() ||
+      _rtFrameKeys.empty()) {
+    if (_rtTransAS) releaseRayTracingTransAS();
+    return;
+  }
+  // Built already -- to a structure, or to nothing when every transparent
+  // triangle was clipped away (latched too, or that frame record would be
+  // re-gathered every frame for nothing).
+  if (((_rtTReady && _rtTransAS) || _rtTBuiltEmpty) && !_rtTGeomDirty &&
+      _rtTFrameSig == _rtTBuiltSig)
+    return;
+  _rtTGeomDirty = false;
+
+  auto xformPt = [](const Mat4& M, float x, float y, float z, float o[3]) {
+    o[0] = M[0] * x + M[4] * y + M[8] * z + M[12];
+    o[1] = M[1] * x + M[5] * y + M[9] * z + M[13];
+    o[2] = M[2] * x + M[6] * y + M[10] * z + M[14];
+  };
+  const Mat4& base = _rtBaseModelView;
+  auto eyeDepth = [&](const float w[3]) {
+    return -(base[2] * w[0] + base[6] * w[1] + base[10] * w[2] + base[14]);
+  };
+  static const Mat4 kIdentity = identityMatrix();
+  const std::vector<float>& ico = rtUnitIcosphereTris();
+
+  std::vector<float> tris, cols, nrms;
+  std::vector<uint32_t> occ;
+  for (size_t ki = 0; ki < _rtTFrameKeys.size(); ++ki) {
+    auto it = _rtGeomCache.find(_rtTFrameKeys[ki]);
+    if (it == _rtGeomCache.end()) continue;
+    const RTGeom& g = it->second;
+    const Mat4& xf = ki < _rtTFrameXform.size() ? _rtTFrameXform[ki] : kIdentity;
+    const float cf = ki < _rtTFrameClip.size() ? _rtTFrameClip[ki][0] : -1.0f;
+    const float cb = ki < _rtTFrameClip.size() ? _rtTFrameClip[ki][1] : 1e6f;
+    const bool clipOn = cf >= 0.0f;
+    auto rot = [&](float nx, float ny, float nz) {
+      nrms.push_back(xf[0] * nx + xf[4] * ny + xf[8] * nz);
+      nrms.push_back(xf[1] * nx + xf[5] * ny + xf[9] * nz);
+      nrms.push_back(xf[2] * nx + xf[6] * ny + xf[10] * nz);
+    };
+    // Triangle meshes (cartoon, surface, tessellated sticks)
+    const bool haveCols = g.triCols.size() * 3 == g.tris.size();
+    const bool haveNrms = g.triNrms.size() == g.tris.size();
+    const bool haveAlpha = g.triAlpha.size() * 9 == g.tris.size();
+    for (size_t t = 0; t + 8 < g.tris.size(); t += 9) {
+      float w[3][3];
+      xformPt(xf, g.tris[t + 0], g.tris[t + 1], g.tris[t + 2], w[0]);
+      xformPt(xf, g.tris[t + 3], g.tris[t + 4], g.tris[t + 5], w[1]);
+      xformPt(xf, g.tris[t + 6], g.tris[t + 7], g.tris[t + 8], w[2]);
+      if (clipOn) {
+        float d0 = eyeDepth(w[0]), d1 = eyeDepth(w[1]), d2 = eyeDepth(w[2]);
+        if ((d0 < cf && d1 < cf && d2 < cf) || (d0 > cb && d1 > cb && d2 > cb))
+          continue;
+      }
+      for (int v = 0; v < 3; ++v)
+        for (int c = 0; c < 3; ++c) tris.push_back(w[v][c]);
+      const size_t ti = t / 9;
+      if (haveCols) {
+        cols.push_back(g.triCols[ti * 3]); cols.push_back(g.triCols[ti * 3 + 1]);
+        cols.push_back(g.triCols[ti * 3 + 2]);
+      } else {
+        cols.push_back(0.8f); cols.push_back(0.8f); cols.push_back(0.8f);
+      }
+      cols.push_back(haveAlpha ? g.triAlpha[ti] : 1.0f);
+      for (int v = 0; v < 3; ++v) {
+        if (haveNrms) {
+          rot(g.triNrms[t + 3 * v], g.triNrms[t + 3 * v + 1], g.triNrms[t + 3 * v + 2]);
+        } else {
+          float e1[3] = {w[1][0]-w[0][0], w[1][1]-w[0][1], w[1][2]-w[0][2]};
+          float e2[3] = {w[2][0]-w[0][0], w[2][1]-w[0][1], w[2][2]-w[0][2]};
+          nrms.push_back(e1[1]*e2[2]-e1[2]*e2[1]);
+          nrms.push_back(e1[2]*e2[0]-e1[0]*e2[2]);
+          nrms.push_back(e1[0]*e2[1]-e1[1]*e2[0]);
+        }
+      }
+      occ.push_back((uint32_t)ki);
+    }
+    // Spheres, tessellated
+    const bool haveSC = g.sphereCols.size() * 4 == g.spheres.size() * 3;
+    const bool haveSA = g.sphereAlpha.size() * 4 == g.spheres.size();
+    for (size_t i = 0; i * 4 + 3 < g.spheres.size(); ++i) {
+      float r = std::max(g.spheres[i * 4 + 3], 0.001f);
+      float wc[3];
+      xformPt(xf, g.spheres[i * 4], g.spheres[i * 4 + 1], g.spheres[i * 4 + 2], wc);
+      if (clipOn) {
+        float d = eyeDepth(wc);
+        if (d + r < cf || d - r > cb) continue;
+      }
+      for (size_t t = 0; t + 8 < ico.size(); t += 9) {
+        for (int v = 0; v < 3; ++v) {
+          const float* u = &ico[t + 3 * v];
+          // world = centre + r * rot(xf) * unit
+          float lx = u[0] * r, ly = u[1] * r, lz = u[2] * r;
+          tris.push_back(wc[0] + xf[0] * lx + xf[4] * ly + xf[8] * lz);
+          tris.push_back(wc[1] + xf[1] * lx + xf[5] * ly + xf[9] * lz);
+          tris.push_back(wc[2] + xf[2] * lx + xf[6] * ly + xf[10] * lz);
+          rot(u[0], u[1], u[2]);
+        }
+        if (haveSC) {
+          cols.push_back(g.sphereCols[i * 3]); cols.push_back(g.sphereCols[i * 3 + 1]);
+          cols.push_back(g.sphereCols[i * 3 + 2]);
+        } else {
+          cols.push_back(0.8f); cols.push_back(0.8f); cols.push_back(0.8f);
+        }
+        cols.push_back(haveSA ? g.sphereAlpha[i] : 1.0f);
+        occ.push_back((uint32_t)ki);
+      }
+    }
+  }
+
+  releaseRayTracingTransAS();
+  const size_t nTris = occ.size();
+  if (nTris == 0) {
+    _rtTBuiltSig = _rtTFrameSig;
+    _rtTBuiltEmpty = true;
+    return;
+  }
+  id<MTLBuffer> tb = [_device newBufferWithBytes:tris.data()
+                                          length:tris.size() * sizeof(float)
+                                         options:MTLResourceStorageModeShared];
+  if (!tb) return;
+  MTLAccelerationStructureTriangleGeometryDescriptor* tgeo =
+      [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
+  tgeo.vertexBuffer = tb;
+  tgeo.vertexStride = 3 * sizeof(float);
+  tgeo.vertexFormat = MTLAttributeFormatFloat3;
+  tgeo.triangleCount = nTris;
+  tgeo.opaque = YES;   // every hit is taken; the shaders walk them and weigh alpha
+  MTLPrimitiveAccelerationStructureDescriptor* pd =
+      [MTLPrimitiveAccelerationStructureDescriptor descriptor];
+  pd.geometryDescriptors = @[tgeo];
+  _rtTransAS = buildAccelStructure(pd);
+  [tb release];   // the AS holds its own copy; the shaders read cols/nrms/occ only
+  if (!_rtTransAS) return;
+  _rtTColBuffer = [_device newBufferWithBytes:cols.data()
+                                       length:cols.size() * sizeof(float)
+                                      options:MTLResourceStorageModeShared];
+  _rtTNrmBuffer = [_device newBufferWithBytes:nrms.data()
+                                       length:nrms.size() * sizeof(float)
+                                      options:MTLResourceStorageModeShared];
+  _rtTOccBuffer = [_device newBufferWithBytes:occ.data()
+                                       length:occ.size() * sizeof(uint32_t)
+                                      options:MTLResourceStorageModeShared];
+  _rtTTriCount = nTris;
+  _rtTBuiltSig = _rtTFrameSig;
+  _rtTReady = _rtTColBuffer && _rtTNrmBuffer && _rtTOccBuffer;
+  static int once = 0;
+  if (_rtTReady && once++ < 5)
+    NSLog(@"RendererMetal RT: transparent AS rebuilt — %zu triangles", nTris);
 }
 
 void RendererMetal::ensureRayTracingAS()
@@ -3376,22 +3743,52 @@ void RendererMetal::ensureRayTracingAS()
     if (!lib) {
       NSLog(@"RendererMetal RT: shader library failed to compile: %@", err);
     } else {
-      // Pass A: raw AO (.r) + traced light-visibility (.g) -> RG16Float.
-      MTLRenderPipelineDescriptor* pa = [[MTLRenderPipelineDescriptor alloc] init];
-      pa.vertexFunction = [lib newFunctionWithName:@"rt_vertex"];
-      pa.fragmentFunction = [lib newFunctionWithName:@"rt_ao"];
-      pa.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
-      _rtAOPipeline = [_device newRenderPipelineStateWithDescriptor:pa error:&err];
-      // Pass B: blur AO + shadow/fog composite -> BGRA8.
-      MTLRenderPipelineDescriptor* pd = [[MTLRenderPipelineDescriptor alloc] init];
-      pd.vertexFunction = [lib newFunctionWithName:@"rt_vertex"];
-      pd.fragmentFunction = [lib newFunctionWithName:@"rt_composite"];
-      pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
-      _rtResolvePipeline = [_device newRenderPipelineStateWithDescriptor:pd error:&err];
-      if (!_rtAOPipeline || !_rtResolvePipeline)
-        NSLog(@"RendererMetal RT: AO/composite pipeline failed: %@", err);
+      _rtLib = lib;   // +1, kept: the transparent variants are specialised later
+      buildRTPipelines(false, &_rtAOPipeline, &_rtResolvePipeline);
     }
   }
+  // metal_rt_transparent (#532): the specialised pair, built the first time
+  // the setting is on -- a session that never turns it on never compiles it.
+  if (_rtLib && _rtTransparent && !_rtTCompileTried) {
+    _rtTCompileTried = true;
+    buildRTPipelines(true, &_rtAOPipelineT, &_rtResolvePipelineT);
+  }
+}
+
+// The RT pass pipelines, specialised on kRTTrans (function constant 0).
+void RendererMetal::buildRTPipelines(bool transparent,
+    id<MTLRenderPipelineState>* ao, id<MTLRenderPipelineState>* composite)
+{
+  NSError* err = nil;
+  MTLFunctionConstantValues* fc = [[MTLFunctionConstantValues alloc] init];
+  bool t = transparent;
+  [fc setConstantValue:&t type:MTLDataTypeBool atIndex:0];
+  id<MTLFunction> vtx = [_rtLib newFunctionWithName:@"rt_vertex"];
+  id<MTLFunction> fao = [_rtLib newFunctionWithName:@"rt_ao" constantValues:fc error:&err];
+  id<MTLFunction> fco = fao ? [_rtLib newFunctionWithName:@"rt_composite" constantValues:fc error:&err] : nil;
+  [fc release];
+  if (!vtx || !fao || !fco) {
+    NSLog(@"RendererMetal RT: %s shader specialisation failed: %@",
+          transparent ? "transparent" : "default", err);
+  } else {
+    // Pass A: raw AO (.r) + traced light-visibility (.g) -> RG16Float.
+    MTLRenderPipelineDescriptor* pa = [[MTLRenderPipelineDescriptor alloc] init];
+    pa.vertexFunction = vtx;
+    pa.fragmentFunction = fao;
+    pa.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
+    *ao = [_device newRenderPipelineStateWithDescriptor:pa error:&err];
+    [pa release];
+    // Pass B: blur AO + shadow/fog composite -> BGRA8.
+    MTLRenderPipelineDescriptor* pd = [[MTLRenderPipelineDescriptor alloc] init];
+    pd.vertexFunction = vtx;
+    pd.fragmentFunction = fco;
+    pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+    *composite = [_device newRenderPipelineStateWithDescriptor:pd error:&err];
+    [pd release];
+    if (!*ao || !*composite)
+      NSLog(@"RendererMetal RT: AO/composite pipeline failed: %@", err);
+  }
+  [vtx release]; [fao release]; [fco release];
 }
 
 // Screen-space AO (metal_ssao) tuning shared by the raster pass (post_ssao_fog)
@@ -3419,6 +3816,10 @@ void RendererMetal::runPostChain()
   bool doRT = _rtEnabled && _rtReady && _rtResolvePipeline && _rtAOPipeline &&
               _rtInstanceAS && _postColor && _rtAO;
   id<MTLTexture> sceneSrc = _sceneColor;
+  // metal_rt_transparent (#532): the specialised pipelines and the transparent
+  // structure, only when both exist -- otherwise the default pair, unchanged.
+  const bool doRTTrans = doRT && _rtTransparent && _rtTReady && _rtTransAS &&
+                         _rtAOPipelineT && _rtResolvePipelineT;
 
   // Pass 1-RT: real ray-traced AO + shadow (+ fog), replacing the SSAO/shadow
   // pass when metal_raytrace is on. Traces against the atom-sphere instance AS.
@@ -3535,7 +3936,13 @@ void RendererMetal::runPostChain()
     pa.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> ea =
         [_cmdBuffer renderCommandEncoderWithDescriptor:pa];
-    [ea setRenderPipelineState:_rtAOPipeline];
+    [ea setRenderPipelineState:doRTTrans ? _rtAOPipelineT : _rtAOPipeline];
+    if (doRTTrans) {
+      [ea useResource:_rtTransAS usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
+      [ea setFragmentAccelerationStructure:_rtTransAS atBufferIndex:9];
+      [ea setFragmentBuffer:_rtTColBuffer offset:0 atIndex:10];
+      [ea setFragmentBuffer:_rtTOccBuffer offset:0 atIndex:12];
+    }
     if (_rtSphereProtoAS)
       [ea useResource:_rtSphereProtoAS usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
     for (id<MTLAccelerationStructure> as : _rtTriProtoASs)
@@ -3564,7 +3971,10 @@ void RendererMetal::runPostChain()
       bool camMoved = false;
       for (int i = 0; i < 16; ++i)
         if (fabsf(_modelviewInv[i] - _modelviewInvPrev[i]) > 1e-6f) { camMoved = true; break; }
-      bool reset = !_rtAOHistoryValid || camMoved || (_rtSphereHash != _rtAOHashPrev);
+      // The transparent structure's signature too (#532): 0 while it is off,
+      // so the default reset rule is unchanged.
+      uint64_t const aoHash = _rtSphereHash ^ (doRTTrans ? _rtTBuiltSig : 0);
+      bool reset = !_rtAOHistoryValid || camMoved || (aoHash != _rtAOHashPrev);
       struct { float alpha; float reset; float p0; float p1; } au;
       au.alpha = 0.1f; au.reset = reset ? 1.0f : 0.0f; au.p0 = au.p1 = 0.0f;
       MTLRenderPassDescriptor* pacc = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -3586,7 +3996,7 @@ void RendererMetal::runPostChain()
       [blit endEncoding];
       aoForComposite = _rtAOAccum;
       _rtAOHistoryValid = true;
-      _rtAOHashPrev = _rtSphereHash;
+      _rtAOHashPrev = aoHash;
       _modelviewInvPrev = _modelviewInv;
     }
 
@@ -3597,7 +4007,13 @@ void RendererMetal::runPostChain()
     pd.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> er =
         [_cmdBuffer renderCommandEncoderWithDescriptor:pd];
-    [er setRenderPipelineState:_rtResolvePipeline];
+    [er setRenderPipelineState:doRTTrans ? _rtResolvePipelineT : _rtResolvePipeline];
+    if (doRTTrans) {
+      [er useResource:_rtTransAS usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
+      [er setFragmentAccelerationStructure:_rtTransAS atBufferIndex:9];
+      [er setFragmentBuffer:_rtTColBuffer offset:0 atIndex:10];
+      [er setFragmentBuffer:_rtTNrmBuffer offset:0 atIndex:11];
+    }
     [er setFragmentTexture:_sceneColor atIndex:0];
     [er setFragmentTexture:_sceneDepth atIndex:1];
     [er setFragmentTexture:_shadowDepth atIndex:2];
@@ -4134,6 +4550,20 @@ bool RendererMetal::ensurePeelTargets()
   if (!_peelDepth) return false;
   _peelPassDesc.depthAttachment.texture = _peelDepth;
   _oitPeelPassDesc.depthAttachment.texture = _peelDepth;
+  // The stencil plane of the same texture, attached with DontCare on both
+  // ends (#538). Every pipeline bound in these passes -- the colour-less
+  // pre-pass ones and the OIT ones -- is built with
+  // stencilAttachmentPixelFormat Depth32Float_Stencil8, and Metal API
+  // validation asserts when a pipeline names a stencil format the pass has no
+  // texture for: every glass, frosted_glass and jelly object aborted under
+  // validation on the first peeled frame. DontCare/DontCare keeps what leaving
+  // it off was for: neither peel depth state touches stencil, and on a
+  // tile-based GPU it is never loaded from or written back to memory.
+  for (MTLRenderPassDescriptor* d in @[ _peelPassDesc, _oitPeelPassDesc ]) {
+    d.stencilAttachment.texture = _peelDepth;
+    d.stencilAttachment.loadAction = MTLLoadActionDontCare;
+    d.stencilAttachment.storeAction = MTLStoreActionDontCare;
+  }
   return true;
 }
 
@@ -4151,14 +4581,6 @@ bool RendererMetal::peelSupported() const
   // back to an unpeeled LessEqual test rather than disappearing.
   return _peelPassDesc && _oitPeelPassDesc && _sceneDepth && _rtW && _rtH &&
       _vboPeelPipelineUByte && _vboPeelPipelineFloat;
-}
-
-void RendererMetal::resetTransparentOIT()
-{
-  // Called once per frame, before the first transparent pass. The peel path
-  // opens several transparent encoders per frame and only the first may CLEAR
-  // the accumulation and reveal targets; every later one loads what is there.
-  _oitCleared = false;
 }
 
 id<MTLDepthStencilState> RendererMetal::peelWriteState()
@@ -5925,12 +6347,44 @@ static float mat_turb(float3 p) {  // turbulence: sum of |noise - 0.5|
   return s;
 }
 
+// How many noise cells one pixel covers at lookup coordinate `q`: the longer
+// of the two screen-axis derivatives (the standard GPU LOD footprint). Nearly
+// rotation-invariant -- exact for a surface facing the camera, within 1.41x on
+// a grazing one -- where length(fwidth(q)) summed |dx| and |dy| per component
+// and changed by up to 2x as an object turned in the image plane.
+static float mat_cells_per_pixel(float3 q) {
+  return max(length(dfdx(q)), length(dfdy(q)));
+}
+
+// How much of a noise octave survives: 1 while a cell spans ~1.4 pixels or
+// more (0.7 cells per pixel), fading to 0 by 1.4 cells per pixel (a cell of
+// ~0.7 px). Value noise carries most of its energy at wavelengths of about two
+// cells, so this sits near the practical Nyquist limit; it was tuned against
+// measured shimmer under a sub-pixel pan and against keeping clay's fine grain
+// at normal zoom (it is what separates clay from matte).
+// Past it a cell is sub-pixel and the value a pixel lands on
+// is effectively random -- it shimmers as the camera moves. Fading the octave
+// to its mean (0, since the octaves are centred) is the band-limit. It is set
+// per pixel, so a larger export keeps finer grain than the live view; the two
+// agree wherever an octave survives in both.
+static float mat_octave_fade(float cells) {
+  return 1.0 - smoothstep(0.7, 1.4, cells);
+}
+
 // Two octaves of model-space grain, centred on 1.0. Every grainy material uses
-// the same shape so they differ only by amplitude and frequency.
+// the same shape so they differ only by amplitude and frequency. Each octave
+// is faded out as it drops below the pixel size (mat_octave_fade): zoomed in,
+// nothing changes; zoomed out, the grain settles to the flat albedo instead of
+// shimmering. Only ever called from fragment functions (the derivatives need
+// them). The second octave's lookup is the first's scaled by `harmonic` (plus
+// a constant), so its footprint is too: one derivative serves both.
 static float mat_grain(float3 pModel, float amount, float freq, float harmonic, float offset) {
   if (amount <= 0.0) return 1.0;
-  return 1.0 + amount * (mat_noise(pModel * freq) * 2.0 - 1.0)
-             + 0.5 * amount * (mat_noise(pModel * freq * harmonic + offset) * 2.0 - 1.0);
+  float3 q1 = pModel * freq;
+  float cells1 = mat_cells_per_pixel(q1);
+  return 1.0 + amount * mat_octave_fade(cells1) * (mat_noise(q1) * 2.0 - 1.0)
+             + 0.5 * amount * mat_octave_fade(cells1 * harmonic)
+                   * (mat_noise(q1 * harmonic + offset) * 2.0 - 1.0);
 }
 
 // --- marble ----------------------------------------------------------------
@@ -7167,12 +7621,12 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
 
   // Ray tracing: capture solid triangle meshes (cartoon/surface) once per CPU
   // buffer — the frame only records that this buffer contributed.
-  if (_rtEnabled && !_shadowMode && !_peelMode && !_oitActive) {
+  if (_rtEnabled && !_shadowMode && !_peelMode && (!_oitActive || _rtTransparent)) {
     rtNoteGeometry(data, nullptr,
         rtMixParams({(uint64_t)mode, (uint64_t)vertexCount, (uint64_t)stride,
                      (uint64_t)posOffset, (uint64_t)(colorOffset + 1), (uint64_t)colorType}),
         [&](RTGeom& g) {
-          rtAppendVBOTris(g.tris, g.triCols, g.triNrms, normalOffset, colorOffset, colorType,
+          rtAppendVBOTris(g.tris, g.triCols, g.triNrms, &g.triAlpha, normalOffset, colorOffset, colorType,
                           mode, vertexCount, data, stride, posOffset, nullptr);
         });
   }
@@ -7496,13 +7950,13 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
   // Ray tracing: capture solid triangle meshes (cartoon/surface) once per CPU
   // buffer. Keyed on the vertex data, with the index buffer as an alias so
   // freeing either one drops the cached triangles.
-  if (_rtEnabled && !_shadowMode && !_peelMode && !_oitActive) {
+  if (_rtEnabled && !_shadowMode && !_peelMode && (!_oitActive || _rtTransparent)) {
     rtNoteGeometry(vertexData, indexData,
         rtMixParams({(uint64_t)mode, (uint64_t)indexCount, (uint64_t)stride,
                      (uint64_t)posOffset, (uint64_t)(colorOffset + 1), (uint64_t)colorType,
                      (uint64_t)reinterpret_cast<uintptr_t>(indexData)}),
         [&](RTGeom& g) {
-          rtAppendVBOTris(g.tris, g.triCols, g.triNrms, normalOffset, colorOffset, colorType,
+          rtAppendVBOTris(g.tris, g.triCols, g.triNrms, &g.triAlpha, normalOffset, colorOffset, colorType,
               mode, indexCount, vertexData, stride, posOffset, indexData);
         });
   }
@@ -7788,6 +8242,7 @@ void RendererMetal::invalidateVBOCache(uint64_t key)
   _rtGeomCache.clear();
   _rtGeomAlias.clear();
   _rtGeomDirty = true;
+  _rtTGeomDirty = true;
 }
 
 void RendererMetal::rtDropGeometry(const void* cpuData)
@@ -7805,8 +8260,14 @@ void RendererMetal::rtDropGeometry(const void* cpuData)
     return;
   // Only geometry that made it into the frame record can invalidate the built
   // acceleration structure (see rtNoteGeometry).
-  if (!g->second.spheres.empty() || !g->second.tris.empty())
-    _rtGeomDirty = true;
+  if (!g->second.spheres.empty() || !g->second.tris.empty()) {
+    // An entry only ever noted by the transparent record (#532) leaves the
+    // opaque structure alone; every other entry dirties it exactly as before.
+    if (g->second.inOpaque || !g->second.inTransparent)
+      _rtGeomDirty = true;
+    if (g->second.inTransparent)
+      _rtTGeomDirty = true;
+  }
   _rtGeomCache.erase(g);
   // Drop any remaining aliases of the entry just erased (the alias map has one
   // entry per indexed VBO, so this scan is cheap and runs only on a rep rebuild).
@@ -8052,16 +8513,18 @@ fragment SphereShadowOut sphere_impostor_fragment_shadow(
 
 void RendererMetal::buildImpostorPipelines()
 {
-  if (_sphereImpostorPipeline[cMaterialFamily_default]) return;
+  if (_sphereImpostorsBuilt) return;
   NSError* err = nil;
   id<MTLLibrary> lib = [_device newLibraryWithSource:[[kMaterialSrc stringByAppendingString:kMaterialImpostorSrc]
                                                    stringByAppendingString:kSphereImpostorSrc]
                                              options:nil error:&err];
   if (!lib) { NSLog(@"RendererMetal: sphere impostor compile failed: %@", err); return; }
   id<MTLFunction> vfn = [lib newFunctionWithName:@"sphere_impostor_vertex"];
-  id<MTLFunction> ffn =
-      materialFragmentFunction(lib, @"sphere_impostor_fragment", cMaterialFamily_default);
-  if (!vfn || !ffn) { NSLog(@"RendererMetal: sphere impostor funcs missing"); return; }
+  if (!vfn) { NSLog(@"RendererMetal: sphere impostor vertex function missing"); return; }
+  // From here the build counts as done even if some family fails: each family
+  // is specialised and built on its own, the draw site falls back per family,
+  // and retrying a failed specialisation every frame would only recompile.
+  _sphereImpostorsBuilt = true;
 
   MTLVertexDescriptor* vd = [MTLVertexDescriptor vertexDescriptor];
   vd.attributes[0].format = MTLVertexFormatFloat4;           // a_vertex_radius
@@ -8074,7 +8537,7 @@ void RendererMetal::buildImpostorPipelines()
   vd.layouts[0].stepFunction = MTLVertexStepFunctionPerVertex;
 
   MTLRenderPipelineDescriptor* psd = [[MTLRenderPipelineDescriptor alloc] init];
-  psd.vertexFunction = vfn; psd.fragmentFunction = ffn; psd.vertexDescriptor = vd;
+  psd.vertexFunction = vfn; psd.vertexDescriptor = vd;
   psd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
   psd.colorAttachments[0].blendingEnabled = YES;
   psd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
@@ -8085,10 +8548,12 @@ void RendererMetal::buildImpostorPipelines()
   psd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
   psd.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
   for (int f = 0; f < cMaterialFamily_count; ++f) {
-    id<MTLFunction> fn = (f == cMaterialFamily_default)
-        ? [ffn retain]
-        : materialFragmentFunction(lib, @"sphere_impostor_fragment", f);
-    if (!fn) continue;
+    id<MTLFunction> fn = materialFragmentFunction(lib, @"sphere_impostor_fragment", f);
+    if (!fn) {
+      // materialFragmentFunction has already logged a real failure; an
+      // unimplemented family is skipped silently, as in the other builders.
+      continue;
+    }
     psd.fragmentFunction = fn;
     _sphereImpostorPipeline[f] =
         [_device newRenderPipelineStateWithDescriptor:psd error:&err];
@@ -8099,11 +8564,9 @@ void RendererMetal::buildImpostorPipelines()
 
   // Transparent sphere OIT variant: same vertex shader + geometry, MRT
   // accum/reveal output, ray-cast depth retained for occlusion.
-  id<MTLFunction> offn = materialFragmentFunction(
-      lib, @"sphere_impostor_fragment_oit", cMaterialFamily_default);
-  if (offn) {
+  {
     MTLRenderPipelineDescriptor* op = [[MTLRenderPipelineDescriptor alloc] init];
-    op.vertexFunction = vfn; op.fragmentFunction = offn; op.vertexDescriptor = vd;
+    op.vertexFunction = vfn; op.vertexDescriptor = vd;
     op.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
     op.colorAttachments[0].blendingEnabled = YES;
     op.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorOne;
@@ -8119,9 +8582,8 @@ void RendererMetal::buildImpostorPipelines()
     op.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
     op.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
     for (int f = 0; f < cMaterialFamily_count; ++f) {
-      id<MTLFunction> fn = (f == cMaterialFamily_default)
-          ? [offn retain]
-          : materialFragmentFunction(lib, @"sphere_impostor_fragment_oit", f);
+      id<MTLFunction> fn =
+          materialFragmentFunction(lib, @"sphere_impostor_fragment_oit", f);
       if (!fn) continue;
       op.fragmentFunction = fn;
       _sphereOitPipeline[f] = [_device newRenderPipelineStateWithDescriptor:op error:&err];
@@ -8211,7 +8673,7 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
   // consecutive verts sharing the same a_vertex_radius (float4 @ offset 0).
   // sphereSizeScale is baked into the stored radius, so it is part of the
   // params signature: changing sphere_scale re-extracts.
-  if (_rtEnabled && !_shadowMode && !_peelMode && !_oitActive) {
+  if (_rtEnabled && !_shadowMode && !_peelMode && (!_oitActive || _rtTransparent)) {
     rtNoteGeometry(call.data, nullptr,
         rtMixParams({(uint64_t)vertexCount, (uint64_t)call.stride,
                      (uint64_t)call.posRadiusOff,
@@ -8233,8 +8695,10 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
               g.sphereCols.push_back(cp[0] / 255.f);
               g.sphereCols.push_back(cp[1] / 255.f);
               g.sphereCols.push_back(cp[2] / 255.f);
+              g.sphereAlpha.push_back(cp[3] / 255.f);
             } else {
               g.sphereCols.push_back(0.8f); g.sphereCols.push_back(0.8f); g.sphereCols.push_back(0.8f);
+              g.sphereAlpha.push_back(1.0f);
             }
           }
         });
@@ -8874,7 +9338,8 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
   // once per CPU buffer (opaque pass only) — this used to be 24 triangles per
   // stick regenerated on every frame, including pure camera moves. 8
   // verts/cylinder share v1/v2/radius.
-  if (_rtEnabled && !_shadowMode && !_peelMode && !_oitActive && call.cylinderCount > 0) {
+  if (_rtEnabled && !_shadowMode && !_peelMode && (!_oitActive || _rtTransparent) &&
+      call.cylinderCount > 0) {
     rtNoteGeometry(call.vdata, nullptr,
         rtMixParams({(uint64_t)call.cylinderCount, (uint64_t)call.stride,
                      (uint64_t)call.v1Off, (uint64_t)call.v2Off,
@@ -8890,13 +9355,16 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
                           ? call.uniRadius
                           : *reinterpret_cast<const float*>(vb + bptr + call.radiusOff);
             simd_float3 rgb = simd_make_float3(0.8f, 0.8f, 0.8f);
+            float alpha = 1.0f;
             if (call.colorOff >= 0) {   // Traced reflections: stick colour (first half)
               const uint8_t* cp = vb + bptr + call.colorOff;
-              if (call.colorIsFloat) { const float* f = reinterpret_cast<const float*>(cp); rgb = simd_make_float3(f[0], f[1], f[2]); }
-              else rgb = simd_make_float3(cp[0] / 255.f, cp[1] / 255.f, cp[2] / 255.f);
+              if (call.colorIsFloat) { const float* f = reinterpret_cast<const float*>(cp); rgb = simd_make_float3(f[0], f[1], f[2]); alpha = f[3]; }
+              else { rgb = simd_make_float3(cp[0] / 255.f, cp[1] / 255.f, cp[2] / 255.f); alpha = cp[3] / 255.f; }
             }
+            size_t const before = g.tris.size();
             rtAppendCylinder(g.tris, g.triCols, g.triNrms, rgb, simd_make_float3(p1[0], p1[1], p1[2]),
                              simd_make_float3(p2[0], p2[1], p2[2]), r);
+            g.triAlpha.insert(g.triAlpha.end(), (g.tris.size() - before) / 9, alpha);
           }
         });
   }

@@ -205,6 +205,15 @@ class TestTheMapping(_RayCase):
         cmd.set('stick_ball', 1, 'm')
         self.assertEqual(ray_params('m', 'sticks')[:2], (0, 0))
 
+    def testJellyOnSpheresAndBallAndStickTracesAsJelly(self):
+        # Jelly is the exception to both degradations above (#526).
+        peptide(rep='spheres', material='jelly')
+        self.assertEqual(ray_params('m', 'spheres'), EXPECTED['jelly'])
+        cmd.show('sticks', 'm')
+        cmd.set('stick_material', 'jelly', 'm')
+        cmd.set('stick_ball', 1, 'm')
+        self.assertEqual(ray_params('m', 'sticks'), EXPECTED['jelly'])
+
 
 class TestTheRenders(_RayCase):
     """What the primitives actually CARRY."""
@@ -335,9 +344,9 @@ class TestGlassSurfaceUnderRay(_RayCase):
     path read the RAW transparency, while a multi-coloured surface took the
     per-vertex array the build had already baked the implied alpha into."""
 
-    def red_behind(self, material, multi):
+    def red_behind(self, material, multi, rep='surface'):
         fresh()
-        peptide(material=material, colour='grey80')
+        peptide(rep=rep, material=material, colour='grey80')
         if multi:
             cmd.color('grey70', 'm and elem N')
         self.frame()
@@ -351,10 +360,11 @@ class TestGlassSurfaceUnderRay(_RayCase):
         cmd.translate([0, 0, -60], 'ball', camera=1)
         # keep the front clip, push the back one past the ball
         cmd.set_view(v[:16] + (v[16] + 120.0,) + v[17:])
-        img = trace(self.tmp, 'behind_%s_%d' % (material, multi))
-        # redness where the SURFACE is: red above the other two channels.
+        img = trace(self.tmp, 'behind_%s_%s_%d' % (rep, material, multi))
+        # redness where the SUBJECT is: red above the other two channels.
         cmd.disable('ball')
-        mask = subject(trace(self.tmp, 'mask_%s_%d' % (material, multi)))
+        mask = subject(trace(self.tmp, 'mask_%s_%s_%d' % (rep, material,
+                                                          multi)))
         red = img[..., 0] - (img[..., 1] + img[..., 2]) / 2
         return float(red[mask].mean())
 
@@ -366,3 +376,14 @@ class TestGlassSurfaceUnderRay(_RayCase):
         self.assertGreater(one, opaque + 40)
         # ...and one colour or two no longer decides how transparent it is.
         self.assertLess(abs(one - multi), 0.15 * multi)
+
+    def testJellySpheresTraceWithJellysImpliedAlpha(self):
+        # `ray` traces the sphere rep's built CGO, whose per-sphere alpha is
+        # what the build resolved through the material (#526): a jelly sphere
+        # is 85% opaque under `ray`, not solid.
+        opaque = self.red_behind('default', 0, rep='spheres')
+        jelly = self.red_behind('jelly', 0, rep='spheres')
+        self.assertLess(opaque, 5)
+        # measured ~32 against ~0 for default; 0.85 opacity is a small
+        # share of red, so the bar sits well below it but far above noise
+        self.assertGreater(jelly, opaque + 15)

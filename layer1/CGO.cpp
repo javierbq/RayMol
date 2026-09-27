@@ -67,6 +67,17 @@ constexpr unsigned VERTEX_ACCESSIBILITY_SIZE = 1;
 #include <cassert>
 #include <iostream>
 
+/* Whether CGO VBOs pack normals into bytes (cgo_shader_ub_normal). A GL-path
+ * option ONLY: the Metal renderer (G->Renderer set) binds a_Normal as Float3
+ * for the raster and the RT per-vertex normals alike, and CGOGL asserts it.
+ * Every place that SIZES, FILLS or DECLARES the normal slot must ask this one
+ * function -- asking the setting directly in any of them makes the declared
+ * format and the data disagree. */
+static bool CGOPackedNormals(PyMOLGlobals* G)
+{
+  return !G->Renderer && SettingGet<bool>(G, cSetting_cgo_shader_ub_normal);
+}
+
 template <typename T> inline T CLAMPVALUE(T val, T minimum, T maximum)
 {
   return (val < minimum) ? minimum : (val > maximum) ? maximum : val;
@@ -431,7 +442,7 @@ CGO::CGO(PyMOLGlobals* G, int size)
 {
   op = VLACalloc(float, size + 32);
   cgo_shader_ub_color = SettingGet<bool>(G, cSetting_cgo_shader_ub_color);
-  cgo_shader_ub_normal = SettingGet<bool>(G, cSetting_cgo_shader_ub_normal);
+  cgo_shader_ub_normal = CGOPackedNormals(G);
 }
 
 void CGOSetUseShader(CGO* I, int use_shader)
@@ -441,7 +452,7 @@ void CGOSetUseShader(CGO* I, int use_shader)
     I->cgo_shader_ub_color =
         SettingGetGlobal_i(I->G, cSetting_cgo_shader_ub_color);
     I->cgo_shader_ub_normal =
-        SettingGetGlobal_i(I->G, cSetting_cgo_shader_ub_normal);
+        CGOPackedNormals(I->G);
   } else {
     I->cgo_shader_ub_color = 0;
     I->cgo_shader_ub_normal = 0;
@@ -1832,7 +1843,7 @@ CGO* CGOCombineBeginEnd(const CGO* I, int est, bool do_not_split_lines)
         cgo->cgo_shader_ub_color =
             SettingGetGlobal_i(cgo->G, cSetting_cgo_shader_ub_color);
         cgo->cgo_shader_ub_normal =
-            SettingGetGlobal_i(cgo->G, cSetting_cgo_shader_ub_normal);
+            CGOPackedNormals(cgo->G);
       }
     }
   }
@@ -2215,7 +2226,7 @@ static NormalColorFormatSize GetNormalColorFormatSize(PyMOLGlobals* G)
 
   fmt.normalFormat =
       VERTEX_NORMAL_SIZE == 3 ? VertexFormat::Float3 : VertexFormat::Float4;
-  if (SettingGet<int>(G, cSetting_cgo_shader_ub_normal)) {
+  if (CGOPackedNormals(G)) {
     fmt.normalFormat = VERTEX_NORMAL_SIZE == 3 ? VertexFormat::Byte3Norm
                                                : VertexFormat::Byte4Norm;
   }
@@ -2310,7 +2321,7 @@ static int OptimizePointsToVBO(const CGO* I, CGO* cgo,
   cgo->color[2] = 1.f;
 
   unsigned mul = VERTEX_POS_SIZE + VERTEX_PICKCOLOR_SIZE;
-  mul += SettingGet<bool>(G, cSetting_cgo_shader_ub_normal)
+  mul += CGOPackedNormals(G)
              ? 1
              : VERTEX_NORMAL_SIZE;
   mul +=
@@ -2321,7 +2332,7 @@ static int OptimizePointsToVBO(const CGO* I, CGO* cgo,
   auto* vertexVals = vertexValsVec.data();
   auto* normalVals = vertexVals + 3 * num_total_vertices_points;
   nxtn = 3;
-  if (SettingGetGlobal_i(I->G, cSetting_cgo_shader_ub_normal)) {
+  if (CGOPackedNormals(I->G)) {
     normalValsC = (uchar*) normalVals;
     nxtn = 1;
   }
@@ -2936,7 +2947,7 @@ static bool OptimizeVertsToVBONotIndexed(const CGO* I, CGO* cgo,
 
   unsigned mul =
       VERTEX_POS_SIZE + VERTEX_PICKCOLOR_SIZE + VERTEX_ACCESSIBILITY_SIZE;
-  mul += SettingGet<bool>(G, cSetting_cgo_shader_ub_normal)
+  mul += CGOPackedNormals(G)
               ? 1
               : VERTEX_NORMAL_SIZE;
   mul += SettingGet<bool>(G, cSetting_cgo_shader_ub_color)
@@ -2948,7 +2959,7 @@ static bool OptimizeVertsToVBONotIndexed(const CGO* I, CGO* cgo,
   auto* vertexVals = vertexValsVec.data();
   auto* normalVals = vertexVals + 3 * count.num_total_indexes;
   unsigned nxtn = VERTEX_NORMAL_SIZE;
-  if (SettingGet<int>(G, cSetting_cgo_shader_ub_normal)) {
+  if (CGOPackedNormals(G)) {
     normalValsC = (uchar*) normalVals;
     nxtn = 1;
   }
@@ -3063,7 +3074,7 @@ static bool OptimizeLinesToVBONotIndexed(const CGO* I, CGO* cgo,
   cgo->color[2] = 1.f;
 
   unsigned mul = VERTEX_POS_SIZE + VERTEX_PICKCOLOR_SIZE;
-  mul += SettingGet<bool>(G, cSetting_cgo_shader_ub_normal)
+  mul += CGOPackedNormals(G)
              ? 1
              : VERTEX_NORMAL_SIZE;
   mul +=
@@ -3074,7 +3085,7 @@ static bool OptimizeLinesToVBONotIndexed(const CGO* I, CGO* cgo,
   auto* vertexVals = vertexValsVec.data();
   auto* normalVals = vertexVals + 3 * count.num_total_indexes_lines;
   nxtn = 3;
-  if (SettingGet<int>(G, cSetting_cgo_shader_ub_normal)) {
+  if (CGOPackedNormals(G)) {
     normalValsC = (uchar*) normalVals;
     nxtn = 1;
   }
@@ -3380,7 +3391,7 @@ CGO* CGOOptimizeToVBONotIndexed(const CGO* I, int est, bool addshaders)
   cgo->has_draw_buffers |= has_draw_buffer;
   cgo->use_shader = true;
   cgo->cgo_shader_ub_color = SettingGet<int>(G, cSetting_cgo_shader_ub_color);
-  cgo->cgo_shader_ub_normal = SettingGet<int>(G, cSetting_cgo_shader_ub_normal);
+  cgo->cgo_shader_ub_normal = CGOPackedNormals(G);
   return (cgo);
 }
 
@@ -3414,7 +3425,7 @@ static bool OptimizeVertsToVBOIndexed(const CGO* I, CGO* cgo,
 
   unsigned mul =
       VERTEX_POS_SIZE + VERTEX_PICKCOLOR_SIZE + VERTEX_ACCESSIBILITY_SIZE;
-  mul += SettingGet<bool>(G, cSetting_cgo_shader_ub_normal)
+  mul += CGOPackedNormals(G)
               ? 1
               : VERTEX_NORMAL_SIZE;
   mul += SettingGet<bool>(G, cSetting_cgo_shader_ub_color)
@@ -3426,7 +3437,7 @@ static bool OptimizeVertsToVBOIndexed(const CGO* I, CGO* cgo,
   auto* vertexVals = vertexValsVec.data();
   auto* normalVals = vertexVals + 3 * count.num_total_vertices;
   nxtn = 3;
-  if (SettingGetGlobal_i(I->G, cSetting_cgo_shader_ub_normal)) {
+  if (CGOPackedNormals(I->G)) {
     normalValsC = (uchar*) normalVals;
     nxtn = 1;
   }
@@ -3490,7 +3501,7 @@ static bool OptimizeVertsToVBOIndexed(const CGO* I, CGO* cgo,
         for (cnt = 0; cnt < sp->nverts * 3; cnt++) {
           vertexVals[pl + cnt] = vertexValsDA[cnt];
         }
-        if (SettingGetGlobal_i(I->G, cSetting_cgo_shader_ub_normal)) {
+        if (CGOPackedNormals(I->G)) {
           if (sp->arraybits & CGO_NORMAL_ARRAY) {
             nxtVals = normalValsDA = vertexValsDA + (nxtn * sp->nverts);
             for (cnt = 0; cnt < sp->nverts * 3; cnt++) {
@@ -3738,7 +3749,7 @@ static bool OptimizeLinesToVBOIndexed(const CGO* I, CGO* cgo,
 
   unsigned mul = VERTEX_POS_SIZE + VERTEX_PICKCOLOR_SIZE;
   if (hasNormals) {
-    mul += SettingGet<bool>(G, cSetting_cgo_shader_ub_normal)
+    mul += CGOPackedNormals(G)
                 ? 1
                 : VERTEX_NORMAL_SIZE;
   }
@@ -3753,7 +3764,7 @@ static bool OptimizeLinesToVBOIndexed(const CGO* I, CGO* cgo,
   float* normalVals = nullptr;
   if (hasNormals) {
     normalVals = nxtVals;
-    if (SettingGetGlobal_i(I->G, cSetting_cgo_shader_ub_normal)) {
+    if (CGOPackedNormals(I->G)) {
       normalValsC = (uchar*) normalVals;
       sz = 1;
     } else {
@@ -3824,7 +3835,7 @@ static bool OptimizeLinesToVBOIndexed(const CGO* I, CGO* cgo,
         }
         if (normalVals) {
           if (sp->arraybits & CGO_NORMAL_ARRAY) {
-            if (SettingGetGlobal_i(I->G, cSetting_cgo_shader_ub_normal)) {
+            if (CGOPackedNormals(I->G)) {
               nxtVals2 = normalValsDA = nxtVals2 + (nxtn * sp->nverts);
               for (cnt = 0; cnt < sp->nverts * 3; cnt++) {
                 normalValsC[VAR_FOR_NORMAL + cnt VAR_FOR_NORMAL_CNT_PLUS] =
@@ -4072,7 +4083,7 @@ CGO* CGOOptimizeToVBOIndexed(const CGO* I, int est, const float* color,
       cgo->cgo_shader_ub_color =
           SettingGetGlobal_i(cgo->G, cSetting_cgo_shader_ub_color);
       cgo->cgo_shader_ub_normal =
-          SettingGetGlobal_i(cgo->G, cSetting_cgo_shader_ub_normal);
+          CGOPackedNormals(cgo->G);
     }
   }
   if (!ok) {
@@ -4384,7 +4395,7 @@ CGO* CGOOptimizeSpheresToVBONonIndexed(
     if (cgo->use_shader) {
       cgo->cgo_shader_ub_color = true;
       cgo->cgo_shader_ub_normal =
-          SettingGet<bool>(cgo->G, cSetting_cgo_shader_ub_normal);
+          CGOPackedNormals(cgo->G);
     }
   }
   if (!ok) {
@@ -7147,7 +7158,7 @@ bool CGOCheckWhetherToFree(PyMOLGlobals* G, CGO* I)
     if (I->cgo_shader_ub_color !=
             SettingGetGlobal_i(G, cSetting_cgo_shader_ub_color) ||
         I->cgo_shader_ub_normal !=
-            SettingGetGlobal_i(G, cSetting_cgo_shader_ub_normal)) {
+            CGOPackedNormals(G)) {
       return true;
     }
   }
@@ -7309,7 +7320,7 @@ CGO* CGOConvertLinesToShaderCylinders(const CGO* I, int est)
     cgo->cgo_shader_ub_color =
         SettingGetGlobal_i(cgo->G, cSetting_cgo_shader_ub_color);
     cgo->cgo_shader_ub_normal =
-        SettingGetGlobal_i(cgo->G, cSetting_cgo_shader_ub_normal);
+        CGOPackedNormals(cgo->G);
   }
   if (tot_ncyls) {
     return (cgo);
@@ -7449,7 +7460,7 @@ CGO* CGOSplitUpLinesForPicking(const CGO* I)
     cgo->cgo_shader_ub_color =
         SettingGetGlobal_i(cgo->G, cSetting_cgo_shader_ub_color);
     cgo->cgo_shader_ub_normal =
-        SettingGetGlobal_i(cgo->G, cSetting_cgo_shader_ub_normal);
+        CGOPackedNormals(cgo->G);
   }
 
   return cgo_managed.release();
@@ -7678,7 +7689,7 @@ CGO* CGOColorByRamp(PyMOLGlobals* G, const CGO* I, ObjectGadgetRamp* ramp,
         cgo->cgo_shader_ub_color =
             SettingGetGlobal_i(cgo->G, cSetting_cgo_shader_ub_color);
         cgo->cgo_shader_ub_normal =
-            SettingGetGlobal_i(cgo->G, cSetting_cgo_shader_ub_normal);
+            CGOPackedNormals(cgo->G);
       }
     }
   }
@@ -8017,7 +8028,7 @@ CGO* CGOConvertTrianglesToAlpha(const CGO* I)
     cgo->cgo_shader_ub_color =
         SettingGetGlobal_i(cgo->G, cSetting_cgo_shader_ub_color);
     cgo->cgo_shader_ub_normal =
-        SettingGetGlobal_i(cgo->G, cSetting_cgo_shader_ub_normal);
+        CGOPackedNormals(cgo->G);
   }
   if (tot_nverts) {
     return (cgo);
@@ -8160,7 +8171,7 @@ CGO* CGOGenerateNormalsForTriangles(const CGO* I)
     cgo->cgo_shader_ub_color =
         SettingGetGlobal_i(cgo->G, cSetting_cgo_shader_ub_color);
     cgo->cgo_shader_ub_normal =
-        SettingGetGlobal_i(cgo->G, cSetting_cgo_shader_ub_normal);
+        CGOPackedNormals(cgo->G);
   }
   return (cgo);
 }
@@ -8256,7 +8267,7 @@ CGO* CGOTurnLightingOnLinesOff(const CGO* I, bool use_shader)
     cgo->cgo_shader_ub_color =
         SettingGetGlobal_i(cgo->G, cSetting_cgo_shader_ub_color);
     cgo->cgo_shader_ub_normal =
-        SettingGetGlobal_i(cgo->G, cSetting_cgo_shader_ub_normal);
+        CGOPackedNormals(cgo->G);
   }
   return (cgo);
 }
@@ -8583,7 +8594,7 @@ CGO* CGOConvertLinesToTrilines(const CGO* I, bool addshaders)
     cgo->cgo_shader_ub_color =
         SettingGetGlobal_i(cgo->G, cSetting_cgo_shader_ub_color);
     cgo->cgo_shader_ub_normal =
-        SettingGetGlobal_i(cgo->G, cSetting_cgo_shader_ub_normal);
+        CGOPackedNormals(cgo->G);
   }
 
   {

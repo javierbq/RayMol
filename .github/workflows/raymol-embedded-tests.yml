@@ -77,8 +77,12 @@ jobs:
               testing/tests/raymol/design_enumerate.py \
               testing/tests/raymol/design_region.py \
               testing/tests/raymol/design_saverestore.py \
+              testing/tests/raymol/inspector_command_names.py \
               testing/tests/raymol/inspector_materials.py \
+              testing/tests/raymol/line_stick_helper.py \
               testing/tests/raymol/material_bundles.py \
+              testing/tests/raymol/material_docs.py \
+              testing/tests/raymol/material_draw_params_cache.py \
               testing/tests/raymol/material_env.py \
               testing/tests/raymol/material_glass.py \
               testing/tests/raymol/material_jelly.py \
@@ -87,8 +91,10 @@ jobs:
               testing/tests/raymol/material_resolution.py \
               testing/tests/raymol/material_settings.py \
               testing/tests/raymol/material_table.py \
+              testing/tests/raymol/movie_object_settings.py \
               testing/tests/raymol/metal_pick.py \
               testing/tests/raymol/metal_rt_reflect.py \
+              testing/tests/raymol/metal_rt_transparent.py \
               testing/tests/raymol/metal_shader_sources.py \
               testing/tests/raymol/scene_materials.py \
               testing/tests/raymol/scene_object_settings.py \
