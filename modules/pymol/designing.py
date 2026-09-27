@@ -1080,6 +1080,10 @@ def discard_pending(name, _self=cmd):
 
 def clear_pending(_self=cmd):
     """Drop every placeholder, and anything that would create another."""
+    # A reset, not the end of a run: nothing is restaged on the way out (#546).
+    sb = _sets_batch()
+    if sb is not None:
+        sb.quiesce()
     for job_id, job in list(_JOBS.items()):
         if isinstance(job, _DeferredDesignJob):
             _JOBS.pop(job_id, None)

@@ -24,7 +24,7 @@ from .errors import SetFormatError, SetInputError
 #: Bumped only for a change an older reader cannot absorb. A file newer than this
 #: refuses to open, naming the build that wrote it; an older file is migrated forward
 #: inside one transaction. There is no downgrade path.
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 
 #: A metric key. Lower-case, starts with a letter, no separators but '_': the same
 #: alphabet MetricSpec keys already use, tightened to exclude a leading digit so the
@@ -40,15 +40,28 @@ _CHAIN_UNSAFE = re.compile(r'[^A-Za-z0-9_]')
 RESERVED_COLUMNS = frozenset((
     'id', 'set_id', 'ord', 'name', 'run_id', 'created', 'sequences', 'n_chains',
     'n_residues', 'parents', 'starred', 'rejected', 'tags', 'note', 'staged_object',
-    'pinned', 'entry_id', 'rowid', 'design_chains',
+    'pinned', 'entry_id', 'rowid', 'design_chains', 'staged_by',
 ))
+
+#: Who last decided an entry's staging (#546), `entries.staged_by`:
+#:   ''      nobody has -- never staged, or its link was cleared by a session load
+#:   'auto'  PROVISIONAL: a running batch staged it into a free slot, or the end-of-run
+#:           restage chose it by ranking. The only value a restage may replace.
+#:   'user'  a person did, with `set_stage` or `set_unstage` (the drawer included). A
+#:           staged 'user' entry is never unstaged by a restage, and an UNSTAGED one is
+#:           never brought back by one.
+#: A staged entry with '' (a file from before format 3) counts as the user's: a restage
+#: only ever touches what it can prove it placed itself.
+STAGED_AUTO = 'auto'
+STAGED_USER = 'user'
+STAGED_BY = ('', STAGED_AUTO, STAGED_USER)
 
 SET_KINDS = ('structures', 'sequences', 'mixed')
 ARRAY_ENCODINGS = ('f32', 'u8q')
 BLOB_KINDS = ('cif', 'f32', 'u8q', 'thumb')
 
 #: Format version 1 from the spec (§2.2), plus `entries.design_chains` (version 2,
-#: #545). Order matters for the foreign keys.
+#: #545) and `entries.staged_by` (version 3, #546). Order matters for the foreign keys.
 DDL = (
     """CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)""",
     """CREATE TABLE session (
@@ -84,6 +97,7 @@ DDL = (
   note TEXT NOT NULL DEFAULT '',
   staged_object TEXT, pinned INTEGER NOT NULL DEFAULT 0,
   design_chains TEXT NOT NULL DEFAULT '[]',
+  staged_by TEXT NOT NULL DEFAULT '',
   UNIQUE (set_id, name))""",
     """CREATE INDEX entries_set_ord ON entries(set_id, ord)""",
     """CREATE INDEX entries_staged ON entries(staged_object)
@@ -206,9 +220,18 @@ def _migrate_1_to_2(conn):
                          (json.dumps(picked), eid))
 
 
+def _migrate_2_to_3(conn):
+    """v2 -> v3: `entries.staged_by` (#546). Nothing to backfill: '' on a staged
+    entry already reads as the user's, which is the only safe reading of a link this
+    build did not watch being made. Idempotent, like the step before it."""
+    if not any(r[1] == 'staged_by' for r in conn.execute('PRAGMA table_info(entries)')):
+        conn.execute("ALTER TABLE entries ADD COLUMN staged_by TEXT NOT NULL"
+                     " DEFAULT ''")
+
+
 #: from_version -> callable(conn) that brings the file to from_version + 1.
 #: `open_or_migrate` walks it inside one transaction.
-MIGRATIONS = {1: _migrate_1_to_2}
+MIGRATIONS = {1: _migrate_1_to_2, 2: _migrate_2_to_3}
 
 
 def check_key(key):

@@ -13,8 +13,10 @@
 		6D5A6B0F455F98D46056DB73 /* DataDrawer.swift in Sources */ = {isa = PBXBuildFile; fileRef = DCA9BA024CFF93453FD3B379 /* DataDrawer.swift */; };
 		A41800010000000000000002 /* SetPlot.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41800010000000000000001 /* SetPlot.swift */; };
 		A41900010000000000000002 /* LineageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41900010000000000000001 /* LineageView.swift */; };
+		A42000010000000000000002 /* SetNoticeBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A42000010000000000000001 /* SetNoticeBanner.swift */; };
 		A41800010000000000000003 /* SetPlot.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41800010000000000000001 /* SetPlot.swift */; };
 		A41900010000000000000003 /* LineageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41900010000000000000001 /* LineageView.swift */; };
+		A42000010000000000000003 /* SetNoticeBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A42000010000000000000001 /* SetNoticeBanner.swift */; };
 		A41800010000000000000005 /* SetPlotModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41800010000000000000004 /* SetPlotModelTests.swift */; };
 		A41900030000000000000002 /* LineageModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41900030000000000000001 /* LineageModelTests.swift */; };
 		A41900020000000000000002 /* SequenceRowModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A41900020000000000000001 /* SequenceRowModelTests.swift */; };
@@ -346,6 +348,7 @@
 		DCA9BA024CFF93453FD3B379 /* DataDrawer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DataDrawer.swift; sourceTree = "<group>"; };
 		A41800010000000000000001 /* SetPlot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetPlot.swift; sourceTree = "<group>"; };
 		A41900010000000000000001 /* LineageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LineageView.swift; sourceTree = "<group>"; };
+		A42000010000000000000001 /* SetNoticeBanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetNoticeBanner.swift; sourceTree = "<group>"; };
 		A41800010000000000000004 /* SetPlotModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetPlotModelTests.swift; sourceTree = "<group>"; };
 		A41900030000000000000001 /* LineageModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LineageModelTests.swift; sourceTree = "<group>"; };
 		A41900020000000000000001 /* SequenceRowModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SequenceRowModelTests.swift; sourceTree = "<group>"; };
@@ -522,6 +525,7 @@
 				DCA9BA024CFF93453FD3B379 /* DataDrawer.swift */,
 				A41800010000000000000001 /* SetPlot.swift */,
 				A41900010000000000000001 /* LineageView.swift */,
+				A42000010000000000000001 /* SetNoticeBanner.swift */,
 				85B66833BF167209A47B9C15 /* ThemeStudioPanel.swift */,
 				B820FE9080BF73526A54CD66 /* TimelinePanel.swift */,
 				C562306A5AD1EEDDBA931B98 /* TransportBar.swift */,
@@ -1488,6 +1492,7 @@
 				6D5A6B0F455F98D46056DB73 /* DataDrawer.swift in Sources */,
 				A41800010000000000000002 /* SetPlot.swift in Sources */,
 				A41900010000000000000002 /* LineageView.swift in Sources */,
+				A42000010000000000000002 /* SetNoticeBanner.swift in Sources */,
 				63F74F260E91A9424EED005C /* SetsStore.swift in Sources */,
 				B532BA92CE9FB3A65DD02D37 /* AppBuildInfo.swift in Sources */,
 				124F6E6764C7D94831B8AC7E /* AppVersionFooter.swift in Sources */,
@@ -1568,6 +1573,7 @@
 				5E6BF848615486D91ADD4509 /* DataDrawer.swift in Sources */,
 				A41800010000000000000003 /* SetPlot.swift in Sources */,
 				A41900010000000000000003 /* LineageView.swift in Sources */,
+				A42000010000000000000003 /* SetNoticeBanner.swift in Sources */,
 				263D9169ECE71B5E9CCB5F5F /* SetsStore.swift in Sources */,
 				AA00B9355E30A51B8F4C207B /* AppBuildInfo.swift in Sources */,
 				45817B402639546111EFD5B7 /* AppVersionFooter.swift in Sources */,

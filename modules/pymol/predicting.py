@@ -523,6 +523,10 @@ def clear_pending(_self=cmd):
     placeholder, so clearing the placeholders alone would let the next pump() put them
     straight back. Dropping the deferred jobs matters for the same reason.
     """
+    # A reset, not the end of a run: nothing is restaged on the way out (#546).
+    sb = _sets_batch()
+    if sb is not None:
+        sb.quiesce()
     fetching.shutdown()
     for job_id, job in list(_JOBS.items()):
         if isinstance(job, _DeferredJob):

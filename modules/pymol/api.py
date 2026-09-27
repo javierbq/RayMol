@@ -112,6 +112,7 @@ from .setting_sets import \
       set_view_delete,      \
       set_stage,            \
       set_unstage,          \
+      set_notice,           \
       set_peek,             \
       set_reference,        \
       set_budget,           \

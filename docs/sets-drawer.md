@@ -115,6 +115,32 @@ shows), **Send to ▾** (the next tool, or an export — see below) and **Save v
 says by how much; raise it with `set_budget`, or unstage (or pin) what is already
 there. The header's "n of N staged · budget b" is the same arithmetic.
 
+### Staging while a batch runs, and when it finishes
+
+While a batch is landing, each design is staged as it arrives, into whatever budget
+slots are free. That staging is **provisional**: it is the first designs to arrive,
+not the best. When the run finishes (every member landed, failed or was cancelled) and
+the set has a ranking key with values (sort by a metric column once — a header click or
+`set_sort` — and it becomes the ranking key), the provisional entries are replaced by
+the set's top entries by that key, and one line says so, in the console and in a strip
+over the drawer's tab: `Restaged top 6 by pLDDT`.
+
+- Pinned entries, and entries you staged yourself (`set_stage`, space, **Stage**), are
+  never replaced; they are charged to the budget first and the rest goes to the ranking.
+  Staging an entry the batch staged makes it yours.
+- An entry you unstaged (`set_unstage`, or `delete` of its object) stays out.
+- The top is read the way `top:N` reads it: the active filter applies, rejected entries
+  and entries with no value for the key are skipped.
+- The whole set is ranked, so a re-run that extends a set competes with the earlier
+  run's provisional entries — even when the first run had filled the budget.
+- A cancelled run is restaged over what landed. A single design (no group) is never
+  restaged. With no ranking key, or no values yet, staging stays as it landed.
+- Changing the sort later does not restage anything.
+
+`set_get` shows who staged an entry as `staged_by` (`auto`, `user` or empty). The strip
+goes away with the next staging action on the set, or with **Dismiss**
+(`set_notice set, 1`).
+
 Every drawer action is a `set_*` command. Anything you can click you can also type,
 script, or ask an agent to do over MCP; the drawer is a client of the command surface,
 not a second one. `appkit_sets.open_set('name')` from Python opens a set in the drawer

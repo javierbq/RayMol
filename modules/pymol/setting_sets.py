@@ -312,7 +312,9 @@ USAGE
 NOTES
 
     Without a key: {entry name: {column: value, plus id, run_id, parents, sequences,
-    starred, rejected, pinned, tags, note, staged, design_chains}}. With an array key: {entry name:
+    starred, rejected, pinned, tags, note, staged, staged_by, design_chains}}. staged_by
+    is 'auto' for a provisional stage a finished run may replace, 'user' for one you
+    made (set_stage / set_unstage), '' for neither. With an array key: {entry name:
     (index, values)}; with a scalar key or one of the fields above: {entry name: value}.
     """
     c = _c()
@@ -326,6 +328,7 @@ NOTES
                       sequences=e.get('sequences') or {}, starred=e.get('starred'),
                       rejected=e.get('rejected'), pinned=e.get('pinned'),
                       tags=e.get('tags'), note=e.get('note'), staged=e.get('staged_object'),
+                      staged_by=e.get('staged_by') or '',
                       design_chains=e.get('design_chains') or [])
         if not key:
             out[e['name']] = dict(scalars, **fields)
@@ -602,6 +605,12 @@ USAGE
 
     set_stage name, entries [, budget ]
 
+NOTES
+
+    What you stage is yours: a batch that finishes later restages only the entries
+    it staged itself (provisionally, as they landed), never these. Staging an entry
+    the batch staged makes it yours the same way.
+
 EXAMPLES
 
     set_stage rfd3_a1, top:3
@@ -610,6 +619,7 @@ EXAMPLES
     row = _set(name)
     found = selectors.resolve(_c(), row, entries)
     names = binding.stage(row, found, budget_override=int(budget) or None, _self=_self)
+    _c().set_notice(row['id'], None)        # a staging action answers the notice
     if not int(quiet):
         colorprinting.parrot(' set_stage: %s' % ', '.join(names))
     return names
@@ -625,14 +635,42 @@ DESCRIPTION
 USAGE
 
     set_unstage name [, entries ]
+
+NOTES
+
+    An entry you unstage stays out: a batch that finishes later does not restage it.
     """
     row = _set(name)
     found = selectors.resolve(_c(), row, entries)
     explicit = str(entries).strip().lower() not in ('staged', 'all', 'filtered')
     removed = binding.unstage(row, found, include_pinned=explicit, _self=_self)
+    _c().set_notice(row['id'], None)
     if not int(quiet):
         colorprinting.parrot(' set_unstage: %s' % (', '.join(removed) or 'nothing'))
     return removed
+
+
+def set_notice(name, dismiss=0, quiet=1, _self=cmd):
+    """
+DESCRIPTION
+
+    "set_notice" prints the one-line notice the drawer shows over a set -- what
+    changed its staging without you asking, e.g. "Restaged top 6 by pLDDT" when a
+    run finished -- and with dismiss=1 clears it. Any set_stage or set_unstage on
+    the set clears it too.
+
+USAGE
+
+    set_notice name [, dismiss ]
+    """
+    c = _c()
+    row = _set(name)
+    notice = c.notice(row['id'])
+    if int(dismiss):
+        c.set_notice(row['id'], None)
+    elif not int(quiet):
+        colorprinting.parrot(' set_notice: %s' % ((notice or {}).get('text') or '(none)'))
+    return (notice or {}).get('text') or ''
 
 
 def set_peek(name='', entry='', quiet=1, _self=cmd):

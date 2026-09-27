@@ -49,7 +49,7 @@ SET_FIELDS = frozenset(('note', 'tool', 'group_name', 'budget', 'ranking_key',
 #: Fields `update_entry` may write: the user-facing flags and links, never the
 #: identity or the derived counts.
 ENTRY_FIELDS = frozenset(('starred', 'rejected', 'tags', 'note', 'staged_object',
-                          'pinned', 'parents', 'design_chains'))
+                          'pinned', 'parents', 'design_chains', 'staged_by'))
 
 _ENTRY_JSON = ('sequences', 'parents', 'design_chains')
 _SET_JSON = ('columns',)
@@ -369,6 +369,40 @@ class Container:
                 conn.execute('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)',
                              (key, _dumps(record)))
 
+    # -- set notices (#546) ---------------------------------------------------------
+
+    _NOTICE_PREFIX = 'set_notice:'
+
+    def notice(self, set_id):
+        """The one-line notice the drawer shows over a set -- `{'kind', 'text', ...}`
+        -- or None. Written when something the user did not do changed what the set
+        shows (a finished run restaged it); cleared by the next staging action. In
+        `meta` for the reason a shared target is: it is about the scene, not an entry,
+        and the Swift reader already re-reads `meta` on every version change."""
+        row = self._one('SELECT value FROM meta WHERE key = ?',
+                        (self._NOTICE_PREFIX + str(set_id),))
+        if row is None:
+            return None
+        try:
+            record = json.loads(row['value'])
+        except ValueError:
+            return None
+        return record if isinstance(record, dict) and record.get('text') else None
+
+    def set_notice(self, set_id, record):
+        """Write (or, with None, drop) a set's notice. Dropping one that is not there
+        writes nothing, so clearing on every staging action costs no version bump."""
+        key = self._NOTICE_PREFIX + str(set_id)
+        if record is None:
+            if self._one('SELECT 1 FROM meta WHERE key = ?', (key,)) is None:
+                return
+            with self._tx() as conn:
+                conn.execute('DELETE FROM meta WHERE key = ?', (key,))
+            return
+        with self._tx() as conn:
+            conn.execute('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)',
+                         (key, _dumps(dict(record))))
+
     def run_chain_blobs(self, run_id, chains):
         """{chain: {blob hash, ...}} over every entry of `run_id`, for `chains`.
         One distinct hash per chain is what "the run's target is one structure" means."""
@@ -541,6 +575,8 @@ class Container:
             self._release_blobs(ids)
             conn.execute('DELETE FROM sets WHERE id = ?', (set_id,))
             conn.execute('DROP TABLE IF EXISTS %s' % self._table(set_id))
+            conn.execute('DELETE FROM meta WHERE key = ?',
+                         (self._NOTICE_PREFIX + str(set_id),))
             self._delete_orphan_blobs()
 
     # -- columns -----------------------------------------------------------------
@@ -942,6 +978,12 @@ class Container:
                 values[key] = int(bool(int(value)))
             elif key == 'staged_object':
                 values[key] = None if value in (None, '') else str(value)
+            elif key == 'staged_by':
+                if value not in schema.STAGED_BY:
+                    raise SetInputError('staged_by is one of %s, got %r'
+                                        % (', '.join(repr(v) for v in schema.STAGED_BY),
+                                           value))
+                values[key] = value
             else:
                 values[key] = str(value if value is not None else '')
         assignments = ', '.join('%s = ?' % schema.quote(k) for k in values)

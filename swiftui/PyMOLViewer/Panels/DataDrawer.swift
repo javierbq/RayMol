@@ -475,6 +475,7 @@ struct DataDrawer: View {
         VStack(spacing: 0) {
             tabRow(set: set)
             Rectangle().fill(hairline).frame(height: 1)
+            SetNoticeBanner(set: set)      // #546: nothing unless the set has a notice
             switch engine.dataDrawerTab {
             case .plot:
                 SetPlotView(set: set, rows: engine.filteredSetRows)

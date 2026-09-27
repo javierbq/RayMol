@@ -1281,6 +1281,237 @@ class SharedTarget(BatchTestCase):
                          [['B'], ['B']])
 
 
+class RestageByRanking(BatchTestCase):
+    """#546: while a run lands, staging is provisional; when it ends, the set's top
+    entries by ranking key replace the provisional ones, and nothing a person staged,
+    pinned or unstaged is touched."""
+
+    KEY = 'backbone_valid_pct'          # a GEOMETRY_SPEC, higher_is_better=True
+
+    def score(self, jobs, scores):
+        """Give each job a runtime metric document with KEY = its score, the channel a
+        real runtime reports geometry on (`designing._document_values`)."""
+        import json
+        for job, value in zip(jobs, scores):
+            real = getattr(job, '_real', None) or job
+            path = os.path.join(_RESULTS['dir'], '%s.metrics.json' % real.job_id)
+            with open(path, 'w') as handle:
+                json.dump({'tool': GEN, 'values': [
+                    {'key': self.KEY, 'state': 1, 'value': float(value)}]}, handle)
+            real.metrics_path = path
+
+    def scored(self, row):
+        c = store.active()
+        return {e['name']: (e.get('scalars') or {}).get(self.KEY)
+                for e in c.entries(row['id'])}
+
+    def staged_names(self, row):
+        return sorted(e['name'] for e in self.staged(row))
+
+    def top(self, row, n, exclude=()):
+        values = {k: v for k, v in self.scored(row).items() if k not in exclude}
+        return sorted(sorted(values, key=lambda k: -values[k])[:n])
+
+    def run_ascending(self, n, scores=None, before_rest=None, **kwargs):
+        """Submit `n`, deliver the first, sort by KEY (as a header click would), call
+        `before_rest(row, jobs)` -- which returns how many jobs have been delivered by
+        then, when it delivered some itself -- then deliver the rest: the best arrive
+        LAST."""
+        jobs = self.design(n, **kwargs)
+        self.score(jobs, scores or [10.0 * (i + 1) for i in range(n)])
+        deliver_designs(jobs[:1])
+        row = self.only_set()
+        cmd.set_sort(row['name'], self.KEY, 1)
+        done = 1
+        if before_rest:
+            done = before_rest(row, jobs) or 1
+        out = io.StringIO()
+        with redirect_stdout(out):
+            deliver_designs(jobs[done:])
+        return row, jobs, out.getvalue()
+
+    def testBestDesignsArrivingLastEndUpStaged(self):
+        row, jobs, printed = self.run_ascending(10)
+        self.assertEqual(batch.running(), {})
+        self.assertEqual(self.staged_names(row), self.top(row, 6))
+        self.assertIn('Restaged top 6 by Backbone bonds in range', printed)
+        self.assertEqual(printed.count('Restaged'), 1, 'one line, not one per design')
+        c = store.active()
+        self.assertEqual({e['staged_by'] for e in self.staged(row)}, {'auto'})
+        self.assertEqual(c.notice(row['id'])['text'],
+                         'Restaged top 6 by Backbone bonds in range')
+        # The shared target (#545) came through the swap: one target, its users are
+        # exactly the staged entries, and the group holds those plus the target.
+        target = self.target(row)
+        self.assertTrue(target)
+        record = c.shared_target(row['id'])
+        self.assertEqual(sorted(record['entries']),
+                         sorted(e['id'] for e in self.staged(row)))
+        self.assertEqual(sorted(self.children(row['group_name'])),
+                         sorted([e['staged_object'] for e in self.staged(row)] + [target]))
+        for e in self.staged(row):
+            self.assertEqual(cmd.get_chains(e['staged_object']), ['B'])
+        # A staging action answers the notice.
+        cmd.set_unstage(row['name'], self.staged(row)[0]['name'])
+        self.assertIsNone(c.notice(row['id']))
+
+    def testPinnedHandStagedAndHandUnstagedEntriesAreLeftAlone(self):
+        names = {}
+
+        def mid_run(row, jobs):
+            deliver_designs(jobs[1:4])          # four landed, all provisional
+            staged = self.staged_names(row)
+            self.assertEqual(len(staged), 4)
+            first, second, third, fourth = [jobs[i].spec.name for i in range(4)]
+            cmd.set_pin(row['name'], first)
+            cmd.set_stage(row['name'], second)  # already staged: now the user's
+            cmd.set_unstage(row['name'], third)
+            cmd.delete(self.staged_object(row, fourth))   # unstaged by hand, too
+            names.update(pinned=first, kept=second, out=third, deleted=fourth)
+            return 4
+
+        row, jobs, printed = self.run_ascending(10, before_rest=mid_run)
+        # The four earliest scored lowest; two of them are protected, two stay out.
+        staged = self.staged_names(row)
+        self.assertIn(names['pinned'], staged)
+        self.assertIn(names['kept'], staged)
+        self.assertNotIn(names['out'], staged)
+        self.assertNotIn(names['deleted'], staged)
+        self.assertEqual(len(staged), 6)
+        self.assertEqual(sorted(set(staged) - {names['pinned'], names['kept']}),
+                         self.top(row, 4, exclude=names.values()))
+        self.assertIn('Restaged top 4 by Backbone bonds in range (2 pinned or staged by'
+                      ' you kept)', printed)
+        by = {e['name']: e['staged_by'] for e in store.active().entries(row['id'])}
+        self.assertEqual(by[names['kept']], 'user')
+        self.assertEqual(by[names['out']], 'user')
+        self.assertEqual(by[names['deleted']], 'user')
+
+    def staged_object(self, row, name):
+        return store.active().entry(row['id'], name)['staged_object']
+
+    def testNoRankingKeyLeavesTheProvisionalStagingAsItLanded(self):
+        jobs = self.design(8)
+        self.score(jobs, [10.0 * (i + 1) for i in range(8)])
+        out = io.StringIO()
+        with redirect_stdout(out):
+            deliver_designs(jobs)
+        row = self.only_set()
+        self.assertEqual(self.staged_names(row),
+                         sorted(j.spec.name for j in jobs[:6]))
+        self.assertNotIn('Restaged', out.getvalue())
+        self.assertIsNone(store.active().notice(row['id']))
+
+    def testARankingKeyWithNoValuesLeavesTheStagingAlone(self):
+        def rank_on_empty(row, jobs):
+            c = store.active()
+            c.declare_columns(row['id'], [{'key': 'unscored', 'scope': 'object',
+                                           'dtype': 'float', 'label': 'Unscored'}])
+            cmd.set_sort(row['name'], 'unscored', 1)
+
+        row, jobs, printed = self.run_ascending(8, before_rest=rank_on_empty)
+        self.assertEqual(self.staged_names(row), sorted(j.spec.name for j in jobs[:6]))
+        self.assertNotIn('Restaged', printed)
+
+    def testAnExtendingRunRanksTheWholeSetEvenIntoAFullBudget(self):
+        row, first, _ = self.run_ascending(6, seed=7)
+        self.assertEqual(self.staged_names(row), sorted(j.spec.name for j in first))
+        # Ten more like these, all better: the set is full, so none get a slot as they
+        # land, and the end of the run still puts the best six of all sixteen in view.
+        again = cmd.binder_design(GEN, 'tgt', 'tgt and resi 5', length=6, n_designs=10,
+                                  seed=7)
+        self.score(again, [100.0 + i for i in range(10)])
+        out = io.StringIO()
+        with redirect_stdout(out):
+            deliver_designs(again)
+        c = store.active()
+        self.assertEqual([s['name'] for s in c.sets()], [row['name']])
+        self.assertEqual(c.count(row['id']), 16)
+        self.assertEqual(self.staged_names(row), self.top(row, 6))
+        self.assertTrue(set(self.staged_names(row)) <= {j.spec.name for j in again})
+        self.assertIn('Restaged top 6', out.getvalue())
+        self.assertEqual(len(self.children(row['group_name'])), 7, 'six and the target')
+
+    def testACancelledRunIsRestagedOverWhatLanded(self):
+        from pymol import designing
+        jobs = self.design(10)
+        self.score(jobs, [10.0 * (i + 1) for i in range(10)])
+        deliver_designs(jobs[:1])
+        row = self.only_set()
+        cmd.set_sort(row['name'], self.KEY, 1)
+        deliver_designs(jobs[1:7])
+        self.assertTrue(batch.running())
+        out = io.StringIO()
+        with redirect_stdout(out):
+            for job in jobs[7:]:
+                job.cancel()
+                designing.discard_pending(job.spec.name)
+        self.assertEqual(batch.running(), {})
+        self.assertEqual(store.active().count(row['id']), 7)
+        self.assertEqual(self.staged_names(row), self.top(row, 6))
+        self.assertIn('Restaged top 6', out.getvalue())
+        # The notice is readable and dismissable from the command line, as in the drawer.
+        self.assertEqual(cmd.set_notice(row['name']),
+                         'Restaged top 6 by Backbone bonds in range')
+        cmd.set_notice(row['name'], 1)
+        self.assertIsNone(store.active().notice(row['id']))
+        self.assertEqual(cmd.set_notice(row['name']), '')
+
+    def testALaterSortDoesNotRestage(self):
+        row, jobs, _ = self.run_ascending(10)
+        before = self.staged_names(row)
+        cmd.set_sort(row['name'], self.KEY, 0)          # worst first now
+        self.assertEqual(self.staged_names(row), before)
+
+    def testABudgetHeldByTheUserLeavesNoRoomAndMovesNothing(self):
+        def take_it(row, jobs):
+            deliver_designs(jobs[1:2])
+            cmd.set_stage(row['name'], '%s+%s' % (jobs[0].spec.name, jobs[1].spec.name))
+            cmd.set_budget(1, row['name'])
+            return 2
+
+        row, jobs, printed = self.run_ascending(6, before_rest=take_it)
+        self.assertEqual(self.staged_names(row),
+                         sorted([jobs[0].spec.name, jobs[1].spec.name]))
+        self.assertNotIn('Restaged', printed)
+
+    def testASingleDesignIsNeverRestaged(self):
+        self.helix()
+        jobs = [cmd.binder_design(GEN, 'tgt', 'tgt and resi 5', length=6, n_designs=1)]
+        self.score(jobs, [5.0])
+        deliver_designs(jobs)
+        row = self.only_set()
+        self.assertEqual(self.staged_names(row), [jobs[0].spec.name])
+        self.assertIn(jobs[0].spec.name, cmd.get_names('objects'))
+
+    def testAVersionTwoFileGainsStagedBy(self):
+        import sqlite3
+        from pymol.sets import schema
+        jobs = self.design(2)
+        deliver_designs(jobs)
+        row = self.only_set()
+        path = os.path.join(_RESULTS['dir'], 'v2.raymol')
+        with redirect_stdout(io.StringIO()):
+            cmd.save(path)
+            cmd.reinitialize()
+        conn = sqlite3.connect(path)
+        conn.execute('ALTER TABLE entries DROP COLUMN staged_by')
+        conn.execute("UPDATE meta SET value = '2' WHERE key = 'format_version'")
+        conn.commit()
+        conn.close()
+        with redirect_stdout(io.StringIO()):
+            cmd.load(path)
+        c = store.active()
+        self.assertEqual(c.meta_get('format_version'), str(schema.FORMAT_VERSION))
+        self.assertEqual([e['staged_by'] for e in c.entries(row['id'])], ['', ''])
+        # '' on a staged entry is the user's: a restage never replaces it.
+        self.assertEqual(len(self.staged(row)), 2)
+        cmd.set_sort(row['name'], 'seed', 1)
+        result = binding.restage_by_ranking(c.get_set(row['id']))
+        self.assertEqual(result['kept'], 2)
+        self.assertEqual(result['staged'] + result['unstaged'], [])
+
+
 class Running(BatchTestCase):
 
     def testRunningIsCheapAndNeverRaises(self):
