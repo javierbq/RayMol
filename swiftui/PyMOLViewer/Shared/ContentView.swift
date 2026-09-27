@@ -695,8 +695,11 @@ struct ContentView: View {
             : nil
         return PanelLayout.macColumnPlan(
             windowHeight: windowHeight, consoleHeight: console, topRail: macAnyTopPane,
+            // No banner: it is transient (every agent command) and must not unmount the
+            // drawer or move the yield; it takes its height from the viewport instead
+            // (macViewport's floor, #543 review).
             sequenceObjects: engine.sequenceVisible ? engine.sequences.count : nil,
-            mcpBanner: macMCPBannerShowing, dockedModeBar: macModeBarDocked,
+            dockedModeBar: macModeBarDocked,
             drawerVisible: engine.dataDrawerVisible, tab: engine.dataDrawerTab,
             drawerFrac: CGFloat(dataDrawerFrac))
     }
@@ -911,13 +914,18 @@ struct ContentView: View {
                         // open further. The .id() forces the VSplitView to
                         // re-adopt idealHeight when the row count changes (otherwise
                         // a pinned divider keeps the panel at its first-seen height,
-                        // hiding sequences loaded later) — including when the drawer
-                        // opens or closes and the plan gives rows up or back (#543).
+                        // hiding sequences loaded later).
                         .frame(minHeight: PanelLayout.macMinSequenceStripHeight,
                                idealHeight: PanelLayout.sequenceStripIdealHeight(
                                    objects: macSequenceRows(windowHeight: winGeo.size.height)),
-                               maxHeight: PanelLayout.macMaxSequenceStripHeight)
-                        .id(macSequenceRows(windowHeight: winGeo.size.height))
+                               maxHeight: PanelLayout.sequenceStripMaxHeight(
+                                   plannedRows: macSequenceRows(windowHeight: winGeo.size.height),
+                                   objects: engine.sequences.count))
+                        // Keyed on the OBJECT rows only, as before #543: a yield must not
+                        // re-identify the pane (that lost its shift-click anchor and drag
+                        // state and re-ran fetchSequences on every column change). The
+                        // yield is carried by the maxHeight cap above instead.
+                        .id(PanelLayout.sequenceStripRows(objects: engine.sequences.count))
                 }
 
                 // The viewport takes the remaining (majority of) space, with the
@@ -1311,7 +1319,11 @@ struct ContentView: View {
     @ViewBuilder
     private var macViewport: some View {
         MetalViewport()
-            .frame(minWidth: 400, minHeight: PanelLayout.macViewportMinHeight)
+            // Less the MCP banner while a tool runs: the banner is kept out of the
+            // column plan so it cannot flip the drawer, so it is the viewport that
+            // gives it its 32pt for those seconds (#543 review).
+            .frame(minWidth: 400,
+                   minHeight: PanelLayout.viewportMinHeight(mcpBanner: macMCPBannerShowing))
             .layoutPriority(1)
             .overlay(alignment: .top) {
                 if engine.measureMode != nil { measureOverlay }

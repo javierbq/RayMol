@@ -793,7 +793,7 @@ struct SetTableView: View {
     private static let starWidth: CGFloat = 20
     private static let stateWidth: CGFloat = 20
     private static let nameWidth: CGFloat = 150
-    private static let rowHeight: CGFloat = 22
+    private static let rowHeight: CGFloat = PanelLayout.macDrawerRowHeight
     /// Metric columns share what is left of the width, between these bounds.
     private static let metricMin: CGFloat = 60
     private static let metricMax: CGFloat = 110
@@ -963,7 +963,7 @@ struct SetTableView: View {
         .font(.system(size: 10).monospacedDigit())
         .foregroundColor(PanelTheme.disabledColor)
         .padding(.horizontal, 8)
-        .frame(height: 18)
+        .frame(height: PanelLayout.macTableRunHeaderHeight)
         .help("The same on every entry of the set:\n"
               + columns.map { column -> String in
                   let value = engine.setRows.first.map { $0.value(column) } ?? .null
@@ -995,7 +995,7 @@ struct SetTableView: View {
         .font(.system(size: 10, weight: .semibold))
         .foregroundColor(PanelTheme.headerColor)
         .padding(.horizontal, 6)
-        .frame(height: 20)
+        .frame(height: PanelLayout.macTableHeaderRowHeight)
     }
 
     private func histogramRow(model: SetTableModel, metricWidth: CGFloat) -> some View {
@@ -1016,7 +1016,7 @@ struct SetTableView: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 6)
-        .frame(height: 16)
+        .frame(height: PanelLayout.macTableHistogramHeight)
     }
 
     private func headerCell(_ key: String, title: String, model: SetTableModel,
@@ -1099,7 +1099,7 @@ struct SetTableView: View {
             }
         }
         .padding(.horizontal, 8)
-        .frame(height: 24)
+        .frame(height: PanelLayout.macTableFooterHeight)
     }
 
     /// What Send to ▾ acts on: the rows the user picked, else the active filter — the
@@ -1757,7 +1757,7 @@ private struct SetTableRowView: View {
             Spacer(minLength: 0)
         }
         .font(.system(size: 11).monospacedDigit())
-        .frame(height: 22)
+        .frame(height: PanelLayout.macDrawerRowHeight)
         .contentShape(Rectangle())
         .help(tooltip)
     }

@@ -157,10 +157,27 @@ enum PanelLayout {
     /// `DataDrawer.tabRow` — the tab strip with the filter bar beside it — and the
     /// hairline under it. The first thing under the header.
     static let macDrawerTabRowHeight: CGFloat = 24
-    /// `SetTableView`'s own chrome: the column header (20), the histogram/brush strip
-    /// (16), the footer (24) and their two hairlines.
-    static let macDrawerTableChrome: CGFloat = 62
-    /// One table row.
+    /// `SetTableView.runHeaderRow` (#544): the run's constants on one line above the
+    /// column headers. Shown only when the set HAS constant columns — the ordinary batch
+    /// case — and charged ALWAYS (#543 review): the flag lives in a table layout the
+    /// column arithmetic does not see, and over-charging 18pt costs a set without one a
+    /// little comfort, while under-charging is a floor that draws no row.
+    static let macTableRunHeaderHeight: CGFloat = 18
+    /// `SetTableView.headerRow` — the column headers.
+    static let macTableHeaderRowHeight: CGFloat = 20
+    /// `SetTableView.histogramRow` — the per-column histogram/brush strip.
+    static let macTableHistogramHeight: CGFloat = 16
+    /// `SetTableView.footer`.
+    static let macTableFooterHeight: CGFloat = 24
+    /// `SetTableView`'s own chrome: the run header (18), the column header (20), the
+    /// histogram/brush strip (16), the footer (24) and their two hairlines — 80. The
+    /// view reads each of these constants for its frames (#543 review), so the budget
+    /// and the view are one set of numbers. 62 before #544's run header.
+    static var macDrawerTableChrome: CGFloat {
+        macTableRunHeaderHeight + macTableHeaderRowHeight + macTableHistogramHeight
+            + macDrawerHairline + macDrawerHairline + macTableFooterHeight
+    }
+    /// One table row (`SetTableView.rowHeight`, `SetTableRowView`'s frame).
     static let macDrawerRowHeight: CGFloat = 22
     /// A hairline, wherever one separates two of the above.
     static let macDrawerHairline: CGFloat = 1
@@ -213,9 +230,12 @@ enum PanelLayout {
 
     /// `SetPlotView.controls` — the x / y / colour pickers row (`.frame(height: 24)`).
     static let macPlotControlsHeight: CGFloat = 24
-    /// `SetPlotView`'s x-axis histogram brush: `.frame(height: 18)` plus
-    /// `.padding(.bottom, 2)`.
-    static let macPlotAxisStripHeight: CGFloat = 20
+    /// `SetPlotView`'s x-axis histogram brush and the padding under it.
+    static let macPlotAxisBrushHeight: CGFloat = 18
+    static let macPlotAxisBrushBottomPadding: CGFloat = 2
+    static var macPlotAxisStripHeight: CGFloat {
+        macPlotAxisBrushHeight + macPlotAxisBrushBottomPadding
+    }
     /// `SetPlotView.footer` (`.frame(height: 22)`).
     static let macPlotFooterHeight: CGFloat = 22
     /// Everything `SetPlotView` draws that is NOT `plotArea`: controls, hairline, the
@@ -225,10 +245,12 @@ enum PanelLayout {
         macPlotControlsHeight + macDrawerHairline + macPlotAxisStripHeight
             + macDrawerHairline + macPlotFooterHeight
     }
-    /// `SetPlotView.topGutter + bottomGutter` (8 + 16): the part of `plotArea` the tick
-    /// labels take, outside the plotted rectangle.
-    static let macPlotGutterHeight: CGFloat = 24
-    /// `SetPlotView.cardSize.height`: the hover card is drawn INSIDE the plotted
+    /// `SetPlotView.topGutter` / `bottomGutter`: the part of `plotArea` the tick labels
+    /// take, outside the plotted rectangle.
+    static let macPlotTopGutter: CGFloat = 8
+    static let macPlotBottomGutter: CGFloat = 16
+    static var macPlotGutterHeight: CGFloat { macPlotTopGutter + macPlotBottomGutter }
+    /// `SetPlotView.cardSize.height` (the view reads this): the hover card is drawn INSIDE the plotted
     /// rectangle, so a rectangle shorter than this cannot show it — hover is how a
     /// point is identified, so below that the plot is a picture, not a tool.
     static let macPlotHoverCardHeight: CGFloat = 58
@@ -238,7 +260,8 @@ enum PanelLayout {
 
     /// `LineageView.header` (`.frame(height: 20)`) and the hairline under it.
     static let macLineageHeaderHeight: CGFloat = 20
-    /// `LineageView.margin` (18, above and below the canvas) and `rowHeight` (16).
+    /// `LineageView.margin` (18, above and below the canvas) and `rowHeight` (16); the
+    /// view reads these.
     static let macLineageMargin: CGFloat = 18
     static let macLineageRowPitch: CGFloat = 16
     /// The smallest Lineage canvas the tab is drawn at: its two margins and three node
@@ -252,7 +275,8 @@ enum PanelLayout {
     static let macPreferredChartAreaHeight: CGFloat = 180
 
     /// The table rows a Table or Sequences drawer asks for before the Object viewer
-    /// gives up rows for it (#543's "at least 3 table rows" at the default window).
+    /// gives up rows for it (#543's "at least 3 table rows" at the default window):
+    /// 132 + 66 = 198pt with the run header.
     /// Below the untouched default's four on purpose: three rows is a usable table,
     /// and the fourth is not worth a sequence row the user can see.
     static let macComfortTableRows = 3
@@ -260,7 +284,8 @@ enum PanelLayout {
     /// The drawer's FLOOR on `tab`: below it the tab draws chrome and no data, so
     /// `drawerFits` shows the hint and the drag divider will not go under it.
     ///
-    /// Table and Sequences keep `macMinDrawerHeight` (one row, 136pt). Plot is
+    /// Table and Sequences keep `macMinDrawerHeight` (one row: 154pt with #544's run
+    /// header, 136 before). Plot is
     /// `macDrawerAboveTabHeight + macPlotChromeHeight + macMinPlotAreaHeight` = 202pt;
     /// Lineage `… + macLineageHeaderHeight + hairline + macMinLineageAreaHeight` = 157pt.
     static func minDrawerHeight(tab: DataDrawerTab) -> CGFloat {
@@ -522,11 +547,24 @@ enum PanelLayout {
     /// drawer shows its hint, and then the viewer keeps all its rows, because giving
     /// them up would buy nothing.
     ///
+    /// The yield's target respects a height the USER dragged to (#543 review): with a
+    /// stored fraction the viewer yields only toward that height (lifted to the tab's
+    /// floor) when it is below the comfort height — the user already said how much
+    /// drawer they want.
+    ///
+    /// NO MCP banner term, on purpose (#543 review). The banner is up only while an
+    /// agent's tool call runs, i.e. it flips on every command; charging it here swapped
+    /// the drawer for its hint and back on each one, destroying the tab's view state
+    /// (the plot's axes, colour and brush). So the banner never changes this plan: it
+    /// takes its 32pt from the VIEWPORT instead, which may dip that far below its floor
+    /// while a tool runs — see `viewportMinHeight(mcpBanner:)`. A docked Predict/Binder
+    /// bar is persistent and IS charged.
+    ///
     /// `sequenceObjects` is the enabled-object count when the viewer is showing
     /// (nil = hidden); `drawerVisible` false plans the column with no drawer at all.
     static func macColumnPlan(windowHeight: CGFloat, consoleHeight: CGFloat?,
                               topRail: Bool, sequenceObjects: Int?,
-                              mcpBanner: Bool, dockedModeBar: Bool,
+                              dockedModeBar: Bool,
                               drawerVisible: Bool, tab: DataDrawerTab,
                               drawerFrac: CGFloat) -> MacColumnPlan {
         let fullRows = sequenceObjects.map { sequenceStripRows(objects: $0) }
@@ -534,7 +572,7 @@ enum PanelLayout {
             drawerCeiling(windowHeight: windowHeight,
                           used: drawerColumnUsed(consoleHeight: consoleHeight,
                                                  topRail: topRail, sequenceRows: rows,
-                                                 mcpBanner: mcpBanner,
+                                                 mcpBanner: false,
                                                  dockedModeBar: dockedModeBar))
         }
         guard drawerVisible else {
@@ -543,7 +581,8 @@ enum PanelLayout {
         }
         var rows = fullRows
         if let full = fullRows, full > 1, drawerFits(ceiling: ceiling(rows: 1), tab: tab) {
-            let comfort = comfortDrawerHeight(tab: tab)
+            let comfort = yieldTarget(tab: tab, drawerFrac: drawerFrac,
+                                      windowHeight: windowHeight)
             var r = full
             while r > 1, ceiling(rows: r) < comfort { r -= 1 }
             rows = r
@@ -557,6 +596,37 @@ enum PanelLayout {
                              drawerHeight: drawerHeight(frac: drawerFrac,
                                                         windowHeight: windowHeight,
                                                         maxHeight: c, tab: tab))
+    }
+
+    /// The drawer height the Object viewer yields rows toward: the tab's comfort height,
+    /// or — when the user has dragged the drawer (a stored fraction) — the smaller of
+    /// that and their height lifted to the tab's floor.
+    static func yieldTarget(tab: DataDrawerTab, drawerFrac: CGFloat,
+                            windowHeight: CGFloat) -> CGFloat {
+        let comfort = comfortDrawerHeight(tab: tab)
+        guard drawerFrac.isFinite, drawerFrac > 0, windowHeight.isFinite, windowHeight > 0
+        else { return comfort }
+        return min(comfort, max(drawerFrac * windowHeight, minDrawerHeight(tab: tab)))
+    }
+
+    /// The viewport's floor as the VIEW enforces it: `macViewportMinHeight`, less the
+    /// MCP banner while it is up. The banner is transient and is deliberately left out
+    /// of the column plan (see `macColumnPlan`), so it is the viewport that gives the
+    /// banner its 32pt for the few seconds a tool call runs.
+    static func viewportMinHeight(mcpBanner: Bool) -> CGFloat {
+        macViewportMinHeight - (mcpBanner ? macMCPBannerHeight : 0)
+    }
+
+    /// The Object viewer's `maxHeight` in the split. The pane's `.id` is keyed on its
+    /// OBJECT rows only (#543 review: re-identifying it on every column change lost its
+    /// shift-click anchor and drag state and re-fetched the sequences), so a yield
+    /// cannot re-seat its ideal height; capping the max is what makes the split give
+    /// the rows back to the drawer. Not yielding → the usual generous cap.
+    static func sequenceStripMaxHeight(plannedRows: Int?, objects: Int) -> CGFloat {
+        guard let plannedRows, plannedRows < sequenceStripRows(objects: objects) else {
+            return macMaxSequenceStripHeight
+        }
+        return sequenceStripIdealHeight(objects: plannedRows)
     }
 
     // MARK: - the hint's ways out (#543)
