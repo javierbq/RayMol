@@ -36,6 +36,7 @@ Nothing here is reached by a poll except `running()`, which reads process state 
 Spec: docs/superpowers/specs/2026-09-13-sets-batch-delivery-design.md,
 docs/superpowers/specs/2026-09-16-sets-sequence-design-design.md
 """
+import os
 import sys
 
 from pymol import colorprinting
@@ -73,9 +74,10 @@ class _Batch:
 
     __slots__ = ('id', 'set_id', 'run_id', 'tool', 'total', 'settled', 'landed',
                  'group', 'superpose', 'slots', 'members', 'order', 'detached',
-                 'quiet_end')
+                 'quiet_end', 'home', 'away')
 
-    def __init__(self, id, set_id, run_id, tool, total, group, superpose, slots):
+    def __init__(self, id, set_id, run_id, tool, total, group, superpose, slots,
+                 home=''):
         self.id = id
         self.set_id = set_id
         self.run_id = run_id
@@ -105,6 +107,14 @@ class _Batch:
         #: Set by `quiesce` when the batch is being torn down rather than finishing
         #: (`clear_pending`): its end is not a run's end, so nothing is restaged.
         self.quiet_end = False
+        #: Where this batch's set and run LIVE: the path of the container it opened
+        #: in, followed through Save As (`installed`) and through the working file
+        #: being kept under a recovered_ name (`moved`). When the session is replaced
+        #: under the batch, later results are written back here (#448).
+        self.home = os.path.abspath(home) if home else ''
+        #: True while `home` is not the active container: the batch is writing into a
+        #: document nobody has open, so it is not this session's badge.
+        self.away = False
 
 
 def _container():
@@ -240,7 +250,8 @@ def open(name, tool, tool_version='', inputs=None, total=1, reference='',
     else:
         staged_now = len(binding._staged(c, set_row['id'], _self=_self))
         slots = max(binding.budget(set_row) - staged_now, 0)
-    batch = _Batch(name, set_row['id'], run_id, tool, total, group, superpose, slots)
+    batch = _Batch(name, set_row['id'], run_id, tool, total, group, superpose, slots,
+                   home=c.path)
     _BATCHES[name] = batch
     return batch
 
@@ -306,14 +317,56 @@ def _still_ours(batch):
     return run.get('set_id') == batch.set_id
 
 
-def _check_document(batch):
-    if not _still_ours(batch):
-        batch.detached = True
-        raise SetError(
-            'the set document changed while batch %s was running (a .raymol or .pse'
-            ' was loaded, or the session was reset); its remaining results land as'
-            ' plain objects in the group %s and are not written to any set'
-            % (batch.id, batch.id))
+def _detach(batch):
+    batch.detached = True
+    raise SetError(
+        'the set document changed while batch %s was running (a .raymol or .pse'
+        ' was loaded, or the session was reset), and the document it was writing into'
+        ' (%s) cannot be written any more; its remaining results land as plain objects'
+        ' in the group %s and are not written to any set'
+        % (batch.id, batch.home or 'none', batch.id))
+
+
+def _open_home(batch):
+    """The batch's own container, opened on the side, when the session was replaced
+    under it (#448) -- or None when that cannot be done safely.
+
+    Safely means: the file is still there (a Container on a missing path would CREATE
+    one, and results would go into a file nobody knows about), it is not the active
+    container (then `_still_ours` would have said so), and the batch's run resolves to
+    the batch's set in it. That last check is the same identity `_still_ours` uses, so
+    a pid-scoped working name reused by a new session can never be mistaken for it.
+    """
+    path = batch.home
+    if not path or not os.path.isfile(path):
+        return None
+    if store.is_open():
+        try:
+            if os.path.samefile(path, _container().path):
+                return None
+        except OSError:
+            pass
+    try:
+        c = store.Container(path)
+    except Exception:
+        return None
+    try:
+        ok = c.run(batch.run_id).get('set_id') == batch.set_id
+    except Exception:
+        ok = False
+    if not ok:
+        c.close()
+        return None
+    return c
+
+
+def _left_behind(batch, object_name, entry_name, _self=cmd):
+    """Say where a result that landed in a document nobody has open went. Said every
+    time, for the reason `_stage_or_discard` says its line: a finished design that does
+    not appear in the scene with nothing on the console looks lost."""
+    colorprinting.parrot(
+        ' sets: %s landed as entry %s of %s in %s, which is not the open session;'
+        ' "load" that file to see it.' % (object_name, entry_name, batch.id, batch.home))
 
 
 def land(object_name, state=None, _self=cmd):
@@ -333,10 +386,12 @@ def land(object_name, state=None, _self=cmd):
     if batch is None or batch.detached:
         return None
     member = batch.members[object_name]
-    _check_document(batch)
-    c = _container()
     n_states = max(1, int(_self.count_states(object_name) or 1))
     which = n_states if state is None else int(state)
+    if not _still_ours(batch):
+        return _land_away(batch, object_name, member, which, _self=_self)
+    c = _container()
+    batch.away = False
     entry_name = binding._unique_entry_name(c, batch.set_id, member['entry'])
     ids = binding.capture_object(batch.set_id, object_name, name=entry_name,
                                  run_id=batch.run_id, parents=member['parents'],
@@ -367,6 +422,52 @@ def land(object_name, state=None, _self=cmd):
             'entry': entry_name}
 
 
+def _land_away(batch, object_name, member, which, _self=cmd):
+    """`land` for a batch whose session was replaced under it (#448): the entry is
+    written into the batch's OWN container -- the untitled session's file, now kept
+    under a recovered_ name, or the user's document, now closed -- and the object is
+    taken out of the scene, which belongs to a different document.
+
+    Why not leave it in the new scene, as #445 did: that scene is not the campaign's.
+    An object dropped into it is written to no set, is saved into the wrong document if
+    that one is saved, and is simply gone at quit if it is not -- and the campaign's own
+    file, the one the recovery flow offers back, would be missing every design that
+    landed after the load. Here each result is on disk in the campaign's file before
+    the object is deleted, exactly the order `_stage_or_discard` keeps for a design
+    that lands into a full budget.
+
+    Falls back to #445's behaviour, once, when that file cannot be written any more
+    (deleted, moved, unreadable): the object stays where it is, in the batch's group.
+    """
+    c = _open_home(batch)
+    if c is None:
+        _detach(batch)
+    batch.away = True
+    try:
+        entry_name = binding._unique_entry_name(c, batch.set_id, member['entry'])
+        ids = binding.capture_object(batch.set_id, object_name, name=entry_name,
+                                     run_id=batch.run_id, parents=member['parents'],
+                                     states=which, scalars=member['scalars'],
+                                     specs=member['specs'], into=c, _self=_self)
+    finally:
+        c.close()
+    entry_id = ids[0]
+    batch.landed += 1
+    # On disk in the batch's file: only now may the object leave the scene.
+    try:
+        mstore.forget_object(object_name)
+    except Exception:
+        pass
+    try:
+        _self.delete(object_name)
+    except Exception:
+        pass
+    _left_behind(batch, object_name, entry_name, _self=_self)
+    _settle(batch, object_name)
+    return {'set_id': batch.set_id, 'entry_id': entry_id, 'staged': False,
+            'entry': entry_name, 'path': batch.home}
+
+
 def land_sequence(member_name, sequences, scalars=None, arrays=(), specs=(), _self=cmd):
     """Write a member that has no object -- a DESIGNED SEQUENCE (#453) -- as an entry of
     its batch's set. Returns None when the name is not a member (or its batch detached),
@@ -391,8 +492,28 @@ def land_sequence(member_name, sequences, scalars=None, arrays=(), specs=(), _se
     if batch is None or batch.detached:
         return None
     member = batch.members[member_name]
-    _check_document(batch)
-    c = _container()
+    away = not _still_ours(batch)
+    if away:
+        # The session was replaced under the batch (#448): the sequence goes into the
+        # batch's own container, as `_land_away` does for a structure. There is no
+        # object to take out of the scene.
+        c = _open_home(batch)
+        if c is None:
+            _detach(batch)
+        batch.away = True
+    else:
+        c = _container()
+        batch.away = False
+    try:
+        return _write_sequence(batch, c, member_name, member, sequences, scalars,
+                               arrays, specs, away)
+    finally:
+        if away:
+            c.close()
+
+
+def _write_sequence(batch, c, member_name, member, sequences, scalars, arrays, specs,
+                    away):
     entry_name = binding._unique_entry_name(c, batch.set_id, member['entry'])
     all_scalars = dict(member['scalars'])
     all_scalars.update(dict(scalars or {}))
@@ -407,9 +528,14 @@ def land_sequence(member_name, sequences, scalars=None, arrays=(), specs=(), _se
                            scalars=all_scalars, arrays=list(arrays or ()),
                            specs=all_specs)
     batch.landed += 1
+    if away:
+        _left_behind(batch, member_name, entry_name)
     _settle(batch, member_name)
-    return {'set_id': batch.set_id, 'entry_id': entry_id, 'staged': False,
-            'entry': entry_name}
+    out = {'set_id': batch.set_id, 'entry_id': entry_id, 'staged': False,
+           'entry': entry_name}
+    if away:
+        out['path'] = batch.home
+    return out
 
 
 def _stage_or_discard(batch, c, entry_id, entry_name, object_name, _self=cmd):
@@ -570,7 +696,7 @@ def running(set_id=None):
     try:
         out = {}
         for batch in _BATCHES.values():
-            if batch.detached:
+            if batch.detached or batch.away:
                 continue
             if set_id is not None and batch.set_id != set_id:
                 continue
@@ -579,3 +705,50 @@ def running(set_id=None):
         return out
     except Exception:
         return {}
+
+
+# -- Following the document (#448) -------------------------------------------------------
+
+
+def _same(a, b):
+    return bool(a) and bool(b) and os.path.abspath(a) == os.path.abspath(b)
+
+
+def _observe(event, container=None, path=None, old=None, new=None, **_):
+    """The store's observer (store.observe): keep each batch's `home` pointing at the
+    file its set and run are in, and answer "who is still writing to this file".
+
+    Cheap on purpose -- `installed` is one indexed lookup per live batch, and a store
+    change is not on any poll. `running()` itself still reads nothing but these dicts.
+    """
+    if event == 'installed':
+        for batch in list(_BATCHES.values()):
+            if batch.detached:
+                continue
+            ours = False
+            if container is not None and not container.closed:
+                try:
+                    ours = container.run(batch.run_id).get('set_id') == batch.set_id
+                except Exception:
+                    ours = False
+            if ours:
+                # Save As, or the batch's own file opened again: it is home, and the
+                # batch is this session's again.
+                batch.home = os.path.abspath(container.path)
+                batch.away = False
+            else:
+                batch.away = True
+        return None
+    if event == 'moved':
+        for batch in _BATCHES.values():
+            if _same(batch.home, old):
+                batch.home = os.path.abspath(new)
+        return None
+    if event == 'writers':
+        return [batch.id for batch in _BATCHES.values()
+                if not batch.detached and _same(batch.home, path)
+                and len(batch.settled) < max(batch.total, len(batch.order))]
+    return None
+
+
+store.observe(_observe)

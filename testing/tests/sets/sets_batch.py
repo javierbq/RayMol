@@ -869,18 +869,28 @@ class PredictOverASet(BatchTestCase):
 
 class GenerationCheck(BatchTestCase):
 
-    def testLandRefusesAfterTheStoreChangedUnderTheBatch(self):
+    def drop_kept_files(self):
+        """Delete what `release_working_file` kept, as a user deleting it in Finder
+        would: the one case where a batch that lost its session has nowhere to go."""
+        for name in os.listdir(self._sets_dir):
+            if name.startswith('recovered_'):
+                os.unlink(os.path.join(self._sets_dir, name))
+
+    def testLandFallsBackToPlainObjectsOnlyWhenItsOwnFileIsGone(self):
         jobs = self.design(3)
         deliver_designs(jobs[:1])
         row = self.only_set()
         self.assertEqual(store.active().count(row['id']), 1)
-        # Another document arrives mid-batch.
+        # Another document arrives mid-batch, and then the file the untitled session
+        # was kept in disappears (#448 would otherwise write the rest into it).
         other = os.path.join(_RESULTS['dir'], 'other.raymol')
         store.Container(other).close()
         with redirect_stdout(io.StringIO()):
             cmd.load(other)
         self.assertEqual(store.active().sets(), [])
-        self.assertEqual(batch.running()[row['id']]['done'], 1)   # not yet detached
+        # Not this session's badge any more: the set is not in the open file.
+        self.assertEqual(batch.running(), {})
+        self.drop_kept_files()
         # The next delivery's write is refused, cleanly, ONCE -- and the design is kept
         # as a plain grouped object, with a warning rather than an exception.
         out = io.StringIO()
@@ -888,6 +898,7 @@ class GenerationCheck(BatchTestCase):
             deliver_designs(jobs[1:2])
         self.assertIn('was not written to its set', out.getvalue())
         self.assertIn('document changed', out.getvalue())
+        self.assertIn('cannot be written any more', out.getvalue())
         self.assertEqual(batch.running(), {})                    # detached
         self.assertIsNone(batch.land(jobs[2].spec.name))         # no second raise
         out = io.StringIO()
@@ -900,16 +911,22 @@ class GenerationCheck(BatchTestCase):
         self.assertEqual(sorted(self.children(row['name'])),
                          sorted(j.spec.name for j in jobs[1:]))
         self.assertEqual(store.active().sets(), [])              # nothing written here
+        # And no file was CREATED where the kept one used to be.
+        self.assertEqual([n for n in os.listdir(self._sets_dir)
+                          if n.startswith('recovered_')], [])
 
-    def testLandRaisesOnceOnAGenerationChangeWithoutASession(self):
+    def testLandRaisesOnceWhenTheBatchsFileIsGoneWithoutASession(self):
         # The store-level contract, without deliver_result in the way.
         cmd.fab('ACDEFG', 'src', chain='A')
         b = batch.open('direct', 'user', total=1, group=False)
         self.assertTrue(batch.expect(b, 'src'))
-        store.reset()
+        with redirect_stdout(io.StringIO()):
+            store.reset()
+        self.drop_kept_files()
         self.assertRaises(SetError, batch.land, 'src')
         self.assertIsNone(batch.land('src'))
         self.assertEqual(batch.running(), {})
+        self.assertIn('src', cmd.get_names('objects'))
 
     def testAPseSaveMidBatchCarriesStagedDesignsAndWarnsAboutTheSet(self):
         cmd.set_budget(1)
@@ -985,6 +1002,228 @@ class GenerationCheck(BatchTestCase):
         self.assertEqual(batch.running()[row['id']]['done'], 1)
         deliver_designs(jobs[1:])
         self.assertEqual(len(self.staged(row)), 1)
+
+
+class SessionReplacedMidBatch(BatchTestCase):
+    """#448: `load x.pse`, `load other.raymol` and `reinitialize` while a batch is still
+    landing. What already landed is on disk afterwards, the console says where, and the
+    results that land later go to the SAME file -- never into the session that replaced
+    it, and never nowhere.
+
+    Measured before the fix: an untitled session's entries survived as a recovered_
+    file (#447) but nothing on the console said so except on one of the paths, a batch
+    with nothing landed yet lost its set and run outright, and every later design
+    landed as a plain object in the new scene -- in no set, in the wrong document if
+    that one was saved, and gone at quit if it was not.
+    """
+
+    HOWS = ('pse', 'raymol', 'raymol_with_session', 'reinitialize')
+
+    def kept_files(self):
+        return sorted(os.path.join(self._sets_dir, n) for n in os.listdir(self._sets_dir)
+                      if n.startswith('recovered_') and n.endswith('.raymol'))
+
+    def other_pse(self):
+        path = os.path.join(_RESULTS['dir'], 'other.pse')
+        if not os.path.exists(path):
+            with redirect_stdout(io.StringIO()):
+                cmd.fab('GG', 'scratch')
+                cmd.save(path, 'scratch')
+                cmd.delete('scratch')
+        return path
+
+    def other_raymol(self, with_session=False):
+        import pickle
+        path = os.path.join(_RESULTS['dir'], 'other_%d.raymol' % int(with_session))
+        store.remove_db_files(path)
+        c = store.Container(path)
+        if with_session:
+            cmd.fab('GG', 'scratch')
+            c.write_session(pickle.dumps(cmd.get_session('scratch'), 1))
+            cmd.delete('scratch')
+        c.close()
+        return path
+
+    def replace_session(self, how):
+        """Replace the session the way `how` says; return the console."""
+        target = {'pse': self.other_pse,
+                  'raymol': self.other_raymol,
+                  'raymol_with_session': lambda: self.other_raymol(True)}.get(how)
+        path = target() if target else None
+        out = io.StringIO()
+        with redirect_stdout(out):
+            if path:
+                cmd.load(path)
+            else:
+                cmd.reinitialize()
+        return out.getvalue()
+
+    def start(self, n=4, landed=2, titled=False):
+        jobs = self.design(n)
+        deliver_designs(jobs[:landed])
+        row = self.only_set()
+        doc = None
+        if titled:
+            doc = os.path.join(_RESULTS['dir'], 'campaign.raymol')
+            with redirect_stdout(io.StringIO()):
+                cmd.save(doc)
+        return jobs, row, doc
+
+    @staticmethod
+    def entries_in(path, set_id):
+        c = store.Container(path)
+        try:
+            return sorted(e['name'] for e in c.entries(set_id))
+        finally:
+            c.close()
+
+    # -- untitled ---------------------------------------------------------------------
+
+    def testUntitledLandedEntriesAreKeptAndTheConsoleSaysWhere(self):
+        for how in self.HOWS:
+            with self.subTest(how=how):
+                self.tearDown()
+                self.setUp()
+                jobs, row, _ = self.start()
+                landed = sorted(e['name'] for e in store.active().entries(row['id']))
+                console = self.replace_session(how)
+                kept = self.kept_files()
+                self.assertEqual(len(kept), 1, (how, os.listdir(self._sets_dir)))
+                self.assertEqual(self.entries_in(kept[0], row['id']), landed)
+                # One line, naming the set, the count, the path and the batch.
+                self.assertEqual(console.count('were never saved'), 1, console)
+                self.assertIn('2 entries in %s' % row['name'], console)
+                self.assertIn(kept[0], console)
+                self.assertIn('Still running: %s' % row['name'], console)
+                # Nothing of it in the session that replaced it.
+                self.assertEqual(store.active().sets(), [])
+                self.assertEqual(batch.running(), {})
+
+    def testUntitledLaterResultsLandInTheKeptFileNotInTheNewSession(self):
+        for how in self.HOWS:
+            with self.subTest(how=how):
+                self.tearDown()
+                self.setUp()
+                jobs, row, _ = self.start()
+                self.replace_session(how)
+                kept = self.kept_files()[0]
+                out = io.StringIO()
+                with redirect_stdout(out):
+                    deliver_designs(jobs[2:])
+                self.assertEqual(len(self.entries_in(kept, row['id'])), 4)
+                for job in jobs[2:]:
+                    self.assertIn(job.spec.name, out.getvalue())
+                    # On disk in the campaign's file, so out of a scene that is not
+                    # the campaign's.
+                    self.assertNotIn(job.spec.name, cmd.get_names('all'))
+                self.assertIn(kept, out.getvalue())
+                self.assertNotIn('was not written', out.getvalue())
+                self.assertEqual(store.active().sets(), [])      # the new document
+                self.assertEqual(batch.running(), {})
+                self.assertFalse(batch.is_running(row['name']))  # settled and reaped
+                # Offered back by the ordinary recovery flow, with every entry.
+                offered = {r['path']: r['entries'] for r in store.recoverable()}
+                self.assertEqual(offered.get(kept), 4)
+
+    def testABatchThatLandedNothingYetStillKeepsItsSetAndRun(self):
+        jobs, row, _ = self.start(n=3, landed=0)
+        console = self.replace_session('pse')
+        kept = self.kept_files()
+        self.assertEqual(len(kept), 1, os.listdir(self._sets_dir))
+        self.assertIn('no entries yet', console)
+        with redirect_stdout(io.StringIO()):
+            deliver_designs(jobs)
+        self.assertEqual(len(self.entries_in(kept[0], row['id'])), 3)
+
+    def testAnUntitledSessionWithNothingInItLeavesNothingAndSaysNothing(self):
+        # The #447 rule is unchanged for a session with no results and no batch.
+        store.active().create_set('empty')
+        console = self.replace_session('reinitialize')
+        self.assertEqual(self.kept_files(), [])
+        self.assertNotIn('never saved', console)
+
+    def testTheKeptFileCarriesTheSceneAndTheBatchLandsBackIntoItWhenReopened(self):
+        jobs, row, _ = self.start(n=4, landed=2)
+        staged = sorted(e['staged_object'] for e in self.staged(row))
+        self.assertEqual(len(staged), 2)
+        self.replace_session('pse')
+        kept = self.kept_files()[0]
+        deliver_designs(jobs[2:3])                     # one lands away
+        with redirect_stdout(io.StringIO()):
+            cmd.load(kept)
+        # The scene came back with the table: the staged designs are objects again.
+        for name in staged:
+            self.assertIn(name, cmd.get_names('objects'))
+        again = store.active().get_set(row['id'])
+        self.assertEqual(store.active().count(again['id']), 3)
+        # The batch is this session's again: its badge is back, and the last design
+        # lands, and is staged, in the open document like any other.
+        self.assertEqual(batch.running()[row['id']]['done'], 3)
+        deliver_designs(jobs[3:])
+        self.assertEqual(store.active().count(again['id']), 4)
+        self.assertIn(jobs[3].spec.name,
+                      [e['staged_object'] for e in self.staged(again)])
+        self.assertEqual(batch.running(), {})
+
+    def testAKeptFileIsNotDiscardedWhileItsBatchIsStillWritingToIt(self):
+        from pymol.sets.errors import SetInputError
+        jobs, row, _ = self.start(n=3, landed=1)
+        self.replace_session('reinitialize')
+        kept = self.kept_files()[0]
+        self.assertRaises(SetInputError, store.discard_recoverable, kept)
+        self.assertEqual(store.sweep_recovered(), [])
+        self.assertTrue(os.path.exists(kept))
+        with redirect_stdout(io.StringIO()):
+            deliver_designs(jobs[1:])
+        # Every member has settled: the file is an ordinary recovered container now.
+        store.discard_recoverable(kept)
+        self.assertFalse(os.path.exists(kept))
+
+    def testASequenceBatchLandsAwayToo(self):
+        b = batch.open('seqs', 'user', total=2, group=False, kind='sequences')
+        batch.expect(b, 'seq_1')
+        batch.expect(b, 'seq_2')
+        batch.land_sequence('seq_1', {'A': 'ACDE'})
+        with redirect_stdout(io.StringIO()):
+            store.reset()
+        kept = self.kept_files()
+        self.assertEqual(len(kept), 1)
+        with redirect_stdout(io.StringIO()):
+            result = batch.land_sequence('seq_2', {'A': 'GHIK'})
+        self.assertEqual(result['path'], kept[0])
+        self.assertEqual(self.entries_in(kept[0], b.set_id), ['seq_1', 'seq_2'])
+        self.assertFalse(store.is_open() and store.active().sets())
+
+    # -- titled -----------------------------------------------------------------------
+
+    def testATitledDocumentKeepsItsEntriesAndReceivesTheRest(self):
+        for how in self.HOWS:
+            with self.subTest(how=how):
+                self.tearDown()
+                self.setUp()
+                jobs, row, doc = self.start(titled=True)
+                console = self.replace_session(how)
+                # Committed as they landed: nothing was waiting for a Save.
+                self.assertEqual(len(self.entries_in(doc, row['id'])), 2)
+                self.assertIn('%s is still running' % row['name'], console)
+                self.assertIn(doc, console)
+                # A document is not a working file: nothing is "kept" beside it.
+                self.assertEqual(self.kept_files(), [])
+                self.assertNotIn('never saved', console)
+                out = io.StringIO()
+                with redirect_stdout(out):
+                    deliver_designs(jobs[2:])
+                self.assertEqual(len(self.entries_in(doc, row['id'])), 4)
+                self.assertIn(doc, out.getvalue())
+                for job in jobs[2:]:
+                    self.assertNotIn(job.spec.name, cmd.get_names('all'))
+                self.assertEqual(store.active().sets(), [])
+
+    def testATitledDocumentWithNoBatchRunningIsReplacedQuietly(self):
+        jobs, row, doc = self.start(n=2, landed=2, titled=True)
+        console = self.replace_session('pse')
+        self.assertNotIn('still running', console)
+        self.assertEqual(len(self.entries_in(doc, row['id'])), 2)
 
 
 class SharedTarget(BatchTestCase):

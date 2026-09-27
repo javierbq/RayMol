@@ -1322,6 +1322,7 @@ def active():
         retire_own_leftover()
         _ACTIVE = Container(working_path())
         _GENERATION += 1
+        _notify('installed', container=_ACTIVE)
     return _ACTIVE
 
 
@@ -1381,6 +1382,13 @@ def replace(container):
     _GENERATION += 1
     if previous is not None and previous is not container:
         previous.close()
+    _notify('installed', container=container)
+    if previous is not None and previous is not container \
+            and not _is_working(previous.path) \
+            and os.path.abspath(previous.path) != os.path.abspath(container.path):
+        # A user's document was replaced by another one. The file stays where it is;
+        # what may need saying is that a batch is still writing into it (#448).
+        _left_document(previous.path)
     return container
 
 
@@ -1395,7 +1403,9 @@ def reset():
     disappeared without a word.
 
     "Holds entries" is asked of the LIVE container, before the close, because that is
-    the one moment when the answer is free; see `Container.holds_entries`.
+    the one moment when the answer is free; see `Container.holds_entries`. A working
+    file a batch is still writing into is kept even before its first entry, and the
+    batch follows it (#448, `release_working_file`).
     """
     global _ACTIVE, _GENERATION
     previous = _ACTIVE
@@ -1405,8 +1415,108 @@ def reset():
         return
     held = previous.holds_entries()
     previous.close()
-    if os.path.abspath(previous.path) == os.path.abspath(working_path()):
-        retire_working_file(previous.path, held=held)
+    _notify('installed', container=None)
+    if _is_working(previous.path):
+        release_working_file(previous.path, held=held)
+    else:
+        _left_document(previous.path)
+
+
+def _is_working(path):
+    return os.path.abspath(path) == os.path.abspath(working_path())
+
+
+# -- Who is still writing (#448) ---------------------------------------------------------
+#
+# A batch keeps delivering for hours, and the document it was writing into can be
+# replaced under it at any moment (`load`, `reinitialize`, a quit). This module must
+# not import the batch module -- nothing here knows about the session -- so the batch
+# registers an OBSERVER and the store tells it what happened to its container:
+#
+#   installed(container)   a container became the active one (None: none is)
+#   writers(path)          -> ids of live batches whose results still go to `path`
+#   moved(old, new)        the working file was renamed out of the pid namespace
+#   kept(path, running)    an untitled session's container was preserved at `path`
+#   left(path, running)    a user's document was closed while batches still write to it
+#
+# The last two are what the console line hangs off (binding registers that half). An
+# observer that raises is ignored: a broken reporter must never cost a container.
+
+_OBSERVERS = []
+
+
+def observe(fn):
+    """Register `fn(event, **details)`. A truthy list answer is collected (only
+    `writers` asks for one). Idempotent."""
+    if fn not in _OBSERVERS:
+        _OBSERVERS.append(fn)
+    return fn
+
+
+def _notify(event, **details):
+    answers = []
+    for fn in list(_OBSERVERS):
+        try:
+            answer = fn(event, **details)
+        except Exception:
+            answer = None
+        if answer:
+            answers.extend(answer)
+    return answers
+
+
+def writers(path):
+    """Ids of live batches whose remaining results are written to the container at
+    `path`, whether or not it is open. [] when none, or when no batch module exists."""
+    return _notify('writers', path=os.path.abspath(os.fspath(path)))
+
+
+def release_working_file(path, held=None):
+    """`retire_working_file` for a working file whose session is being REPLACED
+    (`load`, `reinitialize`, a quit), plus what #448 adds to it:
+
+    * a working file a running batch still writes into is kept even when it holds no
+      entry yet -- the batch's set and run are in it, and its next result goes there;
+    * the batch hears where its container went (`moved`), so later results follow it
+      rather than landing in whatever new working file reuses the pid-scoped name;
+    * one console line says what was kept, where, and what is still writing to it.
+
+    Returns where the container ended up, or None when it was removed.
+    """
+    busy = writers(path)
+    kept = retire_working_file(path, held=True if busy else held)
+    if kept:
+        if os.path.abspath(kept) != os.path.abspath(path):
+            _notify('moved', old=os.path.abspath(path), new=os.path.abspath(kept))
+        _notify('kept', path=kept, running=writers(kept) or busy)
+    return kept
+
+
+def _left_document(path):
+    busy = writers(path)
+    if busy:
+        _notify('left', path=path, running=busy)
+
+
+def describe_container(path):
+    """`[(set name, entry count)]` for the closed container at `path`, in creation
+    order, or [] when it cannot be read. For the console line; never raises."""
+    try:
+        conn = sqlite3.connect(path)
+    except sqlite3.Error:
+        return []
+    try:
+        rows = conn.execute(
+            'SELECT s.name, (SELECT COUNT(*) FROM entries e WHERE e.set_id = s.id)'
+            ' FROM sets s ORDER BY s.created, s.name').fetchall()
+        return [(str(name), int(n)) for name, n in rows]
+    except sqlite3.Error:
+        return []
+    finally:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
 
 
 def retire_working_file(path, held=None, force=False):
@@ -1606,6 +1716,10 @@ def discard_recoverable(path):
     path = os.path.abspath(os.fspath(path))
     if not is_preserved(path):
         raise SetInputError('%s is not a recoverable container' % path)
+    if writers(path):
+        # A batch that outlived its session is still writing into this file (#448).
+        raise SetInputError('%s is still receiving results from a running batch'
+                            % path)
     remove_db_files(path)
     return path
 
@@ -1639,7 +1753,8 @@ def sweep_recovered(keep=RECOVERED_KEEP, max_age=RECOVERED_MAX_AGE):
             continue
         mtime = _mtime(path)
         info = inspect_container(path)
-        if info is None or is_container_open(path) or _has_sidecar(path):
+        if info is None or is_container_open(path) or _has_sidecar(path) \
+                or writers(path):
             kept += 1
             continue
         stale = (max_age and mtime is not None and (now - mtime) > max_age)

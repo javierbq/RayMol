@@ -371,6 +371,17 @@ USAGE
         '''
         r = DEFAULT_ERROR
         what = reinit_code[reinit_sc.auto_err(str(what),'option')]
+        if what == 0 and not object:
+            # Before the scene goes: an untitled session's working file is kept for
+            # recovery when it holds entries or a batch still writes into it (#448),
+            # and it keeps the scene too. A no-op without such a file.
+            try:
+                from pymol.sets import store as _set_store
+                if _set_store.is_open():
+                    from pymol.sets import binding as _set_binding
+                    _set_binding.checkpoint_before_replace(_self=_self)
+            except Exception:
+                pass
         try:
             _self.lock(_self)
             r = _cmd.reinitialize(_self._COb,int(what),str(object))

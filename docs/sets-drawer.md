@@ -362,6 +362,33 @@ entries is renamed `recovered_<date>_<pid>.raymol` and kept, and the same is tru
 file a crash left behind (which the next launch used to sweep). On quit RayMol also
 writes the session into it, so what comes back is the scene as well as the sets.
 
+**Opening another session while a batch is running keeps the batch's results** (#448).
+`load x.pse`, `load other.raymol` and `reinitialize` (File ▸ Clear Session) replace
+the session; they do not discard the campaign. In an untitled session the working file
+is kept exactly as on quit — renamed `recovered_…`, with the scene written into it —
+and this happens even before the first design has landed, because the batch's set and
+run are in it. The console says what was kept and where, in one line:
+
+    sets: the untitled session's sets were never saved, so they were kept: 12 entries in
+    rfd3_ab12, at ~/Library/RayMolState/recovered_20260927-114453_4242.raymol. "load"
+    that file to go back to them; it is also offered at the next launch. Still running:
+    rfd3_ab12 -- its remaining results are written there too.
+
+The batch keeps running, and every design that lands afterwards is written into **that
+file** — the campaign's own — and not into the session you opened: it is not added to
+the new scene, and a line on the console names the file it went to. A `.raymol`
+document you had open behaves the same way: its entries were on disk as they landed,
+it stays where it is, and the rest of the batch is written into it. Open the file again
+(`load`, or the recovery alert on the next launch) and the batch is this session's
+again: its badge comes back and the remaining designs land and stage as usual. Only if
+that file has been deleted in the meantime do later designs fall back to landing as
+plain objects in the current scene, with a warning.
+
+In the app, opening a session file, dropping one on the viewport or choosing File ▸
+Clear Session while a batch is running asks first — **Save…** (as a `.raymol`),
+**Don't Save** (keeps it as a recovered file, as above) or **Cancel**. The console, a
+script and an MCP agent get the behaviour above without the question.
+
 On the next cold launch, if such a container exists, RayMol says so before you use the
 window and offers **Open**, **Discard** or **Keep for Later**. Open reuses the ordinary
 `.raymol` document path — the file opens in place, and results that land afterwards go

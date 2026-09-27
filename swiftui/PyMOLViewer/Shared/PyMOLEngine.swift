@@ -1821,6 +1821,85 @@ final class PyMOLEngine: ObservableObject {
         case panel([String])
     }
 
+    /// What replacing the session would do to a batch that is still landing (#448):
+    /// the sets it is filling, how many of their entries have landed, and — when the
+    /// session is a `.raymol` document — the file they are in. nil when no batch is
+    /// running, which is when the open/clear paths ask nothing new.
+    struct RunningBatchReplace: Equatable {
+        /// Names of the sets a batch is landing in, in the order the drawer lists them.
+        let sets: [String]
+        /// Entries already in those sets — every one of them on disk.
+        let landed: Int
+        /// The open `.raymol` document the batch writes into, or nil for an untitled
+        /// session, whose working file is kept as a recovered container instead.
+        let document: URL?
+
+        var isUntitled: Bool { document == nil }
+
+        var title: String {
+            "A batch is still running in \(Self.list(sets))."
+        }
+
+        /// The sheet's text. It says what Don't Save does, because the answer is not
+        /// "lose the results": Python keeps the file either way (#447, #448) and the
+        /// batch keeps writing into it.
+        func message(replacing action: String) -> String {
+            let n = landed == 1 ? "1 design has" : "\(landed) designs have"
+            let already = landed == 0 ? "No design has landed yet." : "\(n) landed."
+            if let document {
+                return """
+                    \(already) \(action) will close “\(document.lastPathComponent)”. \
+                    Its sets are already saved in it, and the rest of the batch keeps \
+                    writing there; Save first to keep the scene as it is now too.
+                    """
+            }
+            return """
+                \(already) \(action) will replace this untitled session. Save keeps it \
+                as a .raymol file you choose. Don’t Save keeps it as a recovered file \
+                in RayMol's state folder, offered again at the next launch, and the \
+                rest of the batch keeps writing into it.
+                """
+        }
+
+        static func list(_ names: [String]) -> String {
+            switch names.count {
+            case 0: return "a set"
+            case 1: return "“\(names[0])”"
+            case 2: return "“\(names[0])” and “\(names[1])”"
+            default: return "“\(names[0])” and \(names.count - 1) other sets"
+            }
+        }
+    }
+
+    /// The #448 rule, pure so `OpenFilesTests` can pin it: any batch in `running`
+    /// asks, whether or not a design has landed yet — the batch's set and run are in
+    /// the file already, and so will be everything it delivers from now on. The
+    /// document counts as titled only when the open `.raymol` IS the store's file.
+    static func runningBatchReplace(sets: [SetEntry], running: [String: BatchProgress],
+                                    storePath: String, currentDocument: URL?)
+        -> RunningBatchReplace? {
+        guard !running.isEmpty else { return nil }
+        let busy = sets.filter { running[$0.id] != nil }
+        // A running id the drawer has not read yet (the marker is ahead of the file
+        // read) still asks; it just cannot be named.
+        let names = busy.map(\.name)
+        let landed = busy.reduce(0) { $0 + $1.count }
+        var document: URL? = nil
+        if let currentDocument, isRayMolDocument(currentDocument.path), !storePath.isEmpty,
+           currentDocument.standardizedFileURL.path
+            == URL(fileURLWithPath: storePath).standardizedFileURL.path {
+            document = currentDocument
+        }
+        return RunningBatchReplace(sets: names, landed: landed, document: document)
+    }
+
+    /// `runningBatchReplace` for this engine's live state.
+    var runningBatchReplace: RunningBatchReplace? {
+        Self.runningBatchReplace(sets: sets, running: setsRunning,
+                                 storePath: setsStorePath,
+                                 currentDocument: currentSessionURL)
+    }
+
     /// True when any set in this session holds an entry — the fact spec §2.1's
     /// sheet turns on. Read from `sets`, which the `SETS:` marker fills from the
     /// container, so no Python round trip is needed to answer it.

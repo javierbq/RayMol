@@ -1040,7 +1040,11 @@ struct ContentView: View {
         // Native File-menu commands → reuse the same actions as the toolbar.
         .onReceive(NotificationCenter.default.publisher(for: .raymolOpenFile)) { _ in macOpenFile() }
         .onReceive(NotificationCenter.default.publisher(for: .raymolFetch)) { _ in macFetchID = ""; showMacFetch = true }
-        .onReceive(NotificationCenter.default.publisher(for: .raymolClearSession)) { _ in engine.clearSession() }
+        .onReceive(NotificationCenter.default.publisher(for: .raymolClearSession)) { _ in
+            // A running batch asks first (#448): Clear Session is `reinitialize`.
+            guard confirmClearSessionIfNeeded(engine: engine) else { return }
+            engine.clearSession()
+        }
         .onReceive(NotificationCenter.default.publisher(for: .raymolSaveSession)) { _ in saveSession() }
         .onReceive(NotificationCenter.default.publisher(for: .raymolSaveSessionAs)) { _ in saveSessionAs() }
         .onReceive(NotificationCenter.default.publisher(for: .raymolExportSession)) { _ in exportPyMOLSession(engine: engine) }
