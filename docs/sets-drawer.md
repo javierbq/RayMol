@@ -126,23 +126,34 @@ there. The header's "n of N staged · budget b" is the same arithmetic.
 
 While a batch is landing, each design is staged as it arrives, into whatever budget
 slots are free. That staging is **provisional**: it is the first designs to arrive,
-not the best. When the run finishes (every member landed, failed or was cancelled) and
-the set has a ranking key with values (sort by a metric column once — a header click or
-`set_sort` — and it becomes the ranking key), the provisional entries are replaced by
-the set's top entries by that key, and one line says so, in the console and in a strip
-over the drawer's tab: `Restaged top 6 by pLDDT`.
+not the best. When the run finishes (every member landed, failed or was cancelled), the
+provisional entries are replaced by the set's top entries, and one line says so, in the
+console and in a strip over the drawer's tab: `Restaged top 6 by pLDDT`.
 
-- Pinned entries, and entries you staged yourself (`set_stage`, space, **Stage**), are
-  never replaced; they are charged to the budget first and the rest goes to the ranking.
-  Staging an entry the batch staged makes it yours.
+What it ranks by: the set's ranking key (sort by a metric column once — a header click
+or `set_sort` — and it becomes the ranking key); with none, the metric the TOOL declares
+(`ranking_metrics` on its class: boltz2 declares `min_ipsae`, then `mean_plddt` for a
+monomer). The tool's metric is used, not written into the set, so `top:N` and the sort
+indicator do not change. The direction is the column's `higher_is_better` — an
+ascending header click does not make the worst designs "the top". Nothing is restaged
+when the key has no direction, or fewer than two distinct values among the candidates.
+A backbone generator declares no ranking metric, so a design run stays in arrival order
+until you sort.
+
+- Pinned entries, entries you staged yourself (`set_stage`, space, **Stage**), entries
+  you pinned or unpinned, and provisional entries whose object you **edited** (`alter`,
+  `remove`, a mutation or repack — any change to the atoms) are never replaced; they are
+  charged to the budget first and the rest goes to the ranking.
 - An entry you unstaged (`set_unstage`, or `delete` of its object) stays out.
 - The top is read the way `top:N` reads it: the active filter applies, rejected entries
-  and entries with no value for the key are skipped.
+  and entries with no value for the key are skipped. Slots the ranking cannot fill keep
+  the unscored provisional entries already there, so the scene never shrinks for want
+  of a score.
 - The whole set is ranked, so a re-run that extends a set competes with the earlier
   run's provisional entries — even when the first run had filled the budget.
 - A cancelled run is restaged over what landed. A single design (no group) is never
-  restaged. With no ranking key, or no values yet, staging stays as it landed.
-- Changing the sort later does not restage anything.
+  restaged. Changing the sort later does not restage anything.
+- The strip's restage line belongs to that session: loading the file later drops it.
 
 `set_get` shows who staged an entry as `staged_by` (`auto`, `user` or empty). The strip
 goes away with the next staging action on the set, or with **Dismiss**

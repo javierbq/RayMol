@@ -961,6 +961,15 @@ class Container:
         with self._lock:
             return int(self._conn.execute(sql, (set_id,) + tuple(params)).fetchone()[0])
 
+    def distinct_count(self, set_id, expression, where='', params=()):
+        """How many distinct non-NULL values `expression` (an ALREADY validated,
+        quoted column over aliases `e`/`m`) takes among a set's entries matching
+        `where`."""
+        sql, _ = self._entries_sql(set_id, 'SELECT count(DISTINCT %s)' % expression,
+                                   where, order_by=None)
+        with self._lock:
+            return int(self._conn.execute(sql, (set_id,) + tuple(params)).fetchone()[0])
+
     def update_entry(self, entry_id, **fields):
         bad = sorted(set(fields) - ENTRY_FIELDS)
         if bad:
