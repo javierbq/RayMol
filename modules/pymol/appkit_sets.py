@@ -340,6 +340,18 @@ def open_set(name, _self=cmd):
     global _active_set_id, _last_filter_key
     row = _set_row(name)
     _active_set_id = row['id']
+    # Remembered IN THE FILE, as the set a recovery of this document should point at
+    # (#547). Here, on navigation, rather than on close or save: the case it exists for
+    # is a crash, which runs neither. Only when it moves, so re-opening the same set
+    # writes nothing; one meta row and a version bump per set change is noise next to
+    # a delivery.
+    try:
+        from pymol.sets import binding
+        c = _store().active()
+        if c.meta_get(binding.LAST_ACTIVE_KEY, '') != row['id']:
+            c.meta_set(binding.LAST_ACTIVE_KEY, row['id'])
+    except Exception:
+        pass
     # Arm the filter channel rather than emitting here. ORDER is the reason: the far
     # side clears the drawer's filter when the SETS: marker moves the active set, so a
     # SETSFILTER line printed BEFORE that marker would be wiped by it. Clearing the key
@@ -418,6 +430,46 @@ def toggle_stage(name, entries, _self=cmd):
     except SetError as exc:
         colorprinting.warning(' sets: %s' % exc)
         return []
+
+
+def stage_entries(name, entries, fit=0, _self=cmd):
+    """Stage `entries` (a selector) of set `name` -- the recovery notice's "Stage N
+    starred" (#547) sends `starred`. Through `set_stage`, so the budget is the one every
+    other path answers to. Only the named entries that HAVE a structure and are not
+    staged yet are sent -- the same ones the drawer counts -- so a starred sequence
+    entry cannot fail the whole click. A refusal, or any other failure, is one warning
+    line rather than a traceback, and the notice stays up so the user can act on it.
+
+    `fit=1` is "Stage top K starred" (#547 review): when the entries outnumber the free
+    stage slots, stage the best K of them by the set's ranking (`binding.pick_to_fit`)
+    rather than refusing them all. With no free slot at all the whole list goes, so
+    the budget refusal is what the user hears."""
+    from pymol.sets import selectors
+    from pymol.sets.errors import SetError
+    try:
+        row = _set_row(name)
+        found = selectors.resolve(_store().active(), row, entries)
+        # Structure = a stored chain; `n_chains` counts a sequence entry's chains too.
+        c = _store().active()
+        names = [e['name'] for e in found
+                 if not e.get('staged_object') and c.chain_blobs(e['id'])]
+        if not names:
+            return []
+        if int(fit):
+            from pymol.sets import binding
+            keep = {e['name'] for e in found if e['name'] in names}
+            chosen, _label = binding.pick_to_fit(
+                _store().active(), row, [e for e in found if e['name'] in keep],
+                _self=_self)
+            if chosen:
+                names = [e['name'] for e in chosen]
+        return _self.set_stage(row['name'], '+'.join(names), quiet=1)
+    except SetError as exc:
+        colorprinting.warning(' sets: %s' % exc)
+    except Exception as exc:
+        colorprinting.warning(' sets: could not stage %s of %s (%s: %s)'
+                              % (entries, name, type(exc).__name__, exc))
+    return []
 
 
 # -- The filter channel (#418) ------------------------------------------------------------

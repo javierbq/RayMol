@@ -652,8 +652,8 @@ struct DataDrawer: View {
                 }
             }
             if let set = engine.activeSet {
-                // #546: the set's notice, in this row's slack; just the spacer when
-                // there is none. Lowest priority: the name and the budget first.
+                // #546/#547: the set's notice, in this row's slack; just the spacer
+                // when there is none. Lowest priority: the name and the budget first.
                 SetNoticeInline(set: set).layoutPriority(-1)
             } else {
                 Spacer(minLength: 8)

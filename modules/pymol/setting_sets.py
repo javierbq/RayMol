@@ -670,6 +670,13 @@ USAGE
     notice = c.notice(row['id'])
     if int(dismiss):
         c.set_notice(row['id'], None)
+        if (notice or {}).get('kind') == 'recovered':
+            # Dismissing the recovery notice is "I know, stop telling me" -- for this
+            # container, for good (#547). Staging clears the notice too, but a crash
+            # before the next save would bring back the same dead end, so only this
+            # explicit answer silences it.
+            from pymol.sets import binding
+            c.meta_set(binding.RECOVERY_NOTICE_KEY, '1')
     elif not int(quiet):
         colorprinting.parrot(' set_notice: %s' % ((notice or {}).get('text') or '(none)'))
     return (notice or {}).get('text') or ''

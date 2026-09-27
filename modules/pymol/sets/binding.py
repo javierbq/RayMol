@@ -1102,6 +1102,13 @@ def stage(set_row, entries, budget_override=None, by=schema.STAGED_USER, _self=c
     if not todo:
         return names
     group = set_row.get('group_name') or set_row['name']
+    # Staged into an EMPTY scene -- after a recovery that brought the sets back without
+    # the scene, typically -- the camera is still wherever the empty session left it,
+    # and a design sitting at its target's coordinates is off-screen: a black viewport
+    # with the objects listed beside it (#547 review, measured: get_view unchanged by a
+    # stage). So only then, the camera goes to what was staged. With anything else in
+    # the scene the camera is the user's and is never moved.
+    was_empty = not (_self.get_names('public_nongroup_objects') or [])
     _ensure_group(group, _self=_self)
     for e in todo:
         obj = _free_object_name(e['name'], _self=_self)
@@ -1116,7 +1123,48 @@ def stage(set_row, entries, budget_override=None, by=schema.STAGED_USER, _self=c
         place(c, set_row, e, obj, superpose=True, by=by, _self=_self)
         _write_back_metrics(c, dict(e, staged_object=obj), obj, _self=_self)
         names.append(obj)
+    if was_empty and names:
+        try:
+            _self.zoom(group, animate=0)
+        except Exception:
+            pass
     return names
+
+
+def pick_to_fit(c, set_row, entries, _self=cmd):
+    """`entries` cut to the set's FREE stage slots, best first: `(chosen, label)`.
+
+    All of them, with label '', when they fit. Otherwise the top `free` by the set's
+    ranking -- the key a finished run restages by (`_ranking`: its own ranking key,
+    else its tool's declared metric), with that key's label -- and, when there is none,
+    the first `free` in delivery order, with label ''. What "Stage top K starred" stages
+    after a recovery (#547 review): sixteen stars and a budget of six must not leave
+    the one staging action greyed out."""
+    entries = list(entries)
+    free = max(budget(set_row) - len(_staged(c, set_row['id'], _self=_self)), 0)
+    if len(entries) <= free:
+        return entries, ''
+    ranking = _ranking(c, set_row)
+    label = ''
+    if ranking is not None:
+        key, desc, label = ranking
+
+        def order(e):
+            value = (e.get('scalars') or {}).get(key)
+            if value is None:
+                return (1, 0, e.get('ord') or 0)
+            return (0, -value if desc else value, e.get('ord') or 0)
+    else:
+        def order(e):
+            return (0, 0, e.get('ord') or 0)
+    return sorted(entries, key=order)[:free], label
+
+
+def stageable_starred(c, set_row):
+    """Starred entries a stage could still add: unstaged, with a stored structure --
+    the ones the drawer's "Stage N starred" counts."""
+    return c.entries(set_row['id'], where='e.starred = 1 AND e.staged_object IS NULL'
+                                          ' AND ' + HAS_STRUCTURE)
 
 
 def unstage(set_row, entries, include_pinned=False, by=schema.STAGED_USER, _self=cmd):
@@ -1734,4 +1782,98 @@ def load_raymol(filename, partial=0, quiet=1, *, _self=cmd):
             colorprinting.warning(' sets: the previous session had sets that were never'
                                   ' saved; they were kept in %s' % kept)
     _self.set('session_file', filename.replace('\\', '/'), quiet=1)
+    if session is None and store.is_preserved(filename):
+        try:
+            after_recovery(_self=_self)
+        except Exception as exc:
+            colorprinting.warning(' sets: recovered, but could not point you at a set'
+                                  ' (%s)' % exc)
     return r
+
+
+#: `meta` key set when the user DISMISSES a recovered container's "Scene not
+#: recovered" notice (#547, `set_notice <set>, 1`). Not written when the notice is
+#: shown, nor when a staging action clears it: staging and then crashing again before
+#: a save is the same dead end, and the next Open must say so again (review round 1).
+#: The trigger itself already requires a session-less open.
+RECOVERY_NOTICE_KEY = 'recovery_notice'
+
+#: `meta` key naming the set the drawer was last opened on -- "the most recently
+#: active set" a recovery points at. Written by `appkit_sets.open_set`.
+LAST_ACTIVE_KEY = 'last_active_set'
+
+RECOVERY_TEXT = 'Scene not recovered.'
+
+
+def most_recently_active_set(c):
+    """The set the user was last working in: the one the drawer was last opened on,
+    else the one that received the newest entry, else the newest set. None when the
+    file has no sets."""
+    sets = c.sets()
+    if not sets:
+        return None
+    by_id = {s['id']: s for s in sets}
+    last = c.meta_get(LAST_ACTIVE_KEY, '') or ''
+    if last in by_id:
+        return by_id[last]
+    newest = None
+    for s in sets:
+        rows = c.entries(s['id'], order_by='e.created DESC', limit=1)
+        stamp = rows[0]['created'] if rows else s.get('created') or 0
+        if newest is None or stamp > newest[0]:
+            newest = (stamp, s)
+    return newest[1]
+
+
+def after_recovery(_self=cmd):
+    """A recovered container was opened and the scene did not come back with it
+    (#547): the sets, stars and views are there, and nothing is staged. Put a notice
+    on the most recently active set -- the drawer draws it as `Scene not recovered.
+    [Stage N starred] [Apply <view>] [Dismiss]` -- open the drawer on that set, and
+    say the same on the console, with the command, for an agent or a user without
+    the drawer. Not after an explicit Dismiss (`RECOVERY_NOTICE_KEY`). Returns the set's name, or '' when there was nothing to point at."""
+    c = container()
+    if c.meta_get(RECOVERY_NOTICE_KEY):
+        return ''
+    row = most_recently_active_set(c)
+    if row is None:
+        return ''
+    c.set_notice(row['id'], {'kind': 'recovered', 'text': RECOVERY_TEXT})
+    try:
+        from pymol import appkit_sets
+        appkit_sets.open_set(row['name'], _self=_self)
+    except Exception:
+        pass
+    # The same entries the drawer's "Stage N starred" counts, and the same cut to the
+    # budget its "Stage top K starred" makes.
+    starred = stageable_starred(c, row)
+    views = c.views(row['id'])
+    hints = []
+    if starred:
+        chosen, label = pick_to_fit(c, row, starred, _self=_self)
+        if len(chosen) == len(starred):
+            hints.append('"set_stage %s, starred" puts its %d starred entr%s back'
+                         % (row['name'], len(starred), 'y' if len(starred) == 1 else 'ies'))
+        elif chosen:
+            hints.append('"set_stage %s, %s" stages the top %d of its %d starred entries'
+                         ' (%s; the budget is %d)'
+                         % (row['name'], '+'.join(e['name'] for e in chosen), len(chosen),
+                            len(starred), 'by %s' % label if label else 'in delivery order',
+                            budget(row)))
+        else:
+            hints.append('its %d starred entries do not fit the stage budget (%d);'
+                         ' unstage some or raise it with set_budget'
+                         % (len(starred), budget(row)))
+    if views:
+        # What the drawer's "Apply <view>" does: the view's filter and sort become the
+        # set's. Not `set_stage ..., view:`, which would usually be over budget.
+        view = views[-1]
+        steps = ['"set_filter %s, %s"' % (row['name'], view['filter'])
+                 if view.get('filter') else '"set_filter %s"' % row['name']]
+        if view.get('sort_key'):
+            steps.append('"set_sort %s, %s, %d"' % (row['name'], view['sort_key'],
+                                                     int(view.get('sort_desc', 1))))
+        hints.append('its view %s applies with %s' % (view['name'], ' and '.join(steps)))
+    colorprinting.parrot(' sets: %s -- the sets came back, the scene did not.%s'
+                         % (row['name'], (' ' + '; '.join(hints) + '.') if hints else ''))
+    return row['name']

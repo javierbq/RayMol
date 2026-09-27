@@ -813,21 +813,128 @@ final class SetsStoreTests: XCTestCase {
               ('set_notice_other', '{"text": "not a notice key"}')
             """)
         let store = try XCTUnwrap(SetsStore(path: path))
-        XCTAssertEqual(store.noticesBySet(), ["ab12cd34": "Restaged top 6 by pLDDT"],
+        XCTAssertEqual(store.noticesBySet(),
+                       ["ab12cd34": SetNotice(kind: "restage", text: "Restaged top 6 by pLDDT")],
                        "a malformed row and a look-alike key are skipped, not fatal")
         let set = try XCTUnwrap(store.sets().first)
-        XCTAssertEqual(set.notice, "Restaged top 6 by pLDDT")
-        XCTAssertEqual(SetNoticeModel.make(set: set)?.text, "Restaged top 6 by pLDDT")
+        XCTAssertEqual(set.notice?.text, "Restaged top 6 by pLDDT")
+        let rows = store.rows(setID: set.id, columns: set.columns)
+        let model = try XCTUnwrap(SetNoticeModel.make(set: set, rows: rows))
+        XCTAssertEqual(model.text, "Restaged top 6 by pLDDT")
+        XCTAssertFalse(model.showsStage, "a restage notice offers nothing but Dismiss")
+        XCTAssertFalse(model.isRecovery, "its Dismiss is the header's x")
+        XCTAssertNil(model.view)
     }
 
     func testNoNoticeMeansNoBanner() throws {
         let store = try XCTUnwrap(SetsStore(path: path))
         let set = try XCTUnwrap(store.sets().first)
-        XCTAssertEqual(set.notice, "", "a file with no notice rows reads as none")
-        XCTAssertNil(SetNoticeModel.make(set: set))
+        XCTAssertNil(set.notice, "a file with no notice rows reads as none")
+        XCTAssertNil(SetNoticeModel.make(set: set, rows: []))
         var blank = set
-        blank.notice = "   "
-        XCTAssertNil(SetNoticeModel.make(set: blank), "whitespace is not a notice")
+        blank.notice = SetNotice(kind: "recovered", text: "   ")
+        XCTAssertNil(SetNoticeModel.make(set: blank, rows: []), "whitespace is not a notice")
+    }
+
+    // MARK: - the recovery notice's buttons (#547)
+
+    private func recovered() throws -> (SetEntry, [SetRow]) {
+        try exec("""
+            INSERT INTO meta VALUES
+              ('set_notice:ab12cd34', '{"kind": "recovered", "text": "Scene not recovered."}')
+            """)
+        let store = try XCTUnwrap(SetsStore(path: path))
+        let set = try XCTUnwrap(store.sets().first)
+        return (set, store.rows(setID: set.id, columns: set.columns))
+    }
+
+    func testTheRecoveryNoticeOffersTheUnstagedStarredAndTheNewestView() throws {
+        let (set, rows) = try recovered()
+        let model = try XCTUnwrap(SetNoticeModel.make(set: set, rows: rows))
+        XCTAssertEqual(model.text, "Scene not recovered.")
+        XCTAssertTrue(model.isRecovery)
+        // Fixture: e1 starred and unstaged, e2 staged (not starred), e3 neither.
+        XCTAssertEqual(model.starredToStage, 1)
+        XCTAssertEqual(model.stageTitle, "Stage 1 starred")
+        XCTAssertNil(model.stageRefusal, "1 more fits: budget 4, 1 staged")
+        XCTAssertEqual(model.view?.name, "all", "the most recently saved view")
+        XCTAssertEqual(model.applyTitle, "Apply all")
+    }
+
+    func testEachRecoveryButtonShowsOnlyWhenItApplies() throws {
+        var (set, rows) = try recovered()
+        // A starred entry that is ALREADY staged is not "starred to stage".
+        rows = rows.map { row in
+            SetRow(id: row.id, name: row.name, ord: row.ord, starred: row.id == "e2",
+                   rejected: row.rejected, pinned: row.pinned, stagedObject: row.stagedObject,
+                   nChains: row.nChains, nResidues: row.nResidues, tags: row.tags,
+                   runID: row.runID, values: row.values)
+        }
+        set.views = []
+        let model = try XCTUnwrap(SetNoticeModel.make(set: set, rows: rows))
+        XCTAssertFalse(model.showsStage, "no unstaged starred entry: no Stage button")
+        XCTAssertNil(model.view, "no saved view: no Apply button")
+        XCTAssertNil(model.applyTitle)
+        XCTAssertEqual(model.text, "Scene not recovered.", "the line and Dismiss remain")
+    }
+
+    func testAStarredEntryWithNoStructureIsNotCountedToStage() throws {
+        // A `chains` table naming only e2: e1 is starred and unstaged but has only a
+        // sequence, which `set_stage` cannot load -- the same rule Python counts by.
+        try exec("""
+            CREATE TABLE chains (entry_id TEXT NOT NULL, chain TEXT NOT NULL,
+                                 ord INTEGER NOT NULL, blob TEXT NOT NULL,
+                                 PRIMARY KEY (entry_id, chain));
+            INSERT INTO chains VALUES ('e2', 'A', 0, 'h');
+            """)
+        let (set, rows) = try recovered()
+        XCTAssertEqual(rows.map(\.hasStructure), [false, true, false])
+        let model = try XCTUnwrap(SetNoticeModel.make(set: set, rows: rows))
+        XCTAssertFalse(model.showsStage)
+    }
+
+    func testMoreStarsThanFreeSlotsOffersTheTopThatFit() throws {
+        // e1 and e3 starred and unstaged; budget 2 with e2 staged leaves one slot.
+        try exec("UPDATE entries SET starred = 1 WHERE id = 'e3'")
+        try exec("UPDATE meta SET value = '2' WHERE key = 'stage_budget'")
+        let (set, rows) = try recovered()
+        let model = try XCTUnwrap(SetNoticeModel.make(set: set, rows: rows))
+        XCTAssertEqual(model.starredToStage, 2)
+        XCTAssertEqual(model.stageCount, 1)
+        XCTAssertEqual(model.stageTitle, "Stage top 1 starred")
+        XCTAssertNil(model.stageRefusal, "enabled: one of them fits")
+        XCTAssertTrue(model.stageHelp(set: set.name).contains("1 of the 2 starred"))
+    }
+
+    func testStarsThatFitKeepTheFullCountLabel() throws {
+        try exec("UPDATE entries SET starred = 1 WHERE id = 'e3'")
+        let (set, rows) = try recovered()
+        let model = try XCTUnwrap(SetNoticeModel.make(set: set, rows: rows))
+        XCTAssertEqual(model.stageCount, 2)
+        XCTAssertEqual(model.stageTitle, "Stage 2 starred", "budget 4, 1 staged: both fit")
+    }
+
+    func testStagingTheStarredPastTheBudgetIsRefusedOnTheButton() throws {
+        try exec("UPDATE meta SET value = '1' WHERE key = 'stage_budget'")
+        let (set, rows) = try recovered()
+        XCTAssertEqual(set.budget, 1)
+        let model = try XCTUnwrap(SetNoticeModel.make(set: set, rows: rows))
+        XCTAssertTrue(model.showsStage, "still offered, so the user sees why not")
+        let refusal = try XCTUnwrap(model.stageRefusal)
+        XCTAssertTrue(refusal.contains("the budget is 1"), refusal)
+    }
+
+    func testASequencesSetHasNothingToStage() throws {
+        let (base, rows) = try recovered()
+        let set = SetEntry(id: base.id, name: base.name, kind: "sequences", tool: base.tool,
+                       count: base.count, stagedCount: base.stagedCount, budget: base.budget,
+                       groupName: base.groupName, reference: base.reference,
+                       rankingKey: base.rankingKey, sortKey: base.sortKey,
+                       sortDescending: base.sortDescending, filter: base.filter,
+                       columns: base.columns, histogram: base.histogram, views: base.views,
+                       running: base.running, notice: base.notice)
+        let model = try XCTUnwrap(SetNoticeModel.make(set: set, rows: rows))
+        XCTAssertFalse(model.showsStage)
     }
 
     func testMetricColumnDecodeTolerantOfMissingFields() throws {

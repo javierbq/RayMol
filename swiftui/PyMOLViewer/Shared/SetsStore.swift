@@ -174,11 +174,16 @@ struct SetRow: Identifiable, Equatable, Hashable {
     /// when the entry has none or the file predates the column. What the Sequences tab
     /// shows by default — a binder run's target is the same in every row.
     let designChains: [String]
+    /// The entry has a stored structure (a `chains` row) that `set_stage` can load.
+    /// Not `nChains > 0`: a sequence-only entry counts its chains too (#547 review).
+    let hasStructure: Bool
 
     init(id: String, name: String, ord: Int, starred: Bool, rejected: Bool,
          pinned: Bool, stagedObject: String?, nChains: Int, nResidues: Int,
          tags: String, runID: String?, values: [String: MetricValue],
-         parents: [String] = [], designChains: [String] = []) {
+         parents: [String] = [], designChains: [String] = [],
+         hasStructure: Bool? = nil) {
+        self.hasStructure = hasStructure ?? (nChains > 0)
         self.id = id
         self.name = name
         self.ord = ord
@@ -737,17 +742,18 @@ final class SetsStore {
                 histogram: bins,
                 views: views[id] ?? [],
                 running: running[id],
-                notice: notices[id] ?? "")
+                notice: notices[id])
         }
     }
 
-    /// Every set's one-line notice (#546), by set id: `meta` rows
+    /// Every set's one-line notice (#546, #547), by set id: `meta` rows
     /// `set_notice:<set id>` holding `{"kind", "text"}`, written by Python when
     /// something the user did not do changed what a set shows (a finished run
-    /// restaged it) and cleared by the next staging action. One query, on a version
-    /// change only, like the views.
-    func noticesBySet() -> [String: String] {
-        var out: [String: String] = [:]
+    /// restaged it; a recovery brought the sets back without the scene) and cleared
+    /// by the next staging action. One query, on a version change only, like the
+    /// views.
+    func noticesBySet() -> [String: SetNotice] {
+        var out: [String: SetNotice] = [:]
         let prefix = "set_notice:"
         for row in query("SELECT key, value FROM meta WHERE key LIKE 'set_notice:%'") {
             guard let key = row.string("key"), key.hasPrefix(prefix),
@@ -755,7 +761,8 @@ final class SetsStore {
                   let data = value.data(using: .utf8),
                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let text = object["text"] as? String, !text.isEmpty else { continue }
-            out[String(key.dropFirst(prefix.count))] = text
+            out[String(key.dropFirst(prefix.count))] =
+                SetNotice(kind: object["kind"] as? String ?? "", text: text)
         }
         return out
     }
@@ -773,9 +780,13 @@ final class SetsStore {
             .joined()
         // A format-1 file has no `design_chains` (#545); it still reads, as "none".
         let designSelect = entriesHasColumn("design_chains") ? ", e.design_chains" : ""
+        // Whether there is a structure to stage: the `chains` table, which a fixture
+        // without it lacks (then `nChains` stands in).
+        let structureSelect = hasTable("chains")
+            ? ", EXISTS (SELECT 1 FROM chains ch WHERE ch.entry_id = e.id) AS has_structure" : ""
         let sql = """
             SELECT e.id, e.name, e.ord, e.starred, e.rejected, e.pinned, e.staged_object,
-                   e.n_chains, e.n_residues, e.tags, e.run_id, e.parents\(designSelect)\(metricSelect)
+                   e.n_chains, e.n_residues, e.tags, e.run_id, e.parents\(designSelect)\(structureSelect)\(metricSelect)
             FROM entries e LEFT JOIN \(Self.quote("m_" + setID)) m ON m.entry_id = e.id
             WHERE e.set_id = ? ORDER BY e.ord
             """
@@ -797,11 +808,17 @@ final class SetsStore {
                 runID: row.string("run_id"),
                 values: values,
                 parents: Self.decodeParents(row.string("parents") ?? "[]"),
-                designChains: Self.decodeParents(row.string("design_chains") ?? "[]"))
+                designChains: Self.decodeParents(row.string("design_chains") ?? "[]"),
+                hasStructure: row.int("has_structure").map { $0 != 0 })
         }
     }
 
     /// Whether `entries` has `column`. One PRAGMA, on the same read-only connection.
+    func hasTable(_ name: String) -> Bool {
+        query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+              bind: [name]).contains { $0.string("name") == name }
+    }
+
     func entriesHasColumn(_ column: String) -> Bool {
         query("PRAGMA table_info(entries)").contains { $0.string("name") == column }
     }
