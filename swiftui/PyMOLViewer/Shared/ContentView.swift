@@ -612,10 +612,8 @@ struct ContentView: View {
     // both fit — see macDrawerNoRoomHint, which offers to close either pane above it.
     @ViewBuilder
     private func macDrawerBand(windowHeight: CGFloat) -> some View {
-        let ceiling = macDrawerCeiling(windowHeight: windowHeight)
-        if PanelLayout.drawerFits(ceiling: ceiling) {
-            let h = PanelLayout.drawerHeight(frac: CGFloat(dataDrawerFrac),
-                                             windowHeight: windowHeight, maxHeight: ceiling)
+        let plan = macColumnPlan(windowHeight: windowHeight)
+        if plan.drawerFits, let h = plan.drawerHeight {
             VStack(spacing: 0) {
                 macDrawerDivider(windowHeight: windowHeight)
                 DataDrawer().frame(height: h)
@@ -637,29 +635,16 @@ struct ContentView: View {
             Text("Data drawer needs more room")
                 .font(.system(size: 10))
                 .foregroundColor(themeManager.active.panelText.color.opacity(0.6))
-            if showCommandPanel {
-                Button("Hide Console") { showCommandPanel = false }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(themeManager.active.accent.color)
+            // The ways out, in PanelLayout's order (#543): Hide Console FIRST, then
+            // Hide Sequences, then Close. The Object sequence viewer is the other pane
+            // charged against this column (#457); the user chooses which of the two
+            // to give up, in one click rather than a window resize. Each is offered
+            // only while its pane is showing.
+            ForEach(PanelLayout.drawerNoRoomActions(consoleVisible: showCommandPanel,
+                                                    sequenceVisible: engine.sequenceVisible),
+                    id: \.self) { action in
+                macDrawerNoRoomButton(action)
             }
-            // The Object sequence viewer is the OTHER pane charged against this column
-            // (#457), and at five objects it is worth 180pt of it — more than the
-            // console. The offer is here for the console's reason: the user chooses
-            // which of the two panes above the drawer to give up, in one click rather
-            // than a window resize. It was here before #419 too, wording and all; #456
-            // had a button of the same name that hid a band INSIDE the drawer, which
-            // is a different thing that no longer exists.
-            if engine.sequenceVisible {
-                Button("Hide Sequences") { engine.sequenceVisible = false }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(themeManager.active.accent.color)
-            }
-            Button("Close") { engine.closeDataDrawer() }
-                .buttonStyle(.plain)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundColor(themeManager.active.accent.color)
             Rectangle().fill(hairlineColor).frame(height: 1)
         }
         .padding(.horizontal, 10)
@@ -669,13 +654,38 @@ struct ContentView: View {
               + "make room for the Data drawer. The set stays open.")
     }
 
+    private func macDrawerNoRoomButton(_ action: PanelLayout.DrawerRoomAction) -> some View {
+        let title: String
+        switch action {
+        case .hideConsole: title = "Hide Console"
+        case .hideSequences: title = "Hide Sequences"
+        case .close: title = "Close"
+        }
+        return Button(title) {
+            switch action {
+            case .hideConsole: showCommandPanel = false
+            case .hideSequences: engine.sequenceVisible = false
+            case .close: engine.closeDataDrawer()
+            }
+        }
+        .buttonStyle(.plain)
+        .font(.system(size: 10, weight: .semibold))
+        .foregroundColor(themeManager.active.accent.color)
+    }
+
     // The most the drawer may take: what is LEFT of the column once the console
     // band, the rail and the sequence strip have taken theirs (the viewport has a
-    // hard 360pt minimum — macViewport). Without it a 220pt drawer under a 130pt
+    // hard `macViewportMinHeight` floor — macViewport). Without it a 220pt drawer under a 130pt
     // console in a 771pt window ran its bottom rows off the window. The drawer
     // yields; the console and the strip keep their own rules. The arithmetic lives
     // in PanelLayout so PanelLayoutTests can pin it.
-    private func macDrawerCeiling(windowHeight: CGFloat) -> CGFloat {
+    //
+    // #543 plans the whole column in one call: the drawer's ceiling, fit and height on
+    // the SELECTED TAB (Plot and Lineage ask for a chart's worth), and how many rows
+    // the Object viewer is charged at — fewer than its objects while the drawer is
+    // open and short of room, which the viewer's own frame below reads from the same
+    // plan, so the pane and the arithmetic cannot disagree.
+    private func macColumnPlan(windowHeight: CGFloat) -> PanelLayout.MacColumnPlan {
         let console: CGFloat? = showCommandPanel
             ? PanelLayout.consoleHeight(
                 frac: CGFloat(consoleFrac), windowHeight: windowHeight,
@@ -683,11 +693,20 @@ struct ContentView: View {
                 minHeight: PanelLayout.macMinConsoleHeight,
                 maxHeight: PanelLayout.maxConsoleHeight(windowHeight: windowHeight))
             : nil
-        let used = PanelLayout.drawerColumnUsed(
-            consoleHeight: console, topRail: macAnyTopPane,
-            sequenceRows: engine.sequenceVisible ? engine.sequences.count : nil,
-            mcpBanner: macMCPBannerShowing, dockedModeBar: macModeBarDocked)
-        return PanelLayout.drawerCeiling(windowHeight: windowHeight, used: used)
+        return PanelLayout.macColumnPlan(
+            windowHeight: windowHeight, consoleHeight: console, topRail: macAnyTopPane,
+            sequenceObjects: engine.sequenceVisible ? engine.sequences.count : nil,
+            mcpBanner: macMCPBannerShowing, dockedModeBar: macModeBarDocked,
+            drawerVisible: engine.dataDrawerVisible, tab: engine.dataDrawerTab,
+            drawerFrac: CGFloat(dataDrawerFrac))
+    }
+
+    // The rows the Object viewer is charged at — the plan's, so the pane's ideal height
+    // and the drawer's ceiling are one computation (#543). `sequenceStripIdealHeight`
+    // of a 1…5 row count is that many rows, so it is passed straight through.
+    private func macSequenceRows(windowHeight: CGFloat) -> Int {
+        macColumnPlan(windowHeight: windowHeight).sequenceRows
+            ?? PanelLayout.sequenceStripRows(objects: engine.sequences.count)
     }
 
     // The two pieces of column chrome that come and go (#458). Both read the SAME
@@ -719,7 +738,8 @@ struct ContentView: View {
     // the console divider's negated, since that one sits below its pane).
     @ViewBuilder
     private func macDrawerDivider(windowHeight: CGFloat) -> some View {
-        let maxH = macDrawerCeiling(windowHeight: windowHeight)
+        let maxH = macColumnPlan(windowHeight: windowHeight).drawerCeiling
+        let tab = engine.dataDrawerTab
         Rectangle()
             .fill(hairlineColor)
             .frame(height: 1)
@@ -735,10 +755,10 @@ struct ContentView: View {
                     .onChanged { v in
                         // The same floor `drawerFits` uses, so the drag and the hint
                         // cannot disagree about whether a height is usable (#456).
-                        let minH = PanelLayout.minDrawerHeight()
+                        let minH = PanelLayout.minDrawerHeight(tab: tab)
                         let start = macDrawerDragAnchor ?? PanelLayout.drawerHeight(
                             frac: CGFloat(dataDrawerFrac), windowHeight: windowHeight,
-                            maxHeight: maxH)
+                            maxHeight: maxH, tab: tab)
                         macDrawerDragAnchor = start
                         let h = min(max(start - v.translation.height, minH), maxH)
                         if let f = PanelLayout.consoleFrac(height: h, windowHeight: windowHeight) {
@@ -827,9 +847,9 @@ struct ContentView: View {
         // drags the splitter open. The formula is `PanelLayout`'s because
         // `drawerColumnUsed` charges the pane against the same column with the same
         // number (#457) — two copies of it is one edit away from a drawer sized against
-        // a viewer a row taller than the layout thinks.
-        let seqRows = PanelLayout.sequenceStripRows(objects: engine.sequences.count)
-        let seqH = PanelLayout.sequenceStripIdealHeight(objects: engine.sequences.count)
+        // a viewer a row taller than the layout thinks. Since #543 the rows come from
+        // `macColumnPlan` (see macSequenceRows), which can charge FEWER than the object
+        // count while the Data drawer is open and the column is short.
 
         // The window's content height, used for the console's 1/5 default and its
         // persisted share (#331/#332). A GeometryReader is the only reliable source
@@ -888,14 +908,16 @@ struct ContentView: View {
                     SequencePanel()
                         // idealHeight grows with the sequence count (up to 5 rows);
                         // maxHeight stays large so the user can drag the splitter
-                        // open further. .id(seqRows) forces the VSplitView to
+                        // open further. The .id() forces the VSplitView to
                         // re-adopt idealHeight when the row count changes (otherwise
                         // a pinned divider keeps the panel at its first-seen height,
-                        // hiding sequences loaded later).
+                        // hiding sequences loaded later) — including when the drawer
+                        // opens or closes and the plan gives rows up or back (#543).
                         .frame(minHeight: PanelLayout.macMinSequenceStripHeight,
-                               idealHeight: seqH,
+                               idealHeight: PanelLayout.sequenceStripIdealHeight(
+                                   objects: macSequenceRows(windowHeight: winGeo.size.height)),
                                maxHeight: PanelLayout.macMaxSequenceStripHeight)
-                        .id(seqRows)
+                        .id(macSequenceRows(windowHeight: winGeo.size.height))
                 }
 
                 // The viewport takes the remaining (majority of) space, with the
@@ -1289,7 +1311,7 @@ struct ContentView: View {
     @ViewBuilder
     private var macViewport: some View {
         MetalViewport()
-            .frame(minWidth: 400, minHeight: 360)
+            .frame(minWidth: 400, minHeight: PanelLayout.macViewportMinHeight)
             .layoutPriority(1)
             .overlay(alignment: .top) {
                 if engine.measureMode != nil { measureOverlay }

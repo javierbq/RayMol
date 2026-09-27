@@ -124,8 +124,16 @@ enum PanelLayout {
     static let minCeilingFrac: CGFloat = 0.2
     /// The macOS viewport's own minimum. The console may grow until the viewport
     /// is down to this, which is what keeps #317 ("drag it open to read a long
-    /// predict log") working while still guaranteeing a viewport.
-    static let macViewportMinHeight: CGFloat = 360
+    /// predict log") working while still guaranteeing a viewport. `macViewport`'s
+    /// own `.frame(minHeight:)` reads this constant, so the layout's arithmetic and
+    /// the view's hard floor are one number.
+    ///
+    /// 360 until #543 (Javier, 2026-09-26). At the app's persisted 1332×771 with the
+    /// console up, 360 left 719 − 135 − 23 − 5 − 360 = 196pt of content for the Object
+    /// viewer AND the Data drawer together — a five-object viewer is 180 of that — so
+    /// the drawer collapsed to its hint right after a batch landed, which is the moment
+    /// it is wanted. 280 is still a real 3D view (39% of that column), not a sliver.
+    static let macViewportMinHeight: CGFloat = 280
 
     static let defaultPanelFrac: CGFloat = 0.53
     static let minPanelFrac: CGFloat = 0.2
@@ -188,6 +196,119 @@ enum PanelLayout {
         macDrawerHeaderHeight + macDrawerHairline + macMinTabContentHeight
     }
 
+    // MARK: - what the CHART tabs are made of (#543)
+
+    // Table and Sequences keep the floor above: header, tab row, table chrome, one row.
+    // Plot and Lineage draw a chart, and a chart the height of a table row is not a
+    // chart — the walkthrough's Plot tab was a ~90pt strip. Each constant below names
+    // the view (and the line of it) it was read from, the way #456's review held the
+    // table's parts to theirs: every drawer floor is a sum of these, so one that is
+    // short is a tab that draws its chrome and no chart.
+
+    /// What the drawer spends ABOVE any tab's own view: its header, the tab row and the
+    /// two hairlines (`DataDrawer.body` / `tabHalf`). 52pt, on every tab.
+    static var macDrawerAboveTabHeight: CGFloat {
+        macDrawerHeaderHeight + macDrawerHairline + macDrawerTabRowHeight + macDrawerHairline
+    }
+
+    /// `SetPlotView.controls` — the x / y / colour pickers row (`.frame(height: 24)`).
+    static let macPlotControlsHeight: CGFloat = 24
+    /// `SetPlotView`'s x-axis histogram brush: `.frame(height: 18)` plus
+    /// `.padding(.bottom, 2)`.
+    static let macPlotAxisStripHeight: CGFloat = 20
+    /// `SetPlotView.footer` (`.frame(height: 22)`).
+    static let macPlotFooterHeight: CGFloat = 22
+    /// Everything `SetPlotView` draws that is NOT `plotArea`: controls, hairline, the
+    /// axis strip, hairline, footer. `plotArea` is the flexible GeometryReader and gets
+    /// whatever of the tab is left over.
+    static var macPlotChromeHeight: CGFloat {
+        macPlotControlsHeight + macDrawerHairline + macPlotAxisStripHeight
+            + macDrawerHairline + macPlotFooterHeight
+    }
+    /// `SetPlotView.topGutter + bottomGutter` (8 + 16): the part of `plotArea` the tick
+    /// labels take, outside the plotted rectangle.
+    static let macPlotGutterHeight: CGFloat = 24
+    /// `SetPlotView.cardSize.height`: the hover card is drawn INSIDE the plotted
+    /// rectangle, so a rectangle shorter than this cannot show it — hover is how a
+    /// point is identified, so below that the plot is a picture, not a tool.
+    static let macPlotHoverCardHeight: CGFloat = 58
+    /// The smallest `plotArea` the Plot tab is drawn at: the hover card inside the
+    /// gutters (82pt).
+    static var macMinPlotAreaHeight: CGFloat { macPlotGutterHeight + macPlotHoverCardHeight }
+
+    /// `LineageView.header` (`.frame(height: 20)`) and the hairline under it.
+    static let macLineageHeaderHeight: CGFloat = 20
+    /// `LineageView.margin` (18, above and below the canvas) and `rowHeight` (16).
+    static let macLineageMargin: CGFloat = 18
+    static let macLineageRowPitch: CGFloat = 16
+    /// The smallest Lineage canvas the tab is drawn at: its two margins and three node
+    /// rows (84pt). Three because a node, its parent row and its child row is the least
+    /// that shows a lineage rather than a list.
+    static var macMinLineageAreaHeight: CGFloat { 2 * macLineageMargin + 3 * macLineageRowPitch }
+
+    /// The chart area a Plot or Lineage tab ASKS for (#543: "at least ~180pt of plot
+    /// area"). What the drawer defaults to on those tabs, and what the Object viewer
+    /// gives rows up for while the drawer is open — see `macColumnPlan`.
+    static let macPreferredChartAreaHeight: CGFloat = 180
+
+    /// The table rows a Table or Sequences drawer asks for before the Object viewer
+    /// gives up rows for it (#543's "at least 3 table rows" at the default window).
+    /// Below the untouched default's four on purpose: three rows is a usable table,
+    /// and the fourth is not worth a sequence row the user can see.
+    static let macComfortTableRows = 3
+
+    /// The drawer's FLOOR on `tab`: below it the tab draws chrome and no data, so
+    /// `drawerFits` shows the hint and the drag divider will not go under it.
+    ///
+    /// Table and Sequences keep `macMinDrawerHeight` (one row, 136pt). Plot is
+    /// `macDrawerAboveTabHeight + macPlotChromeHeight + macMinPlotAreaHeight` = 202pt;
+    /// Lineage `… + macLineageHeaderHeight + hairline + macMinLineageAreaHeight` = 157pt.
+    static func minDrawerHeight(tab: DataDrawerTab) -> CGFloat {
+        switch tab {
+        case .table, .sequences:
+            return macMinDrawerHeight
+        case .plot:
+            return macDrawerAboveTabHeight + macPlotChromeHeight + macMinPlotAreaHeight
+        case .lineage:
+            return macDrawerAboveTabHeight + macLineageHeaderHeight + macDrawerHairline
+                + macMinLineageAreaHeight
+        }
+    }
+
+    /// The untouched drawer's height on `tab`. Table and Sequences keep 220 (four rows);
+    /// Plot and Lineage are sized so the chart area is `macPreferredChartAreaHeight` —
+    /// 300pt and 253pt. The ceiling still wins, so this is what the tab gets WHEN THERE
+    /// IS ROOM.
+    static func preferredDrawerHeight(tab: DataDrawerTab) -> CGFloat {
+        switch tab {
+        case .table, .sequences:
+            return macDefaultDrawerHeight
+        case .plot:
+            return macDrawerAboveTabHeight + macPlotChromeHeight + macPreferredChartAreaHeight
+        case .lineage:
+            return macDrawerAboveTabHeight + macLineageHeaderHeight + macDrawerHairline
+                + macPreferredChartAreaHeight
+        }
+    }
+
+    /// The drawer height the Object viewer yields rows to protect (see
+    /// `macColumnPlan`): `macComfortTableRows` for the two list tabs, the full preferred
+    /// chart for the two chart tabs.
+    static func comfortDrawerHeight(tab: DataDrawerTab) -> CGFloat {
+        switch tab {
+        case .table, .sequences:
+            return macDrawerChromeHeight + CGFloat(macComfortTableRows) * macDrawerRowHeight
+        case .plot, .lineage:
+            return preferredDrawerHeight(tab: tab)
+        }
+    }
+
+    /// The Plot tab's `plotArea` height in a drawer of `drawerHeight` — what #543's
+    /// "plot area ≥ 180pt" is stated in. 0 when the drawer cannot draw one.
+    static func plotAreaHeight(drawerHeight: CGFloat) -> CGFloat {
+        max(drawerHeight - macDrawerAboveTabHeight - macPlotChromeHeight, 0)
+    }
+
     // MARK: - the OBJECT sequence viewer's own height (#457)
 
     /// The Object viewer's IDEAL height — the sequence strip's own formula, unchanged
@@ -238,9 +359,10 @@ enum PanelLayout {
         return Int(left / macDrawerRowHeight)
     }
 
-    /// The drawer's minimum: its chrome plus one row. `drawerFits` tests it and the drag
-    /// divider clamps to it, so the two cannot disagree about whether a window has room.
-    static func minDrawerHeight() -> CGFloat { macMinDrawerHeight }
+    /// The drawer's minimum on the Table: its chrome plus one row. `drawerFits` tests it
+    /// and the drag divider clamps to it, so the two cannot disagree about whether a
+    /// window has room. Tab-aware since #543 — see `minDrawerHeight(tab:)`.
+    static func minDrawerHeight() -> CGFloat { minDrawerHeight(tab: .table) }
 
     /// Height the panes ABOVE the drawer have already claimed in the viewport
     /// column, so the drawer can size itself against what is actually left.
@@ -293,7 +415,7 @@ enum PanelLayout {
     /// status label may wrap to two lines, so there is no single height to measure.
     /// Rounding UP is the safe direction — an over-charged bar costs the drawer some
     /// height it could have had, while an under-charged one over-commits a column
-    /// whose viewport has a HARD 360pt minimum (`macViewport`'s own frame), and that
+    /// whose viewport has a HARD `macViewportMinHeight` minimum (`macViewport`'s own frame), and that
     /// is the footer-off-the-window case.
     static let macDockedModeBarHeight: CGFloat = 72
 
@@ -337,8 +459,8 @@ enum PanelLayout {
     /// What can tip it over is the two panes ABOVE it — the console and the Object
     /// sequence viewer — which is why the hint offers to close either one (#457). There
     /// is always a way back that is one click rather than a window resize.
-    static func drawerFits(ceiling: CGFloat) -> Bool {
-        ceiling >= minDrawerHeight()
+    static func drawerFits(ceiling: CGFloat, tab: DataDrawerTab = .table) -> Bool {
+        ceiling >= minDrawerHeight(tab: tab)
     }
     /// The drawer shares the viewport's column with the console and may grow until
     /// the viewport is at its minimum — the same bracket `maxConsoleHeight` uses,
@@ -354,16 +476,105 @@ enum PanelLayout {
     ///
     /// `maxHeight` overrides the ceiling. The drawer shares its column with the
     /// console, the rail and the sequence strip, and the viewport under them has a
-    /// hard 360pt minimum, so the layout passes the height LEFT after those panes
+    /// hard `macViewportMinHeight` floor, so the layout passes the height LEFT after those panes
     /// — the drawer yields, rather than pushing its own bottom rows off the window
     /// in a short one. The stored fraction is still of the whole window, so what
     /// the user dragged to means the same thing whether or not the console is up.
+    ///
+    /// `tab` picks the default and the floor (#543): one stored fraction serves every
+    /// tab — it is the height the user dragged the DRAWER to — but a Plot tab lifts it
+    /// to its own floor and an untouched one asks for a chart's worth of height.
     static func drawerHeight(frac: CGFloat, windowHeight: CGFloat,
-                             maxHeight: CGFloat? = nil) -> CGFloat {
+                             maxHeight: CGFloat? = nil,
+                             tab: DataDrawerTab = .table) -> CGFloat {
         consoleHeight(frac: frac, windowHeight: windowHeight,
-                      defaultHeight: defaultDrawerHeight,
-                      minHeight: minDrawerHeight(),
+                      defaultHeight: preferredDrawerHeight(tab: tab),
+                      minHeight: minDrawerHeight(tab: tab),
                       maxHeight: maxHeight ?? maxDrawerHeight(windowHeight: windowHeight))
+    }
+
+    // MARK: - the whole column, planned once (#543)
+
+    /// What the macOS viewport column gives the Object viewer and the Data drawer.
+    struct MacColumnPlan: Equatable {
+        /// Rows the Object viewer's ideal height is charged at (and its `.id`), or nil
+        /// when it is hidden. May be FEWER than `sequenceStripRows(objects:)` while the
+        /// drawer is open — the viewer scrolls the rest.
+        var sequenceRows: Int?
+        /// What the column leaves the drawer after every pane above it.
+        var drawerCeiling: CGFloat
+        /// Whether the drawer draws (false = the "needs more room" hint).
+        var drawerFits: Bool
+        /// The drawer's height when it fits; nil when it does not (or is closed).
+        var drawerHeight: CGFloat?
+    }
+
+    /// The column in one pure function: the Object viewer's rows, the drawer's ceiling,
+    /// whether it fits and how tall it is, from the same flags the views read.
+    ///
+    /// The one policy it adds (#543): while the drawer is OPEN, the Object viewer gives
+    /// up rows — down to one, never to nothing — until the drawer has
+    /// `comfortDrawerHeight(tab:)`. Without it the default window cannot show a set: a
+    /// five-object viewer is 180pt, and at 1332×771 with the console up 280 of viewport
+    /// leaves 276 for the viewer and the drawer together. The viewer scrolls the rows
+    /// it gave up (it already did past five); the drawer has nowhere to put a row it
+    /// cannot draw. If even a one-row viewer leaves too little for the tab's FLOOR the
+    /// drawer shows its hint, and then the viewer keeps all its rows, because giving
+    /// them up would buy nothing.
+    ///
+    /// `sequenceObjects` is the enabled-object count when the viewer is showing
+    /// (nil = hidden); `drawerVisible` false plans the column with no drawer at all.
+    static func macColumnPlan(windowHeight: CGFloat, consoleHeight: CGFloat?,
+                              topRail: Bool, sequenceObjects: Int?,
+                              mcpBanner: Bool, dockedModeBar: Bool,
+                              drawerVisible: Bool, tab: DataDrawerTab,
+                              drawerFrac: CGFloat) -> MacColumnPlan {
+        let fullRows = sequenceObjects.map { sequenceStripRows(objects: $0) }
+        func ceiling(rows: Int?) -> CGFloat {
+            drawerCeiling(windowHeight: windowHeight,
+                          used: drawerColumnUsed(consoleHeight: consoleHeight,
+                                                 topRail: topRail, sequenceRows: rows,
+                                                 mcpBanner: mcpBanner,
+                                                 dockedModeBar: dockedModeBar))
+        }
+        guard drawerVisible else {
+            return MacColumnPlan(sequenceRows: fullRows, drawerCeiling: ceiling(rows: fullRows),
+                                 drawerFits: false, drawerHeight: nil)
+        }
+        var rows = fullRows
+        if let full = fullRows, full > 1, drawerFits(ceiling: ceiling(rows: 1), tab: tab) {
+            let comfort = comfortDrawerHeight(tab: tab)
+            var r = full
+            while r > 1, ceiling(rows: r) < comfort { r -= 1 }
+            rows = r
+        }
+        let c = ceiling(rows: rows)
+        guard drawerFits(ceiling: c, tab: tab) else {
+            return MacColumnPlan(sequenceRows: rows, drawerCeiling: c,
+                                 drawerFits: false, drawerHeight: nil)
+        }
+        return MacColumnPlan(sequenceRows: rows, drawerCeiling: c, drawerFits: true,
+                             drawerHeight: drawerHeight(frac: drawerFrac,
+                                                        windowHeight: windowHeight,
+                                                        maxHeight: c, tab: tab))
+    }
+
+    // MARK: - the hint's ways out (#543)
+
+    /// A button on the "Data drawer needs more room" hint.
+    enum DrawerRoomAction: Equatable { case hideConsole, hideSequences, close }
+
+    /// The hint's buttons, in order. The console comes FIRST (#543): it is the pane the
+    /// user is least likely to be reading at the moment a set lands, and closing it is
+    /// worth more column (135pt) than any Object viewer short of five rows. Each pane is
+    /// offered only while it is showing; Close always is.
+    static func drawerNoRoomActions(consoleVisible: Bool,
+                                    sequenceVisible: Bool) -> [DrawerRoomAction] {
+        var actions: [DrawerRoomAction] = []
+        if consoleVisible { actions.append(.hideConsole) }
+        if sequenceVisible { actions.append(.hideSequences) }
+        actions.append(.close)
+        return actions
     }
 
     /// #350: the macOS inspector column's width on a launch with nothing stored.
