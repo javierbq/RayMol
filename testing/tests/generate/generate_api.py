@@ -227,7 +227,9 @@ class BinderDesignTest(GeneratorTestCase):
         for job in jobs:
             self.assertIn(job.spec.name, enabled)
             self.assertEqual(cmd.get_chains(job.spec.name), ['B'])
-        self.assertIn('target_' + group, enabled)
+        # The shared target is the design target itself, so it is made DISABLED
+        # rather than drawn over the user's structure (#545 review round 2).
+        self.assertNotIn('target_' + group, enabled)
         self.assertEqual(cmd.get_chains('target_' + group), ['A'])
 
     def testTheGroupIsNamedForTheBatchAndNeverCallsAnythingABinder(self):

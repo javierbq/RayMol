@@ -1280,23 +1280,31 @@ def resolve_sequence(sequence, quiet=1, _self=cmd):
     return resolve_input(sequence, quiet=quiet, _self=_self)[0]
 
 
-def _with_shared_target(text, _self=cmd):
-    """`text`, or `text` plus its set's shared target when `text` names a staged
-    binder shown over one (#545 review): folding the object means folding the complex
-    it stands for, not the half on display. Said, always -- the chains folded are not
+def _chains_with_shared_target(text, _self=cmd):
+    """The chains of the COMPLEX when `text` names a staged binder shown over its set's
+    shared target (#545 review): folding the object means folding the complex it stands
+    for, not the half on display. In the entry's stored chain order, whatever order the
+    two objects happen to sit in (round 2), with each chain's source named as the object
+    it was read from. None for anything else. Said, always -- the chains folded are not
     all the ones the name selects."""
     try:
         if text not in (_self.get_names('objects') or []):
-            return text
+            return None
         from pymol.sets import binding as set_binding
-        target = set_binding.split_context(text, _self=_self)
-    except Exception:
-        return text
-    if not target:
-        return text
-    colorprinting.parrot(' predict: %s is staged over its set\'s shared target %s;'
-                         ' folding the complex (%s or %s)' % (text, target, target, text))
-    return '(%s) or (%s)' % (target, text)
+        if not set_binding.is_split(text, _self=_self):
+            return None
+        sources = set_binding.complex_sources(text, _self=_self)
+        with set_binding.complex_of(text, _self=_self) as (src, _state):
+            found = chains_from_selection(src, _self=_self)
+    except Exception as exc:
+        colorprinting.warning(' predict: could not read %s with its shared target (%s);'
+                              ' folding the object alone' % (text, exc))
+        return None
+    colorprinting.parrot(' predict: %s is staged over its set\'s shared target; folding'
+                         ' the complex (%s)'
+                         % (text, ', '.join('%s from %s' % (ch, sources.get(ch, text))
+                                            for _, ch, _ in found)))
+    return [(sources.get(chain, text), chain, seq) for _model, chain, seq in found]
 
 
 def resolve_input(sequence, quiet=1, _self=cmd):
@@ -1338,8 +1346,9 @@ def resolve_input(sequence, quiet=1, _self=cmd):
             return text, []
         raise
     if n_atoms > 0:
-        text = _with_shared_target(text, _self=_self)
-        found = chains_from_selection(text, _self=_self)
+        found = _chains_with_shared_target(text, _self=_self)
+        if found is None:
+            found = chains_from_selection(text, _self=_self)
         resolved = '/'.join(seq for _, _, seq in found)
         if not int(quiet):
             colorprinting.parrot(
