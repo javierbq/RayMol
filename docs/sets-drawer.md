@@ -382,7 +382,16 @@ it stays where it is, and the rest of the batch is written into it. Open the fil
 (`load`, or the recovery alert on the next launch) and the batch is this session's
 again: its badge comes back and the remaining designs land and stage as usual. Only if
 that file has been deleted in the meantime do later designs fall back to landing as
-plain objects in the current scene, with a warning.
+plain objects in the current scene (under a free name), with a warning.
+
+A late design never touches anything in the current scene by its own name: it is loaded
+into a scratch object, written into the batch's file and the scratch deleted, so an
+object of yours that happens to share the design's name (member names repeat across
+runs) is left alone. While a batch writes into a file it keeps that file open, so a
+second RayMol sharing the state folder neither sweeps it, offers it for recovery nor
+lets you discard it until the batch has finished; `save` over it is refused. Opening a
+Finder copy of the document does not pull the batch into the copy — only the file it
+left takes it back.
 
 In the app, opening a session file, dropping one on the viewport or choosing File ▸
 Clear Session while a batch is running asks first — **Save…** (as a `.raymol`),

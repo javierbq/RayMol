@@ -1822,42 +1822,65 @@ final class PyMOLEngine: ObservableObject {
     }
 
     /// What replacing the session would do to a batch that is still landing (#448):
-    /// the sets it is filling, how many of their entries have landed, and — when the
-    /// session is a `.raymol` document — the file they are in. nil when no batch is
-    /// running, which is when the open/clear paths ask nothing new.
+    /// the sets it is filling, how many of its designs have landed, and where they
+    /// live. nil when no batch is running, which is when the open/clear paths ask
+    /// nothing new.
     struct RunningBatchReplace: Equatable {
         /// Names of the sets a batch is landing in, in the order the drawer lists them.
         let sets: [String]
-        /// Entries already in those sets — every one of them on disk.
+        /// The running batches' OWN landed count when the marker carries it; else the
+        /// running sets' entry count, which for an extended set also holds earlier
+        /// runs -- `landedIsExact` says which, and the text words it accordingly.
         let landed: Int
-        /// The open `.raymol` document the batch writes into, or nil for an untitled
-        /// session, whose working file is kept as a recovered container instead.
+        let landedIsExact: Bool
+        /// The open `.raymol` document the batch writes into, or nil when its sets are
+        /// in the working file, which Don't Save keeps as a recovered container.
         let document: URL?
+        /// The tracked `.pse` when that is what the session was opened from or saved
+        /// as: a document, but not one that holds the sets.
+        let pseDocument: URL?
 
+        /// No `.raymol` holds the sets yet: Save must write one.
         var isUntitled: Bool { document == nil }
 
         var title: String {
             "A batch is still running in \(Self.list(sets))."
         }
 
+        private var landedText: String {
+            if landedIsExact {
+                switch landed {
+                case 0: return "No design from it has landed yet."
+                case 1: return "1 design from it has landed."
+                default: return "\(landed) designs from it have landed."
+                }
+            }
+            return landed == 1 ? "Its set holds 1 entry." : "Its sets hold \(landed) entries."
+        }
+
         /// The sheet's text. It says what Don't Save does, because the answer is not
         /// "lose the results": Python keeps the file either way (#447, #448) and the
         /// batch keeps writing into it.
         func message(replacing action: String) -> String {
-            let n = landed == 1 ? "1 design has" : "\(landed) designs have"
-            let already = landed == 0 ? "No design has landed yet." : "\(n) landed."
             if let document {
                 return """
-                    \(already) \(action) will close “\(document.lastPathComponent)”. \
+                    \(landedText) \(action) will close “\(document.lastPathComponent)”. \
                     Its sets are already saved in it, and the rest of the batch keeps \
                     writing there; Save first to keep the scene as it is now too.
                     """
             }
+            let what: String
+            if let pseDocument {
+                what = "will replace this session. Its sets are not in " +
+                    "“\(pseDocument.lastPathComponent)” — a .pse can’t hold them."
+            } else {
+                what = "will replace this untitled session."
+            }
             return """
-                \(already) \(action) will replace this untitled session. Save keeps it \
-                as a .raymol file you choose. Don’t Save keeps it as a recovered file \
-                in RayMol's state folder, offered again at the next launch, and the \
-                rest of the batch keeps writing into it.
+                \(landedText) \(action) \(what) Save keeps the session in a .raymol \
+                file you choose. Don’t Save keeps it as a recovered file in RayMol’s \
+                state folder, offered again at the next launch, and the rest of the \
+                batch keeps writing into it.
                 """
         }
 
@@ -1874,23 +1897,30 @@ final class PyMOLEngine: ObservableObject {
     /// The #448 rule, pure so `OpenFilesTests` can pin it: any batch in `running`
     /// asks, whether or not a design has landed yet — the batch's set and run are in
     /// the file already, and so will be everything it delivers from now on. The
-    /// document counts as titled only when the open `.raymol` IS the store's file.
+    /// document counts as holding the sets only when the open `.raymol` IS the
+    /// store's file.
     static func runningBatchReplace(sets: [SetEntry], running: [String: BatchProgress],
                                     storePath: String, currentDocument: URL?)
         -> RunningBatchReplace? {
         guard !running.isEmpty else { return nil }
         let busy = sets.filter { running[$0.id] != nil }
-        // A running id the drawer has not read yet (the marker is ahead of the file
-        // read) still asks; it just cannot be named.
         let names = busy.map(\.name)
-        let landed = busy.reduce(0) { $0 + $1.count }
+        let own = running.values.compactMap(\.landed)
+        let exact = own.count == running.count
+        let landed = exact ? own.reduce(0, +) : busy.reduce(0) { $0 + $1.count }
         var document: URL? = nil
-        if let currentDocument, isRayMolDocument(currentDocument.path), !storePath.isEmpty,
-           currentDocument.standardizedFileURL.path
-            == URL(fileURLWithPath: storePath).standardizedFileURL.path {
-            document = currentDocument
+        var pse: URL? = nil
+        if let currentDocument {
+            if isRayMolDocument(currentDocument.path), !storePath.isEmpty,
+               currentDocument.standardizedFileURL.path
+                == URL(fileURLWithPath: storePath).standardizedFileURL.path {
+                document = currentDocument
+            } else if currentDocument.pathExtension.lowercased() == "pse" {
+                pse = currentDocument
+            }
         }
-        return RunningBatchReplace(sets: names, landed: landed, document: document)
+        return RunningBatchReplace(sets: names, landed: landed, landedIsExact: exact,
+                                   document: document, pseDocument: pse)
     }
 
     /// `runningBatchReplace` for this engine's live state.

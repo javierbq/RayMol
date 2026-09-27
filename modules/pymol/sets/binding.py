@@ -303,7 +303,11 @@ def capture_object(set_id, obj, name='', run_id=None, parents=(), states='all',
         cifs, seqs = [], {}
         # A staged binder shown over its set's shared target is captured WITH the
         # target (#545 review): the entry is the complex, not the half on display.
-        with complex_of(obj, state, _self=_self) as (src, src_state):
+        # Not for `into=`: the staged-complex lookup reads the ACTIVE container, which
+        # for an away delivery is an unrelated document (#448 review).
+        reading = (contextlib.nullcontext((obj, state)) if into is not None
+                   else complex_of(obj, state, _self=_self))
+        with reading as (src, src_state):
             for ch in (chains if src == obj else _chains(src, _self=_self)):
                 sel = _chain_sel(src, ch)
                 try:
@@ -1626,6 +1630,13 @@ def save_raymol(filename, quiet=1, _self=cmd):
     filename = os.path.abspath(_self.exp_path(filename))
     c = container()
     same = os.path.exists(filename) and os.path.samefile(filename, c.path)
+    if not same and store.writers(filename):
+        # The document a batch outlived its session in (#448): it is still writing
+        # there, so saving over it would replace the campaign with this session.
+        raise SetInputError(
+            '%s is where %s is still writing its results (it was the document when the'
+            ' session was replaced); save this session somewhere else, or load that file'
+            ' to go back to it' % (filename, ', '.join(store.writers(filename))))
     if not same:
         old_path = c.path
         tmp = filename + '.saving'
@@ -1690,7 +1701,10 @@ def checkpoint_session(_self=cmd):
     c = store.active()
     if os.path.abspath(c.path) != os.path.abspath(store.working_path()):
         return False
-    if not c.holds_entries():
+    # A running batch keeps the file even before its first entry (#448), so it keeps
+    # the scene too -- else reopening it says "Scene not recovered" and the target the
+    # batch was designing against is gone (#448 review).
+    if not c.holds_entries() and not store.writers(c.path):
         return False
     try:
         c.write_session(_pse_bytes(_self=_self),

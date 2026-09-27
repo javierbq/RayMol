@@ -1703,7 +1703,9 @@ def recoverable():
     out = []
     for path in recovered_files():
         info = inspect_container(path)
-        if info and info['entries']:
+        # Another RayMol still has it open -- a batch whose session was replaced keeps
+        # writing into its kept file, and holds it (#448 review): not ours to offer.
+        if info and info['entries'] and not _has_sidecar(path):
             out.append(info)
     return out
 
@@ -1716,10 +1718,16 @@ def discard_recoverable(path):
     path = os.path.abspath(os.fspath(path))
     if not is_preserved(path):
         raise SetInputError('%s is not a recoverable container' % path)
-    if writers(path):
+    if writers(path) or is_container_open(path):
         # A batch that outlived its session is still writing into this file (#448).
         raise SetInputError('%s is still receiving results from a running batch'
                             % path)
+    # ...or one in ANOTHER RayMol is: its held connection keeps the -wal/-shm beside
+    # the file once our own look has closed (the check `sweep_recovered` makes).
+    inspect_container(path)
+    if _has_sidecar(path):
+        raise SetInputError('%s is open in another RayMol; quit it or let its batch'
+                            ' finish first' % path)
     remove_db_files(path)
     return path
 

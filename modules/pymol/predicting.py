@@ -508,9 +508,11 @@ def discard_pending(name, _self=cmd):
         _RECENT[name] = last
     _PENDING.pop(name, None)
     _TRACK.pop(name, None)
+    # An away member's name in THIS scene is not its placeholder (#448 review).
+    away = _set_is_away(name)
     _settle_in_set(name)
     try:
-        if name in _self.get_names('objects') and _self.count_atoms(name) == 0:
+        if not away and name in _self.get_names('objects') and _self.count_atoms(name) == 0:
             _self.delete(name)
     except Exception:
         pass
@@ -942,6 +944,11 @@ def deliver_result(path, name, seed=None, _self=cmd):
     name = _legal_object_name(name, _self=_self)
     landing = (_PENDING.get(name) or [None])[0]
     try:
+        if _set_is_away(name):
+            # The batch's session was replaced (#448): never load into `name` here,
+            # which may be the user's object. See `_deliver_away`.
+            _deliver_away(path, name, seed, landing, _self=_self)
+            return
         _self.load(path, name, zoom=0)
         # Record which seed produced THIS model, in its state title, so a multi-model
         # object says what each model is. It survives into a saved .pse, which is what
@@ -1083,7 +1090,63 @@ def _entry_sequence(entry):
     return '/'.join(str(seqs[k]) for k in sorted(seqs) if str(seqs[k]).strip())
 
 
-def _land_in_set(name, _self=cmd):
+def _set_is_away(name):
+    """True when `name` is a member of a set batch whose session was replaced under
+    it (#448): its result goes into the batch's own file, through a scratch object."""
+    sb = _sets_batch()
+    if sb is None:
+        return False
+    try:
+        return bool(sb.is_away(name))
+    except Exception:
+        return False
+
+
+def _deliver_away(path, name, seed, landing, _self=cmd):
+    """Deliver a result whose batch lost its session (#448 review): into a SCRATCH
+    object under a fresh name, never into `name`.
+
+    The member name repeats across runs, so in the session that replaced the batch's it
+    may be the user's own object -- `cmd.load` into it would merge atoms, and the set
+    would then capture and delete it. The scratch is measured like any delivery (the
+    set's columns come from its metrics run), written into the batch's file, and
+    deleted by `batch.land`. If that write is refused it is kept, under a free name.
+    """
+    scratch = _self.get_unused_name('_set_delivery')
+    _self.load(path, scratch, zoom=0)
+    try:
+        _self.disable(scratch)
+    except Exception:
+        pass
+    if seed is not None:
+        try:
+            _self.set_title(scratch, _self.count_states(scratch), 'seed=%d' % int(seed))
+        except Exception:
+            pass
+    try:
+        _self.dss(scratch)
+    except Exception:
+        pass
+    try:
+        record_run(scratch, landing, _self.count_states(scratch), _self=_self)
+    except Exception as exc:
+        colorprinting.warning(' predict: could not record metrics for %s (%s)'
+                              % (name, exc))
+    if _land_in_set(name, source=scratch, _self=_self) is None \
+            and scratch in (_self.get_names('all') or []):
+        # Nowhere to write it: keep it in THIS scene, as a run without sets would,
+        # but under a name that is free -- never merged into or over the user's.
+        names = set(_self.get_names('all') or [])
+        keep = name if name not in names else _self.get_unused_name(name + '_')
+        try:
+            _self.set_name(scratch, keep)
+            _self.enable(keep)
+        except Exception:
+            keep = scratch
+        colorprinting.warning(' predict: %s is kept as the plain object %s' % (name, keep))
+
+
+def _land_in_set(name, source=None, _self=cmd):
     """Write the delivered model as an entry of its child set and stage or discard it.
     None when the name is not a set-driven model or the write was refused; warned, never
     raised, for the reason `designing._land_in_set` gives."""
@@ -1091,6 +1154,8 @@ def _land_in_set(name, _self=cmd):
     if sb is None or sb.batch_of(name) is None:
         return None
     try:
+        if source:
+            return sb.land(name, source=source, _self=_self)
         return sb.land(name, state=_self.count_states(name), _self=_self)
     except Exception as exc:
         colorprinting.warning(' predict: %s was not written to its set (%s); it is kept'

@@ -462,7 +462,8 @@ class FiftyDesigns(BatchTestCase):
                         and n not in self.groups()]
         self.assertEqual(len(placeholders), binding.DEFAULT_BUDGET, placeholders)
         self.assertEqual(batch.running(),
-                         {row['id']: {'done': 0, 'total': 50, 'tool': GEN}})
+                         {row['id']: {'done': 0, 'total': 50, 'tool': GEN,
+                                      'landed': 0}})
         runs = c.runs(row['id'])
         self.assertEqual(len(runs), 1)
         self.assertEqual(len(runs[0]['inputs']['seeds']), 50)
@@ -742,7 +743,7 @@ class PredictOverASet(BatchTestCase):
         self.assertEqual(runs[0]['inputs']['selector'], 'top:2')
         self.assertEqual(runs[0]['inputs']['n_models'], 3)
         self.assertEqual(batch.running()[child['id']],
-                         {'done': 0, 'total': 6, 'tool': PRED})
+                         {'done': 0, 'total': 6, 'tool': PRED, 'landed': 0})
 
         deliver_models(jobs)
 
@@ -975,7 +976,8 @@ class GenerationCheck(BatchTestCase):
             deliver_designs(jobs[1:3])
         self.assertNotIn('was not written', out.getvalue())
         self.assertEqual(os.path.realpath(store.active().path), os.path.realpath(path))
-        self.assertEqual(batch.running()[row['id']], {'done': 3, 'total': 4, 'tool': GEN})
+        self.assertEqual(batch.running()[row['id']], {'done': 3, 'total': 4, 'tool': GEN,
+                                                        'landed': 3})
         deliver_designs(jobs[3:])
         self.assertEqual(batch.running(), {})
         c = store.active()
@@ -1224,6 +1226,205 @@ class SessionReplacedMidBatch(BatchTestCase):
         console = self.replace_session('pse')
         self.assertNotIn('still running', console)
         self.assertEqual(len(self.entries_in(doc, row['id'])), 2)
+
+
+class SessionReplacedMidBatchReview(BatchTestCase):
+    """#448 review round 1: what the first cut of the away path got wrong."""
+
+    kept_files = SessionReplacedMidBatch.kept_files
+    other_pse = SessionReplacedMidBatch.other_pse
+    other_raymol = SessionReplacedMidBatch.other_raymol
+    replace_session = SessionReplacedMidBatch.replace_session
+    start = SessionReplacedMidBatch.start
+    entries_in = staticmethod(SessionReplacedMidBatch.entries_in)
+
+    def pse_with(self, name, sequence='WWWWWWWW'):
+        """A .pse holding the USER'S object under `name` -- yesterday's session, or a
+        re-run whose member names repeat."""
+        path = os.path.join(_RESULTS['dir'], 'mine.pse')
+        with redirect_stdout(io.StringIO()):
+            cmd.fab(sequence, 'mine_tmp', chain='Z')
+            cmd.set_name('mine_tmp', name)
+            cmd.save(path, name)
+            cmd.delete(name)
+        return path
+
+    def assertUntouched(self, name, atoms):
+        self.assertIn(name, cmd.get_names('objects'))
+        self.assertEqual(cmd.count_atoms('model %s' % name), atoms)
+        self.assertEqual(cmd.get_chains(name), ['Z'])
+
+    # F1 ---------------------------------------------------------------------------
+
+    def testAnAwayDesignNeverTouchesTheUsersObjectOfTheSameName(self):
+        jobs, row, _ = self.start(n=4, landed=2)
+        clash = jobs[2].spec.name
+        with redirect_stdout(io.StringIO()):
+            cmd.load(self.pse_with(clash))
+        atoms = cmd.count_atoms('model %s' % clash)
+        kept = self.kept_files()[0]
+        out = io.StringIO()
+        with redirect_stdout(out):
+            deliver_designs(jobs[2:])
+        self.assertUntouched(clash, atoms)
+        # The entry in the kept file is the design alone: target A + designed B.
+        c = store.Container(kept)
+        try:
+            entry = c.entry(row['id'], clash)
+        finally:
+            c.close()
+        self.assertEqual(entry['n_chains'], 2)
+        self.assertEqual(sorted(entry['sequences']), ['A', 'B'])
+        self.assertNotIn('W', ''.join(entry['sequences'].values()))
+        # No scratch left behind, and nothing else of the batch in this scene.
+        self.assertEqual([n for n in cmd.get_names('all') if n.startswith('_set_delivery')],
+                         [])
+        self.assertNotIn(jobs[3].spec.name, cmd.get_names('all'))
+        self.assertEqual(store.active().sets(), [])
+
+    def testAnAwayPredictionNeverTouchesTheUsersObjectOfTheSameName(self):
+        jobs = self.design(2)
+        deliver_designs(jobs)
+        parent = self.only_set()
+        preds = cmd.predict(PRED, 'set:%s' % parent['name'])
+        deliver_models(preds[:1])
+        child = store.active().get_set('%s_1' % PRED)
+        clash = preds[1].spec.name
+        with redirect_stdout(io.StringIO()):
+            cmd.load(self.pse_with(clash))
+        atoms = cmd.count_atoms('model %s' % clash)
+        kept = self.kept_files()[0]
+        with redirect_stdout(io.StringIO()):
+            deliver_models(preds[1:])
+        self.assertUntouched(clash, atoms)
+        c = store.Container(kept)
+        try:
+            entries = c.entries(child['id'])
+        finally:
+            c.close()
+        self.assertEqual(len(entries), 2)
+        for e in entries:
+            self.assertNotIn('Z', e['sequences'])
+            self.assertNotIn('W' * 8, ''.join(e['sequences'].values()))
+
+    def testCancellingAnAwayMemberLeavesTheUsersObjectAlone(self):
+        from pymol import designing
+        jobs, row, _ = self.start(n=3, landed=1)
+        clash = jobs[1].spec.name
+        with redirect_stdout(io.StringIO()):
+            cmd.load(self.pse_with(clash))
+        atoms = cmd.count_atoms('model %s' % clash)
+        designing.discard_pending(clash)
+        self.assertUntouched(clash, atoms)
+
+    def testAnAwayLandingWithoutAScratchIsRefusedBeforeAnythingIsTouched(self):
+        from pymol.sets.errors import SetInputError
+        jobs, row, _ = self.start(n=3, landed=1)
+        clash = jobs[1].spec.name
+        with redirect_stdout(io.StringIO()):
+            cmd.load(self.pse_with(clash))
+        atoms = cmd.count_atoms('model %s' % clash)
+        self.assertRaises(SetInputError, batch.land, clash)
+        self.assertUntouched(clash, atoms)
+        self.assertEqual(len(self.entries_in(self.kept_files()[0], row['id'])), 1)
+
+    # F2 ---------------------------------------------------------------------------
+
+    def testABatchWithNothingLandedKeepsTheSceneWithItsFile(self):
+        jobs, row, _ = self.start(n=2, landed=0)
+        self.replace_session('pse')
+        kept = self.kept_files()[0]
+        self.assertTrue(store.inspect_container(kept)['session'])
+        with redirect_stdout(io.StringIO()):
+            deliver_designs(jobs)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            cmd.load(kept)
+        self.assertNotIn(binding.RECOVERY_TEXT, out.getvalue())
+        self.assertIn('tgt', cmd.get_names('objects'))
+        self.assertEqual(store.active().count(row['id']), 2)
+
+    # F3 ---------------------------------------------------------------------------
+
+    def second_process(self, path, discard=False):
+        """What ANOTHER RayMol sharing the state folder does with `path`: its launch
+        sweep, its recovery offer and (optionally) its Discard button."""
+        import json
+        import subprocess
+        import sys
+        script = (
+            'import json, sys\n'
+            'from pymol.sets import store\n'
+            'out = {"swept": store.sweep_recovered(),\n'
+            '       "offered": [r["path"] for r in store.recoverable()]}\n'
+            'if %r:\n'
+            '    try:\n'
+            '        store.discard_recoverable(%r)\n'
+            '        out["discarded"] = True\n'
+            '    except Exception as exc:\n'
+            '        out["discarded"] = str(exc)\n'
+            'print("RESULT" + json.dumps(out))\n' % (discard, path))
+        env = dict(os.environ, RAYMOL_SETS_DIR=self._sets_dir)
+        proc = subprocess.run([sys.executable, '-c', script], env=env,
+                              capture_output=True, text=True, timeout=120)
+        line = [l for l in proc.stdout.splitlines() if l.startswith('RESULT')]
+        self.assertTrue(line, proc.stdout + proc.stderr)
+        return json.loads(line[-1][len('RESULT'):])
+
+    def testAnotherRayMolNeitherSweepsNorOffersNorDiscardsAFileABatchHolds(self):
+        jobs, row, _ = self.start(n=3, landed=0)      # 0 entries: the sweepable case
+        self.replace_session('reinitialize')
+        kept = self.kept_files()[0]
+        seen = self.second_process(kept, discard=True)
+        self.assertEqual(seen['swept'], [])
+        self.assertNotIn(kept, seen['offered'])
+        self.assertNotEqual(seen['discarded'], True)
+        self.assertTrue(os.path.exists(kept))
+        with redirect_stdout(io.StringIO()):
+            deliver_designs(jobs[:1])
+        seen = self.second_process(kept)
+        self.assertNotIn(kept, seen['offered'])
+        # Once the batch has finished it lets go, and the file is an ordinary
+        # recovered container for everyone.
+        with redirect_stdout(io.StringIO()):
+            deliver_designs(jobs[1:])
+        seen = self.second_process(kept)
+        self.assertEqual([os.path.realpath(p) for p in seen['offered']],
+                         [os.path.realpath(kept)])
+
+    # F4 ---------------------------------------------------------------------------
+
+    def testSavingOverTheFileAnAwayBatchWritesIntoIsRefused(self):
+        jobs, row, doc = self.start(n=3, landed=1, titled=True)
+        self.replace_session('pse')
+        with redirect_stdout(io.StringIO()):
+            self.assertRaises(Exception, cmd.save, doc)
+        self.assertEqual(len(self.entries_in(doc, row['id'])), 1)
+        with redirect_stdout(io.StringIO()):
+            deliver_designs(jobs[1:])
+        self.assertEqual(len(self.entries_in(doc, row['id'])), 3)
+
+    # F5 ---------------------------------------------------------------------------
+
+    def testAFinderDuplicateOfTheHomeDocumentDoesNotTakeTheBatch(self):
+        import shutil
+        jobs, row, doc = self.start(n=3, landed=1, titled=True)
+        self.replace_session('pse')
+        dup = os.path.join(_RESULTS['dir'], 'campaign copy.raymol')
+        shutil.copyfile(doc, dup)
+        with redirect_stdout(io.StringIO()):
+            cmd.load(dup)
+        self.assertEqual(batch.running(), {})             # not this session's
+        with redirect_stdout(io.StringIO()):
+            deliver_designs(jobs[1:2])
+        self.assertEqual(store.active().count(row['id']), 1)   # the copy: unchanged
+        self.assertEqual(len(self.entries_in(doc, row['id'])), 2)
+        # The document itself does take it back.
+        with redirect_stdout(io.StringIO()):
+            cmd.load(doc)
+        self.assertEqual(batch.running()[row['id']]['done'], 2)
+        deliver_designs(jobs[2:])
+        self.assertEqual(store.active().count(row['id']), 3)
 
 
 class SharedTarget(BatchTestCase):

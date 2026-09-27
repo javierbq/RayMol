@@ -18,7 +18,7 @@ in it changed since the last poll:
              so an MCP agent can open a set in the drawer with the same call the UI
              makes, and so the drawer follows a `set_delete` of what it was showing.
     peek     the id of the entry currently shown in the hidden peek object, or "".
-    running  {set_id: {"done": n, "total": n, "tool": name}} for batches still
+    running  {set_id: {"done": n, "total": n, "tool": name, "landed": n}} for batches still
              landing, from pymol.sets.batch (#416) when that module exists; {} when it
              does not. Imported lazily and guarded, because the two tickets land
              independently and the badge must simply appear the day both are in.
@@ -81,6 +81,10 @@ def _running():
                 'total': int(rec.get('total', 0) or 0),
                 'tool': str(rec.get('tool', '') or ''),
             }
+            if 'landed' in rec:
+                # This batch's own count (#448), for the replace sheet: an extended
+                # set's entry count also holds earlier runs' designs.
+                clean[str(set_id)]['landed'] = int(rec.get('landed', 0) or 0)
         except (TypeError, ValueError):
             continue
     return clean

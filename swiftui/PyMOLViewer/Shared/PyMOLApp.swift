@@ -761,9 +761,9 @@ enum SetsSaveAnswer { case raymol, pse, cancel }
 func performSessionSave(engine: PyMOLEngine, notes: AnalysisNotesStore,
                         alwaysPanel: Bool, forcingRaymol forced: Bool = false) -> Bool {
     // `forced`: the caller already knows the answer is .raymol (#448's sheet, for a
-    // session whose running batch is filling a set), which is the sheet's own answer.
+    // session whose running batch is filling a set). Recorded as the §2.1 choice only
+    // once the save has happened -- a cancelled panel has answered nothing.
     var forcingRaymol = forced
-    if forced { engine.recordSetsSaveChoice() }
     let first = PyMOLEngine.sessionSaveStep(
         hasNonEmptySet: engine.hasNonEmptySet, currentDocument: engine.currentSessionURL,
         setsChoiceMade: engine.setsSaveChoiceMade, forcingRaymol: forced,
@@ -788,10 +788,13 @@ func performSessionSave(engine: PyMOLEngine, notes: AnalysisNotesStore,
         engine.saveSession(to: url)
         return true
     case .panel(let extensions):
-        guard let url = runSessionSavePanel(engine: engine, extensions: extensions)
+        // The #448 sheet promised a .raymol: offer nothing else.
+        guard let url = runSessionSavePanel(engine: engine,
+                                            extensions: forced ? ["raymol"] : extensions)
         else { return false }
         notes.sessionDidSave(to: url)
         engine.saveSession(to: url)
+        if forced { engine.recordSetsSaveChoice() }
         return true
     }
 }

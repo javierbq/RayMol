@@ -74,7 +74,7 @@ class _Batch:
 
     __slots__ = ('id', 'set_id', 'run_id', 'tool', 'total', 'settled', 'landed',
                  'group', 'superpose', 'slots', 'members', 'order', 'detached',
-                 'quiet_end', 'home', 'away')
+                 'quiet_end', 'home', 'away', 'hold')
 
     def __init__(self, id, set_id, run_id, tool, total, group, superpose, slots,
                  home=''):
@@ -115,6 +115,11 @@ class _Batch:
         #: True while `home` is not the active container: the batch is writing into a
         #: document nobody has open, so it is not this session's badge.
         self.away = False
+        #: The home Container, held OPEN for as long as the batch is away (#448 review).
+        #: Not for speed: an open connection keeps SQLite's -wal/-shm beside the file,
+        #: which is what ANOTHER RayMol's sweep, recovery offer and Discard read as "in
+        #: use" (`store._has_sidecar`) -- a per-process registry cannot tell them.
+        self.hold = None
 
 
 def _container():
@@ -311,14 +316,22 @@ def _still_ours(batch):
     if not store.is_open():
         return False
     try:
-        run = _container().run(batch.run_id)
+        c = _container()
+        run = c.run(batch.run_id)
     except Exception:
         return False
-    return run.get('set_id') == batch.set_id
+    if run.get('set_id') != batch.set_id:
+        return False
+    # The same ids in ANOTHER file -- a Finder duplicate of the document the batch left
+    # -- are not its document (#448 review): an away batch only comes back to its own.
+    if batch.away and not _is_home(c.path, batch.home):
+        return False
+    return True
 
 
 def _detach(batch):
     batch.detached = True
+    _release_hold(batch)
     raise SetError(
         'the set document changed while batch %s was running (a .raymol or .pse'
         ' was loaded, or the session was reset), and the document it was writing into'
@@ -360,6 +373,54 @@ def _open_home(batch):
     return c
 
 
+def _home_container(batch):
+    """The held home Container of an away batch, opening (and holding) it on first
+    use; None when `_open_home` refuses."""
+    c = batch.hold
+    if c is not None and not c.closed and _same(c.path, batch.home) \
+            and _identity(batch.home) == getattr(c, '_raymol_identity', None):
+        return c
+    # Gone, replaced or never opened. A connection to a file that was unlinked (or
+    # replaced) under it would write into an inode nobody can reach, silently -- the
+    # failure #447's review found -- so a held connection is only reused while the
+    # path still names the very file it was opened on.
+    _release_hold(batch)
+    c = _open_home(batch)
+    if c is not None:
+        c._raymol_identity = _identity(batch.home)
+    batch.hold = c
+    return c
+
+
+def _identity(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino)
+
+
+def _release_hold(batch):
+    c, batch.hold = batch.hold, None
+    if c is not None:
+        try:
+            c.close()
+        except Exception:
+            pass
+
+
+def is_away(object_name):
+    """True when `object_name` is a member of a live batch whose session was replaced
+    under it (#448): its result belongs to a document that is not the open one, so the
+    delivering tool must not load it into, read it from, or delete anything by that
+    name in THIS scene -- the name may well be the user's own object here. The caller
+    loads the result into a scratch object and hands that to `land(..., source=)`."""
+    batch = batch_of(object_name)
+    if batch is None or batch.detached:
+        return False
+    return not _still_ours(batch)
+
+
 def _left_behind(batch, object_name, entry_name, _self=cmd):
     """Say where a result that landed in a document nobody has open went. Said every
     time, for the reason `_stage_or_discard` says its line: a finished design that does
@@ -369,7 +430,7 @@ def _left_behind(batch, object_name, entry_name, _self=cmd):
         ' "load" that file to see it.' % (object_name, entry_name, batch.id, batch.home))
 
 
-def land(object_name, state=None, _self=cmd):
+def land(object_name, state=None, source=None, _self=cmd):
     """Write the object that just landed under `object_name` as an entry of its batch's
     set, then stage it or discard it. Returns None when the name is not a batch member
     (or its batch detached), else `{'set_id', 'entry_id', 'staged'}`.
@@ -381,15 +442,27 @@ def land(object_name, state=None, _self=cmd):
 
     Order inside is the point: the entry is on disk BEFORE the staging decision, and the
     staging decision deletes nothing until the write has committed.
+
+    `source` is the scratch object an AWAY delivery was loaded into (`is_away`): when
+    the batch's session was replaced, the entry is captured from it and it -- never
+    `object_name` -- is what leaves the scene. An away landing without one is refused
+    before anything is read or deleted.
     """
     batch = batch_of(object_name)
     if batch is None or batch.detached:
         return None
     member = batch.members[object_name]
+    if not _still_ours(batch):
+        if _home_container(batch) is None:
+            _detach(batch)
+        if not source:
+            raise SetInputError(
+                '%s belongs to batch %s, whose session was replaced; its result must be'
+                ' delivered into a scratch object, not into %r in this scene'
+                % (object_name, batch.id, object_name))
+        return _land_away(batch, object_name, member, source, _self=_self)
     n_states = max(1, int(_self.count_states(object_name) or 1))
     which = n_states if state is None else int(state)
-    if not _still_ours(batch):
-        return _land_away(batch, object_name, member, which, _self=_self)
     c = _container()
     batch.away = False
     entry_name = binding._unique_entry_name(c, batch.set_id, member['entry'])
@@ -422,44 +495,48 @@ def land(object_name, state=None, _self=cmd):
             'entry': entry_name}
 
 
-def _land_away(batch, object_name, member, which, _self=cmd):
+def _land_away(batch, object_name, member, source, _self=cmd):
     """`land` for a batch whose session was replaced under it (#448): the entry is
     written into the batch's OWN container -- the untitled session's file, now kept
-    under a recovered_ name, or the user's document, now closed -- and the object is
-    taken out of the scene, which belongs to a different document.
+    under a recovered_ name, or the user's document, now closed -- from the scratch
+    object `source` the caller loaded the result into, and only `source` leaves the
+    scene.
 
-    Why not leave it in the new scene, as #445 did: that scene is not the campaign's.
-    An object dropped into it is written to no set, is saved into the wrong document if
-    that one is saved, and is simply gone at quit if it is not -- and the campaign's own
-    file, the one the recovery flow offers back, would be missing every design that
-    landed after the load. Here each result is on disk in the campaign's file before
-    the object is deleted, exactly the order `_stage_or_discard` keeps for a design
-    that lands into a full budget.
+    Why not leave the result in the new scene, as #445 did: that scene is not the
+    campaign's. An object dropped into it is written to no set, is saved into the wrong
+    document if that one is saved, and is simply gone at quit if it is not -- and the
+    campaign's own file, the one the recovery flow offers back, would be missing every
+    design that landed after the load.
+
+    Why a scratch object and never `object_name` (#448 review): member names repeat
+    across runs (`name_01..NN`, a design-key digest), so the new session may hold the
+    USER'S object under exactly that name; loading into it merges atoms, and deleting it
+    destroys their work. Nothing here reads the active container either: `into=` skips
+    the staged-complex lookup, which would consult an unrelated document.
 
     Falls back to #445's behaviour, once, when that file cannot be written any more
-    (deleted, moved, unreadable): the object stays where it is, in the batch's group.
+    (deleted, moved, unreadable): SetError, and the caller keeps the scratch as a
+    plain object under a free name.
     """
-    c = _open_home(batch)
+    c = _home_container(batch)
     if c is None:
         _detach(batch)
     batch.away = True
-    try:
-        entry_name = binding._unique_entry_name(c, batch.set_id, member['entry'])
-        ids = binding.capture_object(batch.set_id, object_name, name=entry_name,
-                                     run_id=batch.run_id, parents=member['parents'],
-                                     states=which, scalars=member['scalars'],
-                                     specs=member['specs'], into=c, _self=_self)
-    finally:
-        c.close()
+    n_states = max(1, int(_self.count_states(source) or 1))
+    entry_name = binding._unique_entry_name(c, batch.set_id, member['entry'])
+    ids = binding.capture_object(batch.set_id, source, name=entry_name,
+                                 run_id=batch.run_id, parents=member['parents'],
+                                 states=n_states, scalars=member['scalars'],
+                                 specs=member['specs'], into=c, _self=_self)
     entry_id = ids[0]
     batch.landed += 1
-    # On disk in the batch's file: only now may the object leave the scene.
+    # On disk in the batch's file: only now may the scratch leave the scene.
     try:
-        mstore.forget_object(object_name)
+        mstore.forget_object(source)
     except Exception:
         pass
     try:
-        _self.delete(object_name)
+        _self.delete(source)
     except Exception:
         pass
     _left_behind(batch, object_name, entry_name, _self=_self)
@@ -497,19 +574,15 @@ def land_sequence(member_name, sequences, scalars=None, arrays=(), specs=(), _se
         # The session was replaced under the batch (#448): the sequence goes into the
         # batch's own container, as `_land_away` does for a structure. There is no
         # object to take out of the scene.
-        c = _open_home(batch)
+        c = _home_container(batch)
         if c is None:
             _detach(batch)
         batch.away = True
     else:
         c = _container()
         batch.away = False
-    try:
-        return _write_sequence(batch, c, member_name, member, sequences, scalars,
-                               arrays, specs, away)
-    finally:
-        if away:
-            c.close()
+    return _write_sequence(batch, c, member_name, member, sequences, scalars,
+                           arrays, specs, away)
 
 
 def _write_sequence(batch, c, member_name, member, sequences, scalars, arrays, specs,
@@ -610,6 +683,7 @@ def _reap(batch):
     for name in batch.order:
         _MEMBER.pop(name, None)
     _BATCHES.pop(batch.id, None)
+    _release_hold(batch)
     if batch.detached or not _still_ours(batch):
         return
     if batch.landed:
@@ -676,6 +750,8 @@ def abandon(batch):
 
 def clear():
     """Forget every batch. For `clear_pending` and tests; the store is reset separately."""
+    for batch in list(_BATCHES.values()):
+        _release_hold(batch)
     _BATCHES.clear()
     _MEMBER.clear()
 
@@ -701,7 +777,7 @@ def running(set_id=None):
             if set_id is not None and batch.set_id != set_id:
                 continue
             out[batch.set_id] = {'done': len(batch.settled), 'total': batch.total,
-                                 'tool': batch.tool}
+                                 'tool': batch.tool, 'landed': batch.landed}
         return out
     except Exception:
         return {}
@@ -711,7 +787,19 @@ def running(set_id=None):
 
 
 def _same(a, b):
-    return bool(a) and bool(b) and os.path.abspath(a) == os.path.abspath(b)
+    # realpath: macOS's $TMPDIR is /var/... and also /private/var/... (#447's note).
+    return bool(a) and bool(b) and os.path.realpath(a) == os.path.realpath(b)
+
+
+def _is_home(path, home):
+    """`path` is the batch's home file itself, or the home is gone (moved in Finder)
+    and `path` is the only candidate left."""
+    if not home or not os.path.exists(home):
+        return True
+    try:
+        return os.path.samefile(path, home)
+    except OSError:
+        return _same(path, home)
 
 
 def _observe(event, container=None, path=None, old=None, new=None, **_):
@@ -731,9 +819,18 @@ def _observe(event, container=None, path=None, old=None, new=None, **_):
                     ours = container.run(batch.run_id).get('set_id') == batch.set_id
                 except Exception:
                     ours = False
+            if ours and batch.away and not _is_home(container.path, batch.home):
+                # The run resolves, but in ANOTHER file: a Finder duplicate of the home
+                # document carries the same set and run ids (#448 review). A batch that
+                # is away only goes back to the file it left -- or, when that is gone,
+                # to what is plainly the same document moved. Save As, which is the
+                # legitimate "same document, new path", happens while the batch is
+                # ATTACHED, and is handled below.
+                ours = False
             if ours:
                 # Save As, or the batch's own file opened again: it is home, and the
                 # batch is this session's again.
+                _release_hold(batch)
                 batch.home = os.path.abspath(container.path)
                 batch.away = False
             else:
@@ -742,7 +839,16 @@ def _observe(event, container=None, path=None, old=None, new=None, **_):
     if event == 'moved':
         for batch in _BATCHES.values():
             if _same(batch.home, old):
+                _release_hold(batch)
                 batch.home = os.path.abspath(new)
+        return None
+    if event in ('kept', 'left'):
+        # Hold the file from now on, not from the first late result: a batch that has
+        # landed nothing yet still owns a file another RayMol must not sweep (#448
+        # review). After the rename, so the connection is on the final name.
+        for batch in _BATCHES.values():
+            if not batch.detached and batch.away and _same(batch.home, path):
+                _home_container(batch)
         return None
     if event == 'writers':
         return [batch.id for batch in _BATCHES.values()

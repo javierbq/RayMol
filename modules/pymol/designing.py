@@ -715,7 +715,66 @@ def _expect_in_set(set_batch, object_name, seed):
         return True
 
 
-def _land_in_set(name, _self=cmd):
+def _set_is_away(name):
+    """True when `name` is a member of a set batch whose session was replaced under
+    it (#448): its result goes into the batch's own file, through a scratch object."""
+    sb = _sets_batch()
+    if sb is None:
+        return False
+    try:
+        return bool(sb.is_away(name))
+    except Exception:
+        return False
+
+
+def _deliver_away(path, name, seed, landing, _self=cmd):
+    """Deliver a result whose batch lost its session (#448 review): into a SCRATCH
+    object under a fresh name, never into `name`.
+
+    The member name repeats across runs, so in the session that replaced the batch's it
+    may be the user's own object -- `cmd.load` into it would merge atoms, and the set
+    would then capture and delete it. The scratch is measured like any delivery (the
+    set's columns come from its metrics run), written into the batch's file, and
+    deleted by `batch.land`. If that write is refused it is kept, under a free name.
+    """
+    scratch = _self.get_unused_name('_set_delivery')
+    _self.load(path, scratch, zoom=0)
+    try:
+        _self.disable(scratch)
+    except Exception:
+        pass
+    if seed is not None:
+        try:
+            _self.set_title(scratch, _self.count_states(scratch), 'seed=%d' % int(seed))
+        except Exception:
+            pass
+    try:
+        _self.dss(scratch)
+    except Exception:
+        pass
+    try:
+        record_run(scratch, landing, _self.count_states(scratch), _self=_self)
+    except Exception as exc:
+        colorprinting.warning(' design: could not record metrics for %s (%s)'
+                              % (name, exc))
+    if _land_in_set(name, source=scratch, _self=_self) is None \
+            and scratch in (_self.get_names('all') or []):
+        # Nowhere to write it: keep it in THIS scene, as a run without sets would,
+        # but under a name that is free -- never merged into or over the user's.
+        names = set(_self.get_names('all') or [])
+        keep = name if name not in names else _self.get_unused_name(name + '_')
+        try:
+            _self.set_name(scratch, keep)
+            _self.enable(keep)
+        except Exception:
+            keep = scratch
+        colorprinting.warning(' design: %s is kept as the plain object %s' % (name, keep))
+        if keep == name:
+            # Where a design that could not be written has always gone (#445).
+            _join_batch_group(keep, _self=_self)
+
+
+def _land_in_set(name, source=None, _self=cmd):
     """Write the delivered object as an entry and stage it or discard it (spec §2, §4).
 
     None when the name belongs to no batch, or when the write was refused -- the store
@@ -727,6 +786,8 @@ def _land_in_set(name, _self=cmd):
     if sb is None or sb.batch_of(name) is None:
         return None
     try:
+        if source:
+            return sb.land(name, source=source, _self=_self)
         return sb.land(name, state=_self.count_states(name), _self=_self)
     except Exception as exc:
         colorprinting.warning(' design: %s was not written to its set (%s); it is kept'
@@ -1175,6 +1236,9 @@ def discard_pending(name, _self=cmd):
     """
     name = _legal_object_name(name, _self=_self)
     recording = _TRAJECTORY.pop(name, None)
+    # Read before `_settle_in_set` below can reap the batch: an away member's name in
+    # THIS scene is not its placeholder and may be the user's object (#448 review).
+    away = _set_is_away(name)
     fresh = None
     try:
         fresh = pending_info(name, _self=_self)
@@ -1190,7 +1254,7 @@ def discard_pending(name, _self=cmd):
     _TRACK.pop(name, None)
     _settle_in_set(name)
     try:
-        if name in _self.get_names('objects') and (
+        if not away and name in _self.get_names('objects') and (
                 recording is not None or _self.count_atoms(name) == 0):
             _self.delete(name)
     except Exception:
@@ -2724,7 +2788,14 @@ def deliver_result(path, name, seed=None, _self=cmd):
     # Popped before anything else can fail: from here on this object is a delivered design
     # rather than a recording, and `discard_pending` must never delete it.
     live = _TRAJECTORY.pop(name, None)
+    # A batch whose session was replaced (#448): nothing by this name in THIS scene is
+    # the design's -- not the placeholder, not the recording -- and it may be the
+    # user's. The result goes through a scratch object into the batch's own file.
+    away = _set_is_away(name)
     try:
+        if away:
+            _deliver_away(path, name, seed, landing, _self=_self)
+            return
         if live is not None and not _finish_trajectory(path, name, live, _self=_self):
             # Half-finished is not an option: the recording is not the design, and
             # `cmd.load` on top of it would silently double atoms. Start clean.
