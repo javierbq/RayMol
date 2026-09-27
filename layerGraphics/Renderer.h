@@ -1,4 +1,6 @@
 #pragma once
+
+#include "Material.h"
 #include <cstddef>
 #include <cstdint>
 
@@ -76,6 +78,13 @@ public:
   {
     return false;
   }
+  // grid_mode: SceneRenderMetal calls this right after viewport()/scissor()
+  // for each cell it is about to draw (slot >= 1), and with 0 once the grid
+  // loop is done. Lets a renderer with world-space effects (the Metal
+  // real-time ray tracer) attribute the geometry it captures to the cell that
+  // drew it, so cell A's rays never hit cell B's objects (#478). Default: no-op
+  // (the GL path only ever filters draw calls per cell).
+  virtual void setGridSlot(int slot) {}
   virtual void clear(bool color, bool depth, bool stencil) = 0;
   virtual void clearColor(float r, float g, float b, float a) = 0;
   virtual void scissor(int x, int y, int w, int h) = 0;
@@ -214,6 +223,20 @@ public:
   // not rebuild the acceleration structure. Default: no-op.
   virtual void setRepClip(
       float front, float back, float fracFront = 0.0f, float fracBack = 0.0f) {}
+
+  // Material of the representation about to be drawn (#503). Resolved from the
+  // rep's material setting, object value first, then the rep's global value,
+  // then material_default; `reflect`/`tint`/`rough` additionally carry the
+  // legacy metal_rt_reflect* triple, which the `default` material reads.
+  //
+  // Called on EVERY lit draw, including the reps that have no material of
+  // their own (they pass `default`), so a material cannot leak from one rep
+  // onto the next. Persists like setRepClip: set before every draw.
+  // Default: no-op.
+  virtual void setRepMaterial(const MaterialParams& params) {}
+  // Global traced-reflection knobs: environment on miss (studio vs background)
+  // and rays/pixel for glossy materials in offscreen exports. Default: no-op.
+  virtual void setReflectionParams(int env, int samples) {}
 
   // Record the frame's BASE (camera-only) modelview, before any per-object
   // Move-mode TTT is folded in. Real-time ray tracing uses it to express each
@@ -432,8 +455,35 @@ public:
   // accumulate into weighted-blended OIT targets (depth-tested vs the opaque
   // depth, no depth-write) instead of blending into the scene color; endFrame
   // resolves them over the opaque color. Default: no-op (GL path unaffected).
-  virtual void beginTransparentOIT() {}
+  virtual void beginTransparentOIT(bool peel = false) {}
   virtual void endTransparentOIT() {}
+
+  // Per-object transparent depth peel (#488). Without it every transparent
+  // fragment of an object accumulates -- the front and back of every stick, and
+  // every stick behind it -- so a translucent ball-and-stick reads as dense
+  // mottle rather than one glassy shell. With it, the scene loop runs a
+  // COLOUR-LESS depth pre-pass for one object into a copy of the opaque depth,
+  // then draws that object's transparent geometry tested for EQUALITY against
+  // it, so only the nearest surface per pixel contributes.
+  //
+  // The sequence per peeled object is
+  //     beginPeelPrepass(); <draw the object>; endPeelPrepass();
+  //     beginTransparentOIT(true); <draw the object>; endTransparentOIT();
+  // and the objects that are not peeled follow in one ordinary
+  // beginTransparentOIT(false) pass. The OIT targets are cleared only by the
+  // frame's FIRST transparent encoder and loaded by every later one, so the
+  // passes accumulate into one image.
+  //
+  // peelSupported() is false wherever the targets or pipelines are missing; the
+  // caller then skips the pre-pass entirely and the object renders unpeeled,
+  // which is the pre-#488 look rather than nothing. Default: no-op (GL path
+  // unaffected), and peelSupported() false so no caller tries.
+  virtual void beginPeelPrepass() {}
+  virtual void endPeelPrepass() {}
+  virtual bool peelSupported() const { return false; }
+  // Reset the "the OIT targets still need clearing" flag. SceneRenderMetal
+  // calls this once per frame before the first transparent pass.
+  virtual void resetTransparentOIT() {}
 
   // Real shadow map. SceneRenderMetal sets the light's eye-space view-projection
   // via setLightViewProjEye, then replays the opaque geometry between
@@ -450,6 +500,18 @@ public:
   // User multiplier on the self-shadow depth bias (metal_shadow_bias). Default
   // no-op (GL unaffected).
   virtual void setShadowBias(float bias) {}
+
+  // Environment reflected by the reflective materials (#493). `mode` is
+  // material_env: 0 = the background colour, 1 = a studio, 2 = none. The
+  // renderer builds a small cubemap from this and the background colour and
+  // rebuilds it only when either changes, so it costs nothing per frame. It is
+  // NOT free until a material asks for it, though: the fragments declare the
+  // texture unconditionally, so the map is allocated (~1 MB) on the first
+  // encoder of the first frame whether anything reflective exists or not.
+  //
+  // Called every frame from SceneRenderMetal; the renderer decides whether
+  // anything actually has to be rebuilt. Default: no-op (GL path unaffected).
+  virtual void setEnvironment(int mode, float bgR, float bgG, float bgB) {}
 
   // GPU-tessellated Bezier tubes ("tube cartoon"). controlPoints is a tightly
   // packed array of cubic Bezier patches: 4 Float3 control points each

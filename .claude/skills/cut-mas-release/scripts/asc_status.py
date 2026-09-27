@@ -76,14 +76,26 @@ def main():
               f"{a.get('appStoreState','')}  ({(a.get('createdDate') or '')[:10]})")
 
     print("=== recent builds ===")
+    # macOS and iOS builds share this list but have INDEPENDENT build-number
+    # streams (e.g. macOS 30 alongside iOS 106), so the platform column is not
+    # cosmetic: without it you cannot tell which number the next build must beat.
+    # Platform lives on the related preReleaseVersion, not on the build itself.
     b = _get(
         f"{base}/builds?filter[app]={APP_ID}&limit=8&sort=-uploadedDate"
-        "&fields[builds]=version,processingState,expired,uploadedDate",
+        "&fields[builds]=version,processingState,expired,uploadedDate,preReleaseVersion"
+        "&include=preReleaseVersion&fields[preReleaseVersions]=platform",
         tok,
     )
+    platforms = {
+        i["id"]: i.get("attributes", {}).get("platform", "")
+        for i in b.get("included", [])
+        if i.get("type") == "preReleaseVersions"
+    }
     for d in b["data"]:
         a = d["attributes"]
-        print(f"  build {a.get('version',''):5} {a.get('processingState',''):12} "
+        rel = (d.get("relationships", {}).get("preReleaseVersion", {}).get("data") or {})
+        plat = platforms.get(rel.get("id"), "?")
+        print(f"  {plat:10} build {a.get('version',''):5} {a.get('processingState',''):12} "
               f"expired={a.get('expired')}  ({(a.get('uploadedDate') or '')[:16]})")
 
 

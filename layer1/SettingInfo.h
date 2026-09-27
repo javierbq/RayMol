@@ -919,10 +919,10 @@ enum {
   REC_f( 809, metal_sss_wrap                          , global    , 0.0F ),  /* Metal wrapped/subsurface diffuse term; 0 = pure Lambert (identical), up to ~1 wraps light around the terminator for a soft waxy look */
   REC_b( 810, metal_dof                               , global    , false ), /* Metal depth-of-field post pass (circle-of-confusion blur by distance from focus) */
   REC_f( 811, metal_dof_focus                         , global    , 0.0F ),  /* Metal DOF focus distance in eye-space units; 0 = auto (center of interest) */
-  REC_f( 812, metal_dof_range                         , global    , 14.0F ), /* Metal DOF focus range: distance beyond which blur reaches maximum */
+  REC_f( 812, metal_dof_range                         , global    , 14.0F ), /* Metal DOF focus range: distance beyond which blur reaches maximum; 0 = instant falloff (everything off the focal plane fully blurred), negative = use the default */
   REC_b( 813, metal_temporal_ao                       , global    , true ), /* Metal: accumulate ray-traced AO across frames while the view is still (needs metal_raytrace) */
   REC_b( 814, metal_upscale                           , global    , false ), /* Metal: render the scene at reduced resolution and upscale to native (mobile perf; bilinear, MetalFX follow-up) */
-  REC_f( 815, metal_dof_aperture                      , global    , 14.0F ), /* Metal DOF aperture: max out-of-focus blur radius in px (bokeh strength); larger = wider aperture / stronger blur */
+  REC_f( 815, metal_dof_aperture                      , global    , 14.0F ), /* Metal DOF aperture: max out-of-focus blur radius in px (bokeh strength); larger = wider aperture / stronger blur, 0 = closed aperture / no blur (the DOF pass is skipped), negative = use the default */
   REC_f( 816, surface_clip_front                      , object    , 0.0F ),  /* Per-rep surface clip, referenced to the surface's center of mass: fraction 0..1 of the molecule depth to shave off the NEAR (front) side. 0 = no clip, 1 = clip to the COM. Lets the surface clip while cartoon/sticks stay whole so you can peek inside. */
   REC_f( 817, surface_clip_back                       , object    , 0.0F ),  /* Per-rep surface clip referenced to the COM: fraction 0..1 of the molecule depth to shave off the FAR (back) side. 0 = no clip, 1 = clip to the COM. Equal front/back give a slab symmetric about the COM. */
   REC_b( 818, surface_contour                         , object    , false ), /* Metal: draw a crisp line around the surface's OUTER silhouette (coverage boundary), visible even when the surface is transparent/clipped, so the shape stays defined. */
@@ -940,6 +940,23 @@ enum {
   REC_i( 830, metal_dof_quality                       , global    , 4 ),     /* Metal depth-of-field: bokeh quality level 1..4. Higher traces more gather samples (1->16, 2->32, 3->64, 4->96) for denser, cleaner out-of-focus blur; levels >=2 also run a de-noise smoothing pass (two-pass). 1 = fast single-pass. */
   REC_b( 831, cartoon_spline                          , ostate    , 1 ),
   REC_f( 832, metal_rt_scale                          , global    , 0.5F ),  /* Metal real-time RT: resolution scale of the ray-traced AO + shadow pass in the LIVE view (0.25..1). 0.5 traces a quarter of the rays; the depth-aware composite blur hides the upscale. Offscreen PNG/movie export always traces at full resolution. */     /* Cartoon path tessellation: 0 = classic per-residue Hermite blend (cartoon_throw/power, cartoon_refine); 1 = ChimeraX-style natural cubic spline through the CA trace with parallel-transported, smoothly twisted orientation frames (no per-residue bulges or facets; pairs well with cartoon_sampling 14-20 and Metal ray-traced shadows). */
+  REC_f( 833, metal_rt_reflect                        , object    , 0.0F ),  /* Metal real-time RT: traced self-reflection strength (Fresnel F0, 0..1). 0 = off; ~0.25 = glossy plastic/lacquer; 1 = mirror. Per object: set metal_rt_reflect, 0.3, myobj. Needs metal_raytrace. */
+  REC_f( 834, metal_rt_reflect_tint                   , object    , 0.0F ),  /* Metal real-time RT: how much the surface's own colour tints its reflection (0 = chrome-like white reflection, 1 = coloured/anodised metal). */
+  REC_f( 835, metal_rt_reflect_rough                  , object    , 0.0F ),  /* Metal real-time RT: reflection roughness (0 = mirror, 1 = very blurry). The live view traces one jittered ray; exports average metal_rt_reflect_samples rays. */
+  REC_b( 836, metal_rt_reflect_env                    , global    , true ),  /* Metal real-time RT: reflection rays that miss the molecule see a soft studio environment (on) or the plain background colour (off). */
+  REC_i( 837, metal_rt_reflect_samples                , global    , 8 ),     /* Metal real-time RT: reflection rays per pixel for glossy (rough > 0) materials in offscreen PNG/movie exports (1..64). The live view always traces one. */
+  /* Materials (#503). Ids, not names, so they round-trip through .pse and
+     through older builds; SettingGetTextPtr renders them as names and `set`
+     takes the same names back. 0 is `default`: today's shading, byte for byte.
+     Resolution for a draw is the rep's object-level value, then the rep's
+     global value, then material_default. */
+  REC_i( 838, cartoon_material                       , object    , 0 ),     /* Material of the cartoon representation: default, matte, plastic, metallic, glass, frosted_glass, jelly, marble, clay, rubber. Per object: set cartoon_material, marble, myobj. 0 = default (unchanged shading). Object-scoped: the object's value wins over this setting's global value, which wins over material_default. */
+  REC_i( 839, surface_material                       , object    , 0 ),     /* Material of the surface representation (see cartoon_material). 0 = default. */
+  REC_i( 840, stick_material                         , object    , 0 ),     /* Material of the stick representation, including the stick_ball spheres the stick rep emits (see cartoon_material). 0 = default. */
+  REC_i( 841, sphere_material                        , object    , 0 ),     /* Material of the sphere representation (see cartoon_material). 0 = default. */
+  REC_i( 842, material_default                       , global    , 0 ),     /* Fallback material for every representation that has no material of its own. 0 = default. */
+  REC_i( 843, material_env                           , global    , 0 ),     /* Environment reflected by the reflective materials: 0 = background colour, 1 = studio, 2 = none. */
+  REC_i( 844, transparency_peel                      , object    , -1 ),    /* Keep only the nearest transparent layer of this object, so a translucent ball-and-stick or a glass shell reads as one skin instead of showing its internal joins. -1 = auto (on for glass-family materials), 0 = off, 1 = on. */
 
 #ifdef SETTINGINFO_IMPLEMENTATION
 #undef SETTINGINFO_IMPLEMENTATION

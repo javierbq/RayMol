@@ -131,6 +131,9 @@ struct _CRay {
 			    const float *c1, const float *c2, const float *c3,
 			    float t1, float t2, float t3);
   void wobble(int mode, const float *par);
+  /* The material id stamped on every primitive added from here on (#499);
+     0 = default. Read at trace time through MaterialRayParamsFor. */
+  void material(int id);
   void transparentf(float t);
   int character(int char_id);
   void interiorColor3fv(const float *v, int passive);
@@ -153,6 +156,7 @@ struct _CRay {
   int BigEndian;
   int Wobble;
   float WobbleParam[3];
+  int Material;
   float Trans;
   float Random[256];
   int TTTFlag;

@@ -99,6 +99,46 @@ struct ObjStateMeta: Equatable {
     // unless at least one state carries a title. Indexed by state-1 (issue #203).
     var titles: [String] = []
 
+    // MARK: object-wide material rows (#498)
+    // These four settings are OBJECT-scoped, so they belong on the object
+    // header rather than in a rep panel. Carried per rep -- as they were until
+    // #498 -- the same value appeared in four places and moving one moved them
+    // all, which reads as four broken sliders rather than one shared one.
+
+    /// `transparency_peel` as stored: -1 auto, 0 off, 1 on.
+    var peel: Int = -1
+    /// What auto currently RESOLVES to (#488), so "Auto" is legible. This is
+    /// the object's request; the frame can still decline it (see
+    /// CmdGetObjectPeel).
+    var peelResolved: Bool = false
+    /// Object-level `metal_rt_reflect` / `_tint` / `_rough`.
+    var reflect: [Double] = [0, 0, 0]
+    /// True when every shown rep's material ignores the legacy triple, so the
+    /// group can be disabled and say why. Much narrower than "has a material":
+    /// only the GLASS family is deaf to it, a REFLECTIVE material still
+    /// honours an explicit value (#497), and a PROCEDURAL one takes the triple
+    /// on the ray-traced path. Computed core-side from what each rep DRAWS.
+    var legacyReflectionDead: Bool = false
+    /// Whether the MATERIAL rows (the legacy reflection group) apply here.
+    /// Molecules only: a measurement, CGO or map has no material and no reps,
+    /// so the group would render live and inert above "No representations
+    /// shown". Groups are excluded too — `set` reaches the members but `get`
+    /// reports the group's own value, so a control writes and then reverts.
+    var hasMaterialRows: Bool = false
+    /// Whether the PEEL row applies. A wider set than the above, and
+    /// deliberately so: SceneCollectPeelObjects walks every non-gadget object,
+    /// so a translucent isosurface is peelable and its front/back double blend
+    /// is exactly what peel is for. Only groups are excluded.
+    var hasPeelRow: Bool = false
+
+    /// Does the object header show any of these rows at all?
+    ///
+    /// Extracted so the gate is testable. What a test can reach is this
+    /// predicate, not the `if let` in ObjectCard's body that consults it —
+    /// there is no snapshot harness here, so the view's use of it is covered
+    /// by neither side. Said plainly rather than implied.
+    var showsObjectMaterialRows: Bool { hasPeelRow || hasMaterialRows }
+
     /// Title for a 1-based state, or nil when none/blank.
     func title(forState state: Int) -> String? {
         guard state >= 1, state <= titles.count else { return nil }
@@ -109,7 +149,12 @@ struct ObjStateMeta: Equatable {
 
 // MARK: - Representation inspector: control metadata
 
-enum RepControlKind { case slider, segmented, toggle, color }
+enum RepControlKind {
+    case slider, segmented, toggle, color
+    /// A named choice backed by an integer setting whose options are supplied by
+    /// the core at runtime rather than compiled in (#490: the material table).
+    case menu
+}
 
 /// One controllable property row (label + control bound to a PyMOL setting).
 struct RepProperty: Identifiable {
@@ -122,10 +167,22 @@ struct RepProperty: Identifiable {
     var step: Double = 0.01
     var decimals: Int = 2
     var options: [(label: String, value: Double)] = []   // for .segmented
+    /// Where a `.menu` row gets its options. Compiled-in options would have to
+    /// be kept in step with layer1/Material.cpp by hand, and a build whose table
+    /// differs would offer looks it cannot draw.
+    var optionSource: RepMenuSource = .inline
     // Apply only on release (not on every live drag tick). For settings whose
     // change forces an expensive rebuild (e.g. solvent_radius re-tessellates the
     // whole surface), live updates would recompute on every drag step.
     var commitOnly: Bool = false
+}
+
+/// Runtime source for a `.menu` row's options.
+enum RepMenuSource {
+    /// Options come from the row's own `options` array.
+    case inline
+    /// Options come from the core's material table at runtime.
+    case materials
 }
 
 /// Static description of a representation: display name, color-override setting
@@ -146,6 +203,7 @@ enum RepCatalog {
     static let specs: [String: RepSpec] = [
         "cartoon": RepSpec(rep: "cartoon", display: "Cartoon",
             colorSetting: "cartoon_color", defaultColor: -1, properties: [
+                RepProperty(setting: "cartoon_material", label: "Material", kind: .menu, optionSource: .materials),
                 RepProperty(setting: "cartoon_transparency", label: "Transparency", kind: .slider),
                 RepProperty(setting: "cartoon_loop_radius",   label: "Loop radius",  kind: .slider),
                 RepProperty(setting: "cartoon_tube_radius",   label: "Tube radius",  kind: .slider),
@@ -155,6 +213,7 @@ enum RepCatalog {
             ]),
         "surface": RepSpec(rep: "surface", display: "Surface",
             colorSetting: "surface_color", defaultColor: -1, properties: [
+                RepProperty(setting: "surface_material", label: "Material", kind: .menu, optionSource: .materials),
                 RepProperty(setting: "transparency",   label: "Transparency", kind: .slider),
                 RepProperty(setting: "surface_quality", label: "Quality", kind: .segmented,
                             options: [("0", 0), ("1", 1), ("2", 2)]),
@@ -169,6 +228,7 @@ enum RepCatalog {
             ]),
         "sticks": RepSpec(rep: "sticks", display: "Sticks",
             colorSetting: "stick_color", defaultColor: -1, properties: [
+                RepProperty(setting: "stick_material", label: "Material", kind: .menu, optionSource: .materials),
                 RepProperty(setting: "stick_transparency", label: "Transparency", kind: .slider),
                 RepProperty(setting: "stick_radius",   label: "Radius",  kind: .slider),
                 RepProperty(setting: "stick_h_scale",  label: "H scale", kind: .slider),
@@ -176,6 +236,7 @@ enum RepCatalog {
             ]),
         "spheres": RepSpec(rep: "spheres", display: "Spheres",
             colorSetting: "sphere_color", defaultColor: -1, properties: [
+                RepProperty(setting: "sphere_material", label: "Material", kind: .menu, optionSource: .materials),
                 RepProperty(setting: "sphere_transparency", label: "Transparency", kind: .slider),
                 RepProperty(setting: "sphere_scale", label: "Scale", kind: .slider, max: 3, step: 0.05),
                 RepProperty(setting: "metal_interior_cap", label: "Solid interior", kind: .toggle),
@@ -242,6 +303,114 @@ struct SceneParam: Identifiable {
     var help: String = ""
 }
 
+// Material command strings, in one place so a test can assert what a control
+// SENDS without a window (#498).
+//
+// The screen these controls live on cannot be driven headlessly, so the
+// verification is split: an XCTest pins the string each control emits, and a
+// Python test runs that same string and pins what it does to the session. The
+// literal is the join. Same reason CameraCommands below exists.
+enum MaterialCommands {
+    /// `transparency_peel` is object-scoped and TRI-state (-1 auto / 0 off /
+    /// 1 on), so it is written as an int on the object, never as a bool.
+    static func setPeel(_ value: Int, on obj: String) -> String {
+        "set transparency_peel, \(value), \(obj)"
+    }
+
+    /// One of the legacy `metal_rt_reflect*` sliders. Object-scoped: there is
+    /// one value per object, not one per representation.
+    static func setReflect(_ setting: String, _ value: Double, on obj: String) -> String {
+        "set \(setting), \(String(format: "%.4f", value)), \(obj)"
+    }
+
+    /// Drop this object's reflection overrides, so a material that carries its
+    /// own reflect/tint/roughness goes back to using them (#497).
+    ///
+    /// All three together: they are one look, and clearing one of three leaves
+    /// a state no material describes.
+    static func clearReflect(on obj: String) -> String {
+        ["metal_rt_reflect", "metal_rt_reflect_tint", "metal_rt_reflect_rough"]
+            .map { "unset \($0), \(obj)" }
+            .joined(separator: "\n")
+    }
+
+    /// Run a `pymol.materials` bundle on an object.
+    ///
+    /// Calls the documented function rather than reimplementing its list of
+    /// settings here: a bundle writes GLOBAL lighting as well as the object's
+    /// material, and a copy of that list in the UI would drift from
+    /// modules/pymol/materials.py silently.
+    static func runBundle(_ attr: String, on obj: String) -> String {
+        // The object name lands inside a PYTHON string literal, which is
+        // itself inside a multi-line command that `cmd.do` splits with
+        // `str.splitlines()`. So there are two levels to get right, and they
+        // fail differently:
+        //
+        //   * a quote or a backslash breaks the literal — a SyntaxError, the
+        //     chip does nothing;
+        //   * a LINE BREAK breaks the command, which is worse. cmd.do runs
+        //     each fragment as its own command, so a name containing
+        //     "<break>python end<break>..." closes the block early, discards
+        //     the malformed buffer, and executes what follows as PyMOL
+        //     commands. "Line break" is whatever splitlines says it is: \n and
+        //     \r, but also \v, \f, \x1c-\x1e, \x85, U+2028 and U+2029.
+        //
+        // So the literal is built from printable ASCII only. Everything else
+        // — every control character and every non-ASCII scalar — is written
+        // as a \u / \U escape, which splitlines cannot see and Python's
+        // literal parser turns back into the original character. Enumerating
+        // the separators instead would be a list to keep in step with
+        // CPython; "printable ASCII or escaped" has no list.
+        //
+        // Reachability, stated accurately because an earlier version of this
+        // comment overstated it: `validate_object_names` defaults to 1 and
+        // ObjectMakeValidName rewrites everything outside [A-Za-z0-9+-.^_] to
+        // an underscore, so a name like this needs that setting turned off and
+        // the Python `object=` argument (or a session restored from one). A
+        // hardening gap rather than a live hole — but it is a gap in a defence
+        // this function exists to provide.
+        var safe = ""
+        for u in obj.unicodeScalars {
+            switch u.value {
+            case 0x5C: safe += "\\\\"
+            case 0x27: safe += "\\'"
+            case 0x20...0x7E: safe.unicodeScalars.append(u)
+            case 0...0xFFFF: safe += String(format: "\\u%04x", u.value)
+            default: safe += String(format: "\\U%08x", u.value)
+            }
+        }
+        return "python\nfrom pymol import materials; materials.\(attr)('\(safe)', _self=cmd)\npython end"
+    }
+
+    /// What the chip actually does, said out loud.
+    ///
+    /// #498 calls this button "Suggested lighting", and the first version was
+    /// labelled and tooltipped that way. It is not what running a bundle does:
+    /// `_apply_material` writes the material to ALL FOUR of the object's
+    /// representation settings, shown or not, deliberately and by its own
+    /// docstring. Clicking a chip beside the Sticks dropdown would have
+    /// silently rewritten `surface_material` — so on an object with a
+    /// deliberate mixed look, a glass shell would vanish and nothing on the
+    /// control would have mentioned the surface.
+    ///
+    /// The alternative was to split the bundles into a material half and a
+    /// lighting half and call only the second. That forks a contract the
+    /// A-menu shares, and for the four metals "lighting only" is empty anyway
+    /// — they write a colour and a reflect triple, no light rig. Saying what
+    /// the button does is the smaller and more honest change.
+    static func bundleHelp(_ label: String?) -> String {
+        let what = label.map { "Apply the \($0) look" } ?? "Apply a look"
+        // Precise about the metals: `_metal` writes NO lighting setting at all
+        // — no specular, no shininess, no shadows — it writes a colour and the
+        // reflect/tint/roughness triple, i.e. the group directly below this
+        // chip. Saying "plus the lighting" for them promised something they do
+        // not do and stayed silent about what they overwrite.
+        return what + ": this material on EVERY representation of the object, "
+             + "plus the scene lighting it was tuned for. A named metal instead "
+             + "sets the colour and this object's reflection sliders."
+    }
+}
+
 // Camera-control command strings shared by the inspector row and the camera dock,
 // so the DOF auto-lock action has a single source of truth.
 enum CameraCommands {
@@ -260,6 +429,13 @@ enum CameraCommands {
 }
 
 enum SceneCatalog {
+    /// Scene settings whose value is a material id, so a `.menu` row for one is
+    /// served from the core's material table rather than from its own options.
+    /// Named explicitly: `SceneParam` has no optionSource field, and silently
+    /// handing the material list to an unrelated menu is the failure this
+    /// prevents. (#498 adds the rows themselves.)
+    static let materialSettings: Set<String> = ["material_default"]
+
     // Ordered sub-groups shown inside the SCENE section (see panel reorg).
     static let groups = ["Canvas", "Camera", "Lighting", "Shadows & AO", "Metal optimization", "Effects", "Quality"]
     // Viewport camera dock (see CameraDock): the always-visible strip icons, in
@@ -313,14 +489,26 @@ enum SceneCatalog {
                    help: "Lock focus onto the current selection and keep it sharp as you zoom/rotate. Select an element, then turn this on to snapshot it (it stays locked even if you select elsewhere; toggle off→on to re-target). No selection → focuses the center of interest. Overrides the focus slider."),
         SceneParam(setting: "metal_dof_focus", label: "DOF focus (0=auto)", kind: .slider, min: 0, max: 120, step: 1, decimals: 0, group: "Camera", dependsOn: "metal_dof",
                    help: "Distance of the in-focus plane (eye-space units). 0 = auto-focus on the center of interest. Disabled while Autofocus is on."),
-        SceneParam(setting: "metal_dof_range", label: "DOF range", kind: .slider, min: 1, max: 60, step: 0.5, decimals: 1, group: "Camera", dependsOn: "metal_dof",
-                   help: "How far beyond focus before blur reaches maximum. Smaller = sharper falloff."),
+        SceneParam(setting: "metal_dof_range", label: "DOF range", kind: .slider, min: 0, max: 60, step: 0.5, decimals: 1, group: "Camera", dependsOn: "metal_dof",
+                   help: "How far beyond focus before blur reaches maximum. Smaller = sharper falloff; 0 blurs everything off the focal plane fully."),
         SceneParam(setting: "metal_dof_aperture", label: "DOF aperture (blur)", kind: .slider, min: 0, max: 40, step: 1, decimals: 0, group: "Camera", dependsOn: "metal_dof",
-                   help: "Maximum out-of-focus blur (bokeh radius). Larger = stronger blur."),
+                   help: "Maximum out-of-focus blur (bokeh radius). Larger = stronger blur; 0 closes the aperture for no blur at all."),
         SceneParam(setting: "metal_dof_quality", label: "DOF quality", kind: .slider, min: 1, max: 4, step: 1, decimals: 0, group: "Camera", dependsOn: "metal_dof",
                    help: "Bokeh quality: higher traces more gather samples (1→16, 2→32, 3→64, 4→96) for denser, cleaner out-of-focus blur; levels 2+ add a de-noise pass. 1 = fastest single-pass, 4 = smoothest (GPU-heavy)."),
 
         // --- Lighting: real-time lighting model + shading ---
+        // The two scene-wide MATERIAL rows lead the group (#498). They belong
+        // here rather than in "Metal optimization": what a representation is
+        // made of, and what it reflects, are part of the look -- the group
+        // below is about what the renderer spends time on.
+        SceneParam(setting: "material_default", label: "Material default", kind: .menu, group: "Lighting",
+                   help: "Material for every representation that has no material of its own. An object's own material still wins."),
+        // NOT served from the material table: material_env is an enum over
+        // environments, not a material id. SceneCatalog.materialSettings is
+        // what keeps the two apart, and it lists material_default only.
+        SceneParam(setting: "material_env", label: "Environment", kind: .menu,
+                   options: [("background", 0), ("studio", 1), ("none", 2)], group: "Lighting",
+                   help: "What the reflective materials reflect. 'background' follows the background colour; 'studio' is a fixed three-light room; 'none' disables the environment reflection."),
         SceneParam(setting: "ambient",   label: "Ambient",  kind: .slider, min: 0, max: 1, step: 0.01, decimals: 2, group: "Lighting",
                    help: "Baseline fill light hitting all surfaces evenly, even in shadow."),
         SceneParam(setting: "direct",    label: "Direct",   kind: .slider, min: 0, max: 1, step: 0.01, decimals: 2, group: "Lighting",
@@ -357,6 +545,19 @@ enum SceneCatalog {
                    help: "Ambient-occlusion darkening amount."),
         SceneParam(setting: "metal_rt_shadow_intensity", label: "RT shadow strength", kind: .slider, min: 0, max: 1, step: 0.02, decimals: 2, group: "Metal optimization", dependsOn: "metal_raytrace",
                    help: "Cast-shadow darkening amount (still needs Shadows on)."),
+        // Traced self-reflections. The global value is the default for every
+        // object; each rep's Inspector panel exposes the same three settings
+        // per object (metal_rt_reflect / _tint / _rough are object-scoped).
+        SceneParam(setting: "metal_rt_reflect", label: "Reflections", kind: .slider, min: 0, max: 1, step: 0.05, decimals: 2, group: "Metal optimization", dependsOn: "metal_raytrace",
+                   help: "Ray-traced reflections of the molecule in itself. 0 = off, ~0.25 = glossy plastic, 1 = mirror. Global default; override per object in each rep's panel."),
+        SceneParam(setting: "metal_rt_reflect_tint", label: "Reflection tint", kind: .slider, min: 0, max: 1, step: 0.05, decimals: 2, group: "Metal optimization", dependsOn: "metal_raytrace",
+                   help: "How much the surface's own colour tints its reflection: 0 = chrome-like, 1 = coloured/anodised metal."),
+        SceneParam(setting: "metal_rt_reflect_rough", label: "Reflection roughness", kind: .slider, min: 0, max: 1, step: 0.05, decimals: 2, group: "Metal optimization", dependsOn: "metal_raytrace",
+                   help: "Blur of the reflections: 0 = mirror, 1 = brushed. Exports average several rays; the live view traces one."),
+        SceneParam(setting: "metal_rt_reflect_env", label: "Studio environment", kind: .toggle, group: "Metal optimization", dependsOn: "metal_raytrace",
+                   help: "Reflection rays that miss the molecule see a soft studio backdrop instead of the flat background colour."),
+        SceneParam(setting: "metal_rt_reflect_samples", label: "Reflection samples (export)", kind: .slider, min: 1, max: 32, step: 1, decimals: 0, group: "Metal optimization", dependsOn: "metal_raytrace",
+                   help: "Reflection rays per pixel for rough materials in PNG/movie exports. Higher is smoother but slower."),
         SceneParam(setting: "metal_msaa",   label: "MSAA 4×", kind: .toggle, group: "Metal optimization",
                    help: "4× multisample antialiasing — smoother edges at some GPU cost."),
         SceneParam(setting: "metal_upscale", label: "Reduced-res upscale", kind: .toggle, group: "Metal optimization",
@@ -834,8 +1035,12 @@ let colorOptions: [ColorOption] = [
 
 // MARK: - Action Menu Structure
 
-/// Hierarchical action menu item
-private indirect enum ActionMenuItem {
+/// Hierarchical action menu item.
+///
+/// Internal rather than private so the unit tests can assert which rows a given
+/// kind of object gets — menu *composition* is the behaviour in #461/#468, and
+/// it is otherwise only reachable by driving SwiftUI.
+indirect enum ActionMenuItem {
     case action(label: String, key: String)
     case separator
     case submenu(label: String, children: [ActionMenuItem])
@@ -849,6 +1054,10 @@ private indirect enum ActionMenuItem {
     /// render time from engine.objects, like the align cases, because the set of
     /// groups changes with every poll.
     case moveToGroup(label: String)
+    /// Dynamic submenu listing "New Object…" plus every loaded molecule object,
+    /// mirroring desktop PyMOL's selection-menu "copy to object ▸" (#461). Built
+    /// at render time from engine.objects for the same reason as the cases above.
+    case copyToObject(label: String)
 }
 
 private let baseActionMenuItems: [ActionMenuItem] = [
@@ -878,6 +1087,16 @@ private let baseActionMenuItems: [ActionMenuItem] = [
         .action(label: "publication (with solvent)",   key: "preset_pub_solv"),
         .separator,
         .action(label: "protein interface",            key: "preset_interface"),
+        .separator,
+        // Material LOOKS (#491) -- a different contract from the presets above.
+        // A preset rebuilds the representation set from scratch; these keep
+        // whatever is on screen and change only the material and the light rig.
+        .action(label: "marble (statuary)",            key: "material_marble"),
+        .action(label: "clay (unglazed)",              key: "material_clay"),
+        .action(label: "copper",                       key: "material_copper"),
+        .action(label: "gold",                         key: "material_gold"),
+        .action(label: "steel",                        key: "material_steel"),
+        .action(label: "chrome",                       key: "material_chrome"),
         .separator,
         .action(label: "default",                      key: "preset_default"),
     ]),
@@ -1002,7 +1221,29 @@ private let groupActionMenuItems: [ActionMenuItem] = [
     .action(label: "Delete Group + Contents", key: "group_delete"),
 ]
 
-private func actionMenuItems(isSelection: Bool, isGroup: Bool = false) -> [ActionMenuItem] {
+/// Copy / Extract section, shown on SELECTION rows only (#461, #468).
+///
+/// Both verbs make a new object out of the selected atoms; they differ in what
+/// happens to the source. **Copy to Object** leaves the source intact (upstream
+/// `cmd.copy_to` / `cmd.create`), **Extract** moves the atoms out of it
+/// (`cmd.extract`). Desktop PyMOL offers both on selections and neither on
+/// objects — `modules/pymol/menu.py:1183` (sele_action), :1209 (sele_action2),
+/// :1777 and :1836 all sit in the `else:` branch of an `if object:` — so the
+/// section is gated the same way here.
+///
+/// The three Extract variants come from PyMOL's own Extract submenu
+/// (`modules/pymol/menu.py:47`): the selection alone, or widened by one bond
+/// shell, atom-wise or residue-wise.
+private let copyExtractMenuItems: [ActionMenuItem] = [
+    .copyToObject(label: "Copy to Object"),
+    .submenu(label: "Extract", children: [
+        .action(label: "object",           key: "extract_object"),
+        .action(label: "extend 1",         key: "extract_extend_1"),
+        .action(label: "byres extend 1",   key: "extract_byres_extend_1"),
+    ]),
+]
+
+func actionMenuItems(isSelection: Bool, isGroup: Bool = false) -> [ActionMenuItem] {
     if isGroup { return groupActionMenuItems }
     guard isSelection else { return baseActionMenuItems }
     var items = baseActionMenuItems
@@ -1019,7 +1260,151 @@ private func actionMenuItems(isSelection: Bool, isGroup: Bool = false) -> [Actio
     } else {
         items.append(removeAtoms)
     }
+    // Copy / Extract goes in the object-management tail, just above "Move to
+    // Group" — next to Rename/Duplicate/Delete, which is where upstream keeps it
+    // too ("duplicate, copy to object, extract object" in sele_action). It rides
+    // on the separator already sitting before moveToGroup and adds its own after,
+    // so the tail reads: … Compute │ Copy/Extract │ Move to Group │ Rename….
+    if let groupIdx = items.firstIndex(where: {
+        if case .moveToGroup = $0 { return true }
+        return false
+    }) {
+        items.insert(contentsOf: copyExtractMenuItems + [.separator], at: groupIdx)
+    } else {
+        items.append(contentsOf: [.separator] + copyExtractMenuItems)
+    }
     return items
+}
+
+// MARK: - Copy / Extract command builders (#461, #468)
+
+/// How far an Extract reaches beyond the selection itself.
+///
+/// The widened variants copy the bonded neighbourhood into the new object but
+/// still remove only the *selected* atoms from the source — that asymmetry is
+/// upstream's (`modules/pymol/menu.py:47`), and it is what makes "extend 1"
+/// useful for pulling a ligand out with the residues it touches.
+enum ExtractScope: String, CaseIterable {
+    case object
+    case extend1
+    case byresExtend1
+
+    /// The selection the new object is built from.
+    fileprivate func createSelection(for sele: String) -> String {
+        switch self {
+        case .object:       return "(\(sele))"
+        case .extend1:      return "((\(sele)) extend 1)"
+        case .byresExtend1: return "(byres ((\(sele)) extend 1))"
+        }
+    }
+}
+
+/// Command for "Copy to Object ▸ <existing object>" (#461).
+///
+/// `copy_to` merges the atoms into an existing object and renames chain/segi/ID
+/// so they cannot collide with what is already there; the source object keeps
+/// its atoms. `quiet=0` so the " Copied N atoms to object X" line lands in the
+/// console feed — the panel gives no other confirmation that anything happened.
+///
+/// Wrapped in a python block to undo one thing `copy_to` does on its own: it
+/// disables every object the selection lives in (`modules/pymol/editing.py:3309`)
+/// so the merged result stands out. On the desktop that is a momentary thing in a
+/// menu; here the source's row stays in the panel with its checkbox silently
+/// clearing, right after a menu item that promises a *copy* — it reads as the
+/// copy having eaten the original. So the enabled sources are captured first and
+/// switched back on afterwards. Sources that were already hidden stay hidden.
+func copyToObjectCommand(sele: String, target: String) -> String {
+    let capture = "_on = [o for o in cmd.get_object_list(\"(\(sele))\") "
+        + "if o in cmd.get_names(\"objects\", enabled_only=1)]"
+    let copy = "cmd.copy_to(\"\(target)\", \"(\(sele))\", zoom=0, quiet=0)"
+    let restore = "[cmd.enable(o) for o in _on]"
+    return "python\n\(capture); \(copy); \(restore)\npython end"
+}
+
+/// Command for "Copy to Object ▸ New Object…" (#461).
+///
+/// Upstream is `cmd.create(None, sele, zoom=0)`, letting PyMOL auto-name the
+/// result; here the name comes from the modal instead, so the copy can be
+/// labelled at the moment it is made. `zoom=0` keeps the camera still — the new
+/// object sits exactly on top of the atoms it was copied from, so framing it
+/// would be a jump to nowhere.
+func copyToNewObjectCommand(sele: String, name: String) -> String {
+    "create \(name), (\(sele)), zoom=0"
+}
+
+/// Command for "Extract ▸ …" (#468) — move the selected atoms out of their
+/// parent object into a new one.
+///
+/// Routed through a `python` block rather than the `extract` console keyword
+/// because that keyword needs a name and this deliberately passes `None`, which
+/// makes PyMOL's own `get_unused_name("obj")` mint `obj01`, `obj02`, … exactly
+/// as the desktop menu item does.
+///
+/// Two notes on the widened variants:
+///
+/// - they must spell the extract selection out (`extract="<sele>"`) instead of
+///   the boolean `extract=1`, because the atoms to remove are a *subset* of the
+///   atoms to copy. `cmd.create` calls that form deprecated and says so on the
+///   console; upstream's menu has the same wart and the alternative is losing
+///   the feature.
+/// - the trailing `delete` drops the selection itself. `cmd.extract` only
+///   cleans up its own temporary, so the user's named selection would survive
+///   with every one of its atoms gone — a 0-atom row in the panel that still
+///   looks live. This mirrors what "Remove Atoms" already does.
+func extractCommand(sele: String, scope: ExtractScope) -> String {
+    let create: String
+    switch scope {
+    case .object:
+        // Selection == extraction target, so `cmd.extract` (which is `create`
+        // with the boolean `extract=1`) covers it without the deprecated form.
+        create = "cmd.extract(None, \"\(scope.createSelection(for: sele))\", zoom=0)"
+    case .extend1, .byresExtend1:
+        create = "cmd.create(None, \"\(scope.createSelection(for: sele))\", "
+            + "extract=\"\(sele)\", zoom=0)"
+    }
+    return "python\n\(create); cmd.delete(\"\(sele)\")\npython end"
+}
+
+/// Mirror of PyMOL's `ExecutiveGetUnusedName(G, "obj")`
+/// (`layer3/Executive.cpp:3553` → `ExecutiveMakeUnusedName`, pattern `%02d`
+/// starting at 1): the first `objNN` no existing name has taken.
+///
+/// Computed here rather than asked of the engine so the "New Object…" modal can
+/// be prefilled the instant it opens. `existing` should be every name PyMOL
+/// knows — objects, selections and groups all share one namespace.
+func defaultNewObjectName(existing: [String]) -> String {
+    let taken = Set(existing)
+    var n = 1
+    while true {
+        let candidate = String(format: "obj%02d", n)
+        if !taken.contains(candidate) { return candidate }
+        n += 1
+    }
+}
+
+/// PyMOL's own legal-name character set: A–Z, a–z, 0–9 and `+ - . ^ _`
+/// (`ObjectMakeValidName`, layer1/PyMOLObject.cpp).
+///
+/// Enforced up front rather than left to the engine because the engine's
+/// response to an illegal name is to quietly rewrite it — type `my obj!` and you
+/// get an object called `my_obj` — so the name in the panel is not the name that
+/// was asked for. A comma is worse than cosmetic: it splits the command into a
+/// different argument list and `create foo, bar, (sele), zoom=0` throws a Python
+/// traceback into the console feed.
+func isLegalObjectName(_ name: String) -> Bool {
+    !name.isEmpty && name.allSatisfy { c in
+        guard c.isASCII else { return false }
+        return c.isLetter || c.isNumber || "+-.^_".contains(c)
+    }
+}
+
+/// Whether `name` can be given to a brand-new object.
+///
+/// Legal, and not already taken: `create` against a name that already exists
+/// does *nothing at all* — no new object, no error, no console line — so an
+/// unchecked collision turns "New Object…" into a button that silently fails.
+func canNameNewObject(_ name: String, existing: [String]) -> Bool {
+    isLegalObjectName(name) && !existing.contains(name)
 }
 
 // MARK: - Command Dispatch
@@ -1053,6 +1438,13 @@ private func runActionCommand(_ key: String, name: String, engine: PyMOLEngine) 
     case "preset_pub_solv":         cmd = "python\nfrom pymol import preset; preset.pub_solv('\(n)', _self=cmd)\npython end"
     case "preset_interface":        cmd = "python\nfrom pymol import preset; preset.interface('\(n)', _self=cmd)\npython end"
     case "preset_default":          cmd = "python\nfrom pymol import preset; preset.default('\(n)', _self=cmd)\npython end"
+    // Material looks (#491)
+    case "material_marble":         cmd = "python\nfrom pymol import materials; materials.marble('\(n)', _self=cmd)\npython end"
+    case "material_clay":           cmd = "python\nfrom pymol import materials; materials.clay('\(n)', _self=cmd)\npython end"
+    case "material_copper":         cmd = "python\nfrom pymol import materials; materials.copper('\(n)', _self=cmd)\npython end"
+    case "material_gold":           cmd = "python\nfrom pymol import materials; materials.gold('\(n)', _self=cmd)\npython end"
+    case "material_steel":          cmd = "python\nfrom pymol import materials; materials.steel('\(n)', _self=cmd)\npython end"
+    case "material_chrome":         cmd = "python\nfrom pymol import materials; materials.chrome('\(n)', _self=cmd)\npython end"
     // Find
     case "find_polar_within":  cmd = "dist \(n)_polar_conts, \(n), \(n), quiet=1, mode=2, label=0, reset=1; enable \(n)_polar_conts"
     case "find_polar_other":   cmd = "dist \(n)_polar_conts, (\(n)), (byobj (\(n))) and (not (\(n))), quiet=1, mode=2, label=0, reset=1; enable \(n)_polar_conts"
@@ -1134,6 +1526,11 @@ private func runActionCommand(_ key: String, name: String, engine: PyMOLEngine) 
     // now-empty selection (PyMOL's selection-menu "remove atoms"). Shown only on
     // selection rows — see actionMenuItems(isSelection:).
     case "remove_atoms":       cmd = "remove (\(n)); delete \(n)"
+    // Extract the selection into a new auto-named object, moving its atoms out
+    // of the parent (#468). Shown only on selection rows, like "Remove Atoms".
+    case "extract_object":            cmd = extractCommand(sele: n, scope: .object)
+    case "extract_extend_1":          cmd = extractCommand(sele: n, scope: .extend1)
+    case "extract_byres_extend_1":    cmd = extractCommand(sele: n, scope: .byresExtend1)
     // Global ("all" row) actions
     case "deselect":           cmd = "deselect"
     case "hide_everything":    cmd = "hide everything, \(n)"
@@ -1302,6 +1699,7 @@ struct ObjectPanel: View {
     @State private var showSelectionBuilder = false
     @State private var renameText = ""
     @State private var groupNameText = ""
+    @State private var copyToNewText = ""
     // Independent collapse state for the three top-level sections (Scene starts
     // collapsed, matching the previous default).
     @State private var openSections: Set<String> = ["objects", "selections",
@@ -1316,7 +1714,61 @@ struct ObjectPanel: View {
     // `group ..., action=open|close` — see the note in toggleGroupOpen.
     @State private var openGroups: Set<String> = []
 
+    // The panel's name-entry modals are split across two computed properties
+    // rather than one `.alert` chain: three of them in a single expression put
+    // the body past the Swift type-checker's budget ("unable to type-check in
+    // reasonable time"), which is the same reason other views in this file are
+    // broken up.
     var body: some View {
+        panelWithNamingAlerts
+            // "Copy to Object ▸ New Object…" (#461) — same request-channel shape
+            // as the two below. Unlike Extract, which auto-names the way desktop
+            // PyMOL does, the copy asks: a copy is usually made to be kept and
+            // compared against its source, and "obj01" tells you nothing then.
+            .alert("Copy “\(engine.pendingCopyToNew ?? "")” to a new object",
+                   isPresented: Binding(get: { engine.pendingCopyToNew != nil },
+                                        set: { if !$0 { engine.pendingCopyToNew = nil } })) {
+                TextField("Object name", text: $copyToNewText)
+                Button("Copy") {
+                    if let sele = engine.pendingCopyToNew {
+                        let new = copyToNewText.trimmingCharacters(in: .whitespaces)
+                        // Guard in the action body, not only via .disabled() on
+                        // the button: this is the path that actually builds a
+                        // command string, so it is where a bad name has to stop.
+                        if canNameNewObject(new, existing: engine.objects.map(\.name)) {
+                            engine.runCommand(copyToNewObjectCommand(sele: sele, name: new))
+                        }
+                    }
+                    engine.pendingCopyToNew = nil
+                }
+                .disabled(!canNameNewObject(copyToNewText.trimmingCharacters(in: .whitespaces),
+                                            existing: engine.objects.map(\.name)))
+                Button("Cancel", role: .cancel) { engine.pendingCopyToNew = nil }
+            } message: { Text(copyToNewMessage) }
+            .onChange(of: engine.pendingCopyToNew) { newValue in
+                if newValue != nil {
+                    copyToNewText = defaultNewObjectName(existing: engine.objects.map(\.name))
+                }
+            }
+    }
+
+    /// The "Copy to Object ▸ New Object…" alert's subtitle — the reassurance when
+    /// the name is usable, and the reason the Copy button is greyed when it is
+    /// not. Says *why* rather than just refusing, since both failure modes
+    /// (illegal character, name already taken) are invisible in the field itself.
+    private var copyToNewMessage: String {
+        let name = copyToNewText.trimmingCharacters(in: .whitespaces)
+        if name.isEmpty { return "Enter a name for the new object." }
+        if !isLegalObjectName(name) {
+            return "PyMOL names can use letters, digits and + - . ^ _ only."
+        }
+        if engine.objects.contains(where: { $0.name == name }) {
+            return "“\(name)” is already taken. Pick a name no object or selection is using."
+        }
+        return "The selected atoms stay in their current object too."
+    }
+
+    private var panelWithNamingAlerts: some View {
         panelBody
             // Name-entry modal for the action-menu "Rename" (engine.pendingRename).
             .alert("Rename “\(engine.pendingRename ?? "")”",
@@ -2031,6 +2483,33 @@ private func actionMenuContent(_ items: [ActionMenuItem], name: String, engine: 
                     Button("Remove from Group") { engine.runCommand("ungroup \(name)") }
                 }
             }
+        case .copyToObject(let label):
+            // "copy to object ▸" (#461). Targets are the loaded molecule objects;
+            // groups are excluded (copy_to needs something to hold atoms) and so
+            // is the selection itself. Upstream additionally hides the objects the
+            // selection already lives in (menu.py:1136) — copying atoms back into
+            // their own parent only renames their chain/segi — but the panel's row
+            // model does not record which objects a selection spans, so that
+            // filter is left out rather than guessed at.
+            //
+            // `isPending` rows ARE excluded: they are placeholders for a running
+            // inference job, greyed and non-interactive everywhere else in the
+            // panel, and holding no atoms yet. Copying into one would race the job
+            // that is about to populate it.
+            Menu(label) {
+                Button("New Object…") { engine.pendingCopyToNew = name }
+                let targets = engine.objects.filter {
+                    !$0.isSelection && !$0.isGroup && !$0.isPending && $0.name != name
+                }
+                if !targets.isEmpty {
+                    Divider()
+                    ForEach(targets) { target in
+                        Button(target.name) {
+                            engine.runCommand(copyToObjectCommand(sele: name, target: target.name))
+                        }
+                    }
+                }
+            }
         case .alignToMolecule(let label):
             // Candidate targets: every OTHER loaded molecule object (mirrors
             // desktop PyMOL's align_to_object). Empty when nothing else is loaded.
@@ -2094,6 +2573,9 @@ private struct ActionMenuButton: View {
                 .contentShape(Rectangle())
         }
         .repMenuChrome()
+        // Stable AX hook so UI tests can open a specific row's action menu
+        // (the visible label "A" is shared by every row), matching colorMenu.*.
+        .accessibilityIdentifier("actionMenu.\(name)")
     }
 }
 
@@ -2767,6 +3249,74 @@ private struct SegmentedSetting: View {
     }
 }
 
+/// A named choice backed by an integer setting, with the options supplied at
+/// runtime (#490: the material table).
+///
+/// Labels are Text, never shapes: a SwiftUI `Menu` silently drops shape-based
+/// row content on macOS, so a checkmark drawn as a shape would vanish. The
+/// current row is marked by weight and a leading bullet in the string instead.
+private struct MenuSetting: View {
+    let options: [(label: String, value: Double)]
+    let value: Double
+    let onSelect: (Double) -> Void
+    /// Clears the override so the row inherits again. nil hides the row.
+    var onInherit: (() -> Void)? = nil
+
+    /// What the chip reads. An id with no row in the table is shown as its
+    /// NUMBER, not as "default": `set cartoon_material, glass` is a supported
+    /// command today (names resolve against the FULL table, implemented or
+    /// not), and a .pse from a newer build carries ids this one has no name
+    /// for. Showing those as "default" invited the user to click "default" to
+    /// confirm what they were already seeing and silently destroy the value.
+    private var current: String {
+        if let hit = options.first(where: { abs($0.value - value) < 0.5 }) {
+            return hit.label
+        }
+        return value < 0.5 ? "default" : "#\(Int(value))"
+    }
+
+    var body: some View {
+        Menu {
+            ForEach(Array(options.enumerated()), id: \.offset) { _, opt in
+                let sel = abs(opt.value - value) < 0.5
+                Button(action: { onSelect(opt.value) }) {
+                    Text(sel ? "• \(opt.label)" : opt.label)
+                }
+            }
+            if let onInherit {
+                Divider()
+                // Without this the dropdown is a one-way pin: the first pick
+                // writes an object-level override and nothing in the UI could
+                // ever take it off again, so a later change to the rep global
+                // or to material_default would never reach this object. The
+                // colour controls in this same panel lead with the same
+                // affordance.
+                Button("Inherit", action: onInherit)
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Text(current).font(.system(size: 10))
+                Text("⌄").font(.system(size: 9))
+            }
+            .foregroundColor(PanelTheme.buttonText)
+            .padding(.horizontal, 6).padding(.vertical, 1)
+            .background(PanelTheme.buttonBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 3))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        // An empty table means the core has not answered yet; offering a menu
+        // that can only set `default` would be worse than showing it disabled.
+        // The opacity is what makes "disabled" legible -- the label sets its
+        // own foreground and background colours, which survive SwiftUI's
+        // disabled styling, so without it a dead chip looks live. Same pairing
+        // the scene rows in this file use.
+        .disabled(options.isEmpty)
+        .opacity(options.isEmpty ? 0.4 : 1.0)
+    }
+}
+
 private struct ToggleSetting: View {
     let value: Double
     let onToggle: (Bool) -> Void
@@ -3352,6 +3902,23 @@ private struct ObjectCard: View {
                     RepChips(objName: entry.name, listed: listedReps,
                              active: activeSet, current: currentRep,
                              onSelect: { selectedRep = $0 })
+                    // Object-scoped material rows (#498), above the per-rep
+                    // grid because that is what they are: one peel decision and
+                    // one legacy reflection triple for the whole object, not
+                    // four copies of each.
+                    //
+                    // The OPTIONAL is load-bearing. objectMeta is filled only by
+                    // the poll for the currently expanded object, so re-opening
+                    // a card starts empty; `?? ObjStateMeta()` rendered the
+                    // DEFAULTS for the ~100-500ms round trip, and TriStateSetting
+                    // writes on every tap including the already-highlighted one.
+                    // A tap in that window on a cell that looks like the current
+                    // state is a real write of a value the user never chose.
+                    if let meta = engine.objectMeta[entry.name],
+                       meta.showsObjectMaterialRows {
+                        ObjectMaterialRows(objName: entry.name, meta: meta)
+                        Divider().background(PanelTheme.disabledColor.opacity(0.3))
+                    }
                     if let rep = currentRep {
                         // Always present (even when hidden): show/hide the layer
                         // + delete it. Hiding keeps the layer listed so it can be
@@ -3614,6 +4181,208 @@ private struct RepChips: View {
     }
 }
 
+// MARK: - Object-wide material rows (#498)
+
+/// The material settings that are OBJECT-scoped, so they cannot honestly live
+/// in a representation panel: `transparency_peel` and the legacy
+/// `metal_rt_reflect*` triple.
+///
+/// Until this, the triple was three rows in EACH of the four material-bearing
+/// rep panels — twelve controls over three settings, every one showing the same
+/// value, and moving any one of them moved the other eleven. #490 labelled them
+/// "(object)" as a stopgap and left the real fix here.
+private struct ObjectMaterialRows: View {
+    let objName: String
+    let meta: ObjStateMeta
+    @EnvironmentObject var engine: PyMOLEngine
+    /// Collapsed by default: it is a legacy group, and on an object whose reps
+    /// all carry a material it does nothing at all.
+    @State private var legacyOpen = false
+
+    private static let reflectProps = [
+        RepProperty(setting: "metal_rt_reflect", label: "Reflection",
+                    kind: .slider, min: 0, max: 1, step: 0.05, decimals: 2),
+        RepProperty(setting: "metal_rt_reflect_tint", label: "Tint",
+                    kind: .slider, min: 0, max: 1, step: 0.05, decimals: 2),
+        RepProperty(setting: "metal_rt_reflect_rough", label: "Roughness",
+                    kind: .slider, min: 0, max: 1, step: 0.05, decimals: 2),
+    ]
+
+    var body: some View {
+        VStack(spacing: 3) {
+            if meta.hasPeelRow { peelRow }
+            if meta.hasMaterialRows { legacyGroup }
+        }
+    }
+
+    // MARK: peel
+
+    /// `transparency_peel` is a TRI-state, not a toggle: -1 auto, 0 off, 1 on,
+    /// and auto is the default. A two-state control would have to pick a
+    /// meaning for auto and would silently write one the first time it was
+    /// touched — turning an object that was following its material into one
+    /// pinned against it.
+    private var peelRow: some View {
+        gridRow("Peel transp.") {
+            HStack(spacing: 6) {
+                TriStateSetting(value: meta.peel,
+                                options: [(-1, "Auto"), (0, "Off"), (1, "On")]) {
+                    engine.runCommand(MaterialCommands.setPeel($0, on: objName))
+                    engine.refreshExpandedDetail()
+                }
+                // What auto currently MEANS. The whole point of -1 is that the
+                // answer comes from the materials the object's reps resolve to,
+                // so the setting alone says nothing -- which is exactly the
+                // thing a user cannot find out from anywhere else.
+                if meta.peel < 0 {
+                    Text(meta.peelResolved ? "on (glass-family)" : "off")
+                        .font(.system(size: 9))
+                        .foregroundColor(PanelTheme.disabledColor)
+                }
+            }
+        }
+    }
+
+    // MARK: legacy reflection
+
+    @ViewBuilder
+    private var legacyGroup: some View {
+        Button(action: { legacyOpen.toggle() }) {
+            HStack(spacing: 4) {
+                Image(systemName: legacyOpen ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 8))
+                Text("Reflection (legacy)")
+                    .font(.system(size: 10))
+                if meta.legacyReflectionDead {
+                    Text("— not in use")
+                        .font(.system(size: 9))
+                        .foregroundColor(PanelTheme.disabledColor)
+                }
+                Spacer(minLength: 0)
+            }
+            .foregroundColor(meta.legacyReflectionDead
+                             ? PanelTheme.disabledColor : PanelTheme.textColor)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(meta.legacyReflectionDead
+              ? "Every shown representation has a glass-family material, the one family that ignores these."
+              : "Object-wide reflection, from before materials. Ray-traced only.")
+
+        if legacyOpen {
+            ForEach(Self.reflectProps) { p in
+                gridRow(p.label) {
+                    LabeledSlider(prop: p, value: value(for: p.setting),
+                                  onLive: { set(p.setting, $0) },
+                                  onCommit: { set(p.setting, $0) })
+                }
+                .opacity(meta.legacyReflectionDead ? 0.45 : 1)
+                .disabled(meta.legacyReflectionDead)
+            }
+            if meta.legacyReflectionDead {
+                // Disabled and SAYING WHY. A greyed-out group with no reason is
+                // indistinguishable from a broken one -- and the reason here is
+                // not obvious: the sliders are fine, it is the materials on the
+                // shown reps that do not read them.
+                Text("Every shown representation has a glass-family material, and glass "
+                     + "is the one family that ignores these. Any other material — "
+                     + "including `default` — makes them live again.")
+                    .font(.system(size: 9))
+                    .foregroundColor(PanelTheme.disabledColor)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                // The way BACK to undefined, which nothing else in the panel
+                // offers. These sliders show the object's value, and an object
+                // with none shows the global's 0 -- while a REFLECTIVE material
+                // is drawing its own table row (metallic: 0.6 / 0.35 / 0.35).
+                // So the group reads three zeros that are not what is on
+                // screen, and the first touch of a slider makes the zero real
+                // and detaches the material from its row for good. The material
+                // dropdown one panel down has had `onInherit` for this since
+                // #490; the sliders never did.
+                HStack(spacing: 6) {
+                    Text("Unset = the material's own values")
+                        .font(.system(size: 9))
+                        .foregroundColor(PanelTheme.disabledColor)
+                    Spacer(minLength: 4)
+                    Button(action: clearReflection) {
+                        Text("Clear")
+                            .font(.system(size: 9))
+                            .padding(.horizontal, 8).padding(.vertical, 1)
+                            .overlay(RoundedRectangle(cornerRadius: 4)
+                                .stroke(PanelTheme.disabledColor.opacity(0.55), lineWidth: 0.5))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Remove this object's reflection overrides, so a material "
+                          + "that carries its own (plastic, metallic, the named metals) "
+                          + "goes back to using them.")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private func value(for setting: String) -> Double {
+        switch setting {
+        case "metal_rt_reflect":       return meta.reflect.count > 0 ? meta.reflect[0] : 0
+        case "metal_rt_reflect_tint":  return meta.reflect.count > 1 ? meta.reflect[1] : 0
+        case "metal_rt_reflect_rough": return meta.reflect.count > 2 ? meta.reflect[2] : 0
+        default: return 0
+        }
+    }
+
+    private func set(_ setting: String, _ v: Double) {
+        engine.runCommand(MaterialCommands.setReflect(setting, v, on: objName))
+    }
+
+    private func clearReflection() {
+        engine.runCommand(MaterialCommands.clearReflect(on: objName))
+        engine.refreshExpandedDetail()
+    }
+
+    @ViewBuilder
+    private func gridRow<Content: View>(_ label: String, @ViewBuilder _ content: () -> Content) -> some View {
+        HStack(spacing: 6) {
+            Text(label)
+                .font(.system(size: 10))
+                .foregroundColor(PanelTheme.textColor)
+                .frame(width: 78, alignment: .leading)
+            content()
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+/// A small segmented control over an INT setting whose options carry words
+/// rather than digits.
+///
+/// SegmentedSetting's cells are a fixed 20pt, sized for "0"/"1"/"2"; "Auto"
+/// does not fit in one. Same visual language, cells sized to their label.
+private struct TriStateSetting: View {
+    let value: Int
+    let options: [(value: Int, label: String)]
+    let onSelect: (Int) -> Void
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(options.enumerated()), id: \.offset) { _, opt in
+                let sel = opt.value == value
+                Button(action: { onSelect(opt.value) }) {
+                    Text(opt.label)
+                        .font(.system(size: 9, weight: sel ? .bold : .regular))
+                        .padding(.horizontal, 6)
+                        .frame(height: 16)
+                        .background(sel ? PanelTheme.selectionTextColor : PanelTheme.buttonBackground)
+                        .foregroundColor(sel ? Color.black : PanelTheme.buttonText)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 3))
+    }
+}
+
 // MARK: - Property grid
 
 private struct RepPropertyGrid: View {
@@ -3715,12 +4484,102 @@ private struct RepPropertyGrid: View {
             // (e.g. surface_contour_color). -1 = inherit (here: the surface color).
             SettingColorControl(objName: objName, rep: spec.rep, setting: p.setting,
                                 colorState: state.settingColors[p.setting] ?? "inherit")
+        case .menu:
+            // Options come from the core (engine.materialNames), so a build
+            // whose table differs cannot be offered a look it can't draw.
+            HStack(spacing: 6) {
+                MenuSetting(options: options(for: p), value: v,
+                            onSelect: { set(p.setting, $0) },
+                            onInherit: { unset(p.setting) })
+                if p.optionSource == .materials {
+                    suggestedLighting(forMaterialValue: v)
+                }
+            }
+        }
+    }
+
+    /// "Suggested lighting" beside a material dropdown, when the chosen
+    /// material has a `pymol.materials` bundle.
+    ///
+    /// A material is only half a look: `marble` under the default rig still
+    /// carries a tight specular that reads as polished plastic rather than
+    /// stone. The bundle sets the lighting that flatters it, and until now the
+    /// only way to reach one was the A-menu, several clicks away from the
+    /// dropdown that raises the question.
+    ///
+    /// Several bundles can share a material -- the four metals are all
+    /// `metallic` -- so this is a menu when more than one matches and a single
+    /// button when exactly one does. Nothing is shown when none does, rather
+    /// than a disabled control: most materials have no bundle, and a row of
+    /// dead buttons would be worse than no button.
+    @ViewBuilder
+    private func suggestedLighting(forMaterialValue v: Double) -> some View {
+        let id = Int(v.rounded())
+        let name = engine.materialNames.first(where: { $0.id == id })?.name ?? ""
+        let matching = engine.materialBundles.filter { $0.material == name }
+        if matching.count == 1, let b = matching[0] as (attr: String, label: String, material: String)? {
+            Button(action: { runBundle(b.attr) }) { suggestedLabel }
+                .buttonStyle(.plain)
+                .help(MaterialCommands.bundleHelp(b.label))
+        } else if matching.count > 1 {
+            Menu {
+                ForEach(matching, id: \.attr) { b in
+                    Button(b.label) { runBundle(b.attr) }
+                }
+            } label: { suggestedLabel }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help(MaterialCommands.bundleHelp(nil))
+        }
+    }
+
+    private var suggestedLabel: some View {
+        HStack(spacing: 2) {
+            Image(systemName: "wand.and.stars").font(.system(size: 9))
+            Text("Look").font(.system(size: 9))
+        }
+        .padding(.horizontal, 5).frame(height: 16)
+        .background(PanelTheme.buttonBackground)
+        .foregroundColor(PanelTheme.buttonText)
+        .clipShape(RoundedRectangle(cornerRadius: 3))
+    }
+
+    /// The bundles write GLOBAL lighting settings as well as the object's
+    /// material, which is the point of them -- so this runs the documented
+    /// function rather than reimplementing its list of settings here, where a
+    /// copy would drift from `modules/pymol/materials.py` silently.
+    private func runBundle(_ attr: String) {
+        engine.runCommand(MaterialCommands.runBundle(attr, on: objName))
+        engine.refreshExpandedDetail()
+    }
+
+    /// Options for a `.menu` row, from the core rather than compiled in.
+    private func options(for p: RepProperty) -> [(label: String, value: Double)] {
+        switch p.optionSource {
+        case .materials:
+            return engine.materialNames.map { (label: $0.name, value: Double($0.id)) }
+        case .inline:
+            return p.options
         }
     }
 
     private func set(_ setting: String, _ value: Double) {
         let s = (value == value.rounded()) ? String(Int(value)) : String(format: "%.4f", value)
         engine.runCommand("set \(setting), \(s), \(objName)")
+        // The displayed value comes from a poll that runs at most every ~500ms,
+        // so without this the menu keeps the bullet on the old entry until the
+        // next tick. The sliders and toggles hold local state to hide that lag;
+        // a discrete menu cannot, so it asks for the refresh instead -- the
+        // same thing the per-atom transparency row does after its unset.
+        engine.refreshExpandedDetail()
+    }
+
+    /// Drop the object-level override so the row inherits the rep global (and
+    /// then `material_default`) again.
+    private func unset(_ setting: String) {
+        engine.runCommand("unset \(setting), \(objName)")
+        engine.refreshExpandedDetail()
     }
 
     @ViewBuilder
@@ -3978,6 +4837,22 @@ struct SceneParamRow: View {
                 }
             case .color:
                 EmptyView()  // scene colors use p.isColor above, not the .color kind
+            case .menu:
+                // Scene-level named choices. Only the material-valued ones are
+                // served from the material table -- SceneParam has no
+                // optionSource field, so mapping engine.materialNames
+                // unconditionally would hand the material list to the first
+                // non-material scene menu anyone adds, silently, while it wrote
+                // to an unrelated setting. Anything else falls back to the
+                // param's own options. #498 added both of them, and they are
+                // the case in point: `material_default` IS a material id and
+                // `material_env` is an enum over environments that happens to
+                // sit next to it, so exactly one of the two is in the set.
+                MenuSetting(options: SceneCatalog.materialSettings.contains(p.setting)
+                                ? engine.materialNames.map { (label: $0.name, value: Double($0.id)) }
+                                : p.options.map { (label: $0.label, value: $0.value) },
+                            value: v,
+                            onSelect: { engine.runCommand("set \(p.setting), \(Int($0))") })
             }
         }
     }

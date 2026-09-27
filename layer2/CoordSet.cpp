@@ -26,6 +26,7 @@ Z* -------------------------------------------------------------------
 #include"Err.h"
 #include"Scene.h"
 #include"CoordSet.h"
+#include "Material.h"
 #include"Color.h"
 #include"PConv.h"
 #include"P.h"
@@ -1429,13 +1430,28 @@ void CoordSet::render(RenderInfo * info)
     if (!ray) {
       ObjectUseColor(Obj);
     } else {
-      ray->wobble(SettingGet<int>(*this, cSetting_ray_texture),
+      // A material picks the texture MODE unless ray_texture is explicit
+      // (#499); the triple stays ray_texture_settings -- see
+      // MaterialRayParams.
+      int const materialId =
+          MaterialRayId(G, Setting.get(), Obj->Setting.get(), a, this);
+      ray->wobble(MaterialRayWobble(
+                      G, Setting.get(), Obj->Setting.get(), materialId),
           SettingGet<const float*>(*this, cSetting_ray_texture_settings));
+      ray->material(materialId);
       ray->color3fv(ColorGet(G, Obj->Color));
     }
 
     if (ray || pick) {
       r->render(info);
+      if (ray) {
+        // What the MATERIAL armed is not left on for whatever the ray adds
+        // next -- another object's CGO, a map mesh. Wobble goes back to this
+        // object's own ray_texture, not to 0: that value always did carry
+        // over to the next object, and `default` keeps doing exactly that.
+        ray->material(0);
+        ray->wobble(SettingGet<int>(*this, cSetting_ray_texture), nullptr);
+      }
       continue;
     }
 

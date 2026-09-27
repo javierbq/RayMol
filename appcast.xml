@@ -6,29 +6,28 @@
     <description>RayMol macOS updates</description>
     <language>en</language>
     <item>
-      <title>RayMol 1.11.1</title>
+      <title>RayMol 1.11.2</title>
       <description xml:lang="en" sparkle:format="markdown"><![CDATA[
-## RayMol 1.11.1
+## RayMol 1.11.2
 
-A rendering fix for sticks after using Move mode.
+A rendering fix for the `lines` representation with more than one object on screen.
 
-- **Fixed: opening Move mode washed out every stick in the session.** The Move
-  gizmo's cylinders latched their cap style and color blending onto every
-  cylinder drawn afterwards, so bonds picked up flat, notched ends and a
-  full-length color ramp instead of the hard color change at the middle of
-  the bond. It affected every object, every representation and every frame from
-  that point on, and deleting the gizmo did not undo it. The effect grew with
-  `stick_radius`, so it was most obvious on thicker sticks. Cap style and
-  coloring are now carried per cylinder, and sticks render the same whether or
-  not Move mode has been opened.
+- **Fixed: only one object's lines were drawn when two or more objects showed
+  lines.** Loading two structures and choosing *show ▸ lines* on **all** drew the
+  lines of the last object only; the others' lines were missing, and they came
+  back the moment you toggled that object off. Every line-drawing object shared a
+  single GPU vertex buffer, so whichever object was drawn last overwrote the
+  others' geometry before the frame reached the GPU. Each object now draws from
+  its own buffer. Sticks were never affected — only lines. The label leader lines
+  drawn beside offset labels shared the same flaw and are fixed with it.
 
 Built on the open-source PyMOL engine. Updates install automatically via the in-app updater (**Check for Updates…** in the app menu).
 ]]></description>
-      <pubDate>Sun, 13 Sep 2026 15:20:19 +0000</pubDate>
-      <sparkle:version>29</sparkle:version>
-      <sparkle:shortVersionString>1.11.1</sparkle:shortVersionString>
+      <pubDate>Fri, 18 Sep 2026 05:21:21 +0000</pubDate>
+      <sparkle:version>30</sparkle:version>
+      <sparkle:shortVersionString>1.11.2</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.11.1/RayMol-1.11.1.dmg" type="application/octet-stream" sparkle:edSignature="KRPF2oSNoUiVCwdGDHy/f9YusglK2LG4ONndM13GYrzsWPUcMig2golBU3tN7/ow1mJyylzhKr6zUVSWXoPMCA==" length="83111881" />
+      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.11.2/RayMol-1.11.2.dmg" type="application/octet-stream" sparkle:edSignature="OKCC2+fxLzE8GB1XH0xIWkdHZtotHheHxc0fzzRJVaTKdruUC+Zlz0srBjHfiij8AOQHgZgXAJbUdRFP0INtBQ==" length="83110465" />
     </item>
   </channel>
 </rss>

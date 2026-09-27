@@ -34,12 +34,15 @@ INTERPOLATE = frozenset([
     "metal_dof_focus", "metal_dof_range", "metal_dof_aperture",
     "metal_exposure", "metal_sss_wrap", "metal_outline_width",
     "metal_rt_ao_radius", "metal_rt_ao_intensity", "metal_rt_shadow_intensity",
+    "metal_rt_reflect", "metal_rt_reflect_tint", "metal_rt_reflect_rough",
     "ambient", "direct", "reflect", "specular", "shininess", "fog",
 ])
 
-# Values at/below the renderer's sentinel are reinterpreted as 14 (MAXIMUM blur)
-# — RendererMetal.mm:2528,2532 — so an interpolated fade must never reach them.
-_FLOOR = {"metal_dof_aperture": 0.02, "metal_dof_range": 0.02}
+# The aperture a DOF fade ramps to on the side where DOF is off: 0 is a closed
+# aperture, which the renderer skips outright (RendererMetal.mm, #472), so the
+# effect dissolves all the way out. Before #472 zero was the renderer's "unset"
+# sentinel and meant MAXIMUM blur, so the fade had to stop just short of it.
+_OFF_APERTURE = 0.0
 
 # Settings build_track must NOT emit because build_dof_transition owns them
 # outright. Focus is not a plain number: the renderer RESOLVES it every frame
@@ -48,6 +51,12 @@ _FLOOR = {"metal_dof_aperture": 0.02, "metal_dof_range": 0.02}
 # Two writers on one setting would fight, the later dict.update winning by
 # accident of ordering.
 _DOF_OWNED = frozenset(["metal_dof_focus"])
+
+# Everything build_dof_transition can put on a track. Together with INTERPOLATE
+# (all build_track can emit) this is the COMPLETE set of names author() is able
+# to produce, which is what session_restore validates against.
+_DOF_EMITTED = frozenset(["metal_dof", "metal_dof_aperture", "metal_dof_focus",
+                          "metal_dof_autofocus"])
 
 # Focus distances closer together than this (Angstroms) are the same plane;
 # ramping between them would only switch autofocus off for no visible gain.
@@ -148,12 +157,12 @@ def interpolatable(setting, a, b):
 
 
 def value_at(setting, a, b, e):
-    """Interpolated value at eased position `e`, clamped off the sentinel floor."""
-    v = a + (b - a) * e
-    floor = _FLOOR.get(setting)
-    if floor is not None and v < floor:
-        v = floor
-    return v
+    """Interpolated value at eased position `e`.
+
+    `setting` is unused — it was the hook for per-setting clamping, which only
+    ever existed to keep DOF fades off the renderer's zero sentinel (#472). The
+    argument stays so callers and the ramp table read the same way."""
+    return a + (b - a) * e
 
 
 def build_track(keyframes, power=None):
@@ -371,10 +380,10 @@ def build_dof_transition(keyframes, _self=cmd, power=None):
 
     * metal_dof is boolean, so a scene that turns DOF on or off POPS. Across such
       a transition DOF is force-enabled for the interior frames and the aperture
-      ramps between the enabled scene's value and _FLOOR (0.02 = no visible blur;
-      never <= 0, which is the renderer's MAXIMUM-blur sentinel), dissolving the
-      effect in or out. The aperture captured on the DISABLED side is meaningless
-      — nothing was ever rendered with it — so it takes no part.
+      ramps between the enabled scene's value and _OFF_APERTURE (0 = closed
+      aperture = no blur), dissolving the effect in or out. The aperture
+      captured on the DISABLED side is meaningless — nothing was ever rendered
+      with it — so it takes no part.
     * metal_dof_focus is resolved by the renderer every frame, so the captured
       numbers are not the distances on screen. resolve_focus turns each side into
       the distance the renderer would actually use under THAT frame's
@@ -390,7 +399,6 @@ def build_dof_transition(keyframes, _self=cmd, power=None):
     should reset to a specific frame afterwards if they need a known frame active."""
     from pymol import raymol_scenes as _rs
     out = {}
-    floor = _FLOOR['metal_dof_aperture']
     kfs = sorted(keyframes, key=lambda k: int(k[0]))
     for (f0, n0, p0), (f1, n1, p1) in zip(kfs, kfs[1:]):
         f0, f1 = int(f0), int(f1)
@@ -410,9 +418,10 @@ def build_dof_transition(keyframes, _self=cmd, power=None):
             on_name = n1 if dof_b else n0
             ap_on = _as_float((sb if dof_b else sa).get('metal_dof_aperture'))
             if ap_on is None:
-                ap_on = 14.0              # RendererMetal's own maximum-blur value
-            ap_on = max(ap_on, floor)
-            ap_from, ap_to = (floor, ap_on) if dof_b else (ap_on, floor)
+                ap_on = 14.0              # metal_dof_aperture's own default
+            ap_on = max(ap_on, _OFF_APERTURE)
+            ap_from, ap_to = ((_OFF_APERTURE, ap_on) if dof_b
+                              else (ap_on, _OFF_APERTURE))
         pw = effective_power(p0, p1, power)
         for f in range(f0 + 1, f1):
             e = ease((f - f0) / float(span), pw)
@@ -572,8 +581,20 @@ def session_restore(session, *, _self=cmd):
     d = session.get('raymol_movie_anim')
     if not isinstance(d, dict):
         return 1
-    from pymol import raymol_scenes as _rs
-    known = set(_rs.CAPTURE)
+    # What author() can actually emit -- an ALLOWLIST, not the whole CAPTURE
+    # list minus the names that happen to look dangerous today.
+    #
+    # A track value used to be validated as "a name in CAPTURE + parses as a
+    # float". CAPTURE is the set a scene SNAPSHOTS, which is much larger than
+    # the set a movie can ramp, and it holds several settings that force a
+    # rebuild on every write: the material ids (cRepInvColor on all four reps)
+    # and, worse, surface_quality, which is cRepInvRep -- a full surface
+    # re-tessellation. None can be produced by author(), but all were accepted
+    # from a .pse, so a corrupted or hand-edited session could put one on every
+    # interior frame and make playback rebuild the geometry per frame.
+    # Validating against what the author emits closes all of them at once and
+    # stays closed the next time CAPTURE grows.
+    known = set(INTERPOLATE) | set(_DOF_EMITTED)
     raw = d.get('track')
     if isinstance(raw, dict):
         for fs, vals in raw.items():
@@ -608,20 +629,27 @@ def session_restore(session, *, _self=cmd):
 
 def enter_scene(name_b64, _self=cmd):
     """Movie-frame callback: make scene `name`'s captured render settings and
-    autofocus target current. Applies ALL captured settings (at a keyframe the
-    scene's own values are by definition the correct endpoint) but deliberately
-    NOT object TTT — the movie owns object motion through its own keyframes and
-    re-applying would fight the interpolation."""
+    autofocus target current. Restores every captured setting that DIFFERS (at a
+    keyframe the scene's own values are by definition the correct endpoint, and
+    re-asserting one that already matches costs a full rebuild for several of
+    them) but deliberately NOT object TTT — the movie owns object motion through
+    its own keyframes and re-applying would fight the interpolation."""
     try:
         name = base64.b64decode(name_b64).decode('utf-8')
     except Exception:
         return
     from pymol import raymol_scenes as _rs
-    for s, v in _rs.scene_settings_map(name).items():
-        try:
-            _self.set(s, v)
-        except Exception as e:
-            print('MOVIE_ERR:' + str(e))
+    # The same conditional-write path a recall uses, not a second copy of the
+    # loop. The material settings invalidate every representation on every
+    # write, so re-asserting a scene's values unchanged at each keyframe rebuilt
+    # cartoon, surface, stick and sphere geometry for every object -- twice per
+    # scene, on every pass of a looping movie and on every frame of an export.
+    try:
+        # apply_settings reports a per-setting failure itself, so this only
+        # catches something structural -- the scene having no payload at all.
+        _rs.apply_settings(name, _self)
+    except Exception as e:
+        print('MOVIE_ERR:' + str(e))
     try:
         _rs.apply_focus_target(name, _self)
     except Exception:
