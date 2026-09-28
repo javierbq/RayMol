@@ -364,15 +364,20 @@ struct BatchProgress: Equatable, Hashable, Decodable {
     let done: Int
     let total: Int
     let tool: String
+    /// How many of THIS batch's members have been written as entries (#448) -- not the
+    /// set's count, which also holds what earlier runs put in an extended set. nil from
+    /// a marker that predates it or dropped the counts.
+    let landed: Int?
 
     /// A batch known to be running, with nothing else known: the marker dropped the
     /// counts to stay under the feedback-line cap and sent bare ids.
     static let unknown = BatchProgress(done: 0, total: 0, tool: "")
 
-    init(done: Int, total: Int, tool: String) {
+    init(done: Int, total: Int, tool: String, landed: Int? = nil) {
         self.done = done
         self.total = total
         self.tool = tool
+        self.landed = landed
     }
 }
 

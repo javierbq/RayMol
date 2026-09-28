@@ -276,4 +276,121 @@ final class OpenFilesTests: XCTestCase {
         XCTAssertFalse(PyMOLEngine.sessionNeedsRaymolPrompt(hasNonEmptySet: true, currentDocument: pse,
                                                             alreadyDecided: true))
     }
+
+    // MARK: - #448: replacing the session while a batch is still landing
+
+    private func set(_ name: String, id: String, count: Int) -> SetEntry {
+        SetEntry(id: id, name: name, kind: "structures", tool: "rfd3", count: count,
+                 stagedCount: min(count, 6), budget: 6, groupName: name, reference: "tgt",
+                 rankingKey: "", sortKey: "", sortDescending: true, filter: "",
+                 columns: [], histogram: [])
+    }
+
+    private let working = "/Users/x/Library/RayMolState/raymol_sets_4242.raymol"
+    private func busy(landed: Int? = 12) -> [String: BatchProgress] {
+        ["ab12cd34": BatchProgress(done: 12, total: 200, tool: "rfd3", landed: landed)]
+    }
+
+    func testNoRunningBatchAsksNothingNew() {
+        // The #349 / §2.1 behaviour is untouched when nothing is landing — even with
+        // a big set in the session.
+        XCTAssertNil(PyMOLEngine.runningBatchReplace(
+            sets: [set("rfd3_a", id: "ab12cd34", count: 500)], running: [:],
+            storePath: working, currentDocument: nil))
+    }
+
+    func testAnUntitledRunningBatchAsksAndSaysDontSaveKeepsARecoveredFile() {
+        let guardInfo = PyMOLEngine.runningBatchReplace(
+            sets: [set("rfd3_a", id: "ab12cd34", count: 40), set("old", id: "ffff0000", count: 40)],
+            running: busy(), storePath: working, currentDocument: nil)
+        XCTAssertEqual(guardInfo?.sets, ["rfd3_a"])
+        XCTAssertEqual(guardInfo?.landed, 12, "the batch's own count, not the set's 40")
+        XCTAssertEqual(guardInfo?.landedIsExact, true)
+        XCTAssertEqual(guardInfo?.isUntitled, true)
+        XCTAssertEqual(guardInfo?.title, "A batch is still running in “rfd3_a”.")
+        let text = guardInfo?.message(replacing: "Opening “b.pse”") ?? ""
+        XCTAssertTrue(text.contains("12 designs from it have landed."), text)
+        XCTAssertTrue(text.contains("this untitled session"), text)
+        XCTAssertTrue(text.contains("Don’t Save keeps it as a recovered file"), text)
+        XCTAssertTrue(text.contains("keeps writing into it"), text)
+    }
+
+    func testWithoutTheBatchsOwnCountTheSheetSaysWhatTheSetsHold() {
+        // An older marker, or a truncated one: the set count is all there is, and for
+        // an extended set it includes earlier runs -- so it is not called "landed".
+        let guardInfo = PyMOLEngine.runningBatchReplace(
+            sets: [set("rfd3_a", id: "ab12cd34", count: 40)], running: busy(landed: nil),
+            storePath: working, currentDocument: nil)
+        XCTAssertEqual(guardInfo?.landed, 40)
+        XCTAssertEqual(guardInfo?.landedIsExact, false)
+        let text = guardInfo?.message(replacing: "Clearing the session") ?? ""
+        XCTAssertTrue(text.contains("Its sets hold 40 entries."), text)
+        XCTAssertFalse(text.contains("landed"), text)
+    }
+
+    func testASessionTrackingAPseSaysThePseDoesNotHoldItsSets() {
+        // Opened from (or saved as) a .pse, then a batch: the sets are in the working
+        // file, so Don't Save is the recovered-file answer -- but it is not "untitled".
+        let guardInfo = PyMOLEngine.runningBatchReplace(
+            sets: [set("rfd3_a", id: "ab12cd34", count: 1)], running: busy(landed: 1),
+            storePath: working, currentDocument: URL(fileURLWithPath: "/tmp/a.pse"))
+        XCTAssertEqual(guardInfo?.isUntitled, true)
+        XCTAssertEqual(guardInfo?.pseDocument, URL(fileURLWithPath: "/tmp/a.pse"))
+        let text = guardInfo?.message(replacing: "Clearing the session") ?? ""
+        XCTAssertTrue(text.contains("1 design from it has landed."), text)
+        XCTAssertTrue(text.contains("not in “a.pse”"), text)
+        XCTAssertFalse(text.contains("untitled"), text)
+        XCTAssertTrue(text.contains("recovered file"), text)
+    }
+
+    func testARaymolDocumentIsNamedAndSaidToHoldTheSetsAlready() {
+        let doc = URL(fileURLWithPath: "/tmp/campaign.raymol")
+        let guardInfo = PyMOLEngine.runningBatchReplace(
+            sets: [set("rfd3_a", id: "ab12cd34", count: 7)], running: busy(landed: 7),
+            storePath: "/tmp/campaign.raymol", currentDocument: doc)
+        XCTAssertEqual(guardInfo?.document, doc)
+        XCTAssertEqual(guardInfo?.isUntitled, false)
+        let text = guardInfo?.message(replacing: "Opening “b.pse”") ?? ""
+        XCTAssertTrue(text.contains("“campaign.raymol”"), text)
+        XCTAssertTrue(text.contains("already saved"), text)
+        XCTAssertFalse(text.contains("recovered"), text)
+    }
+
+    func testARaymolDocumentThatIsNotTheStoresFileIsNotClaimed() {
+        // The marker has moved to another file (the store is authoritative): do not
+        // tell the user their sets are in a document they are not in.
+        let guardInfo = PyMOLEngine.runningBatchReplace(
+            sets: [set("rfd3_a", id: "ab12cd34", count: 7)], running: busy(),
+            storePath: working, currentDocument: URL(fileURLWithPath: "/tmp/campaign.raymol"))
+        XCTAssertEqual(guardInfo?.isUntitled, true)
+    }
+
+    func testABatchWithNothingLandedYetStillAsks() {
+        // Its set and run are in the file already, and so is everything it delivers.
+        let guardInfo = PyMOLEngine.runningBatchReplace(
+            sets: [set("rfd3_a", id: "ab12cd34", count: 0)], running: busy(landed: 0),
+            storePath: working, currentDocument: nil)
+        XCTAssertEqual(guardInfo?.landed, 0)
+        XCTAssertTrue(guardInfo?.message(replacing: "Opening “b.pse”")
+                        .contains("No design from it has landed yet.") ?? false)
+    }
+
+    func testARunningIdTheDrawerHasNotReadYetStillAsks() {
+        let guardInfo = PyMOLEngine.runningBatchReplace(
+            sets: [], running: busy(), storePath: working, currentDocument: nil)
+        XCTAssertNotNil(guardInfo)
+        XCTAssertEqual(guardInfo?.title, "A batch is still running in a set.")
+        XCTAssertEqual(PyMOLEngine.RunningBatchReplace.list(["a", "b", "c"]),
+                       "“a” and 2 other sets")
+    }
+
+    func testTheMarkerDecodesTheBatchsOwnLandedCountAndToleratesItsAbsence() throws {
+        let with = #"{"v":3,"path":"/p","active":"","peek":"","running":{"ab12cd34":{"done":5,"total":9,"tool":"rfd3","landed":4}}}"#
+        let without = #"{"v":3,"path":"/p","active":"","peek":"","running":{"ab12cd34":{"done":5,"total":9,"tool":"rfd3"}}}"#
+        let a = try JSONDecoder().decode(SetsMarker.self, from: Data(with.utf8))
+        let b = try JSONDecoder().decode(SetsMarker.self, from: Data(without.utf8))
+        XCTAssertEqual(a.running["ab12cd34"]?.landed, 4)
+        XCTAssertNil(b.running["ab12cd34"]?.landed)
+        XCTAssertEqual(b.running["ab12cd34"]?.done, 5)
+    }
 }

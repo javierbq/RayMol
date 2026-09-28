@@ -260,7 +260,7 @@ def _metric_payload(obj, state):
 
 
 def capture_object(set_id, obj, name='', run_id=None, parents=(), states='all',
-                   scalars=None, specs=(), _self=cmd):
+                   scalars=None, specs=(), into=None, _self=cmd):
     # `run_id`: a set run to attach the entries to (provenance). None means "derive one
     # per metrics-store run on the object", which is what a captured prediction wants.
     """Add `obj` to a set. One entry per state (`states='all'`), the current state only
@@ -275,10 +275,17 @@ def capture_object(set_id, obj, name='', run_id=None, parents=(), states='all',
 
     An int `states` exists for delivery: a live design with `keep_frames=1` has the
     finished design in its LAST state, and the global `get_state()` may point anywhere.
+
+    `into` is a container other than the active one, for exactly one caller: a batch
+    whose session was replaced under it writes its later results back into ITS OWN
+    document, which is no longer the open one (#448, `batch._land_away`). It needs an
+    explicit `run_id`, since the per-metrics-run fallback is keyed on the active store.
     """
     if not _exists(obj, _self=_self):
         raise SetNotFound('no object %r' % obj)
-    c = container()
+    if into is not None and run_id is None:
+        raise SetInputError('capturing into another container needs a run id')
+    c = into if into is not None else container()
     n_states = max(1, int(_self.count_states(obj) or 1))
     if isinstance(states, int) and not isinstance(states, bool):
         state_list = [min(max(int(states), 1), n_states)]
@@ -296,7 +303,11 @@ def capture_object(set_id, obj, name='', run_id=None, parents=(), states='all',
         cifs, seqs = [], {}
         # A staged binder shown over its set's shared target is captured WITH the
         # target (#545 review): the entry is the complex, not the half on display.
-        with complex_of(obj, state, _self=_self) as (src, src_state):
+        # Not for `into=`: the staged-complex lookup reads the ACTIVE container, which
+        # for an away delivery is an unrelated document (#448 review).
+        reading = (contextlib.nullcontext((obj, state)) if into is not None
+                   else complex_of(obj, state, _self=_self))
+        with reading as (src, src_state):
             for ch in (chains if src == obj else _chains(src, _self=_self)):
                 sel = _chain_sel(src, ch)
                 try:
@@ -1619,6 +1630,13 @@ def save_raymol(filename, quiet=1, _self=cmd):
     filename = os.path.abspath(_self.exp_path(filename))
     c = container()
     same = os.path.exists(filename) and os.path.samefile(filename, c.path)
+    if not same and store.writers(filename):
+        # The document a batch outlived its session in (#448): it is still writing
+        # there, so saving over it would replace the campaign with this session.
+        raise SetInputError(
+            '%s is where %s is still writing its results (it was the document when the'
+            ' session was replaced); save this session somewhere else, or load that file'
+            ' to go back to it' % (filename, ', '.join(store.writers(filename))))
     if not same:
         old_path = c.path
         tmp = filename + '.saving'
@@ -1683,7 +1701,10 @@ def checkpoint_session(_self=cmd):
     c = store.active()
     if os.path.abspath(c.path) != os.path.abspath(store.working_path()):
         return False
-    if not c.holds_entries():
+    # A running batch keeps the file even before its first entry (#448), so it keeps
+    # the scene too -- else reopening it says "Scene not recovered" and the target the
+    # batch was designing against is gone (#448 review).
+    if not c.holds_entries() and not store.writers(c.path):
         return False
     try:
         c.write_session(_pse_bytes(_self=_self),
@@ -1693,6 +1714,53 @@ def checkpoint_session(_self=cmd):
         colorprinting.warning(' sets: could not checkpoint the session: %s' % exc)
         return False
     return True
+
+
+def checkpoint_before_replace(_self=cmd):
+    """`checkpoint_session` for the moment just BEFORE the scene is replaced (`load`,
+    `reinitialize`), and never raising: an untitled session whose working file is about
+    to be kept for recovery keeps its scene with it (#448), so reopening the recovered
+    file brings back the staged designs and not only the table. Returns True when a
+    blob was written."""
+    try:
+        return checkpoint_session(_self=_self)
+    except Exception:
+        return False
+
+
+def _names(running, limit=3):
+    names = list(dict.fromkeys(str(n) for n in running or ()))
+    if len(names) > limit:
+        return '%s and %d more' % (', '.join(names[:limit]), len(names) - limit)
+    return ', '.join(names)
+
+
+def _report_release(event, path=None, running=None, **_):
+    """The one console line #448 asks for, whichever path replaced the session: what
+    was kept, how many entries, where -- and which batch is still writing there."""
+    if event == 'kept':
+        sets = [(name, n) for name, n in store.describe_container(path) if n]
+        total = sum(n for _, n in sets)
+        what = ('%d entr%s in %s' % (total, 'y' if total == 1 else 'ies',
+                                      _names([name for name, _ in sets]))
+                if total else 'no entries yet')
+        line = (' sets: the untitled session\'s sets were never saved, so they were'
+                ' kept: %s, at %s. "load" that file to go back to them; it is also'
+                ' offered at the next launch.' % (what, path))
+        if running:
+            line += (' Still running: %s -- its remaining results are written there'
+                     ' too.' % _names(running))
+        colorprinting.warning(line)
+    elif event == 'left' and running:
+        total = sum(n for _, n in store.describe_container(path))
+        colorprinting.warning(
+            ' sets: %s is still running; its remaining results are written to %s'
+            ' (%d entr%s there now, no longer open), not to the session that replaced'
+            ' it.' % (_names(running), path, total, 'y' if total == 1 else 'ies'))
+    return None
+
+
+store.observe(_report_release)
 
 
 def _read_session_readonly(path):
@@ -1733,6 +1801,7 @@ def load_raymol(filename, partial=0, quiet=1, *, _self=cmd):
     # The session blob is read and unpickled BEFORE the container is opened, because
     # opening migrates an older file in place (#545 review): a file whose session this
     # build cannot read is refused untouched, not refused after it was upgraded.
+    store.about_to_open(filename)
     early = _read_session_readonly(filename)
     session = None
     if early is not None:
@@ -1754,6 +1823,13 @@ def load_raymol(filename, partial=0, quiet=1, *, _self=cmd):
                                  % (filename, exc))
     old = container()
     old_path = old.path
+    if session is not None:
+        # The scene goes with the working file if that file is about to be kept for
+        # recovery (#448): `set_session` below replaces it, and a recovered container
+        # without its scene opens as "Scene not recovered". A no-op for a document or
+        # a working file with nothing in it. (With no session, `reinitialize` below
+        # does this itself.)
+        checkpoint_before_replace(_self=_self)
     if session is None:
         # A container written by the store alone (a batch that never saw Save, an
         # exported set) carries no session. Clear the scene FIRST: `reinitialize`
@@ -1776,11 +1852,10 @@ def load_raymol(filename, partial=0, quiet=1, *, _self=cmd):
         # Not force: opening another document is not permission to discard what the
         # previous, untitled one holds. A batch that landed entries into the working
         # file keeps them, under a recovered_ name, and is offered back on the next
-        # launch (#447; the floor of #448, which is about saying so at the time).
-        kept = store.retire_working_file(old_path)
-        if kept:
-            colorprinting.warning(' sets: the previous session had sets that were never'
-                                  ' saved; they were kept in %s' % kept)
+        # launch (#447); a batch still RUNNING keeps it even before its first result,
+        # and its later results follow it there (#448). The console line is
+        # `_report_release`'s, so this path and `reset()`'s say the same thing.
+        store.release_working_file(old_path)
     _self.set('session_file', filename.replace('\\', '/'), quiet=1)
     if session is None and store.is_preserved(filename):
         try:

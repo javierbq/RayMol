@@ -65,6 +65,10 @@ final class RayMolAppDelegate: NSObject, NSApplicationDelegate {
         // this is only the camera and the objects.
         PyMOLEngine.shared.runPython(
             "from pymol.sets import binding as _sb; _sb.checkpoint_session()")
+        // A batch whose session was replaced holds its document open (#448); fold its
+        // -wal into the file and let go, since Python's atexit may never run here.
+        PyMOLEngine.shared.runPython(
+            "from pymol.sets import batch as _sbb; _sbb.release_all()")
         // The tempfile channels are named after this pid (#399), so nothing will
         // ever reuse them — without this they'd accumulate one set per run.
         TempChannel.removeAll()
@@ -632,6 +636,13 @@ func openWouldReplaceSession(_ url: URL, hasObjects: Bool) -> Bool {
 // proceed (Cancel, or a failed/cancelled save).
 @MainActor
 func confirmReplaceSessionIfNeeded(opening url: URL, engine: PyMOLEngine) -> Bool {
+    // A batch still landing asks its own question first (#448), and it supersedes the
+    // #349 one: a running batch always means objects are on screen, and the choice
+    // that matters is where its results live, not just whether the scene is saved.
+    if PyMOLEngine.isSessionFile(url.path), let batch = engine.runningBatchReplace {
+        return confirmReplaceRunningBatch(batch, action: "Opening “\(url.lastPathComponent)”",
+                                          engine: engine)
+    }
     guard openWouldReplaceSession(url, hasObjects: !engine.objects.isEmpty)
     else { return true }
     let alert = NSAlert()
@@ -654,6 +665,45 @@ func confirmReplaceSessionIfNeeded(opening url: URL, engine: PyMOLEngine) -> Boo
     }
 }
 
+/// File ▸ Clear Session is `reinitialize`, which replaces the session as an open does.
+/// Only a running batch asks (#448); clearing an ordinary session stays one click, as
+/// it always was.
+@MainActor
+func confirmClearSessionIfNeeded(engine: PyMOLEngine) -> Bool {
+    guard let batch = engine.runningBatchReplace else { return true }
+    return confirmReplaceRunningBatch(batch, action: "Clearing the session", engine: engine)
+}
+
+/// #448's sheet, built like #349's: before a session holding a running batch is
+/// replaced, offer Save / Don't Save / Cancel. Nothing is lost on Don't Save — the
+/// Python floor keeps an untitled session's working file as a recovered container
+/// (and a `.raymol` document is a file already), and the batch keeps writing into it —
+/// so the sheet says that rather than implying a discard. Returns false when the
+/// replace must not proceed (Cancel, or a cancelled/failed save).
+@MainActor
+func confirmReplaceRunningBatch(_ batch: PyMOLEngine.RunningBatchReplace, action: String,
+                                engine: PyMOLEngine) -> Bool {
+    let alert = NSAlert()
+    alert.messageText = batch.title
+    alert.informativeText = batch.message(replacing: action)
+    alert.alertStyle = .warning
+    alert.addButton(withTitle: "Save…")
+    alert.addButton(withTitle: "Don’t Save")
+    alert.addButton(withTitle: "Cancel")
+    switch alert.runModal() {
+    case .alertFirstButtonReturn:
+        // A .raymol document is overwritten in place, as ⌘S would; an untitled
+        // session goes straight to a .raymol Save panel -- the one format that holds
+        // the set the batch is filling, so spec §2.1's .pse question is not asked.
+        return performSessionSave(engine: engine, notes: AnalysisNotesStore.shared,
+                                  alwaysPanel: false, forcingRaymol: batch.isUntitled)
+    case .alertSecondButtonReturn:
+        return true
+    default:
+        return false
+    }
+}
+
 // Save the outgoing session before it's replaced, mirroring ⌘S semantics: an open
 // document is overwritten silently; an untitled session shows the Save panel.
 // Ordering is safe without waiting — cmd.save and the subsequent `load` both run
@@ -662,10 +712,11 @@ func confirmReplaceSessionIfNeeded(opening url: URL, engine: PyMOLEngine) -> Boo
 //
 // It goes through performSessionSave for one reason worth stating: the save this
 // button performs is the LAST thing that happens to the outgoing session. The
-// `load` right behind it resets the sets store and deletes the working container,
-// so a `.pse` written here does not merely omit the sets, it is the moment they
-// stop existing. A button labelled Save must not be the one that loses six hours
-// of GPU time, so it asks spec §2.1's question exactly as ⌘S does.
+// `load` right behind it resets the sets store: the working container survives
+// only as a recovered_ file (#447, #448), so a `.pse` written here is the moment
+// the sets leave the document the user thinks they saved. A button labelled Save
+// must not be the one that strands six hours of GPU time, so it asks spec §2.1's
+// question exactly as ⌘S does.
 @MainActor
 private func saveCurrentSessionForReplace(engine: PyMOLEngine) -> Bool {
     performSessionSave(engine: engine, notes: AnalysisNotesStore.shared,
@@ -712,11 +763,14 @@ enum SetsSaveAnswer { case raymol, pse, cancel }
 @MainActor
 @discardableResult
 func performSessionSave(engine: PyMOLEngine, notes: AnalysisNotesStore,
-                        alwaysPanel: Bool) -> Bool {
-    var forcingRaymol = false
+                        alwaysPanel: Bool, forcingRaymol forced: Bool = false) -> Bool {
+    // `forced`: the caller already knows the answer is .raymol (#448's sheet, for a
+    // session whose running batch is filling a set). Recorded as the §2.1 choice only
+    // once the save has happened -- a cancelled panel has answered nothing.
+    var forcingRaymol = forced
     let first = PyMOLEngine.sessionSaveStep(
         hasNonEmptySet: engine.hasNonEmptySet, currentDocument: engine.currentSessionURL,
-        setsChoiceMade: engine.setsSaveChoiceMade, forcingRaymol: false,
+        setsChoiceMade: engine.setsSaveChoiceMade, forcingRaymol: forced,
         alwaysPanel: alwaysPanel)
     if first == .askAboutSets {
         switch presentSetsSaveSheet(engine: engine) {
@@ -738,10 +792,13 @@ func performSessionSave(engine: PyMOLEngine, notes: AnalysisNotesStore,
         engine.saveSession(to: url)
         return true
     case .panel(let extensions):
-        guard let url = runSessionSavePanel(engine: engine, extensions: extensions)
+        // The #448 sheet promised a .raymol: offer nothing else.
+        guard let url = runSessionSavePanel(engine: engine,
+                                            extensions: forced ? ["raymol"] : extensions)
         else { return false }
         notes.sessionDidSave(to: url)
         engine.saveSession(to: url)
+        if forced { engine.recordSetsSaveChoice() }
         return true
     }
 }

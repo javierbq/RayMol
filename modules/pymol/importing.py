@@ -840,6 +840,12 @@ SEE ALSO
         if not partial:
             try:
                 from pymol.sets import store as _set_store
+                if _set_store.is_open():
+                    # An untitled session's working file is KEPT when it holds
+                    # entries or a batch is still writing into it (#447, #448); its
+                    # scene goes with it, so the recovered file reopens whole.
+                    from pymol.sets import binding as _set_binding
+                    _set_binding.checkpoint_before_replace(_self=_self)
                 _set_store.reset()
             except Exception:
                 pass
