@@ -379,6 +379,24 @@ class TestDrawerHelpers(AppkitSetsTestCase):
             appkit_sets.poll()
         self.assertEqual(markers(out.getvalue())[0]['peek'], '')
 
+    def test_peeking_an_entry_without_a_structure_is_a_quiet_no_op(self):
+        # Sequence designs (MPNN) have no structure. The drawer peeks on hover, so
+        # this must not raise (a traceback per row crossed), and it must not leave an
+        # earlier entry's ghost on screen as if it were this one's.
+        self.populated(1)
+        appkit_sets.peek('s', 'p0')
+        self.assertIn(binding.PEEK, cmd.get_names('all'))
+        c = binding.container()
+        seqs = c.create_set('seqs', kind='sequences', tool='mpnn')
+        c.add_entry(seqs['id'], 'seq_s1', sequences={'B': 'ACDEFGHIK'})
+        with captured() as out:
+            self.assertIsNone(appkit_sets.peek('seqs', 'seq_s1'))
+        self.assertNotIn('Traceback', out.getvalue())
+        self.assertNotIn(binding.PEEK, cmd.get_names('all'))
+        with captured() as out:
+            appkit_sets.poll()
+        self.assertEqual(markers(out.getvalue())[0]['peek'], '')
+
     def test_console_clear_is_reflected(self):
         # `set_peek` with no arguments from the console (or over MCP) clears the peek
         # object behind the drawer's back; the marker must notice on the next poll.

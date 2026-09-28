@@ -393,9 +393,19 @@ def peek(name, entry, _self=cmd):
     binding.peek itself keeps no record -- the peek object is anonymous by design so a
     console `set_peek` needs nothing from the UI -- so the record lives here."""
     global _peek_set_id, _peek_entry_id
+    from pymol.sets.errors import SetInputError
     row = _set_row(name)
     e = _store().active().entry(row['id'], str(entry).strip())
-    _self.set_peek(row['name'], e['name'], quiet=1)
+    try:
+        _self.set_peek(row['name'], e['name'], quiet=1)
+    except SetInputError as exc:
+        # A sequence-design entry has no structure to ghost. The drawer peeks on
+        # hover, so a traceback here would print once per row the pointer crosses;
+        # clear any earlier ghost (it would otherwise look like this entry's) and
+        # say it once, quietly.
+        clear_peek(_self=_self)
+        colorprinting.warning(' sets: nothing to peek -- %s' % exc)
+        return None
     _stamp_peek(e['id'], _self=_self)
     _peek_set_id, _peek_entry_id = row['id'], e['id']
     return e['id']

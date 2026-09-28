@@ -682,4 +682,26 @@ final class SetFilterTimingTests: XCTestCase {
                                                    total: engine.setRows.count),
                        "2 of 5 match")
     }
+
+    /// A sequence design has no structure to ghost. The table and the plot peek on
+    /// hover, so sending set_peek for it printed a traceback per row crossed and left
+    /// ◐ on a row that showed nothing. It must send no peek and clear the current one.
+    func testPeekingARowWithoutAStructureClearsInsteadOfPeeking() {
+        var sent: [String] = []
+        engine.pythonTap = { sent.append($0) }
+        engine.peekEntry(set, row("design_1", ord: 0))
+        XCTAssertEqual(engine.peekedEntryID, "id_design_1")
+        XCTAssertTrue(sent.last?.contains("_s.peek(") ?? false)
+
+        let sequence = SetRow(id: "id_seq", name: "design_1_s1", ord: 1, starred: false,
+                              rejected: false, pinned: false, stagedObject: nil,
+                              nChains: 1, nResidues: 70, tags: "", runID: nil,
+                              values: [:], hasStructure: false)
+        sent = []
+        engine.peekEntry(set, sequence)
+        XCTAssertNil(engine.peekedEntryID, "no ◐ on a row that shows nothing")
+        XCTAssertFalse(sent.contains { $0.contains("_s.peek(") }, "no set_peek for it")
+        XCTAssertTrue(sent.contains { $0.contains("clear_peek()") },
+                      "the previous entry's ghost must not stay on screen as this one's")
+    }
 }

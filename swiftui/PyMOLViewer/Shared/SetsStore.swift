@@ -1537,7 +1537,17 @@ extension PyMOLEngine {
 
     /// `set_peek set, entry` through the helper that records WHICH entry, so the
     /// row can show ◐. runPython, not Quiet: this draws.
+    ///
+    /// A row with no structure (a sequence design) has nothing to ghost. The table
+    /// and the plot peek on hover, so sending it anyway printed a traceback for every
+    /// row the pointer crossed and left ◐ on a row that showed nothing. Such a row
+    /// clears the current peek instead, so no other entry's ghost stays on screen as if
+    /// it were this one's.
     func peekEntry(_ set: SetEntry, _ row: SetRow) {
+        guard row.hasStructure else {
+            clearPeek()
+            return
+        }
         peekedEntryID = row.id
         runPython("from pymol import appkit_sets as _s\n_s.peek(\(pyQuoted(set.name)), \(pyQuoted(row.name)))")
     }
