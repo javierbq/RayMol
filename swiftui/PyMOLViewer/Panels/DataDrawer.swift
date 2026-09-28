@@ -1188,6 +1188,7 @@ struct SetTableView: View {
 
     @ViewBuilder private func rowMenu(_ row: SetRow) -> some View {
         Button("Peek") { engine.peekEntry(set, row) }
+            .disabled(!row.hasStructure)
         Button(row.isStaged ? "Unstage" : "Stage") { engine.toggleStage(set, [row]) }
         if row.isStaged {
             Button(row.pinned ? "Unpin" : "Pin") { engine.setPin(set, [row], on: !row.pinned) }
