@@ -619,7 +619,14 @@ extension MetalViewport {
                                      hasRenderedOnce: hasRenderedOnce,
                                      redisplayPending: pending,
                                      framesInFlight: engine.metalFramesInFlight) {
-            case .skip, .throttle:
+            case .skip:
+                // Nothing is dirty, so no deferred rep build is waiting on a
+                // frame. A synchronous heavy op (image export / Copy Image)
+                // leaves the scene clean, and waiting for "build frames" that
+                // never render held its overlay up until the 60 s backstop.
+                engine.heavyRenderTick(presented: false)
+                return
+            case .throttle:
                 return
             case .render:
                 break
