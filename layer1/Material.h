@@ -80,6 +80,40 @@ struct MaterialParams {
 int MaterialSettingForRep(int repType);
 
 /**
+ * The layer whose material SETTINGS a draw of `repType` reads: its own, except
+ * that side chains follow the cartoon.
+ *
+ * A stick or sphere layer with no material of its own -- `stick_material` /
+ * `sphere_material` set on neither the state nor the object, and `default`
+ * globally -- returns cRepCartoon while the object shows a cartoon on any
+ * POLYMER atom (`show cartoon` also marks ligands, which draw none), so it
+ * draws with the cartoon's material AND its Custom knobs. Picking a
+ * material for the layer, `default` included, makes it independent again.
+ * Every other rep, and every object that is not a molecule, returns `repType`.
+ *
+ * Per object, not per atom: a ligand shown as sticks in the same object follows
+ * too. Surfaces never follow. Only the SETTING is borrowed -- the degradations
+ * of MaterialResolve stay keyed on the rep that draws (glass on sphere
+ * impostors), so pass the real rep to it.
+ *
+ * With every material at `default` this changes nothing that is drawn: the
+ * cartoon then resolves to `material_default`, which is what the layer would
+ * have resolved to itself.
+ *
+ * @param obj the object, so its shown reps can be consulted; may be null
+ */
+int MaterialSourceRep(PyMOLGlobals* G, const CSetting* set1,
+    const CSetting* set2, int repType, const pymol::CObject* obj);
+
+/**
+ * Does the layer have a material of its OWN -- the half of MaterialSourceRep
+ * that does not depend on what is shown? True for a rep that takes no
+ * material at all.
+ */
+bool MaterialLayerHasOwnMaterial(PyMOLGlobals* G, const CSetting* set1,
+    const CSetting* set2, int repType);
+
+/**
  * Resolve the material id for one draw: the rep's OBJECT-level value (or
  * object-state), then the rep's global value, then `material_default`.
  *
@@ -175,9 +209,46 @@ MaterialParams MaterialResolve(int id, int repType);
 MaterialParams MaterialResolveForDraw(PyMOLGlobals* G, const CSetting* set1,
     const CSetting* set2, int repType, const CoordSet* cs = nullptr);
 
+/* The knobs of the Custom material (#568). A slot is one of the overridable
+   MaterialParams fields; the per-rep override settings are ordered the same
+   way (`<rep>_material_reflect`, `_tint`, `_rough`, `_knob1`..`_knob6`). */
+enum MaterialKnobSlot {
+  kKnob_reflect = 0,
+  kKnob_tint,
+  kKnob_rough,
+  kKnob_p0,   // knob1
+  kKnob_p1,
+  kKnob_p2,
+  kKnob_p3,
+  kKnob_p4,
+  kKnob_p5,   // knob6
+  kMaterialKnobSlotCount
+};
+
+struct MaterialKnob {
+  int slot;            // MaterialKnobSlot
+  const char* label;   // what it does, for the Inspector
+  // A sensible slider range (the core clamps nothing); for a toggle, the off
+  // and on values the Inspector writes.
+  float min, max;
+  // Shown as an on/off switch (min off, max on) rather than a slider. The
+  // value is still an amount: the shader scales by it, so the command line
+  // can set anything between.
+  bool toggle = false;
+};
+
 /**
- * The FINAL parameters a draw uses: MaterialResolveForDraw plus the decision of
- * which families read the legacy object-scoped `metal_rt_reflect*` triple.
+ * The knobs material `id` has -- the slots its shader actually reads -- in
+ * display order. Returns their count (0 for `default` and unimplemented ids)
+ * and points `*knobs` at them. An override of any other slot is ignored.
+ */
+int MaterialKnobs(int id, const MaterialKnob** knobs);
+
+/**
+ * The FINAL parameters a draw uses: MaterialResolveForDraw, with reflect / tint /
+ * rough zeroed for every family that does not own them (all but reflective and
+ * glass), then the layer's Custom overrides of the knobs its material has
+ * (MaterialKnobs, #568).
  *
  * The draw site is a thin caller of this, so the rules stay in one place and
  * can be asserted from Python without a Metal context.
@@ -194,7 +265,8 @@ MaterialParams MaterialDrawParams(PyMOLGlobals* G, const CSetting* set1,
  * configuration the rule targets, glass sticks with no balls.
  */
 MaterialParams MaterialDrawParamsCached(PyMOLGlobals* G, const CSetting* set1,
-    const CSetting* set2, int repType, bool emitsStickBalls);
+    const CSetting* set2, int repType, bool emitsStickBalls,
+    const pymol::CObject* obj = nullptr);
 
 /**
  * Does this stick rep emit any `stick_ball` sphere? Atom-level, so this scans.

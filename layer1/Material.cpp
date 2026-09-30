@@ -38,14 +38,18 @@ constexpr int kP_edge = 2;     /* procedural: grazing-angle darkening */
 constexpr int kP_sheen = 3;    /* procedural: velvet sheen (rubber) */
 constexpr int kP_vein = 4;     /* marble: vein contrast */
 constexpr int kP_sharp = 5;    /* marble: vein sharpness */
-/* Glass family. The slots are reused per family -- p[0] is grain for a
-   procedural material and absorption for a glass one -- which is why they are
-   named here rather than carried as one flat list. p[5] is NOT a table knob:
+/* Glass family. The slots are reused per family, and within it per material
+   -- p[0] is grain for a procedural material, absorption for jelly and
+   reflection for clear and frosted glass -- which is why they are named here
+   rather than carried as one flat list. p[5] is NOT a table knob:
    setRepMaterial overwrites it for the whole glass family with the frost tap
    count the current target can afford, so nothing put here would survive. */
 constexpr int kP_absorb = 0;   /* jelly: Beer-Lambert strength through the body */
 constexpr int kP_scatter = 1;  /* jelly: density of the scattered inner glow */
 constexpr int kP_wet = 2;      /* jelly: sharp wet-skin highlight strength */
+constexpr int kP_jellyDistort = 3;  /* jelly: refraction amount (#590) */
+constexpr int kP_reflect = 0;  /* clear/frosted glass: surface reflection (#590) */
+constexpr int kP_distort = 1;  /* clear/frosted glass: refraction amount (#590) */
 
 /* Index is the material id; the order must match the enum in Material.h.
  *
@@ -68,17 +72,18 @@ const MaterialRow kMaterialTable[] = {
             {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}, 0}},
 
     {cMaterial_metallic, "metallic", cMaterialFamily_reflective, true, 0.0f,
-        {cMaterialFamily_reflective, cMaterial_metallic, 0.6f, 0.35f, 0.35f,
+        {cMaterialFamily_reflective, cMaterial_metallic, 0.6f, 0.35f, 0.25f,
             {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}, 0}},
 
+    /* Glass p[0] = reflection, p[1] = distortion (#590): both on. */
     {cMaterial_glass, "glass", cMaterialFamily_glass, true, 0.15f,
         {cMaterialFamily_glass, cMaterial_glass, 0.0f, 0.0f, 0.0f,
-            {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}, 1}},
+            {1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f}, 1}},
 
     {cMaterial_frosted_glass, "frosted_glass", cMaterialFamily_glass, true,
         0.2f,
         {cMaterialFamily_glass, cMaterial_frosted_glass, 0.0f, 0.0f, 0.6f,
-            {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f}, 1}},
+            {1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f}, 1}},
 
     /* Jelly is in the glass family but is the opposite material: a dense
        scattering BODY under a smooth skin, where glass is a clear body under a
@@ -160,7 +165,7 @@ const MaterialRow kMaterialTable[] = {
        this ticket; the table declared it in advance. */
     {cMaterial_jelly, "jelly", cMaterialFamily_glass, true, 0.85f,
         {cMaterialFamily_glass, cMaterial_jelly, 0.0f, 0.0f, 0.03f,
-            {2.2f, 0.35f, 1.1f, 0.0f, 0.0f, 0.0f}, 1}},
+            {2.2f, 0.35f, 1.1f, 1.0f, 0.0f, 0.0f}, 1}},  // p[3] distortion (#590)
 
     {cMaterial_marble, "marble", cMaterialFamily_procedural, true, 0.0f,
         {cMaterialFamily_procedural, cMaterial_marble, 0.0f, 0.0f, 0.9f,
@@ -176,15 +181,15 @@ const MaterialRow kMaterialTable[] = {
        body rather than a flat matte one.
 
        Only p[0..2] reach the GPU for this family. `reflect`, `tint` and `rough`
-       in every row are overwritten from the metal_rt_reflect* settings in
-       CGOGL.cpp before upload, so tuning them here has no effect. */
+       are zeroed for it in MaterialFinalizeParams, so tuning them here has no
+       effect. */
     {cMaterial_clay, "clay", cMaterialFamily_procedural, true, 0.0f,
         {cMaterialFamily_procedural, cMaterial_clay, 0.0f, 0.0f, 1.0f,
             {0.10f, 9.0f, 0.45f, 0.0f, 0.0f, 0.0f}, 0}},
 
     {cMaterial_rubber, "rubber", cMaterialFamily_procedural, true, 0.0f,
         {cMaterialFamily_procedural, cMaterial_rubber, 0.0f, 0.0f, 0.95f,
-            {0.14f, 14.0f, 0.12f, 0.10f, 0.0f, 0.0f}, 0}},
+            {0.14f, 26.5f, 0.17f, 0.37f, 0.0f, 0.0f}, 0}},
 };
 
 constexpr int kMaterialTableSize =
@@ -403,11 +408,45 @@ bool MaterialRepEmitsStickBalls(
   return false;
 }
 
+bool MaterialLayerHasOwnMaterial(PyMOLGlobals* G, const CSetting* set1,
+    const CSetting* set2, int repType)
+{
+  // A material of its OWN, at any level, keeps the layer independent: set on
+  // the state or the object, or a non-default global value for the layer.
+  int const own = MaterialSettingForRep(repType);
+  int id = cMaterial_default;
+  return !own || SettingGetIfDefined_i(G, set1, own, &id) ||
+         SettingGetIfDefined_i(G, set2, own, &id) ||
+         SettingGetGlobal_i(G, own) != cMaterial_default;
+}
+
+int MaterialSourceRep(PyMOLGlobals* G, const CSetting* set1,
+    const CSetting* set2, int repType, const pymol::CObject* obj)
+{
+  if (repType != cRepCyl && repType != cRepSphere) {
+    return repType; // only the side-chain layers follow
+  }
+  if (MaterialLayerHasOwnMaterial(G, set1, set2, repType)) {
+    return repType;
+  }
+  // Cheap checks first: this runs per draw op. The cast and the visibility
+  // test only happen for a stick or sphere layer with no material of its own.
+  auto const* objmol = dynamic_cast<const ObjectMolecule*>(obj);
+  if (!objmol || !objmol->showsPolymerCartoon()) {
+    return repType;
+  }
+  return cRepCartoon;
+}
+
 static MaterialParams MaterialResolveForDrawCached(PyMOLGlobals* G,
     const CSetting* set1, const CSetting* set2, int repType,
-    bool emitsStickBalls)
+    bool emitsStickBalls, const pymol::CObject* obj)
 {
-  int const id = MaterialResolveSettingId(G, set1, set2, repType);
+  // The SETTING comes from the source layer (a side chain following its
+  // cartoon reads cartoon_material); the degradations below stay keyed on the
+  // rep that actually draws -- glass on sphere impostors, stick_ball glass.
+  int const id = MaterialResolveSettingId(
+      G, set1, set2, MaterialSourceRep(G, set1, set2, repType, obj));
   MaterialParams params = MaterialResolve(id, repType);
   // stick_ball spheres are emitted by the STICK rep, so they arrive as cRepCyl
   // and take stick_material -- including clear or frosted glass, which
@@ -430,7 +469,8 @@ static MaterialParams MaterialResolveForDrawCached(PyMOLGlobals* G,
 MaterialParams MaterialResolveForDraw(PyMOLGlobals* G, const CSetting* set1,
     const CSetting* set2, int repType, const CoordSet* cs)
 {
-  int const id = MaterialResolveSettingId(G, set1, set2, repType);
+  int const id = MaterialResolveSettingId(G, set1, set2,
+      MaterialSourceRep(G, set1, set2, repType, cs ? cs->Obj : nullptr));
   MaterialParams params = MaterialResolve(id, repType);
   /* LAZY on purpose: resolve first, and walk atoms only when the answer can
      change something. Computing it eagerly for every cRepCyl call -- as this
@@ -444,76 +484,182 @@ MaterialParams MaterialResolveForDraw(PyMOLGlobals* G, const CSetting* set1,
   return params;
 }
 
-static MaterialParams MaterialApplyLegacyTriple(
-    PyMOLGlobals* G, const CSetting* set1, const CSetting* set2,
+static MaterialParams MaterialFinalizeParams(
+    PyMOLGlobals* G, const CSetting* set1, const CSetting* set2, int repType,
     MaterialParams params);
 
+/* The Custom overrides come from the same layer as the material: a side chain
+   following its cartoon draws with the cartoon's tuning, not its own. */
 MaterialParams MaterialDrawParams(PyMOLGlobals* G, const CSetting* set1,
     const CSetting* set2, int repType, const CoordSet* cs)
 {
-  return MaterialApplyLegacyTriple(G, set1, set2,
+  int const source =
+      MaterialSourceRep(G, set1, set2, repType, cs ? cs->Obj : nullptr);
+  return MaterialFinalizeParams(G, set1, set2, source,
       MaterialResolveForDraw(G, set1, set2, repType, cs));
 }
 
 MaterialParams MaterialDrawParamsCached(PyMOLGlobals* G, const CSetting* set1,
-    const CSetting* set2, int repType, bool emitsStickBalls)
+    const CSetting* set2, int repType, bool emitsStickBalls,
+    const pymol::CObject* obj)
 {
-  return MaterialApplyLegacyTriple(G, set1, set2,
-      MaterialResolveForDrawCached(G, set1, set2, repType, emitsStickBalls));
+  return MaterialFinalizeParams(G, set1, set2,
+      MaterialSourceRep(G, set1, set2, repType, obj),
+      MaterialResolveForDrawCached(
+          G, set1, set2, repType, emitsStickBalls, obj));
 }
 
-static MaterialParams MaterialApplyLegacyTriple(
-    PyMOLGlobals* G, const CSetting* set1, const CSetting* set2,
+/* The Custom material's per-layer overrides (#568): for each material-bearing
+   rep, the object-scoped settings that replace its material's own knobs --
+   reflect, tint, rough, then knob1..knob6 for p[0..5]. Unset means the
+   material's value. */
+namespace {
+struct CustomOverrideSet {
+  int slot[kMaterialKnobSlotCount];   // indexed by MaterialKnobSlot
+};
+const CustomOverrideSet* MaterialCustomOverridesForRep(int repType)
+{
+#define RAYMOL_CUSTOM_SET(rep)                                                 \
+  {{cSetting_##rep##_material_reflect, cSetting_##rep##_material_tint,         \
+      cSetting_##rep##_material_rough, cSetting_##rep##_material_knob1,        \
+      cSetting_##rep##_material_knob2, cSetting_##rep##_material_knob3,        \
+      cSetting_##rep##_material_knob4, cSetting_##rep##_material_knob5,        \
+      cSetting_##rep##_material_knob6}}
+  static const CustomOverrideSet kCartoon = RAYMOL_CUSTOM_SET(cartoon);
+  static const CustomOverrideSet kSurface = RAYMOL_CUSTOM_SET(surface);
+  static const CustomOverrideSet kStick = RAYMOL_CUSTOM_SET(stick);
+  static const CustomOverrideSet kSphere = RAYMOL_CUSTOM_SET(sphere);
+#undef RAYMOL_CUSTOM_SET
+  switch (MaterialSettingForRep(repType)) {
+  case cSetting_cartoon_material: return &kCartoon;
+  case cSetting_surface_material: return &kSurface;
+  case cSetting_stick_material: return &kStick;
+  case cSetting_sphere_material: return &kSphere;
+  }
+  return nullptr;
+}
+
+/* Which knobs each material HAS: the slots its shader actually reads, with
+   the name and a sensible range. One table, because the meaning of a
+   p[] slot differs per material, not per family -- marble reads p[1] as vein
+   scale and never reads p[0], rubber reads p[2] as its highlight where clay
+   reads it as grazing darkening, and matte reads only p[0..1]. An override
+   of a slot that is not listed for the layer's material is ignored, so the
+   settings cannot promise a change the shader does not make. Ranges are for
+   the Inspector's sliders (a toggle writes its min or max); the core clamps
+   nothing. Checked against
+   RendererMetal.mm: mat_body_shade / mat_shade_procedural (matte, clay,
+   rubber), mat_marble_albedo, mat_jelly_shade, mat_glass_shade and the
+   frosted tap spread, mat_env_specular (reflective). */
+const MaterialKnob kReflective[] = {
+    {kKnob_reflect, "Reflection", 0.0f, 1.0f},
+    {kKnob_tint, "Reflection tint", 0.0f, 1.0f},
+    {kKnob_rough, "Roughness", 0.0f, 1.0f}};
+// Clear and frosted glass: p[0] scales the surface reflection (the Fresnel
+// environment rim and the glints, mat_glass_shade), p[1] the refraction
+// (#588, bindRepMaterial). Both are 1 in the table and toggles in the
+// Inspector (#590). `rough` is the glints' and reflection's blur.
+const MaterialKnob kGlass[] = {{kKnob_p0 + kP_reflect, "Reflection", 0.0f, 1.0f, true},
+    {kKnob_p0 + kP_distort, "Distortion", 0.0f, 1.0f, true},
+    {kKnob_rough, "Roughness", 0.0f, 1.0f}};
+const MaterialKnob kFrostedGlass[] = {{kKnob_p0 + kP_reflect, "Reflection", 0.0f, 1.0f, true},
+    {kKnob_p0 + kP_distort, "Distortion", 0.0f, 1.0f, true},
+    {kKnob_rough, "Frost", 0.0f, 1.0f}};
+// Jelly's p[3] scales its refraction (#590); p[0..2] are its body.
+const MaterialKnob kJelly[] = {{kKnob_rough, "Skin reflection blur", 0.0f, 1.0f},
+    {kKnob_p0, "Absorption", 0.0f, 6.0f},
+    {kKnob_p1, "Inner glow", 0.0f, 1.0f},
+    {kKnob_p2, "Wet highlight", 0.0f, 3.0f},
+    {kKnob_p0 + kP_jellyDistort, "Distortion", 0.0f, 1.0f, true}};
+const MaterialKnob kMatte[] = {{kKnob_p0, "Grain", 0.0f, 0.5f},
+    {kKnob_p1, "Grain frequency", 0.0f, 40.0f}};
+const MaterialKnob kClay[] = {{kKnob_p0, "Grain", 0.0f, 0.5f},
+    {kKnob_p1, "Grain frequency", 0.0f, 40.0f},
+    {kKnob_p2, "Edge darkening", 0.0f, 1.0f}};
+const MaterialKnob kRubber[] = {{kKnob_p0, "Grain", 0.0f, 0.5f},
+    {kKnob_p1, "Grain frequency", 0.0f, 40.0f},
+    {kKnob_p2, "Highlight", 0.0f, 1.0f},
+    {kKnob_p3, "Sheen", 0.0f, 1.0f}};
+const MaterialKnob kMarble[] = {{kKnob_p1, "Vein scale", 0.02f, 1.0f},
+    {kKnob_p4, "Vein contrast", 0.0f, 1.0f},
+    {kKnob_p5, "Vein sharpness", 1.0f, 20.0f}};
+
+/* The object's (or state's) own value only: a GLOBAL override would turn one
+   layer's tuning into every object's, which is not what Custom means. */
+bool MaterialCustomValue(const CSetting* set1, const CSetting* set2, int index,
+    float* out)
+{
+  return SettingGetIfDefined<float>(set1, index, out) ||
+         SettingGetIfDefined<float>(set2, index, out);
+}
+} // namespace
+
+int MaterialKnobs(int id, const MaterialKnob** knobs)
+{
+  const MaterialKnob* k = nullptr;
+  int n = 0;
+#define RAYMOL_KNOBS(arr) (k = arr, n = int(sizeof(arr) / sizeof(arr[0])))
+  if (MaterialIsImplemented(id)) {
+    switch (id) {
+    case cMaterial_plastic:
+    case cMaterial_metallic: RAYMOL_KNOBS(kReflective); break;
+    case cMaterial_glass: RAYMOL_KNOBS(kGlass); break;
+    case cMaterial_frosted_glass: RAYMOL_KNOBS(kFrostedGlass); break;
+    case cMaterial_jelly: RAYMOL_KNOBS(kJelly); break;
+    case cMaterial_matte: RAYMOL_KNOBS(kMatte); break;
+    case cMaterial_clay: RAYMOL_KNOBS(kClay); break;
+    case cMaterial_rubber: RAYMOL_KNOBS(kRubber); break;
+    case cMaterial_marble: RAYMOL_KNOBS(kMarble); break;
+    }
+  }
+#undef RAYMOL_KNOBS
+  if (knobs)
+    *knobs = k;
+  return n;
+}
+
+static MaterialParams MaterialFinalizeParams(
+    PyMOLGlobals* G, const CSetting* set1, const CSetting* set2, int repType,
     MaterialParams params)
 {
-  // reflect/tint/rough: `default` reads the legacy object-scoped
-  // metal_rt_reflect* triple, and a REFLECTIVE material carries its own (#494).
-  //
-  // Overwriting unconditionally -- as this did while no reflective material was
-  // implemented -- made the reflect/tint/rough columns of the table dead data,
-  // so `metallic` would have rendered with whatever the legacy sliders happened
-  // to hold: 0 for an untouched object, i.e. no reflection at all.
-  //
-  // GLASS is exempt for the same reason, and it was not: `rough` is its frost
-  // axis (the cubemap mip is sqrt(rough) * 7, and it sets the tap spread), so
-  // taking `metal_rt_reflect_rough` -- default 0 -- replaced frosted_glass's
-  // 0.6 with a near-mirror sample. `frosted_glass` rendered as clear `glass`,
-  // and the only surviving difference between the two materials was their
-  // implied alpha. It also let a legacy object slider reshape a material that
-  // is meant to be a pure function of its id.
-  //
-  // The procedural materials (matte, marble, clay, rubber) do not read these at
-  // all, so leaving them on the legacy path keeps `default` and every
-  // already-shipped material byte-exact.
+  // reflect/tint/rough belong to the REFLECTIVE family (its reflection) and
+  // the GLASS family (`rough` is its reflection blur or frost). Every other
+  // family draws with all three at 0: that is what `default` has always
+  // drawn with, and the procedural rows' `rough` values (matte's 1.0,
+  // clay's...) are not a knob those shaders read. Zeroing here keeps
+  // `default` and the procedural materials byte-exact now that the legacy
+  // object-wide metal_rt_reflect* triple they used to read -- 0 unless
+  // someone set it -- is gone (#565).
+  (void)G;
   if (params.family != cMaterialFamily_reflective &&
       params.family != cMaterialFamily_glass) {
-    params.reflect = SettingGet_f(G, set1, set2, cSetting_metal_rt_reflect);
-    params.tint = SettingGet_f(G, set1, set2, cSetting_metal_rt_reflect_tint);
-    params.rough = SettingGet_f(G, set1, set2, cSetting_metal_rt_reflect_rough);
-  } else if (params.family == cMaterialFamily_reflective) {
-    // A reflective material starts from its TABLE row, but an EXPLICIT
-    // per-object metal_rt_reflect* value still wins (#497).
-    //
-    // "Explicit" is the whole point: SettingGetIfDefined, not SettingGet. An
-    // object that has never been touched has no value here, so it keeps the
-    // table's -- which is what stopped `metallic` rendering with the sliders'
-    // default 0 and no reflection at all. But a user (or a bundle) who does set
-    // one gets it, which is how `chrome` can be metallic with a tighter tint
-    // and a sharper roughness without needing a table row of its own.
-    //
-    // GLASS is deliberately NOT given this: `rough` is its frost axis, not a
-    // reflection knob, and letting a legacy slider reshape it is the bug fixed
-    // earlier in this ticket.
-    float v = 0.0f;
-    if (SettingGetIfDefined<float>(set1, cSetting_metal_rt_reflect, &v) ||
-        SettingGetIfDefined<float>(set2, cSetting_metal_rt_reflect, &v))
-      params.reflect = v;
-    if (SettingGetIfDefined<float>(set1, cSetting_metal_rt_reflect_tint, &v) ||
-        SettingGetIfDefined<float>(set2, cSetting_metal_rt_reflect_tint, &v))
-      params.tint = v;
-    if (SettingGetIfDefined<float>(set1, cSetting_metal_rt_reflect_rough, &v) ||
-        SettingGetIfDefined<float>(set2, cSetting_metal_rt_reflect_rough, &v))
-      params.rough = v;
+    params.reflect = 0.0f;
+    params.tint = 0.0f;
+    params.rough = 0.0f;
+  }
+  // Custom (#568): the layer's own overrides of the knobs its material HAS
+  // (MaterialKnobs, keyed by the material's own id -- `mode`). The shading
+  // model stays the material's, so an override never switches pipelines.
+  // `default` has no knobs, which also keeps the default path free of these
+  // lookups; so does a degraded rep, which resolves to `default`.
+  if (params.family == cMaterialFamily_default)
+    return params;
+  const CustomOverrideSet* ov = MaterialCustomOverridesForRep(repType);
+  if (!ov)
+    return params;
+  const MaterialKnob* knobs = nullptr;
+  int const n = MaterialKnobs(params.mode, &knobs);
+  float v = 0.0f;
+  for (int i = 0; i < n; ++i) {
+    int const slot = knobs[i].slot;
+    if (!MaterialCustomValue(set1, set2, ov->slot[slot], &v))
+      continue;
+    switch (slot) {
+    case kKnob_reflect: params.reflect = v; break;
+    case kKnob_tint: params.tint = v; break;
+    case kKnob_rough: params.rough = v; break;
+    default: params.p[slot - kKnob_p0] = v; break;
+    }
   }
   return params;
 }
@@ -684,8 +830,9 @@ bool MaterialObjectWantsPeel(PyMOLGlobals* G, const CSetting* set1,
      second, and this runs once per object per FRAME. */
   bool maybeWantsPeel = false;
   for (size_t i = 0; i < sizeof(kReps) / sizeof(kReps[0]); ++i) {
-    if (MaterialResolve(
-            MaterialResolveSettingId(G, set1, set2, kReps[i]), kReps[i])
+    if (MaterialResolve(MaterialResolveSettingId(G, set1, set2,
+                            MaterialSourceRep(G, set1, set2, kReps[i], obj)),
+            kReps[i])
             .wantsPeel) {
       maybeWantsPeel = true;
       break;

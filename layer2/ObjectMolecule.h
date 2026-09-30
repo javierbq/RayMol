@@ -95,6 +95,18 @@ public:
   struct CSculpt *Sculpt =  nullptr;
   int RepVisCacheValid = 0;
   int RepVisCache = 0;     /* for transient storage during updates */
+  /* OR of every atom's visRep. Unlike RepVisCache, which is every bit for a
+     single-state object, this is exact. Lazy; invalidated with RepVisCache. */
+  mutable int RepVisAtoms = 0;
+  mutable bool RepVisAtomsValid = false;
+  /* Cached with it: does any POLYMER atom carry the cartoon bit? `show
+     cartoon` sets the bit on ligands and waters too, which draw none. */
+  mutable bool PolymerCartoonShown = false;
+  int repsShownByAtoms() const;
+  bool showsPolymerCartoon() const;
+  /* Whether the last update() saw a cartoon shown (-1: not yet). Side chains
+     follow the cartoon's material, see ObjectMolecule::update(). */
+  int CartoonShownSeen = -1;
 
   // for reporting available assembly ids after mmCIF loading - SUBJECT TO CHANGE
   std::shared_ptr<pymol::cif_file> m_ciffile;

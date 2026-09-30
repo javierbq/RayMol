@@ -38,9 +38,13 @@ struct MaterialU {
   float reflect;
   float tint;
   float rough;
-  float _pad1;
+  // Glass refraction (#588): pixels per eye unit of lateral offset at unit
+  // depth (0.5 * viewport height * projection[5]) for a draw that refracts,
+  // 0 for every other draw. Per draw, so a grid_mode cell uses its own height.
+  float refrPx;
   float p[6];
-  float _pad2[2];
+  int refrOrtho;    // 1: the projection is orthographic (#588)
+  float _pad2;
 };
 static_assert(sizeof(MaterialU) == 128, "MaterialU must match the MSL struct");
 static_assert(sizeof(MaterialU) % 16 == 0, "MaterialU must stay 16-byte aligned");
@@ -49,7 +53,7 @@ static_assert(sizeof(MaterialU) % 16 == 0, "MaterialU must stay 16-byte aligned"
 // lit draw path, so a material cannot leak from one representation onto the
 // next; the reps that have no material of their own bind a neutral `default`.
 void bindMaterialU(id<MTLRenderCommandEncoder> enc, const MaterialParams& mp,
-    const float* invModelview)
+    const float* invModelview, float refrPx = 0.0f, int refrOrtho = 0)
 {
   if (!enc)
     return;
@@ -61,6 +65,8 @@ void bindMaterialU(id<MTLRenderCommandEncoder> enc, const MaterialParams& mp,
   u.reflect = mp.reflect;
   u.tint = mp.tint;
   u.rough = mp.rough;
+  u.refrPx = refrPx;
+  u.refrOrtho = refrOrtho;
   for (int i = 0; i < 6; ++i)
     u.p[i] = mp.p[i];
   [enc setFragmentBytes:&u length:sizeof(u) atIndex:kMaterialBufferIndex];
@@ -359,40 +365,12 @@ fragment float4 batch_fragment(BatchVertexOut in [[stage_in]])
   }
 }
 
-void RendererMetal::setSampleCount(NSUInteger n)
+void RendererMetal::rebuildDrawPipelines()
 {
-  if (n < 1) n = 1;
-  // The MSAA scene pass resolves the Depth32Float_Stencil8 depth attachment
-  // (StoreAndMultisampleResolve, see ensurePostTargets). A depth-stencil
-  // format is only a legal MSAA resolve target on Apple GPU family 5+ (A12 and
-  // later) and on Mac GPUs; the iOS *simulator* and older iPhones reject it —
-  // under Metal API validation (any run from Xcode) that is a hard assert in
-  // beginFrame on the very first frame, i.e. a crash on launch. Fall back to
-  // single-sample rendering there rather than resolving an unsupported format.
-  if (n > 1 && _device) {
-    bool depthStencilResolveOK = false;
-#if TARGET_OS_SIMULATOR
-    depthStencilResolveOK = false;
-#else
-    if (@available(macOS 10.15, iOS 13.0, *)) {
-      depthStencilResolveOK = [_device supportsFamily:MTLGPUFamilyApple5]
-                           || [_device supportsFamily:MTLGPUFamilyMac2];
-    }
-#endif
-    if (!depthStencilResolveOK) {
-      static bool warned = false;
-      if (!warned) {
-        NSLog(@"RendererMetal: MSAA depth-stencil resolve unsupported on this GPU; "
-              @"rendering single-sample (metal_msaa ignored)");
-        warned = true;
-      }
-      n = 1;
-    }
-  }
-  if (n == _sampleCount) return;
-  _sampleCount = n;
-  // Rebuild every sample-count-dependent (opaque-pass) pipeline. OIT and
-  // post-process pipelines stay single-sample. Lazy pipelines rebuild on next
+  // Called on a sample-count change and when the OIT passes gain the glass
+  // refraction target (#588), which every OIT pipeline must then declare.
+  // Rebuild every sample-count-dependent (opaque-pass) pipeline, and the OIT
+  // pipelines with them. OIT and post-process pipelines stay single-sample. Lazy pipelines rebuild on next
   // use once nil'd; batch + VBO are rebuilt eagerly here.
   // MRC: release the +1 sample-count-dependent pipelines before discarding them.
   // Lazy ones (sphere/cylinder/bezier/label/line) rebuild on next use; the eager
@@ -425,6 +403,41 @@ void RendererMetal::setSampleCount(NSUInteger n)
   _vboPipelineCache.clear();
   buildBatchPipeline();
   buildVBOPipelines();
+}
+
+void RendererMetal::setSampleCount(NSUInteger n)
+{
+  if (n < 1) n = 1;
+  // The MSAA scene pass resolves the Depth32Float_Stencil8 depth attachment
+  // (StoreAndMultisampleResolve, see ensurePostTargets). A depth-stencil
+  // format is only a legal MSAA resolve target on Apple GPU family 5+ (A12 and
+  // later) and on Mac GPUs; the iOS *simulator* and older iPhones reject it —
+  // under Metal API validation (any run from Xcode) that is a hard assert in
+  // beginFrame on the very first frame, i.e. a crash on launch. Fall back to
+  // single-sample rendering there rather than resolving an unsupported format.
+  if (n > 1 && _device) {
+    bool depthStencilResolveOK = false;
+#if TARGET_OS_SIMULATOR
+    depthStencilResolveOK = false;
+#else
+    if (@available(macOS 10.15, iOS 13.0, *)) {
+      depthStencilResolveOK = [_device supportsFamily:MTLGPUFamilyApple5]
+                           || [_device supportsFamily:MTLGPUFamilyMac2];
+    }
+#endif
+    if (!depthStencilResolveOK) {
+      static bool warned = false;
+      if (!warned) {
+        NSLog(@"RendererMetal: MSAA depth-stencil resolve unsupported on this GPU; "
+              @"rendering single-sample (metal_msaa ignored)");
+        warned = true;
+      }
+      n = 1;
+    }
+  }
+  if (n == _sampleCount) return;
+  _sampleCount = n;
+  rebuildDrawPipelines();
   // Force scene-target recreation (single-sample vs multisampled) next frame.
   // MRC: release the old MS targets now; ensurePostTargets recreates them and its
   // own release of these ivars then sees nil (a safe no-op).
@@ -464,6 +477,7 @@ RendererMetal::~RendererMetal()
   [_sceneColor release];     [_sceneDepth release];     [_postColor release];
   [_sceneColorMS release];   [_sceneDepthMS release];
   [_oitAccum release];       [_oitReveal release];
+  [_oitRefract release];
   [_peelDepth release];      _peelDepth = nil;
   [_rtAO release];           [_rtAOHistory release];    [_rtAOAccum release];
   [_dofTex release];
@@ -476,6 +490,8 @@ RendererMetal::~RendererMetal()
   // Pipeline states (newRenderPipelineStateWithDescriptor, +1).
   [_batchPipeline release];
   [_oitResolvePipeline release];
+  [_oitResolveRefractPipeline release];
+  [_exportAlphaRefractPipeline release];
   [_vboShadowPipelineUByte release];  [_vboShadowPipelineFloat release];
   [_vboPeelPipelineUByte release];    [_vboPeelPipelineFloat release];
   [_sphereShadowPipeline release];    [_spherePeelPipeline release];
@@ -725,6 +741,16 @@ void RendererMetal::setRepClip(float front, float back, float fracFront,
   _repClipFracBack = fracBack;
 }
 
+// How much a draw refracts: its material's Distortion knob (#590) -- p[1] for
+// clear and frosted glass, p[3] for jelly -- and 0 for every other material.
+static float glassDistortion(const MaterialParams& mp)
+{
+  if (mp.family != cMaterialFamily_glass)
+    return 0.0f;
+  const float d = (mp.mode == cMaterial_jelly) ? mp.p[3] : mp.p[1];
+  return d < 0.0f ? 0.0f : (d > 1.0f ? 1.0f : d);
+}
+
 void RendererMetal::setRepMaterial(const MaterialParams& params)
 {
   _repMatParams = params;
@@ -738,11 +764,75 @@ void RendererMetal::setRepMaterial(const MaterialParams& params)
   // viewport, and an export can afford what an interactive orbit cannot.
   if (_repMatParams.family == cMaterialFamily_glass) {
     _repMatParams.p[5] = _offscreen ? kFrostTaps : kFrostTapsLive;
+    // The glass family refracts (#588, jelly #590) unless its Distortion
+    // knob is off: set up the target the first time, before this rep draws.
+    if (glassDistortion(_repMatParams) > 0.0f && !_oitRefractEnabled)
+      enableOitRefraction();
   }
   // The ray tracer's per-occurrence table reads the same three fields.
   _repMat[0] = _repMatParams.reflect;
   _repMat[1] = _repMatParams.tint;
   _repMat[2] = _repMatParams.rough;
+}
+
+void RendererMetal::enableOitRefraction()
+{
+  // Glass refraction's target (#588) is created the first time a glass-family
+  // rep -- clear, frosted or jelly -- is set up with its Distortion knob on
+  // (glassDistortion, #590), not with the other OIT targets: it is a
+  // full-resolution 8 B/px texture that a session without glass would carry,
+  // and clear every transparent frame, for nothing.
+  if (_oitRefractEnabled || !_device || !_oitAccum || !_oitPassDesc ||
+      !_oitPeelPassDesc)
+    return;
+  // A peeled object's OIT pass cannot be reopened: its depth attachment is not
+  // stored. beginTransparentOIT finishes the job when the next pass opens.
+  if (_oitActive && _oitPeelTest) {
+    _oitRefractPending = true;
+    return;
+  }
+  _oitRefractPending = false;
+  MTLTextureDescriptor* ad = [MTLTextureDescriptor
+      texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
+                                   width:_oitAccum.width
+                                  height:_oitAccum.height
+                               mipmapped:NO];
+  ad.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+  ad.storageMode = MTLStorageModePrivate;
+  _oitRefract = [_device newTextureWithDescriptor:ad];
+  if (!_oitRefract) return;
+  _oitRefractEnabled = true;
+  _oitPassDesc.colorAttachments[2].texture = _oitRefract;
+  _oitPeelPassDesc.colorAttachments[2].texture = _oitRefract;
+  // Every OIT pipeline must now declare the attachment. The pipelines already
+  // encoded this frame are retained by the command buffer, and every draw
+  // picks its pipeline after its material is set, so this rep and all that
+  // follow draw with the rebuilt ones.
+  rebuildDrawPipelines();
+  // The shared OIT pass stores all its targets, so it can be ended here and
+  // reopened carrying the new one; the pass picks up where it left off.
+  if (_oitActive)
+    beginTransparentOIT(false);
+}
+
+void RendererMetal::bindRepMaterial()
+{
+  // The glass family -- clear and frosted glass (#588) and jelly (#590) --
+  // refracts in the OIT pass, which it always reaches: its implied alpha makes
+  // it transparent even at transparency 0.
+  const float distortion = glassDistortion(_repMatParams);
+  const bool refracts = _oitActive && !_shadowMode && !_peelMode &&
+                        _oitRefract && distortion > 0.0f;
+  // The Distortion knob scales the bend: 1 on, 0 off, anything between from
+  // the command line (#590).
+  const float refrPx = refracts ? distortion * 0.5f * (float)_viewport.height *
+                                      _projectionMatrix[5]
+                                : 0.0f;
+  // An orthographic projection has w = 1 everywhere: its last row is 0,0,0,1.
+  const int ortho = _projectionMatrix[15] != 0.0f ? 1 : 0;
+  bindMaterialU(_encoder, _repMatParams, _modelviewInv.data(), refrPx, ortho);
+  if (refracts && refrPx > 0.0f)
+    _oitHasRefraction = true;
 }
 
 
@@ -890,6 +980,7 @@ void RendererMetal::beginFrame()
   // grows without bound, and the composite turns the whole frame black after a
   // few frames. Which is exactly what it did.
   _oitCleared = false;
+  _oitRefractCleared = false;
   // Start this frame's geometry record. Only the LIST of contributing cache
   // entries is re-accumulated during the opaque pass; the geometry itself stays
   // in _rtGeomCache and is touched again only when that list changes.
@@ -908,6 +999,7 @@ void RendererMetal::beginFrame()
   _encoder = nil;
   _oitActive = false;
   _oitHasContent = false;
+  _oitHasRefraction = false;
   _coverageDraws.clear();  // surface outer-contour: re-stashed during this frame
   _contourActive = false;
   _aoExemptDraws.clear();  // cartoon/ribbon AO-exempt mask: re-stashed this frame
@@ -1299,12 +1391,54 @@ struct ExportAlphaU {
   float projA, projB, invW, invH;
   float focusDist, focusRange, maxRadiusPx, dofOn;
 };
-fragment float4 post_export_alpha(PostVOut in [[stage_in]],
-    texture2d<float> src [[texture(0)]],
-    depth2d<float> depthTex [[texture(1)]],
-    texture2d<float> revealTex [[texture(2)]], sampler s [[sampler(0)]],
-    constant ExportAlphaU& u [[buffer(0)]]) {
-  float d = depthTex.sample(s, in.uv);
+
+// Glass refraction (#588): where the opaque image behind glass is seen. See
+// mat_glass_refraction for what refrTex holds. Shared by oit_resolve_refract,
+// which fetches the colour there, and post_export_alpha_refract, whose matte
+// must test the same pixel or it would not line up with the bent image.
+struct RefractU {
+  float projA, projB, ortho;  // linear eye depth, as post_linear_depth
+  float maxPx;                // longest displacement, pixels
+  float bgGap;                // eye units assumed behind glass over background
+  float maxGap;               // longest depth gap that still adds displacement
+  float _pad0, _pad1;
+};
+static float2 refract_pick_uv(float2 uv, texture2d<float> refrTex,
+    depth2d<float> depthTex, sampler s, constant RefractU& u) {
+  float4 r = refrTex.sample(s, uv);
+  if (r.b <= 0.5)                        // no refracting layer here
+    return uv;
+  float glassZ = r.a;                    // the nearest layer's eye distance
+  float d = depthTex.sample(s, uv);
+  // Over the background there is no depth to measure; bgGap stands in, so
+  // the background is displaced like content a fixed distance behind.
+  float z = (d < 0.99995) ? post_linear_depth(d, u.projA, u.projB, u.ortho)
+                          : glassZ + u.bgGap;
+  float gap = clamp(z - glassZ, 0.0, u.maxGap);
+  // Averaged over layers: two overlapping glass objects bend the view like
+  // one, not twice. Perspective foreshortens the lateral travel by depth.
+  float2 offPx = (r.rg / r.b) * gap / ((u.ortho > 0.5) ? 1.0 : max(z, 1e-3));
+  float len = length(offPx);
+  if (len > u.maxPx) offPx *= u.maxPx / len;
+  // Eye +y is up, texture v is down.
+  float2 size = float2(refrTex.get_width(), refrTex.get_height());
+  float2 uv2 = clamp(uv + float2(offPx.x, -offPx.y) / size,
+                     float2(0.0), float2(1.0));
+  // Only content BEHIND the glass may be seen through it: a displaced sample
+  // that lands on geometry in front of the glass (an opaque stick crossing
+  // it) keeps the straight-through view.
+  float d2 = depthTex.sample(s, uv2);
+  float z2 = (d2 < 0.99995) ? post_linear_depth(d2, u.projA, u.projB, u.ortho)
+                            : 1e30;
+  return (z2 >= glassZ) ? uv2 : uv;
+}
+
+// dUV is where the opaque depth is tested: in.uv, or with glass refraction
+// the pixel the bent view landed on.
+static float4 export_alpha(PostVOut in, float2 dUV, texture2d<float> src,
+    depth2d<float> depthTex, texture2d<float> revealTex, sampler s,
+    constant ExportAlphaU& u) {
+  float d = depthTex.sample(s, dUV);
   // Opaque geometry (depth < far) stays fully opaque; the far-plane background is
   // cut out. BUT transparent reps (the molecular surface) render via weighted-
   // blended OIT and do NOT write depth, so a depth-only cutout erases them from
@@ -1347,6 +1481,23 @@ fragment float4 post_export_alpha(PostVOut in [[stage_in]],
   }
   return float4(src.sample(s, in.uv).rgb, a);
 }
+fragment float4 post_export_alpha(PostVOut in [[stage_in]],
+    texture2d<float> src [[texture(0)]],
+    depth2d<float> depthTex [[texture(1)]],
+    texture2d<float> revealTex [[texture(2)]], sampler s [[sampler(0)]],
+    constant ExportAlphaU& u [[buffer(0)]]) {
+  return export_alpha(in, in.uv, src, depthTex, revealTex, s, u);
+}
+fragment float4 post_export_alpha_refract(PostVOut in [[stage_in]],
+    texture2d<float> src [[texture(0)]],
+    depth2d<float> depthTex [[texture(1)]],
+    texture2d<float> revealTex [[texture(2)]],
+    texture2d<float> refrTex [[texture(3)]], sampler s [[sampler(0)]],
+    constant ExportAlphaU& u [[buffer(0)]],
+    constant RefractU& ru [[buffer(1)]]) {
+  return export_alpha(in, refract_pick_uv(in.uv, refrTex, depthTex, s, ru),
+                      src, depthTex, revealTex, s, u);
+}
 
 // Weighted-blended OIT resolve: composite accumulated transparent color over
 // the (already post-processed) opaque color. reveal = Π(1-α) = transmittance.
@@ -1360,6 +1511,30 @@ fragment float4 oit_resolve(PostVOut in [[stage_in]],
   float4 accum = accumTex.sample(s, in.uv);
   float3 avg = accum.rgb / max(accum.a, 1e-5);
   float cover = 1.0 - reveal;            // fraction covered by transparency
+  return float4(avg * cover + opaque * (1.0 - cover), 1.0);
+}
+
+// oit_resolve for a frame in which refracting glass drew (#588): the opaque
+// image behind the glass is sampled where the bent view ray lands
+// (refract_pick_uv) instead of straight through.
+//
+// The opaque colour is the post-processed one (SSAO, fog, and with Metal ray
+// tracing the traced shadows and AO), so what is seen through the glass is
+// shaded exactly as it is outside it.
+fragment float4 oit_resolve_refract(PostVOut in [[stage_in]],
+    texture2d<float> opaqueTex [[texture(0)]],
+    texture2d<float> accumTex [[texture(1)]],
+    texture2d<float> revealTex [[texture(2)]],
+    depth2d<float> depthTex [[texture(3)]],
+    texture2d<float> refrTex [[texture(4)]],
+    sampler s [[sampler(0)]],
+    constant RefractU& u [[buffer(0)]]) {
+  float2 uv = refract_pick_uv(in.uv, refrTex, depthTex, s, u);
+  float3 opaque = opaqueTex.sample(s, uv).rgb;
+  float reveal = revealTex.sample(s, in.uv).r;
+  float4 accum = accumTex.sample(s, in.uv);
+  float3 avg = accum.rgb / max(accum.a, 1e-5);
+  float cover = 1.0 - reveal;
   return float4(avg * cover + opaque * (1.0 - cover), 1.0);
 }
 
@@ -1804,6 +1979,7 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   [_sceneColor release];   [_postColor release];   [_sceneDepth release];
   [_sceneColorMS release];  [_sceneDepthMS release];
   [_oitAccum release];      [_oitReveal release];
+  [_oitRefract release];
   [_peelDepth release];
   [_rtAO release];          [_dofTex release];
   [_rtAOHistory release];   [_rtAOAccum release];
@@ -1811,7 +1987,7 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   [_aoExemptMaskTex release];
   _sceneColor = _postColor = _sceneDepth = nil;
   _sceneColorMS = _sceneDepthMS = nil;
-  _oitAccum = _oitReveal = nil;
+  _oitAccum = _oitReveal = _oitRefract = nil;
   _peelDepth = nil;
   _surfaceCoverageTex = nil;
   _aoExemptMaskTex = nil;
@@ -1915,6 +2091,10 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   rd.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
   rd.storageMode = MTLStorageModePrivate;
   _oitReveal = [_device newTextureWithDescriptor:rd];
+  // Same format as the accumulation target (#588); cleared to "no refracting
+  // layer": zero slope, zero count, and a far eye distance for the min. Only
+  // once glass has asked for it (enableOitRefraction); a resize keeps it.
+  _oitRefract = _oitRefractEnabled ? [_device newTextureWithDescriptor:ad] : nil;
 
   if (!_oitPassDesc)
     _oitPassDesc = [[MTLRenderPassDescriptor alloc] init];
@@ -1926,6 +2106,11 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   _oitPassDesc.colorAttachments[1].loadAction = MTLLoadActionClear;
   _oitPassDesc.colorAttachments[1].clearColor = MTLClearColorMake(1, 0, 0, 0);
   _oitPassDesc.colorAttachments[1].storeAction = MTLStoreActionStore;
+  _oitPassDesc.colorAttachments[2].texture = _oitRefract;
+  _oitPassDesc.colorAttachments[2].loadAction = MTLLoadActionClear;
+  _oitPassDesc.colorAttachments[2].clearColor =
+      MTLClearColorMake(0, 0, 0, kOitRefractFar);
+  _oitPassDesc.colorAttachments[2].storeAction = MTLStoreActionStore;
   _oitPassDesc.depthAttachment.texture = _sceneDepth;
   _oitPassDesc.depthAttachment.loadAction = MTLLoadActionLoad; // keep opaque depth
   _oitPassDesc.depthAttachment.storeAction = MTLStoreActionStore;
@@ -1970,6 +2155,10 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   _oitPeelPassDesc.colorAttachments[1].texture = _oitReveal;
   _oitPeelPassDesc.colorAttachments[1].clearColor = MTLClearColorMake(1, 0, 0, 0);
   _oitPeelPassDesc.colorAttachments[1].storeAction = MTLStoreActionStore;
+  _oitPeelPassDesc.colorAttachments[2].texture = _oitRefract;
+  _oitPeelPassDesc.colorAttachments[2].clearColor =
+      MTLClearColorMake(0, 0, 0, kOitRefractFar);
+  _oitPeelPassDesc.colorAttachments[2].storeAction = MTLStoreActionStore;
   _oitPeelPassDesc.depthAttachment.texture = nil;
   _oitPeelPassDesc.depthAttachment.loadAction = MTLLoadActionLoad;
   // This pass TESTS the peel depth and never writes it (peelTestState has
@@ -2052,9 +2241,11 @@ void RendererMetal::buildPostPipelines()
   _blitPipeline = mkpipe(@"post_blit");
   _tonemapPipeline = mkpipe(@"post_tonemap");
   _exportAlphaPipeline = mkpipe(@"post_export_alpha");
+  _exportAlphaRefractPipeline = mkpipe(@"post_export_alpha_refract");
   _fxaaPipeline = mkpipe(@"post_fxaa");
   _ssaoPipeline = mkpipe(@"post_ssao_fog");
   _oitResolvePipeline = mkpipe(@"oit_resolve");
+  _oitResolveRefractPipeline = mkpipe(@"oit_resolve_refract");
   _outlinePipeline = mkpipe(@"post_outline");
   _surfaceContourPipeline = mkpipe(@"post_surface_contour");
   _dofPipeline = mkpipe(@"post_dof");
@@ -2214,7 +2405,7 @@ struct RTU {
   float aoCreaseRadiusPx;  // crease ring radius in pixels (== PostU.aoRadiusPx)
   float aoExemptEnabled;   // >0.5: aoMaskTex marks cartoon/ribbon pixels that skip it (#79)
   float pad3;              // -> 12 floats after lightViewProj (still a 16-byte multiple)
-  // Traced self-reflections (metal_rt_reflect*): env 0 = bg colour / 1 = studio
+  // Traced self-reflections (reflective materials): env 0 = bg colour / 1 = studio
   // gradient on miss; samples = rays/pixel for glossy materials (offscreen);
   // sphereCount = number of sphere instances (ids below it are spheres);
   // matCount = rows in the material table; then the two-light model.
@@ -2722,7 +2913,7 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
     }
   }
 
-  // Traced self-reflections (metal_rt_reflect / _tint / _rough, per object).
+  // Traced self-reflections (each draw's material reflect / tint / rough).
   // A primary ray finds the primitive under the pixel -> its occurrence's
   // material and a barycentric-smooth normal. If the material reflects, one
   // reflection ray (NS jittered rays for glossy exports) is traced against the
@@ -3239,6 +3430,7 @@ void RendererMetal::ensureRayTracingTransAS()
       _rtTFrameSig == _rtTBuiltSig)
     return;
   _rtTGeomDirty = false;
+  _rtTBuiltKeys = std::unordered_set<const void*>(_rtTFrameKeys.begin(), _rtTFrameKeys.end());
 
   auto xformPt = [](const Mat4& M, float x, float y, float z, float o[3]) {
     o[0] = M[0] * x + M[4] * y + M[8] * z + M[12];
@@ -3414,6 +3606,7 @@ void RendererMetal::ensureRayTracingAS()
     }
     size_t nTris = nTriFloats / 9;   // floats→triangles
     _rtGeomDirty = false;
+    _rtBuiltKeys = std::unordered_set<const void*>(_rtFrameKeys.begin(), _rtFrameKeys.end());
     if (nSph == 0 && nTris == 0) { _rtTriCount = 0; _rtReady = false; return; }
 
     // Bake the CURRENT visible pose into each caster (#427, #425). `xf` is the
@@ -3795,6 +3988,20 @@ void RendererMetal::buildRTPipelines(bool transparent,
 // and the crease term of the ray-traced composite (rt_composite, #436): the same
 // darkening strength and the same ring radius (a fraction of the render height),
 // so the crease look is identical whichever path draws it.
+// Glass refraction (#588) in the OIT resolve. The displacement is capped at a
+// fraction of the frame height, so a grazing silhouette cannot fetch from
+// across the image. Gaps are in eye units (Angstroms): content deeper inside
+// the glass than kRefractMaxGap moves no further, and the background counts as
+// kRefractBgGap behind the glass.
+static const float kRefractMaxFrac = 0.02f;
+static const float kRefractBgGap = 8.0f;
+static const float kRefractMaxGap = 16.0f;
+
+RendererMetal::RefractParams RendererMetal::refractParams() const
+{
+  return {_projA, _projB, _projOrtho, (float)_rtH * kRefractMaxFrac,
+          kRefractBgGap, kRefractMaxGap, 0.0f, 0.0f};
+}
 static const float kSSAOIntensity = 0.8f;
 static const float kSSAORadiusFrac = 0.015f;   // ~1.5% of height
 
@@ -3911,7 +4118,7 @@ void RendererMetal::runPostChain()
     u.aoExemptEnabled = aoMaskReady ? 1.0f : 0.0f;
     u.pad3 = 0.0f;
     // Traced self-reflections: materials come from the per-occurrence table
-    // (metal_rt_reflect/_tint/_rough per object); only the global knobs and the
+    // (each draw's reflect/tint/rough); only the global knobs and the
     // hit-shading light model travel in the uniform. matCount 0 = nothing
     // reflective this frame -> the composite skips the reflection block.
     bool anyReflective = false;
@@ -4122,11 +4329,22 @@ void RendererMetal::runPostChain()
     pd.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> e2 =
         [_cmdBuffer renderCommandEncoderWithDescriptor:pd];
-    [e2 setRenderPipelineState:_oitResolvePipeline];
+    // Refracting glass drew this frame (#588): the resolve that bends the
+    // opaque image through it. Otherwise the plain one, unchanged.
+    const bool refract = _oitHasRefraction && _oitResolveRefractPipeline &&
+                         _oitRefract && _sceneDepth;
+    [e2 setRenderPipelineState:refract ? _oitResolveRefractPipeline
+                                       : _oitResolvePipeline];
     [e2 setFragmentTexture:sceneSrc atIndex:0];
     [e2 setFragmentTexture:_oitAccum atIndex:1];
     [e2 setFragmentTexture:_oitReveal atIndex:2];
     [e2 setFragmentSamplerState:_postSampler atIndex:0];
+    if (refract) {
+      const RefractParams ru = refractParams();
+      [e2 setFragmentTexture:_sceneDepth atIndex:3];
+      [e2 setFragmentTexture:_oitRefract atIndex:4];
+      [e2 setFragmentBytes:&ru length:sizeof(ru) atIndex:0];
+    }
     [e2 drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [e2 endEncoding];
     sceneSrc = dst;
@@ -4380,10 +4598,20 @@ void RendererMetal::runPostChain()
     pd.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> ea =
         [_cmdBuffer renderCommandEncoderWithDescriptor:pd];
-    [ea setRenderPipelineState:_exportAlphaPipeline];
+    // With glass refraction the matte tests the pixel the bent view landed on,
+    // as the resolve fetched the colour from (#588), or the two disagree.
+    const bool refractMatte = _oitHasRefraction && _oitRefract &&
+                              _exportAlphaRefractPipeline;
+    [ea setRenderPipelineState:refractMatte ? _exportAlphaRefractPipeline
+                                            : _exportAlphaPipeline];
     [ea setFragmentTexture:sceneSrc atIndex:0];
     [ea setFragmentTexture:_sceneDepth atIndex:1];
     [ea setFragmentTexture:_oitReveal atIndex:2];  // recover transparent (surface) coverage
+    if (refractMatte) {
+      const RefractParams ru = refractParams();
+      [ea setFragmentTexture:_oitRefract atIndex:3];
+      [ea setFragmentBytes:&ru length:sizeof(ru) atIndex:1];
+    }
     [ea setFragmentSamplerState:_postSampler atIndex:0];
     // DOF params so the matte keeps out-of-focus bokeh halos semi-transparent
     // (must match the DOF pass's focus/range/aperture, incl. pixelRadiusScale).
@@ -4719,6 +4947,11 @@ void RendererMetal::beginTransparentOIT(bool peel)
     return;
   if (peel && (!peelSupported() || !_peelDepth)) peel = false;
   if (_encoder) { [_encoder endEncoding]; _encoder = nil; }
+  // Nothing is open now, so a deferred refraction target can join (#588).
+  if (_oitRefractPending) {
+    _oitActive = false;
+    enableOitRefraction();
+  }
 
   MTLRenderPassDescriptor* desc = peel ? _oitPeelPassDesc : _oitPassDesc;
   // Only the frame's FIRST transparent encoder clears the accumulation and
@@ -4727,6 +4960,11 @@ void RendererMetal::beginTransparentOIT(bool peel)
   MTLLoadAction load = _oitCleared ? MTLLoadActionLoad : MTLLoadActionClear;
   desc.colorAttachments[0].loadAction = load;
   desc.colorAttachments[1].loadAction = load;
+  // The refraction target keeps its own flag: it can join mid-frame, after
+  // encoders that did not carry it.
+  desc.colorAttachments[2].loadAction =
+      _oitRefractCleared ? MTLLoadActionLoad : MTLLoadActionClear;
+  if (_oitRefract) _oitRefractCleared = true;
 
   _passDesc = desc;
   _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:desc];
@@ -6028,6 +6266,11 @@ constant float kMatGlassBaseAttenuation = 0.82;
 constant float kMatGlassKeyGlint = 1.2;
 constant float kMatGlassHeadGlint = 0.9;
 constant float kMatGlassGlintExp = 60.0;
+// How much of that surface reflection -- the Fresnel rim and the glints
+// together -- glass shows (#590). Refraction (#588) made the body read as
+// glass on its own, and at full strength the glints crowded the view through
+// it.
+constant float kMatGlassReflection = 0.5;
 
 // Marble's light wrap: the waxy translucent diffusion of real stone. Applied on
 // BOTH the lit VBO path and the impostors so one object's cartoon and spheres
@@ -6073,20 +6316,18 @@ static float3 mat_fresnel(float3 f0, float vdoth) {
 // Glass shading (#495): a Fresnel-weighted environment reflection over a
 // mostly-transparent body.
 //
-// Deliberately NOT refraction. A real refractive glass needs the scene behind
-// it, which inside an OIT pass is not available -- the accumulation buffer has
-// no depth-ordered layer behind to bend. What IS available is the environment
-// cubemap (#493) and the fragment's own alpha, and a Fresnel rim over a
-// see-through body is what actually reads as glass at molecular scale, where
-// the geometry is thousands of small curved surfaces rather than one slab.
+// Refraction is not done here. The scene behind the glass is not available
+// inside the OIT pass, so the fragment only records how it bends the view
+// (mat_glass_refraction) and oit_resolve_refract displaces the opaque image
+// when it composites the transparency over it (#588).
 //
 // `frost` spreads the environment samples around the reflection direction, so
 // frosted glass blurs the room rather than mirroring it. The taps are tiny
 // fixed offsets rather than a real cone: at this sample count a proper
 // distribution would alias worse than the offsets do.
 static float3 mat_glass_shade(float3 base, float3 N, float3 V, float rough,
-    int taps, float3 keyDir, texturecube<float> envMap, sampler envSmp,
-    thread float3& hi) {
+    float reflection, int taps, float3 keyDir, texturecube<float> envMap,
+    sampler envSmp, thread float3& hi) {
   float3 R = reflect(-V, N);
   float lod = sqrt(saturate(rough)) * 7.0;
   float3 room = float3(0.0);
@@ -6149,8 +6390,72 @@ static float3 mat_glass_shade(float3 base, float3 N, float3 V, float rough,
   // 2, so faint glint tails come out about twice as bright as added raw, and
   // frosted glass's broad glints (peak 0.52 * 2.1 = 1.09) top out near 0.89
   // instead of clipping to white -- a softer bloom, which is the point.
-  hi = room * F + float3(1.0 - exp(-2.0 * glint));
+  // (Those figures are the curve itself, before the scale below: at the
+  // default Reflection the peaks land near 0.49 for clear glass and 0.45 for
+  // frosted.)
+  //
+  // Both are then scaled by kMatGlassReflection and by `reflection`, the
+  // material's Reflection knob (p[0], 1 = on, 0 = off; #590).
+  hi = (room * F + float3(1.0 - exp(-2.0 * glint))) *
+       (kMatGlassReflection * saturate(reflection));
   return base * kMatGlassBaseAttenuation;
+}
+
+// Glass refraction (#588): what one refracting glass fragment writes to the
+// OIT refraction target, for oit_resolve_refract to turn into a displacement
+// of the opaque image seen through it.
+//
+// The view ray enters the glass and bends toward the inward normal. The
+// content behind is then seen shifted by the bent ray's lateral travel,
+// slope * (opaque depth - glass depth), so a point touching the surface does
+// not move and one deep inside moves most; the resolve has both depths. The
+// slope is carried in pixels (times `refrPx`, per draw) so the resolve needs
+// no projection of its own beyond linearising depth.
+//
+// The glass is treated as a SOLID: one interface, entered and never left, so
+// only the wall facing the viewer is recorded (an unpeeled object also draws
+// its far wall; the callers skip it). That
+// is the right model for content inside a closed glass surface (a cartoon in a
+// glass molecular surface), which is the case that matters; glass in front of
+// content it does not enclose bends it too, as a thick lens would.
+//
+// The bend is then scaled down by kMatGlassRefractStrength. The one-interface
+// model over-bends: a real glass shell bends the ray back where it leaves, and
+// a molecular surface is hundreds of small lobes, each its own lens. At full
+// strength (measured on 1rx1 under a glass surface, 2026-09-29) nearly every
+// pixel hit the displacement cap and the interior read as noise; at 0.2 the
+// side chains visibly bend and break at the lobes and the fold stays readable.
+//
+// `refrPx` 0 means this draw does not refract (its Distortion knob is off, or
+// there is no target): it writes
+// the target's clear value, which the additive and min blends leave unchanged.
+constant float kMatGlassIor = 1.33;
+constant float kMatGlassRefractStrength = 0.2;
+constant float kOitRefractFar = 60000.0;   // RendererMetal::kOitRefractFar
+// Called from every lit library, for the whole glass family. The sphere rep
+// never draws clear or frosted glass (they degrade to `default` there), but
+// sphere impostors other reps emit -- cartoon ring spheres, surface dots --
+// can, and refract like the rest.
+static float4 mat_glass_refraction(float3 N, float3 posEye, float refrPx,
+    int refrOrtho) {
+  if (refrPx <= 0.0)
+    return float4(0.0, 0.0, 0.0, kOitRefractFar);
+  // The view ray through this fragment, into the scene: along -z under an
+  // orthographic projection, from the eye through the point in perspective.
+  float3 I = (refrOrtho != 0) ? float3(0.0, 0.0, -1.0) : normalize(posEye);
+  // N must face the viewer, against I.
+  if (dot(N, I) > 0.0) N = -N;
+  float3 T = refract(I, N, 1.0 / kMatGlassIor);
+  // The bend is the bent ray's slope MINUS the straight ray's, so glass that
+  // faces its view ray head-on bends nothing wherever it is in the image. The
+  // floors keep a near-grazing ray from a runaway slope: at IOR 1.33 -T.z
+  // stays above about 0.75 in an orthographic view, but in perspective the
+  // view ray is already off axis, and at a wide field_of_view a grazing wall
+  // in a corner reaches the 0.25 floor. The resolve's displacement cap
+  // bounds the result either way.
+  float2 slope = T.xy / max(-T.z, 0.25) - I.xy / max(-I.z, 0.25);
+  return float4(slope * (refrPx * kMatGlassRefractStrength), 1.0,
+                -posEye.z);
 }
 
 // Composite glass for the OIT pass (#535): the see-through body at its own
@@ -6164,7 +6469,10 @@ static float3 mat_glass_shade(float3 base, float3 N, float3 V, float rough,
 // dimmed by the highlight's share -- an approximation, but the one that keeps
 // a single colour and coverage per fragment.
 // Marked unused: this block is shared by every material library, and the
-// sphere impostors -- where glass degrades to `default` -- never call it.
+// sphere library never calls it. The sphere rep degrades clear and frosted
+// glass to `default`; the glass spheres other reps emit (cartoon rings,
+// surface dots) shade through mat_impostor_composite's additive body + hi
+// instead, so their reflection is not separated from the coverage.
 // Without the attribute that is a new -Wunused-function in the sphere library
 // (the VBO and cylinder libraries both call it).
 __attribute__((unused)) static float4 mat_glass_cover(float3 body, float3 hi, float a) {
@@ -6173,8 +6481,10 @@ __attribute__((unused)) static float4 mat_glass_cover(float3 body, float3 hi, fl
   // The soft knee (#494) is for the BODY only. It exists to keep a coloured
   // highlight from clipping toward white and taking the hue with it; a glint
   // on glass IS white, and the knee would squeeze it toward the 0.85 light
-  // background, which is where clear glass most needs one: a unit glint lands
-  // at ~0.83, and the knee only approaches 1.0 asymptotically.
+  // background, which is where clear glass most needs one: under the knee a
+  // unit glint would land at ~0.83, and it only approaches 1.0 asymptotically
+  // (since #590 glass's glints peak near 0.49, so the knee would dim them
+  // further still).
   float3 rgb = (mat_soft_knee(body) * a + hi) / max(cover, 1e-4);
   return float4(saturate(rgb), cover);
 }
@@ -6226,9 +6536,10 @@ struct MaterialU {
   float reflect;
   float tint;
   float rough;
-  float _pad1;
+  float refrPx;     // glass refraction scale (#588); 0 = this draw does not refract
   float p[6];
-  float _pad2[2];
+  int refrOrtho;    // glass refraction: 1 = orthographic projection
+  float _pad2;
 };
 
 // Jelly (#496): a gummy -- a dense scattering BODY under a sharp wet skin. It
@@ -6237,9 +6548,11 @@ struct MaterialU {
 //
 // The prototype got here by REFRACTING the resolved opaque scene through a
 // 12-tap frosted disc and filtering it Beer-Lambert toward the base colour.
-// None of that survives the move into the OIT pass -- there is no opaque
-// texture to sample (the reason is spelled out on mat_glass_shade). What
-// replaces it is coverage: jelly's implied alpha is 0.85, roughly six times
+// None of that survives the move into the OIT pass -- the fragment has no
+// opaque texture to sample (see mat_glass_shade). Jelly does take glass's
+// deferred refraction (#588, #590), but at its coverage only the 15% of the
+// view that passes through the body is bent. What replaces the prototype's
+// look is coverage: jelly's implied alpha is 0.85, roughly six times
 // clear glass's 0.15, so this fragment dominates the blend and the body is
 // something you look INTO rather than through. See layer1/Material.cpp for why
 // that number is 0.85 and not the 0.45 the ticket specifies. So the port keeps
@@ -6514,8 +6827,8 @@ static float3 mat_impostor_composite(float3 base, float3 N, float3 pEye,
     // Outside the OIT pass there is no coverage to separate the reflection
     // from, so it is simply added; the OIT fragment uses mat_glass_cover.
     float3 hi;
-    float3 body = mat_glass_shade(base, N, V, m.rough, taps, keyDir, envMap,
-                                  envSmp, hi);
+    float3 body = mat_glass_shade(base, N, V, m.rough, m.p[0], taps, keyDir,
+                                  envMap, envSmp, hi);
     return mat_soft_knee(body + hi);
   }
   if (kMatReflective) {
@@ -6574,6 +6887,7 @@ struct VBOVertexOut {
   float3 posModel;    // model-space position: procedural patterns are evaluated
                       // here so the grain stays glued to the molecule instead
                       // of swimming when the camera moves
+  float3 posEye;      // eye-space position: glass refraction's view ray (#588)
 };
 
 
@@ -6665,7 +6979,7 @@ static float3 vbo_material_shade(float3 baseColor, float3 nEye, float3 pModel,
     // Outside the OIT pass the reflection is simply added; vbo_fragment_oit
     // composites it over the body with mat_glass_cover instead.
     float3 hi;
-    float3 body = mat_glass_shade(baseColor, N, V, mat.rough, taps,
+    float3 body = mat_glass_shade(baseColor, N, V, mat.rough, mat.p[0], taps,
                                   float3(lt.klx, lt.kly, lt.klz), envMap,
                                   envSmp, hi);
     return mat_soft_knee(body + hi);
@@ -6729,6 +7043,7 @@ vertex VBOVertexOut vbo_vertex(
   out.eyeDist = -eyePos.z;
   // The raw vertex attribute IS model space; no transform needed on this path.
   out.posModel = in.position;
+  out.posEye = eyePos.xyz;
   return out;
 }
 
@@ -6859,6 +7174,7 @@ fragment float4 coverage_fragment(CovOut in [[stage_in]],
 struct OITFragOut {
   float4 accum  [[color(0)]];
   float  reveal [[color(1)]];
+  float4 refr   [[color(2)]];   // glass refraction (#588); masked off elsewhere
 };
 static float oit_weight(float a, float z) {
   return clamp(pow(min(1.0, a * 10.0) + 0.01, 3.0) * 1e8 *
@@ -6873,28 +7189,53 @@ fragment OITFragOut vbo_fragment_oit(VBOVertexOut in [[stage_in]],
 {
   apply_rep_clip(clip, in.eyeDist);
   float4 c;
+  float4 refr = float4(0.0, 0.0, 0.0, kOitRefractFar);
   if (kMatGlass && mat.mode != kMatMode_jelly) {
     // Clear and frosted glass: body at its coverage, reflection on top (#535).
     // Jelly is dense enough (0.85) that its highlights survive the coverage
     // as they are, so it keeps the shared path.
     float3 N = normalize(in.normalEye);
+    // Before the flip: a wall whose outward normal faces away from its view
+    // ray is the far side of the glass, which only an unpeeled object draws
+    // (#588). The raw normal is kept: it is the one refraction needs.
+    const float3 Nraw = N;
+    const float3 viewRay = (mat.refrOrtho != 0) ? float3(0.0, 0.0, -1.0)
+                                                : normalize(in.posEye);
+    const bool farWall = dot(Nraw, viewRay) > 0.0;
     if (N.z < 0.0) N = -N;
     int taps = (mat.mode == kMatMode_frosted_glass)
                  ? int(max(1.0, mat.p[5])) : 1;
     float3 hi;
     float3 body = mat_glass_shade(in.color.rgb, N, float3(0.0, 0.0, 1.0),
-                                  mat.rough, taps,
+                                  mat.rough, mat.p[0], taps,
                                   float3(lt.klx, lt.kly, lt.klz), envMap,
                                   envSmp, hi);
     c = mat_glass_cover(body, hi, in.color.a);
+    // The far wall is not recorded. Flipped to face the viewer, its slope is
+    // the exact opposite of the near wall's, and averaged with it the bend
+    // would cancel wherever the whole object lies in front of what is seen.
+    if (!farWall)
+      refr = mat_glass_refraction(Nraw, in.posEye, mat.refrPx,
+                                  mat.refrOrtho);
   } else {
     c = float4(vbo_material_shade(in.color.rgb, in.normalEye, in.posModel, lt, mat, envMap, envSmp),
                in.color.a);
+    if (kMatGlass) {
+      // Jelly bends the view through it too (#590), with the same near-wall
+      // rule as glass.
+      const float3 Nraw = normalize(in.normalEye);
+      const float3 viewRay = (mat.refrOrtho != 0) ? float3(0.0, 0.0, -1.0)
+                                                  : normalize(in.posEye);
+      if (dot(Nraw, viewRay) <= 0.0)
+        refr = mat_glass_refraction(Nraw, in.posEye, mat.refrPx,
+                                    mat.refrOrtho);
+    }
   }
   float w = oit_weight(c.a, in.position.z);
   OITFragOut o;
   o.accum = float4(c.rgb * c.a, c.a) * w;
   o.reveal = c.a;
+  o.refr = refr;
   return o;
 }
 
@@ -7472,6 +7813,32 @@ void RendererMetal::drawLinesAA(PrimitiveType mode, int vertexCount,
                vertexCount:emitVerts];
 }
 
+// The OIT passes' third target, the glass refraction record (#588). Once it
+// exists every OIT pipeline must declare it to match the pass; only the glass
+// family's write it, adding slope and layer count and keeping the nearest eye distance. The
+// rest mask it off, so their draws cannot touch it.
+static void setOitRefractAttachment(
+    MTLRenderPipelineColorAttachmentDescriptor* a, bool declared, bool writes)
+{
+  // Undeclared (Invalid) while the passes carry no refraction target.
+  if (!declared)
+    return;
+  a.pixelFormat = MTLPixelFormatRGBA16Float;
+  if (!writes) {
+    a.blendingEnabled = NO;
+    a.writeMask = MTLColorWriteMaskNone;
+    return;
+  }
+  a.blendingEnabled = YES;
+  a.rgbBlendOperation = MTLBlendOperationAdd;
+  a.sourceRGBBlendFactor = MTLBlendFactorOne;
+  a.destinationRGBBlendFactor = MTLBlendFactorOne;
+  a.alphaBlendOperation = MTLBlendOperationMin;   // factors ignored by min
+  a.sourceAlphaBlendFactor = MTLBlendFactorOne;
+  a.destinationAlphaBlendFactor = MTLBlendFactorOne;
+  a.writeMask = MTLColorWriteMaskAll;
+}
+
 id<MTLRenderPipelineState> RendererMetal::oitPipelineForVD(
     MTLVertexDescriptor* vd, int family)
 {
@@ -7495,6 +7862,8 @@ id<MTLRenderPipelineState> RendererMetal::oitPipelineForVD(
   p.colorAttachments[1].sourceAlphaBlendFactor = MTLBlendFactorZero;
   p.colorAttachments[1].destinationAlphaBlendFactor =
       MTLBlendFactorOneMinusSourceColor;
+  setOitRefractAttachment(p.colorAttachments[2], _oitRefractEnabled,
+                          family == cMaterialFamily_glass);
   p.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
   p.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
   NSError* e = nil;
@@ -7827,7 +8196,7 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
     [_encoder setFragmentBytes:&_cl length:sizeof(_cl) atIndex:1]; }
   // Material of THIS rep (#503). Bound per draw, like the clip above, so a
   // material cannot leak onto the rep drawn next.
-  bindMaterialU(_encoder, _repMatParams, _modelviewInv.data());
+  bindRepMaterial();
 
   // Flat (uniform-colored) geometry: supply the color the flat shader reads
   // from buffer 2. No per-vertex color is available here (the GL path would set
@@ -8124,7 +8493,7 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
     [_encoder setFragmentBytes:&_cl length:sizeof(_cl) atIndex:1]; }
   // Material of THIS rep (#503). Bound per draw, like the clip above, so a
   // material cannot leak onto the rep drawn next.
-  bindMaterialU(_encoder, _repMatParams, _modelviewInv.data());
+  bindRepMaterial();
 
   // Flat (uniform-colored) geometry reads its color from buffer 2 — see drawVBO.
   if (flat) {
@@ -8260,12 +8629,13 @@ void RendererMetal::rtDropGeometry(const void* cpuData)
     return;
   // Only geometry that made it into the frame record can invalidate the built
   // acceleration structure (see rtNoteGeometry).
+  // And only an entry the structure was actually BUILT from: freeing the
+  // buffers a rebuilt rep replaced (drained each frame, after the frame's AS
+  // was built from the replacement) must not force a second rebuild.
   if (!g->second.spheres.empty() || !g->second.tris.empty()) {
-    // An entry only ever noted by the transparent record (#532) leaves the
-    // opaque structure alone; every other entry dirties it exactly as before.
-    if (g->second.inOpaque || !g->second.inTransparent)
+    if (_rtBuiltKeys.count(key))
       _rtGeomDirty = true;
-    if (g->second.inTransparent)
+    if (_rtTBuiltKeys.count(key))
       _rtTGeomDirty = true;
   }
   _rtGeomCache.erase(g);
@@ -8369,6 +8739,8 @@ vertex SphereVOut sphere_impostor_vertex(SphereIn in [[stage_in]],
 struct SphereOITOut {
   float4 accum  [[color(0)]];
   float  reveal [[color(1)]];
+  float4 refr   [[color(2)]];   // glass-family refraction (#588, #590): jelly spheres and the clear or
+                                // frosted glass spheres other reps emit; masked off elsewhere
   float  depth  [[depth(any)]];
 };
 static float sph_oit_weight(float a, float z) {
@@ -8488,11 +8860,31 @@ fragment SphereOITOut sphere_impostor_fragment_oit(SphereVOut in [[stage_in]],
     constant SphereU& u [[buffer(1)]],
     constant MaterialU& mat [[buffer(2)]]) {
   float3 rgb; float a; float depth;
-  sphere_shade_material(in, u, mat, envMap, envSmp, rgb, a, depth);
+  float4 refr = float4(0.0, 0.0, 0.0, kOitRefractFar);
+  if (kMatGlass) {
+    // The glass family on sphere impostors: jelly spheres (#590), and the
+    // clear or frosted glass of spheres another rep emits (cartoon rings,
+    // surface dots; the sphere rep itself degrades those to `default`). All
+    // refract: sphere_shade_material, unrolled for the hit point and normal.
+    float3 n = float3(0.0), pt = float3(0.0);
+    float intensity = 0.0, specular = 0.0;
+    bool lit = true;
+    sphere_shade(in, u, rgb, a, depth, n, pt, intensity, specular, lit);
+    if (lit) {
+      rgb = mat_impostor_composite(in.color.rgb, n, pt, u.lAmbient, u.lDirect,
+                                   u.lReflect, float3(u.klx, u.kly, u.klz),
+                                   mat, intensity, specular, u.lSSSWrap,
+                                   envMap, envSmp);
+      refr = mat_glass_refraction(n, pt, mat.refrPx, mat.refrOrtho);
+    }
+  } else {
+    sphere_shade_material(in, u, mat, envMap, envSmp, rgb, a, depth);
+  }
   float w = sph_oit_weight(a, depth);
   SphereOITOut out;
   out.accum = float4(rgb * a, a) * w;
   out.reveal = a;
+  out.refr = refr;
   out.depth = depth;
   return out;
 }
@@ -8579,6 +8971,10 @@ void RendererMetal::buildImpostorPipelines()
     op.colorAttachments[1].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceColor;
     op.colorAttachments[1].sourceAlphaBlendFactor = MTLBlendFactorZero;
     op.colorAttachments[1].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceColor;
+    // The per-family loop below sets the attachment: the glass family's
+    // sphere pipeline writes it -- jelly spheres, and the clear or frosted
+    // glass of the sphere impostors other reps emit (the sphere rep itself
+    // degrades those to `default`) (#590).
     op.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
     op.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
     for (int f = 0; f < cMaterialFamily_count; ++f) {
@@ -8586,6 +8982,8 @@ void RendererMetal::buildImpostorPipelines()
           materialFragmentFunction(lib, @"sphere_impostor_fragment_oit", f);
       if (!fn) continue;
       op.fragmentFunction = fn;
+      setOitRefractAttachment(op.colorAttachments[2], _oitRefractEnabled,
+                              f == cMaterialFamily_glass);
       _sphereOitPipeline[f] = [_device newRenderPipelineStateWithDescriptor:op error:&err];
       [fn release];
       if (!_sphereOitPipeline[f])
@@ -8761,7 +9159,7 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
   // reads zero and clip.z/clip.w = 0/0 = NaN (all fragments fail the depth
   // range test / produce garbage depth).
   [_encoder setFragmentBytes:&u length:sizeof(u) atIndex:1];
-  bindMaterialU(_encoder, _repMatParams, _modelviewInv.data());
+  bindRepMaterial();
 
   [_encoder drawPrimitives:MTLPrimitiveTypeTriangle
                vertexStart:0
@@ -8901,6 +9299,7 @@ vertex CylVOut cyl_impostor_vertex(CylIn in [[stage_in]],
 struct CylOITOut {
   float4 accum  [[color(0)]];
   float  reveal [[color(1)]];
+  float4 refr   [[color(2)]];   // glass refraction (#588); masked off elsewhere
   float  depth  [[depth(any)]];
 };
 static float cyl_oit_weight(float a, float z) {
@@ -9061,6 +9460,7 @@ fragment CylOITOut cyl_impostor_fragment_oit(CylVOut in [[stage_in]],
     constant CylU& u [[buffer(1)]],
     constant MaterialU& mat [[buffer(2)]]) {
   float3 rgb; float a; float depth;
+  float4 refr = float4(0.0, 0.0, 0.0, kOitRefractFar);
   if (kMatGlass && mat.mode != kMatMode_jelly) {
     // Glass sticks: the body at its coverage, the reflection on top (#535);
     // see mat_glass_cover and vbo_fragment_oit.
@@ -9073,11 +9473,28 @@ fragment CylOITOut cyl_impostor_fragment_oit(CylVOut in [[stage_in]],
                    ? int(max(1.0, mat.p[5])) : 1;
       float3 hi;
       float3 body = mat_glass_shade(base, n, float3(0.0, 0.0, 1.0), mat.rough,
-                                    taps, float3(u.klx, u.kly, u.klz), envMap,
-                                    envSmp, hi);
+                                    mat.p[0], taps, float3(u.klx, u.kly, u.klz),
+                                    envMap, envSmp, hi);
       float4 g = mat_glass_cover(body, hi, a);
       rgb = g.rgb;
       a = g.a;
+      // The ray-cast hit is the stick's near wall, so it always refracts. pt
+      // is the hit in eye space.
+      refr = mat_glass_refraction(n, pt, mat.refrPx, mat.refrOrtho);
+    }
+  } else if (kMatGlass) {
+    // Jelly sticks (#590): cyl_shade_material, unrolled for the hit point and
+    // normal that refraction needs.
+    float3 n = float3(0.0), pt = float3(0.0), base = float3(0.0);
+    float intensity = 0.0, specular = 0.0;
+    bool lit = true;
+    cyl_shade(in, u, rgb, a, depth, n, pt, base, intensity, specular, lit);
+    if (lit) {
+      rgb = mat_impostor_composite(base, n, pt, u.lAmbient, u.lDirect,
+                                   u.lReflect, float3(u.klx, u.kly, u.klz),
+                                   mat, intensity, specular, u.lSSSWrap,
+                                   envMap, envSmp);
+      refr = mat_glass_refraction(n, pt, mat.refrPx, mat.refrOrtho);
     }
   } else {
     cyl_shade_material(in, u, mat, envMap, envSmp, rgb, a, depth);
@@ -9086,6 +9503,7 @@ fragment CylOITOut cyl_impostor_fragment_oit(CylVOut in [[stage_in]],
   CylOITOut o;
   o.accum = float4(rgb * a, a) * w;
   o.reveal = a;
+  o.refr = refr;
   o.depth = depth;
   return o;
 }
@@ -9226,6 +9644,8 @@ void RendererMetal::buildCylinderImpostorPipeline(
     op.colorAttachments[1].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceColor;
     op.colorAttachments[1].sourceAlphaBlendFactor = MTLBlendFactorZero;
     op.colorAttachments[1].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceColor;
+    setOitRefractAttachment(op.colorAttachments[2], _oitRefractEnabled,
+                            cylOitFam == cMaterialFamily_glass);
     op.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
     op.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
     _cylinderOitPipeline = [_device newRenderPipelineStateWithDescriptor:op error:&err];
@@ -9427,7 +9847,7 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
   u.interiorColor[2] = _capColor[2]; u.interiorColor[3] = _capColorOverride ? 1.0f : 0.0f;
   [_encoder setVertexBytes:&u length:sizeof(u) atIndex:1];
   [_encoder setFragmentBytes:&u length:sizeof(u) atIndex:1];
-  bindMaterialU(_encoder, _repMatParams, _modelviewInv.data());
+  bindRepMaterial();
 
   [_encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
                        indexCount:call.indexCount
@@ -9600,6 +10020,9 @@ void RendererMetal::drawBezierTubes(const void* cp, size_t dataSize,
   const float ringF = 14.0f; // subdivisions around the tube
   struct QuadFactors { uint16_t edge[4]; uint16_t inside[2]; };
   if (!_bezierTessFactors || _bezierTessPatchCap < numPatches) {
+    // MRC: drop the smaller buffer before growing (an in-flight command
+    // buffer that still uses it keeps it alive through Metal's own retain).
+    [_bezierTessFactors release];
     _bezierTessFactors = [_device newBufferWithLength:numPatches * sizeof(QuadFactors)
                                               options:MTLResourceStorageModeShared];
     if (!_bezierTessFactors) return;

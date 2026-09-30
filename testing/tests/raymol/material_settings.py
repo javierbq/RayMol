@@ -6,7 +6,8 @@ Two things can go silently wrong and are guarded here:
 
   * A duplicate setting index truncates the generated table, and the settings
     past the duplicate simply vanish (this happened once already: the first cut
-    of `metal_rt_reflect` reused 831, which `cartoon_spline` owned).
+    of `metal_rt_reflect`, since retired, reused 831, which `cartoon_spline`
+    owned).
   * A selection-scoped `set` of an int setting writes an atom-level value that
     no draw path reads: the user gets a success message and no change. C
     refuses it for the four per-representation material settings.
@@ -64,7 +65,7 @@ class TestMaterialSettingBlock(testing.PyMOLTestCase):
     def testExistingMetalIndicesDidNotMove(self):
         """.pse files store indices; moving one silently reinterprets old files."""
         for name, index in [('cartoon_spline', 831), ('metal_rt_scale', 832),
-                            ('metal_rt_reflect', 833),
+                            ('metal_rt_reflect_env', 836),
                             ('metal_rt_reflect_samples', 837)]:
             self.assertEqual(setting._get_index(name), index, name)
 

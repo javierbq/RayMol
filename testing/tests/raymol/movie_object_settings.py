@@ -1,8 +1,8 @@
 """Movies replay each scene's PER-OBJECT settings, and building one leaves the
 live session alone (#508).
 
-A scene captures globals and per-object overrides (materials,
-metal_rt_reflect*). Two things were wrong with movies built from scenes:
+A scene captures globals and per-object overrides (the per-rep materials,
+transparency_peel). Two things were wrong with movies built from scenes:
 
   * playback replayed only the GLOBAL half. raymol_scene_anim.enter_scene,
     the frame command authored at each scene cut, applied the scene's globals
@@ -30,7 +30,7 @@ from pymol import appkit_movie as am
 def obj_state():
     # o1, o2: an override in both scenes; o4: an override only in s2 (must be
     # UNSET at the cut back to s1); material_default: the global o3 follows.
-    return (cmd.get('stick_material', 'o1'), cmd.get('metal_rt_reflect', 'o2'),
+    return (cmd.get('stick_material', 'o1'), cmd.get('surface_material', 'o2'),
             cmd.get('material_default'), cmd.get('stick_material', 'o4'))
 
 
@@ -45,22 +45,22 @@ class TestMovieObjectSettings(testing.PyMOLTestCase):
         cmd.fragment('thr', 'o4')
         cmd.hide('everything')
         cmd.show('sticks')
-        # scene s1: per-object marble / 0.1, global matte
+        # scene s1: per-object marble / glass, global matte
         cmd.set('stick_material', 'marble', 'o1')
-        cmd.set('metal_rt_reflect', 0.1, 'o2')
+        cmd.set('surface_material', 'glass', 'o2')
         cmd.set('material_default', 'matte')
         cmd.select('dof_focus', 'o1')
         cmd.scene('s1', 'store')
-        # scene s2: per-object clay / 0.9, global plastic
+        # scene s2: per-object clay / jelly, global plastic
         cmd.set('stick_material', 'clay', 'o1')
-        cmd.set('metal_rt_reflect', 0.9, 'o2')
+        cmd.set('surface_material', 'jelly', 'o2')
         cmd.set('material_default', 'plastic')
         cmd.set('stick_material', 'rubber', 'o4')
         cmd.select('dof_focus', 'o2')
         cmd.scene('s2', 'store')
         # the LIVE state authoring must not disturb: neither scene's
         cmd.set('stick_material', 'rubber', 'o1')
-        cmd.set('metal_rt_reflect', 0.5, 'o2')
+        cmd.set('surface_material', 'rubber', 'o2')
         cmd.set('material_default', 'clay')
         cmd.unset('stick_material', 'o4')
         cmd.select('dof_focus', 'o1 and name CA')
@@ -90,8 +90,8 @@ class TestMovieObjectSettings(testing.PyMOLTestCase):
 
     def assertStepsBetweenTheScenes(self, seen, loops_back=False):
         # o4 reads as material_default when it has no override of its own
-        s1 = ('marble', '0.10000', 'matte', 'default')
-        s2 = ('clay', '0.90000', 'plastic', 'rubber')
+        s1 = ('marble', 'glass', 'matte', 'default')
+        s2 = ('clay', 'jelly', 'plastic', 'rubber')
         # the first frames are inside s1's span, and somewhere later the movie
         # has cut to s2 -- per-object values included, not only the global
         self.assertEqual(seen[2], s1)

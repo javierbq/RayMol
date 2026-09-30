@@ -2,18 +2,18 @@ import XCTest
 import SwiftUI
 @testable import RayMol
 
-/// The Inspector's OBJECT-wide material controls (#498): the peel tri-state,
-/// the collapsed legacy reflection group, the suggested-lighting join, and the
-/// two scene-wide material rows.
+/// The Inspector's OBJECT-wide material controls (#498): the peel tri-state
+/// and the two scene-wide material rows. (The legacy reflection group was
+/// removed in #565.)
 ///
 /// What these pin is the Swift half. The decisions themselves live in the core
-/// and in `modules/pymol/appkit_inspector.py` — whether the legacy triple is
-/// dead for an object, what auto-peel resolves to — and are tested there. Here:
+/// and in `modules/pymol/appkit_inspector.py` — what auto-peel resolves to —
+/// and are tested there. Here:
 /// that the rows exist where they should, that nothing duplicates them, and
 /// that the payload is parsed without inventing values.
 final class MaterialInspectorTests: XCTestCase {
 
-    // MARK: - the legacy reflection triple is object-wide, once
+    // MARK: - the retired reflection triple is in no panel
 
     /// It used to be three slider rows in EACH of the four material-bearing rep
     /// panels: twelve controls over three object-scoped settings, every one
@@ -23,14 +23,14 @@ final class MaterialInspectorTests: XCTestCase {
     /// ribbon or mesh would be exactly as wrong and is the one a reviewer
     /// scanning the four would miss.
     func testNoRepPanelCarriesTheObjectScopedReflectionTriple() {
+        // Retired outright in #565; no panel may bring them back either.
         let objectScoped = ["metal_rt_reflect", "metal_rt_reflect_tint",
                             "metal_rt_reflect_rough"]
         for rep in RepCatalog.order {
             guard let spec = RepCatalog.specs[rep] else { continue }
             for setting in objectScoped {
                 XCTAssertFalse(spec.properties.contains { $0.setting == setting },
-                               "\(rep) still carries \(setting); it is object-scoped "
-                               + "and belongs on the object header")
+                               "\(rep) still carries \(setting), retired in #565")
             }
         }
     }
@@ -62,70 +62,15 @@ final class MaterialInspectorTests: XCTestCase {
     func testAPayloadWithoutTheNewKeysReadsAsAuto() {
         let meta = PyMOLEngine.parseObjMeta(["state": 1, "all": 0])
         XCTAssertEqual(meta.peel, -1)
-        XCTAssertFalse(meta.legacyReflectionDead)
-        XCTAssertEqual(meta.reflect, [0, 0, 0])
     }
 
     func testTheObjectRowsAreParsedFromThePayload() {
         let meta = PyMOLEngine.parseObjMeta([
             "state": 1, "all": 0,
             "peel": 1, "peel_resolved": 1,
-            "refl": [0.6, 0.35, 0.2], "legacy_dead": 1,
         ])
         XCTAssertEqual(meta.peel, 1)
         XCTAssertTrue(meta.peelResolved)
-        XCTAssertEqual(meta.reflect, [0.6, 0.35, 0.2])
-        XCTAssertTrue(meta.legacyReflectionDead)
-    }
-
-    // MARK: - suggested lighting: the join key comes from the core
-
-    private func bundles(_ json: String) -> [(attr: String, label: String, material: String)]? {
-        PyMOLEngine.parseBundles("BUNDLES:" + json)
-    }
-
-    func testBundlesAreParsedWithTheirMaterial() {
-        let out = bundles("""
-            [["marble","Marble (statuary)","marble"],["gold","Gold","metallic"]]
-            """)
-        XCTAssertEqual(out?.count, 2)
-        XCTAssertEqual(out?[0].attr, "marble")
-        XCTAssertEqual(out?[0].label, "Marble (statuary)")
-        XCTAssertEqual(out?[0].material, "marble")
-        XCTAssertEqual(out?[1].material, "metallic")
-    }
-
-    /// Several bundles share a material — the four metals are all `metallic` —
-    /// which is why the control is a menu rather than a button when more than
-    /// one matches, and why the parse must not collapse them into a map.
-    func testSeveralBundlesMayShareTheSameMaterial() {
-        let out = bundles("""
-            [["copper","Copper","metallic"],["gold","Gold","metallic"],
-             ["steel","Steel","metallic"],["chrome","Chrome","metallic"]]
-            """)
-        XCTAssertEqual(out?.count, 4)
-        XCTAssertEqual(Set(out?.map { $0.material } ?? []), ["metallic"])
-    }
-
-    /// A malformed payload must leave the previous list alone rather than
-    /// emptying it: the control simply not appearing is a much quieter failure
-    /// than the app deciding there are no bundles.
-    func testAMalformedPayloadIsRejectedRatherThanEmptying() {
-        XCTAssertNil(bundles("not json"))
-        XCTAssertNil(bundles("[]"))
-        XCTAssertNil(PyMOLEngine.parseBundles("MATERIALS:[[0,\"default\"]]"))
-    }
-
-    /// A row missing its material, or carrying an empty attr, is DROPPED. The
-    /// attr is what gets executed — a button that runs `materials.()` would be
-    /// worse than no button.
-    func testIncompleteBundleRowsAreSkipped() {
-        let out = bundles("""
-            [["marble","Marble","marble"],["clay","Clay"],["","Nameless","x"],
-             ["ok","Ok",""]]
-            """)
-        XCTAssertEqual(out?.count, 1)
-        XCTAssertEqual(out?[0].attr, "marble")
     }
 
     // MARK: - what the controls SEND
@@ -136,6 +81,31 @@ final class MaterialInspectorTests: XCTestCase {
     // in one place without the other breaks a test rather than the feature
     // quietly.
 
+    /// The control says what it does (#567): Nearest only is peel ON (1),
+    /// All is peel OFF (0). Swapping the two values would be a control whose
+    /// words do the opposite of what they say.
+    func testTranslucentLayersLabelsMapToThePeelValues() {
+        let byLabel = Dictionary(uniqueKeysWithValues:
+            TranslucentLayers.options.map { ($0.label, $0.value) })
+        XCTAssertEqual(byLabel["Auto"], -1)
+        XCTAssertEqual(byLabel["Nearest only"], 1)
+        XCTAssertEqual(byLabel["All"], 0)
+        XCTAssertEqual(TranslucentLayers.options.count, 3)
+    }
+
+    /// The caption is the explanation the old "Peel transp." row lacked, and
+    /// for Auto it has to say what Auto currently MEANS.
+    func testTranslucentLayersCaptionSaysWhatHappens() {
+        XCTAssertTrue(TranslucentLayers.caption(peel: 1, resolved: false).contains("One skin"))
+        XCTAssertTrue(TranslucentLayers.caption(peel: 0, resolved: true).contains("Every layer"))
+        XCTAssertTrue(TranslucentLayers.caption(peel: -1, resolved: true).contains("nearest only"))
+        XCTAssertTrue(TranslucentLayers.caption(peel: -1, resolved: false).contains("all layers"))
+        // any other explicit value is Nearest only, as the core reads it --
+        // never "Auto"
+        XCTAssertTrue(TranslucentLayers.caption(peel: 2, resolved: true).contains("One skin"))
+        XCTAssertFalse(TranslucentLayers.caption(peel: 2, resolved: true).contains("Auto"))
+    }
+
     func testThePeelControlWritesTheTriStateOnTheObject() {
         XCTAssertEqual(MaterialCommands.setPeel(-1, on: "m1"),
                        "set transparency_peel, -1, m1")
@@ -145,129 +115,155 @@ final class MaterialInspectorTests: XCTestCase {
                        "set transparency_peel, 1, m1")
     }
 
-    /// Object-scoped, always. A selection-scoped `set` of these would be
-    /// accepted and write an atom-level value no draw path reads.
-    func testTheReflectionSlidersWriteTheObject() {
-        XCTAssertEqual(MaterialCommands.setReflect("metal_rt_reflect", 0.5, on: "m1"),
-                       "set metal_rt_reflect, 0.5000, m1")
-        XCTAssertEqual(MaterialCommands.setReflect("metal_rt_reflect_rough", 0.05, on: "obj2"),
-                       "set metal_rt_reflect_rough, 0.0500, obj2")
-    }
-
-    /// The bundle is CALLED, not reimplemented: it writes global lighting as
-    /// well as the object's material, and a copy of that list here would drift
-    /// from modules/pymol/materials.py with nothing to catch it.
-    func testTheLookButtonCallsTheBundle() {
-        XCTAssertEqual(MaterialCommands.runBundle("marble", on: "m1"),
-                       "python\nfrom pymol import materials; "
-                       + "materials.marble('m1', _self=cmd)\npython end")
-    }
-
-    /// The chip's help has to say that the bundle rewrites the material on
-    /// EVERY representation, because it does -- `_apply_material` loops all
-    /// four settings by design. #498 calls this "Suggested lighting" and the
-    /// first version was labelled that way, which would have let a click
-    /// beside the Sticks dropdown silently replace a deliberate
-    /// `surface_material, glass` with marble and never mention the surface.
-    func testTheLookButtonSaysItRewritesEveryRepresentation() {
-        let help = MaterialCommands.bundleHelp("Marble (statuary)")
-        XCTAssertTrue(help.contains("Marble (statuary)"), help)
-        XCTAssertTrue(help.contains("EVERY representation"), help)
-        XCTAssertTrue(help.contains("lighting"), help)
-        // The named metals write NO lighting setting -- no specular, no
-        // shininess, no shadows. They write a colour and the reflect triple,
-        // i.e. the group directly below the chip. An earlier version promised
-        // lighting for them and said nothing about the reflection.
-        XCTAssertTrue(help.contains("reflection"), help)
-        XCTAssertTrue(help.contains("colour"), help)
-        // ...and the many-bundles variant, which has no single label to name.
-        XCTAssertTrue(MaterialCommands.bundleHelp(nil).contains("EVERY representation"))
-    }
-
-    /// The gates that keep the rows off the objects they do not apply to.
+    /// The gate that keeps the peel row off the objects it does not apply to.
     ///
-    /// They are GATES, not values, so unlike every other key in this payload
-    /// they default to OFF rather than to the setting's own default: a payload
-    /// that predates them renders no rows rather than inert ones.
+    /// It is a GATE, not a value, so unlike every other key in this payload it
+    /// defaults to OFF rather than to the setting's own default: a payload that
+    /// predates it renders no row rather than an inert one.
     func testTheObjectRowsAreOffByDefaultUntilThePayloadSaysOtherwise() {
-        XCTAssertFalse(ObjStateMeta().hasMaterialRows)
         XCTAssertFalse(ObjStateMeta().hasPeelRow)
         XCTAssertFalse(ObjStateMeta().showsObjectMaterialRows)
         XCTAssertFalse(PyMOLEngine.parseObjMeta(["state": 1]).showsObjectMaterialRows)
-        XCTAssertTrue(PyMOLEngine.parseObjMeta(["material_rows": 1]).hasMaterialRows)
         XCTAssertTrue(PyMOLEngine.parseObjMeta(["peel_row": 1]).hasPeelRow)
     }
 
-    /// The two gates are independent, and that asymmetry is the point: peel
-    /// applies to anything SceneCollectPeelObjects can peel (an isosurface
-    /// included), materials only to molecules. A single flag hid the peel
-    /// control from the object class whose front/back double blend it exists
-    /// to fix.
-    func testPeelAndMaterialRowsAreGatedSeparately() {
-        let surface = PyMOLEngine.parseObjMeta(["peel_row": 1, "material_rows": 0])
-        XCTAssertTrue(surface.hasPeelRow)
-        XCTAssertFalse(surface.hasMaterialRows)
-        XCTAssertTrue(surface.showsObjectMaterialRows)   // the header still shows
+    // MARK: - the Custom material (#569)
 
-        let group = PyMOLEngine.parseObjMeta(["peel_row": 0, "material_rows": 0])
-        XCTAssertFalse(group.showsObjectMaterialRows)
+    func testCustomReadsAsCustomOfItsBase() {
+        XCTAssertEqual(CustomMaterial.label(base: "metallic", isCustom: true), "Custom (metallic)")
+        XCTAssertEqual(CustomMaterial.label(base: "metallic", isCustom: false), "metallic")
+        // a side chain following the cartoon says whose material it draws with
+        XCTAssertEqual(CustomMaterial.label(base: "metallic", isCustom: true, follows: true),
+                       "Cartoon's (metallic)")
     }
 
-    /// Clearing restores the undefined state, which nothing else in the panel
-    /// offers: a reflective material draws its own table row until one of
-    /// these is set, and the first touch of a slider makes the displayed 0
-    /// real and detaches it for good.
-    func testClearingReflectionUnsetsAllThree() {
-        let cmdText = MaterialCommands.clearReflect(on: "m1")
-        XCTAssertEqual(cmdText, "unset metal_rt_reflect, m1\n"
-                              + "unset metal_rt_reflect_tint, m1\n"
-                              + "unset metal_rt_reflect_rough, m1")
+    /// The literals are the join with inspector_materials.py, which runs them.
+    func testPickingANamedMaterialClearsTheLayersOverrides() {
+        let lines = CustomMaterial.pick("stick_material", id: 7, clearing: ["rough", "knob5"],
+                                        on: "m1").components(separatedBy: "\n")
+        XCTAssertEqual(lines, ["set stick_material, 7, m1",
+                               "unset stick_material_rough, m1",
+                               "unset stick_material_knob5, m1"])
+        // nothing to clear: one line, not ten
+        XCTAssertEqual(CustomMaterial.pick("stick_material", id: 7, clearing: [], on: "m1"),
+                       "set stick_material, 7, m1")
     }
 
-    /// An object name reaches a PYTHON string literal that is itself inside a
-    /// command `cmd.do` splits with `str.splitlines()` — two levels, failing
-    /// differently.
-    ///
-    /// Every case of the escape is exercised — backslash, quote, all ten
-    /// splitlines separators and an astral scalar — so breaking any one of
-    /// them fails this. The first version tested only the quote, and a
-    /// mutation removing the backslash escape survived it.
-    ///
-    /// Reachability: `validate_object_names` defaults to 1 and rewrites these
-    /// characters to underscores, so this needs that setting off plus the
-    /// Python `object=` argument. A hardening gap, not a live hole.
-    func testTheLookButtonEscapesTheObjectName() {
-        XCTAssertEqual(MaterialCommands.runBundle("marble", on: "foo'bar"),
-                       "python\nfrom pymol import materials; "
-                       + "materials.marble('foo\\'bar', _self=cmd)\npython end")
-        // Backslash first, or escaping the quote would double-escape it.
-        XCTAssertTrue(MaterialCommands.runBundle("clay", on: "a\\b")
-                        .contains("materials.clay('a\\\\b'"))
-        // A line break is the one that can INJECT: cmd.do splits with
-        // str.splitlines() and would run the tail as its own commands. "Line
-        // break" is splitlines' list, not just \n -- every one of these must
-        // come out as an escape.
-        let separators: [Unicode.Scalar] = ["\n", "\r", "\u{0B}", "\u{0C}",
-            "\u{1C}", "\u{1D}", "\u{1E}", "\u{85}", "\u{2028}", "\u{2029}"]
-        for sep in separators {
-            let name = "a\(Character(sep))python end\(Character(sep))b"
-            let cmd = MaterialCommands.runBundle("clay", on: name)
-            // Exactly the two newlines the block structure needs, and nothing
-            // else that is not printable ASCII.
-            let stray = cmd.unicodeScalars.filter {
-                $0 != "\n" && !(0x20...0x7E).contains($0.value)
-            }
-            XCTAssertTrue(stray.isEmpty, "U+\(String(sep.value, radix: 16)) survived: \(cmd)")
-            XCTAssertEqual(cmd.unicodeScalars.filter { $0 == "\n" }.count, 2, cmd)
-            let hex = String(format: "%04x", sep.value)
-            XCTAssertTrue(cmd.contains("materials.clay('a\\u\(hex)python end\\u\(hex)b'"), cmd)
-        }
-        // Beyond the BMP the escape is the eight-digit form Python reads.
-        XCTAssertTrue(MaterialCommands.runBundle("clay", on: "a\u{1F600}")
-                        .contains("materials.clay('a\\U0001f600'"))
+    func testInheritClearsTheMaterialAndItsOverrides() {
+        XCTAssertEqual(CustomMaterial.inherit("surface_material", clearing: ["tint"], on: "m1"),
+                       "unset surface_material, m1\nunset surface_material_tint, m1")
+        XCTAssertEqual(CustomMaterial.inherit("surface_material", clearing: [], on: "m1"),
+                       "unset surface_material, m1")
+    }
+
+    func testAKnobWritesTheLayersOverride() {
+        XCTAssertEqual(CustomMaterial.setKnob("sphere_material", "knob5", 0.25, on: "m1"),
+                       "set sphere_material_knob5, 0.2500, m1")
+        XCTAssertEqual(CustomMaterial.stem("cartoon_material"), "cartoon")
+    }
+
+    /// The race fix: a knob dragged since the last poll is cleared too.
+    func testAPickClearsWhatWasTunedSinceTheLastPoll() {
+        XCTAssertEqual(CustomMaterial.overrides(set: [], touched: ["rough"]), ["rough"])
+        XCTAssertEqual(CustomMaterial.overrides(set: ["rough"], touched: ["rough", "tint"]),
+                       ["rough", "tint"])
+        XCTAssertEqual(CustomMaterial.overrides(set: ["knob5"], touched: []), ["knob5"])
+    }
+
+    /// The gate that keeps Custom off a layer that has degraded to `default`
+    /// (glass on spheres or ball-and-stick): knobs come from the DRAWN
+    /// material, and only when it is the one the setting names.
+    func testCustomIsOfferedOnlyForTheMaterialTheLayerDraws() {
+        let rough = MaterialKnobInfo(suffix: "rough", label: "Roughness", min: 0, max: 1)
+        let table: [Int: [MaterialKnobInfo]] = [4: [rough], 3: [rough]]
+        XCTAssertEqual(CustomMaterial.offeredKnobs(base: 4, drawn: 4, table: table), [rough])
+        XCTAssertEqual(CustomMaterial.offeredKnobs(base: 4, drawn: 0, table: table), [])  // degraded
+        XCTAssertEqual(CustomMaterial.offeredKnobs(base: 4, drawn: nil, table: table), []) // no payload
+        XCTAssertEqual(CustomMaterial.offeredKnobs(base: 0, drawn: 0, table: table), [])
+    }
+
+    /// One short line per material: the whole table on one line is over
+    /// PyMOL's ~1024-char feedback cap and would be split.
+    func testEachMaterialsKnobsArriveOnTheirOwnLine() {
+        let parsed = PyMOLEngine.parseMaterialKnobs(
+            "MATKNOBS:7:[[\"knob2\",\"Vein scale\",0.02,1],[\"knob6\",\"Vein sharpness\",1,20]]")
+        XCTAssertEqual(parsed?.0, 7)
+        XCTAssertEqual(parsed?.1.map { $0.suffix }, ["knob2", "knob6"])
+        XCTAssertEqual(parsed?.1.last, MaterialKnobInfo(suffix: "knob6", label: "Vein sharpness", min: 1, max: 20))
+        XCTAssertNil(PyMOLEngine.parseMaterialKnobs("MATKNOBS:x:[]"))
+        XCTAssertNil(PyMOLEngine.parseMaterialKnobs("MATERIALS:[[0,\"default\"]]"))
+    }
+
+    /// The fifth field says which control a knob gets (#590); a four-field row,
+    /// from an older core, is a slider.
+    func testAToggleKnobArrivesAsAToggle() {
+        let parsed = PyMOLEngine.parseMaterialKnobs(
+            "MATKNOBS:4:[[\"knob1\",\"Reflection\",0,1,\"toggle\"],"
+            + "[\"rough\",\"Roughness\",0,1,\"slider\"],[\"knob3\",\"Old\",0,1]]")
+        XCTAssertEqual(parsed?.1.map { $0.toggle }, [true, false, false])
+        XCTAssertEqual(parsed?.1.first,
+                       MaterialKnobInfo(suffix: "knob1", label: "Reflection", min: 0, max: 1, toggle: true))
+    }
+
+    /// The switch is on for any amount above the knob's minimum -- every one
+    /// has a visible effect, the documented 0.5 included -- and on before the
+    /// first poll (every toggle is on in the table).
+    func testAToggleReadsOnForAnyAmount() {
+        let k = MaterialKnobInfo(suffix: "knob2", label: "Distortion", min: 0, max: 1, toggle: true)
+        XCTAssertEqual(CustomMaterial.toggleValue(1, k), 1)
+        XCTAssertEqual(CustomMaterial.toggleValue(0, k), 0)
+        XCTAssertEqual(CustomMaterial.toggleValue(0.5, k), 1)
+        XCTAssertEqual(CustomMaterial.toggleValue(0.16, k), 1)
+        XCTAssertEqual(CustomMaterial.toggleValue(nil, k), 1)
+    }
+
+    func testTheRepPayloadCarriesTheCustomState() {
+        let st = PyMOLEngine.parseMaterialCustom(
+            ["material": ["drawn": 3, "knobs": ["reflect": 0.6, "rough": 0.05], "custom": ["rough"],
+                          "set": ["rough", "knob5"]]])
+        XCTAssertEqual(st?.drawn, 3)
+        XCTAssertEqual(st?.set, ["rough", "knob5"])
+        XCTAssertEqual(st?.knobs["rough"], 0.05)
+        XCTAssertEqual(st?.custom, ["rough"])
+        XCTAssertTrue(st?.isCustom ?? false)
+        XCTAssertNil(PyMOLEngine.parseMaterialCustom(["vals": [:]]))
+        XCTAssertFalse(MaterialCustomState().isCustom)
+        XCTAssertFalse(st?.follows ?? true)  // absent reads as its own
+        XCTAssertTrue(PyMOLEngine.parseMaterialCustom(
+            ["material": ["drawn": 3, "follows": true]])?.follows ?? false)
+    }
+
+    // MARK: - layer Looks
+
+    func testALookAppliesToOneLayer() {
+        XCTAssertEqual(CustomMaterial.applyLook("gold", "stick_material", on: "m1"),
+                       "apply_look gold, m1, stick")
+        XCTAssertEqual(CustomMaterial.applyLook("statuary", "surface_material", on: "m1"),
+                       "apply_look statuary, m1, surface")
+    }
+
+    func testTheLookListParses() {
+        let looks = PyMOLEngine.parseLooks(
+            "LOOKS:[[\"gold\",\"Gold\",\"metallic\"],[\"statuary\",\"Marble (statuary)\",\"marble\"]]")
+        XCTAssertEqual(looks, [MaterialLook(name: "gold", label: "Gold", material: "metallic"),
+                               MaterialLook(name: "statuary", label: "Marble (statuary)", material: "marble")])
+        XCTAssertNil(PyMOLEngine.parseLooks("LOOKS:[]"))
+        XCTAssertNil(PyMOLEngine.parseLooks("MATERIALS:[[0,\"default\"]]"))
     }
 
     // MARK: - the two scene-wide rows
+
+    /// The Scene panel's global Reflections / tint / roughness sliders drove
+    /// the retired triple's global fallback (#565) and went with it.
+    func testTheSceneCatalogOffersNoRetiredReflectionSlider() {
+        let names = Set(SceneCatalog.params.map { $0.setting })
+        for n in ["metal_rt_reflect", "metal_rt_reflect_tint", "metal_rt_reflect_rough"] {
+            XCTAssertFalse(names.contains(n), n)
+        }
+        // ...while the two global RT reflection knobs stay
+        XCTAssertTrue(names.contains("metal_rt_reflect_env"))
+        XCTAssertTrue(names.contains("metal_rt_reflect_samples"))
+    }
 
     func testTheSceneCatalogOffersBothMaterialRows() {
         let byName = Dictionary(uniqueKeysWithValues:

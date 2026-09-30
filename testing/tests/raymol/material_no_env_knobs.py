@@ -29,7 +29,8 @@ ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir,
 # Every RAYMOL_ name the prototype read that tuned a material, spelled out
 # rather than derived, so a returning knob is caught by NAME and not only by
 # prefix: 25 read by its renderer, and the five RT_REFLECT names its render
-# scripts (prototype_renders/scripts) turned into metal_rt_reflect* settings.
+# scripts (prototype_renders/scripts) turned into metal_rt_reflect* settings
+# (since retired, #565).
 PROTOTYPE_MATERIAL_KNOBS = (
     'RAYMOL_MATERIAL',
     'RAYMOL_GLASS_COVER', 'RAYMOL_GLASS_FROST', 'RAYMOL_GLASS_IOR',

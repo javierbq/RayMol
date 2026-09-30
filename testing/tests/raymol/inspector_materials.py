@@ -1,29 +1,19 @@
-"""The Inspector's object-wide material rows (#498), Python side.
+"""The Inspector's object-wide material row (#498), Python side.
 
-Four controls moved or arrived in #498, and three of them need a fact the Swift
-side cannot compute:
-
-  * the peel tri-state shows what AUTO currently resolves to, which is a
-    question only the core can answer (#488);
-  * the legacy `metal_rt_reflect*` group is disabled when it cannot change
-    anything the object draws, which depends on the material FAMILY of every
-    shown representation;
-  * "Suggested lighting" appears beside a material dropdown when a
-    `pymol.materials` bundle applies that material, and the join key lives in
-    `materials.BUNDLES`.
-
-All three are computed in `appkit_inspector` and shipped in the object payload.
-These pin them there, where they can be tested without a GPU or a window.
+The peel tri-state shows what AUTO currently resolves to, which is a question
+only the core can answer (#488). It is computed in `appkit_inspector` and
+shipped in the object payload; these pin it there, where it can be tested
+without a GPU or a window. (The legacy `metal_rt_reflect*` group that shared
+the header was removed in #565, and the Look bundles in #566.)
 
 Runs on a RayMol --testing build:
     pymol -ckqy testing/testing.py --run testing/tests/raymol/inspector_materials.py
 """
-import json
 import os
 import re
 
 from pymol import appkit_inspector as ai
-from pymol import cmd, materials, setting, testing
+from pymol import cmd, setting, testing
 
 
 def meta(obj, objs=None):
@@ -34,45 +24,6 @@ def meta(obj, objs=None):
 
 def reps_payload(obj, objs=None):
     return ai._build(objs or [obj])['detail'][obj]
-
-
-class TestInspectorBundles(testing.PyMOLTestCase):
-    def testTheBundleListCarriesTheMaterialEachApplies(self):
-        """The Inspector joins on the third field to decide whether to offer
-        the button beside a material dropdown. A list of (attr, label) alone --
-        which is what BUNDLES was before #498 -- cannot answer that."""
-        rows = ai.material_bundles()
-        self.assertEqual(len(rows), len(materials.BUNDLES))
-        for attr, label, mat in rows:
-            self.assertTrue(hasattr(materials, attr), attr)
-            self.assertTrue(label)
-            self.assertIn(mat, [n for _i, n in setting.get_material_names(1)], attr)
-
-    def testTheFourMetalsAllNameMetallic(self):
-        """Which is why the control is a MENU when more than one bundle matches
-        and a button when one does. A material -> bundle map would silently keep
-        whichever metal came last."""
-        by_material = {}
-        for attr, _label, mat in ai.material_bundles():
-            by_material.setdefault(mat, []).append(attr)
-        self.assertEqual(sorted(by_material.get('metallic', [])),
-                         ['chrome', 'copper', 'gold', 'steel'])
-        self.assertEqual(by_material.get('marble'), ['marble'])
-
-    def testPollBundlesEmitsParseableJson(self):
-        """The Swift side parses this line; a payload it cannot read leaves the
-        control absent with nothing said."""
-        import io, contextlib
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            ai.poll_bundles()
-        line = buf.getvalue().strip()
-        self.assertTrue(line.startswith('BUNDLES:'), line[:40])
-        rows = json.loads(line[len('BUNDLES:'):])
-        self.assertTrue(rows)
-        for row in rows:
-            self.assertEqual(len(row), 3)
-            self.assertTrue(all(isinstance(x, str) for x in row))
 
 
 class TestInspectorPeelRow(testing.PyMOLTestCase):
@@ -103,179 +54,11 @@ class TestInspectorPeelRow(testing.PyMOLTestCase):
         self.assertEqual(meta('m1')['peel'], 1)
 
 
-class TestLegacyReflectionGroup(testing.PyMOLTestCase):
-    """When the object-wide `metal_rt_reflect*` group is disabled.
-
-    #498 says "once every active rep has a non-default material". That was
-    written before #497 gave REFLECTIVE materials an explicit-override path, so
-    the test here is narrower: the material must also belong to a family that
-    IGNORES the triple. Disabling the group for `metallic` would take away a
-    control that still works.
-    """
-    def setUp(self):
-        super().setUp()
-        cmd.reinitialize()
-        cmd.fragment('ala', 'm1')
-
-    def dead(self):
-        return meta('m1')['legacy_dead']
-
-    def show(self, *reps):
-        """Hide first: RayMol's `auto_show_*` defaults put sticks, cartoon AND
-        nb_spheres on a fresh fragment, so a test that only calls show() is
-        asserting about four reps it did not choose -- and three of them have no
-        material, which keeps the group live for reasons the test never states.
-        """
-        cmd.hide('everything', 'm1')
-        for r in reps:
-            cmd.show(r, 'm1')
-        cmd.rebuild('m1')
-        cmd.refresh()
-
-    def testAnObjectWithNoMaterialsKeepsTheGroupLive(self):
-        self.show('surface', 'sticks')
-        self.assertEqual(self.dead(), 0)
-
-    def testARepWhoseFLAGIsSetCountsAsDrawn(self):
-        """The rep list the poll ships is "some atom has this rep's flag",
-        which over-approximates what is on screen: `nb_spheres` draws only
-        NONBONDED atoms, but `auto_show_nonbonded` sets its flag on every atom
-        of a fresh fragment.
-
-        Kept deliberately. The error is one-directional -- an over-approximation
-        keeps the group LIVE when it might have been disabled, and the cost of
-        that is an enabled slider that happens to do nothing, against the cost
-        of a disabled slider that would have worked."""
-        cmd.hide('everything', 'm1')
-        cmd.show('surface', 'm1')
-        cmd.show('nb_spheres', 'm1')
-        cmd.rebuild('m1')
-        cmd.refresh()
-        # GLASS, not a procedural material: glass is the one family that is
-        # deaf, so nb_spheres is the ONLY thing keeping the group live here.
-        # With marble it would stay live for two reasons and this test would
-        # pass with the nb_spheres half deleted.
-        cmd.set('surface_material', 'glass', 'm1')
-        self.assertEqual(self.dead(), 0)
-
-    def testAProceduralMaterialKeepsItLive(self):
-        """The first version of this asserted the opposite, on the strength of
-        MaterialApplyLegacyTriple's comment that "the procedural materials do
-        not read these at all". That is true of the RASTER shaders and false of
-        the draw: the same function OVERWRITES reflect/tint/rough from the
-        object settings for every family except reflective and glass, and the
-        values reach the ray tracer's per-occurrence table. The triple is an
-        RT-only knob to begin with -- the scene copies carry
-        `dependsOn: metal_raytrace` -- so that is the path that decides."""
-        self.show('surface')
-        cmd.set('surface_material', 'marble', 'm1')
-        self.assertEqual(self.dead(), 0)
-        # ...and the slider really does reach the draw, so the group is not
-        # merely being left live out of caution.
-        from pymol import _cmd
-        from pymol.constants import repres
-        cmd.set('metal_rt_reflect', 0.9, 'm1')
-        _f, _m, refl, _t, _r, _p = _cmd.get_material_draw_params(
-            cmd._COb, 'm1', repres['surface'])
-        self.assertAlmostEqual(refl, 0.9, places=4)
-
-    def testAGlassMaterialKillsIt(self):
-        """Glass is the one family that really is deaf: its table row carries
-        reflect 0 and MaterialApplyLegacyTriple exempts it outright."""
-        self.show('surface')
-        cmd.set('surface_material', 'glass', 'm1')
-        self.assertEqual(self.dead(), 1)
-
-    def testAGlassMaterialThatDEGRADESKeepsItLive(self):
-        """Judged on what the rep DRAWS, not on what its setting names.
-
-        Glass has no sphere-impostor path, so `sphere_material, glass` draws as
-        `default` -- and `default` reads the triple. Asking
-        get_material_family about the setting's id said "deaf" and greyed out a
-        group whose sliders were reaching the draw, on the epic's own showcase
-        materials. The surface case above is the one glass rep that does NOT
-        degrade, which is why it was the only one covered."""
-        cmd.hide('everything', 'm1')
-        cmd.show('spheres', 'm1')
-        cmd.rebuild('m1')
-        cmd.refresh()
-        cmd.set('sphere_material', 'glass', 'm1')
-        self.assertEqual(self.dead(), 0)
-        from pymol import _cmd
-        from pymol.constants import repres
-        cmd.set('metal_rt_reflect', 0.9, 'm1')
-        fam, _m, refl, _t, _r, _p = _cmd.get_material_draw_params(
-            cmd._COb, 'm1', repres['spheres'])
-        self.assertEqual(fam, 0)                       # degraded to default ...
-        self.assertAlmostEqual(refl, 0.9, places=4)    # ... and reading the slider
-
-    def testBallAndStickGlassKeepsItLiveToo(self):
-        """The other degradation, and the one `get_effective_material` alone
-        would not catch: it lives in MaterialResolveForDraw, not
-        MaterialResolve."""
-        cmd.hide('everything', 'm1')
-        cmd.show('sticks', 'm1')
-        cmd.set('stick_ball', 1, 'm1')
-        cmd.set('stick_material', 'glass', 'm1')
-        cmd.rebuild('m1')
-        cmd.refresh()
-        self.assertEqual(self.dead(), 0)
-
-    def testAReflectiveMaterialKeepsItLive(self):
-        """The #497 refinement, and the one the ticket's own wording gets
-        wrong: `metallic` starts from its table row, but an explicit
-        per-object metal_rt_reflect still wins. Disabling the sliders there
-        would remove a working control and say the opposite of the truth."""
-        self.show('surface')
-        cmd.set('surface_material', 'metallic', 'm1')
-        self.assertEqual(self.dead(), 0)
-        # ...and the override really does work, so the group is not merely
-        # being left live out of caution.
-        from pymol import _cmd
-        from pymol.constants import repres
-        cmd.set('metal_rt_reflect', 0.9, 'm1')
-        _f, _m, refl, _t, _r, _p = _cmd.get_material_draw_params(
-            cmd._COb, 'm1', repres['surface'])
-        self.assertAlmostEqual(refl, 0.9, places=4)
-
-    def testOneShownRepWithoutAMaterialKeepsItLive(self):
-        """Ribbon, mesh, lines, dots and labels have no material setting at
-        all, so they draw with `default` shading and DO read the triple. An
-        earlier version of this looked only at the four material-bearing reps
-        and disabled the group while a ribbon on screen still obeyed it."""
-        self.show('surface', 'ribbon')
-        cmd.set('surface_material', 'glass', 'm1')
-        self.assertEqual(self.dead(), 0)
-
-    def testAMaterialOnAnUNSHOWNRepDoesNotKillIt(self):
-        """The claim the disabled group makes is about what the object DRAWS."""
-        self.show('surface')
-        cmd.set('cartoon_material', 'glass', 'm1')   # cartoon is not shown
-        self.assertEqual(self.dead(), 0)
-
-    def testEveryShownRepMustBeDeaf(self):
-        self.show('surface', 'sticks')
-        cmd.set('surface_material', 'glass', 'm1')
-        self.assertEqual(self.dead(), 0)
-        cmd.set('stick_material', 'glass', 'm1')
-        self.assertEqual(self.dead(), 1)
-
-    def testAnObjectShowingNothingKeepsItLive(self):
-        """Nothing drawn is not the same as "the sliders are dead": the next
-        rep the user shows may well read them."""
-        cmd.hide('everything', 'm1')
-        cmd.rebuild('m1')
-        cmd.refresh()
-        self.assertEqual(self.dead(), 0)
-
-
 class TestWhichObjectsGetTheRows(testing.PyMOLTestCase):
-    """The object-wide rows are for MOLECULES, and not for groups.
+    """The object-wide peel row is for peelable objects, and not for groups.
 
-    Three separate reasons, and each of them bit before the gate existed:
+    Two separate reasons, and each of them bit before the gate existed:
 
-      * a measurement, CGO or map has no material, so the group rendered live
-        and inert directly above "No representations shown";
       * probing one for its peel resolves through ExecutiveFindObjectByName,
         which writes "named object not found." straight to the feedback log --
         the issue #219 flood, twice a second for as long as the card is open,
@@ -290,21 +73,21 @@ class TestWhichObjectsGetTheRows(testing.PyMOLTestCase):
         cmd.reinitialize()
         cmd.fragment('ala', 'm1')
 
-    def testAMoleculeGetsThem(self):
-        self.assertEqual(meta('m1')['material_rows'], 1)
+    def testAMoleculeGetsIt(self):
         self.assertEqual(meta('m1')['peel_row'], 1)
 
-    def testAMeasurementGetsPeelButNotMaterials(self):
-        """The two gates are separate. A measurement has no material, so the
-        reflection group would render live and inert -- but peel is not a
-        material question: SceneCollectPeelObjects walks every non-gadget
-        object."""
+    def testAMeasurementGetsIt(self):
+        """Peel is not a material question: SceneCollectPeelObjects walks every
+        non-gadget object."""
         cmd.distance('d1', 'm1 and index 1', 'm1 and index 2')
         m = meta('d1', objs=['m1', 'd1'])
-        self.assertEqual(m['material_rows'], 0)
         self.assertEqual(m['peel_row'], 1)
-        for key in ('refl', 'legacy_dead'):
-            self.assertNotIn(key, m)
+
+    def testNoPayloadCarriesTheRetiredReflectionGroup(self):
+        """#565 retired the object-wide metal_rt_reflect* group. Its payload keys
+        -- and the molecules-only gate that existed only for it -- go too."""
+        for key in ('refl', 'legacy_dead', 'material_rows'):
+            self.assertNotIn(key, meta('m1'), key)
 
     def testObjectKindsMatchExecutiveGetType(self):
         """OBJECT_KINDS is a hand-kept copy of ExecutiveGetType's labels, so
@@ -323,7 +106,7 @@ class TestWhichObjectsGetTheRows(testing.PyMOLTestCase):
         labels = tuple(re.findall(r'return "(object:[^"]*)";', body))
         self.assertEqual(labels, ai.OBJECT_KINDS)
 
-    def testBothGatesAreAnsweredForEVERYObjectKind(self):
+    def testTheGateIsAnsweredForEVERYObjectKind(self):
         """Enumerated over the WHOLE of cmd.get_type's object vocabulary, not a
         hand-picked subset.
 
@@ -363,12 +146,8 @@ class TestWhichObjectsGetTheRows(testing.PyMOLTestCase):
         self.assertEqual(sorted(expected_peel), sorted(ai.OBJECT_KINDS))
         for kind in ai.OBJECT_KINDS:
             self.assertEqual(ai._takes_peel_row(kind), expected_peel[kind], kind)
-            # Materials are molecules-only, so the other gate needs no table.
-            self.assertEqual(ai._takes_material_rows(kind),
-                             kind == 'object:molecule', kind)
-        # A name the core cannot type at all gets neither.
+        # A name the core cannot type at all gets no row.
         self.assertFalse(ai._takes_peel_row(''))
-        self.assertFalse(ai._takes_material_rows(''))
 
     def testARampGetsNoRowsAtAll(self):
         """The live version of the gadget case, since a ramp IS buildable
@@ -383,13 +162,11 @@ class TestWhichObjectsGetTheRows(testing.PyMOLTestCase):
         self.assertIn('rmp', cmd.get_names('public_objects'))
         m = meta('rmp', objs=['rmp'])
         self.assertEqual(m['peel_row'], 0)
-        self.assertEqual(m['material_rows'], 0)
 
-    def testAGroupGetsNeither(self):
+    def testAGroupDoesNotGetIt(self):
         cmd.fragment('ala', 'm2')
         cmd.group('g1', 'm1 m2')
         m = meta('g1', objs=['g1'])
-        self.assertEqual(m['material_rows'], 0)
         self.assertEqual(m['peel_row'], 0)
 
     def testTheGroupAsymmetryIsRealAndNotJustCaution(self):
@@ -400,38 +177,6 @@ class TestWhichObjectsGetTheRows(testing.PyMOLTestCase):
         cmd.set('transparency_peel', 1, 'g1')
         self.assertEqual(cmd.get_setting_int('transparency_peel', 'm1'), 1)
         self.assertEqual(cmd.get_setting_int('transparency_peel', 'g1'), -1)
-
-
-class TestObjectWideReflectionValues(testing.PyMOLTestCase):
-    def setUp(self):
-        super().setUp()
-        cmd.reinitialize()
-        cmd.fragment('ala', 'm1')
-        cmd.show('surface', 'm1')
-        cmd.rebuild('m1')
-        cmd.refresh()
-
-    def testThePayloadCarriesTheObjectLevelTriple(self):
-        """One copy, on the object. Until #498 these were three rows in each of
-        the four material-bearing rep panels -- twelve controls over three
-        object-scoped settings, and moving any one moved the other eleven."""
-        cmd.set('metal_rt_reflect', 0.5, 'm1')
-        cmd.set('metal_rt_reflect_tint', 0.25, 'm1')
-        cmd.set('metal_rt_reflect_rough', 0.75, 'm1')
-        refl = meta('m1')['refl']
-        self.assertEqual(len(refl), 3)
-        self.assertAlmostEqual(refl[0], 0.5, places=4)
-        self.assertAlmostEqual(refl[1], 0.25, places=4)
-        self.assertAlmostEqual(refl[2], 0.75, places=4)
-
-    def testTheRepPayloadNoLongerCarriesThem(self):
-        """The Swift catalog drops the rows; this is the other half -- the poll
-        should stop shipping the value four times over."""
-        for rep in reps_payload('m1'):
-            for s in ('metal_rt_reflect', 'metal_rt_reflect_tint',
-                      'metal_rt_reflect_rough'):
-                self.assertNotIn(s, rep.get('vals', {}),
-                                 '%s still ships %s' % (rep['rep'], s))
 
 
 class TestWhatTheControlsSend(testing.PyMOLTestCase):
@@ -457,27 +202,6 @@ class TestWhatTheControlsSend(testing.PyMOLTestCase):
             cmd.do('set transparency_peel, %d, m1' % value)
             self.assertEqual(cmd.get_setting_int('transparency_peel', 'm1'), value)
 
-    def testTheReflectionCommandSetsTheObjectLevelValue(self):
-        cmd.do('set metal_rt_reflect, 0.5000, m1')
-        self.assertAlmostEqual(
-            cmd.get_setting_float('metal_rt_reflect', 'm1'), 0.5, places=4)
-        # ...on the OBJECT, so the global is untouched and every rep of m1 sees
-        # the same value -- which is the whole reason the row moved to the
-        # object header.
-        self.assertAlmostEqual(cmd.get_setting_float('metal_rt_reflect'), 0.0,
-                               places=4)
-
-    def testTheBundleCommandRunsTheBundle(self):
-        cmd.do("python\nfrom pymol import materials; "
-               "materials.marble('m1', _self=cmd)\npython end")
-        self.assertEqual(cmd.get('surface_material', 'm1'), 'marble')
-        self.assertEqual(cmd.get('cartoon_material', 'm1'), 'marble')
-        # ...and the lighting half, which is what separates a bundle from the
-        # dropdown beside it.
-        self.assertAlmostEqual(cmd.get_setting_float('specular'), 0.12, places=4)
-        self.assertAlmostEqual(cmd.get_setting_float('metal_sss_wrap'), 0.6,
-                               places=4)
-
 
 class TestSceneMaterialRows(testing.PyMOLTestCase):
     def testTheSceneParamsArePolled(self):
@@ -497,3 +221,126 @@ class TestSceneMaterialRows(testing.PyMOLTestCase):
         by_name = {n: i for i, n in setting.get_material_names(0)}
         self.assertEqual(int(scene['material_default']), by_name['marble'])
         self.assertEqual(int(scene['material_env']), 1)
+
+
+class TestCustomMaterial(testing.PyMOLTestCase):
+    """The Custom material's Inspector half (#569), Python side: the knobs the
+    MATKNOBS lines carry, the per-rep state the poll ships, and what commands
+    of the form the Swift strings send (MaterialInspectorTests pins those
+    strings; the line format is the join) do to the session."""
+    KNOBS = ('reflect', 'tint', 'rough', 'knob1', 'knob2', 'knob3',
+             'knob4', 'knob5', 'knob6')
+
+    def setUp(self):
+        super().setUp()
+        cmd.reinitialize()
+        cmd.fragment('ala', 'm1')
+        cmd.hide('everything', 'm1')
+        cmd.show('sticks', 'm1')
+
+    def rep(self, name='sticks'):
+        return [r for r in reps_payload('m1') if r['rep'] == name][0]
+
+    def testEachMaterialsKnobsComeFromTheCore(self):
+        from pymol import _cmd
+        for mid, name in ai.material_names():
+            self.assertEqual([k[0] for k in ai.material_knobs(mid)],
+                             [k[0] for k in _cmd.get_material_knobs(mid)], name)
+        by_name = {n: i for i, n in ai.material_names()}
+        self.assertEqual(ai.material_knobs(by_name['default']), [])
+        self.assertEqual([k[0] for k in ai.material_knobs(by_name['marble'])],
+                         ['knob2', 'knob5', 'knob6'])
+
+    def testEveryPolledLineFitsInOneFeedbackLine(self):
+        """PyMOL splits feedback at ~1024 chars (OrthoLineLength), and a split
+        line fails to parse on the Swift side -- which left every material
+        menu disabled when the knobs rode on the MATERIALS line."""
+        import io, contextlib, json
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            ai.poll_materials()
+        lines = buf.getvalue().splitlines()
+        self.assertTrue(lines[0].startswith('MATERIALS:'))
+        # names only: the knobs must not ride here, at any compactness -- the
+        # table is ~70 chars from the cap even with compact separators
+        for row in json.loads(lines[0][len('MATERIALS:'):]):
+            self.assertEqual(len(row), 2, row)
+        knob_lines = [l for l in lines if l.startswith('MATKNOBS:')]
+        self.assertGreaterEqual(len(knob_lines), 9)
+        for l in lines:
+            self.assertLess(len(l), 1000, l[:60])
+        mid, payload = knob_lines[0][len('MATKNOBS:'):].split(':', 1)
+        self.assertEqual(json.loads(payload), ai.material_knobs(int(mid)))
+
+    def testTheRepShipsWhatTheDrawUsesAndWhatIsOverridden(self):
+        cmd.set('stick_material', 'metallic', 'm1')
+        m = self.rep()['material']
+        self.assertAlmostEqual(m['knobs']['reflect'], 0.6, places=4)
+        self.assertEqual(m['custom'], [])
+        cmd.set('stick_material_rough', 0.05, 'm1')
+        m = self.rep()['material']
+        self.assertAlmostEqual(m['knobs']['rough'], 0.05, places=4)
+        self.assertEqual(m['custom'], ['rough'])
+
+    def testAGlobalValueIsNotShownAsAnOverride(self):
+        cmd.set('stick_material', 'metallic', 'm1')
+        cmd.set('stick_material_rough', 0.9)          # global, not the object's
+        self.assertEqual(self.rep()['material']['custom'], [])
+
+    def testPickingANamedMaterialClearsTheOverrides(self):
+        """What CustomMaterial.pick sends: set the material, and unset the
+        overrides the payload reports in `set`. Re-picking a material that HAS
+        the overridden knob is what shows the unset ran -- a material without
+        it would hide a leftover anyway."""
+        cmd.set('stick_material', 'metallic', 'm1')
+        cmd.set('stick_material_rough', 0.05, 'm1')
+        self.assertEqual(self.rep()['material']['set'], ['rough'])
+        cmd.do('set stick_material, 2, m1\nunset stick_material_rough, m1')
+        self.assertEqual(cmd.get('stick_material', 'm1'), 'plastic')
+        m = self.rep()['material']
+        self.assertEqual(m['custom'], [])
+        self.assertEqual(m['set'], [])
+        self.assertAlmostEqual(m['knobs']['rough'], 0.15, places=4)   # plastic's own
+
+    def testAKnobCommandWritesTheLayersOverride(self):
+        """What CustomMaterial.setKnob sends."""
+        cmd.set('stick_material', 'marble', 'm1')
+        cmd.do('set stick_material_knob5, 0.2500, m1')
+        m = self.rep()['material']
+        self.assertEqual(m['custom'], ['knob5'])
+        self.assertAlmostEqual(m['knobs']['knob5'], 0.25, places=4)
+
+    def testADegradedLayerDrawsDefaultAndOffersNoKnobs(self):
+        """Glass on a ball-and-stick degrades to `default`: the layer draws
+        material 0, so the Inspector must not offer Custom there."""
+        cmd.set('stick_material', 'glass', 'm1')
+        cmd.set('stick_ball', 1, 'm1')
+        cmd.set('stick_material_rough', 0.5, 'm1')
+        m = self.rep()['material']
+        self.assertEqual(m['drawn'], 0)
+        self.assertEqual(m['custom'], [])
+        cmd.set('stick_ball', 0, 'm1')
+        by_name = {n: i for i, n in setting.get_material_names(1)}
+        self.assertEqual(self.rep()['material']['drawn'], by_name['glass'])
+
+    def testALeftoverOverrideIsNotCustomButIsStillCleared(self):
+        """An override the drawn material has no knob for is ignored by the
+        core, so it must not make the row read Custom -- but it is still in
+        `set`, what a pick or Reset unsets, or it would come back the next
+        time a material with that knob is picked."""
+        cmd.set('stick_material', 'metallic', 'm1')
+        cmd.set('stick_material_rough', 0.05, 'm1')
+        cmd.set('stick_material', 'marble', 'm1')     # marble has no rough
+        m = self.rep()['material']
+        self.assertEqual(m['custom'], [])
+        self.assertEqual(m['set'], ['rough'])
+
+    def testEachLayerReportsItsOwnOverrides(self):
+        cmd.show('spheres', 'm1')
+        cmd.set('sphere_material', 'metallic', 'm1')
+        cmd.set('stick_material', 'metallic', 'm1')
+        cmd.set('sphere_material_rough', 0.07, 'm1')
+        spheres = self.rep('spheres')['material']
+        self.assertEqual(spheres['custom'], ['rough'])
+        self.assertAlmostEqual(spheres['knobs']['rough'], 0.07, places=4)
+        self.assertEqual(self.rep('sticks')['material']['custom'], [])

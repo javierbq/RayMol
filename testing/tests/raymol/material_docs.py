@@ -66,3 +66,45 @@ class TestMaterialDocs(testing.PyMOLTestCase):
         rows = first_cells(section(self.doc, 'Settings'))
         for name in names:
             self.assertIn(name, rows, name)
+
+
+class TestCustomKnobsAreDocumented(testing.PyMOLTestCase):
+    def setUp(self):
+        super().setUp()
+        if not os.path.isfile(DOC):
+            self.skipTest('docs/materials.md not present; not a repo checkout')
+
+    def testTheOverrideFamilyHasASettingsRow(self):
+        """The 36 `<rep>_material_<knob>` settings are documented as one
+        pattern row of the Settings table; material_settings() above does not
+        match them by name, so this is what keeps that row."""
+        from pymol import setting as _s
+        self.assertTrue(any('_material_' in n for n in _s.get_name_list()))
+        with open(DOC, encoding='utf-8') as handle:
+            rows = first_cells(section(handle.read(), 'Settings'))
+        self.assertIn('<rep>_material_<knob>', rows)
+
+    def testEveryMaterialsKnobsAreItsRow(self):
+        """Custom's knobs (#568) differ per MATERIAL, not per family -- marble
+        reads p[1] as vein scale and never reads p[0] -- so the table has a row
+        per material, and each row must name exactly the knobs the core says
+        that material has (_cmd.get_material_knobs), with the same labels."""
+        from pymol import _cmd
+        with open(DOC, encoding='utf-8') as handle:
+            text = section(handle.read(), "Custom: tuning a layer's material")
+        rows = {}
+        for line in text.splitlines():
+            cells = [c.strip() for c in line.split('|')]
+            if len(cells) > 3 and cells[1].startswith('`'):
+                rows[cells[1].strip('`')] = cells[2]
+        checked = 0
+        for mid, name in setting.get_material_names(1):
+            knobs = _cmd.get_material_knobs(mid)
+            if not knobs:
+                self.assertNotIn(name, rows, name)
+                continue
+            expected = ', '.join('`%s` %s' % (k[0], k[1]) for k in knobs)
+            self.assertEqual(rows.get(name), expected, name)
+            checked += 1
+        self.assertEqual(checked, len(rows))
+        self.assertGreaterEqual(checked, 9)

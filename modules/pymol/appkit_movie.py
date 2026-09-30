@@ -106,6 +106,56 @@ def _emit_state_sweep(obj, lo, hi, start, end, mode='sweep'):
         print('MOVIE_ERR:' + str(ex))
 
 
+def _reset_object_motions():
+    """Drop every object's own mview track. `mview reset` alone clears only the
+    camera track, so per-object state/matrix keyframes from the previous build
+    would survive at frames the new build doesn't overwrite (e.g. a hold pinned
+    at frame 41 bleeding into a shorter lane). The authoring paths here own
+    those tracks and re-emit them on every build."""
+    for o in cmd.get_object_list() or []:
+        try:
+            cmd.mview('reset', object=o)
+        except Exception:
+            pass
+
+
+def _current_states():
+    """{objname: model shown now} for every multi-state object. Reads the
+    object's own `state` (which falls back to the global state when unset), so
+    a model picked in the Object panel is honored as well as `set state, N`."""
+    out = {}
+    for o, n in _multistate_objects().items():
+        try:
+            s = int(cmd.get('state', o))
+        except Exception:
+            continue
+        out[o] = max(1, min(s, n))
+    return out
+
+
+def _emit_state_hold(obj, pins, total):
+    """Hold `obj` on the models it was pinned to (#579): per-object STATE
+    keyframes at each (frame, state) in `pins`, extended to frames 1 and `total`
+    so the object never falls back to the global mset (model 1) before the first
+    pin or after the last. Equal pins interpolate to a constant model; unequal
+    ones move between them like any other keyframed channel."""
+    try:
+        pts = {}
+        for f, s in pins:
+            pts[int(f)] = int(s)
+        if not pts:
+            return
+        fs = sorted(pts)
+        total = max(int(total), 2)
+        pts.setdefault(1, pts[fs[0]])
+        pts.setdefault(total, pts[fs[-1]])
+        for f in sorted(pts):
+            cmd.mview('store', object=obj, first=f, state=pts[f])
+        cmd.mview('interpolate', object=obj)
+    except Exception as ex:
+        print('MOVIE_ERR:' + str(ex))
+
+
 def reset_ensemble():
     """Drop all movie authoring and rewind so a multi-state object plays its raw
     models again (count_frames falls back to the state count)."""
@@ -268,8 +318,12 @@ def make_movie(kind, duration=12.0, angle=30.0, axis='y', loop=1,
     result is a clean single-motion movie. Leaves the playhead at frame 1."""
     from pymol import movie
     try:
+        # Camera motions hold the models showing now (#579); the builders' own
+        # `mset 1 xN` would otherwise drop every ensemble to model 1.
+        held = _current_states() if str(kind) in ('roll', 'rock', 'nutate') else {}
         if int(reset):
             cmd.mview('reset')
+            _reset_object_motions()
             cmd.mset('')
         k = str(kind)
         loop = int(loop)
@@ -291,6 +345,9 @@ def make_movie(kind, duration=12.0, angle=30.0, axis='y', loop=1,
             from pymol import raymol_scenes as _rs
             with _rs.suspended():
                 movie.add_scenes(names=names, pause=float(pause), loop=loop)
+        total = cmd.count_frames()
+        for obj, s in held.items():
+            _emit_state_hold(obj, [(1, s)], total)
         cmd.rewind()
     except Exception as e:
         print('MOVIE_ERR:' + str(e))
@@ -410,14 +467,19 @@ def append_template(kind, duration=8.0, axis='y', angle=30.0,
 # view matrices, keyed by the item's UUID. On every edit Swift calls rebuild()
 # with the ordered spec and we lay a fresh movie. Session-scoped (the dict lives
 # for the process, like the Swift-side item list) — not restored from a .pse.
+# Alongside each view we keep the model every multi-state object showed when
+# the item was captured (#579), so a camera item holds that model instead of
+# sweeping the ensemble.
 
 _views = {}
+_states = {}   # cam UUID -> {objname: state} at capture time
 
 
 def capture_view(cam_id):
     """Store the current camera view under `cam_id` (a camera item's UUID)."""
     try:
         _views[str(cam_id)] = list(cmd.get_view())
+        _states[str(cam_id)] = _current_states()
     except Exception as e:
         print('MOVIE_ERR:' + str(e))
 
@@ -425,18 +487,21 @@ def capture_view(cam_id):
 def forget_view(cam_id):
     """Drop the stored view for a deleted camera item."""
     _views.pop(str(cam_id), None)
+    _states.pop(str(cam_id), None)
 
 
 def forget_all_views():
     """Drop every stored camera view (timeline cleared / new session)."""
     _views.clear()
+    _states.clear()
 
 
 def capture_template_views(ids_json, kind, axis='y', angle=30.0):
     """Compute + store the waypoint camera views for a roll/rock template under
     the ordered `ids` (Swift pre-generates one UUID per waypoint). Views are
     derived from the CURRENT view so the template spins/rocks around wherever
-    the molecule is now; the live view is left unchanged.
+    the molecule is now; the live view is left unchanged. Every waypoint also
+    records the models showing now, so the motion holds them (#579).
 
       roll : equal steps around a full 360 turn about `axis`.
       rock : 0 -> +angle -> -angle -> 0 about `axis` (the canonical 4 points)."""
@@ -446,6 +511,7 @@ def capture_template_views(ids_json, kind, axis='y', angle=30.0):
         if not ids:
             return
         v0 = cmd.get_view()
+        held = _current_states()
         n = len(ids)
         k = str(kind)
         ax = str(axis)
@@ -463,6 +529,7 @@ def capture_template_views(ids_json, kind, axis='y', angle=30.0):
             if deg:
                 cmd.turn(ax, float(deg))
             _views[str(cid)] = list(cmd.get_view())
+            _states[str(cid)] = dict(held)
         cmd.set_view(v0)                          # restore the live view
     except Exception as e:
         print('MOVIE_ERR:' + str(e))
@@ -491,6 +558,7 @@ def rebuild(spec_json):
             reset_ensemble()
             return
         cmd.mview('reset')
+        _reset_object_motions()
         total = max(2, max(int(it.get('end', it['frame'])) for it in spec))
         cmd.mset('1 x%d' % total)
 
@@ -498,6 +566,7 @@ def rebuild(spec_json):
         cam_scene = [it for it in spec if not it.get('states')]
         motion = []   # objects that received per-scene TTT keyframes (#204)
         scene_kfs = []   # (frame, scene_name, power) for the setting animation
+        pins = {}        # objname -> [(frame, state)] the items hold it on (#579)
 
         # Camera + scene keyframes on the GLOBAL track (camera view / scene reps),
         # plus an optional pinned global state for non-swept objects.
@@ -532,9 +601,15 @@ def rebuild(spec_json):
                 if v:
                     cmd.set_view(v)
                 cmd.mview('store', first=f, power=power, linear=linear)
+                for obj, s in _states.get(str(cam), {}).items():
+                    pins.setdefault(obj, []).append((f, s))
             ps = it.get('state')
             if ps is not None:
                 cmd.mview('store', first=f, state=int(ps))
+                # An explicit pin wins over the capture-time snapshot, and must
+                # land on the per-object tracks too: those win at render.
+                for obj in _multistate_objects():
+                    pins.setdefault(obj, []).append((f, int(ps)))
         if cam_scene:
             cmd.mview('interpolate')
         # #204: interpolate each object's matrix track once (keyframes stored with
@@ -558,12 +633,14 @@ def rebuild(spec_json):
 
         # State sweeps — per-object tracks (independent; no clamping between objects).
         if state_clips:
+            swept = set()
             for clip in state_clips:
                 start = int(clip['frame']); end = int(clip.get('end', total))
                 mode = str(clip.get('mode', 'sweep'))
                 req_first = int(clip.get('first', 1) or 1)
                 req_last = int(clip.get('last', 0) or 0)   # 0 = through the last model
                 ms = _multistate_objects(clip.get('objects'))
+                swept.update(ms)
                 if mode == 'lockstep':
                     # One global state sweep across [start,end]; shorter objects clamp.
                     mx = max(ms.values()) if ms else 1
@@ -579,11 +656,21 @@ def rebuild(spec_json):
                         lo = max(1, min(req_first, n))
                         hi = n if req_last <= 0 else max(1, min(req_last, n))
                         _emit_state_sweep(obj, lo, hi, start, end, mode)
+            # Objects no clip plays keep the models their camera items hold.
+            for obj in _multistate_objects():
+                if obj in pins and obj not in swept:
+                    _emit_state_hold(obj, pins[obj], total)
         else:
-            # Non-destructive default: auto-sweep every multi-state object across
-            # the whole movie so a camera/scene movie never freezes the ensemble.
+            # A camera item holds the models it was captured on (#579): a Roll
+            # moves the camera, not the ensemble. Objects no item pins (loaded
+            # after the camera items, or a scenes-only lane) keep the
+            # non-destructive default — auto-sweep across the whole movie so
+            # they never freeze on model 1.
             for obj, n in _multistate_objects().items():
-                _emit_state_sweep(obj, 1, n, 1, total, 'sweep')
+                if obj in pins:
+                    _emit_state_hold(obj, pins[obj], total)
+                else:
+                    _emit_state_sweep(obj, 1, n, 1, total, 'sweep')
 
         cmd.rewind()
     except Exception as e:

@@ -1,50 +1,42 @@
-"""Traced self-reflection material settings (metal_rt_reflect*).
+"""Traced-reflection settings after #565.
 
-The Metal ray-traced composite reads a per-object material (reflect / tint /
-roughness) and two global knobs (environment on miss, export samples). This
-checks the settings exist with distinct indices (a duplicate index silently
-truncates the table: the first cut of this feature reused 831, which
-cartoon_spline already owned, and the last three settings vanished), that the
-defaults keep reflections off, and that the object-scoped ones override per
-object with a global fallback.
+The object-wide `metal_rt_reflect` / `_tint` / `_rough` triple predated
+materials and never shipped. It is retired: reflection now comes from each
+layer's material (reflective materials carry their own; per-layer tuning is the
+Custom material). Its indices 833-835 are kept as blank slots, so no other
+setting's index moves and a .pse written by a dev build loads.
+
+The two GLOBAL knobs that are not part of the triple stay: the environment a
+reflection ray sees on a miss, and the ray count for exports.
 
 Runs on a RayMol build:
     pymol -ckqy testing/testing.py --run tests/raymol/metal_rt_reflect.py
 """
 from pymol import cmd, setting, testing
 
-OBJECT_SCOPED = ['metal_rt_reflect', 'metal_rt_reflect_tint', 'metal_rt_reflect_rough']
+RETIRED = ['metal_rt_reflect', 'metal_rt_reflect_tint', 'metal_rt_reflect_rough']
 GLOBAL = ['metal_rt_reflect_env', 'metal_rt_reflect_samples']
 
 
 class TestMetalRTReflectSettings(testing.PyMOLTestCase):
-    def testDistinctIndices(self):
-        names = OBJECT_SCOPED + GLOBAL
-        indices = [setting._get_index(n) for n in names]
-        self.assertEqual(len(set(indices)), len(indices), indices)
-        # None may collide with a pre-existing setting either: every name must
-        # be registered exactly once, and the index must round-trip to it.
-        index_to_name = {v: k for k, v in setting.index_dict.items()}
-        for n, i in zip(names, indices):
-            self.assertEqual(setting.name_list.count(n), 1, n)
-            self.assertEqual(index_to_name[i], n)
+    def testTheTripleIsGone(self):
+        for n in RETIRED:
+            self.assertNotIn(n, setting.name_list, n)
+            with self.assertRaises(Exception, msg=n):
+                cmd.set(n, 0.5)
 
-    def testDefaultsOff(self):
-        for n in OBJECT_SCOPED:
-            self.assertAlmostEqual(cmd.get_setting_float(n), 0.0, msg=n)
+    def testItsIndicesStayReservedSoNothingElseMoved(self):
+        # the neighbours on both sides keep their indices
+        self.assertEqual(setting._get_index('metal_rt_scale'), 832)
+        self.assertEqual(setting._get_index('metal_rt_reflect_env'), 836)
+        # ...and the three slots are blank, not handed to a new setting
+        index_to_name = {v: k for k, v in setting.index_dict.items()}
+        for i in (833, 834, 835):
+            self.assertFalse(index_to_name.get(i), i)
+
+    def testTheGlobalKnobsRemain(self):
+        for n in GLOBAL:
+            self.assertEqual(setting.name_list.count(n), 1, n)
         # cmd.get() renders a boolean as 'on'/'off', so read the typed getter.
         self.assertEqual(cmd.get_setting_boolean('metal_rt_reflect_env'), 1)
         self.assertGreaterEqual(cmd.get_setting_int('metal_rt_reflect_samples'), 1)
-
-    def testPerObjectOverride(self):
-        cmd.pseudoatom('m1')
-        cmd.pseudoatom('m2')
-        cmd.set('metal_rt_reflect', 0.3)          # global default
-        cmd.set('metal_rt_reflect', 1.0, 'm2')    # per-object override
-        cmd.set('metal_rt_reflect_tint', 0.8, 'm2')
-        self.assertAlmostEqual(float(cmd.get('metal_rt_reflect', 'm1')), 0.3, places=5)
-        self.assertAlmostEqual(float(cmd.get('metal_rt_reflect', 'm2')), 1.0, places=5)
-        self.assertAlmostEqual(float(cmd.get('metal_rt_reflect_tint', 'm1')), 0.0, places=5)
-        self.assertAlmostEqual(float(cmd.get('metal_rt_reflect_tint', 'm2')), 0.8, places=5)
-        cmd.unset('metal_rt_reflect', 'm2')
-        self.assertAlmostEqual(float(cmd.get('metal_rt_reflect', 'm2')), 0.3, places=5)

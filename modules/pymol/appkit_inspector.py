@@ -53,6 +53,11 @@ MATERIAL_REPS = {
 }
 
 
+# The Custom material's knobs (#568), in the order MaterialKnobSlot has them.
+CUSTOM_KNOBS = ('reflect', 'tint', 'rough', 'knob1', 'knob2', 'knob3',
+                'knob4', 'knob5', 'knob6')
+
+
 def material_names():
     """The materials the Inspector dropdown may offer, as [[id, name], ...] with
     `default` first.
@@ -69,44 +74,42 @@ def material_names():
         return []
 
 
-def poll_materials():
-    """Print `MATERIALS:<json>` once, for the Inspector's material dropdowns."""
-    import json
+def material_knobs(mid):
+    """Material `mid`'s Custom knobs (#569), [[suffix, label, min, max,
+    control], ...]: only the ones its shader reads, so the Custom controls come
+    from the core. `control` is 'slider', or 'toggle' for an on/off knob
+    (min off, max on; #590)."""
     try:
-        print('MATERIALS:' + json.dumps(material_names()))
-    except Exception:
-        print('MATERIALS:[]')
-
-
-def material_bundles():
-    """The `pymol.materials` look bundles, as [[attr, label, material], ...].
-
-    A material on its own is half a look; the bundle sets the lighting that
-    flatters it. The Inspector offers one beside the material dropdown when the
-    chosen material has a bundle, so the join key -- the MATERIAL the bundle
-    applies -- comes from `materials.BUNDLES` rather than from a copy in the UI.
-
-    Several bundles can name the same material: the four metals are all
-    `metallic` and differ in colour and in the legacy reflect triple. The UI
-    offers a menu when more than one matches, which is why this returns the
-    whole list rather than a material -> bundle map."""
-    try:
-        from pymol import materials
-        return [[str(attr), str(label), str(mat)]
-                for (label, attr, mat) in materials.BUNDLES]
+        from pymol import _cmd
+        return [[str(k), str(l), float(lo), float(hi), str(c)]
+                for (k, l, lo, hi, c) in _cmd.get_material_knobs(int(mid))]
     except Exception:
         return []
 
 
-def poll_bundles():
-    """Print `BUNDLES:<json>` once, for the Inspector's suggested-lighting
-    control. Emitted at startup beside the material table: neither can change
-    within a session."""
+def poll_materials():
+    """Print `MATERIALS:<json>` once, for the Inspector's material dropdowns,
+    then one `MATKNOBS:<id>:<json>` line per material with knobs.
+
+    Separate lines because PyMOL's feedback splits a line at ~1024 chars
+    (OrthoLineLength): the whole table with its knobs is over that, and a split
+    line fails to parse -- which left every material menu disabled."""
     import json
     try:
-        print('BUNDLES:' + json.dumps(material_bundles()))
+        names = material_names()
+        print('MATERIALS:' + json.dumps(names, separators=(',', ':')))
+        for mid, _name in names:
+            knobs = material_knobs(mid)
+            if knobs:
+                print('MATKNOBS:%d:%s' % (mid, json.dumps(knobs, separators=(',', ':'))))
+        # The layer Looks (looks.py): [[name, label, material], ...]
+        try:
+            from pymol import looks
+            print('LOOKS:' + json.dumps(looks.looks_payload(), separators=(',', ':')))
+        except Exception:
+            pass
     except Exception:
-        print('BUNDLES:[]')
+        print('MATERIALS:[]')
 
 
 def _material_id(rep_name, obj):
@@ -128,6 +131,60 @@ def _material_id(rep_name, obj):
         return float(value) if value is not None else 0.0
     except Exception:
         return 0.0
+
+
+def _custom_prefix(rep_name):
+    """`cartoon` / `surface` / `stick` / `sphere`: the stem of the rep's Custom
+    override settings, `<stem>_material_<knob>` (#568)."""
+    entry = MATERIAL_REPS.get(rep_name)
+    return entry[0][:-len('_material')] if entry else None
+
+
+def _custom_state(rep_name, obj, explicit):
+    """What the Inspector's Custom controls need for one rep (#569):
+    {'drawn': the material id the layer DRAWS with, 'knobs': {suffix: value
+    the draw uses}, 'custom': [overridden suffixes that material has],
+    'set': [every override the object carries for the layer], 'follows':
+    whether the layer draws with the cartoon's material} -- `set` is what a
+    pick, Inherit or Reset unsets.
+
+    `drawn` is the draw's own answer, not the setting: glass on spheres or on
+    ball-and-stick degrades to `default` (0), which has no knobs, so Custom
+    must not be offered there. `custom` counts only the knobs `drawn` has --
+    an override left over from another material (the core ignores it) must
+    not make the row read Custom. `explicit` is the set of setting indices the
+    object itself carries (cmd.get_object_settings), so a global value never
+    reads as an override; the core does not treat it as one either."""
+    try:
+        from pymol import _cmd, setting
+        from pymol.constants import repres
+        prefix = _custom_prefix(rep_name)
+        if not prefix:
+            return None
+        params = _cmd.get_material_draw_params(
+            cmd._COb, obj or '', repres[MATERIAL_REPS[rep_name][1]])
+        if not params:
+            return None
+        values = [params[2], params[3], params[4]] + list(params[5])[:6]
+        knobs = {k: float(v) for k, v in zip(CUSTOM_KNOBS, values)}
+        drawn = int(params[1]) if int(params[0]) != 0 else 0
+        has = {row[0] for row in _cmd.get_material_knobs(drawn)}
+        custom = [k for k in CUSTOM_KNOBS if k in has and
+                  setting._get_index('%s_material_%s' % (prefix, k)) in explicit]
+        # every override the object carries for this layer, knob or not: what
+        # a pick or Reset has to unset (and nothing else, so it stays quiet)
+        explicit_here = [k for k in CUSTOM_KNOBS
+                         if setting._get_index('%s_material_%s' % (prefix, k)) in explicit]
+        # A stick or sphere layer with no material of its own draws with the
+        # cartoon's while one is shown (MaterialSourceRep): its row then says
+        # so, and offers no Custom -- the knobs it draws with are the cartoon's.
+        rep_index = repres[MATERIAL_REPS[rep_name][1]]
+        source = _cmd.get_rep_material(cmd._COb, obj or '', rep_index, -1, 1)
+        follows = source is not None and source != rep_index
+        return {'drawn': drawn, 'knobs': knobs, 'custom': custom,
+                'set': explicit_here, 'follows': follows}
+    except Exception:
+        return None
 
 
 # Per-rep color-override setting (default -1 / -6 = inherit the atom color).
@@ -160,7 +217,6 @@ TRANSP_SETTINGS = ['cartoon_transparency', 'sphere_transparency', 'transparency'
 SCENE_SETTINGS = ['metal_raytrace', 'metal_rt_shadows', 'metal_shadows', 'metal_ssao',
                   'metal_rt_samples', 'metal_rt_ao_radius', 'metal_rt_ao_intensity',
                   'metal_rt_shadow_intensity', 'metal_rt_scale',
-                  'metal_rt_reflect', 'metal_rt_reflect_tint', 'metal_rt_reflect_rough',
                   'metal_rt_reflect_env', 'metal_rt_reflect_samples',
                   'metal_rt_transparent',
                   'metal_outline', 'metal_outline_width', 'metal_msaa',
@@ -411,6 +467,10 @@ def _build(objs):
         # object; attached to the rep whose transparency setting is overridden so
         # the expanded card can show "per-atom: min–max" and a Clear action.
         summ = transp_summary(o)
+        try:
+            explicit = {e[0] for e in (cmd.get_object_settings(o) or [])}
+        except Exception:
+            explicit = set()
         for r in REPS:
             try:
                 present = cmd.count_atoms('(%s) & rep %s' % (o, r)) > 0
@@ -429,6 +489,10 @@ def _build(objs):
             col = _rep_color(o, REP_COLOR[r]) if r in REP_COLOR else 'inherit'
             cols = {s: _rep_color(o, s) for s in REP_EXTRA_COLORS.get(r, [])}
             rep = {'rep': r, 'vis': 1, 'vals': vals, 'color': col, 'colors': cols}
+            if r in MATERIAL_REPS:
+                cs = _custom_state(r, o, explicit)
+                if cs is not None:
+                    rep['material'] = cs
             tset = REP_TRANSP.get(r)
             tsumm = summ.get(tset) if tset else None
             if tsumm and tsumm[2]:
@@ -465,24 +529,14 @@ def _build(objs):
             continue
         entry = {'state': int(round(_num('state', o))),
                  'all': int(round(_num('all_states', o)))}
-        # Object-wide material rows (#498). These live on the object header
-        # rather than in a rep panel because the settings are object-scoped:
-        # carried per rep, the same value appeared in four places and moving
-        # one moved them all.
-        # ...but only for objects each row MEANS something for, and the two
-        # groups of rows do not have the same answer. Peel applies to anything
-        # the scene loop can peel; materials only to molecules.
+        # Object-wide peel row (#498). It lives on the object header rather
+        # than in a rep panel because the setting is object-scoped, and only
+        # for objects the scene loop can peel.
         kind = _object_kind(o)
         entry['peel_row'] = int(_takes_peel_row(kind))
-        entry['material_rows'] = int(_takes_material_rows(kind))
         if entry['peel_row']:
             entry['peel'] = int(round(_num('transparency_peel', o)))
             entry['peel_resolved'] = _object_peel(o)
-        if entry['material_rows']:
-            entry['refl'] = [_num('metal_rt_reflect', o),
-                             _num('metal_rt_reflect_tint', o),
-                             _num('metal_rt_reflect_rough', o)]
-            entry['legacy_dead'] = _legacy_reflection_is_dead(o, detail.get(o, []))
         # Per-state titles (e.g. compound names from a multi-record SDF, which
         # PyMOL stores as each state's title). Included only when at least one
         # state carries a non-empty title, so ordinary single structures add
@@ -763,25 +817,6 @@ def _takes_peel_row(kind):
     return bool(kind) and kind not in _NO_PEEL_ROW_KINDS
 
 
-def _takes_material_rows(kind):
-    """True for the objects the material/reflection rows apply to: molecules,
-    and not groups.
-
-    Measurements, CGOs and maps have no material and no reps, so the legacy
-    reflection group would render LIVE and inert directly above "No
-    representations shown".
-
-    Note what this is NOT for. An earlier version of this comment said probing
-    those objects for their peel floods the console with "named object not
-    found." -- that is wrong, and worth correcting rather than deleting:
-    ExecutiveFindObjectByName returns the object for any cExecObject, which a
-    measurement, a CGO and a map all are. The names that DO reach that error
-    are selections and deleted ones, and neither can arrive here -- the
-    inspector never expands a selection row, and _build's `known` guard drops
-    deleted names before this."""
-    return kind == 'object:molecule'
-
-
 def _object_peel(obj):
     """The RESOLVED peel answer for `obj` (#488), not the raw tri-state.
 
@@ -799,88 +834,6 @@ def _object_peel(obj):
         return int(_cmd.get_object_peel(cmd._COb, obj or ''))
     except Exception:
         return 0
-
-
-#: The one material family that ignores the legacy metal_rt_reflect* triple.
-#:
-#: GLASS only. An earlier version of this listed procedural too, on the
-#: strength of the comment in MaterialApplyLegacyTriple -- "the procedural
-#: materials do not read these at all" -- which is true of the RASTER shaders
-#: (mat_shade_procedural reads m.p[] and m.mode, never m.reflect) and false of
-#: the draw as a whole: that function OVERWRITES reflect/tint/rough from the
-#: object settings for every family except reflective and glass, and the values
-#: go straight into the ray tracer's per-occurrence table. The triple is an
-#: RT-only knob in the first place -- the scene-level copies carry
-#: `dependsOn: metal_raytrace` -- so the RT path is the consumer that decides.
-#:
-#: Reflective is not deaf either, for the other reason: it starts from its
-#: table row, but an EXPLICIT per-object value still wins (#497).
-_TRIPLE_DEAF_FAMILIES = (3,)
-
-
-def _drawn_family(obj, rep_name):
-    """The family a representation actually DRAWS with, or None.
-
-    Not the family of the material the SETTING holds. `MaterialResolve`
-    degrades clear and frosted glass to `default` on sphere impostors, and
-    `MaterialResolveForDraw` does the same for such sticks when they emit
-    stick_ball spheres (jelly is exempt from both, #526) -- and a degraded
-    rep draws as family 0, which reads the legacy triple.
-    get_material_draw_params is documented as "the FINAL material parameters
-    a representation draws with ... after the legacy-slider decision", which
-    is exactly the question being asked here.
-
-    Cost: this is the UNCACHED draw path, so for a glass-family sticks rep it
-    re-runs MaterialRepEmitsStickBalls -- an O(atoms) walk the draw site
-    deliberately avoids by caching the answer on the rep. It is paid at most
-    once per rep per poll tick and the loop below short-circuits on the first
-    non-deaf rep, so in practice it is one call; but there is no cached Python
-    entry point, and on a very large glass-sticks object it is real. See #530."""
-    try:
-        from pymol import _cmd
-        from pymol.constants import repres
-        entry = MATERIAL_REPS.get(rep_name)
-        if not entry:
-            return None
-        params = _cmd.get_material_draw_params(
-            cmd._COb, obj or '', repres[entry[1]])
-        return int(params[0]) if params else None
-    except Exception:
-        return None
-
-
-def _legacy_reflection_is_dead(obj, reps):
-    """True when the legacy metal_rt_reflect* triple cannot change anything the
-    object currently DRAWS, so the Inspector can disable the group and say why.
-
-    #498 specifies "once every active rep has a non-default material". Two
-    things make the real test narrower, and both were found by rendering rather
-    than by reading:
-
-      * a REFLECTIVE material still honours an explicit per-object value
-        (#497), so `metallic` keeps the sliders live;
-      * a PROCEDURAL material does not read them in the raster shader but does
-        take them on the ray-traced path, which is the only path they affect at
-        all.
-
-    So the family must be glass, and it must be the family the rep DRAWS with
-    rather than the one its setting names -- clear and frosted glass degrade
-    to `default` on spheres and on ball-and-stick sticks, and `default` reads
-    the triple.
-
-    A rep with NO material setting (ribbon, mesh, lines, dots, labels) draws
-    with `default` shading and reads it too, so one of those on screen keeps the
-    group live.
-    """
-    if not reps:
-        return 0
-    for rep in reps:
-        if not MATERIAL_REPS.get(rep.get('rep')):
-            return 0
-        family = _drawn_family(obj, rep.get('rep'))
-        if family is None or family not in _TRIPLE_DEAF_FAMILIES:
-            return 0
-    return 1
 
 
 def poll_panel():

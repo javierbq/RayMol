@@ -377,19 +377,15 @@ final class PyMOLEngine: ObservableObject {
     /// looks this build cannot draw. Only the IMPLEMENTED rows arrive here --
     /// the rest are real ids that still work by name from the command line.
     @Published var materialNames: [(id: Int, name: String)] = []
+    /// Each material's Custom knobs (#569), by material id, from the
+    /// `MATKNOBS:<id>:` lines that follow MATERIALS.
+    @Published var materialKnobs: [Int: [MaterialKnobInfo]] = [:]
+    /// The layer Looks (pymol.looks), from the `LOOKS:` line after MATERIALS.
+    @Published var materialLooks: [MaterialLook] = []
     /// How many times the material table has been asked for; see
     /// requestMaterialsIfNeeded().
     private var materialRequests = 0
 
-    /// The `pymol.materials` look bundles (#498), as (attr, label, material).
-    ///
-    /// A material is half a look; the bundle sets the lighting that flatters
-    /// it. The Inspector offers one beside a material dropdown when the chosen
-    /// material has a bundle, and the join key -- the material the bundle
-    /// applies -- comes from `materials.BUNDLES` rather than from a copy here,
-    /// which would go stale the moment a bundle changed what it applies.
-    @Published var materialBundles: [(attr: String, label: String, material: String)] = []
-    private var bundleRequests = 0
     // Global "Scene" parameters (metal_*, depth_cue, fog, fov, surface_quality, bg).
     @Published var sceneState = SceneState()
     // Per-object state metadata (effective current state + overlay-all) for the
@@ -933,7 +929,6 @@ final class PyMOLEngine: ObservableObject {
         // object poll while the table is still empty, so a lost line costs one
         // tick rather than the session.
         requestMaterialsIfNeeded()
-        requestBundlesIfNeeded()
 
         // Test affordance: seed the inspector's expanded object cards so the
         // expanded representation grid can be screenshotted without a click.
@@ -2685,9 +2680,13 @@ final class PyMOLEngine: ObservableObject {
             + "_am.capture_template_views(_b64.b64decode('\(idsB64)').decode('utf-8'), "
             + "'\(kind)', axis='\(axis)', angle=\(angle))")
         let per = max(duration / Double(count - 1), 0.2)   // 3 gaps span the duration
+        // A roll is one continuous spin: easing each 120° gap would slow the camera
+        // to a near-stop at every waypoint (a 6x speed pulse). Rock keeps the ease,
+        // since its waypoints are where the motion reverses.
+        let linear = kind == "roll"
         for id in ids {
             timelineItems.append(TimelineItem(id: id, kind: .camera,
-                                              transition: Transition(seconds: per, linear: false)))
+                                              transition: Transition(seconds: per, linear: linear)))
         }
         rebuildMovie()
     }
@@ -4202,8 +4201,12 @@ final class PyMOLEngine: ObservableObject {
                     // swallow
                 } else if line.hasPrefix("MATERIALS:") {
                     parseMaterialsFeedback(line)
-                } else if line.hasPrefix("BUNDLES:") {
-                    parseBundlesFeedback(line)
+                } else if line.hasPrefix("MATKNOBS:") {
+                    parseMaterialKnobsFeedback(line)
+                } else if line.hasPrefix("LOOKS:") {
+                    if let looks = PyMOLEngine.parseLooks(line) {
+                        DispatchQueue.main.async { self.materialLooks = looks }
+                    }
                 } else if line.hasPrefix("SETTINGS:ready") {
                     loadSettingsCatalogFile()
                 } else if line.hasPrefix("SETTINGS:err") {
@@ -4311,7 +4314,6 @@ final class PyMOLEngine: ObservableObject {
         // couple of seconds, which is the timescale a slow Python layer would
         // need, not crammed into the first 500ms. A no-op once the table is in.
         requestMaterialsIfNeeded()
-        requestBundlesIfNeeded()
 
         // Keep the sequence-panel selection highlight in sync with the active
         // selection (3D-view picks/selects reflect in the sequence).
@@ -4410,7 +4412,7 @@ final class PyMOLEngine: ObservableObject {
     /// One object's `objmeta` entry -> ObjStateMeta.
     ///
     /// Static so a test can exercise it without an engine, the way
-    /// parseMaterials/parseBundles are. The DEFAULTS are the point: they match
+    /// parseMaterials is. The DEFAULTS are the point: they match
     /// each setting's own, so a payload from a build that predates a key reads
     /// as "not set" rather than as a value the user chose. `peel` in
     /// particular defaults to -1 (AUTO) and not 0 — 0 means the user turned
@@ -4422,15 +4424,11 @@ final class PyMOLEngine: ObservableObject {
             titles: (m["titles"] as? [Any])?.map { $0 as? String ?? "" } ?? [],
             peel: (m["peel"] as? NSNumber)?.intValue ?? -1,
             peelResolved: ((m["peel_resolved"] as? NSNumber)?.intValue ?? 0) != 0,
-            reflect: (m["refl"] as? [Any])?.map { ($0 as? NSNumber)?.doubleValue ?? 0 }
-                ?? [0, 0, 0],
-            legacyReflectionDead: ((m["legacy_dead"] as? NSNumber)?.intValue ?? 0) != 0,
-            // These two break the "default to the setting's own" rule above, on
-            // purpose: they are GATES, not values. A payload that predates them
-            // renders no rows rather than rendering rows in a neutral state,
-            // which is the safe direction — an inert control on an object it
-            // does not apply to is worse than a missing one.
-            hasMaterialRows: ((m["material_rows"] as? NSNumber)?.intValue ?? 0) != 0,
+            // This one breaks the "default to the setting's own" rule above, on
+            // purpose: it is a GATE, not a value. A payload that predates it
+            // renders no row rather than a row in a neutral state, which is the
+            // safe direction — an inert control on an object it does not apply
+            // to is worse than a missing one.
             hasPeelRow: ((m["peel_row"] as? NSNumber)?.intValue ?? 0) != 0)
     }
 
@@ -4445,46 +4443,68 @@ final class PyMOLEngine: ObservableObject {
         runPythonQuiet("from pymol import appkit_inspector as _ai\n_ai.poll_materials()")
     }
 
-    /// Ask the core for the look bundles, unless we already have them. Same
-    /// bounded shape as the material table above, and for the same reason:
-    /// neither can change within a session.
-    func requestBundlesIfNeeded() {
-        guard materialBundles.isEmpty, bundleRequests < 5 else { return }
-        bundleRequests += 1
-        runPythonQuiet("from pymol import appkit_inspector as _ai\n_ai.poll_bundles()")
+    private func parseMaterialsFeedback(_ line: String) {
+        guard let out = PyMOLEngine.parseMaterials(line) else { return }
+        DispatchQueue.main.async { self.materialNames = out }
     }
 
-    /// `BUNDLES:[[attr, label, material], ...]` -> the published list.
-    ///
-    /// Static so a test can exercise the parse without an engine; mirrors
-    /// parseMaterials. A row that is not three strings is DROPPED rather than
-    /// guessed at -- a bundle whose attr did not resolve would be a button
-    /// that runs nothing.
-    static func parseBundles(_ line: String)
-            -> [(attr: String, label: String, material: String)]? {
-        guard let r = line.range(of: "BUNDLES:") else { return nil }
-        let json = String(line[r.upperBound...])
+    private func parseMaterialKnobsFeedback(_ line: String) {
+        guard let (id, knobs) = PyMOLEngine.parseMaterialKnobs(line) else { return }
+        DispatchQueue.main.async { self.materialKnobs[id] = knobs }
+    }
+
+    /// `MATKNOBS:<id>:[[suffix, label, min, max, control], ...]` -> (id, knobs),
+    /// `control` being "slider" or "toggle" (#590; absent reads as a slider). One
+    /// line per material: the whole table in one line is over PyMOL's ~1024-
+    /// char feedback cap, and a split line would not parse.
+    static func parseMaterialKnobs(_ line: String) -> (Int, [MaterialKnobInfo])? {
+        guard line.hasPrefix("MATKNOBS:") else { return nil }
+        let rest = line.dropFirst("MATKNOBS:".count)
+        guard let colon = rest.firstIndex(of: ":"), let id = Int(rest[..<colon]) else { return nil }
+        let json = String(rest[rest.index(after: colon)...])
         guard let data = json.data(using: .utf8),
-              let rows = (try? JSONSerialization.jsonObject(with: data)) as? [[Any]]
+              let ks = try? JSONSerialization.jsonObject(with: data) as? [[Any]]
         else { return nil }
-        var out: [(attr: String, label: String, material: String)] = []
-        for row in rows where row.count >= 3 {
-            if let a = row[0] as? String, let l = row[1] as? String,
-               let m = row[2] as? String, !a.isEmpty, !m.isEmpty {
-                out.append((attr: a, label: l, material: m))
-            }
+        let knobs: [MaterialKnobInfo] = ks.compactMap { k in
+            guard k.count >= 4, let s = k[0] as? String, let l = k[1] as? String,
+                  let lo = (k[2] as? NSNumber)?.doubleValue,
+                  let hi = (k[3] as? NSNumber)?.doubleValue, lo < hi else { return nil }
+            let toggle = k.count >= 5 && (k[4] as? String) == "toggle"
+            return MaterialKnobInfo(suffix: s, label: l, min: lo, max: hi, toggle: toggle)
+        }
+        return (id, knobs)
+    }
+
+    /// `LOOKS:[[name, label, material], ...]` -> the Look menu's entries.
+    static func parseLooks(_ line: String) -> [MaterialLook]? {
+        guard line.hasPrefix("LOOKS:"),
+              let data = String(line.dropFirst("LOOKS:".count)).data(using: .utf8),
+              let rows = try? JSONSerialization.jsonObject(with: data) as? [[Any]]
+        else { return nil }
+        let out: [MaterialLook] = rows.compactMap { r in
+            guard r.count >= 3, let n = r[0] as? String, let l = r[1] as? String,
+                  let m = r[2] as? String, !n.isEmpty else { return nil }
+            return MaterialLook(name: n, label: l, material: m)
         }
         return out.isEmpty ? nil : out
     }
 
-    private func parseBundlesFeedback(_ line: String) {
-        guard let out = PyMOLEngine.parseBundles(line) else { return }
-        DispatchQueue.main.async { self.materialBundles = out }
-    }
-
-    private func parseMaterialsFeedback(_ line: String) {
-        guard let out = PyMOLEngine.parseMaterials(line) else { return }
-        DispatchQueue.main.async { self.materialNames = out }
+    /// A rep payload's `material` entry -> MaterialCustomState, or nil.
+    static func parseMaterialCustom(_ r: [String: Any]) -> MaterialCustomState? {
+        guard let m = r["material"] as? [String: Any] else { return nil }
+        var st = MaterialCustomState()
+        st.drawn = (m["drawn"] as? NSNumber)?.intValue ?? 0
+        if let ks = m["knobs"] as? [String: Any] {
+            for (k, v) in ks { st.knobs[k] = (v as? NSNumber)?.doubleValue ?? 0 }
+        }
+        if let cs = m["custom"] as? [Any] {
+            st.custom = Set(cs.compactMap { $0 as? String })
+        }
+        if let ss = m["set"] as? [Any] {
+            st.set = ss.compactMap { $0 as? String }
+        }
+        st.follows = (m["follows"] as? NSNumber)?.boolValue ?? false
+        return st
     }
 
     // the feedback line is just the "OBJDETAIL:ready" trigger) → objectDetails +
@@ -4523,7 +4543,8 @@ final class PyMOLEngine: ObservableObject {
                         values: values,
                         color: r["color"] as? String ?? "inherit",
                         settingColors: settingColors,
-                        atomTransp: atomTransp)
+                        atomTransp: atomTransp,
+                        material: PyMOLEngine.parseMaterialCustom(r))
                 }
             }
         }

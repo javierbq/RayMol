@@ -150,11 +150,18 @@ class TestTheStructuresStaySeparate(testing.PyMOLTestCase):
                 root, 'layerGraphics', 'metal', 'RendererMetal.h'))) as f:
             return f.read()
 
-    def testDroppingATransparentOnlyEntryLeavesTheOpaqueStructureAlone(self):
+    def testDroppingAnEntryDirtiesOnlyTheStructureBuiltFromIt(self):
+        """A dropped cache entry forces a rebuild only of a structure whose
+        last build USED it -- not the opaque one for a transparent-only entry
+        (#532), and neither for the buffers a rebuilt rep replaced, which are
+        drained each frame after that frame's structure was built from the
+        replacement."""
         src, _rt = rt_source()
-        self.assertRegex(src, r'if \(g->second\.inOpaque \|\| !g->second\.inTransparent\)\s*'
-                              r'_rtGeomDirty = true;\s*'
-                              r'if \(g->second\.inTransparent\)\s*_rtTGeomDirty = true;')
+        self.assertRegex(src, r'if \(_rtBuiltKeys\.count\(key\)\)\s*_rtGeomDirty = true;\s*'
+                              r'if \(_rtTBuiltKeys\.count\(key\)\)\s*_rtTGeomDirty = true;')
+        # the sets are the records each structure is built from
+        self.assertIn('_rtBuiltKeys = std::unordered_set<const void*>(_rtFrameKeys.begin(), _rtFrameKeys.end());', src)
+        self.assertIn('_rtTBuiltKeys = std::unordered_set<const void*>(_rtTFrameKeys.begin(), _rtTFrameKeys.end());', src)
         # ...and the transparent build is driven by its own flag
         self.assertRegex(src, r'!_rtTGeomDirty &&\s*_rtTFrameSig == _rtTBuiltSig')
 

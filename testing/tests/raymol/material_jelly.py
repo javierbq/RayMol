@@ -208,18 +208,6 @@ class TestJelly(testing.PyMOLTestCase):
         self.assertAlmostEqual(rough, 0.03, places=4)
         self.assertLess(rough, 0.1)
 
-    def testALegacyReflectSliderCannotReshapeJelly(self):
-        """The whole glass family is exempt from the legacy metal_rt_reflect*
-        triple (#495). Without the exemption jelly's 0.03 becomes the slider's
-        value and the wet skin turns into a blurred one -- a frosted gummy,
-        which is a material nobody asked for and which still looks fine."""
-        cmd.set('surface_material', 'jelly', 'm1')
-        cmd.set('metal_rt_reflect_rough', 0.9, 'm1')
-        cmd.set('metal_rt_reflect', 0.8, 'm1')
-        _f, _m, refl, _t, rough, _p = draw_params('m1', repres['surface'])
-        self.assertAlmostEqual(rough, 0.03, places=4)
-        self.assertAlmostEqual(refl, 0.0, places=4)
-
     def testJellysThreeKnobsReachTheDraw(self):
         """absorption, scatter and wet highlight. Each fails by rendering a
         DIFFERENT plausible material: 0 absorption is a white body, 0 scatter is
@@ -231,14 +219,16 @@ class TestJelly(testing.PyMOLTestCase):
         self.assertAlmostEqual(p[1], 0.35, places=4)   # scattered inner glow
         self.assertAlmostEqual(p[2], 1.1, places=4)    # sharp wet highlight
 
-    def testTheOtherGlassMaterialsCarryNoKnobs(self):
+    def testTheOtherGlassMaterialsCarryNotJellysKnobs(self):
         """The mirror, so the test above cannot pass on a table that hands the
         same knobs to every glass row -- which would put an absorption term on
-        clear glass and stop it being clear."""
+        clear glass and stop it being clear. Clear and frosted glass carry
+        their own p[0..1] instead, Reflection and Distortion, both on (#590),
+        and nothing in p[2]."""
         for name in ('glass', 'frosted_glass'):
             cmd.set('surface_material', name, 'm1')
             _f, _m, _r, _t, _ro, p = draw_params('m1', repres['surface'])
-            self.assertEqual(tuple(p[:3]), (0.0, 0.0, 0.0), name)
+            self.assertEqual(tuple(p[:3]), (1.0, 1.0, 0.0), name)
 
     # -- peel -----------------------------------------------------------------
 
@@ -428,11 +418,10 @@ class TestJelly(testing.PyMOLTestCase):
 
     def testDefaultIsStillUntouched(self):
         """The one that matters most: adding a material must leave a rep with no
-        material exactly as it was -- opaque, and reading the legacy sliders."""
-        cmd.set('metal_rt_reflect_rough', 0.42, 'm1')
+        material exactly as it was -- opaque, with no reflection."""
         fam, mode, _r, _t, rough, p = draw_params('m1', repres['surface'])
         self.assertEqual((fam, mode), (0, 0))
-        self.assertAlmostEqual(rough, 0.42, places=4)
+        self.assertAlmostEqual(rough, 0.0, places=4)
         self.assertEqual(tuple(p[:3]), (0.0, 0.0, 0.0))
         build('m1', 'surface')
         self.assertAlmostEqual(built_transparency('m1', repres['surface']), 0.0,

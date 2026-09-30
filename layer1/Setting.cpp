@@ -2217,6 +2217,12 @@ void SettingGenerateSideEffects(PyMOLGlobals * G, int index, const char *sele, i
      the surface keeps the alpha of the material it had before. */
   case cSetting_cartoon_material:
     ExecutiveInvalidateRep(G, inv_sele, cRepCartoon, cRepInvColor);
+    /* Side chains with no material of their own follow the cartoon's
+       (MaterialSourceRep), implied alpha included -- and the lines, for the
+       line_stick_helper reason in cSetting_stick_material. */
+    ExecutiveInvalidateRep(G, inv_sele, cRepCyl, cRepInvColor);
+    ExecutiveInvalidateRep(G, inv_sele, cRepSphere, cRepInvColor);
+    ExecutiveInvalidateRep(G, inv_sele, cRepLine, cRepInvRep);
     SceneChanged(G);
     break;
   case cSetting_surface_material:

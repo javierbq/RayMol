@@ -74,6 +74,45 @@ struct RepState: Equatable {
     // Present when this rep has per-atom transparency overriding the object-level
     // slider; carries the transparency setting name and the effective min–max range.
     var atomTransp: AtomTransp? = nil
+    // The Custom material state of a material-bearing rep (#569): the knob
+    // values the draw uses and which of them the object overrides.
+    var material: MaterialCustomState? = nil
+}
+
+/// One knob a material has (#568): the override setting's suffix, what it does,
+/// and its range: a slider's, or a toggle's off and on values (#590). From
+/// `_cmd.get_material_knobs` via one `MATKNOBS:` line per material.
+struct MaterialKnobInfo: Equatable {
+    let suffix: String
+    let label: String
+    let min: Double
+    let max: Double
+    /// An on/off knob (#590): a switch, `min` off and `max` on, not a slider.
+    var toggle: Bool = false
+}
+
+/// A layer Look (pymol.looks): a material and its knobs for ONE layer, and a
+/// colour on that layer's atoms, applied with `apply_look <name>, <object>, <layer>`.
+struct MaterialLook: Equatable {
+    let name: String
+    let label: String
+    let material: String
+}
+
+/// A rep's Custom material state, from the rep payload's `material` entry.
+struct MaterialCustomState: Equatable {
+    /// The material the layer DRAWS with -- 0 when it has degraded to
+    /// `default` (glass on spheres or ball-and-stick), which has no knobs.
+    var drawn: Int = 0
+    var knobs: [String: Double] = [:]   // suffix -> the value the draw uses
+    var custom: Set<String> = []        // overridden knobs the drawn material has
+    /// Every override the object carries for this layer, including ones the
+    /// drawn material ignores: what a pick, Inherit or Reset must unset.
+    var set: [String] = []
+    /// A stick or sphere layer with no material of its own, drawing with the
+    /// cartoon's (and its tuning) while the object shows one.
+    var follows: Bool = false
+    var isCustom: Bool { !custom.isEmpty }
 }
 
 /// Effective per-atom transparency range for a rep whose object-level slider is
@@ -99,11 +138,9 @@ struct ObjStateMeta: Equatable {
     // unless at least one state carries a title. Indexed by state-1 (issue #203).
     var titles: [String] = []
 
-    // MARK: object-wide material rows (#498)
-    // These four settings are OBJECT-scoped, so they belong on the object
-    // header rather than in a rep panel. Carried per rep -- as they were until
-    // #498 -- the same value appeared in four places and moving one moved them
-    // all, which reads as four broken sliders rather than one shared one.
+    // MARK: object-wide material row (#498)
+    // `transparency_peel` is OBJECT-scoped, so it belongs on the object header
+    // rather than in a rep panel.
 
     /// `transparency_peel` as stored: -1 auto, 0 off, 1 on.
     var peel: Int = -1
@@ -111,24 +148,10 @@ struct ObjStateMeta: Equatable {
     /// the object's request; the frame can still decline it (see
     /// CmdGetObjectPeel).
     var peelResolved: Bool = false
-    /// Object-level `metal_rt_reflect` / `_tint` / `_rough`.
-    var reflect: [Double] = [0, 0, 0]
-    /// True when every shown rep's material ignores the legacy triple, so the
-    /// group can be disabled and say why. Much narrower than "has a material":
-    /// only the GLASS family is deaf to it, a REFLECTIVE material still
-    /// honours an explicit value (#497), and a PROCEDURAL one takes the triple
-    /// on the ray-traced path. Computed core-side from what each rep DRAWS.
-    var legacyReflectionDead: Bool = false
-    /// Whether the MATERIAL rows (the legacy reflection group) apply here.
-    /// Molecules only: a measurement, CGO or map has no material and no reps,
-    /// so the group would render live and inert above "No representations
-    /// shown". Groups are excluded too — `set` reaches the members but `get`
-    /// reports the group's own value, so a control writes and then reverts.
-    var hasMaterialRows: Bool = false
-    /// Whether the PEEL row applies. A wider set than the above, and
-    /// deliberately so: SceneCollectPeelObjects walks every non-gadget object,
-    /// so a translucent isosurface is peelable and its front/back double blend
-    /// is exactly what peel is for. Only groups are excluded.
+    /// Whether the PEEL row applies. Every molecule and more:
+    /// SceneCollectPeelObjects walks every non-gadget object, so a translucent
+    /// isosurface is peelable and its front/back double blend is exactly what
+    /// peel is for. Groups and ramps (a gadget) are excluded.
     var hasPeelRow: Bool = false
 
     /// Does the object header show any of these rows at all?
@@ -137,7 +160,7 @@ struct ObjStateMeta: Equatable {
     /// predicate, not the `if let` in ObjectCard's body that consults it —
     /// there is no snapshot harness here, so the view's use of it is covered
     /// by neither side. Said plainly rather than implied.
-    var showsObjectMaterialRows: Bool { hasPeelRow || hasMaterialRows }
+    var showsObjectMaterialRows: Bool { hasPeelRow }
 
     /// Title for a 1-based state, or nil when none/blank.
     func title(forState state: Int) -> String? {
@@ -303,6 +326,121 @@ struct SceneParam: Identifiable {
     var help: String = ""
 }
 
+/// The words of the object-level "Translucent layers" control (#567), kept
+/// out of the view so a test can pin them: `transparency_peel` 1 = nearest
+/// only, 0 = all, -1 = auto.
+enum TranslucentLayers {
+    static let options: [(value: Int, label: String)] =
+        [(-1, "Auto"), (1, "Nearest only"), (0, "All")]
+
+    static let help =
+        "How a see-through object is drawn. Nearest only draws it as one skin, "
+        + "without its inner walls and joins; All shows every layer. Auto picks "
+        + "Nearest only for glass, frosted glass and jelly, unless another "
+        + "see-through layer of the object would disappear behind the skin. "
+        + "Metal renderer only, for up to three objects at a time."
+
+    /// Keyed the way the core reads the setting: any negative value is Auto,
+    /// 0 is All, and any other value is an explicit Nearest only.
+    static func caption(peel: Int, resolved: Bool) -> String {
+        if peel < 0 {
+            return resolved
+                ? "Auto: nearest only (a glass-family material asks for one skin)."
+                : "Auto: all layers."
+        }
+        return peel == 0
+            ? "Every layer is drawn, inner walls and joins included."
+            : "One skin: the inner walls and joins are not drawn."
+    }
+}
+
+/// The Custom material (#569): what the material row says and sends.
+///
+/// A layer's material is its base material plus the object's overrides of the
+/// base's own knobs (`<stem>_material_<knob>`, #568). "Custom" is not a
+/// material id: it is the state "this layer has overrides", shown as
+/// "Custom (base)". Picking a named material clears the overrides, so a
+/// layer never keeps tuning written for a different material.
+enum CustomMaterial {
+    /// Every knob suffix, in the core's slot order.
+    static let knobs = ["reflect", "tint", "rough", "knob1", "knob2", "knob3",
+                        "knob4", "knob5", "knob6"]
+
+    /// A toggle knob's switch position as ToggleSetting reads it (on above
+    /// 0.5): on whenever the value is above the knob's `min`, because any
+    /// amount above it has a visible effect -- a distortion of 0.5 set from the
+    /// command line bends the view, so its switch must not read off. An unknown
+    /// value reads as on, the table's default for every toggle.
+    static func toggleValue(_ value: Double?, _ knob: MaterialKnobInfo) -> Double {
+        guard let value else { return 1 }
+        return value > knob.min ? 1 : 0
+    }
+
+    /// `cartoon_material` -> `cartoon`, `stick_material` -> `stick`.
+    static func stem(_ materialSetting: String) -> String {
+        materialSetting.hasSuffix("_material")
+            ? String(materialSetting.dropLast("_material".count)) : materialSetting
+    }
+
+    /// What the row's menu reads.
+    static func label(base: String, isCustom: Bool, follows: Bool = false) -> String {
+        if follows { return "Cartoon's (\(base))" }
+        return isCustom ? "Custom (\(base))" : base
+    }
+
+    /// The knobs a layer may offer as Custom: those of the material it DRAWS
+    /// with, and only when that is the material its setting names. A layer
+    /// that has degraded to `default` (glass on spheres or ball-and-stick)
+    /// draws 0 and offers none.
+    static func offeredKnobs(base: Int, drawn: Int?,
+                             table: [Int: [MaterialKnobInfo]]) -> [MaterialKnobInfo] {
+        guard let drawn, drawn == base else { return [] }
+        return table[drawn] ?? []
+    }
+
+    /// What a pick, Inherit or Reset must unset: the overrides the last poll
+    /// reported, plus any knob written since (the poll lags a drag), each once.
+    static func overrides(set: [String], touched: Set<String>) -> [String] {
+        set + knobs.filter { touched.contains($0) && !set.contains($0) }
+    }
+
+    /// Unset the given overrides of this layer -- the ones the object carries
+    /// (MaterialCustomState.set), so a layer with none sends nothing extra.
+    static func clear(_ materialSetting: String, _ suffixes: [String],
+                      on obj: String) -> String {
+        suffixes.map { "unset \(stem(materialSetting))_material_\($0), \(obj)" }
+            .joined(separator: "\n")
+    }
+
+    /// Pick a named material: set it, and drop the overrides written for the
+    /// previous one.
+    static func pick(_ materialSetting: String, id: Int, clearing suffixes: [String],
+                     on obj: String) -> String {
+        (["set \(materialSetting), \(id), \(obj)"]
+            + (suffixes.isEmpty ? [] : [clear(materialSetting, suffixes, on: obj)]))
+            .joined(separator: "\n")
+    }
+
+    /// Inherit: unset the material and its overrides.
+    static func inherit(_ materialSetting: String, clearing suffixes: [String],
+                        on obj: String) -> String {
+        (["unset \(materialSetting), \(obj)"]
+            + (suffixes.isEmpty ? [] : [clear(materialSetting, suffixes, on: obj)]))
+            .joined(separator: "\n")
+    }
+
+    /// Apply a layer Look: that layer's material and knobs, and its atoms' colour.
+    static func applyLook(_ look: String, _ materialSetting: String, on obj: String) -> String {
+        "apply_look \(look), \(obj), \(stem(materialSetting))"
+    }
+
+    /// One knob's override.
+    static func setKnob(_ materialSetting: String, _ suffix: String, _ value: Double,
+                        on obj: String) -> String {
+        "set \(stem(materialSetting))_material_\(suffix), \(String(format: "%.4f", value)), \(obj)"
+    }
+}
+
 // Material command strings, in one place so a test can assert what a control
 // SENDS without a window (#498).
 //
@@ -317,98 +455,6 @@ enum MaterialCommands {
         "set transparency_peel, \(value), \(obj)"
     }
 
-    /// One of the legacy `metal_rt_reflect*` sliders. Object-scoped: there is
-    /// one value per object, not one per representation.
-    static func setReflect(_ setting: String, _ value: Double, on obj: String) -> String {
-        "set \(setting), \(String(format: "%.4f", value)), \(obj)"
-    }
-
-    /// Drop this object's reflection overrides, so a material that carries its
-    /// own reflect/tint/roughness goes back to using them (#497).
-    ///
-    /// All three together: they are one look, and clearing one of three leaves
-    /// a state no material describes.
-    static func clearReflect(on obj: String) -> String {
-        ["metal_rt_reflect", "metal_rt_reflect_tint", "metal_rt_reflect_rough"]
-            .map { "unset \($0), \(obj)" }
-            .joined(separator: "\n")
-    }
-
-    /// Run a `pymol.materials` bundle on an object.
-    ///
-    /// Calls the documented function rather than reimplementing its list of
-    /// settings here: a bundle writes GLOBAL lighting as well as the object's
-    /// material, and a copy of that list in the UI would drift from
-    /// modules/pymol/materials.py silently.
-    static func runBundle(_ attr: String, on obj: String) -> String {
-        // The object name lands inside a PYTHON string literal, which is
-        // itself inside a multi-line command that `cmd.do` splits with
-        // `str.splitlines()`. So there are two levels to get right, and they
-        // fail differently:
-        //
-        //   * a quote or a backslash breaks the literal — a SyntaxError, the
-        //     chip does nothing;
-        //   * a LINE BREAK breaks the command, which is worse. cmd.do runs
-        //     each fragment as its own command, so a name containing
-        //     "<break>python end<break>..." closes the block early, discards
-        //     the malformed buffer, and executes what follows as PyMOL
-        //     commands. "Line break" is whatever splitlines says it is: \n and
-        //     \r, but also \v, \f, \x1c-\x1e, \x85, U+2028 and U+2029.
-        //
-        // So the literal is built from printable ASCII only. Everything else
-        // — every control character and every non-ASCII scalar — is written
-        // as a \u / \U escape, which splitlines cannot see and Python's
-        // literal parser turns back into the original character. Enumerating
-        // the separators instead would be a list to keep in step with
-        // CPython; "printable ASCII or escaped" has no list.
-        //
-        // Reachability, stated accurately because an earlier version of this
-        // comment overstated it: `validate_object_names` defaults to 1 and
-        // ObjectMakeValidName rewrites everything outside [A-Za-z0-9+-.^_] to
-        // an underscore, so a name like this needs that setting turned off and
-        // the Python `object=` argument (or a session restored from one). A
-        // hardening gap rather than a live hole — but it is a gap in a defence
-        // this function exists to provide.
-        var safe = ""
-        for u in obj.unicodeScalars {
-            switch u.value {
-            case 0x5C: safe += "\\\\"
-            case 0x27: safe += "\\'"
-            case 0x20...0x7E: safe.unicodeScalars.append(u)
-            case 0...0xFFFF: safe += String(format: "\\u%04x", u.value)
-            default: safe += String(format: "\\U%08x", u.value)
-            }
-        }
-        return "python\nfrom pymol import materials; materials.\(attr)('\(safe)', _self=cmd)\npython end"
-    }
-
-    /// What the chip actually does, said out loud.
-    ///
-    /// #498 calls this button "Suggested lighting", and the first version was
-    /// labelled and tooltipped that way. It is not what running a bundle does:
-    /// `_apply_material` writes the material to ALL FOUR of the object's
-    /// representation settings, shown or not, deliberately and by its own
-    /// docstring. Clicking a chip beside the Sticks dropdown would have
-    /// silently rewritten `surface_material` — so on an object with a
-    /// deliberate mixed look, a glass shell would vanish and nothing on the
-    /// control would have mentioned the surface.
-    ///
-    /// The alternative was to split the bundles into a material half and a
-    /// lighting half and call only the second. That forks a contract the
-    /// A-menu shares, and for the four metals "lighting only" is empty anyway
-    /// — they write a colour and a reflect triple, no light rig. Saying what
-    /// the button does is the smaller and more honest change.
-    static func bundleHelp(_ label: String?) -> String {
-        let what = label.map { "Apply the \($0) look" } ?? "Apply a look"
-        // Precise about the metals: `_metal` writes NO lighting setting at all
-        // — no specular, no shininess, no shadows — it writes a colour and the
-        // reflect/tint/roughness triple, i.e. the group directly below this
-        // chip. Saying "plus the lighting" for them promised something they do
-        // not do and stayed silent about what they overwrite.
-        return what + ": this material on EVERY representation of the object, "
-             + "plus the scene lighting it was tuned for. A named metal instead "
-             + "sets the colour and this object's reflection sliders."
-    }
 }
 
 // Camera-control command strings shared by the inspector row and the camera dock,
@@ -547,15 +593,6 @@ enum SceneCatalog {
                    help: "Ambient-occlusion darkening amount."),
         SceneParam(setting: "metal_rt_shadow_intensity", label: "RT shadow strength", kind: .slider, min: 0, max: 1, step: 0.02, decimals: 2, group: "Metal optimization", dependsOn: "metal_raytrace",
                    help: "Cast-shadow darkening amount (still needs Shadows on)."),
-        // Traced self-reflections. The global value is the default for every
-        // object; each rep's Inspector panel exposes the same three settings
-        // per object (metal_rt_reflect / _tint / _rough are object-scoped).
-        SceneParam(setting: "metal_rt_reflect", label: "Reflections", kind: .slider, min: 0, max: 1, step: 0.05, decimals: 2, group: "Metal optimization", dependsOn: "metal_raytrace",
-                   help: "Ray-traced reflections of the molecule in itself. 0 = off, ~0.25 = glossy plastic, 1 = mirror. Global default; override per object in each rep's panel."),
-        SceneParam(setting: "metal_rt_reflect_tint", label: "Reflection tint", kind: .slider, min: 0, max: 1, step: 0.05, decimals: 2, group: "Metal optimization", dependsOn: "metal_raytrace",
-                   help: "How much the surface's own colour tints its reflection: 0 = chrome-like, 1 = coloured/anodised metal."),
-        SceneParam(setting: "metal_rt_reflect_rough", label: "Reflection roughness", kind: .slider, min: 0, max: 1, step: 0.05, decimals: 2, group: "Metal optimization", dependsOn: "metal_raytrace",
-                   help: "Blur of the reflections: 0 = mirror, 1 = brushed. Exports average several rays; the live view traces one."),
         SceneParam(setting: "metal_rt_reflect_env", label: "Studio environment", kind: .toggle, group: "Metal optimization", dependsOn: "metal_raytrace",
                    help: "Reflection rays that miss the molecule see a soft studio backdrop instead of the flat background colour."),
         SceneParam(setting: "metal_rt_reflect_samples", label: "Reflection samples (export)", kind: .slider, min: 1, max: 32, step: 1, decimals: 0, group: "Metal optimization", dependsOn: "metal_raytrace",
@@ -1090,16 +1127,6 @@ private let baseActionMenuItems: [ActionMenuItem] = [
         .separator,
         .action(label: "protein interface",            key: "preset_interface"),
         .separator,
-        // Material LOOKS (#491) -- a different contract from the presets above.
-        // A preset rebuilds the representation set from scratch; these keep
-        // whatever is on screen and change only the material and the light rig.
-        .action(label: "marble (statuary)",            key: "material_marble"),
-        .action(label: "clay (unglazed)",              key: "material_clay"),
-        .action(label: "copper",                       key: "material_copper"),
-        .action(label: "gold",                         key: "material_gold"),
-        .action(label: "steel",                        key: "material_steel"),
-        .action(label: "chrome",                       key: "material_chrome"),
-        .separator,
         .action(label: "default",                      key: "preset_default"),
     ]),
     .submenu(label: "Find", children: [
@@ -1505,13 +1532,6 @@ private func runActionCommand(_ key: String, name: String, engine: PyMOLEngine) 
     case "preset_pub_solv":         cmd = "python\nfrom pymol import preset; preset.pub_solv('\(n)', _self=cmd)\npython end"
     case "preset_interface":        cmd = "python\nfrom pymol import preset; preset.interface('\(n)', _self=cmd)\npython end"
     case "preset_default":          cmd = "python\nfrom pymol import preset; preset.default('\(n)', _self=cmd)\npython end"
-    // Material looks (#491)
-    case "material_marble":         cmd = "python\nfrom pymol import materials; materials.marble('\(n)', _self=cmd)\npython end"
-    case "material_clay":           cmd = "python\nfrom pymol import materials; materials.clay('\(n)', _self=cmd)\npython end"
-    case "material_copper":         cmd = "python\nfrom pymol import materials; materials.copper('\(n)', _self=cmd)\npython end"
-    case "material_gold":           cmd = "python\nfrom pymol import materials; materials.gold('\(n)', _self=cmd)\npython end"
-    case "material_steel":          cmd = "python\nfrom pymol import materials; materials.steel('\(n)', _self=cmd)\npython end"
-    case "material_chrome":         cmd = "python\nfrom pymol import materials; materials.chrome('\(n)', _self=cmd)\npython end"
     // Find
     case "find_polar_within":  cmd = "dist \(n)_polar_conts, \(n), \(n), quiet=1, mode=2, label=0, reset=1; enable \(n)_polar_conts"
     case "find_polar_other":   cmd = "dist \(n)_polar_conts, (\(n)), (byobj (\(n))) and (not (\(n))), quiet=1, mode=2, label=0, reset=1; enable \(n)_polar_conts"
@@ -3970,15 +3990,10 @@ private struct ObjectCard: View {
                     // Object/layer-level coloring (by element/chain/ss/spectrum/
                     // named) is the structure row's "C" button — not duplicated
                     // here. The per-rep grid below controls per-rep color overrides.
-                    // Always show the chips bar (it holds the "+" add menu) so a
-                    // layer can be added even after the last one is deleted.
-                    RepChips(objName: entry.name, listed: listedReps,
-                             active: activeSet, current: currentRep,
-                             onSelect: { selectedRep = $0 })
-                    // Object-scoped material rows (#498), above the per-rep
-                    // grid because that is what they are: one peel decision and
-                    // one legacy reflection triple for the whole object, not
-                    // four copies of each.
+                    // Object-scoped rows (#498, #567) sit with the other
+                    // OBJECT-level controls, above the layer chips: they apply
+                    // to the whole object, and below the chips they read as
+                    // part of whichever layer is selected.
                     //
                     // The OPTIONAL is load-bearing. objectMeta is filled only by
                     // the poll for the currently expanded object, so re-opening
@@ -3992,6 +4007,11 @@ private struct ObjectCard: View {
                         ObjectMaterialRows(objName: entry.name, meta: meta)
                         Divider().background(PanelTheme.disabledColor.opacity(0.3))
                     }
+                    // Always show the chips bar (it holds the "+" add menu) so a
+                    // layer can be added even after the last one is deleted.
+                    RepChips(objName: entry.name, listed: listedReps,
+                             active: activeSet, current: currentRep,
+                             onSelect: { selectedRep = $0 })
                     if let rep = currentRep {
                         // Always present (even when hidden): show/hide the layer
                         // + delete it. Hiding keeps the layer listed so it can be
@@ -4257,34 +4277,16 @@ private struct RepChips: View {
 // MARK: - Object-wide material rows (#498)
 
 /// The material settings that are OBJECT-scoped, so they cannot honestly live
-/// in a representation panel: `transparency_peel` and the legacy
-/// `metal_rt_reflect*` triple.
-///
-/// Until this, the triple was three rows in EACH of the four material-bearing
-/// rep panels — twelve controls over three settings, every one showing the same
-/// value, and moving any one of them moved the other eleven. #490 labelled them
-/// "(object)" as a stopgap and left the real fix here.
+/// in a representation panel: `transparency_peel`. (The legacy object-wide
+/// `metal_rt_reflect*` group that shared this header was removed in #565.)
 private struct ObjectMaterialRows: View {
     let objName: String
     let meta: ObjStateMeta
     @EnvironmentObject var engine: PyMOLEngine
-    /// Collapsed by default: it is a legacy group, and on an object whose reps
-    /// all carry a material it does nothing at all.
-    @State private var legacyOpen = false
-
-    private static let reflectProps = [
-        RepProperty(setting: "metal_rt_reflect", label: "Reflection",
-                    kind: .slider, min: 0, max: 1, step: 0.05, decimals: 2),
-        RepProperty(setting: "metal_rt_reflect_tint", label: "Tint",
-                    kind: .slider, min: 0, max: 1, step: 0.05, decimals: 2),
-        RepProperty(setting: "metal_rt_reflect_rough", label: "Roughness",
-                    kind: .slider, min: 0, max: 1, step: 0.05, decimals: 2),
-    ]
 
     var body: some View {
         VStack(spacing: 3) {
             if meta.hasPeelRow { peelRow }
-            if meta.hasMaterialRows { legacyGroup }
         }
     }
 
@@ -4295,135 +4297,246 @@ private struct ObjectMaterialRows: View {
     /// meaning for auto and would silently write one the first time it was
     /// touched — turning an object that was following its material into one
     /// pinned against it.
+    ///
+    /// Shown as what it DOES (#567): "Nearest only" draws a see-through object
+    /// as one skin (peel on, 1); "All" draws every layer (peel off, 0). The
+    /// caption says so in words, and what Auto currently resolves to.
     private var peelRow: some View {
-        gridRow("Peel transp.") {
+        // Label on its own line and the choices under it: "Nearest only" is
+        // the longest cell in the panel, and side by side with the label the
+        // row truncated in a narrow inspector.
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Translucent layers")
+                .font(.system(size: 10))
+                .foregroundColor(PanelTheme.textColor)
             HStack(spacing: 6) {
                 TriStateSetting(value: meta.peel,
-                                options: [(-1, "Auto"), (0, "Off"), (1, "On")]) {
+                                options: TranslucentLayers.options) {
                     engine.runCommand(MaterialCommands.setPeel($0, on: objName), naming: objName)
                     engine.refreshExpandedDetail()
                 }
-                // What auto currently MEANS. The whole point of -1 is that the
-                // answer comes from the materials the object's reps resolve to,
-                // so the setting alone says nothing -- which is exactly the
-                // thing a user cannot find out from anywhere else.
-                if meta.peel < 0 {
-                    Text(meta.peelResolved ? "on (glass-family)" : "off")
-                        .font(.system(size: 9))
-                        .foregroundColor(PanelTheme.disabledColor)
-                }
-            }
-        }
-    }
-
-    // MARK: legacy reflection
-
-    @ViewBuilder
-    private var legacyGroup: some View {
-        Button(action: { legacyOpen.toggle() }) {
-            HStack(spacing: 4) {
-                Image(systemName: legacyOpen ? "chevron.down" : "chevron.right")
-                    .font(.system(size: 8))
-                Text("Reflection (legacy)")
-                    .font(.system(size: 10))
-                if meta.legacyReflectionDead {
-                    Text("— not in use")
-                        .font(.system(size: 9))
-                        .foregroundColor(PanelTheme.disabledColor)
-                }
+                .fixedSize()
                 Spacer(minLength: 0)
             }
-            .foregroundColor(meta.legacyReflectionDead
-                             ? PanelTheme.disabledColor : PanelTheme.textColor)
-            .contentShape(Rectangle())
+            Text(TranslucentLayers.caption(peel: meta.peel, resolved: meta.peelResolved))
+                .font(.system(size: 9))
+                .foregroundColor(PanelTheme.disabledColor)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .buttonStyle(.plain)
-        .help(meta.legacyReflectionDead
-              ? "Every shown representation has a glass-family material, the one family that ignores these."
-              : "Object-wide reflection, from before materials. Ray-traced only.")
+        .help(TranslucentLayers.help)
+    }
+}
 
-        if legacyOpen {
-            ForEach(Self.reflectProps) { p in
-                gridRow(p.label) {
-                    LabeledSlider(prop: p, value: value(for: p.setting),
-                                  onLive: { set(p.setting, $0) },
-                                  onCommit: { set(p.setting, $0) })
-                }
-                .opacity(meta.legacyReflectionDead ? 0.45 : 1)
-                .disabled(meta.legacyReflectionDead)
+/// A layer's material row, with the Custom material (#569).
+///
+/// The menu offers the materials, then **Custom…** when the current material
+/// has knobs. Custom keeps the current material as the base and shows its
+/// knobs at the values the draw uses, as sliders or on/off toggles (#590);
+/// changing one writes that layer's override (#568), and the menu then reads
+/// "Custom (base)". Picking a
+/// named material clears the overrides; Inherit clears both.
+private struct MaterialSection: View {
+    let objName: String
+    let prop: RepProperty
+    let value: Double
+    let custom: MaterialCustomState?
+    @EnvironmentObject var engine: PyMOLEngine
+    /// Custom chosen but nothing changed yet: the controls show, nothing is
+    /// written. Overrides in the payload keep the section open by themselves.
+    @State private var customOpen = false
+    /// Knobs this view has written since the last pick, Inherit or Reset.
+    /// `set` in the payload lags a drag by up to a poll, so a pick in that
+    /// window must still clear what was just tuned; an extra unset of a knob
+    /// the payload has since caught up on is harmless.
+    @State private var touched: Set<String> = []
+
+    private var baseID: Int { Int(value.rounded()) }
+    private var baseName: String {
+        engine.materialNames.first(where: { $0.id == baseID })?.name
+            ?? (baseID == 0 ? "default" : "#\(baseID)")
+    }
+    /// The knobs of the material the layer DRAWS with. Not the setting's: a
+    /// degraded layer draws `default` and has none, so Custom is not offered.
+    private var knobs: [MaterialKnobInfo] {
+        // A following layer draws with the CARTOON's knobs; its own would be
+        // ignored, so it offers none. Tune the cartoon, or pick a material.
+        if follows { return [] }
+        return CustomMaterial.offeredKnobs(base: baseID, drawn: custom?.drawn,
+                                           table: engine.materialKnobs)
+    }
+    private var follows: Bool { custom?.follows ?? false }
+    private var overrides: [String] {
+        CustomMaterial.overrides(set: custom?.set ?? [], touched: touched)
+    }
+    private var isCustom: Bool { custom?.isCustom ?? false }
+    private var showsKnobs: Bool { !knobs.isEmpty && (isCustom || customOpen) }
+
+    var body: some View {
+        VStack(spacing: 3) {
+            HStack(spacing: 6) {
+                Text(prop.label)
+                    .font(.system(size: 10))
+                    .foregroundColor(PanelTheme.textColor)
+                    .frame(width: 78, alignment: .leading)
+                menu
+                if !engine.materialLooks.isEmpty { lookMenu }
+                Spacer(minLength: 0)
             }
-            if meta.legacyReflectionDead {
-                // Disabled and SAYING WHY. A greyed-out group with no reason is
-                // indistinguishable from a broken one -- and the reason here is
-                // not obvious: the sliders are fine, it is the materials on the
-                // shown reps that do not read them.
-                Text("Every shown representation has a glass-family material, and glass "
-                     + "is the one family that ignores these. Any other material — "
-                     + "including `default` — makes them live again.")
-                    .font(.system(size: 9))
-                    .foregroundColor(PanelTheme.disabledColor)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                // The way BACK to undefined, which nothing else in the panel
-                // offers. These sliders show the object's value, and an object
-                // with none shows the global's 0 -- while a REFLECTIVE material
-                // is drawing its own table row (metallic: 0.6 / 0.35 / 0.35).
-                // So the group reads three zeros that are not what is on
-                // screen, and the first touch of a slider makes the zero real
-                // and detaches the material from its row for good. The material
-                // dropdown one panel down has had `onInherit` for this since
-                // #490; the sliders never did.
+            if showsKnobs {
+                ForEach(knobs, id: \.suffix) { k in
+                    HStack(spacing: 6) {
+                        Text(k.label)
+                            .font(.system(size: 10))
+                            .foregroundColor(PanelTheme.textColor)
+                            .frame(width: 78, alignment: .leading)
+                        if k.toggle {
+                            // On/off (#590): `max` on, `min` off. A value set
+                            // in between from the command line reads as on.
+                            ToggleSetting(value: CustomMaterial.toggleValue(
+                                              custom?.knobs[k.suffix], k),
+                                          onToggle: { setKnob(k.suffix, $0 ? k.max : k.min) })
+                            Spacer(minLength: 0)
+                        } else {
+                            LabeledSlider(prop: sliderProp(k),
+                                          value: custom?.knobs[k.suffix] ?? k.min,
+                                          onLive: { setKnob(k.suffix, $0) },
+                                          onCommit: { setKnob(k.suffix, $0) })
+                        }
+                    }
+                }
                 HStack(spacing: 6) {
-                    Text("Unset = the material's own values")
+                    Text(isCustom ? "Tuned from \(baseName)" : "Change a setting to tune \(baseName)")
                         .font(.system(size: 9))
                         .foregroundColor(PanelTheme.disabledColor)
                     Spacer(minLength: 4)
-                    Button(action: clearReflection) {
-                        Text("Clear")
-                            .font(.system(size: 9))
-                            .padding(.horizontal, 8).padding(.vertical, 1)
-                            .overlay(RoundedRectangle(cornerRadius: 4)
-                                .stroke(PanelTheme.disabledColor.opacity(0.55), lineWidth: 0.5))
+                    if isCustom {
+                        Button(action: reset) {
+                            Text("Reset")
+                                .font(.system(size: 9))
+                                .padding(.horizontal, 8).padding(.vertical, 1)
+                                .overlay(RoundedRectangle(cornerRadius: 4)
+                                    .stroke(PanelTheme.disabledColor.opacity(0.55), lineWidth: 0.5))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Back to \(baseName)'s own values.")
                     }
-                    .buttonStyle(.plain)
-                    .help("Remove this object's reflection overrides, so a material "
-                          + "that carries its own (plastic, metallic, the named metals) "
-                          + "goes back to using them.")
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 84)
             }
         }
     }
 
-    private func value(for setting: String) -> Double {
-        switch setting {
-        case "metal_rt_reflect":       return meta.reflect.count > 0 ? meta.reflect[0] : 0
-        case "metal_rt_reflect_tint":  return meta.reflect.count > 1 ? meta.reflect[1] : 0
-        case "metal_rt_reflect_rough": return meta.reflect.count > 2 ? meta.reflect[2] : 0
-        default: return 0
+    private var menu: some View {
+        Menu {
+            ForEach(engine.materialNames, id: \.id) { m in
+                let sel = m.id == baseID && !(isCustom || customOpen || follows)
+                Button(action: { pick(m.id) }) {
+                    Text(sel ? "• \(m.name)" : m.name)
+                }
+            }
+            if !knobs.isEmpty {
+                Divider()
+                Button(action: { customOpen = true }) {
+                    Text((isCustom || customOpen) ? "• Custom (\(baseName))" : "Custom…")
+                }
+            }
+            Divider()
+            // Unsetting is also how a side chain goes back to following the
+            // cartoon, when the object shows one.
+            Button(follows ? "• Cartoon's" : "Inherit", action: inherit)
+        } label: {
+            HStack(spacing: 3) {
+                // "Custom" once something is tuned, not merely opened.
+                Text(CustomMaterial.label(base: baseName, isCustom: isCustom,
+                                          follows: follows))
+                    .font(.system(size: 10))
+                Text("⌄").font(.system(size: 9))
+            }
+            .foregroundColor(PanelTheme.buttonText)
+            .padding(.horizontal, 6).padding(.vertical, 1)
+            .background(PanelTheme.buttonBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 3))
         }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(follows ? "Drawn with the cartoon's material and tuning; a cartoon Look "
+                        + "colours it too. Pick a material to give this layer its own." : "")
+        .disabled(engine.materialNames.isEmpty)
+        .opacity(engine.materialNames.isEmpty ? 0.4 : 1.0)
     }
 
-    private func set(_ setting: String, _ v: Double) {
-        engine.runCommand(MaterialCommands.setReflect(setting, v, on: objName), naming: objName)
+    /// The Look chip: one-click starting points for THIS layer (material,
+    /// knobs, and a base-coat colour on the layer's atoms, which "by element"
+    /// can recolour on top). The result reads "Custom (material)" and is
+    /// undone by Reset or a material pick; the colour by any recolouring.
+    private var lookMenu: some View {
+        Menu {
+            ForEach(engine.materialLooks, id: \.name) { look in
+                Button(look.label) { applyLook(look.name) }
+            }
+        } label: {
+            HStack(spacing: 2) {
+                Image(systemName: "wand.and.stars").font(.system(size: 9))
+                Text("Look").font(.system(size: 9))
+            }
+            .padding(.horizontal, 5).frame(height: 16)
+            .background(PanelTheme.buttonBackground)
+            .foregroundColor(PanelTheme.buttonText)
+            .clipShape(RoundedRectangle(cornerRadius: 3))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Apply a look to this layer: a material, its settings, and a colour on its atoms "
+              + "that By Element can recolour on top. Reset or picking a material undoes the material.")
     }
 
-    private func clearReflection() {
-        engine.runCommand(MaterialCommands.clearReflect(on: objName), naming: objName)
+    private func applyLook(_ name: String) {
+        customOpen = false
+        // The Look writes knobs this view cannot list; mark them all, so a pick
+        // before the next poll still clears them (unsetting an unset knob is
+        // harmless).
+        touched = Set(CustomMaterial.knobs)
+        engine.runCommand(CustomMaterial.applyLook(name, prop.setting, on: objName), naming: objName)
         engine.refreshExpandedDetail()
     }
 
-    @ViewBuilder
-    private func gridRow<Content: View>(_ label: String, @ViewBuilder _ content: () -> Content) -> some View {
-        HStack(spacing: 6) {
-            Text(label)
-                .font(.system(size: 10))
-                .foregroundColor(PanelTheme.textColor)
-                .frame(width: 78, alignment: .leading)
-            content()
-            Spacer(minLength: 0)
-        }
+    private func sliderProp(_ k: MaterialKnobInfo) -> RepProperty {
+        let span = k.max - k.min
+        return RepProperty(setting: "\(CustomMaterial.stem(prop.setting))_material_\(k.suffix)",
+                           label: k.label, kind: .slider, min: k.min, max: k.max,
+                           step: span / 100, decimals: span >= 10 ? 1 : 2)
+    }
+
+    private func pick(_ id: Int) {
+        customOpen = false
+        defer { touched = [] }
+        engine.runCommand(CustomMaterial.pick(prop.setting, id: id, clearing: overrides,
+                                              on: objName), naming: objName)
+        engine.refreshExpandedDetail()
+    }
+
+    private func inherit() {
+        customOpen = false
+        defer { touched = [] }
+        engine.runCommand(CustomMaterial.inherit(prop.setting, clearing: overrides,
+                                                 on: objName), naming: objName)
+        engine.refreshExpandedDetail()
+    }
+
+    private func reset() {
+        customOpen = false
+        defer { touched = [] }
+        guard !overrides.isEmpty else { return }
+        engine.runCommand(CustomMaterial.clear(prop.setting, overrides, on: objName), naming: objName)
+        engine.refreshExpandedDetail()
+    }
+
+    private func setKnob(_ suffix: String, _ v: Double) {
+        touched.insert(suffix)
+        engine.runCommand(CustomMaterial.setKnob(prop.setting, suffix, v, on: objName), naming: objName)
     }
 }
 
@@ -4475,7 +4588,14 @@ private struct RepPropertyGrid: View {
                 }
             }
             ForEach(spec.properties) { p in
-                gridRow(p.label) { control(for: p) }
+                if p.kind == .menu && p.optionSource == .materials {
+                    // The material row owns its Custom controls (#569).
+                    MaterialSection(objName: objName, prop: p,
+                                    value: state.values[p.setting] ?? 0,
+                                    custom: state.material)
+                } else {
+                    gridRow(p.label) { control(for: p) }
+                }
                 // Per-atom transparency detail sits directly under the matching
                 // transparency slider so it's clear the slider is only a baseline.
                 if let at = state.atomTransp, at.setting == p.setting {
@@ -4559,72 +4679,11 @@ private struct RepPropertyGrid: View {
                                 colorState: state.settingColors[p.setting] ?? "inherit")
         case .menu:
             // Options come from the core (engine.materialNames), so a build
-            // whose table differs cannot be offered a look it can't draw.
-            HStack(spacing: 6) {
-                MenuSetting(options: options(for: p), value: v,
-                            onSelect: { set(p.setting, $0) },
-                            onInherit: { unset(p.setting) })
-                if p.optionSource == .materials {
-                    suggestedLighting(forMaterialValue: v)
-                }
-            }
+            // whose table differs cannot be offered a material it can't draw.
+            MenuSetting(options: options(for: p), value: v,
+                        onSelect: { set(p.setting, $0) },
+                        onInherit: { unset(p.setting) })
         }
-    }
-
-    /// "Suggested lighting" beside a material dropdown, when the chosen
-    /// material has a `pymol.materials` bundle.
-    ///
-    /// A material is only half a look: `marble` under the default rig still
-    /// carries a tight specular that reads as polished plastic rather than
-    /// stone. The bundle sets the lighting that flatters it, and until now the
-    /// only way to reach one was the A-menu, several clicks away from the
-    /// dropdown that raises the question.
-    ///
-    /// Several bundles can share a material -- the four metals are all
-    /// `metallic` -- so this is a menu when more than one matches and a single
-    /// button when exactly one does. Nothing is shown when none does, rather
-    /// than a disabled control: most materials have no bundle, and a row of
-    /// dead buttons would be worse than no button.
-    @ViewBuilder
-    private func suggestedLighting(forMaterialValue v: Double) -> some View {
-        let id = Int(v.rounded())
-        let name = engine.materialNames.first(where: { $0.id == id })?.name ?? ""
-        let matching = engine.materialBundles.filter { $0.material == name }
-        if matching.count == 1, let b = matching[0] as (attr: String, label: String, material: String)? {
-            Button(action: { runBundle(b.attr) }) { suggestedLabel }
-                .buttonStyle(.plain)
-                .help(MaterialCommands.bundleHelp(b.label))
-        } else if matching.count > 1 {
-            Menu {
-                ForEach(matching, id: \.attr) { b in
-                    Button(b.label) { runBundle(b.attr) }
-                }
-            } label: { suggestedLabel }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .help(MaterialCommands.bundleHelp(nil))
-        }
-    }
-
-    private var suggestedLabel: some View {
-        HStack(spacing: 2) {
-            Image(systemName: "wand.and.stars").font(.system(size: 9))
-            Text("Look").font(.system(size: 9))
-        }
-        .padding(.horizontal, 5).frame(height: 16)
-        .background(PanelTheme.buttonBackground)
-        .foregroundColor(PanelTheme.buttonText)
-        .clipShape(RoundedRectangle(cornerRadius: 3))
-    }
-
-    /// The bundles write GLOBAL lighting settings as well as the object's
-    /// material, which is the point of them -- so this runs the documented
-    /// function rather than reimplementing its list of settings here, where a
-    /// copy would drift from `modules/pymol/materials.py` silently.
-    private func runBundle(_ attr: String) {
-        engine.runCommand(MaterialCommands.runBundle(attr, on: objName), naming: objName)
-        engine.refreshExpandedDetail()
     }
 
     /// Options for a `.menu` row, from the core rather than compiled in.

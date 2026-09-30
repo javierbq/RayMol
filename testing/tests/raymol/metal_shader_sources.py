@@ -340,3 +340,60 @@ class TestMetalShaderSources(testing.PyMOLTestCase):
         self.assertIn('post_linear_depth(dn, u.projA, u.projB, u.projOrtho)',
                       composite)
         self.assertNotIn('-u.projB / ((2.0 * dn - 1.0) + u.projA)', composite)
+
+    # -- glass's Reflection and Distortion, jelly's Distortion (#590) --------
+    # The knob tests (material_glass_knobs.py) prove the values reach the
+    # draw; these prove the renderer reads them, which no test can render.
+
+    def testGlassReflectionIsScaledByItsKnob(self):
+        msl = shader_literals(self.source())
+        shade = _function_body(msl['kMaterialSrc'], 'float3 mat_glass_shade(')
+        self.assertIn('float reflection', shade[:shade.index('{')])
+        hi_line = shade[shade.index('hi ='):].split(';')[0]
+        self.assertIn('kMatGlassReflection', hi_line)
+        self.assertIn('reflection', hi_line.replace('kMatGlassReflection', ''))
+        # every caller hands it the material's p[0]
+        calls = 0
+        for name, body in msl.items():
+            code = _strip_comments(body)
+            for m in re.finditer(r'mat_glass_shade\(([^;]*)\);', code):
+                if 'float3 base, float3 N' in m.group(1):
+                    continue            # the definition's own signature
+                # `reflection` follows `rough` in the signature
+                self.assertRegex(m.group(1), r'\.rough,\s*\w+\.p\[0\],',
+                                 name)
+                calls += 1
+        self.assertGreaterEqual(calls, 4)
+
+    def testDistortionGatesAndScalesTheRefraction(self):
+        src = _strip_comments(self.source())
+        helper = src[src.index('static float glassDistortion('):]
+        helper = helper[:helper.index('\n}\n')]
+        self.assertIn('cMaterialFamily_glass', helper)
+        self.assertIn('cMaterial_jelly) ? mp.p[3] : mp.p[1]', helper)
+        set_mat = src[src.index('void RendererMetal::setRepMaterial('):]
+        set_mat = set_mat[:set_mat.index('\n}\n')]
+        self.assertIn('glassDistortion(_repMatParams) > 0.0f', set_mat)
+        self.assertIn('enableOitRefraction()', set_mat)
+        bind = src[src.index('void RendererMetal::bindRepMaterial('):]
+        bind = bind[:bind.index('\n}\n')]
+        self.assertIn('glassDistortion(_repMatParams)', bind)
+        self.assertIn('distortion > 0.0f', bind)
+        self.assertRegex(bind, r'refrPx = refracts \? distortion \*')
+
+    def testJellyRefractsOnEveryLitPath(self):
+        msl = shader_literals(self.source())
+        vbo = _function_body(msl['kVBOSrc'], 'fragment OITFragOut vbo_fragment_oit(')
+        self.assertEqual(vbo.count('mat_glass_refraction('), 2)   # glass, jelly
+        cyl = _function_body(msl['kCylinderImpostorSrc'],
+                             'fragment CylOITOut cyl_impostor_fragment_oit(')
+        self.assertEqual(cyl.count('mat_glass_refraction('), 2)
+        sph = _function_body(msl['kSphereImpostorSrc'],
+                             'fragment SphereOITOut sphere_impostor_fragment_oit(')
+        self.assertEqual(sph.count('mat_glass_refraction('), 1)
+        self.assertIn('out.refr = refr', sph)
+        # ...and the glass family's sphere OIT pipeline writes the target
+        src = _strip_comments(self.source())
+        loop = src[src.index('materialFragmentFunction(lib, @"sphere_impostor_fragment_oit", f)'):]
+        loop = loop[:loop.index('_sphereOitPipeline[f] =')]
+        self.assertIn('f == cMaterialFamily_glass', loop)

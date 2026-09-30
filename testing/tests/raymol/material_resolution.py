@@ -59,6 +59,9 @@ class TestMaterialResolution(testing.PyMOLTestCase):
         for rep, name in MATERIAL_REPS.items():
             cmd.reinitialize()
             cmd.fragment('ala', 'm1')
+            # no cartoon: sticks and spheres would follow its material
+            # (MaterialSourceRep; material_follow.py)
+            cmd.hide('cartoon', 'm1')
             cmd.set(name, MARBLE)
             for other, othername in MATERIAL_REPS.items():
                 want = MARBLE if other == rep else 0

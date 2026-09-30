@@ -1159,8 +1159,10 @@ PyObject *CoordSetAtomToChemPyAtom(PyMOLGlobals * G, AtomInfoType * ai, ObjectMo
 void CoordSet::invalidateRep(cRep_t type, cRepInv_t level)
 {
   if(level >= cRepInvVisib) {
-    if (Obj)
+    if (Obj) {
       Obj->RepVisCacheValid = false;
+      Obj->RepVisAtomsValid = false;
+    }
   }
   /* graphical representations need redrawing */
   if(level == cRepInvVisib) {

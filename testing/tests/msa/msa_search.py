@@ -208,9 +208,27 @@ class MSASearchTestCase(testing.PyMOLTestCase):
         testing.PyMOLTestCase.tearDown(self)
 
     def run_search(self, fake, sequence=QUERY, **kwargs):
-        """Search and wait for it to settle, WITHOUT pumping. Returns the search id."""
-        with patch('pymol.msas.colabfold._urlopen', fake):
-            search_id = cmd.msa_search(sequence, **kwargs)
+        """Search and wait for it to settle, WITHOUT pumping. Returns the search id.
+
+        The worker is held before its first request until msa_search has returned.
+        msa_search pumps on its way out (so a CACHED search lands before the call
+        returns), and with FIRST_POLL_SECONDS at 0 an unheld worker can finish the whole
+        round trip before that pump runs -- landing the alignment there, with the target
+        still present, instead of at the test's own pump -- a scheduler race
+        that failed one CI run in many and never locally.
+        """
+        gate = threading.Event()
+
+        def held(request, timeout=None):
+            if not gate.wait(timeout=10):
+                raise AssertionError('msa_search never returned to open the gate')
+            return fake(request, timeout)
+
+        with patch('pymol.msas.colabfold._urlopen', held):
+            try:
+                search_id = cmd.msa_search(sequence, **kwargs)
+            finally:
+                gate.set()
             searching.join(search_id, timeout=10)
         return search_id
 

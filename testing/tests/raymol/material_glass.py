@@ -131,58 +131,35 @@ class TestGlass(testing.PyMOLTestCase):
         """`rough` is the FROST axis for glass: the cubemap mip is
         sqrt(rough)*7 and it sets the tap spread.
 
-        The legacy object-scoped metal_rt_reflect* triple used to overwrite it
-        for every non-reflective family, so frosted_glass's 0.6 became
-        metal_rt_reflect_rough's default 0 -- a near-mirror sample. It rendered
-        as clear `glass`, and the only surviving difference between the two
-        materials was their implied alpha, which is exactly what the render
-        probe measured. Nothing could see it."""
+        The object-wide metal_rt_reflect* triple (retired in #565) once
+        overwrote it for every non-reflective family, so frosted_glass's 0.6
+        became a near-mirror 0 and it rendered as clear `glass`. The glass
+        family keeps its own value."""
         cmd.set('surface_material', 'frosted_glass', 'm1')
         _fam, _mode, _refl, _tint, rough, _p = _cmd.get_material_draw_params(
             cmd._COb, 'm1', repres['surface'])
         self.assertAlmostEqual(rough, 0.6, places=4)
 
-    def testALegacyReflectSliderCannotReshapeGlass(self):
-        """A material is a pure function of its id. The legacy sliders must not
-        reach into one -- turning metal_rt_reflect_rough up used to make clear
-        glass frosted."""
-        cmd.set('surface_material', 'glass', 'm1')
-        cmd.set('metal_rt_reflect_rough', 1.0, 'm1')
-        _fam, _mode, _refl, _tint, rough, _p = _cmd.get_material_draw_params(
-            cmd._COb, 'm1', repres['surface'])
-        self.assertAlmostEqual(rough, 0.0, places=4)
-
-    def testAReflectiveMaterialKeepsItsExplicitOverride(self):
-        """#497: a reflective material starts from its TABLE row, but an
-        EXPLICIT per-object metal_rt_reflect* value still wins.
-
-        Pinned here because moving the legacy-triple rule out of CGOGL into
-        MaterialDrawParams dropped this branch, and the rebase onto #497 is the
-        only thing that caught it -- no test covered it."""
-        by_name = {n: i for i, n in setting.get_material_names(0)}
+    def testAReflectiveMaterialDrawsItsTableRow(self):
+        """A reflective material draws with its own reflection, not a zero."""
         cmd.set('surface_material', 'metallic', 'm1')
         _f, _m, refl, tint, rough, _p = _cmd.get_material_draw_params(
             cmd._COb, 'm1', repres['surface'])
-        # untouched: the table row, NOT the sliders' default of 0
         self.assertAlmostEqual(refl, 0.6, places=4)
         self.assertAlmostEqual(tint, 0.35, places=4)
-        self.assertAlmostEqual(rough, 0.35, places=4)
-        # explicit values win, and only the ones actually set
-        cmd.set('metal_rt_reflect', 0.9, 'm1')
-        cmd.set('metal_rt_reflect_rough', 0.05, 'm1')
-        _f, _m, refl, tint, rough, _p = _cmd.get_material_draw_params(
-            cmd._COb, 'm1', repres['surface'])
-        self.assertAlmostEqual(refl, 0.9, places=4)
-        self.assertAlmostEqual(tint, 0.35, places=4)   # untouched, table wins
-        self.assertAlmostEqual(rough, 0.05, places=4)
+        self.assertAlmostEqual(rough, 0.25, places=4)
 
-    def testDefaultStillReadsTheLegacySliders(self):
-        """The exemption is narrow: `default` keeps reading the legacy triple,
-        which is what makes this PR byte-identical for it."""
-        cmd.set('metal_rt_reflect_rough', 0.42, 'm1')
-        _fam, _mode, _refl, _tint, rough, _p = _cmd.get_material_draw_params(
-            cmd._COb, 'm1', repres['surface'])
-        self.assertAlmostEqual(rough, 0.42, places=4)
+    def testEveryOtherFamilyDrawsWithNoReflectionAtAll(self):
+        """`default` and the procedural family draw with reflect / tint /
+        rough at 0 -- what `default` has always drawn with, which keeps it
+        byte-identical. Every procedural row carries a non-zero rough (matte
+        and clay 1.0, rubber 0.95, marble 0.9) that its shader never reads; it
+        must still reach the draw as 0."""
+        for material in ('default', 'matte', 'marble', 'clay', 'rubber'):
+            cmd.set('surface_material', material, 'm1')
+            params = _cmd.get_material_draw_params(
+                cmd._COb, 'm1', repres['surface'])
+            self.assertEqual(tuple(params[2:5]), (0.0, 0.0, 0.0), material)
 
     def testGlassCartoonBuildsTransparent(self):
         """The cartoon's per-vertex alpha is baked in RepCartoonNew, not in

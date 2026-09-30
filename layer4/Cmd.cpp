@@ -2424,6 +2424,51 @@ static PyObject* CmdGetMaterialNames(PyObject*, PyObject* args)
 }
 
 /**
+ * Custom material (#568): the knobs material `id` has, as
+ * [(suffix, label, min, max, control), ...] in display order. `suffix`
+ * completes the per-layer override setting: `<rep>_material_<suffix>`.
+ * `control` is "slider", or "toggle" for an on/off knob (min off, max on;
+ * #590). Empty for `default` and for an id with no knobs. The Inspector
+ * builds its Custom controls from this, so it can only offer knobs the
+ * material's shader reads.
+ *
+ * _cmd.get_material_knobs(id)
+ */
+static PyObject* CmdGetMaterialKnobs(PyObject*, PyObject* args)
+{
+  int id = 0;
+  if (!PyArg_ParseTuple(args, "i", &id)) {
+    API_HANDLE_ERROR;
+    return APIAutoNone(nullptr);
+  }
+  static const char* const kSuffix[kMaterialKnobSlotCount] = {"reflect",
+      "tint", "rough", "knob1", "knob2", "knob3", "knob4", "knob5", "knob6"};
+  const MaterialKnob* knobs = nullptr;
+  int const n = MaterialKnobs(id, &knobs);
+  PyObject* list = PyList_New(0);
+  if (!list) {
+    return APIAutoNone(nullptr);
+  }
+  for (int i = 0; i < n; ++i) {
+    // The fifth field is the Inspector's control: "toggle" or "slider".
+    PyObject* item = Py_BuildValue("ssffs", kSuffix[knobs[i].slot],
+        knobs[i].label, knobs[i].min, knobs[i].max,
+        knobs[i].toggle ? "toggle" : "slider");
+    if (!item) {
+      Py_DECREF(list);
+      return APIAutoNone(nullptr);
+    }
+    int const appended = PyList_Append(list, item);
+    Py_DECREF(item);
+    if (appended != 0) {
+      Py_DECREF(list);
+      return APIAutoNone(nullptr);
+    }
+  }
+  return list;
+}
+
+/**
  * Materials (#503): the material id one representation of one object resolves
  * to for a draw -- object value, then the rep's global value, then
  * material_default. Internal; the Inspector and the CI test read it.
@@ -2438,7 +2483,13 @@ static PyObject* CmdGetMaterialNames(PyObject*, PyObject* args)
  * object-level value instead would disagree with the picture on screen.
  * state N>0 names a state explicitly; state <0 forces the object level.
  *
- * _cmd.get_rep_material(object_name_or_empty, rep_index[, state=0])
+ * A side-chain stick or sphere with no material of its own follows the
+ * object's cartoon (MaterialSourceRep), so this reports the cartoon's id for
+ * it. With source_only=1 it reports WHICH layer instead: the rep index itself,
+ * or cRepCartoon when following.
+ *
+ * _cmd.get_rep_material(object_name_or_empty, rep_index[, state=0[,
+ *                       source_only=0]])
  */
 static PyObject* CmdGetRepMaterial(PyObject* self, PyObject* args)
 {
@@ -2446,7 +2497,9 @@ static PyObject* CmdGetRepMaterial(PyObject* self, PyObject* args)
   const char* oname = "";
   int repType = -1;
   int state = 0;
-  if (!PyArg_ParseTuple(args, "Osi|i", &self, &oname, &repType, &state)) {
+  int sourceOnly = 0;
+  if (!PyArg_ParseTuple(
+          args, "Osi|ii", &self, &oname, &repType, &state, &sourceOnly)) {
     API_HANDLE_ERROR;
     return APIAutoNone(nullptr);
   }
@@ -2457,9 +2510,11 @@ static PyObject* CmdGetRepMaterial(PyObject* self, PyObject* args)
   APIEnterBlocked(G);
   const CSetting* stateSetting = nullptr;
   const CSetting* objSetting = nullptr;
+  const pymol::CObject* found = nullptr;
   bool ok = true;
   if (oname && oname[0]) {
     pymol::CObject* obj = ExecutiveFindObjectByName(G, oname);
+    found = obj;
     if (!obj) {
       ErrMessage(G, "GetRepMaterial", "named object not found.");
       ok = false;
@@ -2478,18 +2533,23 @@ static PyObject* CmdGetRepMaterial(PyObject* self, PyObject* args)
   }
   PyObject* result = nullptr;
   if (ok) {
-    result = PyInt_FromLong(
-        MaterialResolveSettingId(G, stateSetting, objSetting, repType));
+    // `sourceOnly` asks which LAYER's setting that is instead: the rep itself,
+    // or cRepCartoon for a side chain following its cartoon.
+    int const source =
+        MaterialSourceRep(G, stateSetting, objSetting, repType, found);
+    result = PyInt_FromLong(sourceOnly ? source
+                                       : MaterialResolveSettingId(G,
+                                             stateSetting, objSetting, source));
   }
   APIExitBlocked(G);
   return APIAutoNone(result);
 }
 
 /* The FINAL material parameters a representation draws with: family, mode and
-   the reflect/tint/rough triple after the legacy-slider decision. Exposed so
-   the rules can be asserted without a Metal context -- `frosted_glass` losing
-   its roughness to `metal_rt_reflect_rough` (default 0) made it render as clear
-   glass, and nothing in Python could see the difference. */
+   the reflect/tint/rough triple as MaterialDrawParams finalises it. Exposed so
+   the rules can be asserted without a Metal context -- `frosted_glass` once
+   lost its roughness to a legacy slider and rendered as clear glass, and
+   nothing in Python could see the difference. */
 static PyObject* CmdGetMaterialDrawParams(PyObject* self, PyObject* args)
 {
   PyMOLGlobals* G = nullptr;
@@ -2538,7 +2598,7 @@ static PyObject* CmdGetMaterialDrawParams(PyObject* self, PyObject* args)
     }
     MaterialParams const p = rep
         ? MaterialDrawParamsCached(G, cs->Setting.get(), objmol->Setting.get(),
-              repType, rep->emitsStickBalls())
+              repType, rep->emitsStickBalls(), objmol)
         : MaterialDrawParams(G, cs ? cs->Setting.get() : nullptr,
               objmol->Setting.get(), repType, cs);
     /* The per-material KNOBS are part of "what this draw uses" too, and until
@@ -7052,6 +7112,7 @@ static PyMethodDef Cmd_methods[] = {
   {"get_object_ttt", CmdGetObjectTTT, METH_VARARGS},
   {"get_object_settings", CmdGetObjectSettings, METH_VARARGS},
   {"get_material_names", CmdGetMaterialNames, METH_VARARGS},
+  {"get_material_knobs", CmdGetMaterialKnobs, METH_VARARGS},
   {"get_material_family", CmdGetMaterialFamily, METH_VARARGS},
   {"get_effective_material", CmdGetEffectiveMaterial, METH_VARARGS},
   {"get_rep_material", CmdGetRepMaterial, METH_VARARGS},

@@ -29,14 +29,13 @@ CAPTURE = [
     "metal_raytrace", "metal_rt_shadows", "metal_shadows", "metal_ssao",
     "metal_rt_samples", "metal_rt_ao_radius", "metal_rt_ao_intensity",
     "metal_rt_shadow_intensity", "metal_rt_scale", "metal_outline", "metal_outline_width",
-    "metal_rt_reflect", "metal_rt_reflect_tint", "metal_rt_reflect_rough",
     "metal_rt_reflect_env", "metal_rt_reflect_samples", "metal_rt_transparent",
     "material_default", "material_env",
     # The per-rep materials are OBJECT-level settings, so they have a global
-    # fallback as well as per-object overrides -- exactly like metal_rt_reflect
-    # above. Both halves have to be captured: the global is what an object with
-    # no override of its own renders with, and what a NEW object created after
-    # the recall picks up. OBJECT_CAPTURE below covers the other half.
+    # fallback as well as per-object overrides. Both halves have to be
+    # captured: the global is what an object with no override of its own
+    # renders with, and what a NEW object created after the recall picks up.
+    # OBJECT_CAPTURE below covers the other half.
     "cartoon_material", "surface_material", "stick_material", "sphere_material",
     "transparency_peel",
     "metal_msaa", "metal_tonemap", "metal_exposure", "metal_sss_wrap",
@@ -107,14 +106,18 @@ _scene_settings = {}
 # only, so a global value is never baked onto an object) and applied with the
 # object argument.
 OBJECT_CAPTURE = [
-    "metal_rt_reflect", "metal_rt_reflect_tint", "metal_rt_reflect_rough",
     # Materials (#503). Ids, so a scene stores what the object is MADE OF
     # independently of its colour. They step at a scene cut -- there is nothing
     # meaningful to interpolate between two materials -- which is why they are
     # captured here and deliberately absent from raymol_scene_anim.INTERPOLATE.
     "cartoon_material", "surface_material", "stick_material", "sphere_material",
     "transparency_peel",
-]
+    # Custom material overrides (#568): per layer, object-scoped, and part of
+    # what the layer is made of -- so they step with the material at a cut.
+] + ["%s_material_%s" % (rep, knob)
+     for rep in ("cartoon", "surface", "stick", "sphere")
+     for knob in ("reflect", "tint", "rough", "knob1", "knob2", "knob3",
+                  "knob4", "knob5", "knob6")]
 
 # The OBJECT_CAPTURE names in force when a given scene was STORED. Recall reads
 # "name absent from this scene's per-object map" as "the object had no override,
@@ -126,8 +129,9 @@ OBJECT_CAPTURE = [
 # written before this existed) is read with the list below.
 _scene_object_capture = {}
 
-# What OBJECT_CAPTURE was before the materials joined it (#489). Every scene in
-# an older .pse was stored with exactly these three.
+# What OBJECT_CAPTURE was before the materials joined it (#489): the
+# metal_rt_reflect* triple, retired in #565 -- so a scene with no record now
+# applies and unsets nothing per object. Nothing with such scenes ever shipped.
 #
 # Known limit: absence of a record cannot distinguish "stored before the record
 # existed AND before the materials joined" (this list is right) from "stored
@@ -135,8 +139,7 @@ _scene_object_capture = {}
 # neither apply nor unset the materials, and the scene half-restores). Only
 # sessions written by the intermediate commits of the PR that added this are in
 # the second case, and none of those shipped, so there is nothing to migrate.
-_LEGACY_OBJECT_CAPTURE = ("metal_rt_reflect", "metal_rt_reflect_tint",
-                          "metal_rt_reflect_rough")
+_LEGACY_OBJECT_CAPTURE = ()
 
 # Movies replay BOTH halves of this at each scene cut: raymol_scene_anim.
 # enter_scene applies the globals and then, through apply_object_settings, the

@@ -22,6 +22,7 @@ def get_command_keywords(self_cmd=cmd):
         'alphatoall'    : [ self_cmd.alphatoall        , 0 , 0 , ''  , parsing.STRICT ],
         'angle'         : [ self_cmd.angle             , 0 , 0 , ''  , parsing.STRICT ],
         'api'           : [ self_cmd.helping.api       , 0 , 0 , ''  , parsing.STRICT ],
+        'apply_look'    : [ self_cmd.apply_look        , 0 , 0 , ''  , parsing.STRICT ],
         'as'            : [ self_cmd.show_as           , 0 , 0 , ''  , parsing.STRICT ],
         'assert'        : [ self_cmd.python_help       , 0 , 0 , ''  , parsing.PYTHON ],
         'assign_stereo' : [ self_cmd.assign_stereo     , 0 , 0 , ''  , parsing.STRICT ],

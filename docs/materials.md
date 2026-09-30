@@ -17,11 +17,8 @@ surface over a marble cartoon with metallic sticks is one object.
 ## Quick start
 
 In the **Inspector**, each style-layer row (Cartoon, Surface, Sticks, Spheres)
-has a **Material** dropdown. When the chosen material has a look — `marble`,
-`clay`, or `metallic` (copper, gold, steel, chrome) — a **Look** chip appears
-beside it and applies the whole look: for marble and clay, the material plus
-the lighting that flatters it; for the metals, `metallic` plus the metal's
-colour and reflection settings. See [Looks](#looks-materials-plus-lighting).
+has a **Material** dropdown. A material changes only that representation's
+material: lighting is set in the Scene panel, and colour where it always was.
 
 From the command line:
 
@@ -59,6 +56,7 @@ set surface_material, glas, myprotein
 | `material_default` | global | `default` | Fallback for every representation above that has no material of its own. |
 | `material_env` | global | `0` | What the reflective and glass-family materials reflect: `0` the background colour, `1` a studio, `2` nothing. |
 | `metal_rt_transparent` | global | `0` | Let transparent geometry cast traced shadows and ambient occlusion and appear in traced reflections (see [Environment and ray tracing](#environment-and-ray-tracing)). |
+| `<rep>_material_<knob>` | object | unset | The layer's Custom overrides of its material's own knobs, for `cartoon`, `surface`, `stick` and `sphere` (see [Custom](#custom-tuning-a-layers-material)). |
 | `transparency_peel` | object | `-1` | Keep only the nearest transparent layer of the object: `-1` auto (on for glass-family materials), `0` off, `1` on. |
 
 **Resolution order.** Each representation takes:
@@ -71,6 +69,28 @@ set surface_material, glas, myprotein
 
 A global `set cartoon_material, default` therefore does *not* block
 `material_default`; only the object-level one does.
+
+**Side chains follow the cartoon.** While an object shows a cartoon, its
+sticks and spheres draw with the cartoon's material and the cartoon's Custom
+tuning, unless that layer has a material of its own. A material of its own means
+`stick_material` / `sphere_material` set on the object or one of its states
+(an explicit `default` counts), or a non-`default` global value. So in
+cartoon-plus-side-chains, the side chains match the backbone they hang from.
+`unset stick_material, myprotein` makes the sticks follow again.
+
+- The Inspector's stick or sphere Material row then reads **Cartoon's
+  (metallic)**, and its Inherit item reads **• Cartoon's**. Picking a material
+  there gives the layer its own; **Inherit** goes back to following.
+- The cartoon's colour setting (`cartoon_color`) does not follow. Colour is
+  shared through the atoms, which is what a cartoon Look colours.
+- A following layer offers no Custom sliders, because it is tuned through the
+  cartoon.
+- Surfaces never follow.
+- The rule is per object, not per atom. A ligand shown as sticks in the same
+  object follows too. "Shows a cartoon" means a polymer atom has it, so an
+  object with no polymer, such as a docked ligand, never follows.
+- The layer still degrades as its own representation: spheres following a
+  glass cartoon draw `default`, as glass spheres always do.
 
 **Object-scoped, never per atom.** A selection-scoped `set` of one of the four
 `*_material` settings (`set cartoon_material, marble, chain A`) is rejected
@@ -97,9 +117,9 @@ reach them.
 | `matte` | procedural | all | Lambert only: no highlight at all. |
 | `plastic` | reflective | all | Glossy clear coat: a white environment reflection over the base colour. Traced reflections when ray tracing is on. |
 | `metallic` | reflective | all | A stronger, rougher environment reflection, tinted by the base colour. The body and the light highlight are `default`'s, so the difference is all in what it reflects (under `ray`, see below, the body is darker and the highlight tinted). |
-| `glass` | glass | cartoon, surface, sticks | Clear body (implied alpha 0.15) under a Fresnel rim, with key-light and headlight glints. |
-| `frosted_glass` | glass | cartoon, surface, sticks | Glass with a blurred environment and soft, broad glints (implied alpha 0.2). |
-| `jelly` | glass | all | A dense gummy body (implied alpha 0.85) with an inner glow and a wet highlight. |
+| `glass` | glass | cartoon, surface, sticks | Clear body (implied alpha 0.15) under a Fresnel rim, with key-light and headlight glints. Bends what is seen through it (see below). |
+| `frosted_glass` | glass | cartoon, surface, sticks | Glass with a blurred environment and soft, broad glints (implied alpha 0.2). Bends what is seen through it like `glass`. |
+| `jelly` | glass | all | A dense gummy body (implied alpha 0.85) with an inner glow and a wet highlight. Bends what is seen through it. |
 | `marble` | procedural | all | Veined stone with a waxy light wrap. |
 | `clay` | procedural | all | Unglazed ceramic: fine grain, darkened at grazing angles. |
 | `rubber` | procedural | all | A mottled, low-sheen skin. |
@@ -115,6 +135,99 @@ ball-and-stick, with its implied alpha.
 
 **Procedural patterns are locked to the object** in the viewport. They don't
 slide when you rotate, pan or zoom.
+
+## Custom: tuning a layer's material
+
+Each layer can tune its material without becoming a different one. The
+overrides are object-scoped settings named `<rep>_material_<knob>`, for the
+`cartoon`, `surface`, `stick` and `sphere` layers; an unset one means the
+material's own value. They tune the material, never replace it, and each
+material has only the knobs its shader reads -- an override of any other knob
+is ignored:
+
+| Material | Knobs |
+|---|---|
+| `plastic` | `reflect` Reflection, `tint` Reflection tint, `rough` Roughness |
+| `metallic` | `reflect` Reflection, `tint` Reflection tint, `rough` Roughness |
+| `glass` | `knob1` Reflection, `knob2` Distortion, `rough` Roughness |
+| `frosted_glass` | `knob1` Reflection, `knob2` Distortion, `rough` Frost |
+| `jelly` | `rough` Skin reflection blur, `knob1` Absorption, `knob2` Inner glow, `knob3` Wet highlight, `knob4` Distortion |
+| `matte` | `knob1` Grain, `knob2` Grain frequency |
+| `clay` | `knob1` Grain, `knob2` Grain frequency, `knob3` Edge darkening |
+| `rubber` | `knob1` Grain, `knob2` Grain frequency, `knob3` Highlight, `knob4` Sheen |
+| `marble` | `knob2` Vein scale, `knob5` Vein contrast, `knob6` Vein sharpness |
+
+In the **Inspector**, a layer's Material menu has **Custom…** under the
+materials whenever the material the layer draws with has knobs (not, for
+example, glass on spheres, which draws as `default`). Choosing it keeps that
+material and shows its knobs as sliders at the values it draws with; moving
+one tunes that layer only, and the menu then reads **Custom (metallic)**.
+Glass's and frosted glass's **Reflection** and **Distortion**, and jelly's
+**Distortion**, are on/off toggles instead of sliders (#590). Each is still an
+amount, so from the command line `set surface_material_knob2, 0.5, myprotein`
+gives glass half its distortion.
+**Reset** goes back to the material's own values, and picking any material
+from the menu clears the tuning. To tune a different material, pick it first,
+then Custom.
+
+From the command line:
+
+```
+set surface_material, metallic, myprotein
+set surface_material_rough, 0.05, myprotein      # a sharper metallic, this layer only
+unset surface_material_rough, myprotein          # back to metallic's own
+```
+
+**Looks** are one-click starting points for a layer: the **Look** chip beside
+the Material menu offers Gold, Copper, Bronze, Steel, Chrome, Marble
+(statuary) and Clay (terracotta). A Look sets that layer's material and its
+Custom knobs, and changes no lighting. The menu then reads **Custom
+(metallic)** (or marble, or clay), so Reset or picking a material undoes the
+tuning. From the command line: `apply_look gold, myprotein, surface` (layers:
+`cartoon`, `surface`, `stick`, `sphere`).
+
+A Look's colour is a base coat on the **atoms**: the named colour `look_gold`
+(and so on), which the Look defines.
+
+- It colours the atoms the layer is shown on. For a cartoon that means the
+  cartoon's whole polymer residues, so the side chains that follow its
+  material take its colour too.
+- A ligand in the same object keeps its colour. A layer shown on no atom
+  colours the whole object.
+- The Look clears that layer's colour setting (`cartoon_color`, ...), and for a
+  cartoon the following sticks' and spheres' too, since a layer colour would
+  hide the atom colours.
+- **By element** then recolours the non-carbons on top: a gold cartoon with
+  side chains keeps gold carbons and gets element-coloured N, O and S.
+- Being atom colours, the colour shows on every layer drawn on those atoms.
+  Any later colouring replaces it.
+
+Some knobs only show under a condition:
+
+- **Grain frequency** changes nothing while **Grain** is 0 (matte's own grain
+  is 0).
+- A blur of what the material reflects needs something to reflect: jelly's
+  **Skin reflection blur**, and plastic's and metallic's **Roughness**, are
+  invisible while `material_env` is the flat background colour -- unless Metal
+  ray tracing traces the reflection, which the reflective Roughness also blurs.
+  (Glass's **Roughness** also widens and softens its glints, so it shows either
+  way -- as long as glass's **Reflection** is on.)
+- Glass's **Roughness** and frosted glass's **Frost** blur the surface
+  reflection, so they change nothing while **Reflection** is off.
+
+An override belongs to the LAYER, not to the material: it stays when the
+layer's material changes and then tunes the new material's knob in the same
+slot. The Inspector clears a layer's overrides when you pick a material; from
+the command line, `unset` them when switching. Since #590 that includes
+`knob1` and `knob2` on glass (Reflection and Distortion) and `knob4` on jelly
+(Distortion), slots those materials used to ignore: a `knob1` left from a Look
+or from another material now dims glass's reflection, and a scene saved
+before #590 with such a leftover renders glass or jelly differently.
+
+`default` has no knobs. A global value is not an override: only the object's
+(or state's) own value counts. Scenes capture the object-level values with the
+material. The CPU
+`ray` command maps materials by name and does not see these.
 
 ## Transparency and peel
 
@@ -137,6 +250,9 @@ joins inside them; with it, the object reads as one skin.
   because peel is per object and would erase that rep's back layers.
 - `1` and `0` force peel on or off.
 - Groups: `set transparency_peel, 1, mygroup` reaches the members.
+- In the Inspector this is **Translucent layers** in the object's section, above
+  its layers: **Nearest only** is `1`, **All** is `0`, **Auto** is `-1`, and a line
+  under it says what Auto currently means.
 - Up to **three** peeled objects are drawn per frame; any further ones draw
   unpeeled, so a fourth jelly object looks denser. The classic OpenGL path
   peels nothing.
@@ -198,8 +314,38 @@ or closed surface shows a flat cap instead, and the cap is never reflective;
 cartoon gets no cap. Making it reflect would mean mirroring
 geometry you just clipped away.
 
-**Glass does not refract.** It is a Fresnel rim and glints over a see-through
-body. What is behind it is seen straight through, not bent.
+**Glass refracts** (#588). What is seen through `glass`, `frosted_glass` and
+`jelly` (#590) is bent by the surface's shape: each lobe of a glass molecular surface works as a
+small lens, strongest toward its edges where the surface turns away from you.
+The bend also grows with how far behind the glass the content lies, so a side
+chain that touches the surface stays joined to it there and only the part
+deeper inside moves. What is bent is the shaded image of the opaque scene
+(with ray tracing on, its traced shadows and ambient occlusion too), so the
+structure is lit the same through the glass as beside it.
+
+- **Only opaque content is bent.** Another transparent object seen through the
+  glass is not. Content in front of the glass is not pulled into it,
+  apart from a fringe about a pixel wide along its edges.
+- **Distortion can be turned off** per layer with the material's Distortion
+  knob (see Custom, above): a toggle in the Inspector, and an amount from 0
+  to 1 on the command line.
+- **Jelly bends less visibly.** It refracts the same way, but its body is
+  85% opaque, so only the part of the view that passes through it is bent.
+  It refracts on spheres too; glass on spheres draws `default`, which does
+  not.
+- **The full strength is fixed** (Distortion scales it down, never up), and
+  deliberately below what a real refractive index would give. A molecular surface is hundreds of lobes, and a real
+  index turns the view through them into noise. Displacement is capped at 2%
+  of the image height, content more than 16 Å behind the glass moves no
+  further, and background behind glass counts as 8 Å deep.
+- **Frosted glass bends as sharply as clear glass**; the view through it is not
+  blurred.
+- **Limits.** It is a screen-space effect: nothing outside the image can be
+  seen through the glass, and at the image's edge the displaced view is
+  clamped. Outlines (`metal_outline`) and depth of field (`metal_dof`) are
+  drawn afterwards from the unbent depth, so behind glass an outline follows
+  where the content would be seen straight through, not where it is bent to. In `grid_mode`, near a cell's edge the displaced view can land in
+  the neighbouring cell. The CPU `ray` command does not refract.
 
 ### The CPU `ray` command
 
@@ -230,57 +376,6 @@ knobs it has:
     - `.pov` carries it on triangles only;
     - `.idtf` exports only triangles;
     - `.wrl` and `.obj` carry none.
-
-## Looks: materials plus lighting
-
-Some looks need more than a material. `pymol.materials` has bundles that set
-the material on **all four** material-bearing representations of each object
-in the selection, plus what else the look depends on: the lighting rig for
-`marble` and `clay`, the colour and reflection settings for the metals. Each
-function's docstring lists exactly what it writes.
-
-```python
-from pymol import materials
-materials.marble('myprotein')   # marble + a soft museum rig (specular down, light wrap)
-materials.clay('myprotein')     # clay + contact shadow and occlusion
-materials.copper('ligand')      # metallic + copper colour + reflection overrides
-materials.gold('ligand')
-materials.steel('ligand')
-materials.chrome('ligand')
-```
-
-- Lighting is **global** (there is one light rig), so calling two bundles in a
-  row leaves the second one's lighting.
-- The named metals **do** write colour, on the selection. That is what
-  separates a metal look from the `metallic` material.
-- `clay` and `marble` switch on screen-space shadows and occlusion
-  (`metal_shadows`, `metal_ssao`), which work without ray tracing (except that
-  cartoons get no occlusion: `metal_ssao_cartoon` is off by default), and set the
-  ray-traced ones (`metal_rt_shadow*`, `metal_rt_ao_*`), which need
-  `metal_raytrace`. The bundles deliberately don't switch that on.
-
-In the Inspector these are the **Look** chips on a representation row, shown
-when the row's material is `marble`, `clay` or `metallic` (which offers the
-four metals). They rewrite all four representation materials of the object,
-not just that row's.
-
-## Legacy: `metal_rt_reflect*`
-
-`metal_rt_reflect`, `metal_rt_reflect_tint` and `metal_rt_reflect_rough`
-(object-scoped) predate materials. They set traced self-reflection directly
-and still work, but **prefer a material** (`plastic` or `metallic`) or a
-metal look.
-
-How materials treat them:
-
-- `default` and the procedural materials take the three values as they are.
-- `plastic` and `metallic` use their own reflection unless the object has an
-  explicit value, which then wins.
-- The glass family ignores them.
-
-The Inspector shows them in a collapsed **Reflection (legacy)** group, marked
-"not in use" when every shown representation is glass. **Clear** unsets all
-three.
 
 ## Scenes and sessions
 

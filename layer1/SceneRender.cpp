@@ -2203,6 +2203,20 @@ void SceneRenderMetal(PyMOLGlobals* G)
     metalConfigDone = true;
   }
 
+  // Release the GPU buffer objects freed since the last frame -- the CPU
+  // vertex copies Metal draws from and, through invalidateVBOCacheEntry, the
+  // MTLBuffers uploaded from them. freeGPUBuffer only QUEUES an object, and
+  // the GL loop drains that queue at the top of every SceneRender. This loop
+  // never did, so every rep rebuild on Metal -- a material or colour change,
+  // each tick of a transparency slider, a surface recompute -- kept the old
+  // copy and its MTLBuffer alive for the life of the process, until iOS killed
+  // the app at its per-app memory limit. Drained here, before the update phase
+  // rebuilds anything and before the frame draws, exactly as the GL loop
+  // does. The GL calls in FreeAllVBOs are the no-op stubs of the
+  // _PYMOL_NO_OPENGL build; a buffer an in-flight command buffer still uses
+  // stays alive through Metal's own retain.
+  G->ShaderMgr->FreeAllVBOs();
+
   // Drain deferred mouse/UI actions (click, drag, release). PyMOL_Button/Drag
   // queue these via OrthoDefer; the normal GL path runs them in
   // ExecutiveDrawNow, which the Metal path bypasses. Without this, mouse

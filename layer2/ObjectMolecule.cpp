@@ -27,6 +27,7 @@ Z* -------------------------------------------------------------------
 #include"Map.h"
 #include"Selector.h"
 #include"ObjectMolecule.h"
+#include"Material.h"
 #include"Ortho.h"
 #include"Util.h"
 #include"Matrix.h"
@@ -10761,12 +10762,72 @@ static void ObjMolCoordSetUpdateSpawn(PyMOLGlobals * G,
 
 
 /*========================================================================*/
+int ObjectMolecule::repsShownByAtoms() const
+{
+  if (!RepVisAtomsValid) {
+    int bits = 0;
+    bool polymerCartoon = false;
+    for (int a = 0; a < NAtom; ++a) {
+      auto const& ai = AtomInfo[a];
+      bits |= ai.visRep;
+      if ((ai.visRep & cRepCartoonBit) && (ai.flags & cAtomFlag_polymer))
+        polymerCartoon = true;
+    }
+    RepVisAtoms = bits;
+    PolymerCartoonShown = polymerCartoon;
+    RepVisAtomsValid = true;
+  }
+  return RepVisAtoms;
+}
+
+bool ObjectMolecule::showsPolymerCartoon() const
+{
+  repsShownByAtoms();
+  return PolymerCartoonShown;
+}
+
+/*========================================================================*/
 void ObjectMolecule::update()
 {
   auto I = this;
   int a; /*, ok; */
 
   OrthoBusyPrime(G);
+  /* Side chains with no material of their own follow the cartoon's while one
+     is shown (MaterialSourceRep). Shading is resolved per draw, but a glass
+     material's implied alpha is baked in at BUILD time -- so showing or hiding
+     the cartoon rebuilds a following layer, per state, when that changes the
+     alpha it implies. With every material `default` nothing is rebuilt. */
+  {
+    int const shown = showsPolymerCartoon() ? 1 : 0;
+    if (CartoonShownSeen >= 0 && shown != CartoonShownSeen) {
+      const CSetting* set2 = Setting.get();
+      for (int a = 0; a < NCSet; ++a) {
+        if (!CSet[a])
+          continue;
+        // Per state: the draw path reads the state's settings first.
+        const CSetting* set1 = CSet[a]->Setting.get();
+        int const cartoonId =
+            MaterialResolveSettingId(G, set1, set2, cRepCartoon);
+        for (int rep : {cRepCyl, cRepSphere}) {
+          if (MaterialLayerHasOwnMaterial(G, set1, set2, rep))
+            continue;   // never follows, so the toggle changes nothing
+          int const ownId = MaterialResolveSettingId(G, set1, set2, rep);
+          if (MaterialImpliedAlpha(MaterialEffectiveId(cartoonId, rep)) ==
+              MaterialImpliedAlpha(MaterialEffectiveId(ownId, rep)))
+            continue;
+          invalidate(static_cast<cRep_t>(rep), cRepInvColor, a);
+          // line_stick_helper reads the sticks' (implied) transparency.
+          if (rep == cRepCyl)
+            invalidate(cRepLine, cRepInvRep, a);
+        }
+      }
+    }
+    CartoonShownSeen = shown;
+    // Re-prime: the invalidations above clear the cache, and the coordinate
+    // set updates below may run on threads that all read it.
+    repsShownByAtoms();
+  }
   /* if the cached representation is invalid, reset state */
   if(!I->RepVisCacheValid) {
     /* note which representations are active */
@@ -10868,6 +10929,7 @@ void ObjectMolecule::invalidate(cRep_t rep, cRepInv_t level, int state)
 
   if(level >= cRepInvVisib) {
     I->RepVisCacheValid = false;
+    I->RepVisAtomsValid = false;
   }
 
   if (level >= cRepInvBondsNoNonbonded) {

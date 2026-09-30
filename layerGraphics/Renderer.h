@@ -226,8 +226,8 @@ public:
 
   // Material of the representation about to be drawn (#503). Resolved from the
   // rep's material setting, object value first, then the rep's global value,
-  // then material_default; `reflect`/`tint`/`rough` additionally carry the
-  // legacy metal_rt_reflect* triple, which the `default` material reads.
+  // then material_default; `reflect`/`tint`/`rough` are the material's own
+  // (0 for every family but reflective and glass).
   //
   // Called on EVERY lit draw, including the reps that have no material of
   // their own (they pass `default`), so a material cannot leak from one rep
