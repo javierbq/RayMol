@@ -794,10 +794,23 @@ struct MovieExportControls: View {
                     .font(.caption).foregroundStyle(.orange)
             }
 
+            VStack(alignment: .leading, spacing: 6) {
+                labeled("Quality") {
+                    Picker("", selection: Binding(
+                        get: { options.quality },
+                        set: { options.applyPreset($0) })) {
+                        ForEach(MovieQuality.allCases) { Text($0.label).tag($0) }
+                    }.pickerStyle(.segmented)
+                }
+                Text(qualityBlurb).font(.caption).foregroundStyle(.secondary)
+            }
+
+            // The individual knobs behind the presets. Editing one switches
+            // Quality to Custom.
             DisclosureGroup(isExpanded: $showAdvanced) {
                 advancedControls.padding(.top, 10)
             } label: {
-                Text("Advanced  ·  \(options.quality.label)")
+                Text("Advanced")
                     .font(.system(size: 13, weight: .medium))
             }
 
@@ -857,15 +870,6 @@ struct MovieExportControls: View {
     @ViewBuilder
     private var advancedControls: some View {
         VStack(alignment: .leading, spacing: 14) {
-            labeled("Quality") {
-                Picker("", selection: Binding(
-                    get: { options.quality },
-                    set: { options.applyPreset($0) })) {
-                    ForEach(MovieQuality.allCases) { Text($0.label).tag($0) }
-                }.pickerStyle(.segmented)
-            }
-            Text(qualityBlurb).font(.caption).foregroundStyle(.secondary)
-
             section("Geometry") {
                 knob("Cartoon sampling", "cartoon_sampling", [7, 10, 14, 20])
                 knob("Sphere quality", "sphere_quality", [1, 2, 3, 4])
