@@ -716,6 +716,7 @@ final class MovieExporter: ObservableObject {
 struct MovieExportControls: View {
     @EnvironmentObject var engine: PyMOLEngine
     @StateObject private var exporter = MovieExporter()
+    var onDone: () -> Void = {}
     // Test affordance (MovieExportSnapshot): start from these options instead
     // of the stored ones, with Advanced expanded or not.
     var previewOptions: MovieExportOptions? = nil
@@ -751,6 +752,7 @@ struct MovieExportControls: View {
     @State private var customW = 1920
     @State private var customH = 1080
     @State private var showAdvanced = false
+    @State private var advancedHeight: CGFloat = 0
     @State private var loaded = false
 
     private var frameCount: Int { max(engine.playback.frameCount, 1) }
@@ -759,6 +761,47 @@ struct MovieExportControls: View {
     private var rtSupported: Bool { engine.rayTracingSupported }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Export Movie").font(.headline)
+                Spacer()
+                Button("Done", action: onDone)
+            }
+            .padding(16)
+
+            #if os(macOS)
+            // The main choices stay put; only the Advanced knobs scroll.
+            mainControls.padding(.horizontal, 16)
+            advancedDisclosure
+                .padding(.horizontal, 16).padding(.top, 18).padding(.bottom, 16)
+            #else
+            // A phone-height sheet can't hold the main controls and the footer
+            // at once, so everything above the footer scrolls together.
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    mainControls
+                    advancedDisclosure
+                }
+                .padding(.horizontal, 16).padding(.bottom, 16)
+            }
+            Spacer(minLength: 0)
+            #endif
+
+            Divider()
+            footer.padding(16)
+        }
+        .onAppear(perform: loadStoredOptions)
+        .onChange(of: options) { _ in saveOptions() }
+        .onChange(of: sizeTag) { _ in applySize() }
+        .onChange(of: customW) { _ in applySize() }
+        .onChange(of: customH) { _ in applySize() }
+        .onChange(of: exporter.finishedURL) { url in
+            if let url = url { deliver(url) }
+        }
+    }
+
+    // Format, Size, ray tracing and the Quality preset.
+    private var mainControls: some View {
         VStack(alignment: .leading, spacing: 18) {
             labeled("Format") {
                 Picker("", selection: $options.format) {
@@ -784,14 +827,16 @@ struct MovieExportControls: View {
                     Spacer(minLength: 0)
                 }
             }
-            Toggle(isOn: $options.rayTraced) {
-                Label("Ray-traced frames (slow)", systemImage: "sparkles")
-            }
-            .tint(TimelineTheme.accent)
-            .disabled(!rtSupported)
-            if options.rayTraced && rtSupported {
-                Text("Ray-tracing every frame is much slower.")
-                    .font(.caption).foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle(isOn: $options.rayTraced) {
+                    Label("Ray-traced frames (slow)", systemImage: "sparkles")
+                }
+                .tint(TimelineTheme.accent)
+                .disabled(!rtSupported)
+                if options.rayTraced && rtSupported {
+                    Text("Ray-tracing every frame is much slower.")
+                        .font(.caption).foregroundStyle(.orange)
+                }
             }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -804,20 +849,59 @@ struct MovieExportControls: View {
                 }
                 Text(qualityBlurb).font(.caption).foregroundStyle(.secondary)
             }
+        }
+    }
 
-            // The individual knobs behind the presets. Editing one switches
-            // Quality to Custom.
-            DisclosureGroup(isExpanded: $showAdvanced) {
-                advancedControls.padding(.top, 10)
-            } label: {
-                Text("Advanced")
-                    .font(.system(size: 13, weight: .medium))
+    // The individual knobs behind the presets. Editing one switches Quality to
+    // Custom. On the Mac they scroll in their own area, as tall as the knobs
+    // but capped so the sheet fits on screen (#604, #607).
+    private var advancedDisclosure: some View {
+        DisclosureGroup(isExpanded: $showAdvanced.animation(.easeInOut(duration: 0.2))) {
+            #if os(macOS)
+            ScrollView {
+                advancedControls
+                    .padding(.top, 10).padding(.trailing, 14)
+                    .background(GeometryReader { g in
+                        Color.clear.preference(key: AdvancedHeightKey.self, value: g.size.height)
+                    })
             }
+            .scrollIndicators(.visible)   // hints there's more below the cap
+            .frame(height: min(advancedHeight, Self.advancedMaxHeight))
+            .onPreferenceChange(AdvancedHeightKey.self) { advancedHeight = $0 }
+            #else
+            advancedControls.padding(.top, 10)
+            #endif
+        } label: {
+            Text("Advanced")
+                .font(.system(size: 13, weight: .medium))
+        }
+    }
 
+    #if os(macOS)
+    private struct AdvancedHeightKey: PreferenceKey {
+        static var defaultValue: CGFloat = 0
+        static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+            value = max(value, nextValue())
+        }
+    }
+
+    // Leaves room for the header, main controls and footer (~560 pt) on the
+    // current screen.
+    private static var advancedMaxHeight: CGFloat {
+        let screen = NSScreen.main?.visibleFrame.height ?? 800
+        return min(max(screen - 600, 180), 420)
+    }
+    #endif
+
+    // Pinned below the scrolling content: summary, warnings, progress and the
+    // Render & Export button (#606).
+    private var footer: some View {
+        VStack(alignment: .leading, spacing: 10) {
             Text("\(frameCount) frames at \(effectiveFPS) fps.")
                 .font(.caption).foregroundStyle(.secondary)
             ForEach(warnings, id: \.self) { w in
                 Text(w).font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if exporter.isExporting {
@@ -831,6 +915,7 @@ struct MovieExportControls: View {
             }
             if let err = exporter.errorText {
                 Text(err).font(.caption).foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             HStack(spacing: 10) {
@@ -854,14 +939,6 @@ struct MovieExportControls: View {
                         .padding(.vertical, 10)
                 }
             }
-        }
-        .onAppear(perform: loadStoredOptions)
-        .onChange(of: options) { _ in saveOptions() }
-        .onChange(of: sizeTag) { _ in applySize() }
-        .onChange(of: customW) { _ in applySize() }
-        .onChange(of: customH) { _ in applySize() }
-        .onChange(of: exporter.finishedURL) { url in
-            if let url = url { deliver(url) }
         }
     }
 
@@ -1094,21 +1171,13 @@ struct MovieExportSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Export Movie").font(.headline)
-                Spacer()
-                Button("Done") { dismiss() }
-            }.padding(16)
-
-            ScrollView {
-                MovieExportControls().padding(16)
-            }
-        }
+        MovieExportControls(onDone: { dismiss() })
         #if os(iOS)
         .presentationDetents([.medium, .large])
         #else
-        .frame(width: 460, height: 620)
+        // Hug the content: the sheet grows and shrinks with Advanced (#604).
+        .frame(width: 460)
+        .fixedSize(horizontal: false, vertical: true)
         #endif
     }
 }
@@ -1127,10 +1196,16 @@ enum MovieExportSnapshot {
         custom.overrides["metal_rt_samples"] = 256
         custom.supersample = 2
         custom.quality = .custom
+        var maximum = MovieExportOptions()
+        maximum.width = 1920; maximum.height = 1080
+        maximum.rayTraced = true
+        maximum.applyPreset(.maximum)
         let shots: [(String, MovieExportOptions, Bool, Bool)] = [
             ("1_default_light", MovieExportOptions(), false, false),
             ("2_advanced_high_4k_light", high, true, false),
             ("3_advanced_custom_dark", custom, true, true),
+            ("4_maximum_rt_dark", maximum, false, true),
+            ("5_advanced_maximum_rt_dark", maximum, true, true),
         ]
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         for (i, shot) in shots.enumerated() {
@@ -1145,15 +1220,7 @@ enum MovieExportSnapshot {
     private static func render(_ shot: (String, MovieExportOptions, Bool, Bool),
                                engine: PyMOLEngine, dir: String) {
         let (name, options, advanced, dark) = shot
-        let root = VStack(spacing: 0) {
-            HStack {
-                Text("Export Movie").font(.headline)
-                Spacer()
-                Button("Done") {}
-            }.padding(16)
-            MovieExportControls(previewOptions: options, previewAdvanced: advanced)
-                .padding(16)
-        }
+        let root = MovieExportControls(previewOptions: options, previewAdvanced: advanced)
         .frame(width: 460)
         .fixedSize(horizontal: false, vertical: true)
         .background(Color(nsColor: .windowBackgroundColor))
