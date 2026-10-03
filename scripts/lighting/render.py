@@ -42,6 +42,20 @@ scripts/materials_gallery/render.py):
     load, fetch, show, .pse); paths with any of these are refused;
   * no `orient` at render time: a literal view, because the camera distance
     `orient` picks depends on the window shape each bundle id persists;
+  * scripts reset to factory settings (reinitialize original_settings), so
+    they must turn use_shaders back on: the Metal app sets it at its first
+    draw, and without it cartoons and the background are not drawn;
+  * an export without ray tracing is a single offscreen frame, and the Metal
+    renderer clears each frame with the background the PREVIOUS frame set
+    (SceneRender hands bg_rgb to the next beginFrame). So the background of
+    every metal_raytrace 0 image is whatever the app last drew: nothing on a
+    locked screen (the initial black), else the live view under the theme.
+    The harness therefore renders on black and pins the theme to Classic
+    (black viewport; PYMOL_AUTOTHEME), so that input is the same with the
+    screen locked or not, and skips the first-boot Theme Studio, which would
+    otherwise swap the scene for a preview on a fresh bundle id. (A scene file
+    that changes bg_rgb changes the fog everywhere, but the background pixels
+    only in metal_raytrace 1 images.);
   * time-dependent inputs are pinned here (metal_dof 0, metal_temporal_ao 0),
     never in the renderer.
 
@@ -89,7 +103,11 @@ VIEW = (0.3716067671775818, 0.9216808080673218, 0.11141323298215866,
         27.469600677490234, 44.069026947021484, 13.284542083740234,
         97.76224517822266, 175.60458374023438, -20.0)
 
-BG = [0.9, 0.9, 0.9]
+# Black: see the docstring (rt0 exports clear with the previous frame's
+# background, which is black whether or not the live view drew).
+BG = [0.0, 0.0, 0.0]
+# The theme PYMOL_AUTOTHEME selects at launch: Classic has a black viewport.
+THEME = 'Classic'
 
 _CARTOON = [
     "cmd.show('cartoon', 'm')",
@@ -147,6 +165,11 @@ def baked_settings(rt, shadows):
     """Every global the image depends on, set explicitly even where it equals
     the factory value: the persisted theme or a scene could otherwise differ."""
     return [
+        # The Metal app turns use_shaders on at its first draw
+        # (PyMOL_DrawWithoutLock: Metal draws VBOs, never immediate mode), and
+        # reinitialize original_settings puts back the factory 0, which drops
+        # cartoons and the background from the export. Set it back.
+        ('use_shaders', 1),
         ('bg_rgb', BG),
         ('ray_opaque_background', 1),
         ('depth_cue', 1),
@@ -545,14 +568,25 @@ def kill_app(binaries):
         time.sleep(1)
 
 
+def launch_env(script, png, size, rt):
+    """The environment of one export (`open --env` passes only these)."""
+    return [
+        'PYMOL_SKIP_WHATS_NEW=1',
+        'PYMOL_SKIP_FIRSTBOOT_THEME=1',
+        'PYMOL_AUTOTHEME=%s' % THEME,
+        'PYMOL_AUTOCMD=run %s' % script,
+        'PYMOL_AUTOEXPORT=%s,%d,%d,%d' % (png, size[0], size[1], rt),
+    ]
+
+
 def launch(app, binaries, script, png, size, rt, timeout):
     """One export. Returns an error string, or None once the PNG is written."""
     kill_app(binaries)
     if os.path.exists(png):
         os.remove(png)
-    env = ['--env', 'PYMOL_SKIP_WHATS_NEW=1',
-           '--env', 'PYMOL_AUTOCMD=run %s' % script,
-           '--env', 'PYMOL_AUTOEXPORT=%s,%d,%d,%d' % (png, size[0], size[1], rt)]
+    env = []
+    for item in launch_env(script, png, size, rt):
+        env += ['--env', item]
     try:
         res = subprocess.run(['open', '-n'] + env + [app])
         if res.returncode != 0:

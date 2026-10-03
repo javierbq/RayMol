@@ -219,6 +219,10 @@ class TestLightingHarness(testing.PyMOLTestCase):
                 shadows = 1 if tag.startswith('shadows_') else 0
                 self.assertIn("cmd.set('metal_shadows', %d)" % shadows, body, tag)
                 self.assertIn("cmd.set('metal_temporal_ao', 0)", body, tag)
+                # Metal draws nothing CGO-based with the factory use_shaders 0
+                self.assertIn("cmd.set('use_shaders', 1)", body, tag)
+                self.assertGreater(body.index("cmd.set('use_shaders', 1)"),
+                                   body.index("cmd.reinitialize('original_settings')"))
                 self.assertIn("cmd.set('metal_dof', 0)", body, tag)
                 loads = [s for s in body if s.startswith('cmd.load(')]
                 self.assertEqual(loads, ['cmd.load(%r, %r)' % (
@@ -368,7 +372,7 @@ class TestLightingHarness(testing.PyMOLTestCase):
             text = self.render.scene_script(ROOT, job, '/m.ran')
             # the change comes after the baked background, so it wins
             self.assertGreater(text.index('[0.55, 0.25, 0.25]'),
-                               text.index("cmd.set('bg_rgb', [0.9, 0.9, 0.9])"))
+                               text.index("cmd.set('bg_rgb', %r)" % (self.render.BG,)))
         jobs = self.render.scene_file_jobs(os.path.join(SCENES, 'rig_present.json'))
         self.assertEqual([j.tag for j in jobs],
                          ['cartoon_rt0', 'cartoon_rt1', 'surface_rt1', 'glass_rt1',
@@ -406,6 +410,21 @@ class TestLightingHarness(testing.PyMOLTestCase):
                 json.dump(bad, handle)
             with self.assertRaises(self.render.Refusal, msg=repr(bad)):
                 self.render.scene_file_jobs(path)
+
+    def testLaunchEnvironment(self):
+        env = self.render.launch_env('/o/_work/t.py', '/o/t.png', (1280, 720), 1)
+        self.assertEqual(env, [
+            'PYMOL_SKIP_WHATS_NEW=1',
+            'PYMOL_SKIP_FIRSTBOOT_THEME=1',
+            'PYMOL_AUTOTHEME=Classic',
+            'PYMOL_AUTOCMD=run /o/_work/t.py',
+            'PYMOL_AUTOEXPORT=/o/t.png,1280,720,1',
+        ])
+        # rt0 exports clear with the previous frame's background: black on a
+        # locked screen (nothing drawn) and black under Classic, so the scenes
+        # ask for black too.
+        self.assertEqual(self.render.BG, [0.0, 0.0, 0.0])
+        self.assertNotIn('RAYMOL_MCP', ' '.join(env))
 
     # --- checks after each render -----------------------------------------------
 
