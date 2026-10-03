@@ -407,7 +407,14 @@ final class MovieExporter: ObservableObject {
             // (updateScene above), so this render's SceneUpdate is a clean no-op —
             // pure C++/Metal, no Python — safe off the main thread. It blocks on
             // the GPU and writes the PNG while the UI stays responsive.
+            // #601: a video / GIF frame's PNG is read straight back and deleted,
+            // so skip its compression (~94% of a 4K frame's time); a PNG
+            // sequence keeps normal files. renderHiResPNG has written the file
+            // when it returns, so the switch only spans this frame's write.
+            let throwaway = self.options.format != .png
+            if throwaway { PyMOLBridge_SetFastPNG(1) }
             engine.renderHiResPNG(png.path, width: w, height: h, rayTraced: rt)
+            if throwaway { PyMOLBridge_SetFastPNG(0) }
             let error = self.appendFrame(png, frameIndex: captureIdx)   // encode off-main
             try? FileManager.default.removeItem(at: png)
             DispatchQueue.main.async {

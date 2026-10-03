@@ -289,4 +289,72 @@ final class AnalysisNotesStoreTests: XCTestCase {
             try? pdf.write(to: URL(fileURLWithPath: path), options: .atomic)
         }
     }
+
+    func testMarkdownParserSplitsHeadingsListsAndParagraphs() {
+        let markdown = """
+        # Set 7 mutations
+        ## What's on screen
+        - **Chain A** design
+          - nested detail
+        1. First step
+        2. Second step
+
+        A wrapped
+        paragraph.
+        """
+
+        XCTAssertEqual(AnalysisNoteMarkdownParser.blocks(in: markdown), [
+            .heading(level: 1, text: "Set 7 mutations"),
+            .heading(level: 2, text: "What's on screen"),
+            .bullet(depth: 0, text: "**Chain A** design"),
+            .bullet(depth: 1, text: "nested detail"),
+            .numbered(depth: 0, number: "1", text: "First step"),
+            .numbered(depth: 0, number: "2", text: "Second step"),
+            .paragraph(text: "A wrapped\nparagraph.")
+        ])
+    }
+
+    func testMarkdownParserKeepsRayMolLinksInsideBlocks() {
+        let bookmark = UUID()
+        let markdown = "- [Interface view](raymol-view://\(bookmark.uuidString))"
+
+        XCTAssertEqual(AnalysisNoteMarkdownParser.blocks(in: markdown), [
+            .bullet(depth: 0, text: "[Interface view](raymol-view://\(bookmark.uuidString))")
+        ])
+    }
+
+    func testMarkdownParserTreatsTagLineAsParagraphNotHeading() {
+        XCTAssertEqual(AnalysisNoteMarkdownParser.blocks(in: "#interface is buried"),
+                       [.paragraph(text: "#interface is buried")])
+    }
+
+    func testMarkdownParserHandlesQuotesRulesAndFencedCode() {
+        let markdown = """
+        > Hector made a P122S mutant
+        ---
+        ```
+        select chain A and resi 121
+        color red
+        ```
+        """
+
+        XCTAssertEqual(AnalysisNoteMarkdownParser.blocks(in: markdown), [
+            .quote(text: "Hector made a P122S mutant"),
+            .rule,
+            .code(lines: ["select chain A and resi 121", "color red"])
+        ])
+    }
+
+    func testMarkdownParserClosesUnterminatedFence() {
+        XCTAssertEqual(AnalysisNoteMarkdownParser.blocks(in: "```\nfetch 1ubq"),
+                       [.code(lines: ["fetch 1ubq"])])
+    }
+
+    func testMarkdownParserSkipsBlockSyntaxInsideFencedCode() {
+        let markdown = "```\n# not a heading\n- not a bullet\n```"
+
+        XCTAssertEqual(AnalysisNoteMarkdownParser.blocks(in: markdown),
+                       [.code(lines: ["# not a heading", "- not a bullet"])])
+    }
+
 }

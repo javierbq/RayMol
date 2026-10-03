@@ -14,6 +14,9 @@ I* Additional authors of this source file include:
 Z* -------------------------------------------------------------------
 */
 #include"os_predef.h"
+
+#include <atomic>
+
 #include"MemoryDebug.h"
 #include"pymol/memory.h"
 
@@ -169,6 +172,14 @@ static void write_data_to_file(
 }
 #endif
 
+// #601: see MyPNGSetFastWrite in MyPNG.h.
+static std::atomic<bool> s_fastWrite{false};
+
+void MyPNGSetFastWrite(bool fast)
+{
+  s_fastWrite = fast;
+}
+
 int MyPNGWrite(pymol::zstring_view file_name_view, const pymol::Image& img,
     const float dpi, const int format, const int quiet,
     const float screen_gamma, const float file_gamma, png_outbuf_t* io_ptr)
@@ -260,6 +271,13 @@ int MyPNGWrite(pymol::zstring_view file_name_view, const pymol::Image& img,
        */
       png_set_IHDR(png_ptr, info_ptr, width, height, bit_depth, PNG_COLOR_TYPE_RGB_ALPHA,
                    PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_BASE, PNG_FILTER_TYPE_BASE);
+
+      if (s_fastWrite) {
+        // #601: stored deflate blocks and no row filter -- at 4K the default
+        // filter search + level-6 deflate was ~94% of a movie frame's time.
+        png_set_compression_level(png_ptr, 0);
+        png_set_filter(png_ptr, PNG_FILTER_TYPE_BASE, PNG_FILTER_NONE);
+      }
 
       if(dpi > 0.0F) {          /* only set resolution if dpi is positive */
         int dots_per_meter = (int) (dpi * 39.3700787);

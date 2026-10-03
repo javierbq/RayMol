@@ -199,6 +199,41 @@ TEST_CASE("Image Make Image", "[Image]")
   REQUIRE(iFILE.good());
 }
 
+// #601: the movie exporter's throwaway frames are written uncompressed and
+// unfiltered. That must stay lossless (same pixels back) while actually
+// skipping compression (no smaller than the raw pixels), and switching it off
+// must restore normal compression.
+TEST_CASE("Image Fast PNG Write", "[Image]")
+{
+  auto dim = 128u;
+  Image img(dim, dim);
+  for (int i = 0; i < img.getSizeInBytes(); i++) {
+    img.bits()[i] = (i % 4 == Image::Channel::ALPHA)
+                        ? 0xff
+                        : static_cast<unsigned char>((i / 4 % dim) * 2);
+  }
+  auto fileSize = [](const char* name) {
+    std::ifstream f(name, std::ios::binary | std::ios::ate);
+    return static_cast<long>(f.tellg());
+  };
+  TmpFILE normal, fast, normalAgain;
+  save_image(normal.getFilename(), img);
+  MyPNGSetFastWrite(true);
+  save_image(fast.getFilename(), img);
+  MyPNGSetFastWrite(false);
+  save_image(normalAgain.getFilename(), img);
+
+  REQUIRE(fileSize(fast.getFilename()) >= static_cast<long>(img.getSizeInBytes()));
+  REQUIRE(fileSize(fast.getFilename()) > fileSize(normal.getFilename()));
+  REQUIRE(fileSize(normalAgain.getFilename()) == fileSize(normal.getFilename()));
+
+  auto a = MyPNGRead(normal.getFilename());
+  auto b = MyPNGRead(fast.getFilename());
+  REQUIRE(a);
+  REQUIRE(b);
+  REQUIRE(*a == *b);
+}
+
 TEST_CASE("Image Deinterlace Data", "[Image]")
 {
   auto test_folder = get_test_folder();

@@ -800,6 +800,211 @@ enum AnalysisNotePreviewParser {
     }
 }
 
+/// One block-level element of a note. `Text` applies only the inline attributes
+/// of a parsed `AttributedString`, so block syntax has to be split out and given
+/// its own view. Each case carries the inline Markdown of its line untouched —
+/// RayMol's private link schemes are inline links and survive the split.
+enum AnalysisNoteMarkdownBlock: Equatable {
+    case heading(level: Int, text: String)
+    case bullet(depth: Int, text: String)
+    case numbered(depth: Int, number: String, text: String)
+    case quote(text: String)
+    case code(lines: [String])
+    case rule
+    case paragraph(text: String)
+}
+
+enum AnalysisNoteMarkdownParser {
+    private static let numberedPattern = #"^(\d{1,9})[.)]\s+(.*)$"#
+
+    /// Split a note segment into block elements, line by line. Consecutive
+    /// non-empty lines join into one paragraph so a wrapped sentence stays a
+    /// single run; a blank line ends it.
+    static func blocks(in markdown: String) -> [AnalysisNoteMarkdownBlock] {
+        var blocks: [AnalysisNoteMarkdownBlock] = []
+        var paragraph: [String] = []
+        var fence: [String]?
+
+        func flushParagraph() {
+            guard !paragraph.isEmpty else { return }
+            blocks.append(.paragraph(text: paragraph.joined(separator: "\n")))
+            paragraph.removeAll()
+        }
+
+        for line in markdown.split(separator: "\n", omittingEmptySubsequences: false).map(String.init) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+            // A fence that is still open when the note ends still renders as
+            // code — notes are previewed while they are being typed.
+            if trimmed.hasPrefix("```") {
+                if let open = fence {
+                    blocks.append(.code(lines: open))
+                    fence = nil
+                } else {
+                    flushParagraph()
+                    fence = []
+                }
+                continue
+            }
+            if fence != nil {
+                fence?.append(line)
+                continue
+            }
+
+            if trimmed.isEmpty { flushParagraph(); continue }
+
+            let hashes = trimmed.prefix { $0 == "#" }.count
+            if (1...6).contains(hashes), trimmed.dropFirst(hashes).first == " " {
+                flushParagraph()
+                blocks.append(.heading(
+                    level: hashes,
+                    text: String(trimmed.dropFirst(hashes + 1)).trimmingCharacters(in: .whitespaces)))
+                continue
+            }
+
+            if isRule(trimmed) {
+                flushParagraph()
+                blocks.append(.rule)
+                continue
+            }
+
+            if let marker = trimmed.first, "-*+".contains(marker), trimmed.dropFirst().first == " " {
+                flushParagraph()
+                blocks.append(.bullet(depth: depth(of: line),
+                                      text: String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)))
+                continue
+            }
+
+            if let match = trimmed.range(of: numberedPattern, options: .regularExpression) {
+                let body = String(trimmed[match])
+                let number = body.prefix { $0.isNumber }
+                flushParagraph()
+                blocks.append(.numbered(
+                    depth: depth(of: line),
+                    number: String(number),
+                    text: String(body.dropFirst(number.count + 1)).trimmingCharacters(in: .whitespaces)))
+                continue
+            }
+
+            if trimmed.hasPrefix(">") {
+                flushParagraph()
+                blocks.append(.quote(text: String(trimmed.dropFirst()).trimmingCharacters(in: .whitespaces)))
+                continue
+            }
+
+            paragraph.append(trimmed)
+        }
+
+        if let open = fence { blocks.append(.code(lines: open)) }
+        flushParagraph()
+        return blocks
+    }
+
+    /// Three or more of the same rule character, ignoring spaces between them.
+    private static func isRule(_ trimmed: String) -> Bool {
+        guard let marker = trimmed.first, "-*_".contains(marker) else { return false }
+        let body = trimmed.filter { !$0.isWhitespace }
+        return body.count >= 3 && body.allSatisfy { $0 == marker }
+    }
+
+    /// Nesting level from the leading indent — two spaces or one tab per level.
+    private static func depth(of line: String) -> Int {
+        var columns = 0
+        for character in line {
+            if character == " " { columns += 1 }
+            else if character == "\t" { columns += 2 }
+            else { break }
+        }
+        return min(columns / 2, 4)
+    }
+}
+
+/// Renders one block of a note. Split out of `NotesInspectorView` so block
+/// rendering carries no engine or store dependency: it takes a parsed block and
+/// a font size and nothing else, which also makes it renderable on its own.
+struct AnalysisNoteBlockView: View {
+    let block: AnalysisNoteMarkdownBlock
+    let fontSize: CGFloat
+
+    var body: some View {
+        switch block {
+        case .heading(let level, let text):
+            Text(inlineMarkdown(text))
+                .font(.system(size: headingSize(level), weight: level <= 2 ? .bold : .semibold))
+                .textSelection(.enabled)
+                .padding(.top, level <= 2 ? 7 : 3)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityAddTraits(.isHeader)
+        case .bullet(let depth, let text):
+            listRow(depth: depth, marker: Text(bulletMarker(depth)).foregroundStyle(.secondary), text: text)
+        case .numbered(let depth, let number, let text):
+            listRow(depth: depth,
+                    marker: Text("\(number).").monospacedDigit().foregroundStyle(.secondary),
+                    text: text)
+        case .quote(let text):
+            HStack(alignment: .top, spacing: 8) {
+                Rectangle().fill(Color.secondary.opacity(0.35)).frame(width: 3)
+                Text(inlineMarkdown(text))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+        case .code(let lines):
+            Text(lines.joined(separator: "\n"))
+                .font(.system(size: max(10, fontSize - 1), design: .monospaced))
+                .textSelection(.enabled)
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+        case .rule:
+            Divider().padding(.vertical, 3)
+        case .paragraph(let text):
+            Text(inlineMarkdown(text))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func listRow(depth: Int, marker: Text, text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            marker
+            Text(inlineMarkdown(text))
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.leading, CGFloat(depth) * 16)
+    }
+
+    private func bulletMarker(_ depth: Int) -> String {
+        switch depth {
+        case 0: return "\u{2022}"
+        case 1: return "\u{25E6}"
+        default: return "\u{25AA}"
+        }
+    }
+
+    private func headingSize(_ level: Int) -> CGFloat {
+        switch level {
+        case 1: return fontSize * 1.55
+        case 2: return fontSize * 1.3
+        case 3: return fontSize * 1.14
+        default: return fontSize * 1.04
+        }
+    }
+
+    /// Inline-only parsing, applied per block. It keeps RayMol's `raymol-view`,
+    /// `raymol-asset` and `raymol-residue` links intact as inline links, which
+    /// the preview's `OpenURLAction` resolves back to a bookmark or selection.
+    private func inlineMarkdown(_ source: String) -> AttributedString {
+        let options = AttributedString.MarkdownParsingOptions(
+            interpretedSyntax: .inlineOnlyPreservingWhitespace
+        )
+        return (try? AttributedString(markdown: source, options: options))
+            ?? AttributedString(source)
+    }
+}
+
 struct NotesInspectorView: View {
     @EnvironmentObject private var notes: AnalysisNotesStore
     @EnvironmentObject private var engine: PyMOLEngine
@@ -1116,9 +1321,13 @@ struct NotesInspectorView: View {
     @ViewBuilder private func previewBlock(_ block: AnalysisNotePreviewBlock) -> some View {
         switch block {
         case .markdown(let markdown):
-            Text(renderMarkdown(markdown))
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            let blocks = AnalysisNoteMarkdownParser.blocks(in: markdown)
+            VStack(alignment: .leading, spacing: 5) {
+                ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                    AnalysisNoteBlockView(block: block, fontSize: fontSize)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         case .image(let id):
             if let asset = notes.screenshots.first(where: { $0.id == id }) {
                 screenshotView(asset)
@@ -1148,14 +1357,6 @@ struct NotesInspectorView: View {
         Label("Linked image unavailable", systemImage: "photo.badge.exclamationmark")
             .font(.caption)
             .foregroundStyle(.secondary)
-    }
-
-    private func renderMarkdown(_ source: String) -> AttributedString {
-        let options = AttributedString.MarkdownParsingOptions(
-            interpretedSyntax: .inlineOnlyPreservingWhitespace
-        )
-        return (try? AttributedString(markdown: source, options: options))
-            ?? AttributedString(source)
     }
 
     private var filteredNoteText: String {

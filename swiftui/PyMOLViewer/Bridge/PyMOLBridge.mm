@@ -10,6 +10,7 @@
 #include "P.h"
 #include "Setting.h"        // SettingGet/SetGlobal_b, cSetting_metal_raytrace
 #include "Scene.h"
+#include "MyPNG.h"        // MyPNGSetFastWrite (#601)
 
 #import <Foundation/Foundation.h>
 #import <Python.h>
@@ -655,6 +656,11 @@ static void renderOneOffscreen(PyMOLHandle h, PyMOLGlobals* G,
     PyMOL_PopValidContext(INST(h));
     ImmBatch_SetActiveRenderer(nullptr);
     renderer->endOffscreen();   // runs post chain, commits, blocks, writes PNG
+}
+
+void PyMOLBridge_SetFastPNG(int on)
+{
+    MyPNGSetFastWrite(on != 0);
 }
 
 void PyMOLBridge_RenderHiResPNG(PyMOLHandle h, const char* path,
