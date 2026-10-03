@@ -1,0 +1,6 @@
+{
+  "comment": "#611 evidence that nothing in rendering reads the light rig yet: the 3-light rig plus air, ENABLED, must render byte-identical to the same app's --set l1 --rig none images of these tags.",
+  "base": "l1",
+  "rig": "on",
+  "only": ["cartoon_rt0", "cartoon_rt1", "surface_rt1", "glass_rt1", "shadows_rt0", "shadows_rt1"]
+}

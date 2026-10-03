@@ -1,0 +1,6 @@
+{
+  "comment": "Harness self-test (#611): a known change on every L1 image. Compared with an L1 --rig none render of the same app, every image must differ (max > 0), which shows --compare sees a difference wherever there is one.",
+  "base": "l1",
+  "rig": "none",
+  "extra": ["cmd.set('bg_rgb', [0.55, 0.25, 0.25])"]
+}
