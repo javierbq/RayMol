@@ -47,8 +47,10 @@ the grids are reused (a repeat prepare builds nothing). It ends with
 `PICKBENCH CHECK ok` (exit status 0) or `PICKBENCH CHECK FAIL ...` (exit
 status 1). --pdb and --n override its structure and count.
 
-The venv core and the app core share the C++ but not necessarily the compiler
-flags, so the numbers are representative, not identical. Standard library
+The bench turns use_shaders on, as the app does, so sticks are built with the
+app's open ends at branched atoms. The venv core and the app core share the
+C++ but not necessarily the compiler flags, so the numbers are
+representative, not identical. Standard library
 only (numpy, when present, only speeds up projecting the atoms).
 """
 
@@ -374,6 +376,11 @@ def run(argv=None, out=print):
     cmd.reinitialize()
     cmd.viewport(*args.size)
     cmd.set('async_builds', 0)
+    # Build what the app draws: Metal forces use_shaders on, and only then
+    # does RepCylBond leave a bond's end open at an atom another bond already
+    # capped (most stick ends in a real molecule). Headless it is off after
+    # reinitialize, which would time (and check) all-capped sticks.
+    cmd.set('use_shaders', 1)
     cmd.load(args.pdb, OBJECT)
     if not cmd.count_atoms(OBJECT):
         out('PICKBENCH%s FAIL no atoms in %s' %

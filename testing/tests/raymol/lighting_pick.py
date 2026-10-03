@@ -15,8 +15,15 @@ The ray through NDC (x, y) starts at the eye (0, 0, 100) with direction
 see metal_pick.camera), so a point on it at eye depth D is eye + D * dir.
 
 These run under the GLUT/headless core (no Metal): the pick evaluates the
-Metal renderer's clip rules from settings, never from GL, so CI checks exactly
-what the app does.
+Metal renderer's clip rules from settings, never from GL. The geometry it
+reads is the rep's own CGO, and that is the app's only where the build does
+not depend on use_shaders. Sticks do: the app forces use_shaders on
+(layer5/PyMOL.cpp), and only then does RepCylBond leave a bond's end open at
+an atom another bond has already capped. So every stick test turns
+use_shaders on before building (PickCase.app_sticks), to build what the app
+draws. Spheres, surfaces and cartoons build the same either way at the
+settings used here (cartoon_nucleic_acid_as_cylinders & 2, off by default, is
+the cartoon's one use_shaders-dependent build).
 
 Surfaces and cartoons with no closed form (1rx1) are checked against a
 brute-force ray-triangle reference built from the object's OBJ export
@@ -65,6 +72,34 @@ def cross(a, b):
     return (a[1] * b[2] - a[2] * b[1],
             a[2] * b[0] - a[0] * b[2],
             a[0] * b[1] - a[1] * b[0])
+
+
+def sphere_roots(o, d, c, r):
+    '''(s0, s1), s0 <= s1, where o + s d crosses the sphere (c, r), or None.'''
+    oc = sub(o, c)
+    a, b, k = dot(d, d), 2.0 * dot(oc, d), dot(oc, oc) - r * r
+    disc = b * b - 4.0 * a * k
+    if disc < 0.0:
+        return None
+    q = math.sqrt(disc)
+    return (-b - q) / (2.0 * a), (-b + q) / (2.0 * a)
+
+
+def tube_roots(o, d, p0, u, r):
+    '''(s0, s1), s0 <= s1, where o + s d crosses the INFINITE cylinder of
+    radius r about the line p0 + t u (u unit), or None (also when the ray is
+    parallel to it).'''
+    m = sub(o, p0)
+    mp = sub(m, tuple(c * dot(m, u) for c in u))
+    dp = sub(d, tuple(c * dot(d, u) for c in u))
+    a, b, k = dot(dp, dp), dot(mp, dp), dot(mp, mp) - r * r
+    if a < 1e-14:
+        return None
+    disc = b * b - a * k
+    if disc < 0.0:
+        return None
+    q = math.sqrt(disc)
+    return (-b - q) / a, (-b + q) / a
 
 
 def _numpy():
@@ -336,7 +371,17 @@ class PickCase(testing.PyMOLTestCase):
         cmd.show_as(rep, name)
         return name
 
+    def app_sticks(self):
+        '''Build sticks as the app does. Metal forces use_shaders on, and only
+        then does RepCylBond draw each atom's round cap once: the first bond
+        at an atom caps it, every later bond leaves its end there open (cap
+        bits 0, PickCap::None). Headless, use_shaders is off after
+        reinitialize and every end is capped. Set before the sticks build
+        (they build at the first pick).'''
+        cmd.set('use_shaders', 1)
+
     def stick(self, name, p1, p2):
+        self.app_sticks()
         cmd.pseudoatom(name, name='A1', pos=list(p1))
         cmd.pseudoatom(name, name='A2', pos=list(p2))
         cmd.bond('%s and name A1' % name, '%s and name A2' % name)
@@ -568,6 +613,277 @@ class TestSticks(PickCase):
     def testMissBesideTheStick(self):
         self.assertIsNone(self.pick(*self.ndc_of((0.0, 1.0, 0.0))))
         self.assertIsNone(self.pick(*self.ndc_of((4.0, 0.0, 0.0))))
+
+
+class TestBranchedSticks(PickCase):
+    '''Sticks at a branched atom, built as the app builds them (app_sticks):
+    CB has three bonds, made in the order CA-CB, CB-CC, CB-CD, so CA-CB caps
+    CB and the other two are OPEN there. CB-CC runs along the view axis toward
+    the camera; CB-CD leans toward it. In the app nearly every stick of a real
+    molecule has such an open end; every other stick test uses lone bonds,
+    whose ends are all capped.'''
+
+    REL = (('CA', (-1.45, 0.25, -0.30)), ('CB', (0.0, 0.0, 0.0)),
+           ('CC', (0.0, 0.0, 1.5)), ('CD', (0.85, -0.70, 0.95)))
+    BONDS = (('CA', 'CB'), ('CB', 'CC'), ('CB', 'CD'))
+
+    def junction(self, z0=0.0, use_shaders=1):
+        '''The junction with CB at (0, 0, z0), as object `br`.'''
+        cmd.delete('br')
+        cmd.set('use_shaders', use_shaders)
+        self.pos = {}
+        for name, p in self.REL:
+            self.pos[name] = (p[0], p[1], p[2] + z0)
+            cmd.pseudoatom('br', name=name, pos=list(self.pos[name]))
+        for a, b in self.BONDS:
+            cmd.bond('br and name %s' % a, 'br and name %s' % b)
+        cmd.show_as('sticks', 'br')
+        self.r = cmd.get_setting_float('stick_radius')
+
+    def caps(self):
+        '''{(bond, atom): capped} as RepCylBond builds it in shader mode: the
+        first bond at an atom draws its round cap, later ones leave it open.'''
+        seen, caps = set(), {}
+        for bond in self.BONDS:
+            for atom in bond:
+                caps[bond, atom] = atom not in seen
+                seen.add(atom)
+        return caps
+
+    def grid(self, n, pad=0.3):
+        '''n x n ray NDC points over the junction's projected box, padded.'''
+        ndc = [self.ndc_of(p) for p in self.pos.values()]
+        jx = pad / ((EYE[2] - self.pos['CB'][2]) * T * self.aspect())
+        jy = pad / ((EYE[2] - self.pos['CB'][2]) * T)
+        x0, x1 = min(p[0] for p in ndc) - jx, max(p[0] for p in ndc) + jx
+        y0, y1 = min(p[1] for p in ndc) - jy, max(p[1] for p in ndc) + jy
+        return [(x0 + (x1 - x0) * (i + 0.5) / n, y0 + (y1 - y0) * (j + 0.5) / n)
+                for i in range(n) for j in range(n)]
+
+    def axis(self, bond):
+        p0, p1 = self.pos[bond[0]], self.pos[bond[1]]
+        h = norm(sub(p1, p0))
+        return p0, tuple(c / h for c in sub(p1, p0)), h
+
+    # -- references ----------------------------------------------------------
+
+    def union_hit(self, d):
+        '''The front-most entry into the union of the bonds' capsules (radius
+        r): (depth, normal, what), what = an atom name (its ball) or a bond
+        (its body); None on a miss. Unclipped, this is what the app shows,
+        whichever bond draws each atom's ball.'''
+        best = None
+        for name, c in self.pos.items():
+            roots = sphere_roots(EYE, d, c, self.r)
+            if roots and (best is None or roots[0] < best[0]):
+                p = tuple(EYE[k] + roots[0] * d[k] for k in range(3))
+                best = (roots[0], unit(sub(p, c)), name)
+        for bond in self.BONDS:
+            p0, u, h = self.axis(bond)
+            roots = tube_roots(EYE, d, p0, u, self.r)
+            if not roots or (best is not None and roots[0] >= best[0]):
+                continue
+            q = sub(tuple(EYE[k] + roots[0] * d[k] for k in range(3)), p0)
+            z = dot(q, u)
+            if 0.0 <= z <= h:
+                best = (roots[0], unit(sub(q, tuple(c * z for c in u))), bond)
+        return best
+
+    def leaves_through_open_end(self, d, hit):
+        '''Does the ray, entering a bond that is open at CB (through its body
+        or its other ball), cross that bond's infinite tube for the last time
+        beyond CB? Then the pick resolves that crossing as an open end.'''
+        caps = self.caps()
+        for bond in self.BONDS:
+            if 'CB' not in bond or caps[bond, 'CB']:
+                continue
+            other = bond[0] if bond[1] == 'CB' else bond[1]
+            if hit[2] not in (bond, other):
+                continue
+            p0, u, h = self.axis(bond)
+            roots = tube_roots(EYE, d, p0, u, self.r)
+            if roots is None:
+                return True  # parallel: leaves through an end
+            q = sub(tuple(EYE[k] + roots[1] * d[k] for k in range(3)), p0)
+            cb_end = 0.0 if bond[0] == 'CB' else h
+            z = dot(q, u)
+            if (z < 0.0) if cb_end == 0.0 else (z > h):
+                return True
+        return False
+
+    def metal_hit(self, d, cap_on, round_far='tube'):
+        '''What Metal's cylinder impostor draws along the ray (cyl_shade and
+        cyl_impostor_vertex, RendererMetal.mm): (depth, cap) or None.
+        Per bond: the front crossing of the infinite tube; past an end, that
+        end's round cap, or nothing if the end is open (caps()). A point in
+        front of the near plane is discarded, unless cap_on and the tube's
+        FAR crossing (of the infinite tube, as the shader computes it) is
+        behind the plane: then a flat cap at the plane. The nearest wins.
+
+        round_far='ball': where that far crossing lies past a ROUND end, use
+        the ball's far crossing instead, which is what the pick tests (the
+        exit of the capped solid). Past an open end both use the tube's.'''
+        caps = self.caps()
+        best = None
+        for bond in self.BONDS:
+            p0, u, h = self.axis(bond)
+            roots = tube_roots(EYE, d, p0, u, self.r)
+            if roots is None:
+                continue
+            front, far = roots
+            q = sub(tuple(EYE[k] + front * d[k] for k in range(3)), p0)
+            z = dot(q, u)
+            if z < 0.0 or z > h:
+                atom = bond[0] if z < 0.0 else bond[1]
+                if not caps[bond, atom]:
+                    continue
+                ball = sphere_roots(EYE, d, self.pos[atom], self.r)
+                if ball is None:
+                    continue
+                front = ball[0]
+            if round_far == 'ball':
+                q = sub(tuple(EYE[k] + far * d[k] for k in range(3)), p0)
+                z = dot(q, u)
+                if z < 0.0 or z > h:
+                    atom = bond[0] if z < 0.0 else bond[1]
+                    if caps[bond, atom]:
+                        ball = sphere_roots(EYE, d, self.pos[atom], self.r)
+                        far = ball[1] if ball else front
+            if front <= FRONT:
+                if not cap_on or far <= FRONT:
+                    continue
+                hit = (FRONT, True)
+            elif front >= BACK:
+                continue
+            else:
+                hit = (front, False)
+            if best is None or hit[0] < best[0]:
+                best = hit
+        return best
+
+    def assertProxiesStraddle(self):
+        '''metal_hit assumes every impostor box survives the near plane:
+        cyl_impostor_vertex clamps a box corner in front of it to the plane
+        only when the corner, pushed back by the bond's depth extent + 3.5 r,
+        is behind it (else the box is clipped, and draws nothing there).'''
+        for bond in self.BONDS:
+            p0, u, h = self.axis(bond)
+            uu = cross(u, (1.0, 0.0, 0.0))
+            if dot(uu, uu) < 0.001:
+                uu = cross(u, (0.0, 1.0, 0.0))
+            uu = unit(uu)
+            vv = unit(cross(uu, u))
+            reach = abs(dot(sub(self.pos[bond[1]], p0), (0, 0, 1))) + \
+                3.5 * self.r
+            for up in (0, 1):
+                for right in (-1, 1):
+                    for out in (-1, 1):
+                        c = tuple(p0[k] + up * h * u[k] + right * self.r * uu[k]
+                                  + out * self.r * vv[k]
+                                  + (2 * up - 1) * self.r * u[k]
+                                  for k in range(3))
+                        depth = EYE[2] - c[2]
+                        if depth < FRONT:
+                            self.assertGreater(depth + reach, FRONT,
+                                               'test geometry: %r' % (bond,))
+
+    # -- tests -----------------------------------------------------------------
+
+    def testOpenEndsAreBuilt(self):
+        # Guards the premise: with every end capped (the headless default)
+        # the near-plane test below would see something else.
+        self.junction(z0=50.4)
+        cmd.set('metal_interior_cap', 1, 'br')
+        x, y = self.ndc_of((0.03, 0.02, 51.9))
+        hit = self.pick(x, y)
+        self.assertHit(hit)
+        self.assertTrue(hit.cap)
+        self.junction(z0=50.4, use_shaders=0)
+        cmd.set('metal_interior_cap', 1, 'br')
+        self.assertIsNone(self.pick(x, y))
+
+    def testMatchesTheCapsuleUnion(self):
+        self.junction()
+        # Straight down CB-CC: in through CC's ball, out through the open end
+        # at CB, so the front is CC's ball, not CB's behind it.
+        hit = self.pick(0.0, 0.0)
+        self.assertHit(hit)
+        self.assertEqual(hit.rep, 'sticks')
+        self.assertAlmostEqual(hit.depth, 100.0 - 1.5 - self.r, delta=1e-3)
+        self.assertLess(norm(sub(hit.point, (0.0, 0.0, 1.5 + self.r))), 1e-3)
+        self.assertNormalNear(hit, (0.0, 0.0, 1.0), 0.05)
+        hits = open_exits = 0
+        for x, y in self.grid(25):
+            d = self.ray_dir(x, y)
+            ref = self.union_hit(d)
+            hit = self.pick(x, y)
+            if (ref is None) != (hit is None):
+                # Only a ray grazing a silhouette may disagree.
+                jitter = [self.union_hit(self.ray_dir(x + a, y + b)) is None
+                          for a, b in ((1e-4, 0), (-1e-4, 0), (0, 1e-4),
+                                       (0, -1e-4))]
+                self.assertTrue(any(j != (ref is None) for j in jitter),
+                                'hit/miss differs at %r: pick %r, union %r' %
+                                ((x, y), hit, ref))
+                continue
+            if ref is None:
+                continue
+            hits += 1
+            open_exits += self.leaves_through_open_end(d, ref)
+            self.assertEqual(hit.rep, 'sticks')
+            self.assertFalse(hit.cap)
+            self.assertFalse(hit.inside)
+            self.assertAlmostEqual(hit.depth, ref[0], delta=1e-3,
+                                   msg='at %r: %r vs %r' % ((x, y), hit, ref))
+            self.assertOnRay(hit, x, y)
+            # Grazing normals are nudged toward the camera (at most ~3 deg).
+            v = unit(tuple(-c for c in d))
+            self.assertNormalNear(hit, ref[1],
+                                  0.5 if dot(ref[1], v) > 0.06 else 3.1)
+        self.assertGreater(hits, 150)
+        # The open-end branch of pickCylinder ran, many times.
+        self.assertGreater(open_exits, 15)
+
+    def testNearPlaneThroughTheJunction(self):
+        for z0 in (49.6, 50.0, 50.4):
+            for cap_on in (0, 1):
+                self.junction(z0=z0)
+                self.assertProxiesStraddle()
+                cmd.set('metal_interior_cap', cap_on, 'br')
+                hits = caps = skipped = 0
+                for x, y in self.grid(19):
+                    d = self.ray_dir(x, y)
+                    ref = self.metal_hit(d, cap_on)
+                    if ref != self.metal_hit(d, cap_on, round_far='ball'):
+                        # A ray leaving a ROUND end's ball in front of the
+                        # plane while the infinite tube runs on behind it:
+                        # Metal caps it, the pick does not (proposed
+                        # follow-up). Open ends are not affected.
+                        skipped += 1
+                        continue
+                    hit = self.pick(x, y)
+                    where = 'z0 %g cap %d at %r: pick %r, Metal %r' % (
+                        z0, cap_on, (x, y), hit, ref)
+                    self.assertEqual(hit is None, ref is None, where)
+                    if ref is None:
+                        continue
+                    hits += 1
+                    caps += ref[1]
+                    self.assertEqual(hit.cap, ref[1], where)
+                    self.assertAlmostEqual(hit.depth, ref[0], delta=1e-3,
+                                           msg=where)
+                    self.assertOnRay(hit, x, y)
+                    self.assertOriented(hit)
+                self.assertLess(skipped, 15, 'z0 %g cap %d' % (z0, cap_on))
+                if cap_on:
+                    # At 50.4 every atom is in front of the plane: the caps
+                    # come from CB-CC and CB-CD, whose far crossings run on
+                    # past their open ends at CB.
+                    self.assertGreater(caps, 10, 'z0 %g' % z0)
+                else:
+                    self.assertEqual(caps, 0)
+                    if z0 < 50.2:
+                        self.assertGreater(hits, 0, 'z0 %g' % z0)
 
 
 class TestSlab(PickCase):
