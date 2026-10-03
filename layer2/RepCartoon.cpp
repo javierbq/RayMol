@@ -40,6 +40,7 @@ Z* -------------------------------------------------------------------
 #include "Material.h"
 #include "Lex.h"
 #include "CoordSet.h"
+#include "PickAccel.h"
 
 #include "AtomIterators.h"
 #include "AtomNeighbors.h"
@@ -74,6 +75,8 @@ struct RepCartoon : Rep {
   void render(RenderInfo* info) override;
   void invalidate(cRepInv_t level) override;
   bool sameVis() const override;
+  bool pickRay(const RepPickArgs& args, PickRayHit& hit) const override;
+  const PickAccel* pickPrepare(bool* built = nullptr) const override;
 
   CGO* ray = nullptr;
   CGO* std = nullptr;
@@ -82,11 +85,16 @@ struct RepCartoon : Rep {
   /**
    * Free the preshader CGO or move to another owner.
    * @post preshader == nullptr
+   *
+   * The swap keeps the same CGO object (the pick source, `ray ? ray :
+   * preshader`, is unchanged across it). Before any CGOFree the pick grid,
+   * which references that CGO's arrays in place, is dropped (#614).
    */
   void disposePreshaderCGO() {
     if (!ray) {
       std::swap(ray, preshader);
     } else {
+      m_pickAccel.reset();
       CGOFree(preshader);
     }
   }
@@ -102,6 +110,7 @@ RepCartoon::~RepCartoon()
 {
   auto I = this;
   assert(I->ray != I->preshader);
+  m_pickAccel.reset(); // references the CGOs below in place (#614)
   CGOFree(I->preshader);
   CGOFree(I->ray);
   CGOFree(I->std);
@@ -262,6 +271,7 @@ void RepCartoon::render(RenderInfo* info)
                       I->cs->Setting.get(), I->obj->Setting.get())) {
       PRINTFB(G, FB_RepCartoon, FB_Warnings)
         " %s-Warning: ray rendering failed\n", __func__ ENDFB(G);
+      I->m_pickAccel.reset(); // the pick grid references I->ray (#614)
       CGOFree(I->ray);
     }
 #endif
@@ -292,6 +302,54 @@ void RepCartoon::render(RenderInfo* info)
       }
     }
   }
+}
+
+/**
+ * Surface pick (#614). The source is the primitive CGO the ray tracer reads,
+ * `ray ? ray : preshader` -- one CGO object before and after
+ * disposePreshaderCGO's swap, so the cached grid stays valid across the
+ * first frame.
+ *
+ * Rules, from RepCartoonCGOGenerate as it resolves on Metal (use_shaders is
+ * forced on; there is no GL "cylinder" program, so has_cylinders_to_optimize
+ * is false):
+ *  - triangles: Mesh (VBO triangles of the same vertices, nothing culled);
+ *  - cylinder-type ops: Mesh (CGOSimplify tessellates them);
+ *  - spheres: impostors (CGOOptimizeSpheresToVBONonIndexed) unless
+ *    cartoon_use_shader is off or the rep is transparent with
+ *    transparency_mode != 3, where CGOSimplify tessellates everything.
+ *    Transparency is the rep-level built value (per-atom
+ *    cartoon_transparency is not modelled).
+ * Keep in step with RepCartoonCGOGenerate.
+ */
+const PickAccel* RepCartoon::pickPrepare(bool* built) const
+{
+  if (built)
+    *built = false;
+  const CGO* cgo = ray ? ray : preshader;
+  if (!cgo)
+    return nullptr;
+  if (builtTransparency() >= 0.999f)
+    return nullptr; // drawn invisible
+  bool const simplified_all =
+      !SettingGetGlobal_b(G, cSetting_cartoon_use_shader) ||
+      (builtTransparency() > 0.f &&
+          SettingGetGlobal_i(G, cSetting_transparency_mode) != 3);
+  PickCGORules rules;
+  rules.sphere = simplified_all ? PickRule::Mesh : PickRule::Impostor;
+  rules.cylinder = PickRule::Mesh;
+  rules.simplified_cylinders = true;
+  rules.triangles = true;
+  PickAccelKey key{cgo, cgo->c, rules.bits()};
+  return pickAccelFor(
+      key, [&](PickAccel& accel) { PickAccelAddCGO(cgo, accel, rules); },
+      built);
+}
+
+bool RepCartoon::pickRay(const RepPickArgs& args, PickRayHit& hit) const
+{
+  const PickAccel* accel = pickPrepare();
+  return accel && accel->intersect(args.ray, pickCapOn(), hit);
 }
 
 #define NUCLEIC_NORMAL0 "C2"
