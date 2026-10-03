@@ -514,20 +514,22 @@ class TestLightRig(testing.PyMOLTestCase):
         # an EM-style scene: a mesh of a map, the molecule and the map off
         cmd.delete('all')
         self.load()
+        cmd.alter('m', 'b = 20.0')          # a gaussian map needs B > 0
         cmd.map_new('dens', 'gaussian', 1.0, 'm and not solvent', 4.0)
-        cmd.isomesh('mesh', 'dens', 0.2)
+        cmd.isomesh('emesh', 'dens', 0.2)
+        self.assertIn('emesh', cmd.get_names('objects'))
         cmd.disable('m')
         cmd.disable('dens')
         cmd.set_lights({'lights': [{}]})
-        centre, size = self.frame_of('mesh')
+        centre, size = self.frame_of('emesh')
         self.assertGreater(size, 7.0)       # wider than the two atoms
         self.assertFrame(cmd.get_lights(), centre, size)
         # the map's own extent counts while it is enabled
         cmd.enable('dens')
         cmd.set_lights({'lights': [{}]})
-        mn = [min(a, b) for a, b in zip(cmd.get_extent('mesh')[0],
+        mn = [min(a, b) for a, b in zip(cmd.get_extent('emesh')[0],
                                         cmd.get_extent('dens')[0])]
-        mx = [max(a, b) for a, b in zip(cmd.get_extent('mesh')[1],
+        mx = [max(a, b) for a, b in zip(cmd.get_extent('emesh')[1],
                                         cmd.get_extent('dens')[1])]
         self.assertFrame(cmd.get_lights(),
                          [(a + b) / 2.0 for a, b in zip(mn, mx)],
