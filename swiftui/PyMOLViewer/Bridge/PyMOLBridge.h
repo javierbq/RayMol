@@ -126,6 +126,45 @@ void PyMOLBridge_RunPythonQuiet(PyMOLHandle instance, const char *code);
 // metal_pick.pick_at (GL color picking is unavailable on the Metal backend).
 void PyMOLBridge_Pick(PyMOLHandle instance, float ndcX, float ndcY, float aspect);
 
+// --- Surface pick (#614) ---
+//
+// The drawn surface point and normal under a screen point: the camera ray,
+// clipped to the slab, against the geometry surfaces, cartoons, spheres and
+// sticks actually draw (layer3/SurfacePick.h). Read-only: never draws and
+// never changes anything a render reads.
+//
+// sceneNdcX/Y: NDC of the SCENE viewport (the letterboxed sub-rect when a
+// letterbox is set, see PyMOLBridge_GetLetterboxAspect), x and y in [-1, 1],
+// +y up. In grid_mode it is still the whole scene viewport; the core finds
+// the cell.
+//
+// flags & 1 ("update"): first run the frame's update phase (rebuild dirty
+// representations). That can reach the Python C-API, so it is MAIN THREAD
+// ONLY. With flags & 1 == 0 nothing touches Python: it picks what was last
+// built (what the last frame drew), which is what a drag tick wants.
+//
+// out must hold count == 8 floats: x, y, z (world point), nx, ny, nz (unit
+// normal facing the camera), depth (eye-space distance along the view axis,
+// Angstrom), facing (dot of the oriented normal with the toward-camera
+// direction BEFORE the silhouette nudge).
+//
+// Returns 0 on a miss, a null handle, a null out, a bad count, or while a
+// modal draw owns the core -- out is then left untouched. Otherwise
+// 1 | inside << 1 | cap << 2: inside = the ray met the geometry from inside
+// (the far wall of a clipped closed shape; "back face" on open geometry);
+// cap = a flat interior cap at a clip plane (metal_interior_cap).
+int PyMOLBridge_SurfacePick(PyMOLHandle instance, float sceneNdcX, float sceneNdcY,
+                            int flags, float *out, int count);
+// Build the surface-pick grid of every drawn pickable representation without
+// picking, so the first pick or drag does not pay for it. flags & 1 = update
+// first (main thread only, as above). Returns how many grids are held after
+// the call (0 on a null handle or under a modal draw).
+int PyMOLBridge_SurfacePickPrepare(PyMOLHandle instance, int flags);
+// The letterbox aspect (width / height) the live frame renders the scene into,
+// as set by PyMOLBridge_SetLetterboxAspect; 0 = the scene fills the view (also
+// when there is no renderer yet).
+float PyMOLBridge_GetLetterboxAspect(PyMOLHandle instance);
+
 // --- Getters ---
 void *PyMOLBridge_GetGlobals(PyMOLHandle instance);
 void *PyMOLBridge_GetRenderer(PyMOLHandle instance);
