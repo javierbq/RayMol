@@ -79,6 +79,7 @@ jobs:
               testing/tests/raymol/inspector_command_names.py \
               testing/tests/raymol/inspector_materials.py \
               testing/tests/raymol/lighting_harness.py \
+              testing/tests/raymol/lighting_rig.py \
               testing/tests/raymol/line_stick_helper.py \
               testing/tests/raymol/material_custom.py \
               testing/tests/raymol/material_docs.py \

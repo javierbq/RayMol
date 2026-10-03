@@ -535,8 +535,9 @@ class TestLightingHarness(testing.PyMOLTestCase):
             with open(self.render.marker_path(out, job.tag)) as handle:
                 self.assertEqual(len(handle.read().splitlines()), 1, job.tag)
 
-    @unittest.skipUnless(hasattr(cmd, 'set_lights'), 'no light rig API yet (#611 part 2)')
     def testOffScriptInProcess(self):
+        # Before #612 the 'off' script reaches the rig through cmd.set_lights,
+        # so this also proves the frozen RIG_OFF validates as written.
         script, marker = self.write_one('cartoon_rt0', 'off')
         cmd.run(script)
         first = cmd.get_lights()
