@@ -1413,3 +1413,55 @@ class TestScope(PickCase):
         self.stick('stk', (-3.0, 0.0, 20.0), (3.0, 0.0, 20.0))
         self.assertEqual(metal_pick.surface_warm(reps='sticks')['accels'], 1)
         self.assertEqual(metal_pick.surface_warm(objects=['ball'])['accels'], 1)
+
+
+class TestPickBench(testing.PyMOLTestCase):
+    '''scripts/lighting/pick_bench.py, the orchestrator's timing entry point,
+    in its --check mode: the same steps as the timed run, on 1rx1, with
+    correctness asserted and no timings printed. Keeps the timing command
+    working as the pick evolves.'''
+
+    def bench(self):
+        import importlib.util
+        import os
+        # <root>/testing/data/1rx1.pdb -> <root>
+        root = os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(self.datafile('1rx1.pdb')))))
+        path = os.path.join(root, 'scripts', 'lighting', 'pick_bench.py')
+        if not os.path.exists(path):
+            self.skipTest('no scripts/lighting/pick_bench.py next to the tests')
+        spec = importlib.util.spec_from_file_location('lt614_pick_bench', path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)  # runs nothing on import
+        return module
+
+    def testCheckModePasses(self):
+        bench = self.bench()
+        lines = []
+        status = bench.run(['--check', '--pdb', self.datafile('1rx1.pdb')],
+                           out=lines.append)
+        self.assertEqual(status, 0, '\n'.join(lines))
+        self.assertEqual(lines[-1], 'PICKBENCH CHECK ok')
+        for label in ('cartoon', 'surface', 'spheres', 'sticks', 'all'):
+            self.assertTrue(any(l.startswith('PICKBENCH CHECK reps=%s ' % label)
+                                and l.endswith(' ok') for l in lines), label)
+        self.assertFalse(any('_ms' in l for l in lines),
+                         '--check must print no timings')
+
+    def testCheckModeReportsAFailure(self):
+        # Invisible spheres (the bench reinitializes, so set it per set):
+        # nothing is pickable, and the check must say so and fail.
+        bench = self.bench()
+        real = bench.bench_set
+
+        def invisible(label, ctx, check):
+            cmd.set('sphere_transparency', 1.0, ctx['name'])
+            return real(label, ctx, check)
+
+        lines = []
+        bench.bench_set = invisible
+        status = bench.run(['--check', '--pdb', self.datafile('1rx1.pdb'),
+                            '--reps', 'spheres'], out=lines.append)
+        self.assertEqual(status, 1, '\n'.join(lines))
+        self.assertTrue(
+            lines[-1].startswith('PICKBENCH CHECK FAIL reps=spheres'), lines[-1])
