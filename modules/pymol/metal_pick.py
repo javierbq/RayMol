@@ -1059,3 +1059,125 @@ def box_commit_ndc(x0, y0, x1, y1, aspect, name='sele', mode='replace'):
     from pymol import cmd
     box_select_ndc(x0, y0, x1, y1, aspect, name=name, mode=mode, base=_BOX_BASE)
     return cmd.count_atoms('?%s' % name)
+
+
+# --- surface pick (#614) ------------------------------------------------------
+#
+# The point and normal of the DRAWN geometry under a screen point, for placing
+# lights (#612's click=/highlight= helpers, #622's gizmo). The work is native
+# (layer3/SurfacePick.cpp): the camera ray, clipped to the slab, against each
+# representation's own geometry, under the clip rule of what the Metal renderer
+# draws for it. CI (no GPU) evaluates exactly the rules the app uses.
+#
+# Not a cmd.* command: callers import pymol.metal_pick.surface_at.
+
+SurfaceHit = collections.namedtuple(
+    'SurfaceHit', 'point normal depth facing object state rep inside cap')
+SurfaceHit.__doc__ = """A surface_at hit.
+
+    point   (x, y, z) world (model) coordinates of the hit
+    normal  unit (nx, ny, nz), oriented toward the camera; within ~3 degrees
+            of the true surface normal except at silhouettes, where it is
+            nudged to face the camera by at least 0.05
+    depth   eye-space distance of the hit along the view axis, in Angstrom
+    facing  dot(normal before the nudge, direction to the camera); > 0 away
+            from silhouettes
+    object  name of the object that was hit
+    state   1-based object state that was hit
+    rep     'surface', 'cartoon', 'spheres' or 'sticks'
+    inside  the ray met the geometry from inside: the far wall of a shape the
+            clip plane cut open. On open two-sided geometry (cartoon sheets)
+            it only means "back face"; prefer normal/facing.
+    cap     a flat interior cap at the clip plane (metal_interior_cap)
+"""
+
+SURFACE_REPS = ('surface', 'cartoon', 'spheres', 'sticks')
+
+_SURFACE_REP_NAMES = None
+
+
+def _surface_rep_mask(reps):
+    """visRep bitmask for `reps` (a name or a sequence of SURFACE_REPS names)."""
+    from pymol import CmdException
+    from pymol.constants import repmasks
+    if isinstance(reps, str):
+        reps = [r for r in reps.replace('+', ' ').replace(',', ' ').split() if r]
+    mask = 0
+    for rep in reps:
+        if rep not in SURFACE_REPS:
+            raise CmdException('surface pick: unknown rep %r (expected one of '
+                               '%s)' % (rep, ', '.join(SURFACE_REPS)))
+        mask |= repmasks[rep]
+    return mask
+
+
+def _surface_rep_name(index):
+    global _SURFACE_REP_NAMES
+    if _SURFACE_REP_NAMES is None:
+        from pymol.constants import repres
+        _SURFACE_REP_NAMES = {repres[r]: r for r in SURFACE_REPS}
+    return _SURFACE_REP_NAMES.get(index, str(index))
+
+
+def _surface_objects(objects):
+    """None, or a list of object names (a name, or a sequence of names)."""
+    if objects is None:
+        return None
+    if isinstance(objects, str):
+        objects = objects.split()
+    return [str(o) for o in objects]
+
+
+def surface_at(ndc_x, ndc_y, aspect=None, reps=SURFACE_REPS, objects=None,
+               update=True, _self=None):
+    """The drawn surface point and normal under a scene-viewport point.
+
+    ndc_x, ndc_y  scene-viewport NDC in [-1, 1], +y up (same convention as
+                  pick_at and the prototype's click=x/y)
+    aspect        viewport width/height; None uses the scene's own
+    reps          which representations to intersect (a subset of
+                  SURFACE_REPS, as a sequence or a space-separated string)
+    objects       object names to consider; None means every enabled
+                  molecule not named '_...' (a listed '_' object counts)
+    update        run the frame's update phase first, so reps not built yet
+                  are built (as the next frame would). With update=False the
+                  pick sees what was last built: in a fresh headless session
+                  that may be nothing.
+
+    Returns a SurfaceHit, or None when nothing drawn is under the point.
+    Raises CmdException for bad arguments or while a modal draw owns the
+    core. Geometry drawn as point sprites, dots, mesh, lines, ribbon,
+    ellipsoids, nonbonded spheres, maps and CGO objects is not picked.
+    """
+    from pymol import cmd as _cmd_mod
+    from pymol.cmd import _cmd
+    c = _self or _cmd_mod
+    mask = _surface_rep_mask(reps)
+    objs = _surface_objects(objects)
+    with c.lockcm:
+        r = _cmd.surface_pick(c._COb, float(ndc_x), float(ndc_y),
+                              float(aspect) if aspect else 0.0, objs, mask,
+                              1 if update else 0)
+    if r is None:
+        return None
+    x, y, z, nx, ny, nz, depth, facing, obj, state, rep, inside, cap = r
+    return SurfaceHit((x, y, z), (nx, ny, nz), depth, facing, obj, state,
+                      _surface_rep_name(rep), bool(inside), bool(cap))
+
+
+def surface_warm(reps=SURFACE_REPS, objects=None, update=True, _self=None):
+    """Build the surface-pick grids of every drawn rep now, so the first
+    surface_at (a click, or the first tick of a drag) does not pay for it.
+
+    Returns {'accels': n, 'bytes': b, 'built': k}: the grids the considered
+    reps hold, their heap size, and how many this call had to build (0 on a
+    repeat call when nothing changed)."""
+    from pymol import cmd as _cmd_mod
+    from pymol.cmd import _cmd
+    c = _self or _cmd_mod
+    mask = _surface_rep_mask(reps)
+    objs = _surface_objects(objects)
+    with c.lockcm:
+        accels, nbytes, built = _cmd.surface_pick_prepare(
+            c._COb, objs, mask, 1 if update else 0, 1)
+    return {'accels': accels, 'bytes': nbytes, 'built': built}
