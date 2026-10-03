@@ -45,6 +45,10 @@ from .predicting import \
 from .movie_exporting import movie_export
 
 #--------------------------------------------------------------------
+# PROTOTYPE: studio spot lights for the Metal renderer (studio_lights.py).
+from .studio_lights import studio
+
+#--------------------------------------------------------------------
 # Backbone GENERATION, a separate surface from prediction on purpose: a generator is
 # handed a target structure and returns a chain that did not exist, so it has no
 # sequence to fold and nothing to put in a PredictionSpec. See docs/generators.md.

@@ -994,6 +994,8 @@ enum {
   REC_f( 879, sphere_material_knob4                   , object    , 0.0F ),  /* Custom material (#568): override of the sphere's material's `knob4` knob -- what it does depends on the material (docs/materials.md, _cmd.get_material_knobs). Unset = the material's own value; ignored by a material that has no such knob. */
   REC_f( 880, sphere_material_knob5                   , object    , 0.0F ),  /* Custom material (#568): override of the sphere's material's `knob5` knob -- what it does depends on the material (docs/materials.md, _cmd.get_material_knobs). Unset = the material's own value; ignored by a material that has no such knob. */
   REC_f( 881, sphere_material_knob6                   , object    , 0.0F ),  /* Custom material (#568): override of the sphere's material's `knob6` knob -- what it does depends on the material (docs/materials.md, _cmd.get_material_knobs). Unset = the material's own value; ignored by a material that has no such knob. */
+  REC_s( 882, studio_lights                           , global    , "" ),    /* PROTOTYPE (studio lights): packed spot-light rig for the Metal renderer, written by the `studio` command (modules/pymol/studio_lights.py). Empty = off. 17 floats per light: mode p1 p2 p3 q1 q2 q3 beam soft r g b intensity spec falloff shadow cue (see SceneStudioLightsUpdate). */
+  REC_s( 883, studio_atmosphere                      , global    , "" ),    /* PROTOTYPE (studio lights): haze dust dust_size scatter seed dust_speed -- light scattering in the air and dust motes lit by the studio beams (Metal post pass). Written by `studio haze=... dust=...`. Empty = off. */
 
 #ifdef SETTINGINFO_IMPLEMENTATION
 #undef SETTINGINFO_IMPLEMENTATION

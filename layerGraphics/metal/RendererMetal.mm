@@ -80,6 +80,11 @@ void bindNeutralMaterialU(id<MTLRenderCommandEncoder> enc)
   static const float kIdentity4x4[16] = {
       1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
   bindMaterialU(enc, MaterialParams{}, kIdentity4x4);
+  // PROTOTYPE (studio lights): an empty rig (count 0) at buffer(9), for the
+  // same reason. Size matches RendererMetal::StudioU.
+  static const float kNoStudio[4 + 16 * pymol::Renderer::kStudioMaxLights + 12 +
+                               20 * pymol::Renderer::kStudioMaxShadows] = {};
+  [enc setFragmentBytes:kNoStudio length:sizeof(kNoStudio) atIndex:9];
 }
 } // namespace
 
@@ -504,6 +509,9 @@ RendererMetal::~RendererMetal()
   [_aoMaskDepthState release];
   [_vboLinePipeline release];         [_bezierTubePipeline release];
   [_blitPipeline release];            [_ssaoPipeline release];
+  [_atmoPipeline release];
+  [_studioShadowArray release]; [_studioShadowDummy release];
+  [_studioShadowPassDesc release];
   [_fxaaPipeline release];            [_outlinePipeline release];
   [_tonemapPipeline release];         [_dofPipeline release];
   [_dofSmoothPipeline release];
@@ -831,6 +839,11 @@ void RendererMetal::bindRepMaterial()
   // An orthographic projection has w = 1 everywhere: its last row is 0,0,0,1.
   const int ortho = _projectionMatrix[15] != 0.0f ? 1 : 0;
   bindMaterialU(_encoder, _repMatParams, _modelviewInv.data(), refrPx, ortho);
+  // PROTOTYPE (studio lights): every lit draw reaches here, so this is the one
+  // place the spot-light rig needs binding. Zero count = shaders skip it.
+  _studio.hdr[2] = (float)ortho;
+  [_encoder setFragmentBytes:&_studio length:sizeof(_studio) atIndex:9];
+  bindStudioShadows(_encoder, 7, 7);
   if (refracts && refrPx > 0.0f)
     _oitHasRefraction = true;
 }
@@ -1613,6 +1626,186 @@ struct PostU {
 // what prevents the RT library from silently losing them again (the #83/#87
 // regression) and keeps the crease term identical in both paths (#436).
 
+// PROTOTYPE (studio atmosphere): light scattering in the air and dust motes,
+// both lit only by the studio beams. Mirrors RendererMetal::StudioU (the
+// light layout is kMaterialSrc's StudioLight). Haze: march the view ray
+// through the beam region up to the first surface, adding in-scattered beam
+// light with a Henyey-Greenstein phase (forward scattering: brightest looking
+// into a light); the shadow light is tested against the shadow map, so the
+// molecule casts dark shafts. Dust: motes on depth layers through the same
+// region, a procedural grid per layer (no geometry), lit the same way with a
+// sharper forward lobe; motes off the focus depth grow and fade (cheap
+// defocus). Everything is in eye space: the air stays put as the molecule
+// turns, and the beams sweep through it.
+struct StudioLightP { float4 pos; float4 axis; float4 color; float4 misc; };
+struct StudioAtmoU { float4 hdr; StudioLightP L[6]; float4 atmo; float4 atmo2;
+                     float4 atmo3; float4x4 shadowVP[3]; float4 shadowInfo[3]; };
+
+// PROTOTYPE (studio shadows): light `slot`'s own shadow map at x (one tap).
+static float atmo_studio_shadow(float3 x, int slot, constant StudioAtmoU& st,
+                                depth2d_array<float> arr, sampler smp) {
+  float4 lc = st.shadowVP[slot] * float4(x, 1.0);
+  if (lc.w <= 0.0) return 1.0;
+  float3 ndc = lc.xyz / lc.w;
+  float2 uv = float2(0.5 * ndc.x + 0.5, 0.5 - 0.5 * ndc.y);
+  float fd = 0.5 + 0.5 * ndc.z;
+  if (uv.x <= 0.0 || uv.x >= 1.0 || uv.y <= 0.0 || uv.y >= 1.0 ||
+      fd <= 0.0 || fd >= 1.0)
+    return 1.0;
+  return arr.sample_compare(smp, uv, uint(slot), fd - 0.0005);
+}
+
+static float atmo_hash(float3 p) {
+  p = fract(p * 0.3183099 + float3(0.71, 0.113, 0.419));
+  p *= 17.0;
+  return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+
+static float atmo_noise(float3 x) {   // value noise, for patchy haze
+  float3 i = floor(x), f = fract(x);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mix(atmo_hash(i), atmo_hash(i + float3(1, 0, 0)), f.x),
+                 mix(atmo_hash(i + float3(0, 1, 0)), atmo_hash(i + float3(1, 1, 0)), f.x), f.y),
+             mix(mix(atmo_hash(i + float3(0, 0, 1)), atmo_hash(i + float3(1, 0, 1)), f.x),
+                 mix(atmo_hash(i + float3(0, 1, 1)), atmo_hash(i + float3(1, 1, 1)), f.x), f.y),
+             f.z);
+}
+
+static float atmo_shadow(float3 x, constant PostU& u, depth2d<float> shadowTex,
+                         sampler shadowSamp) {
+  float4 lc = u.lightViewProj * float4(x, 1.0);
+  if (lc.w <= 0.0) return 1.0;
+  float3 ndc = lc.xyz / lc.w;
+  float2 suv = float2(0.5 * ndc.x + 0.5, 0.5 - 0.5 * ndc.y);
+  float fd = 0.5 + 0.5 * ndc.z;
+  if (suv.x <= 0.0 || suv.x >= 1.0 || suv.y <= 0.0 || suv.y >= 1.0 ||
+      fd <= 0.0 || fd >= 1.0)
+    return 1.0;
+  return shadowTex.sample_compare(shadowSamp, suv, fd - 2.0 / 4096.0);
+}
+
+// Beam light arriving at x and scattered toward the camera. phMax caps the
+// forward lobe: looking straight into a light, Henyey-Greenstein peaks at
+// (1+g)/(1-g)^2 -- 13x at g=0.65 -- which is physically right and whites out
+// the frame, so it is clamped (an artistic limit, not physics).
+static float3 atmo_light(float3 x, float3 toCam, float g, float phMax,
+                         constant StudioAtmoU& st, constant PostU& u,
+                         depth2d<float> shadowTex, sampler shadowSamp,
+                         depth2d_array<float> studioShadow) {
+  float3 sum = float3(0.0);
+  int n = int(st.hdr.x);
+  int shadowIdx = (st.atmo3.w > 0.5) ? int(st.atmo2.z) : -1;
+  for (int i = 0; i < n && i < 6; ++i) {
+    float3 Lv = x - st.L[i].pos.xyz;
+    float dl = max(length(Lv), 1e-3);
+    float3 dir = Lv / dl;                       // direction the light travels
+    float spot = smoothstep(st.L[i].axis.w, st.L[i].color.w,
+                            dot(dir, st.L[i].axis.xyz));
+    if (spot <= 0.0) continue;
+    float att = min(pow(st.L[i].misc.z / dl, st.L[i].misc.y), 4.0);
+    float c = dot(dir, toCam);
+    float ph = min((1.0 - g * g) / pow(max(1.0 + g * g - 2.0 * g * c, 1e-4), 1.5),
+                   phMax);
+    int slot = int(st.L[i].pos.w);
+    float sh = (slot >= 0 && slot < int(st.hdr.w))
+                   ? atmo_studio_shadow(x, slot, st, studioShadow, shadowSamp)
+                   : (i == shadowIdx) ? atmo_shadow(x, u, shadowTex, shadowSamp)
+                                      : 1.0;
+    sum += st.L[i].color.rgb * (spot * att * ph * sh);
+  }
+  return sum;
+}
+
+static float3 atmo_apply(float3 color, float2 uv, float2 frag, float d,
+                         constant PostU& u, constant StudioAtmoU& st,
+                         depth2d<float> shadowTex, sampler shadowSamp,
+                         depth2d_array<float> studioShadow) {
+  // The view ray through this pixel, and where it stops (first surface).
+  float3 ro, rd;
+  if (u.projOrtho > 0.5) {
+    float3 p = post_eye_pos(uv, 0.5, u.projA, u.projB, u.projX, u.projY, 1.0);
+    ro = float3(p.xy, 0.0);
+    rd = float3(0.0, 0.0, -1.0);
+  } else {
+    ro = float3(0.0);
+    rd = normalize(post_eye_pos(uv, 0.5, u.projA, u.projB, u.projX, u.projY, 0.0));
+  }
+  float zHit = (d < 0.99999)
+      ? -post_eye_pos(uv, d, u.projA, u.projB, u.projX, u.projY, u.projOrtho).z
+      : 1e9;
+  float zNear = st.atmo2.x, zFar = min(st.atmo2.y, zHit);
+  if (zFar <= zNear) return color;
+  float3 toCam = -rd;
+  float tPerZ = 1.0 / max(-rd.z, 1e-4);         // ray length per unit eye depth
+  float3 add = float3(0.0);
+
+  float haze = st.atmo.x;
+  if (haze > 0.0) {
+    const int N = 48;
+    float dz = (zFar - zNear) / float(N);
+    float jitter = atmo_hash(float3(frag, st.atmo2.w));
+    float3 acc = float3(0.0);
+    for (int k = 0; k < N; ++k) {
+      float z = zNear + (float(k) + jitter) * dz;
+      float3 x = ro + rd * (z * tPerZ);
+      float3 wisp = float3(0.04, 0.015, 0.0) * st.atmo3.z;   // drifting wisps
+      float dens = 0.55 + 0.9 * atmo_noise(x * (1.0 / max(st.atmo3.x * 3.0, 1.0)) + wisp);
+      acc += dens * atmo_light(x, toCam, st.atmo.w, 5.0, st, u, shadowTex, shadowSamp,
+                                studioShadow);
+    }
+    add += acc * (haze * 0.02 * dz * tPerZ);
+  }
+
+  float dust = st.atmo.y;
+  if (dust > 0.0) {
+    const int K = 32;
+    float cell = max(st.atmo3.x, 0.5);
+    float span = (st.atmo2.y - zNear) / float(K);
+    float gd = min(st.atmo.w + 0.25, 0.92);       // motes scatter more forward
+    for (int k = 0; k < K; ++k) {
+      float z = zNear + (float(k) + 0.5) * span;
+      if (z >= zFar) break;
+      float3 x = ro + rd * (z * tPerZ);
+      float kk = float(k) * 13.37 + st.atmo2.w;
+      float T = st.atmo3.z;                       // animated time (0 = still)
+      // Each layer drifts its own way -- mostly sideways, settling slowly --
+      // so the layers slide past one another (cells per second).
+      float ang = 6.2831853 * atmo_hash(float3(kk, 3.1, 7.7));
+      float spd = 0.12 + 0.18 * atmo_hash(float3(kk, 9.2, 1.3));
+      float2 motion = float2(cos(ang), 0.6 * sin(ang) - 0.35) * spd;
+      float2 q = x.xy / cell + float2(kk * 0.731, kk * 0.293) - motion * T;
+      float2 ci = floor(q), f = q - ci;
+      if (atmo_hash(float3(ci, kk)) > dust * 0.35) continue;   // occupancy
+      // ... and every mote wanders on its own slow orbit (Brownian-looking).
+      // Centre 0.3..0.7 plus a 0.1 wobble stays inside 0.2..0.8 of the cell.
+      float ph = 6.2831853 * atmo_hash(float3(ci, kk + 41.3));
+      float fr = 0.4 + 0.9 * atmo_hash(float3(ci, kk + 57.9));
+      float2 c = 0.3 + 0.4 * float2(atmo_hash(float3(ci, kk + 17.1)),
+                                    atmo_hash(float3(ci, kk + 31.7)));
+      c += 0.1 * float2(sin(T * fr + ph), cos(T * fr * 1.37 + ph * 1.7));
+      // twinkle: flakes turn and catch the light
+      float tw = 0.55 + 0.45 * pow(0.5 + 0.5 * sin(T * (1.3 + 2.1 * fr) + 3.0 * ph), 2.0);
+      float size = st.atmo.z * (0.35 + 1.3 * atmo_hash(float3(ci, kk + 5.3)));
+      float blur = abs(z - st.atmo3.y) * 0.012 * size;
+      // A mote lives in one cell (its centre sits 0.2..0.8 across it), so
+      // cap it at 0.2 cell or the cell edge slices it into a square.
+      float r = min(size + blur, 0.2 * cell);
+      size = min(size, r);
+      float dist = length(f - c) * cell;
+      float a = 1.0 - smoothstep(0.35 * r, r, dist);
+      if (a <= 0.0) continue;
+      float3 xp = x + float3((c - f) * cell, 0.0);
+      float3 lit = atmo_light(xp, toCam, gd, 8.0, st, u, shadowTex, shadowSamp,
+                              studioShadow);
+      add += lit * (a * (size * size) / (r * r) * 0.9 * tw);
+    }
+  }
+  float3 outc = color + add;
+  // Soft knee on the excess (as mat_soft_knee): bright beams roll off.
+  float3 over = max(outc - float3(0.8), float3(0.0));
+  return min(outc, float3(0.8)) + over / (float3(1.0) + over) * 0.2;
+}
+
 fragment float4 post_ssao_fog(PostVOut in [[stage_in]],
     texture2d<float> colorTex [[texture(0)]],
     depth2d<float> depthTex [[texture(1)]],
@@ -1727,6 +1920,25 @@ fragment float4 post_ssao_fog(PostVOut in [[stage_in]],
     color = mix(float3(u.bgR, u.bgG, u.bgB), color, fog);
   }
   return float4(color, 1.0);
+}
+
+// PROTOTYPE (studio atmosphere): its own pass, after whichever pass 1 ran --
+// the SSAO/shadow pass or the ray-traced one (metal_raytrace, on by default)
+// -- and before transparency is composited. Only PostU's projection and
+// lightViewProj fields are read.
+fragment float4 post_atmosphere(PostVOut in [[stage_in]],
+    texture2d<float> colorTex [[texture(0)]],
+    depth2d<float> depthTex [[texture(1)]],
+    depth2d<float> shadowTex [[texture(2)]],
+    depth2d_array<float> studioShadow [[texture(3)]],
+    sampler s [[sampler(0)]],
+    sampler shadowSamp [[sampler(1)]],
+    constant PostU& u [[buffer(0)]],
+    constant StudioAtmoU& st [[buffer(1)]]) {
+  float3 color = colorTex.sample(s, in.uv).rgb;
+  float d = depthTex.sample(s, in.uv);
+  return float4(atmo_apply(color, in.uv, in.position.xy, d, u, st, shadowTex,
+                           shadowSamp, studioShadow), 1.0);
 }
 
 // Silhouette / toon outlines: depth-based Sobel edge detection. Strong depth
@@ -2244,6 +2456,7 @@ void RendererMetal::buildPostPipelines()
   _exportAlphaRefractPipeline = mkpipe(@"post_export_alpha_refract");
   _fxaaPipeline = mkpipe(@"post_fxaa");
   _ssaoPipeline = mkpipe(@"post_ssao_fog");
+  _atmoPipeline = mkpipe(@"post_atmosphere");   // PROTOTYPE (studio atmosphere)
   _oitResolvePipeline = mkpipe(@"oit_resolve");
   _oitResolveRefractPipeline = mkpipe(@"oit_resolve_refract");
   _outlinePipeline = mkpipe(@"post_outline");
@@ -2318,6 +2531,88 @@ void RendererMetal::setLightingParams(float ambient, float direct,
   _lightSpecular = specular;
   _lightShininess = shininess;
   _sssWrap = sssWrap;
+}
+
+void RendererMetal::setStudioShadowTarget(int slot)
+{
+  _studioShadowTarget = (slot >= 0 && slot < kStudioMaxShadows) ? slot : -1;
+}
+
+void RendererMetal::setStudioShadow(int slot, const float* vpEye, float tanHalfFov)
+{
+  if (slot < 0 || slot >= kStudioMaxShadows || !vpEye)
+    return;
+  std::memcpy(_studio.shadowVP[slot], vpEye, 16 * sizeof(float));
+  _studio.shadowInfo[slot][0] = tanHalfFov;
+  _studio.shadowInfo[slot][1] = (float)kStudioShadowDim;
+}
+
+void RendererMetal::setStudioOwnsShadows(int slots)
+{
+  _studioShadowSlots = std::max(0, std::min(slots, (int)kStudioMaxShadows));
+  _studio.hdr[3] = (float)_studioShadowSlots;
+}
+
+void RendererMetal::ensureStudioShadowTextures()
+{
+  static_assert(sizeof(StudioU) == sizeof(float) * (4 + 16 * kStudioMaxLights +
+                    12 + 20 * kStudioMaxShadows), "StudioU mirrors MSL");
+  auto make = [&](int dim) {
+    MTLTextureDescriptor* d = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
+                                     width:dim height:dim mipmapped:NO];
+    d.textureType = MTLTextureType2DArray;
+    d.arrayLength = kStudioMaxShadows;
+    d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+    d.storageMode = MTLStorageModePrivate;
+    return [_device newTextureWithDescriptor:d];
+  };
+  if (!_studioShadowDummy)
+    _studioShadowDummy = make(1);
+  if (_studioShadowTarget >= 0 && !_studioShadowArray) {
+    _studioShadowArray = make(kStudioShadowDim);
+    _studioShadowPassDesc = [[MTLRenderPassDescriptor alloc] init];
+    _studioShadowPassDesc.depthAttachment.texture = _studioShadowArray;
+    _studioShadowPassDesc.depthAttachment.loadAction = MTLLoadActionClear;
+    _studioShadowPassDesc.depthAttachment.clearDepth = 1.0;
+    _studioShadowPassDesc.depthAttachment.storeAction = MTLStoreActionStore;
+  }
+}
+
+// Every lit draw and the atmosphere pass see the maps (or a stand-in: a
+// declared texture must be bound even when no light samples it).
+void RendererMetal::bindStudioShadows(
+    id<MTLRenderCommandEncoder> enc, int texIndex, int smpIndex)
+{
+  ensureStudioShadowTextures();
+  // Never while a shadow pass renders: the array would be read and written
+  // by the same encoder (the depth-only shaders do not sample it anyway).
+  id<MTLTexture> t = (_studioShadowSlots > 0 && _studioShadowArray && !_shadowMode)
+                         ? _studioShadowArray : _studioShadowDummy;
+  [enc setFragmentTexture:t atIndex:texIndex];
+  if (_shadowSampler)
+    [enc setFragmentSamplerState:_shadowSampler atIndex:smpIndex];
+}
+
+void RendererMetal::setStudioAtmosphere(const float* atmo)
+{
+  if (atmo)
+    std::memcpy(_studio.atmo, atmo, sizeof(_studio.atmo));
+  else
+    std::memset(_studio.atmo, 0, sizeof(_studio.atmo));
+}
+
+void RendererMetal::setStudioLights(
+    const float* packed, int count, float shininess)
+{
+  if (count < 0)
+    count = 0;
+  if (count > kStudioMaxLights)
+    count = kStudioMaxLights;
+  _studio.hdr[0] = (float)count;
+  _studio.hdr[1] = shininess;
+  for (int i = 0; i < count; ++i)
+    std::memcpy(_studio.lights[i], packed + 16 * i, 16 * sizeof(float));
 }
 
 void RendererMetal::setKeyLightDir(const float* lightv)
@@ -4014,11 +4309,17 @@ void RendererMetal::runPostChain()
   static bool noShadow = getenv("PYMOL_NO_SHADOW") != nullptr;
   bool doAO = _ssaoPipeline && _aoEnabled && !noAO;
   bool doFog = _ssaoPipeline && _postFogEnabled;
-  bool doShadow = _ssaoPipeline && _shadowEnabled && !noShadow;
+  // PROTOTYPE (studio shadows): each shadowed studio light shadows its own
+  // light in the lit shaders; the regular shadow would darken all of them.
+  bool doShadow = _ssaoPipeline && _shadowEnabled && !noShadow &&
+                  _studioShadowSlots == 0;
   // The shadow MAP may only be sampled when this frame rendered it. In
   // grid_mode the pre-pass is skipped, so the raster path renders unshadowed
   // and the RT path keeps only its traced shadow (metal_rt_shadows).
   bool doShadowMap = doShadow && _shadowMapValid;
+  // PROTOTYPE (studio atmosphere): haze / dust ride on the SSAO pass.
+  bool doAtmo = _atmoPipeline && _studio.hdr[0] > 0.5f &&
+                (_studio.atmo[0] > 0.0f || _studio.atmo[1] > 0.0f);
   if (_rtEnabled) ensureRTAOTargets(_rtW, _rtH);   // metal_rt_scale may have changed
   bool doRT = _rtEnabled && _rtReady && _rtResolvePipeline && _rtAOPipeline &&
               _rtInstanceAS && _postColor && _rtAO;
@@ -4317,6 +4618,45 @@ void RendererMetal::runPostChain()
     [e1 drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [e1 endEncoding];
     sceneSrc = _postColor;
+  }
+
+  // PROTOTYPE (studio atmosphere): haze + dust over whichever pass 1 ran,
+  // before the transparency resolve, so glass composites over the air.
+  if (doAtmo && _postColor && _sceneDepth) {
+    id<MTLTexture> dst = (sceneSrc == _sceneColor) ? _postColor : _sceneColor;
+    struct {   // MSL PostU layout; only projection + light VP are read
+      float projA, projB, fogStart, fogEnd;
+      float bgR, bgG, bgB, fogEnabled;
+      float aoEnabled, aoIntensity, aoRadiusPx, projX;
+      float projY, shadowEnabled, shadowIntensity, aoExemptEnabled;
+      float lightViewProj[16];
+      float shadowRadius, shadowBias, projOrtho, klx, kly, klz, pad0, pad1;
+    } au = {};
+    au.projA = _projA; au.projB = _projB;
+    au.projX = _projX; au.projY = _projY;
+    au.projOrtho = _projOrtho;
+    std::memcpy(au.lightViewProj, _lightViewProjEye, 16 * sizeof(float));
+    const bool shadowOK = doShadowMap && _shadowDepth;
+    _studio.atmo[11] = shadowOK ? 1.0f : 0.0f;
+    MTLRenderPassDescriptor* pd = [MTLRenderPassDescriptor renderPassDescriptor];
+    pd.colorAttachments[0].texture = dst;
+    pd.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+    pd.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> ea =
+        [_cmdBuffer renderCommandEncoderWithDescriptor:pd];
+    [ea setRenderPipelineState:_atmoPipeline];
+    [ea setFragmentTexture:sceneSrc atIndex:0];
+    [ea setFragmentTexture:_sceneDepth atIndex:1];
+    // a depth texture must be bound even when the map is not sampled
+    [ea setFragmentTexture:(shadowOK ? _shadowDepth : _sceneDepth) atIndex:2];
+    bindStudioShadows(ea, 3, 1);
+    [ea setFragmentSamplerState:_postSampler atIndex:0];
+    [ea setFragmentSamplerState:_shadowSampler atIndex:1];
+    [ea setFragmentBytes:&au length:sizeof(au) atIndex:0];
+    [ea setFragmentBytes:&_studio length:sizeof(_studio) atIndex:1];
+    [ea drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [ea endEncoding];
+    sceneSrc = dst;
   }
 
   // Pass 2: OIT resolve — composite accumulated transparency over the opaque
@@ -5046,9 +5386,17 @@ void RendererMetal::beginShadowPass()
   // End the scene encoder opened by beginFrame (it has only the pending clear;
   // no opaque geometry has drawn yet). Switch to the light-POV depth pass.
   if (_encoder) { [_encoder endEncoding]; _encoder = nil; }
-  _passDesc = _shadowPassDesc;
-  _shadowPassDesc.depthAttachment.loadAction = MTLLoadActionClear;
-  _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:_shadowPassDesc];
+  // PROTOTYPE (studio shadows): a studio light's map is one slice of the array.
+  const bool studioTarget = _studioShadowTarget >= 0;
+  if (studioTarget) {
+    ensureStudioShadowTextures();
+    _studioShadowPassDesc.depthAttachment.slice = (NSUInteger)_studioShadowTarget;
+  }
+  MTLRenderPassDescriptor* shadowDesc =
+      studioTarget ? _studioShadowPassDesc : _shadowPassDesc;
+  _passDesc = shadowDesc;
+  shadowDesc.depthAttachment.loadAction = MTLLoadActionClear;
+  _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:shadowDesc];
   bindNeutralMaterialU(_encoder);
   // The environment every reflective material samples (#493). Bound with the
   // neutral material so no encoder can exist without it, and identical on the
@@ -5056,7 +5404,8 @@ void RendererMetal::beginShadowPass()
   // whichever pass draws it.
   bindEnvironment(_encoder);
   if (!_encoder) { _passDesc = _scenePassDesc; return; }
-  MTLViewport vp = {0.0, 0.0, (double)kShadowDim, (double)kShadowDim, 0.0, 1.0};
+  const double shadowDim = studioTarget ? kStudioShadowDim : kShadowDim;
+  MTLViewport vp = {0.0, 0.0, shadowDim, shadowDim, 0.0, 1.0};
   [_encoder setViewport:vp];
   if (!_shadowDepthState) {
     MTLDepthStencilDescriptor* d = [[MTLDepthStencilDescriptor alloc] init];
@@ -5075,7 +5424,8 @@ void RendererMetal::endShadowPass()
   if (!_shadowMode) return;
   if (_encoder) { [_encoder endEncoding]; _encoder = nil; }
   _shadowMode = false;
-  _shadowMapValid = true;
+  if (_studioShadowTarget < 0)   // a studio light's map is not the regular one
+    _shadowMapValid = true;
   // Re-open the scene pass with a fresh CLEAR — the shadow pre-pass runs BEFORE
   // the opaque loop, so the scene starts empty (mirrors beginFrame's clear; the
   // earlier beginFrame encoder we ended above did a redundant, harmless clear).
@@ -6306,6 +6656,150 @@ static float3 mat_soft_knee(float3 c) {
   return min(c, float3(knee)) + over / (float3(1.0) + over) * (1.0 - knee);
 }
 
+// PROTOTYPE (studio lights): eye-space spot lights layered on top of the
+// two-light model. Each light has a position, a spot axis with a soft-edged
+// cone (smoothstep between the outer and inner cosines), a coloured radiance,
+// a distance falloff normalised to 1 at the aim point, and a coloured
+// Blinn-Phong highlight. No per-light shadows: a light flagged `shadow` steers
+// the existing key-light shadow instead (SceneRender.cpp). Mirrors
+// RendererMetal::StudioU.
+struct StudioLight { float4 pos; float4 axis; float4 color; float4 misc; };
+// hdr.w = studio shadow maps this frame; L[i].pos.w = light i's slot (-1 none).
+struct StudioU { float4 hdr; StudioLight L[6]; float4 atmo[3];
+                 float4x4 shadowVP[3]; float4 shadowInfo[3]; };
+
+// PROTOTYPE (studio shadows): how much of light i reaches p, from that
+// light's own perspective shadow map (array slice `slot`). Normal offset by
+// about a map texel at this distance keeps a surface off its own record; a
+// 3x3 compare gives a soft edge. Impostor casters are recorded by their
+// camera-visible point, as in the regular shadow pass.
+static float studio_shadow(float3 p, float3 N, float3 Ld, float dl, int slot,
+                           constant StudioU& st, depth2d_array<float> tex,
+                           sampler smp) {
+  float res = max(st.shadowInfo[slot].y, 1.0);
+  float texel = 2.0 * dl * st.shadowInfo[slot].x / res;
+  float ndl = saturate(dot(N, Ld));
+  float3 po = p + N * (1.5 * texel / max(ndl, 0.25)) + Ld * texel;
+  float4 lc = st.shadowVP[slot] * float4(po, 1.0);
+  if (lc.w <= 0.0) return 1.0;
+  float3 ndc = lc.xyz / lc.w;
+  float2 uv = float2(0.5 * ndc.x + 0.5, 0.5 - 0.5 * ndc.y);
+  float fd = 0.5 + 0.5 * ndc.z;
+  if (uv.x <= 0.0 || uv.x >= 1.0 || uv.y <= 0.0 || uv.y >= 1.0 ||
+      fd <= 0.0 || fd >= 1.0)
+    return 1.0;
+  float lit = 0.0;
+  float t = 1.2 / res;
+  for (int j = -1; j <= 1; ++j)
+    for (int k = -1; k <= 1; ++k)
+      lit += tex.sample_compare(smp, uv + float2(k, j) * t, uint(slot),
+                                fd - 0.0002);
+  return lit / 9.0;
+}
+// How each material takes the studio lights: x diffuse scale, y highlight
+// strength, z highlight sharpness (x shininess), w highlight tint toward the
+// base colour; wrap lets diffuse light past the terminator. Loosely the CPU
+// ray tracer's MaterialRayParamsFor (layer1/Material.cpp). Mode ids mirror
+// layer1/Material.h (MaterialU and the kMatMode_ constants come later in this
+// block, hence plain ints).
+static float4 studio_response(int mode, thread float& wrap) {
+  wrap = 0.0;
+  switch (mode) {
+    case 1: return float4(1.0, 0.0, 1.0, 0.0);                  // matte
+    case 2: return float4(1.0, 2.6, 2.5, 0.0);                  // plastic
+    case 3: return float4(0.4, 2.6, 0.9, 0.9);                  // metallic
+    case 4: return float4(0.12, 1.6, 2.5, 0.0);                 // glass
+    case 5: wrap = 0.2; return float4(0.15, 0.35, 0.35, 0.0);   // frosted glass
+    case 6: wrap = 0.55; return float4(0.9, 1.3, 1.5, 0.3);     // jelly
+    case 7: wrap = 0.35; return float4(1.0, 0.6, 0.8, 0.0);     // marble
+    case 8: return float4(1.0, 0.0, 1.0, 0.0);                  // clay
+    case 9: return float4(1.0, 0.35, 0.2, 0.6);                 // rubber
+    default: return float4(1.0, 1.0, 1.0, 0.0);
+  }
+}
+
+static float3 studio_shade(float3 base, float3 nEye, float3 pEye,
+                           constant StudioU& st, int mode,
+                           depth2d_array<float> shTex, sampler shSmp) {
+  int n = int(st.hdr.x);
+  if (n <= 0) return float3(0.0);
+  float3 V = (st.hdr.z > 0.5) ? float3(0.0, 0.0, 1.0) : normalize(-pEye);
+  float3 N = normalize(nEye);
+  if (dot(N, V) < 0.0) N = -N;   // two-sided, like the default model
+  float wrap;
+  float4 resp = studio_response(mode, wrap);
+  float shin = max(st.hdr.y * resp.z, 1.0);
+  float3 specCol = mix(float3(1.0), base, resp.w);
+  float3 diff = float3(0.0), spec = float3(0.0);
+  for (int i = 0; i < n && i < 6; ++i) {
+    float3 Lv = st.L[i].pos.xyz - pEye;
+    float d = max(length(Lv), 1e-3);
+    float3 Ld = Lv / d;
+    float spot = smoothstep(st.L[i].axis.w, st.L[i].color.w,
+                            dot(-Ld, st.L[i].axis.xyz));
+    float ndl = dot(N, Ld);
+    float wd = saturate((ndl + wrap) / (1.0 + wrap));
+    if (spot <= 0.0 || wd <= 0.0) continue;
+    float3 rad = st.L[i].color.rgb * spot *
+                 pow(st.L[i].misc.z / d, st.L[i].misc.y);
+    int slot = int(st.L[i].pos.w);
+    if (slot >= 0 && slot < int(st.hdr.w))   // this light's own shadow
+      rad *= studio_shadow(pEye, N, Ld, d, slot, st, shTex, shSmp);
+    diff += rad * wd;
+    if (ndl > 0.0) {
+      float3 H = normalize(Ld + V);
+      spec += rad * st.L[i].misc.x * pow(saturate(dot(N, H)), shin);
+    }
+  }
+  return base * diff * resp.x + spec * specCol * resp.y;
+}
+// Beam cues (misc.w = 1): the cone's footprint drawn ON the geometry -- a
+// solid line where the beam ends (outer cone), a dashed one where it reaches
+// full strength (inner cone) and a dot where its axis lands -- in the light's
+// own colour over a dark halo, so it reads on lit and unlit surfaces alike.
+// Widths are in pixels via fwidth of the angle off the beam axis.
+static float3 studio_cues(float3 rgb, float3 pEye, constant StudioU& st) {
+  int n = int(st.hdr.x);
+  for (int i = 0; i < n && i < 6; ++i) {
+    if (st.L[i].misc.w < 0.5) continue;   // uniform: same for every fragment
+    float3 ax = st.L[i].axis.xyz;
+    float3 toP = normalize(pEye - st.L[i].pos.xyz);
+    float ang = acos(clamp(dot(toP, ax), -1.0, 1.0));
+    float aOut = acos(clamp(st.L[i].axis.w, -1.0, 1.0));
+    float aIn = acos(clamp(st.L[i].color.w, -1.0, 1.0));
+    float px = max(fwidth(ang), 1e-6);
+    float3 u = normalize(cross(ax, abs(ax.y) < 0.9 ? float3(0.0, 1.0, 0.0)
+                                                    : float3(1.0, 0.0, 0.0)));
+    float3 v = cross(ax, u);
+    float phi = atan2(dot(toP, v), dot(toP, u));
+    float dash = step(0.5, fract(phi * (24.0 / 6.2831853)));
+    float dOut = abs(ang - aOut) / px, dIn = abs(ang - aIn) / px;
+    float dCtr = ang / px;
+    float halo = max(max(1.0 - smoothstep(2.2, 3.8, dOut),
+                         (1.0 - smoothstep(1.8, 3.2, dIn)) * dash),
+                     1.0 - smoothstep(5.5, 7.0, dCtr));
+    float core = max(max(1.0 - smoothstep(0.7, 1.7, dOut),
+                         (1.0 - smoothstep(0.5, 1.3, dIn)) * dash),
+                     1.0 - smoothstep(3.5, 4.8, dCtr));
+    float3 c = st.L[i].color.rgb;
+    c = mix(c / max(max(max(c.r, c.g), c.b), 1e-4), float3(1.0), 0.4);
+    rgb = mix(rgb, rgb * 0.12, halo * 0.85);
+    rgb = mix(rgb, c, core);
+  }
+  return rgb;
+}
+
+// Adds the rig to an already-shaded colour; the soft knee keeps several bright
+// lights from clipping flat to white. Identity when the rig is off.
+static float3 studio_apply(float3 rgb, float3 base, float3 nEye, float3 pEye,
+                           constant StudioU& st, int mode,
+                           depth2d_array<float> shTex, sampler shSmp) {
+  if (st.hdr.x < 0.5) return rgb;
+  return studio_cues(
+      mat_soft_knee(rgb + studio_shade(base, nEye, pEye, st, mode, shTex, shSmp)),
+      pEye, st);
+}
+
 // Schlick's Fresnel: how much the surface reflects at this grazing angle. f0 is
 // the head-on reflectance -- what makes a metal reflect strongly everywhere and
 // a dielectric only at the rim.
@@ -7052,10 +7546,15 @@ fragment float4 vbo_fragment(VBOVertexOut in [[stage_in]],
     sampler envSmp [[sampler(6)]],
     constant LightU& lt [[buffer(0)]],
     constant ClipU& clip [[buffer(1)]],
-    constant MaterialU& mat [[buffer(2)]])
+    constant MaterialU& mat [[buffer(2)]],
+    constant StudioU& studio [[buffer(9)]],
+    depth2d_array<float> studioShadow [[texture(7)]],
+    sampler studioShadowSmp [[sampler(7)]])
 {
   apply_rep_clip(clip, in.eyeDist);
-  return float4(vbo_material_shade(in.color.rgb, in.normalEye, in.posModel, lt, mat, envMap, envSmp),
+  float3 rgb = vbo_material_shade(in.color.rgb, in.normalEye, in.posModel, lt, mat, envMap, envSmp);
+  return float4(studio_apply(rgb, in.color.rgb, in.normalEye, in.posEye, studio,
+                            mat.mode, studioShadow, studioShadowSmp),
                 in.color.a);
 }
 
@@ -7185,7 +7684,10 @@ fragment OITFragOut vbo_fragment_oit(VBOVertexOut in [[stage_in]],
     sampler envSmp [[sampler(6)]],
     constant LightU& lt [[buffer(0)]],
     constant ClipU& clip [[buffer(1)]],
-    constant MaterialU& mat [[buffer(2)]])
+    constant MaterialU& mat [[buffer(2)]],
+    constant StudioU& studio [[buffer(9)]],
+    depth2d_array<float> studioShadow [[texture(7)]],
+    sampler studioShadowSmp [[sampler(7)]])
 {
   apply_rep_clip(clip, in.eyeDist);
   float4 c;
@@ -7210,6 +7712,11 @@ fragment OITFragOut vbo_fragment_oit(VBOVertexOut in [[stage_in]],
                                   mat.rough, mat.p[0], taps,
                                   float3(lt.klx, lt.kly, lt.klz), envMap,
                                   envSmp, hi);
+    // PROTOTYPE (studio lights): the rig's glints join the reflection, so
+    // they raise coverage the way the key light's own glints do.
+    if (studio.hdr.x > 0.5)
+      hi += studio_shade(in.color.rgb, N, in.posEye, studio, mat.mode,
+                         studioShadow, studioShadowSmp);
     c = mat_glass_cover(body, hi, in.color.a);
     // The far wall is not recorded. Flipped to face the viewer, its slope is
     // the exact opposite of the near wall's, and averaged with it the bend
@@ -7220,6 +7727,8 @@ fragment OITFragOut vbo_fragment_oit(VBOVertexOut in [[stage_in]],
   } else {
     c = float4(vbo_material_shade(in.color.rgb, in.normalEye, in.posModel, lt, mat, envMap, envSmp),
                in.color.a);
+    c.rgb = studio_apply(c.rgb, in.color.rgb, in.normalEye, in.posEye, studio,
+                         mat.mode, studioShadow, studioShadowSmp);
     if (kMatGlass) {
       // Jelly bends the view through it too (#590), with the same near-wall
       // rule as glass.
@@ -8830,6 +9339,8 @@ static void sphere_shade(SphereVOut in, constant SphereU& u,
 // The material-aware entry point the colour fragments use.
 static void sphere_shade_material(SphereVOut in, constant SphereU& u,
     constant MaterialU& mat, texturecube<float> envMap, sampler envSmp,
+    constant StudioU& studio, depth2d_array<float> studioShadow,
+    sampler studioShadowSmp,
     thread float3& rgb, thread float& alpha, thread float& depth) {
   float3 n = float3(0.0), pt = float3(0.0);
   float intensity = 0.0, specular = 0.0;
@@ -8839,15 +9350,21 @@ static void sphere_shade_material(SphereVOut in, constant SphereU& u,
   rgb = mat_impostor_composite(in.color.rgb, n, pt, u.lAmbient, u.lDirect,
                                u.lReflect, float3(u.klx, u.kly, u.klz), mat,
                                intensity, specular, u.lSSSWrap, envMap, envSmp);
+  rgb = studio_apply(rgb, in.color.rgb, n, pt, studio, mat.mode, studioShadow,
+                     studioShadowSmp);
 }
 
 fragment SphereFOut sphere_impostor_fragment(SphereVOut in [[stage_in]],
     texturecube<float> envMap [[texture(6)]],
     sampler envSmp [[sampler(6)]],
     constant SphereU& u [[buffer(1)]],
-    constant MaterialU& mat [[buffer(2)]]) {
+    constant MaterialU& mat [[buffer(2)]],
+    constant StudioU& studio [[buffer(9)]],
+    depth2d_array<float> studioShadow [[texture(7)]],
+    sampler studioShadowSmp [[sampler(7)]]) {
   float3 rgb; float a; float depth;
-  sphere_shade_material(in, u, mat, envMap, envSmp, rgb, a, depth);
+  sphere_shade_material(in, u, mat, envMap, envSmp, studio, studioShadow,
+                          studioShadowSmp, rgb, a, depth);
   SphereFOut out;
   out.color = float4(rgb, a);
   out.depth = depth;
@@ -8858,7 +9375,10 @@ fragment SphereOITOut sphere_impostor_fragment_oit(SphereVOut in [[stage_in]],
     texturecube<float> envMap [[texture(6)]],
     sampler envSmp [[sampler(6)]],
     constant SphereU& u [[buffer(1)]],
-    constant MaterialU& mat [[buffer(2)]]) {
+    constant MaterialU& mat [[buffer(2)]],
+    constant StudioU& studio [[buffer(9)]],
+    depth2d_array<float> studioShadow [[texture(7)]],
+    sampler studioShadowSmp [[sampler(7)]]) {
   float3 rgb; float a; float depth;
   float4 refr = float4(0.0, 0.0, 0.0, kOitRefractFar);
   if (kMatGlass) {
@@ -8878,7 +9398,8 @@ fragment SphereOITOut sphere_impostor_fragment_oit(SphereVOut in [[stage_in]],
       refr = mat_glass_refraction(n, pt, mat.refrPx, mat.refrOrtho);
     }
   } else {
-    sphere_shade_material(in, u, mat, envMap, envSmp, rgb, a, depth);
+    sphere_shade_material(in, u, mat, envMap, envSmp, studio, studioShadow,
+                          studioShadowSmp, rgb, a, depth);
   }
   float w = sph_oit_weight(a, depth);
   SphereOITOut out;
@@ -9430,6 +9951,8 @@ static void cyl_shade(CylVOut in, constant CylU& u,
 // The material-aware entry point the colour fragments use.
 static void cyl_shade_material(CylVOut in, constant CylU& u,
     constant MaterialU& mat, texturecube<float> envMap, sampler envSmp,
+    constant StudioU& studio, depth2d_array<float> studioShadow,
+    sampler studioShadowSmp,
     thread float3& rgb, thread float& alpha, thread float& depth) {
   float3 n = float3(0.0), pt = float3(0.0), base = float3(0.0);
   float intensity = 0.0, specular = 0.0;
@@ -9439,15 +9962,21 @@ static void cyl_shade_material(CylVOut in, constant CylU& u,
   rgb = mat_impostor_composite(base, n, pt, u.lAmbient, u.lDirect, u.lReflect,
                                float3(u.klx, u.kly, u.klz), mat,
                                intensity, specular, u.lSSSWrap, envMap, envSmp);
+  rgb = studio_apply(rgb, base, n, pt, studio, mat.mode, studioShadow,
+                     studioShadowSmp);
 }
 
 fragment CylFOut cyl_impostor_fragment(CylVOut in [[stage_in]],
     texturecube<float> envMap [[texture(6)]],
     sampler envSmp [[sampler(6)]],
     constant CylU& u [[buffer(1)]],
-    constant MaterialU& mat [[buffer(2)]]) {
+    constant MaterialU& mat [[buffer(2)]],
+    constant StudioU& studio [[buffer(9)]],
+    depth2d_array<float> studioShadow [[texture(7)]],
+    sampler studioShadowSmp [[sampler(7)]]) {
   float3 rgb; float a; float depth;
-  cyl_shade_material(in, u, mat, envMap, envSmp, rgb, a, depth);
+  cyl_shade_material(in, u, mat, envMap, envSmp, studio, studioShadow,
+                       studioShadowSmp, rgb, a, depth);
   CylFOut o;
   o.color = float4(rgb, a);
   o.depth = depth;
@@ -9458,7 +9987,10 @@ fragment CylOITOut cyl_impostor_fragment_oit(CylVOut in [[stage_in]],
     texturecube<float> envMap [[texture(6)]],
     sampler envSmp [[sampler(6)]],
     constant CylU& u [[buffer(1)]],
-    constant MaterialU& mat [[buffer(2)]]) {
+    constant MaterialU& mat [[buffer(2)]],
+    constant StudioU& studio [[buffer(9)]],
+    depth2d_array<float> studioShadow [[texture(7)]],
+    sampler studioShadowSmp [[sampler(7)]]) {
   float3 rgb; float a; float depth;
   float4 refr = float4(0.0, 0.0, 0.0, kOitRefractFar);
   if (kMatGlass && mat.mode != kMatMode_jelly) {
@@ -9497,7 +10029,8 @@ fragment CylOITOut cyl_impostor_fragment_oit(CylVOut in [[stage_in]],
       refr = mat_glass_refraction(n, pt, mat.refrPx, mat.refrOrtho);
     }
   } else {
-    cyl_shade_material(in, u, mat, envMap, envSmp, rgb, a, depth);
+    cyl_shade_material(in, u, mat, envMap, envSmp, studio, studioShadow,
+                       studioShadowSmp, rgb, a, depth);
   }
   float w = cyl_oit_weight(a, depth);
   CylOITOut o;

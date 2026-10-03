@@ -197,6 +197,13 @@ public:
   void setLightingParams(float ambient, float direct, float reflect,
       float specular, float shininess, float sssWrap = 0.0f) override;
   void setKeyLightDir(const float* lightv) override;
+  void setStudioLights(const float* packed, int count, float shininess) override;
+  void setStudioAtmosphere(const float* atmo) override;
+  void setStudioShadowTarget(int slot) override;
+  void setStudioShadow(int slot, const float* vpEye, float tanHalfFov) override;
+  void setStudioOwnsShadows(int slots) override;
+  void ensureStudioShadowTextures();
+  void bindStudioShadows(id<MTLRenderCommandEncoder> enc, int texIndex, int smpIndex);
   void setRayTraceParams(int samples, float aoRadius, float aoIntensity,
       float shadowIntensity, float scale = 1.0f) override;
   void setDofQuality(int level) override;
@@ -420,6 +427,7 @@ private:
   }
   id<MTLRenderPipelineState> _blitPipeline = nil;
   id<MTLRenderPipelineState> _ssaoPipeline = nil;
+  id<MTLRenderPipelineState> _atmoPipeline = nil;   // PROTOTYPE (studio atmosphere)
   id<MTLRenderPipelineState> _fxaaPipeline = nil;
   id<MTLSamplerState> _postSampler = nil;
   void ensurePostTargets(NSUInteger w, NSUInteger h);
@@ -765,6 +773,31 @@ private:
   // exactly -normalize(PyMOL's default light). Fed into every lit/shadow/RT shader.
   float _keyLightEye[3] = {0.34815531f, 0.34815531f, 0.87038828f};
   float _sssWrap = 0.0f;  // cSetting_metal_sss_wrap: 0 = pure Lambert (identity)
+  // PROTOTYPE (studio lights): mirrors MSL StudioU (kMaterialSrc). hdr.x =
+  // light count (0 = off), hdr.y = shininess, hdr.z = ortho; then per light
+  // pos(xyz) / axis(xyz, w=cosOuter) / radiance(rgb, w=cosInner) /
+  // misc(x=spec, y=falloff, z=refDist, w=cue). Bound at fragment buffer(9) by
+  // bindRepMaterial, i.e. on every lit VBO / sphere / cylinder draw.
+  // atmo (post pass only, MSL StudioAtmoU): [0] haze, [1] dust, [2] dust
+  // size (A), [3] scatter g; [4] march near, [5] far (eye distance), [6]
+  // shadow light index or -1, [7] seed; [8] dust cell (A), [9] focus distance,
+  // [10] animated time (s x dust_speed), [11] shadow map valid.
+  // hdr.w = studio shadow maps rendered this frame; a light's pos.w is its
+  // shadow slot (-1 none). shadowVP: eye -> light clip per slot; shadowInfo:
+  // x tan(half fov), y map size.
+  struct StudioU {
+    float hdr[4];
+    float lights[kStudioMaxLights][16];
+    float atmo[12];
+    float shadowVP[kStudioMaxShadows][16];
+    float shadowInfo[kStudioMaxShadows][4];
+  } _studio = {};
+  static constexpr int kStudioShadowDim = 2048;
+  id<MTLTexture> _studioShadowArray = nil;   // Depth32F 2D array, one slice per slot
+  id<MTLTexture> _studioShadowDummy = nil;   // 1x1 stand-in when no map exists
+  MTLRenderPassDescriptor* _studioShadowPassDesc = nil;
+  int _studioShadowTarget = -1;
+  int _studioShadowSlots = 0;
   float _projA = -1.f, _projB = 0.f;  // projection[10], projection[14]
   float _projX = 1.f, _projY = 1.f;   // projection[0], projection[5]
   float _projOrtho = 0.f;             // 1 = orthographic (linear eye-z recon; #139)

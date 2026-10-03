@@ -446,6 +446,27 @@ public:
   // follow the light setting. lightv is a 3-vector (eye space, PyMOL's light).
   virtual void setKeyLightDir(const float* /*lightv*/) {}
 
+  // PROTOTYPE (studio lights): up to kStudioMaxLights eye-space spot lights,
+  // 16 floats each (see RendererMetal::setStudioLights for the layout).
+  // count == 0 turns them off. Default: no-op (GL/ray ignore them).
+  static constexpr int kStudioMaxLights = 6;
+  virtual void setStudioLights(
+      const float* /*packed*/, int /*count*/, float /*shininess*/)
+  {
+  }
+  // PROTOTYPE (studio atmosphere): 12 floats, see RendererMetal::StudioU.
+  virtual void setStudioAtmosphere(const float* /*atmo*/) {}
+  // PROTOTYPE (studio shadows): a perspective shadow map per shadowed studio
+  // light (up to kStudioMaxShadows), applied to that light's own contribution.
+  // setStudioShadowTarget(slot) routes the next begin/endShadowPass into that
+  // light's map (-1 = the regular shadow map); setStudioShadow stores its
+  // eye-space light view*projection; setStudioOwnsShadows(n > 0) says n maps
+  // were rendered this frame and turns the regular whole-pixel shadow off.
+  static constexpr int kStudioMaxShadows = 3;
+  virtual void setStudioShadowTarget(int /*slot*/) {}
+  virtual void setStudioShadow(int /*slot*/, const float* /*vpEye*/, float /*tanHalfFov*/) {}
+  virtual void setStudioOwnsShadows(int /*slots*/) {}
+
   // MSAA sample count for the scene (opaque) pass. SceneRenderMetal calls this
   // each frame from the metal_msaa setting (4 = on, 1 = off). The renderer
   // stashes it and applies the rebuild at the next frame's setDrawable (before

@@ -300,6 +300,7 @@ def get_command_keywords(self_cmd=cmd):
         'sort'          : [ self_cmd.sort              , 0 , 0 , ''  , parsing.STRICT ],
         'spawn'         : [ self_cmd.spawn             , 0 , 0 , ',' , parsing.SECURE ], # insecure
         'spheroid'      : [ self_cmd.spheroid          , 0 , 0 , ''  , parsing.STRICT ],
+        'studio'        : [ self_cmd.studio            , 0 , 0 , ''  , parsing.LITERAL ],
         'splash'        : [ self_cmd.splash            , 0 , 0 , ''  , parsing.STRICT ],
         'split_chains'  : [ self_cmd.split_chains      , 0 , 0 , ''  , parsing.STRICT ],
         'split_states'  : [ self_cmd.split_states      , 0 , 0 , ''  , parsing.STRICT ],

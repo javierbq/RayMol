@@ -3,6 +3,8 @@
  */
 
 #include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <vector>
 
 #include "AtomInfo.h"
@@ -14,6 +16,8 @@
 #include "Executive.h"
 #include "Feedback.h"
 #include "Material.h"
+#include "Movie.h"
+#include "PyMOL.h"
 #include "Matrix.h"
 #include "ObjectMolecule.h"
 #include "Ortho.h"
@@ -2093,6 +2097,196 @@ bool SceneGetShadowExtent(PyMOLGlobals* G, float* mn, float* mx)
 // scene radius. Loaded as the renderer's PROJECTION while MODELVIEW stays the
 // camera modelview, so vbo_vertex's projection*(modelview*model) yields light
 // clip for model-space vertices.
+/*
+ * PROTOTYPE (studio lights). `studio_lights` holds a packed rig written by the
+ * `studio` command (modules/pymol/studio_lights.py): 17 floats per light,
+ *   mode  p1 p2 p3  q1 q2 q3  beam soft  r g b intensity  spec falloff
+ *   shadow cue
+ * mode 0, camera rig: p = az el dist, q = aim offset. az/el (degrees) place
+ *   the light around the visible scene in CAMERA space (az 0 = from the
+ *   camera, +90 = from the right, 180 = from behind; el +90 = from above);
+ *   dist and aim are in scene radii. The rig follows the camera.
+ * mode 1, world-anchored: p = light position, q = aim point, both in model
+ *   space (Angstroms), so the light stays put as the molecule turns. The
+ *   `studio` command computes them for target= / highlight= / click= lights.
+ * beam is the full cone angle and soft the share of it that fades. Up to
+ * kStudioMaxShadows lights with shadow=1 each get a perspective shadow map
+ * applied to their own light only; the first also steers the `reflect` key
+ * light. cue=1 draws a light's beam outline on the geometry. File-static state is a prototype shortcut: one rig per process.
+ */
+static bool s_studioShadow = false;
+static glm::vec3 s_studioShadowLightv(0.0f); // cSetting_light-style: travel dir
+
+// PROTOTYPE (studio shadows): the shadowed studio lights this frame (up to
+// Renderer::kStudioMaxShadows), each with its eye-space perspective light
+// view*projection; SceneRenderMetal renders one depth pass per slot.
+static int s_studioShadowSlots = 0;
+static glm::mat4 s_studioShadowVP[pymol::Renderer::kStudioMaxShadows];
+
+// Clock for drifting dust. Movie time (frame / movie_fps) while a movie is
+// playing or its frame changed in the last 2 s -- playback, scrubbing, movie
+// export, which can render one frame several times -- so exported motion is
+// smooth at the movie's own rate; wall-clock time otherwise.
+// RAYMOL_STUDIO_TIME=<seconds> pins the clock (headless tests).
+static double SceneStudioClock(PyMOLGlobals* G)
+{
+  static const char* pinned = getenv("RAYMOL_STUDIO_TIME");
+  if (pinned)
+    return atof(pinned);
+  static const auto t0 = std::chrono::steady_clock::now();
+  const double now =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - t0)
+          .count();
+  static int lastFrame = -1;
+  static double lastChange = -1e9;
+  const int frame = SceneGetFrame(G);
+  if (frame != lastFrame) {
+    lastFrame = frame;
+    lastChange = now;
+  }
+  if (MovieGetLength(G) > 0 && (MoviePlaying(G) || now - lastChange < 2.0))
+    return frame / std::max(SettingGetGlobal_f(G, cSetting_movie_fps), 1.0f);
+  return now;
+}
+
+static void SceneStudioLightsUpdate(PyMOLGlobals* G, float shininess)
+{
+  constexpr int kIn = 17, kMax = pymol::Renderer::kStudioMaxLights;
+  s_studioShadow = false;
+  s_studioShadowSlots = 0;
+  float in[kIn * kMax];
+  int nv = 0;
+  if (const char* str = SettingGetGlobal_s(G, cSetting_studio_lights)) {
+    const char* p = str;
+    while (*p && nv < kIn * kMax) {
+      char* end = nullptr;
+      float v = strtof(p, &end);
+      if (end == p) { // skip a separator (space, comma, ';')
+        ++p;
+        continue;
+      }
+      in[nv++] = v;
+      p = end;
+    }
+  }
+  const int count = nv / kIn;
+  if (!count) {
+    G->Renderer->setStudioLights(nullptr, 0, shininess);
+    G->Renderer->setStudioAtmosphere(nullptr);
+    return;
+  }
+  int shadowIdx = -1;
+  const glm::mat4 mv = glm::make_mat4(SceneGetModelViewMatrixPtr(G));
+  float mn[3], mx[3];
+  glm::vec3 centerEye(0.0f, 0.0f, -50.0f);
+  float radius = 10.0f;
+  const bool hasExtent = SceneGetShadowExtent(G, mn, mx);
+  if (hasExtent) {
+    glm::vec3 cw((mn[0] + mx[0]) * 0.5f, (mn[1] + mx[1]) * 0.5f,
+        (mn[2] + mx[2]) * 0.5f);
+    radius = 0.5f * glm::length(glm::vec3(mx[0] - mn[0], mx[1] - mn[1],
+                        mx[2] - mn[2]));
+    centerEye = glm::vec3(mv * glm::vec4(cw, 1.0f));
+  }
+  radius = std::max(radius, 1.0f);
+  float out[16 * kMax] = {};
+  for (int i = 0; i < count; ++i) {
+    const float* l = in + kIn * i;
+    glm::vec3 pos, target;
+    if (l[0] > 0.5f) {
+      pos = glm::vec3(mv * glm::vec4(l[1], l[2], l[3], 1.0f));
+      target = glm::vec3(mv * glm::vec4(l[4], l[5], l[6], 1.0f));
+    } else {
+      const float az = glm::radians(l[1]), el = glm::radians(l[2]);
+      glm::vec3 dir(std::sin(az) * std::cos(el), std::sin(el),
+          std::cos(az) * std::cos(el)); // center -> light
+      target = centerEye + glm::vec3(l[4], l[5], l[6]) * radius;
+      pos = target + dir * (std::max(l[3], 0.1f) * radius);
+    }
+    glm::vec3 axis = target - pos;
+    const float dist = std::max(glm::length(axis), 1e-3f);
+    axis /= dist; // direction the light travels
+    const float half = glm::radians(glm::clamp(l[7], 0.5f, 179.0f) * 0.5f);
+    const float soft = glm::clamp(l[8], 0.0f, 1.0f);
+    const float cosOuter = std::cos(half);
+    const float cosInner =
+        std::max(std::cos(half * (1.0f - soft)), cosOuter + 1e-4f);
+    // Shadowed lights get a slot and a perspective map from the lamp: a cone
+    // a little wider than the beam, depth range tight around the scene.
+    int slot = -1;
+    if (l[15] > 0.5f && s_studioShadowSlots < pymol::Renderer::kStudioMaxShadows) {
+      slot = s_studioShadowSlots++;
+      const glm::vec3 up = (std::fabs(axis.y) < 0.95f) ? glm::vec3(0, 1, 0)
+                                                       : glm::vec3(1, 0, 0);
+      const float fovy = std::min(2.0f * half * 1.15f + glm::radians(2.0f),
+                                  glm::radians(150.0f));
+      const float nearZ = std::max(dist - 1.3f * radius, 0.5f);
+      const float farZ = dist + 1.3f * radius;
+      s_studioShadowVP[slot] = glm::perspective(fovy, 1.0f, nearZ, farZ) *
+                               glm::lookAt(pos, target, up);
+      G->Renderer->setStudioShadow(slot, glm::value_ptr(s_studioShadowVP[slot]),
+                                   std::tan(0.5f * fovy));
+    }
+    float* o = out + 16 * i;
+    o[0] = pos.x, o[1] = pos.y, o[2] = pos.z, o[3] = (float)slot;
+    o[4] = axis.x, o[5] = axis.y, o[6] = axis.z, o[7] = cosOuter;
+    o[8] = l[9] * l[12], o[9] = l[10] * l[12], o[10] = l[11] * l[12];
+    o[11] = cosInner;
+    o[12] = l[13], o[13] = l[14], o[14] = dist, o[15] = l[16];
+    if (!s_studioShadow && l[15] > 0.5f) {
+      s_studioShadow = true;
+      s_studioShadowLightv = axis;
+      shadowIdx = i;
+    }
+  }
+  G->Renderer->setStudioLights(out, count, shininess);
+
+  // PROTOTYPE (studio atmosphere): `studio_atmosphere` = haze dust dust_size
+  // scatter seed dust_speed. The air is marched over the scene centre +-1.8 radii (where
+  // the beams cross the subject), dust cells scale with the scene, and motes
+  // are in focus at the scene centre.
+  float atmo[12] = {};
+  // Nothing visible: no scale to size the air by (and nothing for the beams
+  // to light), so no air -- the defaults made a screenful of giant motes.
+  const char* str = hasExtent ? SettingGetGlobal_s(G, cSetting_studio_atmosphere)
+                              : nullptr;
+  if (str) {
+    float a[6] = {0.0f, 0.0f, 0.35f, 0.55f, 0.0f, 0.0f};
+    int na = 0;
+    for (const char* p = str; *p && na < 6;) {
+      char* end = nullptr;
+      float v = strtof(p, &end);
+      if (end == p) {
+        ++p;
+        continue;
+      }
+      a[na++] = v;
+      p = end;
+    }
+    if (na > 0 && (a[0] > 0.0f || a[1] > 0.0f)) {
+      const float zc = -centerEye.z;
+      atmo[0] = std::max(a[0], 0.0f);
+      atmo[1] = glm::clamp(a[1], 0.0f, 1.0f);
+      atmo[2] = std::max(a[2], 0.05f);
+      atmo[3] = glm::clamp(a[3], -0.9f, 0.9f);
+      atmo[4] = std::max(zc - 1.8f * radius, 0.5f);
+      atmo[5] = zc + 1.8f * radius;
+      atmo[6] = (float)shadowIdx;
+      atmo[7] = a[4];
+      atmo[8] = radius * 0.15f;
+      atmo[9] = zc;
+      // Animated time for drifting dust and haze wisps (speed folded in), and
+      // keep frames coming while anything moves -- the viewport otherwise
+      // only redraws on demand.
+      if (a[5] > 0.0f) {
+        atmo[10] = (float)std::fmod(SceneStudioClock(G) * a[5], 20000.0);
+        PyMOL_NeedRedisplay(G->PyMOL);
+      }
+    }
+  }
+  G->Renderer->setStudioAtmosphere(atmo);
+}
+
 static glm::mat4 SceneBuildLightViewProjEye(PyMOLGlobals* G, float* outRadius = nullptr)
 {
   float mn[3], mx[3];
@@ -2112,7 +2306,8 @@ static glm::mat4 SceneBuildLightViewProjEye(PyMOLGlobals* G, float* outRadius = 
   // PyMOL's default `light` reproduces the historical normalize(0.4,0.4,1.0), so
   // the shadow-map camera (and thus where cast shadows fall) now follows `light`
   // and stays consistent with the shaders' key-light direction.
-  const float* lightv = SettingGetGlobal_3fv(G, cSetting_light);
+  const float* lightv = s_studioShadow ? glm::value_ptr(s_studioShadowLightv)
+                                       : SettingGetGlobal_3fv(G, cSetting_light);
   glm::vec3 Ldir(-lightv[0], -lightv[1], -lightv[2]);
   if (glm::length(Ldir) < 1e-6f)
     Ldir = glm::vec3(0.4f, 0.4f, 1.0f); // degenerate light: historical fallback
@@ -2430,7 +2625,10 @@ void SceneRenderMetal(PyMOLGlobals* G)
     // (and become user-adjustable via `set light`). The renderer stores
     // -normalize(light) as the direction toward the light; PyMOL's default light
     // reproduces the historical hard-coded normalize(0.4,0.4,1.0).
-    G->Renderer->setKeyLightDir(SettingGetGlobal_3fv(G, cSetting_light));
+    SceneStudioLightsUpdate(G, specPower); // PROTOTYPE (studio lights)
+    G->Renderer->setKeyLightDir(s_studioShadow
+                                    ? glm::value_ptr(s_studioShadowLightv)
+                                    : SettingGetGlobal_3fv(G, cSetting_light));
     // MSAA: 4x when metal_msaa is on, otherwise single-sample. The renderer
     // stashes this and applies it at the next beginLiveFrame (no encoder open),
     // so toggling at runtime never mismatches an in-flight encoder.
@@ -2476,7 +2674,34 @@ void SceneRenderMetal(PyMOLGlobals* G)
   // can't be made per-cell, and a shared map would leak shadows between cells
   // (an object visible only in cell B darkening an object in cell A). Grid mode
   // therefore renders unshadowed (geometry-only parity for now).
-  if (!I->grid.active && SettingGetGlobal_b(G, cSetting_metal_shadows)) {
+  // PROTOTYPE (studio shadows): with shadowed studio lights, one perspective
+  // depth pass per light replaces the regular key-light map; the lit shaders
+  // apply each to its own light (the renderer turns the regular shadow off).
+  const int studioShadowSlots =
+      (!I->grid.active && SettingGetGlobal_b(G, cSetting_metal_shadows))
+          ? s_studioShadowSlots
+          : 0;
+  G->Renderer->setStudioOwnsShadows(studioShadowSlots);
+  if (studioShadowSlots > 0) {
+    const float* mvp = SceneGetModelViewMatrixPtr(G);
+    for (int slot = 0; slot < studioShadowSlots; ++slot) {
+      G->Renderer->setStudioShadowTarget(slot);
+      G->Renderer->matrixMode(0x1701); // PROJECTION = this light's VP (eye space)
+      G->Renderer->loadMatrixf(glm::value_ptr(s_studioShadowVP[slot]));
+      G->Renderer->matrixMode(0x1700); // MODELVIEW = camera modelview
+      G->Renderer->loadMatrixf(mvp);
+      G->Renderer->beginShadowPass();
+      SceneRenderAll(G, &context, normal, nullptr, RenderPass::Opaque, false,
+          0.0f, &I->grid, 0, SceneRenderWhich::All,
+          SceneRenderOrder::GadgetsLast);
+      G->Renderer->endShadowPass();
+    }
+    G->Renderer->setStudioShadowTarget(-1);
+    G->Renderer->matrixMode(0x1701);
+    G->Renderer->loadMatrixf(SceneGetProjectionMatrixPtr(G));
+    G->Renderer->matrixMode(0x1700);
+    G->Renderer->loadMatrixf(mvp);
+  } else if (!I->grid.active && SettingGetGlobal_b(G, cSetting_metal_shadows)) {
     float shadowRadius = 1.0f;
     glm::mat4 lightVP_eye = SceneBuildLightViewProjEye(G, &shadowRadius);
     const float* mvp = SceneGetModelViewMatrixPtr(G);
