@@ -9,6 +9,8 @@ extern "C" {
 
 #include <stdbool.h>
 
+#include "PyMOLBridgeLights.h"   // light-rig types and PYMOL_LIGHT_SET_* (#611)
+
 // Opaque PyMOL instance handle (CPyMOL* in the implementation)
 typedef void* PyMOLHandle;
 
@@ -73,6 +75,30 @@ void PyMOLBridge_RunCommand(const char *command);
 // clipping). `view` must point to exactly 25 floats (cSceneViewSize).
 int PyMOLBridge_GetView(PyMOLHandle instance, float *view, int count);
 int PyMOLBridge_SetView(PyMOLHandle instance, const float *view, int count, float animate);
+
+// --- Light rig (#611, spec §4.4) ---
+// Direct C++ on the scene's rig (layer1/SceneLights.h): no Python, so one call
+// per drag tick is cheap. MAIN THREAD ONLY, like GetView/SetView, and never
+// while a movie export is rendering off-main. Types and codes:
+// PyMOLBridgeLights.h.
+//
+// The rig as JSON, with the keys, order and types of cmd.get_lights(); NULL
+// when there is no rig. Free with PyMOLBridge_FreeFeedback.
+char *PyMOLBridge_LightsJSON(PyMOLHandle instance);
+// Set one number field of light `index` (>= 0), or of the rig and its air
+// (index -1): orbit, pitch, radius, beam, softness, warmth, intensity,
+// highlight, falloff, shadow, outline, anchor (0 camera, 1 pin where it is
+// now), aim (0 centre, 1 point); enabled, ambient, classic, haze, dust,
+// dust_size, dust_speed, scatter, seed. Numbers are clamped into range.
+// Returns a PYMOL_LIGHT_SET_* code; the rig is unchanged unless it is OK.
+int PyMOLBridge_LightSet(PyMOLHandle instance, int index, const char *field, double value);
+// Set one vector field of light `index`: color (sRGB 0..1), aim_point (world
+// Å; aims the light at it) or position (world Å; pins the light there).
+int PyMOLBridge_LightSetVector(PyMOLHandle instance, int index, const char *field, double x, double y, double z);
+// Resolve the rig for the live camera. Fills *rig (when not NULL) and the
+// first min(count, capacity) entries of `lights`; returns the light count, or
+// -1 when there is no rig. PYMOL_LIGHTS_MAX entries always suffice.
+int PyMOLBridge_LightsEyeSpace(PyMOLHandle instance, PyMOLLightRigEye *rig, PyMOLLightEye *lights, int capacity);
 
 // Tab autocomplete: runs PyMOL's own command-line completion (cmd._parser.complete)
 // on the current input and returns the completed string (extended to the

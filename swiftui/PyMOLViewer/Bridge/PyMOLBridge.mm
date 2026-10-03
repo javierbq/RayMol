@@ -10,7 +10,13 @@
 #include "P.h"
 #include "Setting.h"        // SettingGet/SetGlobal_b, cSetting_metal_raytrace
 #include "Scene.h"
+#include "SceneLights.h"  // the light rig (#611): no Python
 #include "MyPNG.h"        // MyPNGSetFastWrite (#601)
+
+#include "PyMOLBridgeLights.h"  // PyMOLLightRigEye, PyMOLLightEye, PYMOL_LIGHT_SET_*
+
+#include <algorithm>
+#include <cstring>
 
 #import <Foundation/Foundation.h>
 #import <Python.h>
@@ -401,6 +407,78 @@ int PyMOLBridge_SetView(PyMOLHandle h, const float *view, int count, float anima
     for (std::size_t i = 0; i < cSceneViewSize; ++i) captured[i] = view[i];
     SceneSetView(G, captured, 1, animate, 1);
     return 1;
+}
+
+// --- Light rig (#611, spec §4.4) ---
+// Main thread only. These call only the scene's light-rig functions
+// (SceneLightsJSON / SceneLightSet / SceneLightsResolve, layer1/SceneLights.h),
+// which are plain C++: no Python, no GIL, so a drag can call LightSet once per
+// tick. testing/tests/raymol/lighting_bridge.py checks these bodies in CI.
+
+char *PyMOLBridge_LightsJSON(PyMOLHandle h)
+{
+    if (!h) return nullptr;
+    PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
+    if (!G) return nullptr;
+    const auto json = SceneLightsJSON(G);
+    return json ? strdup(json->c_str()) : nullptr;
+}
+
+int PyMOLBridge_LightSet(PyMOLHandle h, int index, const char *field, double value)
+{
+    if (!h) return PYMOL_LIGHT_SET_NO_RIG;
+    PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
+    if (!G) return PYMOL_LIGHT_SET_NO_RIG;
+    if (!field) return PYMOL_LIGHT_SET_UNKNOWN_FIELD;
+    return static_cast<int>(SceneLightSet(G, index, field, &value, 1));
+}
+
+int PyMOLBridge_LightSetVector(PyMOLHandle h, int index, const char *field, double x, double y, double z)
+{
+    if (!h) return PYMOL_LIGHT_SET_NO_RIG;
+    PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
+    if (!G) return PYMOL_LIGHT_SET_NO_RIG;
+    if (!field) return PYMOL_LIGHT_SET_UNKNOWN_FIELD;
+    const double v[3] = {x, y, z};
+    return static_cast<int>(SceneLightSet(G, index, field, v, 3));
+}
+
+int PyMOLBridge_LightsEyeSpace(PyMOLHandle h, PyMOLLightRigEye *rig, PyMOLLightEye *lights, int capacity)
+{
+    if (!h) return -1;
+    PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
+    if (!G) return -1;
+    const auto eye = SceneLightsResolve(G);
+    if (!eye) return -1;
+    const int count = static_cast<int>(eye->lights.size());
+    if (rig) {
+        for (int k = 0; k < 3; ++k) rig->centre[k] = eye->centre[k];
+        rig->size = eye->size;
+        rig->enabled = eye->enabled ? 1 : 0;
+        rig->hasFrame = eye->hasFrame ? 1 : 0;
+        rig->count = count;
+    }
+    const int filled = lights ? std::min(count, std::max(capacity, 0)) : 0;
+    for (int i = 0; i < filled; ++i) {
+        const pymol::LightEye &src = eye->lights[i];
+        PyMOLLightEye &dst = lights[i];
+        for (int k = 0; k < 3; ++k) {
+            dst.position[k] = src.position[k];
+            dst.target[k] = src.target[k];
+            dst.direction[k] = src.direction[k];
+        }
+        dst.aimDistance = src.aimDistance;
+        dst.cosOuter = src.cosOuter;
+        dst.cosInner = src.cosInner;
+        dst.orbit = src.orbit;
+        dst.pitch = src.pitch;
+        dst.radius = src.radius;
+        dst.anchor = src.anchor == pymol::LightAnchor::Pinned ? 1 : 0;
+        dst.aim = src.aim == pymol::LightAim::Point ? 1 : 0;
+        dst.shadow = src.shadow ? 1 : 0;
+        dst.outline = src.outline ? 1 : 0;
+    }
+    return count;
 }
 
 char *PyMOLBridge_Complete(const char *text)
