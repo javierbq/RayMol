@@ -184,27 +184,109 @@ Affine coordSetToWorld(const ObjectMolecule* obj,
   return M;
 }
 
-/// Calls `fn(obj, cs, state)` for every coordinate set the scene draws of
-/// every considered molecule, as SceneRenderAllObject + ObjectMolecule::render
-/// pick them.
+/**
+ * Calls `fn(obj, cs, state)` for every coordinate set the scene draws of
+ * every considered molecule, as SceneRenderAllObject + ObjectMolecule::render
+ * pick them: in `cell`'s slot, or (`all_slots`) in any slot of its grid.
+ * Each coordinate set is visited once.
+ */
 template <typename Fn>
-void forEachDrawnCoordSet(
-    PyMOLGlobals* G, const std::vector<std::string>* objects, Fn&& fn)
+void forEachDrawnCoordSet(PyMOLGlobals* G,
+    const std::vector<std::string>* objects, const ScenePickCell& cell,
+    bool all_slots, Fn&& fn)
 {
+  const int first = !cell.grid ? 0 : all_slots ? 1 : cell.slot;
+  const int last = !cell.grid ? 0 : all_slots ? cell.size : cell.slot;
+  std::vector<int> csets;
   for (pymol::CObject* obj : G->Scene->Obj) {
     if (obj->type != cObjectMolecule)
       continue;
     if (!objectWanted(obj->Name, objects))
       continue;
     auto* om = static_cast<ObjectMolecule*>(obj);
-    const int state = ObjectGetCurrentState(obj, false);
-    for (StateIterator iter(G, obj->Setting.get(), state, om->NCSet);
-         iter.next();) {
-      CoordSet* cs = om->CSet[iter.state];
+    csets.clear();
+    for (int slot = first; slot <= last; ++slot) {
+      int state;
+      if (!ScenePickCellState(G, cell, slot, obj, &state))
+        continue;
+      for (StateIterator iter(G, obj->Setting.get(), state, om->NCSet);
+           iter.next();)
+        csets.push_back(iter.state);
+    }
+    // Several slots can draw the same coordinate set (ByObjectStates with a
+    // static singleton draws state 1 in every cell).
+    std::sort(csets.begin(), csets.end());
+    csets.erase(std::unique(csets.begin(), csets.end()), csets.end());
+    for (int state : csets) {
+      CoordSet* cs = om->CSet[state];
       if (cs)
-        fn(om, cs, iter.state);
+        fn(om, cs, state);
     }
   }
+}
+
+/**
+ * The grid layout of the next frame, built as SceneRenderMetal builds it
+ * (SceneGetGridSize, then GridUpdate) but into `cell` alone. SceneGetGridSize
+ * itself writes the scene's m_slots and, in ByObjectByState, every object's
+ * grid_slot, so it must not be called from a pick; this is its read-only
+ * replica (keep the two in step).
+ */
+void pickGridLayout(PyMOLGlobals* G, float aspect, ScenePickCell& cell)
+{
+  const CScene* I = G->Scene;
+  const auto mode = SettingGet<GridMode>(G, cSetting_grid_mode);
+  if (mode == GridMode::NoGrid)
+    return;
+
+  int size = 0;
+  switch (mode) {
+  case GridMode::ByObject: {
+    // m_slots: every positive grid_slot in use, renumbered 1..n in order.
+    int max_slot = 0;
+    for (const pymol::CObject* obj : I->Obj)
+      max_slot = std::max(max_slot, obj->grid_slot);
+    cell.slot_table.assign(max_slot + 1, 0);
+    for (const pymol::CObject* obj : I->Obj)
+      if (obj->grid_slot > 0)
+        cell.slot_table[obj->grid_slot] = 1;
+    for (int& s : cell.slot_table)
+      if (s)
+        s = ++size;
+    break;
+  }
+  case GridMode::ByObjectStates:
+  case GridMode::ByObjectByState: {
+    int max_slot = 0;
+    for (const pymol::CObject* obj : I->Obj) {
+      const int nframe = obj->getNFrame();
+      if (mode == GridMode::ByObjectByState) {
+        cell.state_offsets[obj] = max_slot; // what grid_slot would hold
+        max_slot += nframe;
+      } else if (max_slot < nframe) {
+        max_slot = nframe;
+      }
+    }
+    size = max_slot;
+    break;
+  }
+  default:
+    break; // ByCamera: SceneGetGridSize sizes no grid for it
+  }
+  const auto grid_max = SettingGet<int>(G, cSetting_grid_max);
+  if (grid_max >= 0)
+    size = std::min(size, grid_max);
+
+  // GridUpdate is pure on its argument: run it on a local GridInfo.
+  GridInfo grid{};
+  GridUpdate(&grid, aspect, mode, size);
+  if (!grid.active)
+    return;
+  cell.grid = true;
+  cell.mode = mode;
+  cell.size = grid.last_slot;
+  cell.n_col = grid.n_col;
+  cell.n_row = grid.n_row;
 }
 
 } // namespace
@@ -212,13 +294,68 @@ void forEachDrawnCoordSet(
 ScenePickCell ScenePickGridCell(
     PyMOLGlobals* G, float ndc_x, float ndc_y, float aspect)
 {
-  // Grid modes are mapped in a later step; until then the whole viewport.
-  (void) G;
   ScenePickCell cell;
   cell.ndc_x = ndc_x;
   cell.ndc_y = ndc_y;
   cell.aspect = aspect;
+  pickGridLayout(G, aspect, cell);
+  if (!cell.grid)
+    return cell;
+
+  // Every cell shares the frame's camera and projection; only the viewport
+  // moves (SceneSetMetalGridCell: columns left to right, row 0 at the top),
+  // and the projection's aspect is the cell's (aspRat *= grid.asp_adjust).
+  if (!(std::fabs(ndc_x) <= 1.f) || !(std::fabs(ndc_y) <= 1.f)) {
+    cell.valid = false;
+    return cell;
+  }
+  const double u = (double(ndc_x) + 1.0) / 2.0 * cell.n_col;
+  const double t = (1.0 - double(ndc_y)) / 2.0 * cell.n_row;
+  const int col = std::min(int(std::floor(u)), cell.n_col - 1);
+  const int row = std::min(int(std::floor(t)), cell.n_row - 1);
+  cell.slot = 1 + row * cell.n_col + col;
+  cell.valid = cell.slot <= cell.size;
+  cell.ndc_x = float((u - col) * 2.0 - 1.0);
+  cell.ndc_y = float(1.0 - (t - row) * 2.0);
+  cell.aspect = float(aspect * (float(cell.n_row) / cell.n_col));
   return cell;
+}
+
+bool ScenePickCellState(PyMOLGlobals* G, const ScenePickCell& cell, int slot,
+    const pymol::CObject* obj, int* state)
+{
+  if (!cell.grid) {
+    *state = ObjectGetCurrentState(obj, false);
+    return true;
+  }
+  if (slot < 1 || slot > cell.size)
+    return false;
+  switch (cell.mode) {
+  case GridMode::ByObject: {
+    // SceneGetDrawFlag with grid->slot = slot (Metal draws slots 1..size,
+    // never the whole-window slot 0, so grid_slot 0 is never drawn).
+    const int gs = obj->grid_slot;
+    const bool drawn = gs < 0 ||
+                       (gs > 0 && gs < int(cell.slot_table.size()) &&
+                           cell.slot_table[gs] == slot);
+    if (!drawn)
+      return false;
+    *state = ObjectGetCurrentState(obj, false);
+    return true;
+  }
+  case GridMode::ByObjectStates:
+    *state = SceneGetState(G) + slot - 1;
+    return *state >= 0;
+  case GridMode::ByObjectByState: {
+    const auto it = cell.state_offsets.find(obj);
+    if (it == cell.state_offsets.end())
+      return false;
+    *state = slot - it->second - 1;
+    return *state >= 0 && *state < obj->getNFrame();
+  }
+  default:
+    return false;
+  }
 }
 
 bool ScenePickSegment(PyMOLGlobals* G, float ndc_x, float ndc_y, float aspect,
@@ -267,6 +404,8 @@ SurfacePickHit ScenePickSurface(PyMOLGlobals* G, const SurfacePickRequest& req)
     return out;
 
   const ScenePickCell cell = ScenePickGridCell(G, req.ndc_x, req.ndc_y, aspect);
+  if (!cell.valid)
+    return out;
   float A[3], B[3];
   if (!ScenePickSegment(G, cell.ndc_x, cell.ndc_y, cell.aspect, A, B))
     return out;
@@ -282,7 +421,7 @@ SurfacePickHit ScenePickSurface(PyMOLGlobals* G, const SurfacePickRequest& req)
   int bestState = -1;
   cRep_t bestRep = cRepNone;
 
-  forEachDrawnCoordSet(G, req.objects,
+  forEachDrawnCoordSet(G, req.objects, cell, false,
       [&](ObjectMolecule* obj, CoordSet* cs, int state) {
         int use_matrices = SettingGet_i(
             G, obj->Setting.get(), nullptr, cSetting_matrix_mode);
@@ -393,8 +532,14 @@ SurfacePickPrepareStats ScenePickSurfacePrepare(PyMOLGlobals* G, int rep_mask,
     SceneUpdate(G, false);
   }
   const int mask = rep_mask & cSurfacePickRepMask;
+  // Every coordinate set any grid cell draws. Which cell draws which does not
+  // depend on the aspect, but GridUpdate needs a sane one.
+  float aspect = SceneGetAspectRatio(G);
+  if (!std::isfinite(aspect) || !(aspect > 0.f))
+    aspect = 1.f;
+  const ScenePickCell cell = ScenePickGridCell(G, 0.f, 0.f, aspect);
   forEachDrawnCoordSet(
-      G, objects, [&](ObjectMolecule*, CoordSet* cs, int) {
+      G, objects, cell, true, [&](ObjectMolecule*, CoordSet* cs, int) {
         for (cRep_t r : kPickReps) {
           if (!(mask & (1 << r)))
             continue;
