@@ -32,6 +32,7 @@ Z* -------------------------------------------------------------------
 #include "PConv.h"
 #include "Rep.h"
 #include "Material.h"
+#include "PickAccel.h"
 #include "RepSurface.h"
 #include "Scene.h"
 #include "Selector.h"
@@ -43,6 +44,7 @@ Z* -------------------------------------------------------------------
 #include "Vector.h"
 #include "main.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -77,6 +79,8 @@ struct RepSurface : Rep {
   Rep* recolor() override;
   bool sameVis() const override;
   bool sameColor() const override;
+  bool pickRay(const RepPickArgs& args, PickRayHit& hit) const override;
+  const PickAccel* pickPrepare(bool* built = nullptr) const override;
 
   int N = 0;
   int NT = 0;             //!< number of triangles (?)
@@ -108,6 +112,25 @@ struct RepSurface : Rep {
   bool dot_as_spheres = false;
 
   int surface_mode = cRepSurface_by_flags;
+
+  /**
+   * Surface pick (#614): the atoms' eye-depth range the per-rep clip
+   * (surface_clip_front/back) is measured from, cached for the view it was
+   * computed in so a static view costs O(1) per pick. Keyed on the depth row
+   * of the local -> eye transform and the coordinates it was read from. Pick
+   * state only; render never reads it.
+   */
+  struct PickClipRange {
+    bool valid = false;
+    float depth_row[4] = {0.f, 0.f, 0.f, 0.f};
+    const float* coord = nullptr;
+    int n = 0;
+    float dmin = 0.f, dmax = 0.f;
+  };
+  mutable PickClipRange m_pickClipRange;
+
+  bool pickClipWindow(
+      const RepPickArgs& args, float& s_front, float& s_back) const;
 };
 
 static void RepSurfaceSmoothEdges(RepSurface* I);
@@ -1832,6 +1855,193 @@ void RepSurface::render(RenderInfo* info)
     I->invalidate(cRepInvPurge);
     I->cs->Active[cRepSurface] = false;
   }
+}
+
+/*========================================================================*/
+/* Surface pick (#614)                                                    */
+/*========================================================================*/
+
+namespace
+{
+/**
+ * The triangles the shader CGO draws (RepSurfaceCGOGenerate), decided at
+ * query time because recolor() changes them in place: a triangle passes the
+ * atom-visibility test (surface_proximity: any corner or every corner)
+ * unless all atoms show their surface, and one whose corners are all fully
+ * transparent (per-atom transparency) draws nothing.
+ */
+struct SurfacePickFilter {
+  const int* T = nullptr;
+  const int* vis = nullptr;  ///< nullptr: no visibility test
+  bool proximity = false;
+  const float* va = nullptr; ///< per-vertex alpha, or nullptr
+};
+
+bool surfacePickAccept(const void* ctx, std::uint32_t tri)
+{
+  auto f = static_cast<const SurfacePickFilter*>(ctx);
+  const int* t = f->T + 3 * std::size_t(tri);
+  if (f->vis && !visibility_test(f->proximity, f->vis, t))
+    return false;
+  if (f->va &&
+      std::max(std::max(f->va[t[0]], f->va[t[1]]), f->va[t[2]]) <= 0.001f)
+    return false;
+  return true;
+}
+} // namespace
+
+/**
+ * The per-rep clip window (surface_clip_front/back) in segment units, or
+ * false when the rep has none. Metal discards surface fragments whose eye
+ * distance falls outside [front, back]; this is metalApplyRepClip's exact
+ * formula (CGOGL.cpp) -- the atoms' eye-depth range through the same
+ * modelview (scene view, object TTT, state matrix), padded by
+ * solvent_radius + 1, each fraction shaving its side toward the centre.
+ * Keep in step with metalApplyRepClip. Eye depth is linear in s along the
+ * pick segment, s = (depth - slab_front) / (slab_back - slab_front).
+ */
+bool RepSurface::pickClipWindow(
+    const RepPickArgs& args, float& s_front, float& s_back) const
+{
+  CSetting* s1 = cs->Setting.get();
+  CSetting* s2 = obj->Setting.get();
+  const float fFrac = SettingGet_f(G, s1, s2, cSetting_surface_clip_front);
+  const float bFrac = SettingGet_f(G, s1, s2, cSetting_surface_clip_back);
+  if (fFrac == 0.0f && bFrac == 0.0f)
+    return false;
+  const int n = cs->getNIndex();
+  if (n <= 0)
+    return false;
+
+  // O(atoms) once per view: reuse the range while the depth row and the
+  // coordinates are the ones it was computed from.
+  const float* row = args.local_to_eye + 8;
+  auto& cache = m_pickClipRange;
+  if (!(cache.valid && cache.coord == cs->Coord.data() && cache.n == n &&
+          std::equal(row, row + 4, cache.depth_row))) {
+    float dMin = 1e30f, dMax = -1e30f;
+    for (int i = 0; i < n; i++) {
+      const float* c = cs->coordPtr(i);
+      const float depth =
+          -(row[0] * c[0] + row[1] * c[1] + row[2] * c[2] + row[3]);
+      dMin = std::min(dMin, depth);
+      dMax = std::max(dMax, depth);
+    }
+    cache.valid = true;
+    std::copy_n(row, 4, cache.depth_row);
+    cache.coord = cs->Coord.data();
+    cache.n = n;
+    cache.dmin = dMin;
+    cache.dmax = dMax;
+  }
+
+  const float pad = SettingGet_f(G, s1, s2, cSetting_solvent_radius) + 1.0f;
+  const float center = 0.5f * (cache.dmin + cache.dmax);
+  const float halfD = 0.5f * (cache.dmax - cache.dmin) + pad;
+  const float ff = fFrac < 0.0f ? 0.0f : (fFrac > 1.0f ? 1.0f : fFrac);
+  const float bb = bFrac < 0.0f ? 0.0f : (bFrac > 1.0f ? 1.0f : bFrac);
+  const float front = center - halfD * (1.0f - ff);
+  const float back = center + halfD * (1.0f - bb);
+  const float span = args.slab_back - args.slab_front;
+  if (!(span > 0.f))
+    return false;
+  s_front = (front - args.slab_front) / span;
+  s_back = (back - args.slab_front) / span;
+  return true;
+}
+
+/**
+ * Solid surfaces are picked against their own triangle mesh (V/VN/T,
+ * referenced in place), which is exactly what the shader CGO is built from.
+ * Every type but dots and mesh draws solid on Metal -- including
+ * SolidEmpirical, which the ray-trace path leaves out. A surface built
+ * invisible (transparency >= 0.999) is not picked.
+ */
+const PickAccel* RepSurface::pickPrepare(bool* built) const
+{
+  if (built)
+    *built = false;
+  if (Type == SurfaceType::DotDefault || Type == SurfaceType::Triangle)
+    return nullptr;
+  if (builtTransparency() >= 0.999f)
+    return nullptr;
+  if (NT <= 0 || N <= 0 || V.size() < 3 * std::size_t(N) ||
+      T.size() < 3 * std::size_t(NT))
+    return nullptr;
+  const float* vn = VN.size() >= V.size() ? VN.data() : nullptr;
+  PickAccelKey key;
+  key.source = V.data();
+  key.size = V.size();
+  key.aux0 = vn;
+  key.aux1 = T.data();
+  key.aux_size = std::size_t(NT);
+  return pickAccelFor(
+      key,
+      [&](PickAccel& accel) { accel.setMesh(V.data(), vn, N, T.data(), NT); },
+      built);
+}
+
+/**
+ * Mesh rule (Metal culls nothing, so a clipped surface shows its inside),
+ * within the per-rep clip window. With the interior cap on (opaque, see
+ * pickCapOn), Metal fills the cut by stencil parity over the faces from the
+ * cap plane to the far plane and draws the fill at the per-rep front plane
+ * (repCapDepth; the near plane when the rep has no clip). For a closed
+ * surface an odd parity means the first crossing past the cap plane is an
+ * exit, so that is the test here.
+ */
+bool RepSurface::pickRay(const RepPickArgs& args, PickRayHit& hit) const
+{
+  const PickAccel* accel = pickPrepare();
+  if (!accel)
+    return false;
+
+  SurfacePickFilter f;
+  f.T = T.data();
+  f.proximity = proximity;
+  if (!allVisibleFlag && Vis.size() >= std::size_t(N))
+    f.vis = Vis.data();
+  if (VA.size() >= std::size_t(N))
+    f.va = VA.data();
+  PickTriFilter filter;
+  filter.accept = surfacePickAccept;
+  filter.ctx = &f;
+  const PickTriFilter* fp = (f.vis || f.va) ? &filter : nullptr;
+
+  float s_front = args.ray.smin, s_back = 1.f;
+  const bool clipped = pickClipWindow(args, s_front, s_back);
+
+  PickRay ray = args.ray;
+  ray.smin = std::max(args.ray.smin, s_front);
+  const float window_end = std::min(args.ray.smax, s_back);
+
+  // The fill is a screen-wide quad at the cap plane's depth; one in front of
+  // the near plane (or behind the far one) is clipped away, so no cap.
+  const float s_cap = clipped ? s_front : args.ray.smin;
+  const bool cap_on = pickCapOn() && s_cap >= 0.f && s_cap <= 1.f;
+  if (!cap_on) {
+    ray.smax = window_end;
+    return accel->intersect(ray, false, hit, fp);
+  }
+
+  // Parity runs to the far plane, past any per-rep back plane and past
+  // nearer hits of other reps.
+  ray.smax = 1.f;
+  PickRayHit first;
+  if (!accel->intersect(ray, false, first, fp))
+    return false;
+  if (first.inside) {
+    if (!(s_cap <= args.ray.smax))
+      return false;
+    hit = PickRayHit();
+    hit.s = s_cap;
+    hit.cap = true;
+    return true;
+  }
+  if (first.s > window_end)
+    return false;
+  hit = first;
+  return true;
 }
 
 bool RepSurface::sameVis() const
