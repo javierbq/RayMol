@@ -18,8 +18,12 @@ Z* -------------------------------------------------------------------
 #define _H_Rep
 
 #include <cassert>
+#include <cstddef>
+#include <functional>
+#include <memory>
 
 #include "Picking.h"
+#include "PickMath.h"
 
 #define cCartoon_skip_helix -2
 #define cCartoon_skip -1
@@ -190,6 +194,24 @@ namespace pymol
 }
 struct PyMOLGlobals;
 struct RenderInfo;
+class PickAccel;
+struct PickAccelKey;
+
+/**
+ * Input to Rep::pickRay (#614): the pick segment in the rep's LOCAL frame (the
+ * coordinate-set frame its geometry is built in), plus what a rep needs to
+ * honour view-dependent clipping.
+ */
+struct RepPickArgs {
+  PickRay ray;
+  //! local -> eye transform, row-major 4x4 (for per-rep eye-depth clipping)
+  float local_to_eye[16] = {
+      1.f, 0.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f,
+      0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 0.f, 1.f};
+  //! eye distances of the scene's near and far clip planes (s = 0 and s = 1)
+  float slab_front = 0.f;
+  float slab_back = 0.f;
+};
 
 struct Rep {
   PyMOLGlobals *G;
@@ -263,8 +285,53 @@ struct Rep {
   //! Records the decision at build time; see above.
   void setBuiltLineStickHelper(int v) { m_built_line_stick_helper = v; }
 
+  /**
+   * Surface pick (#614): the front-most point of this rep's DRAWN geometry
+   * along `args.ray`, with the clip rule of what the Metal renderer draws for
+   * it. Fills `hit` in the rep's local frame. Never draws, and never changes
+   * anything a render reads; the only state it touches is m_pickAccel.
+   *
+   * The default is "not pickable".
+   */
+  virtual bool pickRay(const RepPickArgs& args, PickRayHit& hit) const
+  {
+    return false;
+  }
+
+  /**
+   * Build (or reuse) this rep's pick grid without picking, for
+   * surface_pick_prepare. Returns it, or nullptr when the rep has nothing
+   * pickable. `built` (optional) is set when this call had to build it.
+   */
+  virtual const PickAccel* pickPrepare(bool* built = nullptr) const
+  {
+    return nullptr;
+  }
+
+  //! The pick grid cached by an earlier pick or prepare, if any (it may be
+  //! stale; pickPrepare() validates). Read-only.
+  const PickAccel* pickAccelCached() const { return m_pickAccel.get(); }
+
 protected:
   cRepInv_t MaxInvalid = cRepInvNone;
+
+  /**
+   * The cached pick grid if it was built from `key`, else a new one filled by
+   * `fill` (and cached). Overrides of pickPrepare() go through this.
+   */
+  const PickAccel* pickAccelFor(const PickAccelKey& key,
+      const std::function<void(PickAccel&)>& fill, bool* built) const;
+
+  /**
+   * Does Metal fill a slab-cut impostor of this rep with a flat interior cap?
+   * `metal_interior_cap` (coordset, then object level, as CGOGL reads it),
+   * and only for an opaque rep: the renderer turns the cap off in its OIT and
+   * peel passes. Rep-level, not per atom.
+   */
+  bool pickCapOn() const;
+
+  //! Lazily built by pickAccelFor; dies with the rep. Render never reads it.
+  mutable std::unique_ptr<PickAccel> m_pickAccel;
 
 private:
   //! Negative = "this rep does not record a built transparency". Defaulting to
