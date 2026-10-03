@@ -30,6 +30,7 @@ Z* -------------------------------------------------------------------
 #include"Rect.h"
 #include "Camera.h"
 #include "Spatial.h"
+#include "LightRig.h"
 #include<list>
 #include<vector>
 
@@ -148,6 +149,11 @@ class CScene : public Block {
   bool DofExtentValid{};
   bool DofExtentFlag{}; /* false = 'dof_focus' is empty/undefined */
   float DofExtentCenter[3]{};
+
+  /* The light rig (#611; SceneLights.h). nullopt = no rig; a rig with
+     enabled == false is present but off. One per instance, cleared by
+     SceneReinitialize. Not an object: never in Obj, never in an extent. */
+  std::optional<pymol::LightRig> lightRig;
 
   /* Scene Names */
   int ButtonsShown{}, ButtonDrag{}, ButtonMargin{}, ButtonsValid{};

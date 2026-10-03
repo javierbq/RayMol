@@ -4246,6 +4246,7 @@ int SceneReinitialize(PyMOLGlobals * G)
   SceneSetFrame(G, 0, 0);
   SceneInvalidate(G);
   G->Scene->SceneVec.clear();
+  G->Scene->lightRig.reset(); // `reinitialize` clears the rig (#611)
   return (ok);
 }
 
