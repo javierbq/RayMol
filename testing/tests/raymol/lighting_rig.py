@@ -9,8 +9,13 @@ job builds catch2, so the C++ model is tested this way (lighting checklist,
 Covers: no rig by default; the field table against the spec; exact set/get
 round-trips; default names; strict, atomic validation; clamping; frame capture
 (current state, enabled objects, solvent excluded, fallbacks) and re-centre;
-what reinitialize clears; and the epic's non-negotiables (the rig never writes
-a setting, colour or material, never touches an extent, is per instance).
+the per-field setter and getter the app bridge uses (_light_set / _light_get:
+status codes, clamping and wrap, aim switching, the beam kept on a radius
+edit); the JSON the bridge reads (_lights_json: same keys, order and types as
+the dict, exact numbers, escaped text, '.' whatever the C locale); what
+reinitialize clears; and the epic's non-negotiables (the rig never writes a
+setting, colour or material, never touches an extent, is per instance).
+The eye-space resolver and the pin conversions are in lighting_eye.py.
 
 Runs on a RayMol build:
     pymol -ckqy testing/testing.py --run testing/tests/raymol/lighting_rig.py
@@ -113,6 +118,22 @@ FULL_RIG = {
 }
 
 
+# Every field _light_set takes, each away from FULL_RIG's value: (index,
+# field, value). Index -1 is the rig and its air.
+LIGHT_SET_VALUES = [
+    (-1, 'enabled', 0), (-1, 'ambient', 0.33), (-1, 'classic', 0.66),
+    (-1, 'haze', 0.1), (-1, 'dust', 0.2), (-1, 'dust_size', 0.9),
+    (-1, 'dust_speed', 4.0), (-1, 'scatter', 0.25), (-1, 'seed', 99),
+    (1, 'orbit', 12.5), (1, 'pitch', 33.0), (1, 'radius', 6.5),
+    (1, 'beam', 80.0), (1, 'softness', 0.9), (1, 'warmth', 9000.0),
+    (1, 'intensity', 2.5), (1, 'highlight', 0.25), (1, 'falloff', 1.25),
+    (1, 'shadow', 1), (1, 'outline', 0), (1, 'color', [0.9, 0.5, 0.1]),
+    (1, 'aim_point', [1.5, 2.5, 3.5]), (1, 'aim', 0), (1, 'aim', 1),
+    (1, 'anchor', 1), (1, 'pitch', -15.0), (1, 'anchor', 0),
+    (2, 'orbit', 45.0), (2, 'position', [7.0, 8.0, 9.0]),
+]
+
+
 def material_settings():
     return [name for name in pymol.setting.get_name_list()
             if name.endswith('_material')]
@@ -151,6 +172,8 @@ class TestLightRig(testing.PyMOLTestCase):
         self.assertIsNone(cmd.get_lights())
         self.load()
         self.assertIsNone(cmd.get_lights())
+        self.assertIsNone(lighting._lights_json())
+        self.assertIsNone(lighting._lights_eye())
 
     def testFieldTableMatchesSpec(self):
         fields = lighting._light_fields()
@@ -466,6 +489,327 @@ class TestLightRig(testing.PyMOLTestCase):
         cmd.set_lights(None)
         self.assertIsNone(cmd.get_lights())
 
+    # --- per-field set / get (the app bridge's setter) ------------------------
+
+    def assertLightSetFails(self, status, args, *words):
+        """_light_set(*args) raises CmdException('<status>: ...') naming
+        every word, and leaves the rig unchanged."""
+        before = cmd.get_lights()
+        with self.assertRaises(pymol.CmdException) as ctx:
+            lighting._light_set(*args)
+        message = ctx.exception.message
+        self.assertTrue(message.startswith(status + ': '),
+                        '%r for %r' % (message, args))
+        for word in words:
+            self.assertIn(word, message, 'for %r' % (args,))
+        self.assertEqual(cmd.get_lights(), before, message)
+
+    def testLightSetScalarsVectorsRigLevel(self):
+        cmd.set_lights({'centre': [0.0, 0.0, 0.0], 'size': 10.0,
+                        'lights': [{}, {}]})
+        untouched = cmd.get_lights()['lights'][0]
+        scalars = [('orbit', 33.3), ('pitch', -12.5), ('radius', 2.5),
+                   ('beam', 70.1), ('softness', 0.25), ('warmth', 3200.0),
+                   ('intensity', 2.2), ('highlight', 0.8), ('falloff', 1.1)]
+        for field, value in scalars:
+            lighting._light_set(1, field, value)
+            got = cmd.get_lights()['lights'][1][field]
+            self.assertEqual(got, value, field)
+            self.assertIs(type(got), float, field)
+        # ints are numbers too
+        lighting._light_set(1, 'warmth', 4000)
+        self.assertEqual(cmd.get_lights()['lights'][1]['warmth'], 4000.0)
+        # bools: true from 0.5 up; Python bools accepted
+        for value, want in ((1, True), (0, False), (0.7, True), (0.2, False),
+                            (True, True), (False, False)):
+            lighting._light_set(1, 'shadow', value)
+            lighting._light_set(1, 'outline', value)
+            light = cmd.get_lights()['lights'][1]
+            self.assertIs(light['shadow'], want, value)
+            self.assertIs(light['outline'], want, value)
+        # vectors: a list or a tuple of 3
+        lighting._light_set(1, 'color', [0.2, 0.4, 0.6])
+        self.assertEqual(cmd.get_lights()['lights'][1]['color'], [0.2, 0.4, 0.6])
+        lighting._light_set(1, 'color', (1, 0, 0.5))
+        self.assertEqual(cmd.get_lights()['lights'][1]['color'], [1.0, 0.0, 0.5])
+        self.assertEqual(cmd.get_lights()['lights'][0], untouched)
+        # the rig and its air: index -1
+        for field, value in (('ambient', 0.3), ('classic', 0.4)):
+            lighting._light_set(-1, field, value)
+            self.assertEqual(cmd.get_lights()[field], value, field)
+        lighting._light_set(-1, 'enabled', 1)
+        self.assertIs(cmd.get_lights()['enabled'], True)
+        lighting._light_set(-1, 'enabled', False)
+        self.assertIs(cmd.get_lights()['enabled'], False)
+        air = [('haze', 0.2), ('dust', 0.3), ('dust_size', 0.5),
+               ('dust_speed', 3.0), ('scatter', -0.2), ('seed', 17)]
+        for field, value in air:
+            lighting._light_set(-1, field, value)
+            self.assertEqual(cmd.get_lights()['air'][field], value, field)
+        lighting._light_set(-1, 'seed', 17.6)
+        self.assertIs(cmd.get_lights()['air']['seed'], 18)
+
+    def testLightSetWorksOnAnEmptyRig(self):
+        cmd.set_lights({})
+        lighting._light_set(-1, 'enabled', 1)
+        lighting._light_set(-1, 'haze', 0.5)
+        rig = cmd.get_lights()
+        self.assertEqual((rig['enabled'], rig['air']['haze'], rig['centre']),
+                         (True, 0.5, None))
+        self.assertLightSetFails('bad index', (0, 'orbit', 1.0),
+                                 'light index 0 is out of range')
+
+    def testLightSetStatuses(self):
+        cmd.set_lights(FULL_RIG)     # 3 lights, 2 of them shadowed
+        cases = [
+            ('unknown field', (0, 'colour', [1, 0, 0]), "'colour' is not a light field"),
+            ('unknown field', (-1, 'fog', 0.1), "'fog' is not a rig field"),
+            ('unknown field', (-1, 'orbit', 1.0), "'orbit' is a light field"),
+            ('unknown field', (0, 'ambient', 0.1), "'ambient' is a rig field"),
+            ('unknown field', (0, 'version', 1), "'version'"),
+            ('bad index', (3, 'orbit', 1.0), 'light index 3', '0 to 2'),
+            ('bad index', (-2, 'ambient', 0.1), 'light index -2'),
+            ('refused', (0, 'name', 1.0), "'name' is text"),
+            ('refused', (0, 'aim_selection', 1.0), "'aim_selection' is text"),
+            ('refused', (-1, 'centre', [0, 0, 0]), "'centre' is the captured frame"),
+            ('refused', (-1, 'size', 5.0), "'size' is the captured frame"),
+            ('bad value', (0, 'orbit', float('nan')), "'orbit' must be finite"),
+            ('bad value', (0, 'radius', float('inf')), "'radius' must be finite"),
+            ('bad value', (0, 'color', [1.0, float('nan'), 0.0]), "'color' must be finite"),
+            ('bad value', (-1, 'haze', float('-inf')), "'haze' must be finite"),
+            ('bad value', (0, 'color', 1.0), "'color' takes 3 numbers, got 1"),
+            ('bad value', (0, 'position', 1.0), "'position' takes 3 numbers"),
+            ('bad value', (0, 'orbit', [1.0, 2.0, 3.0]), "'orbit' takes 1 number, got 3"),
+            ('bad value', (0, 'anchor', 0.5), "'anchor' takes 0 (camera) or 1 (pinned)"),
+            ('bad value', (0, 'aim', 2), "'aim' takes 0 (centre) or 1 (point)"),
+            ('bad value', (0, 'orbit', 'left'), 'must be a number or a list of 3 numbers'),
+            ('bad value', (0, 'color', [1.0, 'x', 0.0]), 'value item 1'),
+            ('bad value', (0, 'color', [1.0, 0.0]), 'must be a number or a list of 3'),
+            ('bad value', (0, 'orbit', None), 'must be a number'),
+        ]
+        for status, args, *words in cases:
+            self.assertLightSetFails(status, args, *words)
+        # a 4th shadowed light is refused; a shadowed light can be set again,
+        # and once one is switched off another can cast
+        cmd.set_lights({'centre': [0.0, 0.0, 0.0], 'size': 5.0,
+                        'lights': [{'shadow': True}] * 3 + [{}]})
+        self.assertLightSetFails('refused', (3, 'shadow', 1),
+                                 'at most 3 lights can cast shadows')
+        self.assertLightSetFails('refused', (3, 'shadow', 0.5),
+                                 'at most 3 lights can cast shadows')
+        lighting._light_set(3, 'shadow', 0)
+        lighting._light_set(0, 'shadow', 1)
+        lighting._light_set(0, 'shadow', 0)
+        lighting._light_set(3, 'shadow', 1)
+        self.assertEqual([l['shadow'] for l in cmd.get_lights()['lights']],
+                         [False, True, True, True])
+        # no rig
+        cmd.set_lights(None)
+        with self.assertRaises(pymol.CmdException) as ctx:
+            lighting._light_set(0, 'orbit', 1.0)
+        self.assertEqual(ctx.exception.message, 'no rig: there is no light rig')
+        with self.assertRaises(pymol.CmdException) as ctx:
+            lighting._light_get(0, 'orbit')
+        self.assertEqual(ctx.exception.message, 'no rig: there is no light rig')
+        self.assertIsNone(cmd.get_lights())
+
+    def testLightGetStatuses(self):
+        cmd.set_lights(FULL_RIG)
+        for args, status in (((0, 'colour'), 'unknown field'),
+                             ((-1, 'orbit'), 'unknown field'),
+                             ((3, 'orbit'), 'bad index'),
+                             ((-2, 'ambient'), 'bad index')):
+            with self.assertRaises(pymol.CmdException) as ctx:
+                lighting._light_get(*args)
+            self.assertTrue(ctx.exception.message.startswith(status + ': '),
+                            ctx.exception.message)
+
+    def testLightSetClampsAndWraps(self):
+        cmd.set_lights({'centre': [0.0, 0.0, 0.0], 'size': 10.0,
+                        'lights': [{}]})
+        cases = [
+            ('orbit', 270.0, -90.0), ('orbit', -180.0, 180.0),
+            ('orbit', 540.0, 180.0), ('orbit', -190.0, 170.0),
+            ('orbit', 180.0, 180.0), ('orbit', 0.4, 0.4),
+            ('radius', 20.0, 8.0), ('radius', 0.0, 0.5),
+            ('pitch', 120.0, 90.0), ('pitch', -91.0, -90.0),
+            ('beam', 0.0, 1.0), ('beam', 200.0, 170.0),
+            ('softness', 2.0, 1.0), ('warmth', 100.0, 1500.0),
+            ('intensity', 9.0, 4.0), ('highlight', -1.0, 0.0),
+            ('falloff', 3.0, 2.0), ('color', [2.0, -1.0, 0.5], [1.0, 0.0, 0.5]),
+        ]
+        for field, value, want in cases:
+            lighting._light_set(0, field, value)
+            self.assertEqual(cmd.get_lights()['lights'][0][field], want,
+                             (field, value))
+        rig_cases = [
+            ('ambient', 1.5, 1.0), ('classic', -0.5, 0.0),
+            ('dust_size', 9.0, 2.0), ('dust_size', 0.0, 0.05),
+            ('scatter', 1.0, 0.9), ('dust_speed', 11.0, 10.0),
+            ('haze', -0.5, 0.0), ('seed', -5, 0), ('seed', 2000000, 1000000),
+        ]
+        for field, value, want in rig_cases:
+            lighting._light_set(-1, field, value)
+            rig = cmd.get_lights()
+            got = rig[field] if field in rig else rig['air'][field]
+            self.assertEqual(got, want, (field, value))
+
+    def testBeamKeptWhenRadiusChanges(self):
+        """Decision 8: the beam is a cone angle; radius never changes it."""
+        cmd.set_lights({'centre': [0.0, 0.0, 0.0], 'size': 10.0, 'lights': [
+            {'beam': 37.0, 'softness': 0.3},
+            {'beam': 64.0, 'anchor': 'pinned', 'position': [0.0, 0.0, 30.0]}]})
+        before = lighting._lights_eye()
+        for radius in (1.0, 6.0, 0.5, 8.0):
+            lighting._light_set(0, 'radius', radius)
+            lighting._light_set(1, 'radius', radius)
+            rig = cmd.get_lights()
+            eye = lighting._lights_eye()
+            for i in (0, 1):
+                self.assertEqual(rig['lights'][i]['beam'], [37.0, 64.0][i])
+                self.assertEqual(eye['lights'][i]['cos_outer'],
+                                 before['lights'][i]['cos_outer'])
+                self.assertEqual(eye['lights'][i]['cos_inner'],
+                                 before['lights'][i]['cos_inner'])
+                self.assertAlmostEqual(eye['lights'][i]['radius'], radius,
+                                       places=4)
+
+    def testAimPointSwitchesAim(self):
+        cmd.set_lights({'centre': [1.0, 2.0, 3.0], 'size': 4.0, 'lights': [
+            {'aim': 'centre', 'aim_selection': 'resn NAP'}]})
+        # aim_point: aims at the point and drops the selection text
+        lighting._light_set(0, 'aim_point', [5.0, 6.0, 7.0])
+        light = cmd.get_lights()['lights'][0]
+        self.assertEqual((light['aim'], light['aim_point'], light['aim_selection']),
+                         ('point', [5.0, 6.0, 7.0], ''))
+        # aim 1 while already aimed at a point keeps the point
+        lighting._light_set(0, 'aim', 1)
+        self.assertEqual(cmd.get_lights()['lights'][0]['aim_point'], [5.0, 6.0, 7.0])
+        # aim 0: back to the centre, selection text cleared
+        cmd.set_lights({'centre': [1.0, 2.0, 3.0], 'size': 4.0, 'lights': [
+            {'aim': 'point', 'aim_point': [5.0, 6.0, 7.0],
+             'aim_selection': 'organic'}]})
+        lighting._light_set(0, 'aim', 0)
+        light = cmd.get_lights()['lights'][0]
+        self.assertEqual((light['aim'], light['aim_selection']), ('centre', ''))
+        before = lighting._lights_eye()['lights'][0]
+        # aim 1 from the centre: a point at the centre, so nothing moves
+        lighting._light_set(0, 'aim', 1)
+        light = cmd.get_lights()['lights'][0]
+        self.assertEqual((light['aim'], light['aim_point']), ('point', [1.0, 2.0, 3.0]))
+        after = lighting._lights_eye()['lights'][0]
+        for key in ('position', 'target', 'direction'):
+            for a, b in zip(after[key], before[key]):
+                self.assertAlmostEqual(a, b, places=5, msg=key)
+
+    def testLightGetMatchesDict(self):
+        cmd.set_lights(FULL_RIG)
+        rig = cmd.get_lights()
+        for scope, name, kind, default, lo, hi in SPEC_FIELDS:
+            if scope == 'light':
+                for index, light in enumerate(rig['lights']):
+                    got = lighting._light_get(index, name)
+                    self.assertEqual(got, light[name], (index, name))
+                    self.assertIs(type(got), type(light[name]), (index, name))
+            else:
+                want = rig[name] if scope == 'rig' else rig['air'][name]
+                got = lighting._light_get(-1, name)
+                self.assertEqual(got, want, name)
+                self.assertIs(type(got), type(want), name)
+        cmd.set_lights({})
+        self.assertIsNone(lighting._light_get(-1, 'centre'))
+        self.assertIsNone(lighting._light_get(-1, 'size'))
+
+    def testLightSetThenGetEveryField(self):
+        cmd.set_lights(FULL_RIG)
+        for index, field, value in LIGHT_SET_VALUES:
+            lighting._light_set(index, field, value)
+            got = lighting._light_get(index, field)
+            if field in ('anchor', 'aim'):
+                want = [['camera', 'pinned'], ['centre', 'point']][
+                    field == 'aim'][int(value)]
+            elif field in ('enabled', 'shadow', 'outline'):
+                want = bool(value)
+            else:
+                want = value
+            self.assertEqual(got, want, (index, field, value))
+
+    # --- JSON (what the app bridge reads) -------------------------------------
+
+    def testJsonNoneWithoutRig(self):
+        self.assertIsNone(lighting._lights_json())
+        cmd.set_lights(FULL_RIG)
+        cmd.set_lights(None)
+        self.assertIsNone(lighting._lights_json())
+
+    def testJsonMatchesDict(self):
+        import json
+        rig = copy.deepcopy(FULL_RIG)
+        rig['lights'][1]['aim_selection'] = \
+            'resn "NAP" \\ x\nand\tchain A \x01 é ü 分子'
+        for case in (rig, {}, {'lights': [{}]}):
+            cmd.set_lights(case)
+            text = lighting._lights_json()
+            self.assertIsInstance(text, str)
+            decoded = json.loads(text)
+            want = cmd.get_lights()
+            self.assertEqual(decoded, want)
+            self.assertEqual(list(decoded), RIG_KEYS)
+            self.assertEqual(list(decoded['air']), list(AIR_DEFAULTS))
+            for light in decoded['lights']:
+                self.assertEqual(list(light), LIGHT_KEYS)
+
+            # the same types as the dict: floats stay floats
+            def types(value):
+                if isinstance(value, dict):
+                    return {k: types(v) for k, v in value.items()}
+                if isinstance(value, list):
+                    return [types(v) for v in value]
+                return type(value)
+            self.assertEqual(types(decoded), types(want))
+            # one line: control characters are escaped
+            self.assertNotIn('\n', text)
+            self.assertNotIn('\t', text)
+
+    def testJsonNumbersRoundTrip(self):
+        """Numbers that need 17 significant digits read back exactly."""
+        import json
+        rig = {'centre': [0.1 + 0.2, 1.0 / 3.0, -2.0 / 3.0],
+               'size': 123.45678901234567, 'ambient': 0.1 + 0.2,
+               'classic': 1e-300, 'lights': [
+                   {'orbit': 1.0 / 7.0, 'position': [1e20, -1e-20, 0.0],
+                    'warmth': 6500.0, 'anchor': 'pinned'}]}
+        cmd.set_lights(rig)
+        text = lighting._lights_json()
+        self.assertEqual(json.loads(text), cmd.get_lights())
+        self.assertIn('"warmth":6500.0', text)
+        self.assertIn('"seed":0', text)
+        self.assertIn('"enabled":false', text)
+
+    def testJsonIgnoresCLocale(self):
+        """A C locale with a decimal comma never leaks into the JSON."""
+        import json
+        import locale
+        cmd.set_lights(FULL_RIG)
+        expected = cmd.get_lights()
+        old = locale.setlocale(locale.LC_NUMERIC)
+        for name in ('de_DE.UTF-8', 'de_DE', 'fr_FR.UTF-8', 'fr_FR', 'nl_NL.UTF-8'):
+            try:
+                locale.setlocale(locale.LC_NUMERIC, name)
+            except locale.Error:
+                continue
+            if locale.localeconv()['decimal_point'] == ',':
+                break
+            locale.setlocale(locale.LC_NUMERIC, old)
+        else:
+            self.skipTest('no decimal-comma locale installed')
+        try:
+            text = lighting._lights_json()
+        finally:
+            locale.setlocale(locale.LC_NUMERIC, old)
+        self.assertEqual(json.loads(text), expected)
+        self.assertIn('"ambient":0.2', text)
+
     # --- reinitialize ---------------------------------------------------------
 
     def testReinitializeClears(self):
@@ -517,6 +861,14 @@ class TestLightRig(testing.PyMOLTestCase):
             lambda: cmd.set_lights(FULL_RIG),
             lambda: lighting._lights_recenter(),
             lambda: cmd.set_lights(dict(FULL_RIG, ambient=1.0, classic=1.0)),
+        ]
+        # every field the per-field setter takes (the app bridge's path)
+        for index, field, value in LIGHT_SET_VALUES:
+            steps.append(lambda i=index, f=field, v=value:
+                         lighting._light_set(i, f, v))
+        steps += [
+            lambda: lighting._lights_json(),
+            lambda: lighting._lights_eye(),
             lambda: cmd.set_lights(None),
         ]
         for step in steps:
