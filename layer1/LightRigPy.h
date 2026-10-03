@@ -1,7 +1,7 @@
 /*
  * Python conversions of the light rig (#611). The only lighting code that
- * touches Python: included by layer4/Cmd.cpp (and, from the session ticket
- * part on, layer3/Executive.cpp), never by the scene or the app bridge.
+ * touches Python: included by layer4/Cmd.cpp and layer3/Executive.cpp
+ * (sessions), never by the scene or the app bridge.
  *
  * Every conversion is driven by the field table in LightRig.h, so the dict
  * keys, the session list order and get_light_fields() cannot drift apart.
@@ -33,6 +33,44 @@ PyObject* LightRigAsPyDict(const pymol::LightRig& rig);
  * not validated here: SceneLightsReplace() does both.
  */
 pymol::Result<pymol::LightRig> LightRigFromPyDict(PyObject* obj);
+
+/**
+ * The rig as the .pse session key 'light_rig' holds it (spec §6): a
+ * positional list with the dict's version and fields, in field-table order:
+ *
+ *   [version, enabled, centre, size, ambient, classic,
+ *    [haze, dust, dust_size, dust_speed, scatter, seed],
+ *    [[name, anchor, orbit, pitch, radius, position, aim, aim_point,
+ *      aim_selection, beam, softness, color, warmth, intensity, highlight,
+ *      falloff, shadow, outline], ...]]
+ *
+ * Plain values only: bools and the anchor/aim choices as the ints 0|1,
+ * numbers as int or float, vectors as lists of 3 floats, text as str, an
+ * unset frame as None. Nothing goes through PConv's binary arrays, so
+ * pse_binary_dump never turns the values into blobs, and older builds (which
+ * read only the keys they know) see plain data. New reference.
+ *
+ * Append-only: a later version only adds fields at the end of a list.
+ */
+PyObject* LightRigAsPyList(const pymol::LightRig& rig);
+
+/**
+ * Read the 'light_rig' session list. Lenient where LightRigFromPyDict is
+ * strict, so that a session loads whenever its rig makes sense:
+ * - missing trailing fields take the defaults (a light without a name takes
+ *   the next unused default name);
+ * - extra trailing fields are ignored; when the version is newer than this
+ *   build reads, the known prefix is loaded and `warning` says so (Q6);
+ * - out-of-range numbers are clamped (Q3);
+ * - text may be UTF-8 bytes, which is how a .pse saved with the legacy
+ *   pickler (pse_export_version < 1.9) gives non-ASCII text back.
+ * A wrong type, a non-finite number, a version below 1, a pinned light
+ * without a position, or a rig that fails LightRigValidate() is an error
+ * naming the field (and the light): the caller then clears the rig.
+ * Never leaves a Python error set.
+ */
+pymol::Result<pymol::LightRig> LightRigFromPyList(
+    PyObject* obj, std::string* warning = nullptr);
 
 /**
  * The field table, for _cmd.get_light_fields():

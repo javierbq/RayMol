@@ -43,6 +43,7 @@
 #include "Executive.h"
 #include "Feedback.h"
 #include "Lex.h"
+#include "LightRigPy.h"
 #include "List.h"
 #include "List.h"
 #include "ListMacros.h"
@@ -75,6 +76,7 @@
 #include "PyMOLOptions.h"
 #include "RepDot.h"
 #include "Scene.h"
+#include "SceneLights.h"
 #include "ScenePicking.h"
 #include "SceneRay.h"
 #include "ScrollBar.h"
@@ -5585,6 +5587,18 @@ int ExecutiveGetSession(
     PyDict_SetItemString(dict, "view", tmp);
     Py_XDECREF(tmp);
 
+#ifndef _PYMOL_NOPY
+    /* light rig (#611): written only when there is one, so a session without
+     * a rig has exactly the keys it had before */
+    if (const auto* rig = SceneGetLightRig(G)) {
+      tmp = LightRigAsPyList(*rig);
+      if (tmp) {
+        PyDict_SetItemString(dict, "light_rig", tmp);
+        Py_DECREF(tmp);
+      }
+    }
+#endif
+
     tmp = MovieAsPyList(G);
     PyDict_SetItemString(dict, "movie", tmp);
     Py_XDECREF(tmp);
@@ -5948,6 +5962,36 @@ int ExecutiveSetSession(
       }
     }
   }
+
+#ifndef _PYMOL_NOPY
+  /* light rig (#611), restored like the view: skipped on a partial restore;
+   * a full session without the key (an older .pse) clears the rig, and a
+   * partial session file leaves it alone. A key that does not read clears
+   * the rig and marks the restore incomplete; the rest still loads. */
+  if (ok && !partial_restore) {
+    tmp = PyDict_GetItemString(session, "light_rig");
+    if (tmp) {
+      std::string warning;
+      auto rig = LightRigFromPyList(tmp, &warning);
+      if (rig) {
+        if (!warning.empty()) {
+          PRINTFB(G, FB_Executive, FB_Warnings)
+          " ExecutiveSetSession-Warning: light_rig: %s\n",
+              warning.c_str() ENDFB(G);
+        }
+        SceneSetLightRig(G, std::move(*rig));
+      } else {
+        PRINTFB(G, FB_Executive, FB_Warnings)
+        " ExecutiveSetSession-Warning: light_rig: %s; rig cleared\n",
+            rig.error().what().c_str() ENDFB(G);
+        SceneSetLightRig(G, std::nullopt);
+        incomplete = true;
+      }
+    } else if (!partial_session) {
+      SceneSetLightRig(G, std::nullopt);
+    }
+  }
+#endif
 
   if (ok && !partial_restore) {
     tmp = CPythonVal_PyDict_GetItemString(G, session, "moviescenes");
