@@ -3,12 +3,15 @@
 Part of the lighting epic (#610); the spec is
 `docs/superpowers/specs/2026-10-02-lighting-epic-design.md`.
 
-**Why this exists:** CI renders nothing on a GPU.
-- `build.yml` runs the Python suite and the catch2 tests headless on Linux,
-  Windows and macOS.
-- `raymol-embedded-tests.yml` runs an explicit list of RayMol tests on macOS,
-  without drawing a frame.
-- There is no Xcode or iOS job.
+**Why this exists:** CI renders nothing on a GPU and builds no C++ tests.
+- `raymol-embedded-tests.yml` builds the core on macOS (GLUT flavour, without
+  `testing=True`) and runs an explicit list of RayMol Python tests against the
+  real `_cmd`, without drawing a frame.
+- The upstream `CI` workflow (`build.yml`), which ran the catch2 tests in
+  `layerCTest/`, has been disabled since June 2026, and no other workflow
+  builds catch2 (Homebrew ships catch2 v3; PyMOL needs v2).
+- No job builds the app or the iOS core (`ios-deps-artifact.yml` only
+  packages third-party iOS dependencies).
 
 So every claim about pixels, shaders or the app is checked locally with this
 procedure. **Each lighting PR copies the results table at the end into its
@@ -21,8 +24,14 @@ description and fills in the rows its ticket needs.**
   every file explicitly. A test that isn't listed never runs. Typical
   subjects: rig round-trips, commands and errors, scene store and recall,
   movie blend values.
-- **C++:** catch2 tests in `layerCTest/` (rig maths, angle conventions,
-  session lists) run in `build.yml` through `testing=True`.
+- **C++:** no workflow builds catch2, so C++ logic (rig maths, angle
+  conventions, session lists) is tested from Python. Expose the function the
+  renderer or the app bridge calls through a `_cmd` entry, and test it in
+  `testing/tests/raymol/lighting_*.py`. #611 does this with
+  `_cmd.get_lights_eye`, `_cmd.light_set` and `_cmd.get_lights_json` in
+  `lighting_eye.py` and `lighting_rig.py`. Don't add `layerCTest` files for
+  lighting: nothing runs them. Keep the maths in functions that take no
+  `PyMOLGlobals`, so a future catch2 job could call them directly.
 - **Shader sources:** `testing/tests/raymol/metal_shader_sources.py` must keep
   passing. It catches a helper used in one MSL library but defined in another,
   and a `)"` that ends a raw string early.
@@ -56,11 +65,14 @@ The epic's first rule: with no rig, nothing changes.
    `scripts/lighting/render.py`, added by #611 and modelled on
    `scripts/materials_gallery/render.py` (one `open -n` per image,
    `PYMOL_AUTOCMD` plus `PYMOL_AUTOEXPORT=<png>,<w>,<h>,<rt>`, a throwaway first
-   render). The scene set is 1rx1 at 1280×720:
+   render). The scene set is 1rx1 at 1280×720, 16 images:
    - cartoon, surface, sticks, spheres, mesh;
    - a 50% transparent surface (the OIT path);
    - a glass surface;
-   - each with `metal_raytrace` 0 and 1, plus one run with `metal_shadows` 1.
+   - each of those 7 with `metal_raytrace` 0 and 1, at `metal_shadows` 0
+     (14 images);
+   - plus a shadows scene (cartoon and ligand sticks) at `metal_shadows` 1,
+     with `metal_raytrace` 0 and 1 (`shadows_rt0`, `shadows_rt1`).
 3. **Render the branch twice:** with no rig, and with a rig present but off
    (lights defined, then switched off). From #612 on that is `lights
    three_point` then `lights off`; before #612, use `cmd.set_lights` with
@@ -146,7 +158,7 @@ As in Materials Checklist A, steps 2–3:
 
 | Check | Result | Evidence |
 | --- | --- | --- |
-| CI: new tests listed in `raymol-embedded-tests.yml` / `layerCTest` | | |
+| CI: new `lighting_*.py` tests listed in `raymol-embedded-tests.yml` (C++ via `_cmd`) | | |
 | L1 default unchanged (no rig / rig off), max difference | | |
 | L2 lit renders | | contact sheet |
 | L3 shader compile, `iphoneos` + `iphonesimulator` | | |

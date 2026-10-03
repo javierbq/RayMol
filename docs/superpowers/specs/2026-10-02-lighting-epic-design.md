@@ -155,8 +155,8 @@ measuring large assemblies.
     app bridge;
   - `LightRigFromPyList`/`AsPyList` for sessions.
 - **Python:** `cmd.get_lights()` returns the rig as a dict, and
-  `cmd.set_lights(dict)` replaces it. Both use the same versioned format as
-  the session key.
+  `cmd.set_lights(dict)` replaces it. Both carry the same version and fields
+  as the session key: a positional list in the session, a dict in Python.
 - **App bridge:**
   - `PyMOLBridge_LightsJSON()` to read;
   - `PyMOLBridge_LightSet(index, field, value)` to write, one call per drag
@@ -342,10 +342,14 @@ The target, on an iPhone with an A16 or newer and an M-series iPad, with a
 
 ## 10. Testing
 
-CI renders nothing on a GPU and has no Xcode job. Pixel, shader, iOS and app
-checks therefore follow `docs/superpowers/checklists/2026-10-02-lighting-checklist.md`,
-and each PR posts that checklist's results table. Python and catch2 tests run
-in CI; new Python test files must be added to `raymol-embedded-tests.yml`.
+CI renders nothing on a GPU, has no Xcode or iOS job, and builds no C++ tests
+(the upstream `build.yml`, which ran catch2, is disabled). Pixel, shader, iOS
+and app checks therefore follow
+`docs/superpowers/checklists/2026-10-02-lighting-checklist.md`, and each PR
+posts that checklist's results table. Python tests run in CI through
+`raymol-embedded-tests.yml`; new Python test files must be added to its list.
+C++ logic is tested from those Python tests through `_cmd` entries that call
+the same functions the renderer and the app bridge use.
 
 - **Default unchanged:** image tests compare a default scene with master,
   byte for byte, with the rig absent and with it present but off.
@@ -354,7 +358,7 @@ in CI; new Python test files must be added to `raymol-embedded-tests.yml`.
   - scene store and recall;
   - an older `.pse` without the keys;
   - partial restore.
-- **C++ unit tests:**
+- **C++ logic, from Python through `_cmd` (CI):**
   - camera, aimed and pinned lights resolved to eye space under a rotated
     view;
   - the angle conventions in §4.3 (orbit +90° is +x).
