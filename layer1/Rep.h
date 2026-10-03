@@ -312,6 +312,13 @@ struct Rep {
   //! stale; pickPrepare() validates). Read-only.
   const PickAccel* pickAccelCached() const { return m_pickAccel.get(); }
 
+  /**
+   * Drop the cached pick grid, giving its memory back (surface_pick_release).
+   * Returns the heap bytes it held, 0 when there was none. The next pick or
+   * prepare builds it again. Render never reads the grid.
+   */
+  std::size_t pickRelease() const;
+
 protected:
   cRepInv_t MaxInvalid = cRepInvNone;
 

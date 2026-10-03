@@ -12,7 +12,7 @@
 #include "Scene.h"
 #include "SceneLights.h"  // the light rig (#611): no Python
 #include "MyPNG.h"        // MyPNGSetFastWrite (#601)
-#include "SurfacePick.h"  // ScenePickSurface / ScenePickSurfacePrepare (#614)
+#include "SurfacePick.h"  // ScenePickSurface / Prepare / Release (#614)
 
 #include "PyMOLBridgeLights.h"  // PyMOLLightRigEye, PyMOLLightEye, PYMOL_LIGHT_SET_*
 
@@ -613,6 +613,13 @@ int PyMOLBridge_SurfacePickPrepare(PyMOLHandle h, int flags)
     } catch (...) {
         return 0;
     }
+}
+
+int PyMOLBridge_SurfacePickRelease(PyMOLHandle h)
+{
+    PyMOLGlobals *G = surfacePickGlobals(h);
+    if (!G) return 0;
+    return ScenePickSurfaceRelease(G, cSurfacePickRepMask, nullptr).accels;
 }
 
 float PyMOLBridge_GetLetterboxAspect(PyMOLHandle h)

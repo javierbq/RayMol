@@ -2431,6 +2431,33 @@ static PyObject* CmdSurfacePickPrepare(PyObject* self, PyObject* args)
       static_cast<unsigned long long>(stats.bytes), stats.built);
 }
 
+/**
+ * _cmd.surface_pick_release(self, objects, rep_mask)
+ *
+ * Drop the surface-pick grids of the given molecules' reps (objects None:
+ * every molecule), in every state, to give their memory back. The next pick
+ * or prepare rebuilds them. Returns (accels, bytes) dropped.
+ */
+static PyObject* CmdSurfacePickRelease(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  PyObject* objects_py;
+  int rep_mask;
+  API_SETUP_ARGS(G, self, args, "OOi", &self, &objects_py, &rep_mask);
+
+  std::vector<std::string> names;
+  bool have_names = false;
+  API_ASSERT(SurfacePickObjects(G, objects_py, names, have_names));
+
+  API_ASSERT(APIEnterNotModal(G));
+  const SurfacePickReleaseStats stats = ScenePickSurfaceRelease(
+      G, rep_mask, have_names ? &names : nullptr);
+  APIExit(G);
+
+  return Py_BuildValue("(iK)", stats.accels,
+      static_cast<unsigned long long>(stats.bytes));
+}
+
 static PyObject *CmdGetType(PyObject * self, PyObject * args)
 {
   PyMOLGlobals *G = nullptr;
@@ -7459,6 +7486,7 @@ static PyMethodDef Cmd_methods[] = {
   {"metal_pick", CmdMetalPick, METH_VARARGS},
   {"surface_pick", CmdSurfacePick, METH_VARARGS},
   {"surface_pick_prepare", CmdSurfacePickPrepare, METH_VARARGS},
+  {"surface_pick_release", CmdSurfacePickRelease, METH_VARARGS},
   {"mmodify", CmdMModify, METH_VARARGS},
   {"move", CmdMove, METH_VARARGS},
   {"mset", CmdMSet, METH_VARARGS},

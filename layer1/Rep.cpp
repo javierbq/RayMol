@@ -219,6 +219,15 @@ const PickAccel* Rep::pickAccelFor(const PickAccelKey& key,
   return m_pickAccel.get();
 }
 
+std::size_t Rep::pickRelease() const
+{
+  if (!m_pickAccel)
+    return 0;
+  const std::size_t bytes = m_pickAccel->bytes();
+  m_pickAccel.reset();
+  return bytes;
+}
+
 bool Rep::pickCapOn() const
 {
   if (hasTransparency() || builtTransparency() > 0.f)

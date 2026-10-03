@@ -12,8 +12,8 @@
  * reads. With `update`, it first runs the same update phase the next frame
  * would (ExecutiveUpdateSceneMembers + SceneUpdate).
  *
- * Exposed as _cmd.surface_pick / _cmd.surface_pick_prepare, and through
- * pymol.metal_pick.surface_at / surface_warm.
+ * Exposed as _cmd.surface_pick / surface_pick_prepare / surface_pick_release,
+ * and through pymol.metal_pick.surface_at / surface_warm / surface_release.
  */
 #pragma once
 
@@ -147,3 +147,19 @@ struct SurfacePickPrepareStats {
  */
 SurfacePickPrepareStats ScenePickSurfacePrepare(PyMOLGlobals* G, int rep_mask,
     const std::vector<std::string>* objects, bool update, bool build);
+
+struct SurfacePickReleaseStats {
+  int accels = 0;        ///< pick grids dropped
+  std::size_t bytes = 0; ///< heap bytes they held
+};
+
+/**
+ * Drop the pick grids of the considered molecules' pickable reps, in every
+ * coordinate set, drawn or not, to give their memory back: on leaving a mode
+ * that picks, or on a memory warning (the grids otherwise live as long as
+ * their reps). `objects` nullptr means every molecule, '_' names included.
+ * Changes nothing a render reads, runs no update and never reaches Python;
+ * the next pick or prepare rebuilds what it needs.
+ */
+SurfacePickReleaseStats ScenePickSurfaceRelease(PyMOLGlobals* G, int rep_mask,
+    const std::vector<std::string>* objects);

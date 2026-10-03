@@ -3502,9 +3502,25 @@ final class PyMOLEngine: ObservableObject {
         return Self.surfacePickPrepare(handle: instance, updateReps: updateReps)
     }
 
-    // The bridge calls behind the two above, as seams whose signatures use Swift
-    // types only: the unit-test bundle has no bridging header, so it reaches the
-    // bridge (and its null-handle guards) through these.
+    /// Drop every surface-pick grid, giving its memory back; the next pick or
+    /// prepare rebuilds what it needs. Call it on leaving a mode that picks
+    /// (the counterpart of `prepareSurfacePick`) or on a memory warning: the
+    /// grids otherwise live as long as their representations. Returns how
+    /// many were dropped (0 before the core is up or during a movie export).
+    /// Main thread only.
+    @discardableResult
+    func releaseSurfacePick() -> Int {
+        guard Thread.isMainThread else {
+            assertionFailure("releaseSurfacePick touches the core: main thread only")
+            return 0
+        }
+        guard isReady, let instance, !exportRenderActive else { return 0 }
+        return Self.surfacePickRelease(handle: instance)
+    }
+
+    // The bridge calls behind the ones above, as seams whose signatures use
+    // Swift types only: the unit-test bundle has no bridging header, so it
+    // reaches the bridge (and its null-handle guards) through these.
 
     static func surfacePick(handle: UnsafeMutableRawPointer?, sceneNDCX: Float,
                             sceneNDCY: Float, updateReps: Bool) -> SurfacePick? {
@@ -3518,6 +3534,10 @@ final class PyMOLEngine: ObservableObject {
 
     static func surfacePickPrepare(handle: UnsafeMutableRawPointer?, updateReps: Bool) -> Int {
         Int(PyMOLBridge_SurfacePickPrepare(handle, updateReps ? 1 : 0))
+    }
+
+    static func surfacePickRelease(handle: UnsafeMutableRawPointer?) -> Int {
+        Int(PyMOLBridge_SurfacePickRelease(handle))
     }
 
     /// The live frame's letterbox aspect (0 = the scene fills the view).
