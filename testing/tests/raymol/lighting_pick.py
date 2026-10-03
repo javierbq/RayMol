@@ -614,16 +614,19 @@ class TestSticks(PickCase):
 
     def testTessellatedSticksStillHit(self):
         # stick_as_cylinders 0: CGOSimplify triangles on Metal (Mesh rule),
-        # within half an Angstrom of the analytic stick.
+        # picked against the analytic stick they approximate.
         cmd.set('stick_as_cylinders', 0)
         r = cmd.get_setting_float('stick_radius')
         for p in [(0.0, 0.0, 0.0), (1.0, 0.1, 0.0)]:
             x, y = self.ndc_of(p)
             hit = self.pick(x, y)
             self.assertHit(hit)
-            self.assertLess(abs(self.axis_distance(hit.point) - r), 0.5)
+            self.assertAlmostEqual(self.axis_distance(hit.point), r, delta=1e-3)
+            self.assertGreater(hit.point[2], 0.0, 'the far side was picked')
             self.assertOnRay(hit, x, y)
             self.assertOriented(hit)
+        self.assertAlmostEqual(self.pick(0.0, 0.0).depth, 100.0 - r,
+                               delta=1e-3)
 
     def testMissBesideTheStick(self):
         self.assertIsNone(self.pick(*self.ndc_of((0.0, 1.0, 0.0))))
@@ -1025,6 +1028,45 @@ class TestSlab(PickCase):
         self.assertNormalNear(hit, (0.0, 0.0, 1.0), 5.0)
         self.assertOriented(hit)
 
+    def assertFarWallFromInside(self, hit, depth, what):
+        self.assertHit(hit)
+        self.assertEqual(hit.object, 'cut', what)
+        self.assertTrue(hit.inside, what)
+        self.assertFalse(hit.cap, what)
+        self.assertAlmostEqual(hit.depth, depth, delta=1e-3, msg=what)
+        self.assertNormalNear(hit, (0.0, 0.0, 1.0), 0.05)
+        self.assertOriented(hit)
+        self.assertOnRay(hit, 0.0, 0.0)
+
+    def testSphereUseShaderOffStraddlingSphereShowsItsInside(self):
+        # sphere_use_shader 0 drops the impostors to CGOSimplify triangles
+        # (picked as the analytic sphere): Mesh rule, the far wall from
+        # inside, where the impostor is see-through.
+        cmd.set('sphere_use_shader', 0)
+        self.ball('cut', (0.0, 0.0, 50.0))
+        self.assertFarWallFromInside(self.pick(0.0, 0.0), 52.0,
+                                     'sphere_use_shader 0')
+        cmd.set('metal_interior_cap', 1, 'cut')
+        self.assertFarWallFromInside(self.pick(0.0, 0.0), 52.0,
+                                     'no impostor cap on triangles')
+
+    def testTessellatedStraddlingStickShowsItsInside(self):
+        # Without the stick impostor (any of these off) RepCylBond's CGO is
+        # tessellated: Mesh rule, the far wall from inside at 50 + r.
+        r = cmd.get_setting_float('stick_radius')
+        for setting in ('stick_as_cylinders', 'stick_use_shader',
+                        'render_as_cylinders'):
+            cmd.delete('cut')
+            cmd.set(setting, 0)
+            self.stick('cut', (-3.0, 0.0, 50.0), (3.0, 0.0, 50.0))
+            self.assertFarWallFromInside(self.pick(0.0, 0.0), 50.0 + r,
+                                         setting)
+            cmd.set(setting, 1)
+        # And with all three on, the impostor: see-through.
+        cmd.delete('cut')
+        self.stick('cut', (-3.0, 0.0, 50.0), (3.0, 0.0, 50.0))
+        self.assertIsNone(self.pick(0.0, 0.0))
+
 
 class TestSurface(PickCase):
 
@@ -1265,10 +1307,19 @@ class TestCartoon(PickCase):
         cmd.remove('rx and not polymer')
         cmd.show_as('cartoon', 'rx')
         cmd.orient('rx')
-        for view in range(2):
-            if view:
+        for view in range(3):
+            if view == 1:
                 cmd.turn('y', 70)
                 cmd.turn('x', 35)
+            elif view == 2:
+                # The near plane through the middle of the molecule: the
+                # window starts inside it, and where the cut opens the
+                # cartoon, the far wall shows from inside (Mesh rule).
+                v = list(cmd.get_view())
+                v[15] = -v[11]  # front clip at the origin's depth
+                cmd.set_view(v)
+                self.assertAlmostEqual(metal_pick.camera().clip_front,
+                                       -v[11], delta=1e-3)
             mesh = self.export_mesh('rx')
             self.assertGreater(len(mesh.tris), 1000)
 
@@ -1277,8 +1328,18 @@ class TestCartoon(PickCase):
                 return any(norm(cross(sub(m, o), d)) / norm(d) < 2.0
                            for m in mesh.markers)
 
-            self.assertMatchesMesh(mesh, self.box_points('rx', n=7),
-                                   'cartoon', min_hits=8, exclude=near_marker)
+            points = self.box_points('rx', n=7 if view < 2 else 11)
+            self.assertMatchesMesh(mesh, points, 'cartoon', min_hits=8,
+                                   exclude=near_marker)
+            if view == 2:
+                # A finer grid (picks only) to find rays through the cut.
+                front = metal_pick.camera().clip_front
+                hits = [h for h in (self.pick(*p) for p in
+                                    self.box_points('rx', n=31, inset=0.0))
+                        if h]
+                self.assertTrue(all(h.depth >= front - 1e-3 for h in hits))
+                self.assertTrue(any(h.inside for h in hits),
+                                'the cut should expose a back face')
 
     def test1AON(self):
         # 58,870 atoms; correctness only (timing is pick_bench.py's job).
@@ -1336,6 +1397,54 @@ class TestCartoon(PickCase):
                             radius + 1.0)
         self.assertGreater(hits, 0)
 
+    def ring_sphere(self, z):
+        '''TTT single-strand B-DNA, cartoon_ring_mode 4: the middle base's
+        ring sphere (radius cartoon_ring_radius 1.5, at the ring's centroid)
+        centred at (0, 0, z).'''
+        cmd.delete('dna')
+        cmd.fnab('TTT', name='dna', mode='DNA', form='B', dbl_helix=0)
+        cmd.set_view(VIEW)  # the first object zooms the view
+        cmd.show_as('cartoon', 'dna')
+        cmd.set('cartoon_ring_mode', 4)
+        cmd.set('cartoon_ring_radius', 1.5)
+        ring = cmd.get_coords('dna and resi 2 and name N1+C2+N3+C4+C5+C6')
+        c = [sum(p[k] for p in ring) / len(ring) for k in range(3)]
+        cmd.translate([-c[0], -c[1], z - c[2]], 'dna', camera=0)
+
+    def testRingSphereCutByTheNearPlane(self):
+        # Unclipped: the sphere's front pole, wherever it was built.
+        self.ring_sphere(0.0)
+        hit = self.pick(0.0, 0.0)
+        self.assertHit(hit)
+        self.assertAlmostEqual(hit.depth, 98.5, delta=1e-3)
+        self.assertFalse(hit.inside)
+        # Centred on the near plane. The impostor (the default) is
+        # see-through; the triangles RepCartoonCGOGenerate tessellates
+        # instead (cartoon_use_shader off, or a transparent cartoon with
+        # transparency_mode != 3) show the far wall from inside.
+        self.ring_sphere(50.0)
+        cases = [({}, None),
+                 ({'cartoon_use_shader': 0}, 51.5),
+                 ({'cartoon_transparency': 0.5}, 51.5),
+                 ({'cartoon_transparency': 0.5, 'transparency_mode': 3}, None)]
+        for settings, depth in cases:
+            saved = {name: cmd.get(name) for name in settings}
+            for name, value in settings.items():
+                cmd.set(name, value)
+            hit = self.pick(0.0, 0.0)
+            if depth is None:
+                self.assertIsNone(hit, settings)
+            else:
+                self.assertHit(hit)
+                self.assertEqual(hit.rep, 'cartoon')
+                self.assertTrue(hit.inside, settings)
+                self.assertFalse(hit.cap)
+                self.assertAlmostEqual(hit.depth, depth, delta=1e-3,
+                                       msg=settings)
+                self.assertNormalNear(hit, (0.0, 0.0, 1.0), 0.05)
+            for name, value in saved.items():
+                cmd.set(name, value)
+
     def testNucleicAcidRingSpheres(self):
         # cartoon_ring_mode 4 draws each base as a sphere (an impostor on
         # Metal; tessellated with cartoon_use_shader off).
@@ -1362,6 +1471,85 @@ class TestCartoon(PickCase):
         self.assertGreater(spheres, plain)
         cmd.set('cartoon_use_shader', 0)
         self.assertGreater(count(), plain)
+
+
+class TestPerAtomTransparency(PickCase):
+    '''Transparency set per atom (or per bond) leaves the rep's built
+    transparency at 0, so the rep is picked primitive by primitive: the
+    CGO_ALPHA before a sphere or a cylinder, the per-vertex colour alpha of
+    a cartoon's triangle blocks, the surface's per-vertex alpha (VA). A
+    primitive fully transparent there draws nothing, so the pick passes
+    through it to what is behind.'''
+
+    def testInvisibleSphere(self):
+        cmd.pseudoatom('two', name='F', pos=[0.0, 0.0, 20.0], vdw=2.0)
+        cmd.pseudoatom('two', name='B', pos=[0.0, 0.0, 0.0], vdw=2.0)
+        cmd.show_as('spheres', 'two')
+        self.assertAlmostEqual(self.pick(0.0, 0.0).depth, 78.0, delta=1e-3)
+        cmd.set('sphere_transparency', 1.0, 'two and name F')
+        self.assertEqual(cmd.get_setting_float('sphere_transparency', 'two'),
+                         0.0)
+        hit = self.pick(0.0, 0.0)
+        self.assertHit(hit)
+        self.assertEqual(hit.object, 'two')
+        self.assertAlmostEqual(hit.depth, 98.0, delta=1e-3)
+
+    def testInvisibleBond(self):
+        self.stick('stk', (-3.0, 0.0, 20.0), (3.0, 0.0, 20.0))
+        self.ball('ball', (0.0, 0.0, 0.0))
+        self.assertEqual(self.pick(0.0, 0.0).object, 'stk')
+        cmd.set_bond('stick_transparency', 1.0, 'stk')
+        self.assertEqual(cmd.get_setting_float('stick_transparency', 'stk'),
+                         0.0)
+        hit = self.pick(0.0, 0.0)
+        self.assertHit(hit)
+        self.assertEqual(hit.object, 'ball')
+        self.assertAlmostEqual(hit.depth, 98.0, delta=1e-3)
+        # Half transparent is still drawn.
+        cmd.set_bond('stick_transparency', 0.5, 'stk')
+        self.assertEqual(self.pick(0.0, 0.0).object, 'stk')
+
+    def testInvisibleSurfacePatch(self):
+        cmd.pseudoatom('pair', name='A', pos=[-1.25, 0.0, 0.0], vdw=2.0)
+        cmd.pseudoatom('pair', name='B', pos=[1.25, 0.0, 0.0], vdw=2.0)
+        cmd.show_as('surface', 'pair')
+        self.ball('ball', (0.0, 0.0, -20.0))
+        self.assertEqual(self.pick(0.0, 0.0).object, 'pair')
+        cmd.set('transparency', 1.0, 'pair and name A+B')
+        self.assertEqual(cmd.get_setting_float('transparency', 'pair'), 0.0)
+        hit = self.pick(0.0, 0.0)
+        self.assertHit(hit)
+        self.assertEqual(hit.object, 'ball')
+        self.assertAlmostEqual(hit.depth, 118.0, delta=1e-3)
+
+    def testInvisibleCartoonResidues(self):
+        cmd.fab('AAAAAAAAAAAA', 'pep', ss=1)
+        cmd.dss('pep')
+        cmd.show_as('cartoon', 'pep')
+        e = cmd.get_extent('pep')
+        cmd.translate([-(e[0][i] + e[1][i]) / 2.0 for i in range(3)],
+                      selection='pep', camera=0)
+        cmd.translate([0.0, 0.0, 20.0], selection='pep', camera=0)
+        cmd.pseudoatom('wall', pos=[0.0, 0.0, -20.0], vdw=30.0)
+        cmd.show_as('spheres', 'wall')
+        cmd.set_view(VIEW)  # the first object zoomed the view
+        points = [(i / 20.0, j / 20.0) for i in range(-6, 7)
+                  for j in range(-6, 7)]
+
+        def cartoon_hits():
+            hits = [self.pick(*p) for p in points]
+            return sum(1 for h in hits if h is not None and h.object == 'pep')
+
+        every = cartoon_hits()
+        self.assertGreater(every, 10)
+        cmd.set('cartoon_transparency', 1.0, 'pep and resi 7-12')
+        self.assertEqual(cmd.get_setting_float('cartoon_transparency', 'pep'),
+                         0.0)
+        some = cartoon_hits()
+        self.assertGreater(some, 0)
+        self.assertLess(some, every)
+        cmd.set('cartoon_transparency', 1.0, 'pep and resi 1-6')
+        self.assertEqual(cartoon_hits(), 0)
 
 
 class TestTransforms(PickCase):
@@ -1662,6 +1850,20 @@ class TestGrid(PickCase):
         cmd.set('grid_max', 1)
         self.assertEqual(metal_pick.surface_warm()['accels'], 2)
 
+    def testReleaseCoversEveryState(self):
+        # Grids warmed for grid cells stay with their states after the grid
+        # is gone; release drops them all, drawn or not.
+        self.multi('gm', (0.0, 10.0))
+        self.ball('gs', (0.0, 0.0, -20.0))
+        cmd.set('grid_mode', 3)
+        self.assertEqual(metal_pick.surface_warm()['accels'], 3)
+        cmd.set('grid_mode', 0)
+        released = metal_pick.surface_release()
+        self.assertEqual(released['accels'], 3)
+        self.assertGreater(released['bytes'], 0)
+        self.assertEqual(metal_pick.surface_release(),
+                         {'accels': 0, 'bytes': 0})
+
 
 class TestScope(PickCase):
 
@@ -1758,7 +1960,97 @@ class TestScope(PickCase):
             self.pick(x, y)
             self.pick(x, y, update=False)
         metal_pick.surface_warm()
+        metal_pick.surface_release()
         self.assertEqual(self.snapshot(), before)
+
+    def render(self):
+        '''The bytes of a small ray-traced frame (headless: no GL).'''
+        with testing.mktemp('.png') as path:
+            cmd.png(path, width=80, height=60, ray=1, quiet=1)
+            with open(path, 'rb') as handle:
+                return handle.read()
+
+    def assertPicksLeaveTheRenderAlone(self, points, what):
+        self.render()                    # whatever the first frame builds
+        before = self.render()
+        self.assertGreater(len(before), 0)
+        for x, y in points:
+            self.pick(x, y)
+            self.pick(x, y, update=False)
+        metal_pick.surface_warm()
+        self.assertEqual(self.render(), before, what + ': warm and picks')
+        metal_pick.surface_release()
+        self.assertEqual(self.render(), before, what + ': release')
+        for x, y in points:
+            self.pick(x, y)              # rebuilds the released grids
+        self.assertEqual(self.render(), before, what + ': picks again')
+
+    def testPicksLeaveTheRenderAlone(self):
+        # The pick and its update must not change what a frame draws: the
+        # same ray-traced frame before and after (L1 renders no pick).
+        points = [(0.0, 0.0), (0.1, 0.0), (-0.2, 0.15), (0.9, 0.9)]
+        self.ball('ball', (0.0, 0.0, 0.0))
+        self.stick('stk', (-3.0, 0.0, 20.0), (3.0, 0.0, 20.0))
+        self.ball('shell', (2.0, -1.0, 10.0), rep='surface')
+        self.assertPicksLeaveTheRenderAlone(points, 'plain')
+        # The per-rep clip (its cached depth range) and the interior cap.
+        cmd.set('surface_clip_front', 0.4, 'shell')
+        cmd.set('metal_interior_cap', 1, 'shell')
+        self.assertPicksLeaveTheRenderAlone(points, 'surface clip')
+        # A grid (the pick rebuilds its layout locally) over two states.
+        cmd.pseudoatom('multi', pos=[0.0, 3.0, 0.0], vdw=2.0, state=1)
+        cmd.pseudoatom('multi', pos=[0.0, -3.0, 5.0], vdw=2.0, state=2)
+        cmd.show_as('spheres', 'multi')
+        cmd.set('grid_mode', 3)
+        self.addCleanup(self.reset_ray_grid)
+        self.assertPicksLeaveTheRenderAlone(
+            points + [(-0.5, 0.5), (0.5, -0.5)], 'grid_mode 3')
+
+    def reset_ray_grid(self):
+        '''A ray render in grid mode leaves the scene's grid layout behind,
+        and a later ray with grid_mode 0 (an OBJ export in another test)
+        still draws through it: SceneRay only updates the layout in grid
+        mode, and headless no SceneRender resets it (pre-existing; proposed
+        follow-up). A one-slot grid ray clears it.'''
+        cmd.delete('all')
+        cmd.set('grid_mode', 1)
+        self.render()
+        cmd.set('grid_mode', 0)
+
+    def testReleaseDropsTheGrids(self):
+        from pymol.cmd import _cmd
+        mask = metal_pick._surface_rep_mask(metal_pick.SURFACE_REPS)
+
+        def cached():
+            with cmd.lockcm:
+                return _cmd.surface_pick_prepare(cmd._COb, None, mask, 0, 0)[0]
+
+        self.ball('ball', (0.0, 0.0, 0.0))
+        self.stick('stk', (-3.0, 0.0, 20.0), (3.0, 0.0, 20.0))
+        self.assertEqual(metal_pick.surface_warm()['accels'], 2)
+        sticks = metal_pick.surface_warm(reps='sticks')
+        # Only what is asked for, with the heap it held.
+        self.assertEqual(metal_pick.surface_release(reps='sticks'),
+                         {'accels': 1, 'bytes': sticks['bytes']})
+        self.assertEqual(cached(), 1)
+        self.assertEqual(metal_pick.surface_release(objects=['nothing']),
+                         {'accels': 0, 'bytes': 0})
+        # The next pick rebuilds what it needs.
+        hit = self.pick(0.0, 0.0)
+        self.assertEqual(hit.object, 'stk')
+        self.assertEqual(cached(), 2)
+        self.assertEqual(metal_pick.surface_warm()['built'], 0)
+        # Disabled objects keep their grids until released.
+        cmd.disable('ball')
+        released = metal_pick.surface_release()
+        self.assertEqual(released['accels'], 2)
+        self.assertGreater(released['bytes'], sticks['bytes'])
+        cmd.enable('ball')
+        self.assertEqual(cached(), 0)
+        self.assertEqual(metal_pick.surface_release(),
+                         {'accels': 0, 'bytes': 0})
+        self.assertRaises(CmdException, metal_pick.surface_release,
+                          reps='lines')
 
     def testWarmBuildsOnceAndReports(self):
         self.ball('ball', (0.0, 0.0, 0.0))
