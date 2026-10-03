@@ -32,6 +32,8 @@ struct RepSphere : Rep {
   cRep_t type() const override { return cRepSphere; }
   void render(RenderInfo* info) override;
   bool sameVis() const override;
+  bool pickRay(const RepPickArgs& args, PickRayHit& hit) const override;
+  const PickAccel* pickPrepare(bool* built = nullptr) const override;
 
   bool* LastVisib = nullptr;
   int* LastColor = nullptr;
