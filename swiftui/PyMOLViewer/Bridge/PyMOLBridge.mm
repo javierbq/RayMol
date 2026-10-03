@@ -11,7 +11,7 @@
 #include "Setting.h"        // SettingGet/SetGlobal_b, cSetting_metal_raytrace
 #include "Scene.h"
 #include "MyPNG.h"        // MyPNGSetFastWrite (#601)
-#include "SurfacePick.h"  // ScenePickSurface / ScenePickSurfacePrepare (#614)
+#include "SurfacePick.h"  // ScenePickSurface / Prepare / Release (#614)
 
 #import <Foundation/Foundation.h>
 #import <Python.h>
@@ -535,6 +535,13 @@ int PyMOLBridge_SurfacePickPrepare(PyMOLHandle h, int flags)
     } catch (...) {
         return 0;
     }
+}
+
+int PyMOLBridge_SurfacePickRelease(PyMOLHandle h)
+{
+    PyMOLGlobals *G = surfacePickGlobals(h);
+    if (!G) return 0;
+    return ScenePickSurfaceRelease(G, cSurfacePickRepMask, nullptr).accels;
 }
 
 float PyMOLBridge_GetLetterboxAspect(PyMOLHandle h)

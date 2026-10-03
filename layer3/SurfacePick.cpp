@@ -570,3 +570,35 @@ SurfacePickPrepareStats ScenePickSurfacePrepare(PyMOLGlobals* G, int rep_mask,
       });
   return stats;
 }
+
+SurfacePickReleaseStats ScenePickSurfaceRelease(PyMOLGlobals* G, int rep_mask,
+    const std::vector<std::string>* objects)
+{
+  SurfacePickReleaseStats stats;
+  const int mask = rep_mask & cSurfacePickRepMask;
+  // Every molecule, not just the scene's (enabled) ones: a disabled object
+  // keeps the grids its reps were given while it was drawn.
+  for (ObjectIterator iter(G); iter.next();) {
+    pymol::CObject* obj = iter.getObject();
+    if (!obj || obj->type != cObjectMolecule)
+      continue;
+    if (objects && std::find(objects->begin(), objects->end(), obj->Name) ==
+                       objects->end())
+      continue;
+    auto* om = static_cast<ObjectMolecule*>(obj);
+    for (int state = 0; state < om->NCSet; ++state) {
+      const CoordSet* cs = om->CSet[state];
+      if (!cs)
+        continue;
+      for (cRep_t r : kPickReps) {
+        if (!(mask & (1 << r)) || !cs->Rep[r])
+          continue;
+        if (!cs->Rep[r]->pickAccelCached())
+          continue;
+        stats.bytes += cs->Rep[r]->pickRelease();
+        ++stats.accels;
+      }
+    }
+  }
+  return stats;
+}

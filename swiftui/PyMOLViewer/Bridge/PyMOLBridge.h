@@ -160,6 +160,13 @@ int PyMOLBridge_SurfacePick(PyMOLHandle instance, float sceneNdcX, float sceneNd
 // first (main thread only, as above). Returns how many grids are held after
 // the call (0 on a null handle or under a modal draw).
 int PyMOLBridge_SurfacePickPrepare(PyMOLHandle instance, int flags);
+// Drop every surface-pick grid (all molecules, all states), giving their
+// memory back: call it on leaving a mode that picks, or on a memory warning.
+// The next pick or prepare rebuilds what it needs. Never touches Python and
+// changes nothing a render reads; the same thread rules as
+// PyMOLBridge_SurfacePick with flags 0. Returns how many grids were dropped
+// (0 on a null handle or under a modal draw).
+int PyMOLBridge_SurfacePickRelease(PyMOLHandle instance);
 // The letterbox aspect (width / height) the live frame renders the scene into,
 // as set by PyMOLBridge_SetLetterboxAspect; 0 = the scene fills the view (also
 // when there is no renderer yet).

@@ -1188,3 +1188,24 @@ def surface_warm(reps=SURFACE_REPS, objects=None, update=True, _self=None):
         accels, nbytes, built = _cmd.surface_pick_prepare(
             c._COb, objs, mask, 1 if update else 0, 1)
     return {'accels': accels, 'bytes': nbytes, 'built': built}
+
+
+def surface_release(reps=SURFACE_REPS, objects=None, _self=None):
+    """Drop the surface-pick grids surface_warm and surface_at built, to give
+    their memory back: on leaving a mode that picks, or when memory is short.
+    Grids otherwise live as long as their representations. The next pick or
+    surface_warm builds what it needs again.
+
+    reps     which representations' grids to drop (as for surface_at)
+    objects  object names; None means every molecule, '_' names included
+
+    Returns {'accels': n, 'bytes': b}: the grids dropped and the heap they
+    held. Changes nothing a render reads."""
+    from pymol import cmd as _cmd_mod
+    from pymol.cmd import _cmd
+    c = _self or _cmd_mod
+    mask = _surface_rep_mask(reps)
+    objs = _surface_objects(objects)
+    with c.lockcm:
+        accels, nbytes = _cmd.surface_pick_release(c._COb, objs, mask)
+    return {'accels': accels, 'bytes': nbytes}

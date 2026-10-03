@@ -83,6 +83,14 @@ struct RepCartoon : Rep {
   CGO* preshader = nullptr;
 
   /**
+   * What RepCartoonCGOGenerate made of the spheres when it built `std`
+   * (#614 pick): -1 not built yet, 1 tessellated (CGOSimplify), 0 impostors.
+   * Settings it read that do not rebuild the rep (transparency_mode) cannot
+   * change what is drawn after that, so the pick follows this, not them.
+   */
+  signed char stdSpheresTessellated = -1;
+
+  /**
    * Free the preshader CGO or move to another owner.
    * @post preshader == nullptr
    *
@@ -166,6 +174,12 @@ static int RepCartoonCGOGenerate(RepCartoon * I, RenderInfo * info)
   I->setHasTransparency(hasAlpha);
 
   use_shaders = SettingGetGlobal_b(G, cSetting_use_shaders) && SettingGetGlobal_b(G, cSetting_cartoon_use_shader);
+  // The sphere treatment the branches below give `std` (#614 pick).
+  I->stdSpheresTessellated =
+      (!use_shaders ||
+          (hasAlpha && SettingGetGlobal_i(G, cSetting_transparency_mode) != 3))
+          ? 1
+          : 0;
   has_cylinders_to_optimize = G->ShaderMgr->Get_CylinderShader(info->pass, 0) && 
                               SettingGetGlobal_i(G, cSetting_cartoon_nucleic_acid_as_cylinders) && 
                               SettingGetGlobal_b(G, cSetting_render_as_cylinders) && 
@@ -318,10 +332,13 @@ void RepCartoon::render(RenderInfo* info)
  *  - spheres: impostors (CGOOptimizeSpheresToVBONonIndexed) unless
  *    cartoon_use_shader is off or the rep is transparent with
  *    transparency_mode != 3, where CGOSimplify tessellates everything.
- *    "Transparent" is the built transparency, or the hasTransparency()
- *    that RepCartoonCGOGenerate records (it includes per-atom
- *    cartoon_transparency, but only once a frame has been drawn; a grid
- *    built before that is rebuilt when the flag changes the rule).
+ *    Once a frame has built `std`, the treatment it chose
+ *    (stdSpheresTessellated) is what is drawn, whatever those settings say
+ *    later: transparency_mode does not rebuild cartoons. Before that, the
+ *    settings say what the first frame will choose, with "transparent" read
+ *    as the built transparency (per-atom cartoon_transparency only counts
+ *    once a frame has looked at it; the grid is rebuilt when the rule
+ *    changes).
  * Keep in step with RepCartoonCGOGenerate.
  */
 const PickAccel* RepCartoon::pickPrepare(bool* built) const
@@ -333,10 +350,16 @@ const PickAccel* RepCartoon::pickPrepare(bool* built) const
     return nullptr;
   if (builtTransparency() >= 0.999f)
     return nullptr; // drawn invisible
-  bool const transparent = builtTransparency() > 0.f || hasTransparency();
-  bool const simplified_all =
-      !SettingGetGlobal_b(G, cSetting_cartoon_use_shader) ||
-      (transparent && SettingGetGlobal_i(G, cSetting_transparency_mode) != 3);
+  bool simplified_all;
+  if (std && stdSpheresTessellated >= 0) {
+    simplified_all = stdSpheresTessellated != 0; // what the frame drew
+  } else {
+    bool const transparent = builtTransparency() > 0.f || hasTransparency();
+    simplified_all =
+        !SettingGetGlobal_b(G, cSetting_cartoon_use_shader) ||
+        (transparent &&
+            SettingGetGlobal_i(G, cSetting_transparency_mode) != 3);
+  }
   PickCGORules rules;
   rules.sphere = simplified_all ? PickRule::Mesh : PickRule::Impostor;
   rules.cylinder = PickRule::Mesh;
