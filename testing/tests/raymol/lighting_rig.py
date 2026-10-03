@@ -339,6 +339,66 @@ class TestLightRig(testing.PyMOLTestCase):
             message = self.assertRaisesNaming(rig, 'set_lights', *words)
             self.assertEqual(cmd.get_lights(), FULL_RIG, message)
 
+    def testNameLengthBoundary(self):
+        """Q4: 32 characters is the longest name: accepted by set_lights,
+        through _light_get and the JSON, and through a session save and
+        restore; 33 is refused (testValidationIsAtomic)."""
+        self.load()
+        longest = '_' + 'a' * 30 + '9'
+        self.assertEqual(len(longest), 32)
+        cmd.set_lights({'lights': [{'name': longest}, {'name': 'B' * 32}]})
+        rig = cmd.get_lights()
+        self.assertEqual([l['name'] for l in rig['lights']],
+                         [longest, 'B' * 32])
+        self.assertEqual(lighting._light_get(0, 'name'), longest)
+        self.assertIn('"%s"' % longest, lighting._lights_json())
+        session = cmd.get_session()
+        cmd.set_lights(None)
+        cmd.set_session(session)
+        self.assertEqual(cmd.get_lights(), rig)
+
+    def testSequenceSubclassWithWrongLen(self):
+        """A list subclass whose __len__ disagrees with its items is read
+        by its real items: an error naming the field, never a crash."""
+
+        class Liar(list):
+            def __init__(self, items, n):
+                super().__init__(items)
+                self.n = n
+
+            def __len__(self):
+                return self.n
+
+        cmd.set_lights(FULL_RIG)
+        cases = [
+            ({'lights': [{'color': Liar([1.0], 3)}]}, "'color' must be a list of 3"),
+            ({'lights': [{'color': Liar([], 3)}]}, "'color' must be a list of 3"),
+            ({'centre': Liar([0.0, 0.0], 3), 'size': 5.0}, "'centre' must be a list of 3"),
+        ]
+        for rig, words in cases:
+            message = self.assertRaisesNaming(rig, words)
+            self.assertEqual(cmd.get_lights(), FULL_RIG, message)
+        # longer than it says: its real items are checked
+        self.assertRaisesNaming(
+            {'lights': [{'color': Liar([1.0, 0.0, 0.0, 0.5], 3)}]},
+            "'color' must be a list of 3")
+        # a lights list that claims more lights than it holds: the real ones
+        cmd.set_lights({'centre': [0.0, 0.0, 0.0], 'size': 5.0,
+                        'lights': Liar([{'name': 'one'}], 6)})
+        self.assertEqual([l['name'] for l in cmd.get_lights()['lights']],
+                         ['one'])
+        # and fewer than it holds: all of them count
+        self.assertRaisesNaming({'centre': [0.0, 0.0, 0.0], 'size': 5.0,
+                                 'lights': Liar([{}] * 7, 1)},
+                                'at most 6 lights (got 7)')
+        with self.assertRaises(pymol.CmdException):
+            with cmd.lockcm:
+                _cmd.get_lights_eye(cmd._COb, Liar([1.0], 16))
+        with self.assertRaises(pymol.CmdException):
+            lighting._light_set(0, 'color', Liar([0.5], 3))
+        with self.assertRaises(pymol.CmdException):
+            lighting._light_set(0, 'color', Liar([0.5, 0.5, 0.5, 0.5], 3))
+
     def testClamps(self):
         self.load()
         cases = [

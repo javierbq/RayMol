@@ -200,8 +200,10 @@ pymol::Result<LightValue> valueFromPy(
     return value;
   }
   case LightKind::Vec3: {
+    // the real item count (ob_size), never a subclass's __len__: the items
+    // are read straight from the list or tuple below
     const bool seq = (PyList_Check(o) || PyTuple_Check(o)) &&
-                     PySequence_Size(o) == 3;
+                     PySequence_Fast_GET_SIZE(o) == 3;
     if (!seq) {
       return pymol::make_error(where, "'", field.name,
           "' must be a list of 3 numbers", field.optional ? " or None" : "",
@@ -738,7 +740,7 @@ pymol::Result<LightRig> LightRigFromPyDict(PyObject* obj)
       return pymol::make_error(
           "'lights' must be a list, got ", typeName(lights));
     }
-    const Py_ssize_t n = PySequence_Size(lights);
+    const Py_ssize_t n = PySequence_Fast_GET_SIZE(lights); // not __len__
     if (n > pymol::kLightRigMaxLights) {
       return pymol::make_error("at most ", pymol::kLightRigMaxLights,
           " lights (got ", long(n), ")");
@@ -861,7 +863,7 @@ PyObject* LightRigEyeAsPyDict(
 pymol::Result<glm::dmat4> LightMatrixFromPy(PyObject* obj)
 {
   const bool seq = (PyList_Check(obj) || PyTuple_Check(obj)) &&
-                   PySequence_Size(obj) == 16;
+                   PySequence_Fast_GET_SIZE(obj) == 16; // not __len__
   if (!seq) {
     return pymol::make_error(
         "matrix must be 16 numbers (column-major) or None, got ", reprOf(obj));
@@ -890,7 +892,8 @@ pymol::Result<> LightSetValueFromPy(PyObject* obj, double v[3], int& n)
     n = 1;
     return {};
   }
-  if ((PyList_Check(obj) || PyTuple_Check(obj)) && PySequence_Size(obj) == 3) {
+  if ((PyList_Check(obj) || PyTuple_Check(obj)) &&
+      PySequence_Fast_GET_SIZE(obj) == 3) { // not __len__
     for (int i = 0; i < 3; ++i) {
       PyObject* item = PySequence_Fast_GET_ITEM(obj, i); // list or tuple
       if (!pyNumber(item, v[i])) {
