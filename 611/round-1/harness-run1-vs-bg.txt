@@ -1,0 +1,17 @@
+cartoon_rt0.png max=61 differing_px=56207
+cartoon_rt1.png max=140 differing_px=895111
+glass_rt0.png max=108 differing_px=297761
+glass_rt1.png max=157 differing_px=921599
+mesh_rt0.png max=74 differing_px=78883
+mesh_rt1.png max=140 differing_px=840264
+shadows_rt0.png max=140 differing_px=888511
+shadows_rt1.png max=140 differing_px=888550
+spheres_rt0.png max=50 differing_px=48710
+spheres_rt1.png max=140 differing_px=671271
+sticks_rt0.png max=69 differing_px=63970
+sticks_rt1.png max=140 differing_px=867212
+surface_rt0.png max=50 differing_px=40516
+surface_rt1.png max=140 differing_px=664706
+transparent_rt0.png max=31 differing_px=55408
+transparent_rt1.png max=140 differing_px=893724
+overall max=157 images=16
