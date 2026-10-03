@@ -253,7 +253,7 @@ struct LightEye {
   glm::vec3 direction{0.0f, 0.0f, -1.0f};
   float aimDistance = 0.0f;  ///< |target - position|
   float cosOuter = 0.0f;     ///< cos(beam / 2)
-  float cosInner = 0.0f;     ///< where the soft edge starts (> cosOuter)
+  float cosInner = 0.0f;     ///< where the soft edge starts (> cosOuter, <= 1)
   /// Current placement. Camera lights: the stored values. Pinned lights:
   /// derived from where they are now, so they circle the plan (decision 6).
   float orbit = 0.0f, pitch = 0.0f, radius = 0.0f;
@@ -281,7 +281,10 @@ struct LightRigEye {
  * - the direction points from the light to the target (to the centre when
  *   the two coincide, else -z);
  * - cosOuter = cos(beam/2), cosInner = max(cos(beam/2·(1-softness)),
- *   cosOuter + 1e-4), the prototype's cone.
+ *   cosOuter + band), the prototype's cone, with band = min(1e-4,
+ *   (1 - cosOuter)/2) (smaller than 1e-4 only for beams under ~2.3°), so
+ *   cosOuter < cosInner <= 1 for every beam in range (the prototype's 1e-4
+ *   alone passes 1 under ~1.6°).
  * A rig without a frame resolves to no lights.
  */
 LightRigEye LightRigResolve(const LightRig& rig, const glm::dmat4& worldToEye);
@@ -315,7 +318,9 @@ const char* LightSetStatusName(LightSetStatus status);
  *   anchor 0 unpins it, deriving orbit, pitch and radius from where it is
  *   now (the radius is clamped into range, which may move the light).
  * - orbit, pitch or radius on a pinned light re-pins it at the place the
- *   edited value gives, the other two being derived from where it is now.
+ *   edited value gives, the other two being derived from where it is now
+ *   (the derived radius clamped into range, as on unpin: a light on the
+ *   centre moves out to 0.5 sizes).
  * - position sets the point and pins the light.
  * - aim_point sets the point and aims at it, clearing aim_selection; aim 1
  *   on a light aimed at the centre aims at a point at the centre (nothing

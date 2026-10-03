@@ -445,6 +445,43 @@ class TestLightingEye(testing.PyMOLTestCase):
         self.assertVec(lighting._lights_eye()['lights'][0]['position'],
                        oracle(cmd.get_lights()['lights'][0]['position']))
 
+    def testRepinFromTheCentreMovesTheLight(self):
+        """A pinned light on the rig centre has no orbit, pitch or radius to
+        keep: an orbit or pitch edit moves it out to radius 0.5 (the low end
+        of the range, as on unpin), not nowhere. A light past 8 sizes comes
+        in to 8, as on unpin."""
+        centre, size = [1.0, -2.0, 3.0], 4.0
+        for field, value in (('pitch', 45.0), ('orbit', -60.0)):
+            self.rig([{'anchor': 'pinned', 'position': centre, 'orbit': 20.0}],
+                     centre=centre, size=size)
+            self.turn()
+            lighting._light_set(0, field, value)
+            light = cmd.get_lights()['lights'][0]
+            self.assertEqual(light['anchor'], 'pinned', field)
+            # the stored orbit (20) is kept, pitch 0, radius 0 -> 0.5
+            placement = {'orbit': 20.0, 'pitch': 0.0, 'radius': 0.5}
+            placement[field] = value
+            want = add(oracle(centre),
+                       scale(orbit_dir(placement['orbit'], placement['pitch']),
+                             placement['radius'] * size))
+            self.assertVec(oracle(light['position']), want, msg=field)
+            eye = lighting._lights_eye()['lights'][0]
+            self.assertVec(eye['position'], want, msg=field)
+            for key in ('orbit', 'pitch', 'radius'):
+                self.assertAlmostEqual(eye[key], placement[key], delta=1e-3,
+                                       msg='%s: %s' % (field, key))
+                self.assertAlmostEqual(light[key], placement[key],
+                                       msg='%s: %s' % (field, key))
+
+        self.rig([{'anchor': 'pinned', 'position': [0.0, 0.0, 100.0]}],
+                 centre=(0.0, 0.0, 0.0), size=1.0)
+        lighting._light_set(0, 'orbit', 30.0)
+        eye = lighting._lights_eye()
+        offset = sub(eye['lights'][0]['position'], eye['centre'])
+        self.assertAlmostEqual(norm(offset), 8.0, delta=TOL)
+        self.assertAlmostEqual(eye['lights'][0]['orbit'], 30.0, delta=1e-3)
+        self.assertEqual(cmd.get_lights()['lights'][0]['radius'], 8.0)
+
     def testPositionPins(self):
         self.rig([{'orbit': 20.0}], centre=(0.0, 0.0, 0.0), size=2.0)
         lighting._light_set(0, 'position', [3.0, -4.0, 5.5])
@@ -480,13 +517,27 @@ class TestLightingEye(testing.PyMOLTestCase):
                        [2.0, 0.0, 0.0])
 
     def testDegenerateAim(self):
-        # aim point on the light: the beam falls back towards the centre
-        self.rig([{'orbit': 0.0, 'pitch': 0.0, 'radius': 2.0,
-                   'aim': 'point', 'aim_point': [0.0, 0.0, 20.0]}],
+        # aim point on the light: the beam falls back towards the centre.
+        # Off the z axis, so that this differs from the -z fallback below.
+        self.rig([{'orbit': 90.0, 'pitch': 0.0, 'radius': 2.0,
+                   'aim': 'point', 'aim_point': [20.0, 0.0, 0.0]}],
                  centre=(0.0, 0.0, 0.0), size=10.0)
         light = lighting._lights_eye(IDENTITY)['lights'][0]
-        self.assertVec(light['position'], [0.0, 0.0, 20.0])
-        self.assertVec(light['direction'], [0.0, 0.0, -1.0])
+        self.assertVec(light['position'], [20.0, 0.0, 0.0])
+        self.assertVec(light['direction'], [-1.0, 0.0, 0.0])
+        self.assertAlmostEqual(light['aim_distance'], 0.0, delta=TOL)
+        # and under a rotated view, towards wherever the centre is now
+        centre = [3.0, -1.0, 2.0]
+        self.rig([{'orbit': -40.0, 'pitch': 25.0, 'radius': 1.5}],
+                 centre=centre, size=4.0)
+        self.turn()
+        where = lighting._lights_eye()['lights'][0]['position']
+        lighting._light_set(0, 'anchor', 1)              # pinned where it is
+        pinned_at = cmd.get_lights()['lights'][0]['position']
+        lighting._light_set(0, 'aim_point', pinned_at)   # aimed at itself
+        light = lighting._lights_eye()['lights'][0]
+        self.assertVec(light['position'], where)
+        self.assertVec(light['direction'], unit(sub(oracle(centre), where)))
         self.assertAlmostEqual(light['aim_distance'], 0.0, delta=TOL)
         # a pinned light on the centre, aimed at it: -z
         self.rig([{'anchor': 'pinned', 'position': [1.0, 2.0, 3.0]}],
@@ -497,6 +548,30 @@ class TestLightingEye(testing.PyMOLTestCase):
         self.assertAlmostEqual(light['radius'], 0.0, delta=TOL)
         for value in light['direction'] + light['position']:
             self.assertFalse(math.isnan(value))
+
+    def testNarrowBeamConeStaysBelowOne(self):
+        """cos_outer < cos_inner <= 1 for every beam in range: the soft band
+        narrows for beams under ~2.3 degrees instead of pushing cos_inner
+        past 1 (under ~1.6 degrees), where no direction could reach full
+        intensity."""
+        for beam in (1.0, 1.2, 1.5, 1.7, 2.0, 45.0, 170.0):
+            for softness in (0.0, 0.4, 1.0):
+                self.rig([{'beam': beam, 'softness': softness}])
+                light = lighting._lights_eye(IDENTITY)['lights'][0]
+                outer, inner = light['cos_outer'], light['cos_inner']
+                label = 'beam %g softness %g' % (beam, softness)
+                self.assertAlmostEqual(outer, math.cos(math.radians(beam / 2)),
+                                       places=6, msg=label)
+                self.assertLess(outer, inner, label)
+                self.assertLessEqual(inner, 1.0, label)
+                # the centre of the beam reaches full intensity
+                t = (1.0 - outer) / (inner - outer)
+                self.assertGreaterEqual(t, 1.0, label)
+        # the prototype's 1e-4 band where it fits (beam 50, softness 0)
+        self.rig([{'beam': 50.0, 'softness': 0.0}])
+        light = lighting._lights_eye(IDENTITY)['lights'][0]
+        self.assertAlmostEqual(light['cos_inner'],
+                               math.cos(math.radians(25.0)) + 1e-4, places=6)
 
     def testEnabledFlagPassesThrough(self):
         self.rig([{}], enabled=False)

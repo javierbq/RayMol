@@ -692,10 +692,16 @@ LightRigEye LightRigResolve(const LightRig& rig, const glm::dmat4& worldToEye)
     if (!dir)
       dir = glm::dvec3(0.0, 0.0, -1.0);
 
+    // The soft edge keeps the prototype's band of at least 1e-4, but never
+    // more than half the room left below 1 (beams under ~2.3 degrees), so
+    // cosOuter < cosInner <= 1: the prototype's guard alone passes 1 under
+    // ~1.6 degrees, where the centre of the beam never reaches full
+    // intensity.
     const double half = light.beam * 0.5 * kDegToRad;
     const double cosOuter = std::cos(half);
-    const double cosInner =
-        std::max(std::cos(half * (1.0 - light.softness)), cosOuter + 1e-4);
+    const double band = std::min(1e-4, 0.5 * (1.0 - cosOuter));
+    const double cosInner = std::min(
+        1.0, std::max(std::cos(half * (1.0 - light.softness)), cosOuter + band));
 
     eye.position = glm::vec3(p);
     eye.target = glm::vec3(target);
@@ -901,12 +907,16 @@ LightSetStatus LightRigSet(LightRig& rig, int index, std::string_view name,
         break;
       }
       {
-        // Re-pin: where it is now, with the edited value replaced.
+        // Re-pin: where it is now, with the edited value replaced. The
+        // derived radius is clamped into range, as on unpin, so a light on
+        // (or very near) the centre moves out to 0.5 sizes instead of
+        // staying put, and the stored placement is the one used.
         const glm::dvec3 c = transformPoint(worldToEye, *next.centre);
         const double size = *next.size;
         double orbit, pitch, radius;
         LightOrbitFromOffset(transformPoint(worldToEye, light.position) - c,
             size, light.orbit, orbit, pitch, radius);
+        radius = LightFieldClamp(lightField("radius"), radius);
         const double edited = LightFieldClamp(*field, v[0]);
         if (field->id == I::Orbit)
           orbit = edited;

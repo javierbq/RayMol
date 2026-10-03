@@ -42,7 +42,7 @@ typedef struct {
     float direction[3]; // unit, from position to target
     float aimDistance;  // |target - position|
     float cosOuter;     // cos(beam / 2)
-    float cosInner;     // where the soft edge starts (> cosOuter)
+    float cosInner;     // where the soft edge starts (> cosOuter, <= 1)
     float orbit;        // degrees; current (derived from the position when pinned)
     float pitch;        // degrees; current
     float radius;       // scene sizes; current
