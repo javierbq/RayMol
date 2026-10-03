@@ -1897,8 +1897,13 @@ bool surfacePickAccept(const void* ctx, std::uint32_t tri)
  * formula (CGOGL.cpp) -- the atoms' eye-depth range through the same
  * modelview (scene view, object TTT, state matrix), padded by
  * solvent_radius + 1, each fraction shaving its side toward the centre.
- * Keep in step with metalApplyRepClip. Eye depth is linear in s along the
- * pick segment, s = (depth - slab_front) / (slab_back - slab_front).
+ * Keep in step with metalApplyRepClip, and with RendererMetal's gate on it:
+ * the window is applied only when front >= 0 (the lit and indexed draws, the
+ * cap MARK pass and repCapDepth all test _repClipFront >= 0). With an atom
+ * within the pad of the camera plane, or behind it, the surface draws with
+ * the global slab alone and caps at the near plane, so there is no window.
+ * Eye depth is linear in s along the pick segment,
+ * s = (depth - slab_front) / (slab_back - slab_front).
  */
 bool RepSurface::pickClipWindow(
     const RepPickArgs& args, float& s_front, float& s_back) const
@@ -1942,6 +1947,8 @@ bool RepSurface::pickClipWindow(
   const float bb = bFrac < 0.0f ? 0.0f : (bFrac > 1.0f ? 1.0f : bFrac);
   const float front = center - halfD * (1.0f - ff);
   const float back = center + halfD * (1.0f - bb);
+  if (front < 0.f)
+    return false; // Metal disables the per-rep clip (see above)
   const float span = args.slab_back - args.slab_front;
   if (!(span > 0.f))
     return false;

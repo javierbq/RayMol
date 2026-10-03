@@ -506,9 +506,20 @@ SurfacePickHit ScenePickSurface(PyMOLGlobals* G, const SurfacePickRequest& req)
   const double facing = pickmath::dot3(n, v);
   constexpr double kMinFacing = 0.05;
   if (facing < kMinFacing) {
-    for (int k = 0; k < 3; ++k)
-      n[k] += v[k] * (kMinFacing - facing);
-    pickmath::normalize3(n);
+    // Turn n toward the camera, in the plane of n and v, until it faces it
+    // by exactly kMinFacing: keep n's direction across the view (t) and set
+    // its component along v. Within asin(kMinFacing) (~2.9 degrees) of the
+    // true normal when facing >= 0.
+    double t[3] = {n[0] - facing * v[0], n[1] - facing * v[1],
+        n[2] - facing * v[2]};
+    const double tl = std::sqrt(pickmath::dot3(t, t));
+    if (tl > 1e-12) {
+      const double across = std::sqrt(1.0 - kMinFacing * kMinFacing) / tl;
+      for (int k = 0; k < 3; ++k)
+        n[k] = kMinFacing * v[k] + across * t[k];
+    } else {
+      std::copy_n(v, 3, n); // n was -v: no direction across, face the camera
+    }
   }
 
   out.hit = true;

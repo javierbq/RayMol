@@ -1076,9 +1076,11 @@ SurfaceHit = collections.namedtuple(
 SurfaceHit.__doc__ = """A surface_at hit.
 
     point   (x, y, z) world (model) coordinates of the hit
-    normal  unit (nx, ny, nz), oriented toward the camera; within ~3 degrees
-            of the true surface normal except at silhouettes, where it is
-            nudged to face the camera by at least 0.05
+    normal  unit (nx, ny, nz), oriented toward the camera: the drawn
+            geometry's normal (analytic on impostors, the interpolated smooth
+            normal on triangles), except at silhouettes (facing < 0.05),
+            where it is turned toward the camera until it faces it by
+            exactly 0.05 (at most ~3 degrees away when facing >= 0)
     depth   eye-space distance of the hit along the view axis, in Angstrom
     facing  dot(normal before the nudge, direction to the camera); > 0 away
             from silhouettes
