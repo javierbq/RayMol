@@ -318,8 +318,10 @@ void RepCartoon::render(RenderInfo* info)
  *  - spheres: impostors (CGOOptimizeSpheresToVBONonIndexed) unless
  *    cartoon_use_shader is off or the rep is transparent with
  *    transparency_mode != 3, where CGOSimplify tessellates everything.
- *    Transparency is the rep-level built value (per-atom
- *    cartoon_transparency is not modelled).
+ *    "Transparent" is the built transparency, or the hasTransparency()
+ *    that RepCartoonCGOGenerate records (it includes per-atom
+ *    cartoon_transparency, but only once a frame has been drawn; a grid
+ *    built before that is rebuilt when the flag changes the rule).
  * Keep in step with RepCartoonCGOGenerate.
  */
 const PickAccel* RepCartoon::pickPrepare(bool* built) const
@@ -331,10 +333,10 @@ const PickAccel* RepCartoon::pickPrepare(bool* built) const
     return nullptr;
   if (builtTransparency() >= 0.999f)
     return nullptr; // drawn invisible
+  bool const transparent = builtTransparency() > 0.f || hasTransparency();
   bool const simplified_all =
       !SettingGetGlobal_b(G, cSetting_cartoon_use_shader) ||
-      (builtTransparency() > 0.f &&
-          SettingGetGlobal_i(G, cSetting_transparency_mode) != 3);
+      (transparent && SettingGetGlobal_i(G, cSetting_transparency_mode) != 3);
   PickCGORules rules;
   rules.sphere = simplified_all ? PickRule::Mesh : PickRule::Impostor;
   rules.cylinder = PickRule::Mesh;
