@@ -47,6 +47,16 @@ PyObject* pyVec3(const double* v)
   return Py_BuildValue("[ddd]", v[0], v[1], v[2]);
 }
 
+PyObject* pyNone()
+{
+  Py_RETURN_NONE;
+}
+
+PyObject* pyVec3(const glm::vec3& v)
+{
+  return Py_BuildValue("[ddd]", double(v.x), double(v.y), double(v.z));
+}
+
 /// One field's value as a Python object (new reference, nullptr on error).
 PyObject* valueToPy(const LightField& field, const LightValue& value)
 {
@@ -431,6 +441,109 @@ pymol::Result<LightRig> LightRigFromPyDict(PyObject* obj)
   }
 
   return rig;
+}
+
+PyObject* LightValueAsPy(const LightField& field, const LightValue& value)
+{
+  return valueToPy(field, value);
+}
+
+PyObject* LightRigEyeAsPyDict(
+    const LightRig& rig, const pymol::LightRigEye& eye)
+{
+  unique_PyObject_ptr dict(PyDict_New());
+  if (!dict)
+    return nullptr;
+  if (!setItem(dict.get(), "enabled", PyBool_FromLong(eye.enabled)))
+    return nullptr;
+  if (eye.hasFrame) {
+    if (!setItem(dict.get(), "centre", pyVec3(eye.centre)) ||
+        !setItem(dict.get(), "size", PyFloat_FromDouble(eye.size)))
+      return nullptr;
+  } else {
+    if (!setItem(dict.get(), "centre", pyNone()) ||
+        !setItem(dict.get(), "size", pyNone()))
+      return nullptr;
+  }
+
+  PyObject* lights = PyList_New(0);
+  if (!setItem(dict.get(), "lights", lights))
+    return nullptr;
+  for (size_t i = 0; i < eye.lights.size() && i < rig.lights.size(); ++i) {
+    const auto& e = eye.lights[i];
+    unique_PyObject_ptr d(PyDict_New());
+    if (!d)
+      return nullptr;
+    const bool ok =
+        setItem(d.get(), "name", pyString(rig.lights[i].name)) &&
+        setItem(d.get(), "anchor",
+            PyUnicode_FromString(pymol::LightChoiceName(
+                LightKind::Anchor, static_cast<int>(e.anchor)))) &&
+        setItem(d.get(), "aim",
+            PyUnicode_FromString(pymol::LightChoiceName(
+                LightKind::Aim, static_cast<int>(e.aim)))) &&
+        setItem(d.get(), "position", pyVec3(e.position)) &&
+        setItem(d.get(), "target", pyVec3(e.target)) &&
+        setItem(d.get(), "direction", pyVec3(e.direction)) &&
+        setItem(d.get(), "aim_distance", PyFloat_FromDouble(e.aimDistance)) &&
+        setItem(d.get(), "cos_outer", PyFloat_FromDouble(e.cosOuter)) &&
+        setItem(d.get(), "cos_inner", PyFloat_FromDouble(e.cosInner)) &&
+        setItem(d.get(), "orbit", PyFloat_FromDouble(e.orbit)) &&
+        setItem(d.get(), "pitch", PyFloat_FromDouble(e.pitch)) &&
+        setItem(d.get(), "radius", PyFloat_FromDouble(e.radius)) &&
+        setItem(d.get(), "shadow", PyBool_FromLong(e.shadow)) &&
+        setItem(d.get(), "outline", PyBool_FromLong(e.outline));
+    if (!ok || PyList_Append(lights, d.get()) != 0) // lights is borrowed
+      return nullptr;
+  }
+  return dict.release();
+}
+
+pymol::Result<glm::dmat4> LightMatrixFromPy(PyObject* obj)
+{
+  const bool seq = (PyList_Check(obj) || PyTuple_Check(obj)) &&
+                   PySequence_Size(obj) == 16;
+  if (!seq) {
+    return pymol::make_error(
+        "matrix must be 16 numbers (column-major) or None, got ", reprOf(obj));
+  }
+  glm::dmat4 m(1.0);
+  for (int i = 0; i < 16; ++i) {
+    double v;
+    PyObject* item = PySequence_Fast_GET_ITEM(obj, i); // list or tuple
+    if (!pyNumber(item, v) || !std::isfinite(v)) {
+      return pymol::make_error(
+          "matrix item ", i, " must be a finite number, got ", reprOf(item));
+    }
+    m[i / 4][i % 4] = v; // column i / 4, row i % 4
+  }
+  return m;
+}
+
+pymol::Result<> LightSetValueFromPy(PyObject* obj, double v[3], int& n)
+{
+  if (PyBool_Check(obj)) {
+    v[0] = obj == Py_True ? 1.0 : 0.0;
+    n = 1;
+    return {};
+  }
+  if (pyNumber(obj, v[0])) {
+    n = 1;
+    return {};
+  }
+  if ((PyList_Check(obj) || PyTuple_Check(obj)) && PySequence_Size(obj) == 3) {
+    for (int i = 0; i < 3; ++i) {
+      PyObject* item = PySequence_Fast_GET_ITEM(obj, i); // list or tuple
+      if (!pyNumber(item, v[i])) {
+        return pymol::make_error(
+            "value item ", i, " must be a number, got ", reprOf(item));
+      }
+    }
+    n = 3;
+    return {};
+  }
+  return pymol::make_error(
+      "value must be a number or a list of 3 numbers, got ", reprOf(obj));
 }
 
 PyObject* LightFieldsAsPyList()

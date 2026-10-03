@@ -43,4 +43,27 @@ pymol::Result<pymol::LightRig> LightRigFromPyDict(PyObject* obj);
  */
 PyObject* LightFieldsAsPyList();
 
+/// One field's value as the dict holds it (bool, int, float, [x, y, z], str,
+/// 'camera'/'pinned', 'centre'/'point', or None). New reference.
+PyObject* LightValueAsPy(const pymol::LightField& field,
+    const pymol::LightValue& value);
+
+/**
+ * The rig resolved to eye space, for _cmd.get_lights_eye():
+ *   {'enabled', 'centre': [x, y, z] | None, 'size': float | None,
+ *    'lights': [{'name', 'anchor', 'aim', 'position', 'target', 'direction',
+ *                'aim_distance', 'cos_outer', 'cos_inner', 'orbit', 'pitch',
+ *                'radius', 'shadow', 'outline'}, ...]}
+ * Positions are eye space; names come from `rig`. New reference.
+ */
+PyObject* LightRigEyeAsPyDict(
+    const pymol::LightRig& rig, const pymol::LightRigEye& eye);
+
+/// A world->eye matrix from 16 numbers in column-major order (as
+/// glm::make_mat4 reads them).
+pymol::Result<glm::dmat4> LightMatrixFromPy(PyObject* obj);
+
+/// _cmd.light_set's value: a number (n = 1) or a sequence of 3 (n = 3).
+pymol::Result<> LightSetValueFromPy(PyObject* obj, double v[3], int& n);
+
 #endif

@@ -15,6 +15,10 @@ Nothing renders the rig yet: shading lands in #613 and the `lights` and
 
 The dict format is versioned (version 1); the C++ field table defines its
 keys, kinds, defaults and ranges (``_light_fields()``).
+
+The private helpers (``_light_set``, ``_light_get``, ``_lights_eye``,
+``_lights_json``) call the same C++ as the app bridge, so the tests can
+check the rig maths (eye space, pin conversions, JSON) from Python.
 '''
 
 import sys
@@ -109,3 +113,49 @@ def _light_fields(*, _self=cmd):
     min and max are None for unbounded fields.'''
     with _self.lockcm:
         return _self._cmd.get_light_fields(_self._COb)
+
+
+def _light_set(index, field, value, *, _self=cmd):
+    '''Set one field of light `index` (-1: the rig and its air) through the
+    C++ setter the app bridge calls per drag tick. `value` is a number or 3
+    numbers (color, aim_point, position). Numbers are clamped (orbit wraps);
+    anchor 1/0 pins/unpins the light where it is now; orbit, pitch or
+    radius on a pinned light re-pins it; position pins; aim_point aims at
+    the point. Raises CmdException("<status>: <message>"), the status being
+    'unknown field', 'bad index', 'refused', 'bad value' or 'no rig'; the
+    rig is then unchanged.'''
+    with _self.lockcm:
+        _self._cmd.light_set(_self._COb, int(index), str(field), value)
+
+
+def _light_get(index, field, *, _self=cmd):
+    '''One field of light `index` (-1: the rig and its air), as get_lights()
+    holds it. Raises CmdException("<status>: <message>") like _light_set.'''
+    with _self.lockcm:
+        return _self._cmd.light_get(_self._COb, int(index), str(field))
+
+
+def _lights_eye(matrix=None, *, _self=cmd):
+    '''The rig resolved to eye space by the C++ resolver the app bridge uses,
+    or None when there is no rig. `matrix` is a world->eye 4x4 as 16 numbers
+    in column-major order; None uses the live camera (as the bridge does).
+
+    {'enabled', 'centre': [x, y, z] or None (eye space), 'size',
+     'lights': [{'name', 'anchor', 'aim', 'position', 'target',
+                 'direction', 'aim_distance', 'cos_outer', 'cos_inner',
+                 'orbit', 'pitch', 'radius', 'shadow', 'outline'}, ...]}
+
+    A pinned light's orbit, pitch and radius are derived from where it is
+    now; a camera light's are its stored values.'''
+    if matrix is not None:
+        matrix = [float(v) for v in matrix]
+    with _self.lockcm:
+        return _self._cmd.get_lights_eye(_self._COb, matrix)
+
+
+def _lights_json(*, _self=cmd):
+    '''The rig as JSON, as the app bridge reads it (PyMOLBridge_LightsJSON),
+    or None when there is no rig. Same keys, order and types as
+    get_lights().'''
+    with _self.lockcm:
+        return _self._cmd.get_lights_json(_self._COb)
