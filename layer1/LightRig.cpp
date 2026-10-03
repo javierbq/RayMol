@@ -1,6 +1,7 @@
 /*
- * Native light rig (#611): field table, validation and placement helpers.
- * See LightRig.h. Pure functions over plain data: no PyMOLGlobals, no Python.
+ * Native light rig (#611): field table, validation, placement helpers, the
+ * eye-space resolver, per-field set/get and the JSON writer. See LightRig.h.
+ * Pure functions over plain data: no PyMOLGlobals, no Python.
  */
 
 #include "LightRig.h"
@@ -8,8 +9,16 @@
 #include <algorithm>
 #include <cassert>
 #include <cctype>
+#include <clocale>
 #include <cmath>
+#include <cstdio>
+#include <locale>
 #include <sstream>
+#include <utility>
+
+#include <glm/geometric.hpp>
+#include <glm/matrix.hpp>
+#include <glm/vec4.hpp>
 
 namespace pymol
 {
@@ -617,6 +626,512 @@ void LightOrbitFromOffset(const glm::dvec3& d, double size, double keepOrbit,
     orbit = LightWrapDegrees(std::atan2(d.x, d.z) * kRadToDeg);
   }
   radius = size > 0.0 ? len / size : 0.0;
+}
+
+/* ---- eye space ---------------------------------------------------------- */
+
+namespace
+{
+glm::dvec3 transformPoint(const glm::dmat4& m, const glm::dvec3& p)
+{
+  return glm::dvec3(m * glm::dvec4(p, 1.0));
+}
+
+/// Where a camera light sits, in eye space, around eye-space centre `c`.
+glm::dvec3 cameraLightPosition(
+    double orbit, double pitch, double radius, const glm::dvec3& c, double size)
+{
+  return c + (radius * size) * LightOrbitDirection(orbit, pitch);
+}
+
+/// A unit vector, or nullopt when `v` is (nearly) zero.
+std::optional<glm::dvec3> unit(const glm::dvec3& v)
+{
+  const double len = glm::length(v);
+  if (!(len >= 1e-6))
+    return std::nullopt;
+  return v / len;
+}
+} // namespace
+
+LightRigEye LightRigResolve(const LightRig& rig, const glm::dmat4& worldToEye)
+{
+  LightRigEye out;
+  out.enabled = rig.enabled;
+  out.hasFrame = rig.centre.has_value() && rig.size.has_value();
+  if (!out.hasFrame)
+    return out;
+
+  const glm::dvec3 c = transformPoint(worldToEye, *rig.centre);
+  const double size = *rig.size;
+  out.centre = glm::vec3(c);
+  out.size = float(size);
+  out.lights.reserve(rig.lights.size());
+
+  for (const auto& light : rig.lights) {
+    LightEye eye;
+    double orbit = light.orbit, pitch = light.pitch, radius = light.radius;
+    glm::dvec3 p;
+    if (light.anchor == LightAnchor::Pinned) {
+      p = transformPoint(worldToEye, light.position);
+      LightOrbitFromOffset(p - c, size, light.orbit, orbit, pitch, radius);
+    } else {
+      p = cameraLightPosition(orbit, pitch, radius, c, size);
+    }
+
+    const glm::dvec3 target = light.aim == LightAim::Point
+                                  ? transformPoint(worldToEye, light.aimPoint)
+                                  : c;
+    const glm::dvec3 axis = target - p;
+    auto dir = unit(axis);
+    if (!dir)
+      dir = unit(c - p);
+    if (!dir)
+      dir = glm::dvec3(0.0, 0.0, -1.0);
+
+    const double half = light.beam * 0.5 * kDegToRad;
+    const double cosOuter = std::cos(half);
+    const double cosInner =
+        std::max(std::cos(half * (1.0 - light.softness)), cosOuter + 1e-4);
+
+    eye.position = glm::vec3(p);
+    eye.target = glm::vec3(target);
+    eye.direction = glm::vec3(*dir);
+    eye.aimDistance = float(glm::length(axis));
+    eye.cosOuter = float(cosOuter);
+    eye.cosInner = float(cosInner);
+    eye.orbit = float(orbit);
+    eye.pitch = float(pitch);
+    eye.radius = float(radius);
+    eye.anchor = light.anchor;
+    eye.aim = light.aim;
+    eye.shadow = light.shadow;
+    eye.outline = light.outline;
+    out.lights.push_back(eye);
+  }
+  return out;
+}
+
+/* ---- per-field access --------------------------------------------------- */
+
+const char* LightSetStatusName(LightSetStatus status)
+{
+  switch (status) {
+  case LightSetStatus::Ok:
+    return "ok";
+  case LightSetStatus::UnknownField:
+    return "unknown field";
+  case LightSetStatus::BadIndex:
+    return "bad index";
+  case LightSetStatus::Refused:
+    return "refused";
+  case LightSetStatus::BadValue:
+    return "bad value";
+  case LightSetStatus::NoRig:
+    return "no rig";
+  }
+  return "unknown status";
+}
+
+namespace
+{
+LightSetStatus fail(LightSetStatus status, std::string* msg, std::string text)
+{
+  if (msg)
+    *msg = std::move(text);
+  return status;
+}
+
+std::string quoted(std::string_view name)
+{
+  return "'" + std::string(name) + "'";
+}
+
+/// The field `name` of light `index` (>= 0) or of the rig and air (-1).
+LightSetStatus findField(const LightRig& rig, int index, std::string_view name,
+    const LightField*& field, std::string* msg)
+{
+  const int count = int(rig.lights.size());
+  if (index < -1 || index >= count) {
+    std::ostringstream os;
+    os << "light index " << index << " is out of range (";
+    if (count > 0)
+      os << "0 to " << count - 1 << " for the lights, ";
+    os << "-1 for the rig)";
+    return fail(LightSetStatus::BadIndex, msg, os.str());
+  }
+
+  const LightField* rigField = LightRigFindField(LightScope::Rig, name);
+  if (!rigField)
+    rigField = LightRigFindField(LightScope::Air, name);
+  const LightField* lightField = LightRigFindField(LightScope::Light, name);
+
+  field = index == -1 ? rigField : lightField;
+  if (field)
+    return LightSetStatus::Ok;
+
+  if (index == -1 && lightField) {
+    return fail(LightSetStatus::UnknownField, msg,
+        quoted(name) + " is a light field: give a light index");
+  }
+  if (index >= 0 && rigField) {
+    return fail(LightSetStatus::UnknownField, msg,
+        quoted(name) + " is a rig field: use index -1");
+  }
+  return fail(LightSetStatus::UnknownField, msg,
+      quoted(name) + " is not a " + (index == -1 ? "rig" : "light") + " field");
+}
+
+std::string numberText(double v)
+{
+  std::ostringstream os;
+  os.imbue(std::locale::classic());
+  os << v;
+  return os.str();
+}
+
+const LightField& lightField(const char* name)
+{
+  const LightField* field = LightRigFindField(LightScope::Light, name);
+  assert(field);
+  return *field;
+}
+
+/// Store a derived placement on `light` (clamped into the field ranges).
+void putPlacement(Light& light, double orbit, double pitch, double radius)
+{
+  LightFieldPut(light, lightField("orbit"), scalar(orbit));
+  LightFieldPut(light, lightField("pitch"), scalar(pitch));
+  LightFieldPut(light, lightField("radius"), scalar(radius));
+}
+} // namespace
+
+LightSetStatus LightRigSet(LightRig& rig, int index, std::string_view name,
+    const double* v, int n, const glm::dmat4& worldToEye, std::string* msg)
+{
+  using I = LightFieldId;
+  const LightField* field = nullptr;
+  auto status = findField(rig, index, name, field, msg);
+  if (status != LightSetStatus::Ok)
+    return status;
+
+  switch (field->id) {
+  case I::Name:
+  case I::AimSelection:
+    return fail(LightSetStatus::Refused, msg,
+        quoted(name) + " is text: set it with set_lights");
+  case I::Centre:
+  case I::Size:
+    return fail(LightSetStatus::Refused, msg,
+        quoted(name) + " is the captured frame: re-centre, or use set_lights");
+  default:
+    break;
+  }
+
+  const int want = components(field->kind);
+  if (!v || n != want) {
+    return fail(LightSetStatus::BadValue, msg,
+        quoted(name) + " takes " + (want == 3 ? "3 numbers" : "1 number") +
+            ", got " + std::to_string(n));
+  }
+  for (int i = 0; i < n; ++i) {
+    if (!std::isfinite(v[i])) {
+      return fail(LightSetStatus::BadValue, msg,
+          quoted(name) + " must be finite, got " + numberText(v[i]));
+    }
+  }
+  if ((field->kind == LightKind::Anchor || field->kind == LightKind::Aim) &&
+      v[0] != 0.0 && v[0] != 1.0) {
+    return fail(LightSetStatus::BadValue, msg,
+        quoted(name) + " takes 0 (" + LightChoiceName(field->kind, 0) +
+            ") or 1 (" + LightChoiceName(field->kind, 1) + "), got " +
+            numberText(v[0]));
+  }
+
+  LightValue value;
+  for (int i = 0; i < n; ++i)
+    value.num[i] = v[i];
+
+  LightRig next = rig; // edit a copy: the rig changes only when all is well
+
+  if (index == -1) {
+    LightFieldPut(next, *field, value);
+  } else {
+    Light& light = next.lights[size_t(index)];
+    const bool pinned = light.anchor == LightAnchor::Pinned;
+
+    // The pin conversions need the frame; a rig with lights always has one.
+    const bool needsFrame =
+        field->id == I::Anchor || field->id == I::Aim ||
+        (pinned && (field->id == I::Orbit || field->id == I::Pitch ||
+                       field->id == I::Radius));
+    if (needsFrame && !(next.centre && next.size)) {
+      return fail(LightSetStatus::BadValue, msg,
+          "the rig has no frame ('centre' and 'size')");
+    }
+
+    switch (field->id) {
+    case I::Anchor: {
+      const glm::dvec3 c = transformPoint(worldToEye, *next.centre);
+      const double size = *next.size;
+      if (v[0] != 0.0 && !pinned) {
+        // Pin where it is now.
+        const glm::dvec3 p = cameraLightPosition(
+            light.orbit, light.pitch, light.radius, c, size);
+        light.position = transformPoint(glm::inverse(worldToEye), p);
+        light.anchor = LightAnchor::Pinned;
+      } else if (v[0] == 0.0 && pinned) {
+        // Unpin where it is now (a radius outside 0.5-8 is clamped).
+        double orbit, pitch, radius;
+        LightOrbitFromOffset(transformPoint(worldToEye, light.position) - c,
+            size, light.orbit, orbit, pitch, radius);
+        putPlacement(light, orbit, pitch, radius);
+        light.anchor = LightAnchor::Camera;
+      }
+      break;
+    }
+    case I::Orbit:
+    case I::Pitch:
+    case I::Radius:
+      if (!pinned) {
+        LightFieldPut(light, *field, value);
+        break;
+      }
+      {
+        // Re-pin: where it is now, with the edited value replaced.
+        const glm::dvec3 c = transformPoint(worldToEye, *next.centre);
+        const double size = *next.size;
+        double orbit, pitch, radius;
+        LightOrbitFromOffset(transformPoint(worldToEye, light.position) - c,
+            size, light.orbit, orbit, pitch, radius);
+        const double edited = LightFieldClamp(*field, v[0]);
+        if (field->id == I::Orbit)
+          orbit = edited;
+        else if (field->id == I::Pitch)
+          pitch = edited;
+        else
+          radius = edited;
+        const glm::dvec3 p =
+            cameraLightPosition(orbit, pitch, radius, c, size);
+        light.position = transformPoint(glm::inverse(worldToEye), p);
+        putPlacement(light, orbit, pitch, radius);
+      }
+      break;
+    case I::Position:
+      LightFieldPut(light, *field, value);
+      light.anchor = LightAnchor::Pinned;
+      break;
+    case I::AimPoint:
+      LightFieldPut(light, *field, value);
+      light.aim = LightAim::Point;
+      light.aimSelection.clear();
+      break;
+    case I::Aim:
+      if (v[0] != 0.0) {
+        if (light.aim != LightAim::Point) {
+          // Aim at a point where the aim is now: the centre.
+          light.aimPoint = *next.centre;
+          light.aim = LightAim::Point;
+          light.aimSelection.clear();
+        }
+      } else {
+        light.aim = LightAim::Centre;
+        light.aimSelection.clear();
+      }
+      break;
+    case I::Shadow:
+      if (v[0] >= 0.5 && !light.shadow) {
+        int shadowed = 0;
+        for (const auto& other : next.lights)
+          shadowed += other.shadow ? 1 : 0;
+        if (shadowed >= kLightRigMaxShadowed) {
+          std::ostringstream os;
+          os << "at most " << kLightRigMaxShadowed
+             << " lights can cast shadows";
+          return fail(LightSetStatus::Refused, msg, os.str());
+        }
+      }
+      LightFieldPut(light, *field, value);
+      break;
+    default:
+      LightFieldPut(light, *field, value);
+    }
+  }
+
+  auto valid = LightRigValidate(next);
+  if (!valid)
+    return fail(LightSetStatus::BadValue, msg, valid.error().what());
+
+  rig = std::move(next);
+  return LightSetStatus::Ok;
+}
+
+LightSetStatus LightRigGet(const LightRig& rig, int index,
+    std::string_view name, LightValue& out, const LightField** info,
+    std::string* msg)
+{
+  const LightField* field = nullptr;
+  auto status = findField(rig, index, name, field, msg);
+  if (status != LightSetStatus::Ok)
+    return status;
+  out = index == -1 ? LightFieldGet(rig, *field)
+                    : LightFieldGet(rig.lights[size_t(index)], *field);
+  if (info)
+    *info = field;
+  return LightSetStatus::Ok;
+}
+
+/* ---- JSON --------------------------------------------------------------- */
+
+namespace
+{
+/// `v` as JSON: '.' as the decimal separator whatever the C locale, the
+/// shorter of %.15g / %.17g that reads back exactly, and (for float fields)
+/// a ".0" when the text would otherwise read as an int.
+void appendDouble(std::string& out, double v, bool asFloat)
+{
+  if (!std::isfinite(v)) {
+    out += "null"; // validation keeps numbers finite; never invalid JSON
+    return;
+  }
+  const char* point = std::localeconv()->decimal_point;
+  const std::string decimal = (point && *point) ? point : ".";
+  std::string text;
+  for (int precision : {15, 17}) {
+    char buf[64];
+    const int len = std::snprintf(buf, sizeof buf, "%.*g", precision, v);
+    text.assign(buf, len > 0 ? size_t(len) : 0);
+    if (decimal != ".") {
+      for (size_t at = text.find(decimal); at != std::string::npos;
+           at = text.find(decimal, at + 1)) {
+        text.replace(at, decimal.size(), ".");
+      }
+    }
+    std::istringstream in(text);
+    in.imbue(std::locale::classic());
+    double back = 0.0;
+    in >> back;
+    if (!in.fail() && back == v)
+      break;
+  }
+  if (asFloat && text.find_first_of(".eE") == std::string::npos)
+    text += ".0";
+  out += text;
+}
+
+void appendString(std::string& out, const std::string& s)
+{
+  out += '"';
+  for (unsigned char c : s) {
+    switch (c) {
+    case '"':
+      out += "\\\"";
+      break;
+    case '\\':
+      out += "\\\\";
+      break;
+    case '\b':
+      out += "\\b";
+      break;
+    case '\f':
+      out += "\\f";
+      break;
+    case '\n':
+      out += "\\n";
+      break;
+    case '\r':
+      out += "\\r";
+      break;
+    case '\t':
+      out += "\\t";
+      break;
+    default:
+      if (c < 0x20) {
+        char buf[8];
+        std::snprintf(buf, sizeof buf, "\\u%04x", unsigned(c));
+        out += buf;
+      } else {
+        out += char(c); // UTF-8 passes through
+      }
+    }
+  }
+  out += '"';
+}
+
+void appendValue(
+    std::string& out, const LightField& field, const LightValue& value)
+{
+  if (value.unset) {
+    out += "null";
+    return;
+  }
+  const double v = value.num[0];
+  switch (field.kind) {
+  case LightKind::Bool:
+    out += v != 0.0 ? "true" : "false";
+    break;
+  case LightKind::Int:
+    out += std::to_string(static_cast<long long>(v));
+    break;
+  case LightKind::Float:
+  case LightKind::Angle:
+    appendDouble(out, v, true);
+    break;
+  case LightKind::Vec3:
+    out += '[';
+    for (int i = 0; i < 3; ++i) {
+      if (i)
+        out += ',';
+      appendDouble(out, value.num[i], true);
+    }
+    out += ']';
+    break;
+  case LightKind::Str:
+  case LightKind::Name:
+    appendString(out, value.str);
+    break;
+  case LightKind::Anchor:
+  case LightKind::Aim:
+    appendString(out, LightChoiceName(field.kind, int(v)));
+    break;
+  }
+}
+
+template <typename Source>
+void appendFields(std::string& out, LightScope scope, const Source& source)
+{
+  bool first = true;
+  for (const auto& field : LightRigFields()) {
+    if (field.scope != scope)
+      continue;
+    if (!first)
+      out += ',';
+    first = false;
+    appendString(out, field.name);
+    out += ':';
+    appendValue(out, field, LightFieldGet(source, field));
+  }
+}
+} // namespace
+
+std::string LightRigToJSON(const LightRig& rig)
+{
+  std::string out = "{\"version\":";
+  out += std::to_string(kLightRigVersion);
+  out += ',';
+  appendFields(out, LightScope::Rig, rig);
+  out += ",\"air\":{";
+  appendFields(out, LightScope::Air, rig);
+  out += "},\"lights\":[";
+  for (size_t i = 0; i < rig.lights.size(); ++i) {
+    if (i)
+      out += ',';
+    out += '{';
+    appendFields(out, LightScope::Light, rig.lights[i]);
+    out += '}';
+  }
+  out += "]}";
+  return out;
 }
 
 } // namespace pymol

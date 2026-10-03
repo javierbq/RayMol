@@ -13,6 +13,10 @@
 #pragma once
 
 #include <optional>
+#include <string>
+#include <string_view>
+
+#include <glm/mat4x4.hpp>
 
 #include "LightRig.h"
 #include "Result.h"
@@ -47,3 +51,34 @@ void SceneLightRigCapture(PyMOLGlobals* G, glm::dvec3& centre, double& size);
 
 /// Capture the frame again (`lights recenter`). Error when there is no rig.
 pymol::Result<> SceneLightsRecenter(PyMOLGlobals* G);
+
+/**
+ * The live camera's world->eye matrix, T(pos)·R·T(-origin): the matrix
+ * SceneComposeModelViewMatrix() builds and cmd.get_view() describes. It is
+ * the mono view; the renderer (#613) resolves with its own per-frame
+ * modelview instead.
+ */
+glm::dmat4 SceneGetWorldToEye(PyMOLGlobals* G);
+
+/**
+ * LightRigSet() on the scene's rig with the live camera (the pin
+ * conversions use it), then a redraw request when the rig changed. NoRig
+ * when there is no rig. The app bridge calls this once per drag tick.
+ */
+pymol::LightSetStatus SceneLightSet(PyMOLGlobals* G, int index,
+    std::string_view field, const double* v, int n, std::string* msg = nullptr);
+
+/// LightRigGet() on the scene's rig; NoRig when there is none.
+pymol::LightSetStatus SceneLightGet(PyMOLGlobals* G, int index,
+    std::string_view field, pymol::LightValue& out,
+    const pymol::LightField** info = nullptr, std::string* msg = nullptr);
+
+/**
+ * The rig resolved to eye space with `worldToEye`, or with the live camera
+ * (SceneGetWorldToEye) when it is null. nullopt when there is no rig.
+ */
+std::optional<pymol::LightRigEye> SceneLightsResolve(
+    PyMOLGlobals* G, const glm::dmat4* worldToEye = nullptr);
+
+/// The rig as JSON (LightRigToJSON), or nullopt when there is no rig.
+std::optional<std::string> SceneLightsJSON(PyMOLGlobals* G);

@@ -75,6 +75,58 @@ void SceneLightRigCapture(PyMOLGlobals* G, glm::dvec3& centre, double& size)
   size = std::max(0.5 * std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z), 1.0);
 }
 
+glm::dmat4 SceneGetWorldToEye(PyMOLGlobals* G)
+{
+  return glm::dmat4(G->Scene->m_view.getView().toWorldHomogeneous());
+}
+
+pymol::LightSetStatus SceneLightSet(PyMOLGlobals* G, int index,
+    std::string_view field, const double* v, int n, std::string* msg)
+{
+  auto& rig = G->Scene->lightRig;
+  if (!rig) {
+    if (msg)
+      *msg = "there is no light rig";
+    return pymol::LightSetStatus::NoRig;
+  }
+  auto status =
+      pymol::LightRigSet(*rig, index, field, v, n, SceneGetWorldToEye(G), msg);
+  if (status == pymol::LightSetStatus::Ok)
+    SceneInvalidate(G);
+  return status;
+}
+
+pymol::LightSetStatus SceneLightGet(PyMOLGlobals* G, int index,
+    std::string_view field, pymol::LightValue& out,
+    const pymol::LightField** info, std::string* msg)
+{
+  const auto* rig = SceneGetLightRig(G);
+  if (!rig) {
+    if (msg)
+      *msg = "there is no light rig";
+    return pymol::LightSetStatus::NoRig;
+  }
+  return pymol::LightRigGet(*rig, index, field, out, info, msg);
+}
+
+std::optional<pymol::LightRigEye> SceneLightsResolve(
+    PyMOLGlobals* G, const glm::dmat4* worldToEye)
+{
+  const auto* rig = SceneGetLightRig(G);
+  if (!rig)
+    return std::nullopt;
+  return pymol::LightRigResolve(
+      *rig, worldToEye ? *worldToEye : SceneGetWorldToEye(G));
+}
+
+std::optional<std::string> SceneLightsJSON(PyMOLGlobals* G)
+{
+  const auto* rig = SceneGetLightRig(G);
+  if (!rig)
+    return std::nullopt;
+  return pymol::LightRigToJSON(*rig);
+}
+
 pymol::Result<> SceneLightsRecenter(PyMOLGlobals* G)
 {
   auto& rig = G->Scene->lightRig;
