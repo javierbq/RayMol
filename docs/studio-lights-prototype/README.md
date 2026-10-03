@@ -2,7 +2,7 @@
 
 **This branch is a reference, not for merge.** It is the prototype behind the lighting epic. Read it for behaviour, numbers and working shader code, then reimplement each piece properly in its own PR. Base: `master` at 567e34310.
 
-- Design doc with findings, the gizmo proposal and the UI sketches: [Claude doc](https://claude.ai/code/artifact/84ef4f32-d448-4f14-8355-f68ee2aeaa52) (the sketches are also in `sketches/` here).
+- Design spec with the decisions, the light model, commands, storage and the updated UI sketches: [`docs/superpowers/specs/2026-10-02-lighting-epic-design.md`](https://github.com/javierbq/RayMol/blob/7248c0a982d08c24f91f9099c3555735ad501e48/docs/superpowers/specs/2026-10-02-lighting-epic-design.md) (PR #629). Where this README and the spec disagree, the spec wins: the command is `lights`/`atmosphere`, not `studio`, and a lamp drag in the orbit plan changes orbit only. `sketches/` here are the originals from the sketch round.
 - Movie-export speed-up found while profiling: issue #601, PR #602. The copy on this branch is a separate commit so the branch builds as tested.
 
 ## What it does (Metal renderer only)
