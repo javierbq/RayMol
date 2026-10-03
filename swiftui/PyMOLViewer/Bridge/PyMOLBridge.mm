@@ -12,6 +12,7 @@
 #include "Scene.h"
 #include "SceneLights.h"  // the light rig (#611): no Python
 #include "MyPNG.h"        // MyPNGSetFastWrite (#601)
+#include "SurfacePick.h"  // ScenePickSurface / ScenePickSurfacePrepare (#614)
 
 #include "PyMOLBridgeLights.h"  // PyMOLLightRigEye, PyMOLLightEye, PYMOL_LIGHT_SET_*
 
@@ -554,6 +555,73 @@ void PyMOLBridge_Pick(PyMOLHandle h, float ndcX, float ndcY, float aspect)
     PyRun_SimpleString(script);
     if (PyErr_Occurred()) PyErr_Print();
     PAutoUnblock(G, blk);
+}
+
+// --- Surface pick (#614) ---
+
+// The core behind the pick, or null when it must not be touched now: no
+// instance, or a modal draw owns it (the Python path refuses then too,
+// APIEnterNotModal in CmdSurfacePick).
+static PyMOLGlobals *surfacePickGlobals(PyMOLHandle h)
+{
+    if (!h || PyMOL_GetModalDraw(INST(h))) return nullptr;
+    return PyMOL_GetGlobals(INST(h));
+}
+
+int PyMOLBridge_SurfacePick(PyMOLHandle h, float sceneNdcX, float sceneNdcY,
+                            int flags, float *out, int count)
+{
+    if (!out || count != 8) return 0;
+    PyMOLGlobals *G = surfacePickGlobals(h);
+    if (!G) return 0;
+
+    SurfacePickRequest req;
+    req.ndc_x = sceneNdcX;
+    req.ndc_y = sceneNdcY;
+    req.aspect = 0.f;                       // the scene's own (the letterboxed sub-rect)
+    req.rep_mask = cSurfacePickRepMask;     // surface, cartoon, spheres, sticks
+    req.objects = nullptr;                  // every enabled public molecule
+    req.update = (flags & 1) != 0;          // may reach Python: main thread only
+
+    SurfacePickHit hit;
+    try {
+        hit = ScenePickSurface(G, req);
+    } catch (...) {
+        // A failed grid allocation must not unwind into Swift; it is a miss.
+        return 0;
+    }
+    if (!hit.hit) return 0;
+
+    out[0] = hit.point[0];
+    out[1] = hit.point[1];
+    out[2] = hit.point[2];
+    out[3] = hit.normal[0];
+    out[4] = hit.normal[1];
+    out[5] = hit.normal[2];
+    out[6] = hit.depth;
+    out[7] = hit.facing;
+    return 1 | (hit.inside ? 2 : 0) | (hit.cap ? 4 : 0);
+}
+
+int PyMOLBridge_SurfacePickPrepare(PyMOLHandle h, int flags)
+{
+    PyMOLGlobals *G = surfacePickGlobals(h);
+    if (!G) return 0;
+    try {
+        return ScenePickSurfacePrepare(G, cSurfacePickRepMask, nullptr,
+                                       (flags & 1) != 0, true).accels;
+    } catch (...) {
+        return 0;
+    }
+}
+
+float PyMOLBridge_GetLetterboxAspect(PyMOLHandle h)
+{
+    if (!h) return 0.f;
+    PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
+    if (!G) return 0.f;
+    auto *r = static_cast<pymol::RendererMetal *>(G->Renderer);
+    return r ? r->letterboxAspect() : 0.f;
 }
 
 char *PyMOLBridge_GetFeedback(PyMOLHandle h)
