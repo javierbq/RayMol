@@ -37,7 +37,7 @@ linking.
 ## 2. Decisions
 
 Settled with the user on 2026-10-02, one question at a time. Items marked
-*spec* are choices this document makes; challenge them in review.
+*spec* were proposed by this document and approved in review (PR #629).
 
 | # | Topic | Decision |
 | --- | --- | --- |
@@ -53,7 +53,7 @@ Settled with the user on 2026-10-02, one question at a time. Items marked
 | 10 | Lamps in the main view | Every light gets a small knob. Only the selected light shows its beam rings, aim dot and handles. |
 | 11 | Labels | **Orbit** and **Pitch** (with **Radius**). |
 | 12 | Angle zero | Orbit 0° = at the camera, +90° = camera-right, ±180° = behind (rim). Pitch 0° = level with the camera, +90° = above. Same as the prototype's `az`/`el`. |
-| 13 | iOS performance | #616 and #618 count as done only within the budget in §8. |
+| 13 | iOS performance | The budget in §8 is the target. It is calibrated on devices at the end of the epic, in #623. #616 and #618 ship the fallback switches and a GPU-time readout so calibration needs no code. |
 | 14 | Priority | `tier-1`. |
 | 15 | *spec* Classic lights | While a rig is on, PyMOL's own lights are scaled by the rig's `classic` value (default 0), and the rig's `ambient` replaces the `ambient` setting. No setting is written. |
 | 16 | *spec* Command grammar | Standard PyMOL argument parsing, not a literal rest-of-line, so `lights` chains with `;`. |
@@ -272,15 +272,20 @@ the tickets carry permalinks.
 
 ## 8. Performance budget
 
-Measured on an iPhone with an A16 or newer and an M-series iPad, with a
+The target, on an iPhone with an A16 or newer and an M-series iPad, with a
 1,300-atom protein, 3 shadowed lights and dust on:
 
 - 60 fps sustained;
 - at most ~4 ms of added GPU time per frame versus no rig.
 
-If a device misses it, iOS falls back to 1024² shadow maps and half-resolution
-air, and the fallback is re-measured. Mac numbers for 0, 1 and 3 shadowed
-lights at three structure sizes go on #616.
+**When it is checked:** on devices, at the end of the epic, in #623.
+- **Before that:** #616 and #618 ship the fallbacks as switches (1024² shadow
+  maps, half-resolution air) and a GPU-time readout per frame behind a debug
+  setting. Calibration is then a measurement plus a choice of iOS defaults.
+- **If a device still misses the target with the fallbacks:** #623 reports the
+  numbers, and the cap on shadowed lights is revisited.
+- **Mac:** numbers for 0, 1 and 3 shadowed lights at three structure sizes go
+  on #616 (checklist L6).
 
 ## 9. Controls (#619–#623)
 
@@ -337,6 +342,11 @@ lights at three structure sizes go on #616.
 
 ## 10. Testing
 
+CI renders nothing on a GPU and has no Xcode job. Pixel, shader, iOS and app
+checks therefore follow `docs/superpowers/checklists/2026-10-02-lighting-checklist.md`,
+and each PR posts that checklist's results table. Python and catch2 tests run
+in CI; new Python test files must be added to `raymol-embedded-tests.yml`.
+
 - **Default unchanged:** image tests compare a default scene with master,
   byte for byte, with the rig absent and with it present but off.
 - **Round-trips (CI):**
@@ -356,8 +366,8 @@ lights at three structure sizes go on #616.
   - hit-test unit tests for knobs, rings, the square and the pitch arc;
   - Lights mode entry and exit, like `InteractionModeExitTests`;
   - VoiceOver labels.
-- **Device:** the §8 budget on iPhone and iPad; iOS device and simulator
-  shader compiles.
+- **Device:** iOS shader compiles for device and simulator in every
+  rendering PR; the §8 budget once, on iPhone and iPad, in #623.
 
 ## 11. Ticket map
 
@@ -373,3 +383,17 @@ lights at three structure sizes go on #616.
 Critical paths: rendering #611 → #613 → #616 → #618; controls #611 → #619 →
 #622 → #623. The first visible result is #611 + #612 + #613: coloured spot
 lights from a script.
+
+**Delegating the tickets:**
+- **Order:**
+  - #611 and #614 start first;
+  - after #611: #612, #613, #617 and #626;
+  - after #613: #615, #616 and #624, then #618 after #616;
+  - after #612: #619, then #620 and #621, then #622;
+  - last: #623 (including the iOS calibration), #625 and #627.
+- **Don't run rendering tickets in parallel.** #613, #615, #616, #618 and #624
+  all edit the shared shader block (`kMaterialSrc`) or the post chain in
+  `RendererMetal.mm`, so run them one after another.
+- **One branch per ticket,** `light/<issue>-<slug>`, as the materials epic
+  used `mat/…`.
+- **Every PR** posts the checklist's results table (§10).
