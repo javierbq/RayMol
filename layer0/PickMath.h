@@ -340,6 +340,68 @@ inline bool pickTriangle(const float* a, const float* d, const float* v0,
 }
 
 /**
+ * The Mesh rule for one triangle. Metal draws both sides and culls nothing,
+ * so any crossing in [smin, smax] is a hit.
+ *
+ * The reported normal is the smooth normal interpolated from n0..n2 at the
+ * crossing. `inside` says the ray met the back face: it travels along the
+ * geometric normal once that is turned to agree with the smooth one. With no
+ * smooth normals (any of n0..n2 nullptr) a face has no outside: the geometric
+ * normal is turned toward the ray's origin and `inside` stays false.
+ */
+inline bool pickTriangleMesh(const float* a, const float* d, const float* v0,
+    const float* v1, const float* v2, const float* n0, const float* n1,
+    const float* n2, float smin, float smax, PickRayHit& hit)
+{
+  using namespace pickmath;
+  float s, bu, bv;
+  if (!pickTriangle(a, d, v0, v1, v2, s, bu, bv))
+    return false;
+  if (!(s >= smin && s <= smax))
+    return false;
+  const double e1[3] = {double(v1[0]) - v0[0], double(v1[1]) - v0[1],
+      double(v1[2]) - v0[2]};
+  const double e2[3] = {double(v2[0]) - v0[0], double(v2[1]) - v0[1],
+      double(v2[2]) - v0[2]};
+  double g[3] = {
+      e1[1] * e2[2] - e1[2] * e2[1],
+      e1[2] * e2[0] - e1[0] * e2[2],
+      e1[0] * e2[1] - e1[1] * e2[0],
+  };
+  const double dv[3] = {d[0], d[1], d[2]};
+  double n[3] = {g[0], g[1], g[2]};
+  bool smooth = false;
+  if (n0 && n1 && n2) {
+    const double w = 1.0 - bu - bv;
+    for (int k = 0; k < 3; ++k)
+      n[k] = w * n0[k] + double(bu) * n1[k] + double(bv) * n2[k];
+    smooth = dot3(n, n) > 1e-20;
+    if (!smooth)
+      std::copy_n(g, 3, n);
+  }
+  if (smooth) {
+    if (dot3(g, n) < 0.0) {
+      g[0] = -g[0];
+      g[1] = -g[1];
+      g[2] = -g[2];
+    }
+    hit.inside = dot3(g, dv) > 0.0;
+  } else {
+    if (dot3(n, dv) > 0.0) {
+      n[0] = -n[0];
+      n[1] = -n[1];
+      n[2] = -n[2];
+    }
+    hit.inside = false;
+  }
+  normalize3(n);
+  store3(hit.n, n);
+  hit.s = s;
+  hit.cap = false;
+  return true;
+}
+
+/**
  * Apply a clip rule to a primitive's span. Returns true and fills `hit`
  * (s, normal, inside, cap) when the primitive is what the ray sees within
  * [smin, smax].
