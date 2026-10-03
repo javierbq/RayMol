@@ -1094,6 +1094,205 @@ class TestTransforms(PickCase):
         self.assertAlmostEqual(hit.depth, 78.0, delta=1e-3)
 
 
+class TestGrid(PickCase):
+    '''grid_mode 1-3, mapped in the core.
+
+    surface_at takes a whole-viewport point. The core finds the cell under it
+    the way SceneRenderMetal lays cells out (columns left to right, row 0 at
+    the top; every cell shares the frame's camera, with the cell's own
+    aspect) and picks only what that cell draws. At 400 x 300 (aspect 4/3)
+    GridUpdate lays 2 slots out as 1 row x 2 columns (cell aspect 2/3), and
+    3 or 4 slots as 2 x 2 (cell aspect 4/3).
+
+    Every object sits on the view axis, nearer ones in front, so without the
+    cell mapping the nearest object would win every pick.'''
+
+    TWO = (2, 1)   # (n_col, n_row)
+    FOUR = (2, 2)
+    O = (0.0, 0.0, 0.0)
+
+    def at(self, layout, slot, cx=0.0, cy=0.0):
+        '''Viewport NDC of the point (cx, cy), in cell NDC, of 1-based `slot`
+        in an (n_col, n_row) layout.'''
+        n_col, n_row = layout
+        col, row = (slot - 1) % n_col, (slot - 1) // n_col
+        return (-1.0 + (2.0 * col + cx + 1.0) / n_col,
+                1.0 - (2.0 * row + 1.0 - cy) / n_row)
+
+    def cell_sphere(self, layout, cx, cy, c, r):
+        '''(point, depth) where the cell's ray through (cx, cy) enters the
+        sphere (c, r): the pinned camera with the cell's aspect.'''
+        n_col, n_row = layout
+        d = (cx * T * self.aspect() * n_row / n_col, cy * T, -1.0)
+        oc = sub(EYE, c)
+        qa, qb, qc = dot(d, d), 2.0 * dot(oc, d), dot(oc, oc) - r * r
+        disc = qb * qb - 4.0 * qa * qc
+        self.assertGreaterEqual(disc, 0.0, 'test geometry: ray misses')
+        lam = (-qb - math.sqrt(disc)) / (2.0 * qa)
+        return tuple(EYE[i] + lam * d[i] for i in range(3)), lam
+
+    def assertCellHit(self, layout, slot, obj, state, c, r=2.0, cx=0.0,
+                      cy=0.0):
+        p, depth = self.cell_sphere(layout, cx, cy, c, r)
+        hit = self.pick(*self.at(layout, slot, cx, cy))
+        self.assertHit(hit)
+        self.assertEqual((hit.object, hit.state), (obj, state),
+                         'slot %d' % slot)
+        self.assertAlmostEqual(hit.depth, depth, delta=1e-3)
+        self.assertLess(norm(sub(hit.point, p)), 1e-3)
+        self.assertNormalNear(hit, sub(p, c), 0.5)
+        self.assertOriented(hit)
+        return hit
+
+    def multi(self, name, zs):
+        '''One sphere per state, on the view axis at the given z.'''
+        for i, z in enumerate(zs):
+            cmd.pseudoatom(name, pos=[0.0, 0.0, z], vdw=2.0, state=i + 1)
+        cmd.show_as('spheres', name)
+
+    def testOneSlotIsTheWholeViewport(self):
+        # One object: one slot, which GridUpdate does not make a grid.
+        self.ball('ga', self.O)
+        cmd.set('grid_mode', 1)
+        hit = self.pick(0.05, -0.04)
+        self.assertHit(hit)
+        p, depth = self.ray_sphere(0.05, -0.04, self.O, 2.0)
+        self.assertAlmostEqual(hit.depth, depth, delta=1e-3)
+        self.assertLess(norm(sub(hit.point, p)), 1e-3)
+
+    def testByObject(self):
+        self.ball('ga', self.O)
+        self.ball('gb', (0.0, 0.0, 10.0))
+        self.assertEqual(self.pick(0.0, 0.0).object, 'gb')
+        cmd.set('grid_mode', 1)
+        self.assertCellHit(self.TWO, 1, 'ga', 1, self.O)
+        self.assertCellHit(self.TWO, 2, 'gb', 1, (0.0, 0.0, 10.0))
+        # Off-centre points take the cell's aspect (2/3; at the viewport's
+        # 4/3 these rays would pass beside the spheres).
+        self.assertCellHit(self.TWO, 1, 'ga', 1, self.O, cx=0.12, cy=-0.06)
+        self.assertCellHit(self.TWO, 2, 'gb', 1, (0.0, 0.0, 10.0),
+                           cx=-0.12, cy=0.06)
+        # The viewport centre is cell 2's left edge: nothing is drawn there.
+        self.assertIsNone(self.pick(0.0, 0.0))
+        # Outside the viewport there is no cell.
+        self.assertIsNone(self.pick(1.2, 0.0))
+        self.assertIsNone(self.pick(-0.5, -1.01))
+
+    def testEmptySlotAndGridMax(self):
+        self.ball('ga', self.O)
+        self.ball('gb', (0.0, 0.0, 10.0))
+        self.ball('gc', (0.0, 0.0, 20.0))
+        cmd.set('grid_mode', 1)
+        self.assertCellHit(self.FOUR, 1, 'ga', 1, self.O)
+        self.assertCellHit(self.FOUR, 2, 'gb', 1, (0.0, 0.0, 10.0))
+        self.assertCellHit(self.FOUR, 3, 'gc', 1, (0.0, 0.0, 20.0))
+        # Three slots in a 2 x 2 grid: the fourth cell is empty.
+        self.assertIsNone(self.pick(*self.at(self.FOUR, 4)))
+        # grid_max 2 draws two slots (1 x 2): gc, in slot 3, is drawn nowhere.
+        cmd.set('grid_max', 2)
+        self.assertCellHit(self.TWO, 1, 'ga', 1, self.O)
+        self.assertCellHit(self.TWO, 2, 'gb', 1, (0.0, 0.0, 10.0))
+
+    def testByObjectFollowsGridSlot(self):
+        self.ball('ga', self.O)
+        self.ball('gb', (0.0, 0.0, 10.0))
+        self.ball('gc', (0.0, 0.0, 20.0))
+        cmd.set('grid_mode', 1)
+        # gc shares ga's slot: two slots, and gc is in front in cell 1.
+        cmd.set('grid_slot', 1, 'gc')
+        self.assertCellHit(self.TWO, 1, 'gc', 1, (0.0, 0.0, 20.0))
+        self.assertCellHit(self.TWO, 2, 'gb', 1, (0.0, 0.0, 10.0))
+        # A negative grid_slot draws the object in every cell.
+        cmd.set('grid_slot', -2, 'gc')
+        self.assertCellHit(self.TWO, 1, 'gc', 1, (0.0, 0.0, 20.0))
+        self.assertCellHit(self.TWO, 2, 'gc', 1, (0.0, 0.0, 20.0))
+
+    def testByObjectStates(self):
+        self.multi('gm', (0.0, 10.0))
+        self.ball('gs', (0.0, 0.0, -20.0))
+        cmd.set('grid_mode', 2)
+        cmd.frame(1)
+        self.assertCellHit(self.TWO, 1, 'gm', 1, self.O)
+        self.assertCellHit(self.TWO, 2, 'gm', 2, (0.0, 0.0, 10.0))
+        self.assertCellHit(self.TWO, 2, 'gm', 2, (0.0, 0.0, 10.0),
+                           cx=0.12, cy=0.06)
+        # Cells count from the scene's state: cell 1 now draws state 2 and
+        # cell 2 state 3, which gm lacks. The single-state object is drawn in
+        # every cell (static_singletons).
+        cmd.frame(2)
+        self.assertCellHit(self.TWO, 1, 'gm', 2, (0.0, 0.0, 10.0))
+        self.assertCellHit(self.TWO, 2, 'gs', 1, (0.0, 0.0, -20.0))
+        cmd.set('static_singletons', 0)
+        self.assertCellHit(self.TWO, 1, 'gm', 2, (0.0, 0.0, 10.0))
+        self.assertIsNone(self.pick(*self.at(self.TWO, 2)))
+
+    def testByObjectByState(self):
+        self.multi('gp', (0.0, 5.0))
+        self.multi('gq', (10.0, 15.0))
+        cmd.set('grid_mode', 3)
+        expected = [('gp', 1, 0.0), ('gp', 2, 5.0), ('gq', 1, 10.0),
+                    ('gq', 2, 15.0)]
+        for frame in (1, 2):
+            # The scene's state does not move ByObjectByState cells.
+            cmd.frame(frame)
+            for slot, (obj, state, z) in enumerate(expected, 1):
+                self.assertCellHit(self.FOUR, slot, obj, state,
+                                   (0.0, 0.0, z))
+        self.assertCellHit(self.FOUR, 4, 'gq', 2, (0.0, 0.0, 15.0),
+                           cx=-0.08, cy=0.06)
+        # gq with one state: three slots, and the fourth cell is empty.
+        cmd.delete('gq')
+        self.multi('gq', (10.0,))
+        self.assertCellHit(self.FOUR, 3, 'gq', 1, (0.0, 0.0, 10.0))
+        self.assertIsNone(self.pick(*self.at(self.FOUR, 4)))
+
+    def testPicksAreRepeatable(self):
+        '''The layout is rebuilt locally on every pick and written nowhere:
+        picking again, in another order and without the update, gives the
+        same answers, and nothing observable moved.'''
+        self.multi('gp', (0.0, 5.0))
+        self.multi('gq', (10.0, 15.0))
+        cmd.set('grid_mode', 3)
+        points = [self.at(self.FOUR, slot, cx, cy) for slot in (1, 2, 3, 4)
+                  for cx, cy in ((0.0, 0.0), (0.06, -0.05))]
+        first = [self.pick(x, y) for x, y in points]
+        self.assertTrue(all(first))
+
+        def snapshot():
+            return (cmd.get('grid_mode'), cmd.get('grid_max'),
+                    cmd.get('grid_slot', 'gp'), cmd.get('grid_slot', 'gq'),
+                    cmd.get_view(), cmd.get_frame(),
+                    cmd.get_names('all', enabled_only=1))
+        before = snapshot()
+        again = [self.pick(x, y, update=False) for x, y in reversed(points)]
+        self.assertEqual(again[::-1], first)
+        self.assertEqual([self.pick(x, y) for x, y in points], first)
+        self.assertEqual(snapshot(), before)
+        # Back to ByObject: one cell per object again, at the shown state.
+        cmd.set('grid_mode', 1)
+        self.assertCellHit(self.TWO, 1, 'gp', 1, self.O)
+        self.assertCellHit(self.TWO, 2, 'gq', 1, (0.0, 0.0, 10.0))
+
+    def testWarmCoversEveryCell(self):
+        self.multi('gm', (0.0, 10.0))
+        self.ball('gs', (0.0, 0.0, -20.0))
+        # No grid: the shown state of each object.
+        self.assertEqual(metal_pick.surface_warm()['accels'], 2)
+        # ByObjectStates: gm's two states, and the singleton once.
+        cmd.set('grid_mode', 2)
+        warm = metal_pick.surface_warm()
+        self.assertEqual(warm['accels'], 3)
+        self.assertEqual(warm['built'], 1)
+        # ByObjectByState: every state of every object, already warm.
+        cmd.set('grid_mode', 3)
+        warm = metal_pick.surface_warm()
+        self.assertEqual(warm['accels'], 3)
+        self.assertEqual(warm['built'], 0)
+        # One slot is no grid.
+        cmd.set('grid_max', 1)
+        self.assertEqual(metal_pick.surface_warm()['accels'], 2)
+
+
 class TestScope(PickCase):
 
     def testLinesAndRibbonAreNotPicked(self):
