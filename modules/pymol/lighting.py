@@ -49,7 +49,7 @@ PYMOL API
                  'shadow', 'outline'}, ...]}
 
     'centre' and 'size' are the rig frame (world Angstrom): the box
-    midpoint and half-diagonal of the enabled molecules, captured when the
+    midpoint and half-diagonal of the enabled objects, captured when the
     first light is added and again only on re-centre. A light's 'radius' is
     in multiples of 'size'.
 
@@ -76,13 +76,15 @@ PYMOL API
     first unused of key, fill, rim, light4, light5, light6. Out-of-range
     numbers are clamped (orbit wraps into (-180, 180]). When the rig has
     lights and no 'centre'/'size', the frame is captured from the enabled
-    molecules in the current state (solvent excluded).
+    objects in the current state (atoms with solvent excluded, plus maps,
+    meshes, isosurfaces and CGOs).
 
     These raise CmdException naming the key, and leave the rig unchanged:
     unknown keys, a newer version, wrong types, non-finite numbers, only
-    one of 'centre' and 'size', a pinned light without 'position', more
-    than 6 lights, more than 3 shadowed lights, and a bad or duplicate
-    name (letters, digits and _, unique ignoring case).
+    one of 'centre' and 'size', a pinned light without 'position', a light
+    aimed at a point without 'aim_point', more than 6 lights, more than 3
+    shadowed lights, and a bad or duplicate name (letters, digits and _,
+    unique ignoring case).
 
 EXAMPLE
 

@@ -24,7 +24,7 @@ import copy
 import math
 
 import pymol
-from pymol import _cmd, cmd, lighting, testing
+from pymol import _cmd, cgo, cmd, lighting, testing
 
 # Two protein atoms in a 4 x 6 x 12 A box (half-diagonal 7 A), plus waters
 # 50 A away that would inflate the box if solvent were not excluded.
@@ -480,6 +480,64 @@ class TestLightRig(testing.PyMOLTestCase):
         cmd.pseudoatom('one', pos=[3.0, 4.0, 5.0])
         cmd.set_lights({'lights': [{}]})
         self.assertFrame(cmd.get_lights(), [3.0, 4.0, 5.0], 1.0)
+
+    def testCaptureIncludesNonMoleculeObjects(self):
+        """§4.3 / Q5: the extent of the enabled objects. Maps, meshes and
+        CGOs count with the atoms (solvent is still left out when anything
+        else is enabled); disabled ones and gadgets (screen space) do not."""
+        shape = [cgo.BEGIN, cgo.LINES, cgo.VERTEX, -10.0, -20.0, -30.0,
+                 cgo.VERTEX, 1.0, 2.0, 3.0, cgo.END]
+        # a CGO alone
+        cmd.load_cgo(shape, 'shape')
+        cmd.set_lights({'lights': [{}]})
+        self.assertFrame(cmd.get_lights(), [-4.5, -9.0, -13.5],
+                         0.5 * math.sqrt(11.0 ** 2 + 22.0 ** 2 + 33.0 ** 2))
+        # with the molecule: the union of the CGO and the non-solvent atoms
+        # (0,0,0)-(4,6,12); the waters at +-50 A still left out
+        self.load()
+        cmd.set_lights({'lights': [{}]})
+        self.assertFrame(cmd.get_lights(), [-3.0, -7.0, -9.0],
+                         0.5 * math.sqrt(14.0 ** 2 + 26.0 ** 2 + 42.0 ** 2))
+        # a disabled CGO does not count
+        cmd.disable('shape')
+        cmd.set_lights({'lights': [{}]})
+        centre, size = self.frame_of('(enabled and not solvent)')
+        self.assertFrame(cmd.get_lights(), centre, size)
+        # waters and a CGO: the CGO alone (solvent counts only when nothing
+        # else is enabled)
+        cmd.enable('shape')
+        cmd.remove('m and not solvent')
+        cmd.set_lights({'lights': [{}]})
+        self.assertFrame(cmd.get_lights(), [-4.5, -9.0, -13.5],
+                         0.5 * math.sqrt(11.0 ** 2 + 22.0 ** 2 + 33.0 ** 2))
+
+        # an EM-style scene: a mesh of a map, the molecule and the map off
+        cmd.delete('all')
+        self.load()
+        cmd.map_new('dens', 'gaussian', 1.0, 'm and not solvent', 4.0)
+        cmd.isomesh('mesh', 'dens', 0.2)
+        cmd.disable('m')
+        cmd.disable('dens')
+        cmd.set_lights({'lights': [{}]})
+        centre, size = self.frame_of('mesh')
+        self.assertGreater(size, 7.0)       # wider than the two atoms
+        self.assertFrame(cmd.get_lights(), centre, size)
+        # the map's own extent counts while it is enabled
+        cmd.enable('dens')
+        cmd.set_lights({'lights': [{}]})
+        mn = [min(a, b) for a, b in zip(cmd.get_extent('mesh')[0],
+                                        cmd.get_extent('dens')[0])]
+        mx = [max(a, b) for a, b in zip(cmd.get_extent('mesh')[1],
+                                        cmd.get_extent('dens')[1])]
+        self.assertFrame(cmd.get_lights(),
+                         [(a + b) / 2.0 for a, b in zip(mn, mx)],
+                         0.5 * math.sqrt(sum((b - a) ** 2
+                                             for a, b in zip(mn, mx))))
+        # a colour ramp (a gadget, drawn in screen space) changes nothing
+        before = cmd.get_lights()
+        cmd.ramp_new('ramp', 'dens', [0.0, 1.0])
+        cmd.set_lights({'lights': [{}]})
+        self.assertEqual(cmd.get_lights(), before)
 
     def testFrameNotMovedByViewChanges(self):
         self.load()

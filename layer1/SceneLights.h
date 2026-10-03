@@ -41,11 +41,14 @@ void SceneSetLightRig(PyMOLGlobals* G, std::optional<pymol::LightRig> rig);
 pymol::Result<> SceneLightsReplace(PyMOLGlobals* G, pymol::LightRig rig);
 
 /**
- * The rig frame for the current scene (spec §4.3): the box of the enabled
- * objects' atoms in the current state, solvent excluded. The centre is the
- * box midpoint and the size half its diagonal (at least 1 Å). Falls back to
- * every enabled atom when only solvent is enabled, and to the rotation origin
- * with 10 Å when no atoms are enabled (an empty scene, or only maps / CGOs).
+ * The rig frame for the current scene (spec §4.3, Q5): the box of the
+ * enabled objects in the current state, that is the enabled atoms with
+ * solvent excluded, plus the cached extents of enabled objects that are not
+ * molecules (maps, meshes, isosurfaces, CGOs, measurements, slices, volumes;
+ * not gadgets or gizmos). The centre is the box midpoint and the size half
+ * its diagonal (at least 1 Å). Falls back to every enabled atom when only
+ * solvent is enabled, and to the rotation origin with 10 Å when nothing
+ * enabled has an extent.
  */
 void SceneLightRigCapture(PyMOLGlobals* G, glm::dvec3& centre, double& size);
 

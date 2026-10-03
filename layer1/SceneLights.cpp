@@ -10,6 +10,7 @@
 
 #include "Executive.h"
 #include "PyMOLGlobals.h"
+#include "PyMOLObject.h"
 #include "Scene.h"
 #include "SceneDef.h"
 #include "Selector.h"
@@ -48,17 +49,56 @@ void SceneLightRigCapture(PyMOLGlobals* G, glm::dvec3& centre, double& size)
 {
   float mn[3], mx[3];
   bool found = false;
-  // Solvent excluded, as for the shadow frustum: scattered waters would
-  // inflate 1x. A solvent-only scene falls back to every enabled atom.
-  for (const char* expr : {"(enabled and not solvent)", "(enabled)"}) {
+  auto include = [&](const float* lo, const float* hi) {
+    for (int i = 0; i < 3; ++i) {
+      mn[i] = found ? std::min(mn[i], lo[i]) : lo[i];
+      mx[i] = found ? std::max(mx[i], hi[i]) : hi[i];
+    }
+    found = true;
+  };
+  auto includeAtoms = [&](const char* expr) {
     SelectorTmp tmp(G, expr);
+    float lo[3], hi[3];
     if (tmp.getAtomCount() > 0 &&
-        ExecutiveGetExtent(G, tmp.getName(), mn, mx, /* transformed */ true,
-            /* current state */ -2, /* weighted */ false)) {
-      found = true;
+        ExecutiveGetExtent(G, tmp.getName(), lo, hi, /* transformed */ true,
+            /* current state */ -2, /* weighted */ false))
+      include(lo, hi);
+  };
+
+  // The extent of the enabled objects in the current state (§4.3). Atoms
+  // with solvent left out, as for the shadow frustum: scattered waters would
+  // inflate 1x.
+  includeAtoms("(enabled and not solvent)");
+
+  // Enabled objects that are not molecules (maps, meshes, isosurfaces, CGOs,
+  // measurements, slices, volumes): their cached extents, as zoom and the
+  // shadow frustum use them. Left out: alignments (their atoms are the
+  // molecules'), gadgets (drawn in screen space) and gizmos (UI).
+  ExecutiveUpdateSceneMembers(G);
+  for (auto* obj : G->Scene->Obj) {
+    switch (obj->type) {
+    case cObjectMolecule:
+    case cObjectAlignment:
+    case cObjectGadget:
+    case cObjectGizmo:
+    case cObjectGroup:
+      continue;
+    case cObjectMap:
+    case cObjectMesh:
+    case cObjectSurface:
+      if (!obj->ExtentFlag)
+        obj->update(); // as ExecutiveGetExtent: let it compute its extent
+      break;
+    default:
       break;
     }
+    if (obj->ExtentFlag)
+      include(obj->ExtentMin, obj->ExtentMax);
   }
+
+  // Only solvent enabled: every enabled atom.
+  if (!found)
+    includeAtoms("(enabled)");
 
   if (!found) {
     float origin[3];
