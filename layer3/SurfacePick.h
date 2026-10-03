@@ -19,20 +19,30 @@
 
 #include <cstddef>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
+#include "PyMOLEnums.h"
 #include "PyMOLGlobals.h"
 #include "Rep.h"
+
+namespace pymol
+{
+struct CObject;
+}
 
 /// Representations the surface pick knows how to intersect.
 constexpr int cSurfacePickRepMask =
     cRepCylBit | cRepSphereBit | cRepSurfaceBit | cRepCartoonBit;
 
 struct SurfacePickRequest {
-  //! Scene-viewport NDC, x and y in [-1, 1], +y up
+  //! Scene-viewport NDC, x and y in [-1, 1], +y up. In grid_mode this is
+  //! still the whole scene viewport: the pick finds the cell (and its
+  //! objects and states) itself.
   float ndc_x = 0.f;
   float ndc_y = 0.f;
-  //! width / height of the viewport; <= 0 means the scene's own aspect
+  //! width / height of the whole viewport (not of a grid cell); <= 0 means
+  //! the scene's own aspect
   float aspect = 0.f;
   //! visRep bits of the reps to intersect (masked to cSurfacePickRepMask)
   int rep_mask = cSurfacePickRepMask;
@@ -61,21 +71,55 @@ struct SurfacePickHit {
   bool cap = false;
 };
 
-/// A screen point mapped into the viewport (or grid cell) that draws it.
+/**
+ * A screen point mapped into the viewport (or grid cell) that draws it, with
+ * a read-only copy of the frame's grid layout.
+ */
 struct ScenePickCell {
+  //! the point in the cell's own NDC (the viewport's when not `grid`)
   float ndc_x = 0.f;
   float ndc_y = 0.f;
+  //! width / height of the cell (the viewport's when not `grid`)
   float aspect = 1.f;
+  //! false when, in grid mode, the point lies in no drawn cell: outside the
+  //! viewport, or in a slot past the last one (an empty cell). A miss.
+  bool valid = true;
   bool grid = false; ///< a grid cell (grid_mode); false = the whole viewport
   int slot = 0;      ///< 1-based grid slot when `grid`
+
+  // The grid layout SceneRenderMetal computes for the next frame
+  // (SceneGetGridSize + GridUpdate), rebuilt locally: the scene's m_slots and
+  // the objects' grid_slot are never written.
+  GridMode mode = GridMode::NoGrid;
+  int size = 0; ///< slots drawn, after grid_max (meaningful when `grid`)
+  int n_col = 1;
+  int n_row = 1;
+  //! ByObject: obj->grid_slot -> drawn slot, as SceneGetGridSize builds m_slots
+  std::vector<int> slot_table;
+  //! ByObjectByState: the offset SceneGetGridSize would write to
+  //! obj->grid_slot (the object's first slot - 1)
+  std::unordered_map<const pymol::CObject*, int> state_offsets;
 };
 
 /**
- * Map a viewport point to the grid cell that draws it. Read-only.
- * Without an active grid, this is the identity.
+ * Map a scene-viewport point to the grid cell that draws it, as
+ * SceneRenderMetal lays out grid_mode 1-3 (`aspect` is the viewport's).
+ * Read-only. Without an active grid this is the identity (`grid` false).
  */
 ScenePickCell ScenePickGridCell(
     PyMOLGlobals* G, float ndc_x, float ndc_y, float aspect);
+
+/**
+ * Whether grid slot `slot` of `cell`'s layout draws `obj`, and in which state
+ * (what SceneRenderAllObject hands obj->render(); cStateAll is possible),
+ * mirroring SceneRenderAllObject and SceneGetDrawFlag:
+ * - no grid, or ByObject: the object's current state, when its slot is drawn;
+ * - ByObjectStates: SceneGetState + slot - 1;
+ * - ByObjectByState: slot - offset - 1, when within the object's states.
+ * `slot` is ignored without an active grid.
+ */
+bool ScenePickCellState(PyMOLGlobals* G, const ScenePickCell& cell, int slot,
+    const pymol::CObject* obj, int* state);
 
 /**
  * The pick segment for a viewport point: world points `A` on the near clip
@@ -97,8 +141,9 @@ struct SurfacePickPrepareStats {
 
 /**
  * Build the pick grid of every drawn, pickable rep without picking, so the
- * first pick (or drag) does not pay for it. `build == false` only runs the
- * update (when `update`) and reports what is already cached.
+ * first pick (or drag) does not pay for it. In grid_mode, "drawn" means
+ * drawn in any cell (each coordinate set counted once). `build == false` only
+ * runs the update (when `update`) and reports what is already cached.
  */
 SurfacePickPrepareStats ScenePickSurfacePrepare(PyMOLGlobals* G, int rep_mask,
     const std::vector<std::string>* objects, bool update, bool build);

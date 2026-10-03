@@ -1133,8 +1133,12 @@ def surface_at(ndc_x, ndc_y, aspect=None, reps=SURFACE_REPS, objects=None,
     """The drawn surface point and normal under a scene-viewport point.
 
     ndc_x, ndc_y  scene-viewport NDC in [-1, 1], +y up (same convention as
-                  pick_at and the prototype's click=x/y)
-    aspect        viewport width/height; None uses the scene's own
+                  pick_at and the prototype's click=x/y). In grid_mode 1-3
+                  this is still the whole viewport: the core finds the cell
+                  under the point and picks only what that cell draws (an
+                  empty cell is a miss).
+    aspect        whole-viewport width/height (not a cell's); None uses the
+                  scene's own
     reps          which representations to intersect (a subset of
                   SURFACE_REPS, as a sequence or a space-separated string)
     objects       object names to consider; None means every enabled
@@ -1168,6 +1172,7 @@ def surface_at(ndc_x, ndc_y, aspect=None, reps=SURFACE_REPS, objects=None,
 def surface_warm(reps=SURFACE_REPS, objects=None, update=True, _self=None):
     """Build the surface-pick grids of every drawn rep now, so the first
     surface_at (a click, or the first tick of a drag) does not pay for it.
+    In grid_mode, every state any cell draws is warmed.
 
     Returns {'accels': n, 'bytes': b, 'built': k}: the grids the considered
     reps hold, their heap size, and how many this call had to build (0 on a
