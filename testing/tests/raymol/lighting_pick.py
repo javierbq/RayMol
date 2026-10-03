@@ -524,10 +524,25 @@ class TestSpheres(PickCase):
         self.assertOriented(hit, grazing=True)
         self.assertLess(hit.facing, 0.05)
         self.assertAlmostEqual(hit.facing, math.sqrt(1 - 0.999 ** 2), delta=2e-3)
-        # The nudge lifts facing to 0.05: at most ~3 degrees off radial.
-        self.assertNormalNear(hit, sub(hit.point, self.C), 3.1)
+        # The nudge turns the normal, in the plane of the radial and the view
+        # direction, until it faces the camera by exactly 0.05: here by
+        # asin(0.05) - asin(facing), about 0.3 degrees.
+        radial = unit(sub(hit.point, self.C))
+        turn = math.degrees(math.asin(0.05) - math.asin(hit.facing))
+        self.assertAlmostEqual(angle_deg(hit.normal, radial), turn, delta=0.02)
         v = unit(tuple(-c for c in self.ray_dir(x, 0.0)))
-        self.assertGreaterEqual(dot(hit.normal, v), 0.05 - 1e-4)
+        self.assertAlmostEqual(dot(hit.normal, v), 0.05, delta=2e-5)
+        self.assertLess(abs(dot(hit.normal, cross(radial, v))), 1e-5)
+
+    def testFacingCameraIsNotNudged(self):
+        # The nudge only touches grazing hits: a hit facing the camera by
+        # just over 0.05 keeps its radial normal.
+        sin_t = math.sqrt(1.0 - 0.06 ** 2) * self.R / (EYE[2] - self.C[2])
+        x = sin_t / math.sqrt(1.0 - sin_t * sin_t) / (T * self.aspect())
+        hit = self.pick(x, 0.0)
+        self.assertHit(hit)
+        self.assertGreater(hit.facing, 0.05)
+        self.assertNormalNear(hit, sub(hit.point, self.C), 0.05)
 
     def testPointSpritesAreNotPicked(self):
         cmd.set('sphere_mode', 1)
@@ -1178,6 +1193,45 @@ class TestSurface(PickCase):
         self.assertHit(hit)
         self.assertTrue(hit.cap)
         self.assertAlmostEqual(hit.depth, atom_depth - 0.5 * pad, delta=1e-3)
+
+    def testNoPerRepClipWhenItsFrontIsBehindTheCamera(self):
+        # RendererMetal applies the per-rep window only when its front plane
+        # is at eye depth >= 0. Atom A, at depth 1, puts it at
+        # 50.5 - (49.5 + 2.4) = -1.4: Metal draws the surface with the global
+        # slab alone (even though surface_clip_back alone would put the back
+        # plane at 76.45, in front of B).
+        cmd.pseudoatom('m', name='B', pos=[0.0, 0.0, 0.0], vdw=self.R)
+        cmd.pseudoatom('m', name='A', pos=[30.0, 0.0, 99.0], vdw=self.R)
+        cmd.show_as('surface', 'm')
+        cmd.set('surface_clip_back', 0.5, 'm')
+        front, back = self.rep_clip('m', 0.0, 0.5)
+        self.assertLess(front, 0.0, 'test setup')
+        self.assertLess(back, 98.0, 'test setup')
+        hit = self.pick(0.0, 0.0)
+        self.assertHit(hit)
+        self.assertEqual(hit.object, 'm')
+        self.assertFalse(hit.inside)
+        self.assertFalse(hit.cap)
+        self.assertAlmostEqual(hit.depth, 98.0, delta=0.5)
+        # B cut by the near plane instead: the far wall from inside, or with
+        # the interior cap, a cap at the NEAR plane (repCapDepth's sentinel),
+        # not at the disabled per-rep front.
+        cmd.delete('m')
+        cmd.pseudoatom('m', name='B', pos=[0.0, 0.0, 50.0], vdw=self.R)
+        cmd.pseudoatom('m', name='A', pos=[30.0, 0.0, 99.0], vdw=self.R)
+        cmd.show_as('surface', 'm')
+        cmd.set('surface_clip_back', 0.5, 'm')
+        self.assertLess(self.rep_clip('m', 0.0, 0.5)[0], 0.0, 'test setup')
+        hit = self.pick(0.0, 0.0)
+        self.assertHit(hit)
+        self.assertTrue(hit.inside)
+        self.assertAlmostEqual(hit.depth, 52.0, delta=0.5)
+        cmd.set('metal_interior_cap', 1, 'm')
+        hit = self.pick(0.0, 0.0)
+        self.assertHit(hit)
+        self.assertTrue(hit.cap)
+        self.assertAlmostEqual(hit.depth, FRONT, delta=1e-3)
+        self.assertOnRay(hit, 0.0, 0.0)
 
     def testRecolorKeepsTheGrid(self):
         # Colour and transparency recolor the rep in place: the grid stays,
