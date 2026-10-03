@@ -9,10 +9,16 @@ clears the rig, prints a warning naming the field and marks the restore
 incomplete; the rest of the session still loads. A newer version loads the
 fields this build knows, with one warning. Out-of-range numbers are clamped.
 
-The list holds the same version and fields as cmd.get_lights()'s dict, in
-the C++ field table's order (_light_fields()): bools and the anchor/aim
-choices as the ints 0|1, plain ints, floats, strs, lists and None only, so
-pse_binary_dump never turns it into blobs and older builds see plain data.
+The list holds the same version and fields as cmd.get_lights()'s dict:
+[version, [rig fields], [air fields], [[light fields], ...]], each scope's
+list in the C++ field table's order (_light_fields()). Bools and the
+anchor/aim choices are the ints 0|1; plain ints, floats, strs, lists and
+None only, so pse_binary_dump never turns it into blobs and older builds see
+plain data. The four top-level slots are frozen and each scope's list only
+grows at its end, so a version 1 reader still loads a later version's key.
+The 6-light and 3-shadow caps are policy, not format: a key over them loads
+with the extra lights left out and the extra shadows turned off, with a
+warning each.
 
 Runs on a RayMol build:
     pymol -ckqy testing/testing.py --run testing/tests/raymol/lighting_session.py
@@ -62,24 +68,41 @@ CHOICES = {'camera|pinned': ['camera', 'pinned'],
            'centre|point': ['centre', 'point']}
 
 
+def encode(kind, value):
+    """A dict value as the session list holds it."""
+    if kind == 'bool':
+        return int(value)
+    if kind in CHOICES:
+        return CHOICES[kind].index(value)
+    return value
+
+
 def session_list(rig):
     """Oracle: the session list for a get_lights() dict, built from the
     field table (_light_fields), so it pins the order and the encoding."""
     fields = lighting._light_fields()
 
-    def encode(kind, value):
-        if kind == 'bool':
-            return int(value)
-        if kind in CHOICES:
-            return CHOICES[kind].index(value)
-        return value
-
     def scope(name, source):
         return [encode(f[2], source[f[1]]) for f in fields if f[0] == name]
 
-    return ([rig['version']] + scope('rig', rig)
-            + [scope('air', rig['air']),
-               [scope('light', light) for light in rig['lights']]])
+    return [rig['version'], scope('rig', rig), scope('air', rig['air']),
+            [scope('light', light) for light in rig['lights']]]
+
+
+# The version 1 fields of each scope, in session-list order. Frozen: a later
+# version only appends to each scope (testSessionLayoutIsFrozen).
+V1_FIELDS = {
+    'rig': ['enabled', 'centre', 'size', 'ambient', 'classic'],
+    'air': ['haze', 'dust', 'dust_size', 'dust_speed', 'scatter', 'seed'],
+    'light': ['name', 'anchor', 'orbit', 'pitch', 'radius', 'position', 'aim',
+              'aim_point', 'aim_selection', 'beam', 'softness', 'color',
+              'warmth', 'intensity', 'highlight', 'falloff', 'shadow',
+              'outline'],
+}
+
+
+def light_rig_warnings(text):
+    return [line for line in text.splitlines() if 'light_rig' in line]
 
 
 def plain_types(value, path='light_rig'):
@@ -253,24 +276,51 @@ class TestLightSession(testing.PyMOLTestCase):
             key = cmd.get_session(binary=binary)['light_rig']
             plain_types(key)
             self.assertEqual(key, session_list(rig))
-            # the spec §6 layout, by position
+            # the spec §6 layout, by position: one list per scope
+            self.assertEqual(len(key), 4)
             self.assertEqual(key[0], 1)
-            self.assertEqual(len(key), 8)
-            self.assertEqual(key[1], 1)                      # enabled
-            self.assertEqual(key[2], rig['centre'])
-            self.assertEqual(key[3], rig['size'])
-            self.assertEqual(key[4:6], [0.2, 0.3])           # ambient, classic
-            self.assertEqual(key[6], [0.25, 0.4, 0.6, 2.5, -0.3, 1234])
-            self.assertEqual(len(key[7]), 3)
-            for light in key[7]:
+            # enabled, centre, size, ambient, classic
+            self.assertEqual(key[1], [1, rig['centre'], rig['size'], 0.2, 0.3])
+            self.assertEqual(key[2], [0.25, 0.4, 0.6, 2.5, -0.3, 1234])
+            self.assertEqual(len(key[3]), 3)
+            for light in key[3]:
                 self.assertEqual(len(light), 18)
-            key_light, fill, rim = key[7]
+            key_light, fill, rim = key[3]
             self.assertEqual(key_light[0], 'key')
             self.assertEqual(key_light[16:], [1, 0])          # shadow, outline
             self.assertEqual(fill[6:9], [1, [21.3, 33.1, 11.7], 'organic'])
             self.assertEqual(rim[1], 1)                       # pinned
             self.assertEqual(rim[5], [-12.5, 60.25, -4.1])    # position
             self.assertEqual(rim[16:], [0, 1])
+
+    def testSessionLayoutIsFrozen(self):
+        """The version 1 slots never move: four top-level slots, and each
+        scope's list starts with its version 1 fields, in this order. A new
+        field goes at the end of its scope in LightRigFields(); a field added
+        in the middle, or a rig field written before the air list, would make
+        older builds misread every later .pse (and this build every v1 one)."""
+        fields = lighting._light_fields()
+        for scope, names in V1_FIELDS.items():
+            in_table = [f[1] for f in fields if f[0] == scope]
+            self.assertEqual(in_table[:len(names)], names,
+                             '%s: a new field goes at the end of its scope'
+                             % scope)
+        kinds = {(f[0], f[1]): f[2] for f in fields}
+        rig = self.set_rig()
+        key = cmd.get_session()['light_rig']
+        self.assertEqual(len(key), 4)                 # version, rig, air, lights
+        self.assertEqual(key[0], 1)
+
+        def check(scope, values, source):
+            for name, value in zip(V1_FIELDS[scope], values):
+                self.assertEqual(value, encode(kinds[scope, name], source[name]),
+                                 '%s %s' % (scope, name))
+
+        check('rig', key[1], rig)
+        check('air', key[2], rig['air'])
+        self.assertEqual(len(key[3]), len(rig['lights']))
+        for light, source in zip(key[3], rig['lights']):
+            check('light', light, source)
 
     def testNoKeyWithoutRig(self):
         """No rig: no key, so the session has exactly the keys it had before
@@ -363,16 +413,12 @@ class TestLightSession(testing.PyMOLTestCase):
             fn(value)
             return value
 
-        def light(i, slot, value):
-            return edit(lambda k: k[7][i].__setitem__(slot, value))
+        def rig_field(slot, value):
+            return edit(lambda k: k[1].__setitem__(slot, value))
 
-        seven = edit(lambda k: k[7].extend(copy.deepcopy(k[7][:1]) * 4))
-        for i, entry in enumerate(seven[7]):
-            entry[0] = 'l%d' % i
-        four_shadows = edit(lambda k: k[7].append(copy.deepcopy(k[7][0])))
-        four_shadows[7][3][0] = 'extra'
-        for entry in four_shadows[7]:
-            entry[16] = 1
+        def light(i, slot, value):
+            return edit(lambda k: k[3][i].__setitem__(slot, value))
+
         return [
             ('not a list', 'garbage', ['expected a list, got str']),
             ('empty', [], ['empty list']),
@@ -380,26 +426,27 @@ class TestLightSession(testing.PyMOLTestCase):
              ["'version' must be an int"]),
             ('version 0', edit(lambda k: k.__setitem__(0, 0)),
              ['not a light rig version']),
-            ('enabled text', edit(lambda k: k.__setitem__(1, 'yes')),
+            ('rig fields dict', edit(lambda k: k.__setitem__(1, {'enabled': 1})),
+             ['the rig fields must be a list, got dict']),
+            ('enabled text', rig_field(0, 'yes'),
              ["'enabled' must be 0 or 1"]),
-            ('centre of 2', edit(lambda k: k.__setitem__(2, [1.0, 2.0])),
+            ('centre of 2', rig_field(1, [1.0, 2.0]),
              ["'centre' must be a list of 3 numbers"]),
-            ('size NaN', edit(lambda k: k.__setitem__(3, float('nan'))),
+            ('size NaN', rig_field(2, float('nan')),
              ["'size' must be finite"]),
-            ('size 0', edit(lambda k: k.__setitem__(3, 0.0)),
-             ["'size' must be > 0"]),
-            ('centre without size', edit(lambda k: k.__setitem__(3, None)),
+            ('size 0', rig_field(2, 0.0), ["'size' must be > 0"]),
+            ('centre without size', rig_field(2, None),
              ["'centre' and 'size' go together"]),
             ('lights without a frame',
-             edit(lambda k: k.__setitem__(slice(2, 4), [None, None])),
+             edit(lambda k: k[1].__setitem__(slice(1, 3), [None, None])),
              ['needs a frame']),
-            ('air dict', edit(lambda k: k.__setitem__(6, {'haze': 0.1})),
+            ('air dict', edit(lambda k: k.__setitem__(2, {'haze': 0.1})),
              ["'air' must be a list"]),
-            ('float seed', edit(lambda k: k[6].__setitem__(5, 1.5)),
+            ('float seed', edit(lambda k: k[2].__setitem__(5, 1.5)),
              ["air: 'seed' must be an int"]),
-            ('lights text', edit(lambda k: k.__setitem__(7, 'key')),
+            ('lights text', edit(lambda k: k.__setitem__(3, 'key')),
              ["'lights' must be a list"]),
-            ('light dict', edit(lambda k: k[7].__setitem__(0, {'name': 'k'})),
+            ('light dict', edit(lambda k: k[3].__setitem__(0, {'name': 'k'})),
              ['light 0 must be a list']),
             ('orbit text', light(1, 2, 'left'),
              ["light 1 ('fill'): 'orbit' must be a number"]),
@@ -414,11 +461,11 @@ class TestLightSession(testing.PyMOLTestCase):
             ('inf warmth', light(2, 12, float('inf')),
              ["light 2 ('rim'): 'warmth' must be finite"]),
             ('pinned without position',
-             edit(lambda k: k[7].__setitem__(2, k[7][2][:5])),
+             edit(lambda k: k[3].__setitem__(2, k[3][2][:5])),
              ["light 2 ('rim'): a pinned light needs 'position'"]),
-            ('7 lights', seven, ['at most 6 lights (got 7)']),
-            ('4 shadows', four_shadows,
-             ['at most 3 lights can cast shadows']),
+            ('aimed at a point without aim_point',
+             edit(lambda k: k[3].__setitem__(1, k[3][1][:7])),
+             ["light 1 ('fill'): a light aimed at a point needs 'aim_point'"]),
         ]
 
     def testCorruptKeyClearsRigAndLoadsTheRest(self):
@@ -435,8 +482,7 @@ class TestLightSession(testing.PyMOLTestCase):
             self.assertIsNone(cmd.get_lights(), label)
             self.assertEqual(cmd.count_atoms('m'), atoms, label)
             self.assertEqual(cmd.get_view(), view, label)
-            warnings = [line for line in text.splitlines()
-                        if 'light_rig' in line]
+            warnings = light_rig_warnings(text)
             self.assertEqual(len(warnings), 1, '%s: %r' % (label, text))
             self.assertIn('rig cleared', warnings[0], label)
             for word in words:
@@ -446,27 +492,96 @@ class TestLightSession(testing.PyMOLTestCase):
         cmd.set_session(session)
         self.assertEqual(cmd.get_lights(), rig)
 
-    def testNewerVersionLoadsKnownPrefix(self):
-        """Q6: a newer version (append-only) loads the fields this build
-        knows, with one warning, and the restore is complete."""
+    def testCapsDegradeOnRestore(self):
+        """The 6-light and 3-shadow caps are policy (#616 and #623 revisit
+        the shadow cap), not format: a key over them, as a build with higher
+        caps would save, loads with the extra lights left out and the extra
+        shadows turned off, one warning each, and the restore is complete."""
         rig = self.set_rig()
         session = cmd.get_session()
-        for version in (2, 10 ** 30):
-            newer = copy.deepcopy(session['light_rig'])
-            newer[0] = version
-            newer[6] += [0.5, 'future air']
-            for entry in newer[7]:
-                entry += [[1.0, 2.0, 3.0], 'future light field']
-            newer += [{'future': 1}, None]
-            corrupt = dict(session, light_rig=newer)
+        key = session['light_rig']
+
+        # 8 lights, none shadowed past the first: the first 6 load
+        eight = copy.deepcopy(key)
+        for i in range(5):
+            extra = copy.deepcopy(key[3][1])           # 'fill', no shadow
+            extra[0] = 'extra%d' % i
+            eight[3].append(extra)
+        for version in (1, 2):
+            eight[0] = version
+            text = self.restore(dict(session, light_rig=eight))
+            got = cmd.get_lights()
+            self.assertIsNotNone(got, text)
+            self.assertEqual([l['name'] for l in got['lights']],
+                             ['key', 'fill', 'rim', 'extra0', 'extra1',
+                              'extra2'])
+            self.assertEqual(got['lights'][:3], rig['lights'])
+            warnings = light_rig_warnings(text)
+            self.assertIn('8 lights: loaded the first 6 (at most 6 lights)',
+                          warnings[-1], text)
+            self.assertEqual(len(warnings), version, text)
+            self.assertNotIn('rig cleared', text)
+            self.assertNotIn('incomplete', text)
+
+        # 5 shadowed lights: the 4th and 5th lose their shadow
+        five = copy.deepcopy(key)
+        for name in ('back', 'top'):
+            extra = copy.deepcopy(key[3][0])           # 'key', shadowed
+            extra[0] = name
+            five[3].append(extra)
+        for entry in five[3]:
+            entry[16] = 1
+        text = self.restore(dict(session, light_rig=five))
+        got = cmd.get_lights()
+        self.assertIsNotNone(got, text)
+        self.assertEqual([l['shadow'] for l in got['lights']],
+                         [True, True, True, False, False])
+        self.assertEqual(light_rig_warnings(text), [
+            " ExecutiveSetSession-Warning: light_rig: light 3 ('back'): "
+            "shadow turned off (at most 3 lights can cast shadows)",
+            " ExecutiveSetSession-Warning: light_rig: light 4 ('top'): "
+            "shadow turned off (at most 3 lights can cast shadows)"])
+        self.assertNotIn('incomplete', text)
+        # nothing else changed
+        for got_light, want in zip(got['lights'][:3], rig['lights']):
+            self.assertEqual(dict(got_light, shadow=want['shadow']), want)
+
+    def testNewerVersionLoadsKnownPrefix(self):
+        """Q6: a newer version (append-only) loads the fields this build
+        knows, with one warning, and the restore is complete. The newer keys
+        are built as a later writer would: a new field at the end of its
+        scope's list (rig, air or light), a new top-level slot after the
+        lights."""
+        rig = self.set_rig()
+        session = cmd.get_session()
+
+        def newer(version, rig_fields=(), air=(), light=(), slots=()):
+            key = copy.deepcopy(session['light_rig'])
+            key[0] = version
+            key[1] += list(rig_fields)
+            key[2] += list(air)
+            for entry in key[3]:
+                entry += copy.deepcopy(list(light))
+            key += list(slots)
+            return key
+
+        cases = [
+            # one rig-level field (#624's exposure, say), and nothing else
+            newer(2, rig_fields=[0.7]),
+            newer(2, air=[0.5, 'future air']),
+            newer(2, light=[[1.0, 2.0, 3.0], 'future light field']),
+            newer(2, slots=[{'future': 1}, None]),
+            newer(10 ** 30, rig_fields=[0.7, [1, 2]], air=[0.5],
+                  light=[None], slots=[[]]),
+        ]
+        for key in cases:
             cmd.set_lights(OTHER_RIG)
-            text = self.restore(corrupt)
-            self.assertEqual(cmd.get_lights(), rig)
-            warnings = [line for line in text.splitlines()
-                        if 'light_rig' in line]
+            text = self.restore(dict(session, light_rig=key))
+            self.assertEqual(cmd.get_lights(), rig, key)
+            warnings = light_rig_warnings(text)
             self.assertEqual(len(warnings), 1, text)
             self.assertIn('version %d is newer than this build reads (1)'
-                          % version, warnings[0])
+                          % key[0], warnings[0])
             self.assertNotIn('incomplete', text)
 
     def testVersionOneLoadsSilently(self):
@@ -484,17 +599,20 @@ class TestLightSession(testing.PyMOLTestCase):
             ([1], {'version': 1, 'enabled': False, 'centre': None,
                    'size': None, 'ambient': 0.05, 'classic': 0.0,
                    'air': AIR_DEFAULTS, 'lights': []}),
-            ([1, 1, [1.0, 2.0, 3.0], 4.0, 0.2],
+            ([1, [1, [1.0, 2.0, 3.0], 4.0, 0.2]],
              {'version': 1, 'enabled': True, 'centre': [1.0, 2.0, 3.0],
               'size': 4.0, 'ambient': 0.2, 'classic': 0.0,
               'air': AIR_DEFAULTS, 'lights': []}),
+            ([1, [], []], {'version': 1, 'enabled': False, 'centre': None,
+                           'size': None, 'ambient': 0.05, 'classic': 0.0,
+                           'air': AIR_DEFAULTS, 'lights': []}),
         ]
         for value, expected in cases:
             text = self.restore(dict(session, light_rig=value))
             self.assertEqual(cmd.get_lights(), expected, value)
             self.assertNotIn('light_rig', text)
 
-        value = [1, 0, [1.0, 2.0, 3.0], 4.0, 0.05, 0.0, [0.3],
+        value = [1, [0, [1.0, 2.0, 3.0], 4.0, 0.05, 0.0], [0.3],
                  [['top', 0, 45.0], [], ['pin', 1, 0.0, 30.0, 4.0,
                                          [5.0, 6.0, 7.0]]]]
         self.restore(dict(session, light_rig=value))
@@ -513,13 +631,13 @@ class TestLightSession(testing.PyMOLTestCase):
         rig = self.set_rig()
         session = cmd.get_session()
         key = copy.deepcopy(session['light_rig'])
-        key[4] = 1.5                       # ambient
-        key[6][4] = -2.0                   # scatter
-        key[6][5] = 2000000                # seed
-        key[7][0][2] = 270.0               # orbit
-        key[7][0][3] = 120.0               # pitch
-        key[7][0][4] = 20.0                # radius
-        key[7][0][11] = [2.0, -1.0, 0.5]   # color
+        key[1][3] = 1.5                    # ambient
+        key[2][4] = -2.0                   # scatter
+        key[2][5] = 2000000                # seed
+        key[3][0][2] = 270.0               # orbit
+        key[3][0][3] = 120.0               # pitch
+        key[3][0][4] = 20.0                # radius
+        key[3][0][11] = [2.0, -1.0, 0.5]   # color
         text = self.restore(dict(session, light_rig=key))
         self.assertNotIn('light_rig', text)
         got = cmd.get_lights()
@@ -537,8 +655,8 @@ class TestLightSession(testing.PyMOLTestCase):
         rig = self.set_rig()
         session = cmd.get_session()
         key = session['light_rig']
-        as_tuples = tuple(key[:6]) + (tuple(key[6]),
-                                      tuple(tuple(l) for l in key[7]))
+        as_tuples = (key[0], tuple(key[1]), tuple(key[2]),
+                     tuple(tuple(l) for l in key[3]))
         cmd.set_lights(None)
         cmd.set_session(dict(session, light_rig=as_tuples))
         self.assertEqual(cmd.get_lights(), rig)

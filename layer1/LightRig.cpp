@@ -108,6 +108,9 @@ const std::vector<LightField>& LightRigFields()
   using I = LightFieldId;
   using S = LightScope;
   using K = LightKind;
+  // Append a new field at the END of its scope, never in the middle: the
+  // .pse session list gives each scope its own list, in this order, and a
+  // version 1 reader takes each list's known prefix (LightRigPy.h).
   static const std::vector<LightField> fields = {
       // rig
       U(I::Enabled, S::Rig, "enabled", K::Bool),

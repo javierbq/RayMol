@@ -173,6 +173,8 @@ struct LightValue {
 };
 
 /// The table in dict / session / JSON order: rig fields, then air, then light.
+/// A new field goes at the end of its scope (the session list is append-only
+/// per scope, see LightRigAsPyList).
 const std::vector<LightField>& LightRigFields();
 
 /// The field called `name` in `scope`, or nullptr.

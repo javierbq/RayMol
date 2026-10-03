@@ -6,6 +6,7 @@
 
 #ifndef _PYMOL_NOPY
 
+#include <algorithm>
 #include <cmath>
 #include <initializer_list>
 #include <string>
@@ -322,6 +323,11 @@ pymol::Result<Light> lightFromPy(PyObject* d, size_t index, bool& named)
       !PyDict_GetItemString(d, "position")) {
     return pymol::make_error(where, "a pinned light needs 'position'");
   }
+  if (light.aim == pymol::LightAim::Point &&
+      !PyDict_GetItemString(d, "aim_point")) {
+    return pymol::make_error(
+        where, "a light aimed at a point needs 'aim_point'");
+  }
   return light;
 }
 
@@ -461,15 +467,15 @@ Py_ssize_t fieldSlot(pymol::LightFieldId id)
   return -1;
 }
 
-/// Put the fields of `scope` held by `seq[first...]` into `target`, in table
+/// Put the fields of `scope` held by the list `seq` into `target`, in table
 /// order. Fields past the end of `seq` keep their defaults; items past the
 /// scope's last field are ignored (a newer version's fields).
 template <typename Target>
-pymol::Result<> takeListFields(PyObject* seq, Py_ssize_t first,
-    LightScope scope, Target& target, const std::string& where)
+pymol::Result<> takeListFields(
+    PyObject* seq, LightScope scope, Target& target, const std::string& where)
 {
   const Py_ssize_t n = PySequence_Fast_GET_SIZE(seq);
-  Py_ssize_t slot = first;
+  Py_ssize_t slot = 0;
   for (const auto& field : pymol::LightRigFields()) {
     if (field.scope != scope)
       continue;
@@ -505,17 +511,56 @@ pymol::Result<Light> lightFromList(PyObject* seq, size_t index, bool& named)
   where += ": ";
 
   Light light;
-  auto taken = takeListFields(seq, 0, LightScope::Light, light, where);
+  auto taken = takeListFields(seq, LightScope::Light, light, where);
   p_return_if_error(taken);
 
   if (light.anchor == pymol::LightAnchor::Pinned &&
       n <= fieldSlot(pymol::LightFieldId::Position)) {
     return pymol::make_error(where, "a pinned light needs 'position'");
   }
+  if (light.aim == pymol::LightAim::Point &&
+      n <= fieldSlot(pymol::LightFieldId::AimPoint)) {
+    return pymol::make_error(
+        where, "a light aimed at a point needs 'aim_point'");
+  }
   return light;
 }
 
-pymol::Result<LightRig> rigFromList(PyObject* obj, std::string* warning)
+/// The session list's top-level slots. Frozen since version 1: each scope
+/// has its own list, so a later version adds a field at the end of its
+/// scope's list (and a new top-level slot only after the lights), and this
+/// reader still finds every list where it was.
+enum : Py_ssize_t {
+  kSlotVersion = 0,
+  kSlotRig = 1,
+  kSlotAir = 2,
+  kSlotLights = 3,
+};
+
+/// The list at top-level `slot` of `obj`, nullptr when the list is shorter
+/// (the scope takes its defaults), or an error naming `what`.
+pymol::Result<PyObject*> listAt(PyObject* obj, Py_ssize_t slot, const char* what)
+{
+  if (PySequence_Fast_GET_SIZE(obj) <= slot)
+    return static_cast<PyObject*>(nullptr);
+  PyObject* item = PySequence_Fast_GET_ITEM(obj, slot);
+  if (!isSequence(item)) {
+    return pymol::make_error(what, " must be a list, got ", typeName(item));
+  }
+  return item;
+}
+
+/// "light 3 ('back')", or "light 3" for an empty name.
+std::string lightLabel(const Light& light, size_t index)
+{
+  std::string label = "light " + std::to_string(index);
+  if (!light.name.empty())
+    label += " ('" + light.name + "')";
+  return label;
+}
+
+pymol::Result<LightRig> rigFromList(
+    PyObject* obj, std::vector<std::string>* warnings)
 {
   if (!isSequence(obj)) {
     return pymol::make_error("expected a list, got ", typeName(obj));
@@ -525,7 +570,7 @@ pymol::Result<LightRig> rigFromList(PyObject* obj, std::string* warning)
     return pymol::make_error("empty list (no version)");
   }
 
-  PyObject* version = PySequence_Fast_GET_ITEM(obj, 0);
+  PyObject* version = PySequence_Fast_GET_ITEM(obj, kSlotVersion);
   if (!PyLong_Check(version) || PyBool_Check(version)) {
     return pymol::make_error(
         "'version' must be an int, got ", typeName(version));
@@ -538,54 +583,67 @@ pymol::Result<LightRig> rigFromList(PyObject* obj, std::string* warning)
     return pymol::make_error("'version' ", reprOf(version),
         " is not a light rig version (1 or later)");
   }
-  if ((overflow > 0 || v > pymol::kLightRigVersion) && warning) {
-    *warning = "version " + reprOf(version) +
-               " is newer than this build reads (" +
-               std::to_string(pymol::kLightRigVersion) +
-               "): loaded the fields it knows";
+  auto warn = [warnings](std::string text) {
+    if (warnings)
+      warnings->push_back(std::move(text));
+  };
+  if (overflow > 0 || v > pymol::kLightRigVersion) {
+    warn("version " + reprOf(version) + " is newer than this build reads (" +
+         std::to_string(pymol::kLightRigVersion) +
+         "): loaded the fields it knows");
   }
 
-  // [version, rig fields..., [air fields...], [[light fields...], ...]]
+  // [version, [rig fields...], [air fields...], [[light fields...], ...]]
   LightRig rig;
-  Py_ssize_t slot = 1;
-  auto taken = takeListFields(obj, slot, LightScope::Rig, rig, "");
-  p_return_if_error(taken);
-  for (const auto& field : pymol::LightRigFields()) {
-    if (field.scope == LightScope::Rig)
-      ++slot;
+  auto rigFields = listAt(obj, kSlotRig, "the rig fields");
+  p_return_if_error(rigFields);
+  if (*rigFields) {
+    auto taken = takeListFields(*rigFields, LightScope::Rig, rig, "");
+    p_return_if_error(taken);
   }
 
-  if (slot < n) {
-    PyObject* air = PySequence_Fast_GET_ITEM(obj, slot);
-    if (!isSequence(air)) {
-      return pymol::make_error("'air' must be a list, got ", typeName(air));
-    }
-    auto airTaken = takeListFields(air, 0, LightScope::Air, rig, "air: ");
-    p_return_if_error(airTaken);
+  auto air = listAt(obj, kSlotAir, "'air'");
+  p_return_if_error(air);
+  if (*air) {
+    auto taken = takeListFields(*air, LightScope::Air, rig, "air: ");
+    p_return_if_error(taken);
   }
-  ++slot;
 
-  if (slot < n) {
-    PyObject* lights = PySequence_Fast_GET_ITEM(obj, slot);
-    if (!isSequence(lights)) {
-      return pymol::make_error(
-          "'lights' must be a list, got ", typeName(lights));
-    }
-    const Py_ssize_t count = PySequence_Fast_GET_SIZE(lights);
-    if (count > pymol::kLightRigMaxLights) {
-      return pymol::make_error("at most ", pymol::kLightRigMaxLights,
-          " lights (got ", long(count), ")");
+  auto lights = listAt(obj, kSlotLights, "'lights'");
+  p_return_if_error(lights);
+  if (*lights) {
+    // The caps are policy, not format (#616 and #623 revisit the shadow
+    // cap): a file from a build with higher caps loads with the extra lights
+    // left out and the extra shadows turned off, each with a warning.
+    const Py_ssize_t count = PySequence_Fast_GET_SIZE(*lights);
+    const Py_ssize_t kept =
+        std::min<Py_ssize_t>(count, pymol::kLightRigMaxLights);
+    if (count > kept) {
+      warn(std::to_string(count) + " lights: loaded the first " +
+           std::to_string(kept) + " (at most " +
+           std::to_string(pymol::kLightRigMaxLights) + " lights)");
     }
     std::vector<bool> named;
-    for (Py_ssize_t i = 0; i < count; ++i) {
+    for (Py_ssize_t i = 0; i < kept; ++i) {
       bool hasName = false;
       auto light = lightFromList(
-          PySequence_Fast_GET_ITEM(lights, i), size_t(i), hasName);
+          PySequence_Fast_GET_ITEM(*lights, i), size_t(i), hasName);
       p_return_if_error(light);
       rig.lights.push_back(std::move(*light));
       named.push_back(hasName);
     }
     nameUnnamed(rig, named);
+
+    int shadowed = 0;
+    for (size_t i = 0; i < rig.lights.size(); ++i) {
+      auto& light = rig.lights[i];
+      if (light.shadow && ++shadowed > pymol::kLightRigMaxShadowed) {
+        light.shadow = false;
+        warn(lightLabel(light, i) + ": shadow turned off (at most " +
+             std::to_string(pymol::kLightRigMaxShadowed) +
+             " lights can cast shadows)");
+      }
+    }
   }
 
   auto valid = pymol::LightRigValidate(rig);
@@ -702,11 +760,17 @@ pymol::Result<LightRig> LightRigFromPyDict(PyObject* obj)
 
 PyObject* LightRigAsPyList(const LightRig& rig)
 {
+  // [version, [rig fields...], [air fields...], [[light fields...], ...]]:
+  // the slots of rigFromList(), frozen since version 1
   unique_PyObject_ptr list(PyList_New(0));
   if (!list)
     return nullptr;
-  if (!appendItem(list.get(), PyLong_FromLong(pymol::kLightRigVersion)) ||
-      !appendFields(list.get(), LightScope::Rig, rig))
+  if (!appendItem(list.get(), PyLong_FromLong(pymol::kLightRigVersion)))
+    return nullptr;
+
+  unique_PyObject_ptr rigFields(PyList_New(0));
+  if (!rigFields || !appendFields(rigFields.get(), LightScope::Rig, rig) ||
+      PyList_Append(list.get(), rigFields.get()) != 0)
     return nullptr;
 
   unique_PyObject_ptr air(PyList_New(0));
@@ -729,9 +793,10 @@ PyObject* LightRigAsPyList(const LightRig& rig)
   return list.release();
 }
 
-pymol::Result<LightRig> LightRigFromPyList(PyObject* obj, std::string* warning)
+pymol::Result<LightRig> LightRigFromPyList(
+    PyObject* obj, std::vector<std::string>* warnings)
 {
-  auto rig = rigFromList(obj, warning);
+  auto rig = rigFromList(obj, warnings);
   if (PyErr_Occurred())
     PyErr_Clear(); // never leave an error behind for the next session block
   return rig;

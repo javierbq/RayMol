@@ -5971,10 +5971,10 @@ int ExecutiveSetSession(
   if (ok && !partial_restore) {
     tmp = PyDict_GetItemString(session, "light_rig");
     if (tmp) {
-      std::string warning;
-      auto rig = LightRigFromPyList(tmp, &warning);
+      std::vector<std::string> warnings;
+      auto rig = LightRigFromPyList(tmp, &warnings);
       if (rig) {
-        if (!warning.empty()) {
+        for (const auto& warning : warnings) {
           PRINTFB(G, FB_Executive, FB_Warnings)
           " ExecutiveSetSession-Warning: light_rig: %s\n",
               warning.c_str() ENDFB(G);

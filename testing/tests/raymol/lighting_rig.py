@@ -251,6 +251,8 @@ class TestLightRig(testing.PyMOLTestCase):
                 rig['lights'][0][name] = value
                 if name == 'anchor':
                     rig['lights'][0]['position'] = [1.0, 2.0, 3.0]
+                if name == 'aim':
+                    rig['lights'][0]['aim_point'] = [4.0, 5.0, 6.0]
             cmd.set_lights(rig)
             got = cmd.get_lights()
             if scope == 'rig':
@@ -322,6 +324,7 @@ class TestLightRig(testing.PyMOLTestCase):
             ({'lights': [1]}, ['light 0 must be a dict']),
             ({1: 2}, ['keys must be strings']),
             ({'lights': [{'name': 'rim', 'anchor': 'pinned'}]}, ["light 0 ('rim')", "a pinned light needs 'position'"]),
+            ({'lights': [light, {'name': 'spot', 'aim': 'point'}]}, ["light 1 ('spot')", "a light aimed at a point needs 'aim_point'"]),
             ({'centre': [0, 0, 0]}, ["'centre' and 'size' go together"]),
             ({'size': 5.0, 'lights': [{}]}, ["'centre' and 'size' go together"]),
             ({'centre': [0, 0, 0], 'size': 0.0}, ["'size' must be > 0"]),

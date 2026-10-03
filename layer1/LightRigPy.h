@@ -26,8 +26,9 @@ PyObject* LightRigAsPyDict(const pymol::LightRig& rig);
 
 /**
  * Parse cmd.set_lights()'s dict, strictly: unknown keys, a newer version,
- * wrong types, non-finite numbers, bad choices and a pinned light without a
- * 'position' are errors naming the key (and the light). Missing keys take the
+ * wrong types, non-finite numbers, bad choices, a pinned light without a
+ * 'position' and a light aimed at a point without an 'aim_point' are errors
+ * naming the key (and the light). Missing keys take the
  * defaults, a light without a name takes the next unused default name, and
  * out-of-range numbers are clamped. The frame is not captured and the rig is
  * not validated here: SceneLightsReplace() does both.
@@ -36,9 +37,11 @@ pymol::Result<pymol::LightRig> LightRigFromPyDict(PyObject* obj);
 
 /**
  * The rig as the .pse session key 'light_rig' holds it (spec §6): a
- * positional list with the dict's version and fields, in field-table order:
+ * positional list with the dict's version and fields, one list per scope,
+ * each in field-table order:
  *
- *   [version, enabled, centre, size, ambient, classic,
+ *   [version,
+ *    [enabled, centre, size, ambient, classic],
  *    [haze, dust, dust_size, dust_speed, scatter, seed],
  *    [[name, anchor, orbit, pitch, radius, position, aim, aim_point,
  *      aim_selection, beam, softness, color, warmth, intensity, highlight,
@@ -50,27 +53,35 @@ pymol::Result<pymol::LightRig> LightRigFromPyDict(PyObject* obj);
  * pse_binary_dump never turns the values into blobs, and older builds (which
  * read only the keys they know) see plain data. New reference.
  *
- * Append-only: a later version only adds fields at the end of a list.
+ * Append-only, and the four top-level slots are frozen: a later version adds
+ * a field at the end of its scope's list (append it at the end of its scope
+ * in LightRigFields()), and a new top-level slot only after the lights. A
+ * version 1 reader then still finds every list where it was and loads each
+ * list's known prefix.
  */
 PyObject* LightRigAsPyList(const pymol::LightRig& rig);
 
 /**
  * Read the 'light_rig' session list. Lenient where LightRigFromPyDict is
  * strict, so that a session loads whenever its rig makes sense:
- * - missing trailing fields take the defaults (a light without a name takes
- *   the next unused default name);
- * - extra trailing fields are ignored; when the version is newer than this
- *   build reads, the known prefix is loaded and `warning` says so (Q6);
+ * - missing trailing fields and lists take the defaults (a light without a
+ *   name takes the next unused default name);
+ * - extra trailing fields and top-level slots are ignored; when the version
+ *   is newer than this build reads, the known prefix is loaded with a
+ *   warning (Q6);
  * - out-of-range numbers are clamped (Q3);
+ * - the caps are policy, not format: lights after the 6th are left out and
+ *   shadows after the 3rd turned off, each with a warning;
  * - text may be UTF-8 bytes, which is how a .pse saved with the legacy
  *   pickler (pse_export_version < 1.9) gives non-ASCII text back.
  * A wrong type, a non-finite number, a version below 1, a pinned light
- * without a position, or a rig that fails LightRigValidate() is an error
- * naming the field (and the light): the caller then clears the rig.
- * Never leaves a Python error set.
+ * without a position, a light aimed at a point without an aim point, or a
+ * rig that fails LightRigValidate() is an error naming the field (and the
+ * light): the caller then clears the rig. `warnings` (when given) gets one
+ * line per warning. Never leaves a Python error set.
  */
 pymol::Result<pymol::LightRig> LightRigFromPyList(
-    PyObject* obj, std::string* warning = nullptr);
+    PyObject* obj, std::vector<std::string>* warnings = nullptr);
 
 /**
  * The field table, for _cmd.get_light_fields():
