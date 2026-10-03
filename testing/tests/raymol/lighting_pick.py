@@ -17,6 +17,10 @@ see metal_pick.camera), so a point on it at eye depth D is eye + D * dir.
 These run under the GLUT/headless core (no Metal): the pick evaluates the
 Metal renderer's clip rules from settings, never from GL, so CI checks exactly
 what the app does.
+
+Surfaces and cartoons with no closed form (1rx1) are checked against a
+brute-force ray-triangle reference built from the object's OBJ export
+(ObjMesh), under the orient view and a rotated one.
 '''
 
 import math
@@ -57,6 +61,120 @@ def angle_deg(a, b):
     return math.degrees(math.acos(max(-1.0, min(1.0, c))))
 
 
+def cross(a, b):
+    return (a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0])
+
+
+def _numpy():
+    try:
+        import numpy
+        return numpy
+    except ImportError:
+        return None
+
+
+class ObjMesh(object):
+    '''The triangles of a `geometry_export_mode 1` OBJ export, moved back into
+    model space, with their per-corner normals: a brute-force reference for
+    the pick. The export walks the same CPU geometry the pick reads (the ray
+    tracer's source), so this checks the pick's maths and its per-op walk,
+    not Metal-only behaviour.'''
+
+    def __init__(self, path, offset):
+        V, N, faces = [], [], []
+        with open(path) as handle:
+            for line in handle:
+                tag = line.split(' ', 1)[0]
+                if tag == 'v':
+                    V.append(tuple(float(t) - o for t, o in
+                                   zip(line.split()[1:4], offset)))
+                elif tag == 'vn':
+                    N.append(tuple(float(t) for t in line.split()[1:4]))
+                elif tag == 'f':
+                    corners = [c.split('/') for c in line.split()[1:4]]
+                    faces.append(
+                        ([int(c[0]) - 1 for c in corners],
+                         [int(c[2]) - 1 if len(c) > 2 and c[2] else -1
+                          for c in corners]))
+        self.tris, self.normals = [], []
+        used = set()
+        for vi, ni in faces:
+            used.update(vi)
+            p = [V[i] for i in vi]
+            if norm(cross(sub(p[1], p[0]), sub(p[2], p[0]))) < 1e-10:
+                continue  # degenerate
+            self.tris.append(p)
+            self.normals.append([N[i] if i >= 0 else None for i in ni])
+        # Vertices no face uses: what the export keeps of spheres (centres).
+        self.markers = [V[i] for i in range(len(V)) if i not in used]
+        np = _numpy()
+        self.np_tris = np.array(self.tris, dtype=float) if np else None
+
+    def first_hit(self, o, d, lo, hi):
+        '''(s, u, v, index) of the nearest crossing of o + s d with
+        lo <= s <= hi (Moller-Trumbore, double-sided), or None.'''
+        np = _numpy()
+        if np is not None and self.np_tris is not None and len(self.tris):
+            o = np.asarray(o, dtype=float)
+            d = np.asarray(d, dtype=float)
+            v0 = self.np_tris[:, 0]
+            e1 = self.np_tris[:, 1] - v0
+            e2 = self.np_tris[:, 2] - v0
+            p = np.cross(d, e2)
+            det = (e1 * p).sum(1)
+            ok = np.abs(det) > 1e-12
+            inv = np.where(ok, 1.0 / np.where(ok, det, 1.0), 0.0)
+            t = o - v0
+            u = (t * p).sum(1) * inv
+            q = np.cross(t, e1)
+            v = (q * d).sum(1) * inv
+            s = (e2 * q).sum(1) * inv
+            m = ok & (u >= 0) & (v >= 0) & (u + v <= 1) & (s >= lo) & (s <= hi)
+            if not m.any():
+                return None
+            i = int(np.argmin(np.where(m, s, np.inf)))
+            return float(s[i]), float(u[i]), float(v[i]), i
+        best = None
+        for i, (v0, v1, v2) in enumerate(self.tris):
+            e1, e2 = sub(v1, v0), sub(v2, v0)
+            p = cross(d, e2)
+            det = dot(e1, p)
+            if abs(det) < 1e-12:
+                continue
+            t = sub(o, v0)
+            u = dot(t, p) / det
+            if u < 0 or u > 1:
+                continue
+            q = cross(t, e1)
+            v = dot(d, q) / det
+            if v < 0 or u + v > 1:
+                continue
+            s = dot(e2, q) / det
+            if lo <= s <= hi and (best is None or s < best[0]):
+                best = (s, u, v, i)
+        return best
+
+    def oriented_normal(self, hit, d):
+        '''The reference's smooth normal at a first_hit, turned toward the
+        camera the way the pick turns it (inside = back face).'''
+        s, u, v, i = hit
+        v0, v1, v2 = self.tris[i]
+        g = cross(sub(v1, v0), sub(v2, v0))
+        ns = self.normals[i]
+        if any(n is None for n in ns):
+            n = g if dot(g, d) < 0 else tuple(-c for c in g)
+            return unit(n)
+        w = 1.0 - u - v
+        n = tuple(w * ns[0][k] + u * ns[1][k] + v * ns[2][k] for k in range(3))
+        if dot(g, n) < 0:
+            g = tuple(-c for c in g)
+        if dot(g, d) > 0:
+            n = tuple(-c for c in n)
+        return unit(n)
+
+
 class PickCase(testing.PyMOLTestCase):
     '''Pinned camera and helpers; no tests of its own.'''
 
@@ -89,6 +207,115 @@ class PickCase(testing.PyMOLTestCase):
                for k in range(3)]
         half_h = -eye[2] * cam.tan_half
         return (eye[0] / (half_h * self.aspect()), eye[1] / half_h, -eye[2])
+
+    def world_ray(self, x, y):
+        '''(o, d) of the camera ray through (x, y) under the CURRENT camera:
+        the world point at eye depth D is o + D * d.'''
+        cam = metal_pick.camera()
+        d_eye = (x * cam.tan_half * self.aspect(), y * cam.tan_half, -1.0)
+        o = tuple(sum(cam.rot[3 * k + i] * -cam.pos[k] for k in range(3)) +
+                  cam.origin[i] for i in range(3))
+        d = tuple(sum(cam.rot[3 * k + i] * d_eye[k] for k in range(3))
+                  for i in range(3))
+        return o, d
+
+    def eye_depth(self, p):
+        cam = metal_pick.camera()
+        dd = sub(p, cam.origin)
+        return -(sum(cam.rot[6 + i] * dd[i] for i in range(3)) + cam.pos[2])
+
+    def assertOnWorldRay(self, hit, x, y, tol=1e-3):
+        o, d = self.world_ray(x, y)
+        expect = tuple(o[i] + hit.depth * d[i] for i in range(3))
+        self.assertLess(norm(sub(hit.point, expect)), tol,
+                        'hit %r is not on the ray (expected %r)' %
+                        (hit.point, expect))
+
+    def box_points(self, selection, n=4, inset=0.1):
+        '''An n x n grid of NDC points over the central part of the
+        selection's projected bounding box.'''
+        ndc = [self.project(p)[:2] for p in cmd.get_coords(selection)]
+        x0, x1 = min(p[0] for p in ndc), max(p[0] for p in ndc)
+        y0, y1 = min(p[1] for p in ndc), max(p[1] for p in ndc)
+        x0, x1 = x0 + inset * (x1 - x0), x1 - inset * (x1 - x0)
+        y0, y1 = y0 + inset * (y1 - y0), y1 - inset * (y1 - y0)
+        return [(x0 + (x1 - x0) * i / (n - 1), y0 + (y1 - y0) * j / (n - 1))
+                for i in range(n) for j in range(n)]
+
+    def export_mesh(self, name):
+        '''ObjMesh of object `name` alone, exported under the current view.'''
+        enabled = cmd.get_names('objects', enabled_only=1)
+        cmd.disable('all')
+        try:
+            # geometry_export_mode 1 writes model coordinates shifted by an
+            # offset (today (0, 0, -pos.z); proposed follow-up): measure it
+            # with a lone probe sphere so the test survives the fix.
+            probe = (1.0, 2.0, 3.0)
+            cmd.pseudoatom('lt614probe', pos=list(probe), vdw=1.5)
+            cmd.show_as('surface', 'lt614probe')
+            cmd.set('geometry_export_mode', 1)
+            with testing.mktemp('.obj') as path:
+                cmd.save(path)
+                mesh = ObjMesh(path, (0.0, 0.0, 0.0))
+            pts = [p for t in mesh.tris for p in t]
+            centre = tuple(sum(p[k] for p in pts) / len(pts) for k in range(3))
+            offset = sub(centre, probe)
+            cmd.delete('lt614probe')
+            cmd.enable(name)
+            with testing.mktemp('.obj') as path:
+                cmd.save(path)
+                return ObjMesh(path, offset)
+        finally:
+            cmd.delete('lt614probe')
+            cmd.set('geometry_export_mode', 0)
+            for n in enabled:
+                cmd.enable(n)
+
+    def assertMatchesMesh(self, mesh, points, rep, min_hits, depth_tol=0.5,
+                          normal_deg=5.0, exclude=None):
+        '''Pick every point and compare with the brute-force reference:
+        hit/miss agreement away from silhouettes (where a 0.3 A shift of the
+        ray changes the reference's answer), depth within depth_tol, the hit
+        on its ray and on the mesh, the normal within normal_deg of the
+        reference's (camera-facing) smooth normal, facing > 0 unless grazing.
+        `exclude(o, d)` skips rays the reference cannot judge.'''
+        cam = metal_pick.camera()
+        lo, hi = cam.clip_front, cam.clip_back
+        hits = 0
+        for x, y in points:
+            o, d = self.world_ray(x, y)
+            if exclude and exclude(o, d):
+                continue
+            ref = mesh.first_hit(o, d, lo, hi)
+            hit = self.pick(x, y)
+            depth = ref[0] if ref else -cam.pos[2]
+            jx = 0.3 / (depth * cam.tan_half * self.aspect())
+            jy = 0.3 / (depth * cam.tan_half)
+            stable = all(
+                (mesh.first_hit(*(self.world_ray(x + a, y + b) + (lo, hi)))
+                 is None) == (ref is None)
+                for a, b in ((jx, 0), (-jx, 0), (0, jy), (0, -jy)))
+            if stable:
+                self.assertEqual(hit is None, ref is None,
+                                 'hit/miss differs at %r: pick %r, ref %r' %
+                                 ((x, y), hit, ref))
+            if hit is None or ref is None:
+                continue
+            hits += 1
+            self.assertEqual(hit.rep, rep)
+            self.assertAlmostEqual(hit.depth, ref[0], delta=depth_tol)
+            self.assertOnWorldRay(hit, x, y)
+            p_ref = tuple(o[i] + ref[0] * d[i] for i in range(3))
+            self.assertLess(norm(sub(hit.point, p_ref)), depth_tol)
+            n_ref = mesh.oriented_normal(ref, d)
+            self.assertNormalNear(hit, n_ref, normal_deg)
+            v = unit(tuple(-c for c in d))
+            if dot(n_ref, v) > 0.1:
+                self.assertGreater(hit.facing, 0.0)
+            self.assertAlmostEqual(norm(hit.normal), 1.0, delta=1e-4)
+        self.assertGreaterEqual(hits, min_hits,
+                                'too few hits to compare (%d)' % hits)
+        return hits
 
     def ray_sphere(self, x, y, c, r):
         '''(point, depth) where the ray through (x, y) enters sphere (c, r).'''
@@ -418,6 +645,40 @@ class TestSlab(PickCase):
         self.assertEqual(hit.object, 'mid')
         self.assertFalse(hit.cap)
 
+    # -- a surface straddling the front plane ------------------------------
+
+    def testStraddlingSurfaceShowsItsInside(self):
+        # A mesh: the inside of the far wall shows (Metal culls nothing).
+        self.ball('cut', (0.0, 0.0, 50.0), rep='surface')
+        hit = self.pick(0.0, 0.0)
+        self.assertHit(hit)
+        self.assertEqual(hit.rep, 'surface')
+        self.assertTrue(hit.inside)
+        self.assertFalse(hit.cap)
+        self.assertAlmostEqual(hit.depth, 52.0, delta=0.5)
+        self.assertNormalNear(hit, (0.0, 0.0, 1.0), 15.0)
+        self.assertOriented(hit)
+        self.assertOnRay(hit, 0.0, 0.0)
+
+    def testInteriorCapOnStraddlingSurface(self):
+        # Stencil-parity cap at the near plane (no per-rep clip).
+        self.ball('cut', (0.0, 0.0, 50.0), rep='surface')
+        self.ball('mid', (0.0, 0.0, 0.0))
+        cmd.set('metal_interior_cap', 1, 'cut')
+        hit = self.pick(0.0, 0.0)
+        self.assertCap(hit, 'cut')
+        self.assertEqual(hit.rep, 'surface')
+
+    def testNoCapOnTransparentSurface(self):
+        self.ball('cut', (0.0, 0.0, 50.0), rep='surface')
+        cmd.set('metal_interior_cap', 1, 'cut')
+        cmd.set('transparency', 0.5, 'cut')
+        hit = self.pick(0.0, 0.0)
+        self.assertHit(hit)
+        self.assertFalse(hit.cap)
+        self.assertTrue(hit.inside)
+        self.assertAlmostEqual(hit.depth, 52.0, delta=0.5)
+
     def testTessellatedStraddlingSphereShowsItsInside(self):
         # Mesh rule: Metal culls nothing, so a clipped triangle sphere shows
         # the inside of its far wall -- reported inside, normal flipped
@@ -432,6 +693,305 @@ class TestSlab(PickCase):
         self.assertAlmostEqual(hit.depth, 52.0, delta=0.5)
         self.assertNormalNear(hit, (0.0, 0.0, 1.0), 5.0)
         self.assertOriented(hit)
+
+
+class TestSurface(PickCase):
+
+    R = 2.0
+
+    def testSingleAtom(self):
+        # The solvent-excluded surface of one atom is its vdW sphere,
+        # tessellated: within half an Angstrom, the normal near radial.
+        self.ball('one', (0.0, 0.0, 0.0), vdw=self.R, rep='surface')
+        for p in [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.4, 0.9, 0.0),
+                  (-0.8, -1.2, 0.0), (0.3, 1.6, 0.0)]:
+            x, y = self.ndc_of(p)
+            hit = self.pick(x, y)
+            self.assertHit(hit)
+            self.assertEqual(hit.rep, 'surface')
+            self.assertEqual(hit.object, 'one')
+            self.assertFalse(hit.inside)
+            self.assertFalse(hit.cap)
+            self.assertLess(abs(norm(hit.point) - self.R), 0.5)
+            self.assertNormalNear(hit, hit.point, 15.0)
+            self.assertOnRay(hit, x, y)
+            self.assertOriented(hit)
+        self.assertIsNone(self.pick(*self.ndc_of((2.6, 0.0, 0.0))))
+
+    def pair(self):
+        # Two overlapping atoms in ONE object, so the surface around B is
+        # built (and then hidden by atom visibility), not left out.
+        cmd.pseudoatom('pair', name='A', pos=[-1.25, 0.0, 0.0], vdw=self.R)
+        cmd.pseudoatom('pair', name='B', pos=[1.25, 0.0, 0.0], vdw=self.R)
+        cmd.show_as('surface', 'pair')
+
+    def testHiddenAtomsHideTheirPatch(self):
+        self.pair()
+        x, y = self.ndc_of((2.5, 0.0, 0.0))
+        before = self.pick(x, y)
+        self.assertHit(before)
+        self.assertGreater(before.point[0], 2.0)
+        cmd.hide('surface', 'pair and name B')
+        after = self.pick(x, y)
+        if after is not None:
+            self.assertGreater(norm(sub(after.point, before.point)), 1.0)
+        # A's own patch is still there.
+        self.assertHit(self.pick(*self.ndc_of((-2.5, 0.0, 0.0))))
+
+    def testProximityDecidesTheBoundaryTriangles(self):
+        # The triangles across the A/B boundary exist and are filtered at
+        # pick time: surface_proximity 1 shows a triangle with ANY visible
+        # corner, 0 only one with ALL corners visible. Along a line across
+        # the junction, proximity 1 must give strictly more front hits.
+        self.pair()
+        cmd.hide('surface', 'pair and name B')
+        counts = []
+        for prox in (0, 1):
+            cmd.set('surface_proximity', prox, 'pair')
+            n = 0
+            for i in range(15):
+                hit = self.pick(*self.ndc_of((-0.7 + 1.4 * i / 14, 0.0, 0.0)))
+                if hit is not None and not hit.inside:
+                    n += 1
+            counts.append(n)
+        self.assertGreater(counts[1], counts[0])
+
+    def load_fragment(self):
+        cmd.load(self.datafile('1rx1.pdb'), 'rx')
+        cmd.remove('rx and not (polymer and resi 1-40)')
+        cmd.show_as('surface', 'rx')
+        cmd.orient('rx')
+
+    def testMatchesTheExportedSurface(self):
+        self.load_fragment()
+        for view in range(2):
+            if view:
+                cmd.turn('y', 70)
+                cmd.turn('x', 35)
+            mesh = self.export_mesh('rx')
+            self.assertGreater(len(mesh.tris), 1000)
+            self.assertMatchesMesh(mesh, self.box_points('rx'), 'surface',
+                                   min_hits=8)
+
+    def rep_clip(self, obj, ff, bb):
+        '''metalApplyRepClip's eye-depth planes, recomputed from the atoms.'''
+        depths = [self.eye_depth(p) for p in cmd.get_coords(obj)]
+        pad = cmd.get_setting_float('solvent_radius', obj) + 1.0
+        centre = 0.5 * (min(depths) + max(depths))
+        half = 0.5 * (max(depths) - min(depths)) + pad
+        return centre - half * (1.0 - ff), centre + half * (1.0 - bb)
+
+    def testPerRepClipFront(self):
+        self.load_fragment()
+        points = self.box_points('rx', n=5)
+        front, _ = self.rep_clip('rx', 0.5, 0.0)
+        cmd.set('surface_clip_front', 0.5, 'rx')
+        inside = 0
+        for x, y in points:
+            hit = self.pick(x, y)
+            if hit is None:
+                continue
+            self.assertGreaterEqual(hit.depth, front - 2e-3)
+            self.assertOnWorldRay(hit, x, y)
+            inside += hit.inside
+        self.assertGreater(inside, 0, 'the cut should expose the inside')
+        # With the interior cap, the cut is filled at the per-rep front.
+        cmd.set('metal_interior_cap', 1, 'rx')
+        caps = 0
+        for x, y in points:
+            hit = self.pick(x, y)
+            if hit is None:
+                continue
+            self.assertGreaterEqual(hit.depth, front - 2e-3)
+            if hit.cap:
+                caps += 1
+                self.assertAlmostEqual(hit.depth, front, delta=2e-3)
+                self.assertOriented(hit)
+        self.assertGreater(caps, 0)
+
+    def testPerRepClipBack(self):
+        self.load_fragment()
+        points = self.box_points('rx', n=5)
+        _, back = self.rep_clip('rx', 0.0, 0.9)
+        deep = [p for p in points
+                if self.pick(*p) is not None and self.pick(*p).depth > back]
+        self.assertTrue(deep, 'test setup: no hit beyond the back plane')
+        cmd.set('surface_clip_back', 0.9, 'rx')
+        for x, y in points:
+            hit = self.pick(x, y)
+            if hit is not None:
+                self.assertLessEqual(hit.depth, back + 2e-3)
+        for p in deep:
+            self.assertIsNone(self.pick(*p))
+
+    def testPerRepClipOnOneAtom(self):
+        # Closed form: one atom at depth 100, pad = solvent_radius + 1 = 2.4.
+        # front = 100 - 2.4 * (1 - ff), back = 100 + 2.4 * (1 - bb).
+        self.ball('one', (0.0, 0.0, 0.0), vdw=self.R, rep='surface')
+        pad = cmd.get_setting_float('solvent_radius') + 1.0
+        cmd.set('surface_clip_front', 0.5, 'one')
+        hit = self.pick(0.0, 0.0)
+        self.assertHit(hit)
+        self.assertTrue(hit.inside)          # the far wall, from inside
+        self.assertAlmostEqual(hit.depth, 102.0, delta=0.5)
+        self.assertNormalNear(hit, (0.0, 0.0, 1.0), 15.0)
+        cmd.set('surface_clip_back', 0.5, 'one')
+        self.assertIsNone(self.pick(0.0, 0.0))  # both walls cut away
+        cmd.set('metal_interior_cap', 1, 'one')
+        hit = self.pick(0.0, 0.0)
+        self.assertHit(hit)
+        self.assertTrue(hit.cap)
+        self.assertAlmostEqual(hit.depth, 100.0 - 0.5 * pad, delta=1e-3)
+        self.assertNormalNear(hit, (0.0, 0.0, 1.0), 0.01)
+        self.assertOnRay(hit, 0.0, 0.0)
+        # The cut disc has radius sqrt(R^2 - (0.5 pad)^2) = 1.6; beyond it
+        # the band of the sphere between the two planes shows as usual.
+        x, y = self.ndc_of((1.9, 0.0, 0.0))
+        hit = self.pick(x, y)
+        self.assertHit(hit)
+        self.assertFalse(hit.cap)
+        self.assertFalse(hit.inside)
+        self.assertGreater(hit.depth, 100.0 - 0.5 * pad)
+        self.assertLess(hit.depth, 100.0 + 0.5 * pad)
+        self.assertOnRay(hit, x, y)
+        # The planes follow the view (the cached depth range is per view).
+        cmd.move('z', -10.0)
+        atom_depth = -cmd.get_view()[11]
+        self.assertAlmostEqual(atom_depth, 110.0, delta=1e-3)
+        hit = self.pick(0.0, 0.0)
+        self.assertHit(hit)
+        self.assertTrue(hit.cap)
+        self.assertAlmostEqual(hit.depth, atom_depth - 0.5 * pad, delta=1e-3)
+
+    def testRecolorKeepsTheGrid(self):
+        # Colour and transparency recolor the rep in place: the grid stays,
+        # and what recolor decides (here: invisible) is read at pick time.
+        self.ball('one', (0.0, 0.0, 0.0), vdw=self.R, rep='surface')
+        self.assertEqual(metal_pick.surface_warm()['built'], 1)
+        cmd.color('red', 'one')
+        cmd.set('transparency', 0.5, 'one')
+        self.assertEqual(metal_pick.surface_warm()['built'], 0)
+        self.assertHit(self.pick(0.0, 0.0))
+        cmd.set('transparency', 1.0, 'one')
+        self.assertIsNone(self.pick(0.0, 0.0))
+
+    def testSurfaceTypes(self):
+        self.ball('one', (0.0, 0.0, 0.0), vdw=self.R, rep='surface')
+        for surface_type, picked in [(0, True), (1, False), (2, False),
+                                     (3, True), (6, True)]:
+            cmd.set('surface_type', surface_type, 'one')
+            hit = self.pick(0.0, 0.0)
+            if picked:
+                self.assertHit(hit)
+                self.assertAlmostEqual(hit.depth, 98.0, delta=0.5)
+            else:
+                self.assertIsNone(hit, 'surface_type %d' % surface_type)
+
+
+class TestCartoon(PickCase):
+
+    def testMatchesTheExportedCartoon(self):
+        cmd.load(self.datafile('1rx1.pdb'), 'rx')
+        cmd.remove('rx and not polymer')
+        cmd.show_as('cartoon', 'rx')
+        cmd.orient('rx')
+        for view in range(2):
+            if view:
+                cmd.turn('y', 70)
+                cmd.turn('x', 35)
+            mesh = self.export_mesh('rx')
+            self.assertGreater(len(mesh.tris), 1000)
+
+            def near_marker(o, d):
+                # The export keeps only the centre of a sphere.
+                return any(norm(cross(sub(m, o), d)) / norm(d) < 2.0
+                           for m in mesh.markers)
+
+            self.assertMatchesMesh(mesh, self.box_points('rx', n=7),
+                                   'cartoon', min_hits=8, exclude=near_marker)
+
+    def test1AON(self):
+        # 58,870 atoms; correctness only (timing is pick_bench.py's job).
+        cmd.load(self.datafile('1aon.pdb.gz'), 'gro')
+        cmd.show_as('cartoon', 'gro')
+        cmd.orient('gro')
+        hit = self.pick(0.0, 0.0)
+        self.assertHit(hit)
+        self.assertEqual(hit.rep, 'cartoon')
+        self.assertEqual(hit.object, 'gro')
+        self.assertOnWorldRay(hit, 0.0, 0.0, tol=5e-3)
+        self.assertOriented(hit)
+
+    def testFullyTransparentCartoonIsNotPicked(self):
+        cmd.fab('AAAAAAAAAAAA', 'pep', ss=1)
+        cmd.dss('pep')
+        cmd.show_as('cartoon', 'pep')
+        cmd.orient('pep')
+        points = self.box_points('pep', n=4)
+        self.assertTrue(any(self.pick(*p) for p in points))
+        cmd.set('cartoon_transparency', 1.0, 'pep')
+        self.assertFalse(any(self.pick(*p) for p in points))
+
+    def testWarmReusesTheCartoonGrid(self):
+        cmd.fab('AAAAAAAAAAAA', 'pep', ss=1)
+        cmd.dss('pep')
+        cmd.show_as('cartoon', 'pep')
+        cmd.orient('pep')
+        first = metal_pick.surface_warm()
+        self.assertEqual((first['accels'], first['built']), (1, 1))
+        self.assertGreater(first['bytes'], 0)
+        self.assertTrue(any(self.pick(*p) for p in self.box_points('pep')))
+        self.assertEqual(metal_pick.surface_warm()['built'], 0)
+
+    def testCylindricalHelix(self):
+        # The helix becomes a CGO cylinder (tessellated on Metal: Mesh rule).
+        cmd.fab('AAAAAAAAAAAAAAAA', 'pep', ss=1)
+        cmd.dss('pep')  # fab sets the backbone angles, dss the helix flag
+        cmd.show_as('cartoon', 'pep')
+        cmd.set('cartoon_cylindrical_helices', 1)
+        cmd.orient('pep')
+        radius = cmd.get_setting_float('cartoon_helix_radius')
+        ca = cmd.get_coords('pep and name CA')
+        hits = 0
+        for x, y in self.box_points('pep and name CA', n=3, inset=0.25):
+            hit = self.pick(x, y)
+            if hit is None:
+                continue
+            hits += 1
+            self.assertEqual(hit.rep, 'cartoon')
+            self.assertOnWorldRay(hit, x, y)
+            self.assertOriented(hit)
+            # On the cylinder: not farther from the CA trace than its radius.
+            self.assertLess(min(norm(sub(hit.point, p)) for p in ca),
+                            radius + 1.0)
+        self.assertGreater(hits, 0)
+
+    def testNucleicAcidRingSpheres(self):
+        # cartoon_ring_mode 4 draws each base as a sphere (an impostor on
+        # Metal; tessellated with cartoon_use_shader off).
+        cmd.fnab('ATGCATGC', name='dna', mode='DNA', form='B', dbl_helix=1)
+        cmd.show_as('cartoon', 'dna')
+        cmd.orient('dna')
+        points = [(i / 5.0, j / 5.0) for i in range(-4, 5)
+                  for j in range(-4, 5)]
+
+        def count():
+            n = 0
+            for x, y in points:
+                hit = self.pick(x, y)
+                if hit is not None:
+                    n += 1
+                    self.assertEqual(hit.rep, 'cartoon')
+                    self.assertOnWorldRay(hit, x, y)
+            return n
+
+        cmd.set('cartoon_ring_mode', 0)
+        plain = count()
+        cmd.set('cartoon_ring_mode', 4)
+        spheres = count()
+        self.assertGreater(spheres, plain)
+        cmd.set('cartoon_use_shader', 0)
+        self.assertGreater(count(), plain)
 
 
 class TestTransforms(PickCase):
@@ -567,6 +1127,25 @@ class TestScope(PickCase):
         self.assertEqual(hit.object, 'ball')
         self.assertEqual(self.pick(0.0, 0.0, reps='spheres').object, 'ball')
         self.assertIsNone(self.pick(0.0, 0.0, reps=('surface', 'cartoon')))
+
+    def testRepsFilterSkipsASurfaceInFront(self):
+        self.ball('shell', (0.0, 0.0, 20.0), rep='surface')
+        self.ball('ball', (0.0, 0.0, 0.0))
+        hit = self.pick(0.0, 0.0)
+        self.assertEqual(hit.rep, 'surface')
+        self.assertEqual(hit.object, 'shell')
+        hit = self.pick(0.0, 0.0, reps=('spheres',))
+        self.assertEqual(hit.rep, 'spheres')
+        self.assertEqual(hit.object, 'ball')
+
+    def testFullyTransparentSurfaceIsIgnored(self):
+        self.ball('shell', (0.0, 0.0, 20.0), rep='surface')
+        self.ball('ball', (0.0, 0.0, 0.0))
+        cmd.set('transparency', 1.0, 'shell')
+        hit = self.pick(0.0, 0.0)
+        self.assertEqual(hit.object, 'ball')
+        cmd.delete('ball')
+        self.assertIsNone(self.pick(0.0, 0.0))
 
     def testBadArguments(self):
         self.ball('ball', (0.0, 0.0, 0.0))
