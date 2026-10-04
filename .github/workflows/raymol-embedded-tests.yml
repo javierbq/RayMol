@@ -80,6 +80,7 @@ jobs:
               testing/tests/raymol/inspector_materials.py \
               testing/tests/raymol/lighting_bridge.py \
               testing/tests/raymol/lighting_check.py \
+              testing/tests/raymol/lighting_commands.py \
               testing/tests/raymol/lighting_eye.py \
               testing/tests/raymol/lighting_harness.py \
               testing/tests/raymol/lighting_msl.py \
