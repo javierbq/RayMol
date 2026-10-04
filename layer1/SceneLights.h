@@ -1,10 +1,14 @@
 /*
- * The scene's light rig (#611): ownership, frame capture and re-centre.
+ * The scene's light rig (#611): ownership, frame capture and re-centre, and
+ * (#613) what a frame reads from it.
  *
  * One rig per PyMOL instance, held by the scene (CScene::lightRig; decision 1
  * of #610). No rig (std::nullopt) and a rig that is present but disabled are
  * different states: sessions, scenes and the L1 check rely on telling them
- * apart. Nothing in rendering reads the rig yet (#613 will).
+ * apart. The Metal renderer reads the rig once per frame, through
+ * SceneLightsFrame(), which also applies decision 15 to the classic light
+ * terms; with no rig, or a rig that is off, it reads exactly the settings it
+ * read before #613. The maths is in LightShading.h.
  *
  * No Python here (LightRigPy.h has the conversions), so the app bridge can
  * call these directly, one call per drag tick, on the main thread.
@@ -19,6 +23,8 @@
 #include <glm/mat4x4.hpp>
 
 #include "LightRig.h"
+#include "LightRigBlock.h"
+#include "LightShading.h"
 #include "Result.h"
 
 struct PyMOLGlobals;
@@ -110,3 +116,29 @@ const char* SceneLightsRayNoticeText(PyMOLGlobals* G);
  * silences it). Writes no setting and no scene state.
  */
 bool SceneLightsRayNotice(PyMOLGlobals* G, int mode);
+
+/**
+ * What one frame needs from the lighting (#613): PyMOL's classic light terms,
+ * after decision 15, and the rig packed for the GPU.
+ */
+struct SceneLightFrame {
+  /// What setLightingParams() receives: the ambient, direct and reflect
+  /// settings and the adjusted reflect specular (SceneGetAdjustedLightValues),
+  /// or decision 15's terms while the rig is on (LightRigClassic).
+  pymol::LightClassicTerms classic{};
+  /// The adjusted shininess (spec_power); never scaled by the rig.
+  float shininess = 0.0f;
+  /// The rig resolved with the frame's world->eye matrix and packed
+  /// (LightRigFrameBlock); nullopt when there is no rig or it is off.
+  std::optional<pymol::LightRigBlock> rig;
+};
+
+/**
+ * Read the lighting for one frame: the settings the Metal renderer has always
+ * read, and the rig, once (the frame's snapshot point). `worldToEye` is the
+ * frame's render modelview; _cmd.get_light_frame passes the live camera
+ * (SceneGetWorldToEye) when it is given no matrix. Writes nothing. With no
+ * rig, or a rig that is off, `classic` is the settings bit for bit and
+ * nothing is resolved.
+ */
+SceneLightFrame SceneLightsFrame(PyMOLGlobals* G, const glm::dmat4& worldToEye);
