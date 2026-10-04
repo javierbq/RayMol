@@ -27,15 +27,17 @@ from pymol import testing
 SOURCE = os.path.join('layerGraphics', 'metal', 'RendererMetal.mm')
 
 _LITERAL = re.compile(r'static NSString\* const (k\w+) = @R"\((.*?)\)"(.)', re.S)
-# Hand-written helpers in these literals are post_* / rt_* / mat_*; everything
-# else that looks like a call is an MSL builtin (smoothstep, sample_compare...).
-# An optional __attribute__((...)) prefix is allowed: mat_glass_cover carries
-# one, because it lives in the shared block and the sphere library never calls it.
+# Hand-written helpers in these literals are post_* / rt_* / mat_* / light_*
+# (the light rig, #613); everything else that looks like a call is an MSL
+# builtin (smoothstep, sample_compare...).
+# An optional __attribute__((...)) prefix is allowed: mat_glass_cover and the
+# light_ helpers carry one, because they live in the shared block and some
+# libraries never call them.
 _DEF = re.compile(
     r'^\s*(?:__attribute__\(\(\w+\)\)\s+)?(?:static\s+|fragment\s+|vertex\s+)?'
-    r'[\w:<>]+\s+((?:post|rt|mat)_\w+)\s*\(',
+    r'[\w:<>]+\s+((?:post|rt|mat|light)_\w+)\s*\(',
     re.M)
-_CALL = re.compile(r'\b((?:post|rt|mat)_\w+)\s*\(')
+_CALL = re.compile(r'\b((?:post|rt|mat|light)_\w+)\s*\(')
 
 # Which shared block(s) each library is compiled with. Mirrors the
 # newLibraryWithSource: call sites in RendererMetal.mm; a library that gained a
@@ -108,7 +110,7 @@ def shader_literals(source):
 
 
 def undefined_helpers(body):
-    """post_/rt_ helpers that `body` calls but does not define."""
+    """post_/rt_/mat_/light_ helpers that `body` calls but does not define."""
     return set(_CALL.findall(body)) - set(_DEF.findall(body))
 
 
