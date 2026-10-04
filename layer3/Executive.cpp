@@ -11823,6 +11823,9 @@ int ExecutiveCountStates(PyMOLGlobals* G, const char* s1)
 int ExecutiveRay(PyMOLGlobals* G, int width, int height, int mode, float angle,
     float shift, int quiet, int defer, int antialias)
 {
+  // #626: the CPU tracer keeps PyMOL's lights; say so when a rig is on.
+  SceneLightsRayNotice(G, mode);
+
   if ((mode == 0) && G->HaveGUI &&
       SettingGetGlobal_b(G, cSetting_auto_copy_images)) {
     /* force deferred behavior if copying image to clipboard */

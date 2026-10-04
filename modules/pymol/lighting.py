@@ -19,6 +19,8 @@ keys, kinds, defaults and ranges (``_light_fields()``).
 The private helpers (``_light_set``, ``_light_get``, ``_lights_eye``,
 ``_lights_json``) call the same C++ as the app bridge, so the tests can
 check the rig maths (eye space, pin conversions, JSON) from Python.
+The CPU `ray` tracer never draws the rig (#626); ``_lights_ray_notice()``
+is the notice it prints.
 '''
 
 import sys
@@ -161,3 +163,13 @@ def _lights_json(*, _self=cmd):
     get_lights().'''
     with _self.lockcm:
         return _self._cmd.get_lights_json(_self._COb)
+
+
+def _lights_ray_notice(*, _self=cmd):
+    '''The notice the CPU ray tracer prints (as " Ray: <notice>") when it
+    traces an image while the rig is on, or None when the rig is not on (no
+    rig, disabled, or no lights). Studio lighting is Metal-only (#626): `ray`,
+    `png ..., ray=1`, a headless `png` and `mpng` in ray mode keep PyMOL's
+    own lights.'''
+    with _self.lockcm:
+        return _self._cmd.get_lights_ray_notice(_self._COb)

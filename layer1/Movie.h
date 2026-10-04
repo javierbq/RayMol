@@ -50,6 +50,7 @@ struct CMovieModal {
   int format = 0;
   int quiet = 0;
   std::string fname;
+  bool lightsRayNotice = false; ///< #626: the notice was printed for this mpng call
 };
 
 struct CMovie : public Block {
