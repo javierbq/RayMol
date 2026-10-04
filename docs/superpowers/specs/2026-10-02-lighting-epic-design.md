@@ -29,10 +29,23 @@ scenes' rigs.
 a PyMOL setting, never changes an object's colours or materials, and turning
 it off restores the previous look exactly.
 
-**Non-goals (v1):** the CPU `ray` tracer (#626 decides parity or a notice);
-OpenGL/Qt; lights as objects in the object panel; area lights and soft shadows
-from light size (#625 is a spike); HDR (#624, own ticket); per-object light
-linking.
+**Non-goals (v1):** the CPU `ray` tracer (#626: Metal-only, with a notice;
+below); OpenGL/Qt; lights as objects in the object panel; area lights and soft
+shadows from light size (#625 is a spike); HDR (#624, own ticket); per-object
+light linking.
+
+**CPU `ray` tracer (#626).** Studio lighting is drawn only by the Metal
+renderer. Parity was costed at 6–8 weeks plus a CPU copy in every later
+lighting ticket, and declined. `ray` (built-in or POV-Ray), `png …, ray=1`, a
+headless `png`, and `mpng` in ray mode keep PyMOL's own lights. Decision 15
+(`classic` scaling, `ambient` replacement) applies only to the Metal renderer,
+not to them. While a rig is on (enabled, with at least one light), each such
+command prints one line:
+` Ray: studio lights are Metal-only; this ray-traced image uses PyMOL's lights.`
+MCP `capture_viewport` adds the same note to its result. Geometry and scene
+exports (`.pov`, `.wrl`, `.obj`, `.dae`) carry PyMOL's lights without a
+notice. The app's image and movie exports, including *Ray-traced*, render
+through Metal and keep the studio look.
 
 ## 2. Decisions
 
