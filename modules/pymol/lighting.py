@@ -7,8 +7,12 @@ scene in C++ (one rig per PyMOL instance), saved in .pse files, and cleared by
 `reinitialize`. It is not a setting and never writes one, and it is not an
 object: it never appears in the object list or widens the scene extent.
 
-Nothing renders the rig yet: shading lands in #613 and the `lights` and
-`atmosphere` commands in #612. This module is the scripting access of #611:
+The Metal renderer shades the rig (#613). While the rig is on (enabled,
+with at least one light) PyMOL's own lights are scaled by the rig's
+`classic` and its `ambient` replaces the `ambient` setting (decision 15).
+That happens at render time: no setting is ever written, and with no rig, or
+a rig that is off, rendering is exactly what it was. The `lights` and
+`atmosphere` commands land in #612. This module is the scripting access:
 
 * ``get_lights()`` returns the rig as a dict, or None when there is no rig.
 * ``set_lights(rig)`` replaces it from such a dict (None removes it).
@@ -17,8 +21,10 @@ The dict format is versioned (version 1); the C++ field table defines its
 keys, kinds, defaults and ranges (``_light_fields()``).
 
 The private helpers (``_light_set``, ``_light_get``, ``_lights_eye``,
-``_lights_json``) call the same C++ as the app bridge, so the tests can
-check the rig maths (eye space, pin conversions, JSON) from Python.
+``_lights_json``) call the same C++ as the app bridge, and ``_light_frame``
+and ``_light_warmth`` the same C++ as the renderer, so the tests can check
+the rig maths (eye space, pin conversions, JSON, decision 15, the packed
+GPU block, kelvin) from Python.
 The CPU `ray` tracer never draws the rig (#626); ``_lights_ray_notice()``
 is the notice it prints.
 '''
@@ -173,3 +179,38 @@ def _lights_ray_notice(*, _self=cmd):
     own lights.'''
     with _self.lockcm:
         return _self._cmd.get_lights_ray_notice(_self._COb)
+
+
+def _light_frame(matrix=None, *, _self=cmd):
+    '''One frame's lighting as the Metal renderer reads it (#613): the
+    classic light terms after decision 15 and the rig packed for the GPU.
+    `matrix` is a world->eye 4x4 as 16 numbers in column-major order; None
+    uses the live camera. Reads only: nothing is written.
+
+    {'ambient', 'direct', 'reflect', 'specular', 'shininess',
+     'rig_on': bool,
+     'rig': None or {'count', 'head': [4], 'block': [100],
+                     'lights': [{'name', 'position', 'shadow_slot',
+                                 'direction', 'cos_outer', 'radiance',
+                                 'cos_inner', 'highlight', 'falloff',
+                                 'falloff_ref', 'outline'}, ...]}}
+
+    With no rig, or a rig that is off, 'rig' is None and the terms are the
+    settings (specular and shininess after PyMOL's light-count adjustment).
+    'block' is the 400-byte block the GPU reads, as 100 floats, and
+    'lights' is decoded from it (layer1/LightRigBlock.h has the offsets).
+    'radiance' is color * warmth * intensity; 'shadow_slot' is -1 until
+    per-light shadows (#616).'''
+    if matrix is not None:
+        matrix = [float(v) for v in matrix]
+    with _self.lockcm:
+        return _self._cmd.get_light_frame(_self._COb, matrix)
+
+
+def _light_warmth(kelvin, *, _self=cmd):
+    '''A light's warmth (kelvin) as the RGB multiplier the renderer applies
+    to its colour, as a tuple (r, g, b): the black-body colour, white-balanced
+    so 6500 K is exactly (1, 1, 1), with the largest channel 1. Warmer
+    (lower) kelvin is redder, cooler (higher) bluer. Clamped to 1500-15000 K.'''
+    with _self.lockcm:
+        return tuple(_self._cmd.light_warmth_rgb(_self._COb, float(kelvin)))

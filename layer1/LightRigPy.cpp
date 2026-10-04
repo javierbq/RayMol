@@ -8,10 +8,13 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <initializer_list>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "SceneLights.h"
 
 using pymol::Light;
 using pymol::LightField;
@@ -857,6 +860,89 @@ PyObject* LightRigEyeAsPyDict(
     if (!ok || PyList_Append(lights, d.get()) != 0) // lights is borrowed
       return nullptr;
   }
+  return dict.release();
+}
+
+namespace
+{
+/// `n` floats as a list of Python floats (new reference, nullptr on error).
+PyObject* pyFloats(const float* v, int n)
+{
+  unique_PyObject_ptr list(PyList_New(n));
+  if (!list)
+    return nullptr;
+  for (int i = 0; i < n; ++i) {
+    PyObject* item = PyFloat_FromDouble(v[i]);
+    if (!item)
+      return nullptr;
+    PyList_SET_ITEM(list.get(), i, item); // steals
+  }
+  return list.release();
+}
+} // namespace
+
+PyObject* LightFrameAsPyDict(
+    const LightRig* rig, const SceneLightFrame& frame)
+{
+  unique_PyObject_ptr dict(PyDict_New());
+  if (!dict)
+    return nullptr;
+  const auto& c = frame.classic;
+  if (!setItem(dict.get(), "ambient", PyFloat_FromDouble(c.ambient)) ||
+      !setItem(dict.get(), "direct", PyFloat_FromDouble(c.direct)) ||
+      !setItem(dict.get(), "reflect", PyFloat_FromDouble(c.reflect)) ||
+      !setItem(dict.get(), "specular", PyFloat_FromDouble(c.specular)) ||
+      !setItem(dict.get(), "shininess", PyFloat_FromDouble(frame.shininess)) ||
+      !setItem(dict.get(), "rig_on", PyBool_FromLong(frame.rig.has_value())))
+    return nullptr;
+  if (!frame.rig) {
+    if (!setItem(dict.get(), "rig", pyNone()))
+      return nullptr;
+    return dict.release();
+  }
+
+  // The block as the GPU reads it, float by float, decoded below at the
+  // offsets LightRigBlock.h documents (not through the struct's fields), so
+  // a layout change shows up in the tests.
+  constexpr int kFloats = int(sizeof(pymol::LightRigBlock) / sizeof(float));
+  static_assert(kFloats == 100, "LightRigBlock is 100 floats");
+  float f[kFloats];
+  std::memcpy(f, &*frame.rig, sizeof f);
+  const int count = std::clamp(int(f[0]), 0, pymol::kLightRigBlockSlots);
+
+  unique_PyObject_ptr out(PyDict_New());
+  if (!out)
+    return nullptr;
+  PyObject* lights = PyList_New(0);
+  if (!setItem(out.get(), "count", PyLong_FromLong(count)) ||
+      !setItem(out.get(), "head", pyFloats(f, 4)) ||
+      !setItem(out.get(), "block", pyFloats(f, kFloats)) ||
+      !setItem(out.get(), "lights", lights))
+    return nullptr;
+  for (int i = 0; i < count; ++i) {
+    const float* l = f + 4 + 16 * i;
+    const std::string name =
+        rig && size_t(i) < rig->lights.size() ? rig->lights[i].name : "";
+    unique_PyObject_ptr d(PyDict_New());
+    if (!d)
+      return nullptr;
+    const bool ok =
+        setItem(d.get(), "name", pyString(name)) &&
+        setItem(d.get(), "position", pyFloats(l + 0, 3)) &&
+        setItem(d.get(), "shadow_slot", PyLong_FromLong(long(l[3]))) &&
+        setItem(d.get(), "direction", pyFloats(l + 4, 3)) &&
+        setItem(d.get(), "cos_outer", PyFloat_FromDouble(l[7])) &&
+        setItem(d.get(), "radiance", pyFloats(l + 8, 3)) &&
+        setItem(d.get(), "cos_inner", PyFloat_FromDouble(l[11])) &&
+        setItem(d.get(), "highlight", PyFloat_FromDouble(l[12])) &&
+        setItem(d.get(), "falloff", PyFloat_FromDouble(l[13])) &&
+        setItem(d.get(), "falloff_ref", PyFloat_FromDouble(l[14])) &&
+        setItem(d.get(), "outline", PyBool_FromLong(l[15] >= 0.5f));
+    if (!ok || PyList_Append(lights, d.get()) != 0) // lights is borrowed
+      return nullptr;
+  }
+  if (!setItem(dict.get(), "rig", out.release()))
+    return nullptr;
   return dict.release();
 }
 
