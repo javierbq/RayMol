@@ -1,6 +1,6 @@
 /*
- * Python conversions of the light rig (#611). The only lighting code that
- * touches Python: included by layer4/Cmd.cpp and layer3/Executive.cpp
+ * Python conversions of the light rig (#611) and of one frame's lighting
+ * (#613). The only lighting code that touches Python: included by layer4/Cmd.cpp and layer3/Executive.cpp
  * (sessions), never by the scene or the app bridge.
  *
  * Every conversion is driven by the field table in LightRig.h, so the dict
@@ -15,6 +15,8 @@
 #include "Result.h"
 
 #ifndef _PYMOL_NOPY
+
+struct SceneLightFrame; // SceneLights.h
 
 /**
  * The rig as cmd.get_lights() returns it (version 1):
@@ -107,6 +109,24 @@ PyObject* LightValueAsPy(const pymol::LightField& field,
  */
 PyObject* LightRigEyeAsPyDict(
     const pymol::LightRig& rig, const pymol::LightRigEye& eye);
+
+/**
+ * One frame's lighting (SceneLightsFrame, #613), for _cmd.get_light_frame():
+ *   {'ambient', 'direct', 'reflect', 'specular', 'shininess',
+ *    'rig_on': bool,
+ *    'rig': None | {'count': int, 'head': [4 floats], 'block': [100 floats],
+ *                   'lights': [{'name', 'position': [3], 'shadow_slot': int,
+ *                               'direction': [3], 'cos_outer',
+ *                               'radiance': [3], 'cos_inner', 'highlight',
+ *                               'falloff', 'falloff_ref', 'outline': bool},
+ *                              ...]}}
+ * 'block' is the LightRigBlock as the GPU reads it, float by float, and
+ * 'lights' is decoded from it at the offsets LightRigBlock.h documents, so
+ * the tests pin the layout as well as the values. Names come from `rig`.
+ * New reference.
+ */
+PyObject* LightFrameAsPyDict(
+    const pymol::LightRig* rig, const SceneLightFrame& frame);
 
 /// A world->eye matrix from 16 numbers in column-major order (as
 /// glm::make_mat4 reads them).

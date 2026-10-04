@@ -83,6 +83,7 @@ jobs:
               testing/tests/raymol/lighting_harness.py \
               testing/tests/raymol/lighting_rig.py \
               testing/tests/raymol/lighting_session.py \
+              testing/tests/raymol/lighting_shading.py \
               testing/tests/raymol/line_stick_helper.py \
               testing/tests/raymol/material_custom.py \
               testing/tests/raymol/material_docs.py \

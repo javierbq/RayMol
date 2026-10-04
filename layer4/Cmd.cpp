@@ -5280,6 +5280,47 @@ static PyObject* CmdGetLightsJson(PyObject* self, PyObject* args)
   return result;
 }
 
+/* ---- Light shading (#613) ------------------------------------------------
+ * What the Metal renderer reads from the lighting each frame
+ * (SceneLightsFrame, layer1/SceneLights.h) and the kelvin -> RGB conversion
+ * (layer1/LightShading.h), exposed so CI can test the C++ from Python.
+ */
+
+/// One frame's lighting as SceneRenderMetal reads it: the classic terms after
+/// decision 15 and the packed rig block (LightFrameAsPyDict). `matrix` is a
+/// column-major world->eye 4x4 (16 numbers), or None for the live camera.
+/// Reads only.
+static PyObject* CmdGetLightFrame(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  PyObject* matrix = nullptr;
+  API_SETUP_ARGS(G, self, args, "OO", &self, &matrix);
+  std::optional<glm::dmat4> m;
+  if (matrix != Py_None) {
+    auto parsed = LightMatrixFromPy(matrix);
+    if (!parsed)
+      return APIFailure(G, parsed.error());
+    m = *parsed;
+  }
+  APIEnterBlocked(G);
+  const auto frame = SceneLightsFrame(G, m ? *m : SceneGetWorldToEye(G));
+  PyObject* result = LightFrameAsPyDict(SceneGetLightRig(G), frame);
+  APIExitBlocked(G);
+  return result;
+}
+
+/// LightWarmthRGB(kelvin): a light's warmth as [r, g, b] (6500 K neutral).
+static PyObject* CmdLightWarmthRGB(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  double kelvin = 0.0;
+  API_SETUP_ARGS(G, self, args, "Od", &self, &kelvin);
+  const glm::dvec3 rgb = pymol::LightWarmthRGB(kelvin);
+  return Py_BuildValue("[ddd]", rgb.r, rgb.g, rgb.b);
+}
+
+/* ---- end light shading (#613) ------------------------------------------ */
+
 static PyObject *CmdGetMinMax(PyObject * self, PyObject * args)
 {
   PyMOLGlobals *G = nullptr;
@@ -7268,6 +7309,10 @@ static PyMethodDef Cmd_methods[] = {
   {"light_get", CmdLightGet, METH_VARARGS},
   {"get_lights_json", CmdGetLightsJson, METH_VARARGS},
   /* end light rig */
+  /* light shading (#613) */
+  {"get_light_frame", CmdGetLightFrame, METH_VARARGS},
+  {"light_warmth_rgb", CmdLightWarmthRGB, METH_VARARGS},
+  /* end light shading */
   {"get_mtl_obj", CmdGetMtlObj, METH_VARARGS},
   {"get_model", CmdGetModel, METH_VARARGS},
   {"get_property", CmdGetProperty, METH_VARARGS},
