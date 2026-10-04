@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "Executive.h"
+#include "Feedback.h"
 #include "PyMOLGlobals.h"
 #include "PyMOLObject.h"
 #include "Scene.h"
@@ -179,4 +180,40 @@ pymol::Result<> SceneLightsRecenter(PyMOLGlobals* G)
   rig->size = size;
   SceneInvalidate(G);
   return {};
+}
+
+/* ---- CPU ray notice (#626) ---------------------------------------------- */
+
+bool SceneLightsOn(PyMOLGlobals* G)
+{
+  // TODO(#613): return pymol::LightRigIsOn(SceneGetLightRig(G)) from
+  // layer1/LightShading.h once #613 lands. This is the same test, inlined.
+  const auto* rig = SceneGetLightRig(G);
+  return rig && rig->enabled && !rig->lights.empty() && rig->centre &&
+         rig->size;
+}
+
+const char* SceneLightsRayNoticeText(PyMOLGlobals* G)
+{
+  return SceneLightsOn(G) ? "studio lights are Metal-only; this ray-traced "
+                            "image uses PyMOL's lights."
+                          : nullptr;
+}
+
+bool SceneLightsRayNotice(PyMOLGlobals* G, int mode)
+{
+#ifdef _PYMOL_NO_RAY
+  (void) G;
+  (void) mode;
+  return false;
+#else
+  if (mode != 0 && mode != 1)
+    return false;
+  const char* text = SceneLightsRayNoticeText(G);
+  if (!text)
+    return false;
+  PRINTFB(G, FB_Ray, FB_Warnings)
+    " Ray: %s\n", text ENDFB(G);
+  return true;
+#endif
 }

@@ -5398,6 +5398,20 @@ static PyObject* CmdGetLightsJson(PyObject* self, PyObject* args)
   return result;
 }
 
+/// #626: the CPU ray notice text while the rig is on (SceneLightsOn), else
+/// None. The CPU tracer never draws the rig; MCP captures add this as a note.
+static PyObject* CmdGetLightsRayNotice(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  API_SETUP_ARGS(G, self, args, "O", &self);
+  APIEnterBlocked(G);
+  const char* text = SceneLightsRayNoticeText(G);
+  PyObject* result =
+      text ? PyUnicode_FromString(text) : APIAutoNone(Py_None);
+  APIExitBlocked(G);
+  return result;
+}
+
 static PyObject *CmdGetMinMax(PyObject * self, PyObject * args)
 {
   PyMOLGlobals *G = nullptr;
@@ -5707,7 +5721,10 @@ static PyObject *CmdPNG(PyObject * self, PyObject * args)
 
     if(!prior) {
       if(ray || (!G->HaveGUI && (!SceneGetCopyType(G) || width || height))) {
-        prior = SceneRay(G, width, height, SettingGetGlobal_i(G, cSetting_ray_default_renderer),
+        int mode = SettingGetGlobal_i(G, cSetting_ray_default_renderer);
+        // #626: the CPU tracer keeps PyMOL's lights; say so when a rig is on.
+        SceneLightsRayNotice(G, mode);
+        prior = SceneRay(G, width, height, mode,
                  nullptr, nullptr, 0.0F, 0.0F, quiet, nullptr, true, -1);
       } else if(width || height) {
         Extent2D extent{static_cast<std::uint32_t>(width),
@@ -7385,6 +7402,7 @@ static PyMethodDef Cmd_methods[] = {
   {"light_set", CmdLightSet, METH_VARARGS},
   {"light_get", CmdLightGet, METH_VARARGS},
   {"get_lights_json", CmdGetLightsJson, METH_VARARGS},
+  {"get_lights_ray_notice", CmdGetLightsRayNotice, METH_VARARGS},
   /* end light rig */
   {"get_mtl_obj", CmdGetMtlObj, METH_VARARGS},
   {"get_model", CmdGetModel, METH_VARARGS},

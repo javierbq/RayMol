@@ -26,6 +26,7 @@ Z* -------------------------------------------------------------------
 #include"Ortho.h"
 #include"Movie.h"
 #include"Scene.h"
+#include"SceneLights.h"
 #include"MyPNG.h"
 #include"P.h"
 #include"Setting.h"
@@ -710,6 +711,10 @@ static void MovieModalPNG(PyMOLGlobals * G, CMovie * I, CMovieModal * M)
        (M->frame <= M->stop) && (M->file_missing)) {    /* ...that don't already exist */
       if(!I->Image[M->image]) {
         SceneUpdate(G, false);
+        // #626: once per mpng, on the first frame traced with the rig on.
+        if (M->mode == cSceneImage_Ray && !M->lightsRayNotice)
+          M->lightsRayNotice = SceneLightsRayNotice(
+              G, SettingGetGlobal_i(G, cSetting_ray_default_renderer));
         if(SceneMakeMovieImage(G, false, M->modal, M->mode, M->width, M->height)
             || !M->modal) {
           M->stage = 3;
