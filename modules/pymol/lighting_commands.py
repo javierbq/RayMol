@@ -1492,8 +1492,8 @@ DESCRIPTION
     "lights" sets up studio lighting for the Metal renderer: a rig of up
     to six spot lights placed around the molecules, with presets, per-light
     edits and placement helpers. The rig belongs to the scene: .pse files
-    and scenes save it and "reinitialize" clears it. It is not a setting
-    and not an object, and it never changes colours or materials.
+    save it and "reinitialize" clears it. It is not a setting and not an
+    object, and it never changes colours or materials.
 
 USAGE
 
@@ -1710,7 +1710,7 @@ PYMOL API
 
 SEE ALSO
 
-    atmosphere, get_lights, set_lights, scene
+    atmosphere, get_lights, set_lights
     '''
     quiet = _quiet('lights', quiet)
     word = _word(word)
