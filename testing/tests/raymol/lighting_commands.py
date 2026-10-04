@@ -28,6 +28,17 @@ with the object matrix applied), pin/anchor/position and the order of their
 steps, every conflict, the Phase 2 rollback, chaining and the
 non-negotiables for each field kind.
 
+Covers (part 3): the placement helpers with the native surface pick
+(metal_pick.surface_at) under the pinned camera of raymol/lighting_pick.py:
+click= and highlight=<sele> (the mirror rule, rim, the distance on the
+radius sphere and the raised radius, the beam fit, pin=1, a pinned light
+placed again), highlight's projection (perspective and orthoscopic), its
+grid-mode refusal and its check that the hit belongs to the selection (a
+ligand inside a protein in one object), target=<sele> (centroid, beam fit
+to the selection, the anchor kept), every bad value and conflict,
+metal_pick.camera(_self) and a pymol2 instance, and the non-negotiables for
+each helper (the pick runs the scene's update phase).
+
 Runs on a RayMol build:
     pymol -ckqy testing/testing.py --run testing/tests/raymol/lighting_commands.py
 """
@@ -40,6 +51,7 @@ import re
 import pymol
 import pymol.invocation
 from pymol import CmdException, _cmd, cmd, lighting, lighting_commands, testing
+from pymol import metal_pick
 from pymol import parsing
 
 # Two protein atoms in a 4 x 6 x 12 A box (half-diagonal 7 A), plus waters
@@ -1683,6 +1695,494 @@ class TestErrors(CommandsCase):
         self.assertIsNone(cmd.get_lights())
 
 
+# --- placement helpers (part 3) ---------------------------------------------
+
+# The pinned camera of raymol/lighting_pick.py and raymol/metal_pick.py:
+# rotation identity, origin (0,0,0), camera at world z = +100 looking down
+# -Z, slab [50, 150], field of view 20 degrees (perspective: the flag is
+# negative), viewport 400 x 300. The ray through NDC (x, y) leaves the eye
+# along (x * T * aspect, y * T, -1), T = tan(tan(radians(10))) (the
+# renderer's glm::perspective(GetFovWidth) takes tan of half its argument).
+PINNED_VIEW = (1.0, 0.0, 0.0,
+               0.0, 1.0, 0.0,
+               0.0, 0.0, 1.0,
+               0.0, 0.0, -100.0,
+               0.0, 0.0, 0.0,
+               50.0, 150.0, -20.0)
+CAMERA = (0.0, 0.0, 100.0)
+T20 = math.tan(math.tan(math.radians(10.0)))
+
+
+def vsub(a, b):
+    return tuple(x - y for x, y in zip(a, b))
+
+
+def vadd(a, b):
+    return tuple(x + y for x, y in zip(a, b))
+
+
+def vscale(s, a):
+    return tuple(s * x for x in a)
+
+
+def vdot(a, b):
+    return sum(x * y for x, y in zip(a, b))
+
+
+def vnorm(a):
+    return math.sqrt(vdot(a, a))
+
+
+def vunit(a):
+    return vscale(1.0 / vnorm(a), a)
+
+
+def vangle(a, b):
+    c = vdot(vunit(a), vunit(b))
+    return math.degrees(math.acos(max(-1.0, min(1.0, c))))
+
+
+def mirror(n, v):
+    """The mirror rule: the light along 2(N.V)N - V."""
+    return vsub(vscale(2.0 * vdot(n, v), n), v)
+
+
+def fitted_beam(reach, distance):
+    """The beam fit of spec section 5: 2 atan(1.15 F / D), in degrees."""
+    return 2.0 * math.degrees(math.atan(1.15 * reach / distance))
+
+
+def world_of_eye(p, _self=cmd):
+    """An eye-space point in world space under the live camera (the
+    inverse of eye = R (w - origin) + pos, metal_pick.camera's convention).
+    """
+    cam = metal_pick.camera(_self)
+    d = vsub(p, cam.pos)
+    return tuple(sum(cam.rot[3 * k + i] * d[k] for k in range(3)) +
+                 cam.origin[i] for i in range(3))
+
+
+def world_position(name, _self=cmd):
+    """Where light `name` is now, in world space (from _lights_eye)."""
+    for entry in lighting._lights_eye(_self=_self)['lights']:
+        if entry['name'] == name:
+            return world_of_eye(entry['position'], _self)
+    raise KeyError(name)
+
+
+class PlacementCase(CommandsCase):
+    """The pinned camera, an explicit frame (centre (0,0,0), size 10) and
+    sphere pseudoatoms with a known vdW, so every placement has a closed
+    form."""
+
+    def setUp(self):
+        super().setUp()
+        cmd.viewport(400, 300)
+        self.width, self.height = cmd.get_viewport()
+        cmd.set('async_builds', 0)
+        cmd.set_view(PINNED_VIEW)
+
+    def aspect(self):
+        return float(self.width) / float(self.height)
+
+    def frame(self, centre=(0.0, 0.0, 0.0), size=10.0, **fields):
+        lighting.set_lights({'enabled': True, 'centre': list(centre),
+                             'size': size,
+                             'lights': [dict({'name': 'key'}, **fields)]})
+
+    def ball(self, name, pos, vdw, rep='spheres', **kw):
+        cmd.pseudoatom(name, pos=list(pos), vdw=vdw, **kw)
+        cmd.show_as(rep, name)
+        return name
+
+    def ray_sphere(self, x, y, c, r, eye=CAMERA, t=T20, aspect=None):
+        """Where the camera ray through NDC (x, y) enters sphere (c, r)."""
+        aspect = aspect or self.aspect()
+        d = (x * t * aspect, y * t, -1.0)
+        oc = vsub(eye, c)
+        a, b, k = vdot(d, d), 2.0 * vdot(oc, d), vdot(oc, oc) - r * r
+        disc = b * b - 4.0 * a * k
+        self.assertGreaterEqual(disc, 0.0, 'test geometry: the ray misses')
+        s = (-b - math.sqrt(disc)) / (2.0 * a)
+        return vadd(eye, vscale(s, d))
+
+    def ndc_of(self, p):
+        """NDC of a world point under the pinned perspective camera."""
+        depth = CAMERA[2] - p[2]
+        return (p[0] / (depth * T20 * self.aspect()), p[1] / (depth * T20))
+
+    def assertPlaced(self, name, point, direction, distance, places=3):
+        """Light `name` aims at `point` and sits along `direction` from it
+        (`distance` A away unless None); returns where it is."""
+        P = world_position(name)
+        self.assertVec(light(name)['aim_point'], point, places=places)
+        self.assertVec(vunit(vsub(P, point)), vunit(direction),
+                       places=places)
+        if distance is not None:
+            self.assertAlmostEqual(vnorm(vsub(P, point)), distance,
+                                   places=places)
+        return P
+
+
+class TestPlacement(PlacementCase):
+
+    R = 2.0         # the ball's vdW
+
+    def testClickAtTheCentre(self):
+        self.ball('ball', (0.0, 0.0, 0.0), self.R)
+        self.frame()
+        _, text = output(cmd.lights, 'key', click='0/0', radius=2, quiet=0)
+        key = light('key')
+        self.assertEqual((key['anchor'], key['aim'], key['aim_selection']),
+                         ('camera', 'point', ''))
+        self.assertVec(key['aim_point'], (0.0, 0.0, self.R), places=3)
+        # on the R * size sphere along the mirror direction (+z): (0,0,20),
+        # then unpinned there: orbit 0, pitch 0, radius 2 exactly
+        self.assertVec(world_position('key'), (0.0, 0.0, 20.0), places=3)
+        self.assertAlmostEqual(key['orbit'], 0.0, places=4)
+        self.assertAlmostEqual(key['pitch'], 0.0, places=4)
+        self.assertAlmostEqual(key['radius'], 2.0, places=5)
+        self.assertAlmostEqual(key['beam'], fitted_beam(10.0, 20.0 - self.R),
+                               places=3)
+        self.assertIn("lights: key: click=0/0 picked the spheres of 'ball' "
+                      "at (0.00, 0.00, 2.00)", text)
+        self.assertIn("edited 'key' (click, radius)", text)
+        # resolved once: moving the atoms later changes nothing
+        rig = cmd.get_lights()
+        cmd.translate([5.0, 0.0, 0.0], 'ball', camera=0)
+        self.assertEqual(cmd.get_lights(), rig)
+
+    def off_centre(self):
+        """An off-centre click on the ball: (x, y, A, N, V)."""
+        self.ball('ball', (0.0, 0.0, 0.0), self.R)
+        self.frame()
+        target = (1.0, -0.6, math.sqrt(self.R ** 2 - 1.0 - 0.36))
+        x, y = self.ndc_of(target)
+        A = self.ray_sphere(x, y, (0.0, 0.0, 0.0), self.R)
+        self.assertLess(vnorm(vsub(A, target)), 1e-9)
+        N = vunit(A)
+        V = vunit(vsub(CAMERA, A))
+        return x, y, A, N, V
+
+    def testClickOffCentreMirror(self):
+        x, y, A, N, V = self.off_centre()
+        cmd.lights('key', click=[x, y], radius=3)
+        P = self.assertPlaced('key', A, mirror(N, V), None)
+        self.assertAlmostEqual(vnorm(P), 3.0 * 10.0, places=3)
+        key = light('key')
+        self.assertEqual(key['anchor'], 'camera')
+        self.assertAlmostEqual(key['radius'], 3.0, places=5)
+        self.assertAlmostEqual(
+            key['beam'], fitted_beam(10.0, vnorm(vsub(P, A))), places=3)
+
+    def testRim(self):
+        x, y, A, N, V = self.off_centre()
+        cmd.lights('key', click='%r/%r' % (x, y), radius=3)
+        mirrored = world_position('key')
+        cmd.lights('key', click='%r/%r' % (x, y), radius=3, rim=0)
+        self.assertVec(world_position('key'), mirrored, places=4)
+        cmd.lights('key', click='%r/%r' % (x, y), radius=3, rim=150)
+        P = world_position('key')
+        self.assertAlmostEqual(vangle(vsub(P, A), V), 150.0, places=3)
+        side = vunit(vsub(N, vscale(vdot(N, V), V)))
+        u = vadd(vscale(math.cos(math.radians(150.0)), V),
+                 vscale(math.sin(math.radians(150.0)), side))
+        self.assertPlaced('key', A, u, None)
+        self.assertAlmostEqual(vnorm(P), 30.0, places=3)
+
+    def testRaisedRadius(self):
+        # the ball's front at (0,0,7) is 0.7 sizes from the centre, beyond
+        # radius 0.5: R' = 0.7 + 0.5, and the light sits at (0,0,12)
+        self.ball('ball', (0.0, 0.0, 4.0), 3.0)
+        self.frame()
+        _, text = output(cmd.lights, 'key', click='0/0', radius=0.5,
+                         quiet=0)
+        self.assertIn('lights: key: radius raised from 0.5 to 1.2 so the '
+                      'light sits beyond the picked point', text)
+        self.assertVec(world_position('key'), (0.0, 0.0, 12.0), places=3)
+        self.assertAlmostEqual(light('key')['radius'], 1.2, places=4)
+        # quiet: no note, same placement
+        _, text = output(cmd.lights, 'key', click='0/0', radius=0.5)
+        self.assertEqual(text, '')
+        self.assertAlmostEqual(light('key')['radius'], 1.2, places=4)
+
+    def testTooFarFromTheFrame(self):
+        # the picked point (0,0,2) is 8.2 sizes from a frame at (0,0,-80):
+        # R' = 8.7 is past 8
+        self.ball('ball', (0.0, 0.0, 0.0), self.R)
+        self.frame(centre=(0.0, 0.0, -80.0))
+        self.assertError(r"lights: key: click=0/0: the picked point is 8\.2 "
+                         r"sizes from the rig centre.*lights recenter",
+                         cmd.lights, 'key', click='0/0')
+
+    def testHighlight(self):
+        self.ball('s1', (-6.0, 0.0, 0.0), self.R)
+        c2 = (5.0, 3.0, -4.0)
+        self.ball('s2', c2, self.R)
+        self.frame()
+        _, text = output(cmd.lights, 'key', highlight='s2', radius=3,
+                         quiet=0)
+        # the ray through the projected centre runs through c2: it enters
+        # the sphere facing the camera, and the mirror direction is V there
+        V = vunit(vsub(CAMERA, c2))
+        A = vadd(c2, vscale(self.R, V))
+        P = self.assertPlaced('key', A, V, None)
+        self.assertAlmostEqual(vnorm(P), 30.0, places=3)
+        key = light('key')
+        self.assertEqual((key['anchor'], key['aim_selection']),
+                         ('camera', 's2'))
+        self.assertIn("highlight=s2 picked the spheres of 's2'", text)
+
+    def testHighlightRimFallsBackToCameraRight(self):
+        # N is along V at the selection's centre, so the rim turns towards
+        # the camera's right (made perpendicular to V)
+        c2 = (5.0, 3.0, -4.0)
+        self.ball('s2', c2, self.R)
+        self.frame()
+        cmd.lights('key', highlight='s2', rim=90, radius=3)
+        V = vunit(vsub(CAMERA, c2))
+        A = vadd(c2, vscale(self.R, V))
+        right = vunit(vsub((1.0, 0.0, 0.0), vscale(V[0], V)))
+        self.assertPlaced('key', A, right, None)
+
+    def testLigandAndProteinInOneObject(self):
+        # a big "protein" sphere hides the ligand: the pick hits the
+        # protein, more than vdW + 1.5 A from the ligand
+        cmd.pseudoatom('m', name='CA', resn='PRT', resi='1', pos=[0, 0, 0],
+                       vdw=10.0)
+        cmd.pseudoatom('m', name='C1', resn='LIG', resi='2', pos=[0, 0, 1],
+                       vdw=1.0)
+        cmd.show_as('spheres', 'm')
+        self.frame()
+        self.assertError(r"lights: key: highlight=resn LIG: the pick hit the "
+                         r"spheres of 'm' in front of the selection; show "
+                         r"the selection \(e\.g\. as sticks\) or use click=",
+                         cmd.lights, 'key', highlight='resn LIG')
+        # the ligand in front of the protein: its own sphere is hit
+        cmd.alter_state(1, 'resn LIG', 'z = 12.0')
+        cmd.lights('key', highlight='resn LIG')
+        key = light('key')
+        self.assertVec(key['aim_point'], (0.0, 0.0, 13.0), places=3)
+        self.assertEqual(key['aim_selection'], 'resn LIG')
+
+    def testHighlightErrors(self):
+        self.ball('ball', (0.0, 0.0, 0.0), self.R)
+        self.ball('far', (60.0, 0.0, 0.0), self.R)
+        self.ball('behind', (0.0, 0.0, 120.0), self.R)
+        self.ball('hidden', (0.0, 5.0, 0.0), self.R)
+        cmd.hide('everything', 'hidden')
+        self.frame()
+        for sele, pattern in (
+                ('none', r'highlight=none: the selection has no atoms'),
+                ('nosuch', r'highlight=nosuch is not a valid selection'),
+                ('far', r'highlight=far: the selection is off screen'),
+                ('behind', r'highlight=behind: the selection is behind the '
+                           r'camera'),
+                ('hidden', r'highlight=hidden: nothing drawn as a surface, '
+                           r'cartoon, sphere or stick at the selection')):
+            self.assertError(r'lights: key: ' + pattern, cmd.lights, 'key',
+                             highlight=sele)
+        cmd.set('grid_mode', 1)
+        self.assertError(r'lights: key: highlight=ball: not available in '
+                         r'grid mode.*use click=x/y', cmd.lights, 'key',
+                         highlight='ball')
+
+    def testTarget(self):
+        cmd.pseudoatom('t', name='A', pos=[1.0, 0.0, 0.0])
+        cmd.pseudoatom('t', name='B', pos=[-1.0, 0.0, 0.0])
+        cmd.pseudoatom('t', name='C', pos=[0.0, 3.0, 0.0])
+        self.frame(orbit=20.0, pitch=10.0, radius=2.0)
+        cmd.lights('key', target='t')
+        key = light('key')
+        # centroid (0,1,0); F = the farthest atom (C, 2 A) + 1.5 A
+        self.assertVec(key['aim_point'], (0.0, 1.0, 0.0), places=5)
+        self.assertEqual((key['aim'], key['aim_selection'], key['anchor']),
+                         ('point', 't', 'camera'))
+        self.assertEqual((key['orbit'], key['pitch'], key['radius']),
+                         (20.0, 10.0, 2.0))
+        # D: the camera light around the eye-space centre (0,0,-100)
+        o, p = math.radians(20.0), math.radians(10.0)
+        P = (20.0 * math.sin(o) * math.cos(p), 20.0 * math.sin(p),
+             -100.0 + 20.0 * math.cos(o) * math.cos(p))
+        D = vnorm(vsub(P, (0.0, 1.0, -100.0)))
+        self.assertAlmostEqual(eye('key')['aim_distance'], D, places=3)
+        self.assertAlmostEqual(key['beam'], fitted_beam(3.5, D), places=3)
+        # placed first, then fitted at the new distance
+        cmd.lights('key', target='t and name A+B', orbit=-30.0)
+        D = eye('key')['aim_distance']
+        self.assertAlmostEqual(light('key')['orbit'], -30.0)
+        self.assertAlmostEqual(light('key')['beam'], fitted_beam(2.5, D),
+                               places=3)
+
+    def testTargetKeepsAPinnedLightPinned(self):
+        cmd.pseudoatom('t', pos=[0.0, 2.0, 0.0])
+        self.frame()
+        cmd.lights('key', position=[0, 0, 30])
+        cmd.lights('key', target='t')
+        key = light('key')
+        self.assertEqual((key['anchor'], key['position']),
+                         ('pinned', [0.0, 0.0, 30.0]))
+        self.assertAlmostEqual(key['beam'], fitted_beam(
+            1.5, vnorm(vsub((0.0, 0.0, 30.0), (0.0, 2.0, 0.0)))), places=3)
+
+    def testTargetErrors(self):
+        self.frame()
+        self.assertError(r'key: target=none: the selection has no atoms',
+                         cmd.lights, 'key', target='none')
+        self.assertError(r'key: target=3: give a selection', cmd.lights,
+                         'key', target=3)
+        self.assertError(r'key: target= needs a selection', cmd.lights,
+                         'key', target=' ')
+
+    def testBeamGivenIsNotFitted(self):
+        self.ball('ball', (0.0, 0.0, 0.0), self.R)
+        self.frame()
+        cmd.lights('key', click='0/0', beam=33)
+        self.assertEqual(light('key')['beam'], 33.0)
+        cmd.lights('key', target='ball', beam=12)
+        self.assertEqual(light('key')['beam'], 12.0)
+
+    def testPinWithClick(self):
+        self.ball('ball', (0.0, 0.0, 0.0), self.R)
+        self.frame()
+        with recorded_steps() as calls:
+            cmd.lights('key', click='0/0', radius=2, pin=1)
+        self.assertEqual([c[1] for c in calls], ['position', 'beam'])
+        key = light('key')
+        self.assertEqual(key['anchor'], 'pinned')
+        self.assertVec(key['position'], (0.0, 0.0, 20.0), places=3)
+        # without pin=1 the light is placed as a camera light, even one
+        # that was pinned; its radius is where it is now (3.5)
+        cmd.lights('key', position=[0, 0, 35])
+        with recorded_steps() as calls:
+            cmd.lights('key', click='0/0')
+        self.assertEqual([c[1] for c in calls],
+                         ['position', 'anchor', 'beam'])
+        key = light('key')
+        self.assertEqual(key['anchor'], 'camera')
+        self.assertAlmostEqual(key['radius'], 3.5, places=5)
+        self.assertVec(world_position('key'), (0.0, 0.0, 35.0), places=3)
+
+    def testAddWithAHelper(self):
+        # add with no rig: the frame is captured by set_lights, then placed
+        self.ball('ball', (0.0, 0.0, 0.0), self.R)
+        lighting.set_lights(None)
+        name = cmd.lights('add', click='0/0')
+        self.assertEqual(name, 'key')
+        rig = cmd.get_lights()
+        self.assertIs(rig['enabled'], True)
+        centre, size = closed_frame()
+        self.assertVec(rig['centre'], centre)
+        self.assertAlmostEqual(rig['size'], size, places=5)
+        self.assertAlmostEqual(vnorm(vsub(world_position('key'),
+                                          rig['centre'])),
+                               rig['lights'][0]['radius'] * rig['size'],
+                               places=3)
+        self.assertVec(light('key')['aim_point'], (0.0, 0.0, self.R),
+                       places=3)
+
+    def testBadValues(self):
+        self.ball('ball', (0.0, 0.0, 0.0), self.R)
+        self.frame()
+        for fields, pattern in (
+                (dict(click='0.9/0.9'), r'nothing drawn as a surface, '
+                                        r'cartoon, sphere or stick under '
+                                        r'click=0\.9/0\.9'),
+                (dict(click='1.5/0'), r'click=1\.5/0: each value is -1 to 1'),
+                (dict(click='a/b'), r"click=a/b: 'a' is not a number"),
+                (dict(click='0'), r'click=0: give x/y or \[x,y\]'),
+                (dict(click=[0, 0, 0]), r'click=\[0,0,0\]: give x/y'),
+                (dict(click='0/0', rim=180), r'rim=180 is out of range 0 to '
+                                             r'under 180'),
+                (dict(click='0/0', rim=-5), r'rim=-5 is out of range'),
+                (dict(click='0/0', rim='abc'), r'rim=abc is not a number'),
+                (dict(click='0/0', radius=9), r'radius=9 is out of range')):
+            self.assertError(r'lights: key: ' + pattern, cmd.lights, 'key',
+                             **fields)
+
+    def testConflicts(self):
+        self.ball('ball', (0.0, 0.0, 0.0), self.R)
+        self.frame()
+        for fields, pattern in (
+                (dict(click='0/0', orbit=10), r'orbit= and click= both place'),
+                (dict(rim=30), r'rim= needs click= or highlight='),
+                (dict(target='ball', aim='centre'), r'aim= and target= both'),
+                (dict(click='0/0', highlight='ball'), r'click=, highlight=: '
+                                                      r'give one placement '
+                                                      r'helper')):
+            self.assertError(r'lights: key: ' + pattern, cmd.lights, 'key',
+                             **fields)
+
+    def testOrthoscopic(self):
+        cmd.set('orthoscopic', 1)
+        cmd.set_view(PINNED_VIEW[:17] + (20.0,))
+        self.assertTrue(cmd.get_setting_int('orthoscopic'))
+        self.ball('ball', (0.0, 0.0, 0.0), self.R)
+        self.frame()
+        # every ray runs along -z; the half-height is 100 tan(10 deg)
+        h = 100.0 * math.tan(math.radians(10.0))
+        wx, wy = 1.0, 0.5
+        cmd.lights('key', click=[wx / (h * self.aspect()), wy / h], radius=3)
+        A = (wx, wy, math.sqrt(self.R ** 2 - wx * wx - wy * wy))
+        V = (0.0, 0.0, 1.0)
+        P = self.assertPlaced('key', A, mirror(vunit(A), V), None)
+        self.assertAlmostEqual(vnorm(P), 30.0, places=3)
+        # highlight= projects with the orthoscopic half-height: the ray
+        # through the centre of s2 hits its front, and N = V = +z there
+        c2 = (3.0, -2.0, 0.0)
+        self.ball('s2', c2, self.R)
+        cmd.lights('key', highlight='s2', radius=3)
+        self.assertPlaced('key', (3.0, -2.0, self.R), V, None, places=4)
+
+    def testPerInstance(self):
+        import pymol2
+        p1 = pymol2.PyMOL()
+        p1.start()
+        try:
+            c = p1.cmd
+            c.viewport(400, 300)
+            c.set('async_builds', 0)
+            view = PINNED_VIEW[:11] + (-60.0,) + PINNED_VIEW[12:17] + (-30.0,)
+            c.set_view(view)
+            cam = metal_pick.camera(_self=c)
+            self.assertAlmostEqual(cam.pos[2], -60.0, places=4)
+            self.assertAlmostEqual(cam.fov, 30.0, places=4)
+            self.assertAlmostEqual(
+                cam.tan_half, math.tan(math.tan(math.radians(15.0))),
+                places=6)
+            # the singleton's camera is its own
+            self.assertAlmostEqual(metal_pick.camera().pos[2], -100.0,
+                                   places=4)
+            self.assertAlmostEqual(metal_pick.camera(None).fov, 20.0,
+                                   places=4)
+            c.pseudoatom('ball', pos=[0.0, 0.0, 0.0], vdw=self.R)
+            c.show_as('spheres', 'ball')
+            lighting.set_lights({'enabled': True, 'centre': [0, 0, 0],
+                                 'size': 10.0, 'lights': [{'name': 'key'}]},
+                                _self=c)
+            width, height = c.get_viewport()
+            x, y = 0.05, 0.03
+            A = self.ray_sphere(x, y, (0.0, 0.0, 0.0), self.R,
+                                eye=(0.0, 0.0, 60.0),
+                                t=math.tan(math.tan(math.radians(15.0))),
+                                aspect=float(width) / float(height))
+            c.lights('key', click=[x, y], radius=2)
+            key = c.get_lights()['lights'][0]
+            self.assertVec(key['aim_point'], A, places=3)
+            P = world_position('key', _self=c)
+            self.assertAlmostEqual(vnorm(P), 20.0, places=3)
+            self.assertVec(vunit(vsub(P, A)),
+                           vunit(mirror(vunit(A),
+                                        vunit(vsub((0.0, 0.0, 60.0), A)))),
+                           places=3)
+            c.lights('key', highlight='ball')
+            self.assertVec(c.get_lights()['lights'][0]['aim_point'],
+                           (0.0, 0.0, self.R), places=3)
+            self.assertIsNone(cmd.get_lights())         # the singleton
+        finally:
+            p1.stop()
+
+
 # --- docs -------------------------------------------------------------------
 
 class TestDocs(testing.PyMOLTestCase):
@@ -1940,6 +2440,7 @@ class TestNonNegotiables(CommandsCase):
         super().setUp()
         self.load()
         cmd.show('sticks')
+        cmd.show('spheres', 'resi 1')       # drawn, for the surface pick
         cmd.color('red', 'resi 1')
         cmd.set('stick_color', 'blue', 'resi 1')
         cmd.turn('y', 30)
@@ -1971,7 +2472,7 @@ class TestNonNegotiables(CommandsCase):
             ('error', lambda: self.assertRaises(
                 CmdException, cmd.lights, 'neon', intensity=9)),
             ('error do', lambda: do('lights nosuch')),
-        ] + self.part2_steps() + [
+        ] + self.part2_steps() + self.part3_steps() + [
             ('clear', lambda: cmd.lights('clear')),
             ('clear again', lambda: cmd.lights('clear')),
         ]
@@ -2017,6 +2518,42 @@ class TestNonNegotiables(CommandsCase):
     def failing_step(self):
         with recorded_steps(fail_at=1):
             self.assertRaises(CmdException, cmd.lights, 'key', pin=1)
+
+    def ndc_of_atom(self, sele):
+        """The viewport NDC of an atom's centre under the live camera."""
+        point = cmd.get_model(sele).atom[0].coord
+        cam = metal_pick.camera()
+        d = vsub(point, cam.origin)
+        e = [sum(cam.rot[3 * k + i] * d[i] for i in range(3)) + cam.pos[k]
+             for k in range(3)]
+        width, height = cmd.get_viewport()
+        half = -e[2] * cam.tan_half
+        return [e[0] / (half * width / height), e[1] / half]
+
+    def part3_steps(self):
+        """The placement helpers: each runs the surface pick, which runs
+        the scene's update phase first."""
+        L = cmd.lights
+        return [
+            ('target', lambda: L('key', target='resi 1')),
+            ('target beam', lambda: L('fill', target='resi 1', beam=40)),
+            ('click', lambda: L('key', click=self.ndc_of_atom(
+                'resi 1 and name N'))),
+            ('click do', lambda: do('lights key, click=%.5f/%.5f, rim=120, '
+                                    'radius=3' % tuple(self.ndc_of_atom(
+                                        'resi 1 and name N')))),
+            ('highlight', lambda: L('fill', highlight='resi 1 and name N',
+                                    rim=60)),
+            ('highlight pin', lambda: do('lights rim, highlight=resi 1 and '
+                                         'name CA, pin=1')),
+            ('add with highlight', lambda: L('add', 'extra',
+                                             highlight='resi 1 and name CA')),
+            ('remove extra', lambda: L('remove', 'extra')),
+            ('helper errors', lambda: [
+                self.assertRaises(CmdException, L, 'key', highlight='resi 2'),
+                self.assertRaises(CmdException, L, 'key', click='0.99/0.99'),
+                self.assertRaises(CmdException, L, 'key', target='none')]),
+        ]
 
     def testNothingElseChanges(self):
         snap = Snapshot()
