@@ -85,3 +85,28 @@ std::optional<pymol::LightRigEye> SceneLightsResolve(
 
 /// The rig as JSON (LightRigToJSON), or nullopt when there is no rig.
 std::optional<std::string> SceneLightsJSON(PyMOLGlobals* G);
+
+/* ---- CPU ray notice (#626) -----------------------------------------------
+ * Studio lighting is drawn only by the Metal renderer. The CPU tracer (`ray`,
+ * `png ..., ray=1`, a headless `png`, `mpng` in ray mode, POV-Ray immediate
+ * mode) keeps PyMOL's own lights and never reads the rig, so a CPU image made
+ * while the rig is on says so, once per command.
+ */
+
+/// The rig is on: present, enabled, with at least one light (and its frame).
+/// False when there is no rig. "Studio lights in use" everywhere in the core.
+bool SceneLightsOn(PyMOLGlobals* G);
+
+/// "studio lights are Metal-only; this ray-traced image uses PyMOL's lights."
+/// when SceneLightsOn, else nullptr. The one copy of the text (C++, _cmd, MCP).
+const char* SceneLightsRayNoticeText(PyMOLGlobals* G);
+
+/**
+ * For a CPU image about to be traced with SceneRay mode `mode`: when mode is
+ * 0 (built-in) or 1 (POV-Ray) and the rig is on, print " Ray: <text>" through
+ * PRINTFB(FB_Ray, FB_Warnings) and return true; otherwise do nothing and
+ * return false. Call once per command, never per frame, tile or stereo eye.
+ * It is a warning, so it ignores `quiet` (`feedback disable, ray, warnings`
+ * silences it). Writes no setting and no scene state.
+ */
+bool SceneLightsRayNotice(PyMOLGlobals* G, int mode);
