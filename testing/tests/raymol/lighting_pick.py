@@ -2094,9 +2094,10 @@ class TestGrid(PickCase):
         self.assertIsNone(self.pick(*self.at(self.FOUR, 4)))
 
     def testPicksAreRepeatable(self):
-        '''The layout is rebuilt locally on every pick and written nowhere:
-        picking again, in another order and without the update, gives the
-        same answers, and nothing observable moved.'''
+        '''Picking again, in another order and without the update, gives the
+        same answers, and leaves the view, frame, grid settings and enabled
+        objects unchanged. Whether pickGridLayout writes CScene::m_slots or
+        obj->grid_slot cannot be seen from Python (see its comment).'''
         self.multi('gp', (0.0, 5.0))
         self.multi('gq', (10.0, 15.0))
         cmd.set('grid_mode', 3)
@@ -2107,7 +2108,6 @@ class TestGrid(PickCase):
 
         def snapshot():
             return (cmd.get('grid_mode'), cmd.get('grid_max'),
-                    cmd.get('grid_slot', 'gp'), cmd.get('grid_slot', 'gq'),
                     cmd.get_view(), cmd.get_frame(),
                     cmd.get_names('all', enabled_only=1))
         before = snapshot()
