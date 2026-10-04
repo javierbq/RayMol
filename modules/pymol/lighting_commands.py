@@ -719,21 +719,26 @@ def _parse_aim(where, field, value):
 def _drawn_atoms(sele, _self):
     '''The chempy atoms of a selection as they are drawn now, in world space
     (object matrices applied, as the frame capture and the pick use). Each
-    object is read at its own effective state (get_object_state): a
+    object is read at its own effective state (read per object, as the
+    renderer does): a
     single-state object at every frame (static_singletons), the object's
     own state setting, every state with all_states. An object whose state
     is past its last one is not drawn and gives no atoms. (get_model at
     the global state would drop single-state objects above frame 1.)'''
     atoms = []
     for obj in _self.get_object_list('(%s)' % sele) or []:
-        try:
-            state = _self.get_object_state(obj)
-        except CmdException:
-            continue
-        if state == 0:
-            states = range(1, _self.count_states('%' + obj) + 1)
+        # object-level reads, as the renderer does (get_object_state reads
+        # static_singletons globally)
+        n = _self.count_states('%' + obj)
+        if n < 2 and _self.get_setting_boolean('static_singletons', obj):
+            states = (1,)
+        elif _self.get_setting_int('all_states', obj):
+            states = range(1, n + 1)
         else:
-            states = (state,)
+            state = _self.get_setting_int('state', obj)
+            if state > n:
+                continue
+            states = range(1, n + 1) if state <= 0 else (state,)
         part = '(%s) and %%%s' % (sele, obj)
         for s in states:
             atoms += _self.get_model(part, state=s).atom

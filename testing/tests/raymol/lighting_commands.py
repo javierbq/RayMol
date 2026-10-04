@@ -1040,6 +1040,13 @@ class TestAddEditRemove(CommandsCase):
         # quiet: no output
         _, text = output(cmd.lights, 'key', beam=31)
         self.assertEqual(text, '')
+        # the report names the radius in A (612-R2-3)
+        _, text = output(cmd.lights, 'key', orbit=40, quiet=0)
+        self.assertIn('radius 4 (%.1f A)' % (4.0 * cmd.get_lights()['size']),
+                      text)
+        _, text = output(cmd.lights, 'add', 'spot', quiet=0)
+        self.assertIn('radius 4 (%.1f A)' % (4.0 * cmd.get_lights()['size']),
+                      text)
 
     def testEditThroughTheParser(self):
         cmd.lights('three_point')
@@ -2452,6 +2459,21 @@ class TestDrawnStates(PlacementCase):
                          r"atoms is drawn", cmd.lights, 'key', target='rec')
         cmd.lights('key', aim='rec or lig')
         self.assertVec(light('key')['aim_point'], (3.0, 0.0, 0.0), places=5)
+
+    def testObjectLevelStaticSingletons(self):
+        # global on, rec off: rec is not drawn at frame 5
+        cmd.set('static_singletons', 0, 'rec')
+        self.assertError(r"lights: key: aim=rec: none of the selection's "
+                         r"atoms is drawn", cmd.lights, 'key', aim='rec')
+        cmd.lights('key', aim='rec or lig')
+        self.assertVec(light('key')['aim_point'], (3.0, 0.0, 0.0), places=5)
+        # global off, rec on: rec is drawn
+        cmd.set('static_singletons', 1, 'rec')
+        cmd.set('static_singletons', 0)
+        cmd.lights('key', aim='rec')
+        self.assertVec(light('key')['aim_point'], (0.0, 0.0, 0.0), places=5)
+        cmd.lights('key', aim='rec or lig')
+        self.assertVec(light('key')['aim_point'], (1.5, 0.0, 0.0), places=5)
 
     def testObjectStateAndAllStates(self):
         cmd.frame(2)
