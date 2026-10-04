@@ -1,0 +1,56 @@
+PyMOL>help atmosphere
+
+DESCRIPTION
+
+    "atmosphere" sets the air of the light rig: haze and floating dust
+    that the studio lights shine through. The air shows only while the
+    lights are on (see "lights").
+
+USAGE
+
+    atmosphere                           print the air
+    atmosphere field=value [, field=value ...]
+    atmosphere off                       every field back to its default
+
+    Arguments are separated by commas: "atmosphere haze=0.3, dust=0.5".
+
+FIELDS
+
+    field: range, default. A number outside its range is an error.
+
+    haze        0 to 1, default 0: amount of haze in the air
+    dust        0 to 1, default 0: amount of floating dust
+    dust_size   0.05 to 2, default 0.35: size of the dust motes
+    dust_speed  0 to 10, default 1: how fast the dust drifts
+    scatter     -0.9 to 0.9, default 0.55: forward scattering (g); above 0
+                the air glows more where a beam points towards the camera
+    seed        whole number, 0 to 1000000, default 0: the dust pattern
+
+    With no rig, "atmosphere field=..." creates a rig that is off and has
+    no lights: the air shows once a preset or "lights add" turns it on.
+    A preset keeps the air, and so do "lights off" and "lights clear";
+    "atmosphere off" resets it.
+
+EXAMPLES
+
+    atmosphere haze=0.3, dust=0.5, dust_size=0.4, dust_speed=1
+    atmosphere seed=7
+    atmosphere off
+
+NOTES
+
+    Only the Metal renderer draws the air; the CPU ray tracer never does.
+    The command never writes a setting. Every error names the field or
+    value and changes nothing.
+
+PYMOL API
+
+    cmd.atmosphere(str word='', int quiet=1, **fields)
+
+    Returns the air as a dict for "atmosphere" (None with no rig), and
+    None otherwise.
+
+SEE ALSO
+
+    lights, get_lights, set_lights
+

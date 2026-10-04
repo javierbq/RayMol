@@ -1,0 +1,226 @@
+PyMOL>help lights
+
+DESCRIPTION
+
+    "lights" sets up studio lighting for the Metal renderer: a rig of up
+    to six spot lights placed around the molecules, with presets, per-light
+    edits and placement helpers. The rig belongs to the scene: .pse files
+    and scenes save it and "reinitialize" clears it. It is not a setting
+    and not an object, and it never changes colours or materials.
+
+USAGE
+
+    lights                               print the rig
+    lights presets                       list the presets
+    lights preset [, ambient=a] [, classic=c]
+    lights add [, name] [, field=value ...]
+    lights name                          print one light
+    lights name, field=value [, field=value ...]
+    lights remove, name
+    lights on | off | clear | recenter
+    lights ambient=a [, classic=c]       edit the rig
+
+    Arguments are separated by commas, as in every PyMOL command:
+    "lights key, orbit=-45, pitch=35", not "lights key orbit=-45".
+    Keywords, presets and light names match ignoring case.
+
+KEYWORDS
+
+    add       add a light: lights add [, name] [, field=value ...]. Without
+              a name it takes the first unused of key, fill, rim, light4,
+              light5, light6 (name= works too). A rig holds at most 6
+              lights. The first light captures the frame and turns the
+              rig on; adding to a rig that is off leaves it off.
+    remove    remove a light: lights remove, name
+    presets   list the presets
+    recenter  capture the rig's centre and size again from what is shown
+              now (showing, hiding or zooming never moves the lights)
+    on        turn the rig on again (it needs lights)
+    off       turn the rig off and keep it: PyMOL's own lights are used
+    clear     remove all lights. The rig keeps its air, ambient and classic
+              and is off until "lights add" or a preset.
+
+PRESETS
+
+    A preset replaces the lights, ambient and classic, keeps the air, turns
+    the rig on and captures the frame again. Only ambient= and classic=
+    can be given with it; edit a light afterwards for anything else.
+
+    three_point  Classic portrait: warm key with shadow, cool fill, white rim
+    softbox      Product shot: two big soft white boxes, gentle top light
+    spotlight    Theatre: one narrow beam from above, the rest falls off
+    rembrandt    Dramatic: one hard warm key high to the side, almost no fill
+    neon         Coloured rims: magenta and cyan from behind, dim violet front
+    sunset       Low orange sun from one side, blue sky fill from the other
+    underlight   Horror-film: green-tinted key from below, red rim
+
+    spotlight aims its spot a little off the centre (0.25 sizes left, 0.15
+    up, as the camera sees it when the preset is applied).
+
+LIGHT FIELDS
+
+    field (alias): unit, range, default. A number outside its range is an
+    error (orbit wraps instead). Booleans take 1/0, on/off, true/false or
+    yes/no.
+
+    orbit (az)       degrees, -180 to 180 (wraps), default 0: 0 at the
+                     camera, 90 camera-right, 180 behind (a rim)
+    pitch (el)       degrees, -90 to 90, default 30: 0 level with the
+                     camera, 90 above (relative to the camera's up)
+    radius (dist)    scene sizes, 0.5 to 8, default 4 (1 is the edge of the
+                     molecules)
+    beam             degrees, full cone, 1 to 170, default 45; it stays
+                     fixed when radius changes
+    softness (soft)  fraction of the cone that fades out, 0 to 1, default 0.4
+    color (colour)   sRGB, each channel 0 to 1, default white: a PyMOL
+                     colour name, 0xRRGGBB or r/g/b. color=warm, neutral
+                     or cool set white with warmth 3200, 6500 or 9000 K.
+                     Names match ignoring case, and a unique start of a
+                     name is enough (oran is orange). Colours that depend
+                     on context (auto, current, default, atomic, object,
+                     front, back) and colour numbers are refused.
+    rgb              r/g/b or [r,g,b], each 0 to 1 (or whole numbers 0 to
+                     255 when any is above 1); sets color
+    warmth (kelvin)  kelvin, 1500 to 15000, default 6500 (neutral); it
+                     multiplies color
+    intensity (int)  0 to 4, default 1 (above about 2 clips)
+    highlight (spec) strength of the coloured specular, 0 to 1, default 0.5.
+                     A selection instead of a number places the light (see
+                     PLACEMENT).
+    falloff          exponent, 0 to 2, default 2: brightness goes as (aim
+                     distance / distance)^falloff; 2 is inverse square, 0
+                     is none
+    shadow           boolean, default 0. At most 3 lights cast shadows.
+    outline (cue)    boolean, default 0: draw the beam's outline on the
+                     geometry
+    aim              centre or center (default), a world point x/y/z or
+                     [x,y,z] in Angstrom, or a selection: the light aims at
+                     the selection's centroid as it is now (aim again to
+                     follow moved atoms). Parentheses force a selection:
+                     aim=(1/2/3).
+    pin              boolean: 1 pins the light to the molecules where it is
+                     now, 0 makes it a camera light again (stored as anchor)
+    anchor           camera (default) or pinned: the same as pin
+    position         x/y/z or [x,y,z] in world Angstrom: pins the light
+                     there
+    name             renames the light: letters, digits and _, not starting
+                     with a digit, at most 32 characters, unique ignoring
+                     case, and not a preset or keyword
+
+    A camera light follows the camera: orbit, pitch and radius place it
+    around the rig centre as the camera sees it. A pinned light stays put
+    in world space, so it turns with the molecules; "lights name" shows its
+    current orbit, pitch and radius, and setting one of them moves it there
+    and keeps it pinned. With pin=1, the light is placed first (orbit,
+    pitch, radius) and then pinned; with pin=0, it is unpinned first.
+
+    Fields that set the same thing cannot be given together: color with
+    rgb, color=warm/neutral/cool with warmth, pin with anchor, position
+    with orbit, pitch, radius or pin=0, and a field with its alias.
+
+    Stored fields set by other forms (get_lights shows them):
+
+    aim_point        the world point the light aims at, set by aim= and
+                     the placement helpers
+    aim_selection    the selection text aim_point came from (display only)
+
+RIG FIELDS
+
+    ambient          0 to 1, default 0.05: replaces the ambient setting
+                     while the rig is on
+    classic          0 to 1, default 0: scales PyMOL's own direct, reflect
+                     and specular lights while the rig is on
+    enabled          set by "lights on" and "lights off"
+    centre           world Angstrom: the box midpoint of the enabled
+                     objects, captured with the first light, by a preset
+                     and by "lights recenter"
+    size             Angstrom, at least 1: half the box diagonal, captured
+                     with centre; radius is in multiples of it
+
+    With no rig, "lights ambient=..." (like "atmosphere ...") creates an
+    empty rig that is off and holds the value.
+
+    The air (haze, dust, dust_size, dust_speed, scatter, seed) is set with
+    "atmosphere".
+
+PLACEMENT
+
+    Helpers, resolved once when they are given (the light does not follow
+    the atoms or the surface afterwards). highlight= and click= use the
+    native surface pick: what is drawn as a surface, cartoon, spheres or
+    sticks.
+
+    target=sele      aim at the selection's centroid and fit the beam to
+                     the selection (its radius plus 1.5 A); the light keeps
+                     its anchor, orbit, pitch and radius
+    highlight=sele   place the light so that the drawn surface at the
+                     selection's centre (as the camera sees it) shows a
+                     highlight: along the mirror direction of its normal.
+                     The selection must be on screen, and the surface hit
+                     must be its own (within 1.5 A of an atom's vdW
+                     sphere). Not in grid mode (use click=).
+    click=x/y        the same for the surface under a point of the
+                     viewport: x and y from -1 to 1, 0/0 the centre, 1/1
+                     the top right corner (in grid mode, of the whole grid)
+    rim=deg          with highlight= or click=: turn the light deg degrees
+                     (0 to under 180) away from the camera direction,
+                     towards the side of the surface, for a rim light; 0 is
+                     the mirror rule
+
+    highlight= and click= store the picked point as the aim (aim_point)
+    and place the light on its radius (radius= if given, else the light's
+    own, 4 for a new light), as a camera light; add pin=1 to pin it there.
+    When the picked point is on or beyond that radius, the radius is
+    raised to put the light half a size past it, with a note; past 8 that
+    is an error ("lights recenter" first). The beam is fitted to a 10 A
+    patch around the point (for target=, to the selection) unless beam= is
+    given. One helper at a time (rim goes with highlight or click); orbit,
+    pitch and position cannot be given with highlight or click, and aim
+    cannot be given with any helper.
+
+EXAMPLES
+
+    lights three_point
+    lights key, orbit=-45, pitch=35, color=warm
+    lights add, rim, orbit=160, pitch=30, color=cyan, intensity=2
+    lights rim, shadow=1
+    lights key, aim=organic
+    lights key, pin=1
+    lights key, target=organic
+    lights add, spot, highlight=organic, beam=20
+    lights rim, click=0.3/0.2, rim=150, pin=1
+    lights remove, rim
+    lights off
+    lights neon, ambient=0.1; atmosphere haze=0.3, dust=0.5
+
+NOTES
+
+    Only the Metal renderer draws the rig. The CPU ray tracer (ray,
+    png ..., ray=1, mpng) keeps PyMOL's own lights and prints a notice
+    while the rig is on.
+
+    The commands never write a setting, a colour or a material.
+
+    Every error names the field or value and changes nothing. In a ";"
+    chain PyMOL skips the rest of the line after an error.
+
+    A light named after a keyword or preset (possible from set_lights or
+    a session) is shadowed by it; "lights" marks it, and set_lights can
+    rename it.
+
+    "atmosphere" shares the abbreviation "at" with "attach": type "attach"
+    in full.
+
+PYMOL API
+
+    cmd.lights(str word='', str light='', int quiet=1, **fields)
+
+    Returns get_lights() for "lights", that light's dict for "lights name",
+    [(name, description), ...] for "lights presets", the new light's name
+    for "lights add", and None otherwise. From Python, field values may be
+    numbers, bools and lists as well as text.
+
+SEE ALSO
+
+    atmosphere, get_lights, set_lights, scene
+

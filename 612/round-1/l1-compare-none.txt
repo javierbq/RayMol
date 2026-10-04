@@ -1,0 +1,17 @@
+cartoon_rt0.png max=0 differing_px=0
+cartoon_rt1.png max=0 differing_px=0
+glass_rt0.png max=0 differing_px=0
+glass_rt1.png max=0 differing_px=0
+mesh_rt0.png max=0 differing_px=0
+mesh_rt1.png max=0 differing_px=0
+shadows_rt0.png max=0 differing_px=0
+shadows_rt1.png max=0 differing_px=0
+spheres_rt0.png max=0 differing_px=0
+spheres_rt1.png max=0 differing_px=0
+sticks_rt0.png max=0 differing_px=0
+sticks_rt1.png max=0 differing_px=0
+surface_rt0.png max=0 differing_px=0
+surface_rt1.png max=0 differing_px=0
+transparent_rt0.png max=0 differing_px=0
+transparent_rt1.png max=0 differing_px=0
+overall max=0 images=16
