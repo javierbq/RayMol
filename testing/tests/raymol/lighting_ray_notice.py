@@ -511,3 +511,9 @@ class TestDocs(testing.PyMOLTestCase):
         self.assertIn("PyMOL's own lights", doc, name)
         self.assertIn('see "get_lights"', doc, name)
         self.assertIn('A notice says so once per command.', doc, name)
+
+    @testing.foreach('png', 'mpng')
+    def test_no_gui_route(self, name):
+        # With no GUI, a plain png or mpng traces on the CPU too.
+        doc = ' '.join(getattr(cmd, name).__doc__.split())
+        self.assertIn('with no GUI', doc, name)

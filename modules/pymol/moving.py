@@ -413,11 +413,12 @@ NOTES
     the entire movie will be rendered.
 
     With a studio light rig on (see "get_lights"), ray-traced frames
-    (mode=2, or "ray_trace_frames") still use PyMOL's own lights. Studio
-    lighting (the rig's lights, their shadows and air, and the rig's
-    classic and ambient terms) is drawn only by the Metal renderer,
-    which the app uses for its view and for its image and movie exports,
-    including their Ray-traced option. A notice says so once per command.
+    (mode=2, "ray_trace_frames", or any mpng with no GUI) still use
+    PyMOL's own lights. Studio lighting (the rig's lights, their shadows
+    and air, and the rig's classic and ambient terms) is drawn only by
+    the Metal renderer, which the app uses for its view and for its
+    image and movie exports, including their Ray-traced option. A notice
+    says so once per command.
 
 PYMOL API
 
