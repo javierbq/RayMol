@@ -198,12 +198,14 @@ def depth_at(body, index):
 class LightMSLCase(testing.PyMOLTestCase):
 
     def setUp(self):
-        super().setUp()
+        # Skipped, not passed: a source test with no source checked nothing.
+        # Only reached outside a repo checkout. Checked BEFORE the base setUp:
+        # a skip raised in setUp skips tearDown too, which would leave the
+        # base class's feedback push and working directory behind.
         for path in (METAL_MM, SCENE_RENDER, BLOCK_H, SHADING_H):
             if not os.path.isfile(path):
-                # Skipped, not passed: a source test with no source checked
-                # nothing. Only reached outside a repo checkout.
                 self.skipTest('%s not present; not a repo checkout' % path)
+        super().setUp()
         self.mm = read(METAL_MM)
         self.msl = shader_literals(self.mm)
 
