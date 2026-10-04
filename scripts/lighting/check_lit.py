@@ -117,8 +117,10 @@ class Result(object):
         self.detail = detail
 
     def row(self):
-        return '| %s | %s | %s | %s |' % (self.check, self.subject,
-                                          'PASS' if self.ok else 'FAIL', self.detail)
+        """One markdown table row; a '|' inside a cell ("max |d|") is
+        escaped so the row keeps its four columns when pasted into a PR."""
+        cells = (self.check, self.subject, 'PASS' if self.ok else 'FAIL', self.detail)
+        return '| %s |' % ' | '.join(str(c).replace('|', '\\|') for c in cells)
 
     def __repr__(self):
         return 'Result(%r, %r, %r, %r)' % (self.check, self.subject, self.ok, self.detail)

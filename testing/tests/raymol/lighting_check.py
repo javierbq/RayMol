@@ -24,6 +24,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import struct
 import tempfile
@@ -532,6 +533,12 @@ class TestCheckLit(testing.PyMOLTestCase):
         self.assertEqual(rc, 0, text)
         self.assertIn('| equal | mesh_rt0 | PASS |', text)
         self.assertIn('| lit | cartoon_rt0 | PASS |', text)
+        # the table pastes into a PR: a '|' inside a cell is escaped, so
+        # every row has exactly four columns
+        rows = [line for line in text.splitlines() if line.startswith('|')]
+        self.assertIn('| lit | cartoon_rt0 | PASS | max \\|d\\| 120 ', text)
+        for line in rows:
+            self.assertEqual(len(re.findall(r'(?<!\\)\|', line)), 5, line)
         # the negative control: no rig light yet, so dark == lit and pairs fails
         self.save('cartoon_2l_rt0', dark)
         rc, text = self.main('pairs', self.tmp)
