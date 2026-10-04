@@ -202,6 +202,20 @@ class TestSceneFiles(testing.PyMOLTestCase):
                 marker = self.run_job(job)
                 with open(marker) as handle:
                     self.assertEqual(len(handle.read().splitlines()), 1, job.tag)
+                # The camera is still the harness's: the scene's lines run
+                # after its set_view, so a line that moves the camera moves
+                # it in the render too. load_cgo auto-zooms by default, and
+                # a bezier-only CGO has no extent, so the tube scenes'
+                # load_cgo zoomed onto the origin and rendered all black
+                # until it passed zoom=0. (The last value is the field of
+                # view, signed by orthoscopic.)
+                view = cmd.get_view()
+                for i, (got_v, want) in enumerate(zip(view, self.render.VIEW)):
+                    if i == 17:
+                        got_v, want = abs(got_v), abs(want)
+                    self.assertAlmostEqual(got_v, want, delta=1e-3,
+                                           msg='%s moves the camera (view[%d])'
+                                           % (job.tag, i))
                 got = cmd.get_lights()
                 if job.rig == 'none':
                     self.assertIsNone(got, job.tag)
