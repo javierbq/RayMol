@@ -46,8 +46,10 @@ from .movie_exporting import movie_export
 
 #--------------------------------------------------------------------
 # The native light rig (#611, lighting epic #610): owned by the scene in C++,
-# saved in .pse files. Commands (`lights`, `atmosphere`) come with #612.
+# saved in .pse files. The `lights` and `atmosphere` commands (#612) are in
+# lighting_commands.py.
 from .lighting import get_lights, set_lights
+from .lighting_commands import lights, atmosphere
 
 #--------------------------------------------------------------------
 # Backbone GENERATION, a separate surface from prediction on purpose: a generator is

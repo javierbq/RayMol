@@ -26,6 +26,7 @@ def get_command_keywords(self_cmd=cmd):
         'as'            : [ self_cmd.show_as           , 0 , 0 , ''  , parsing.STRICT ],
         'assert'        : [ self_cmd.python_help       , 0 , 0 , ''  , parsing.PYTHON ],
         'assign_stereo' : [ self_cmd.assign_stereo     , 0 , 0 , ''  , parsing.STRICT ],
+        'atmosphere'    : [ self_cmd.atmosphere        , 0 , 0 , ''  , parsing.STRICT ],
         'attach'        : [ self_cmd.attach            , 0 , 0 , ''  , parsing.STRICT ],
         'backward'      : [ self_cmd.backward          , 0 , 0 , ''  , parsing.STRICT ],
         'bg_color'      : [ self_cmd.bg_color          , 0 , 0 , ''  , parsing.STRICT ],
@@ -146,6 +147,7 @@ def get_command_keywords(self_cmd=cmd):
         'iterate_state' : [ self_cmd.iterate_state     , 0 , 0 , ''  , parsing.LITERAL2 ], # insecure
         'join_states'   : [ self_cmd.join_states       , 0 , 0 , ''  , parsing.STRICT ],
         'label'         : [ self_cmd.label             , 0 , 0 , ''  , parsing.LITERAL1 ], # insecure
+        'lights'        : [ self_cmd.lights            , 0 , 0 , ''  , parsing.STRICT ],
         'load'          : [ self_cmd.load              , 0 , 0 , ''  , parsing.STRICT ],
         'loadall'       : [ self_cmd.loadall           , 0 , 0 , ''  , parsing.STRICT ],
         'space'         : [ self_cmd.space             , 0 , 0 , ''  , parsing.STRICT ],
