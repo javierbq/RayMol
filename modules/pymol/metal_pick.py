@@ -253,9 +253,13 @@ _Camera = collections.namedtuple(
     '_Camera', 'rot pos origin fov tan_half clip_front clip_back view')
 
 
-def camera():
-    """Parse cmd.get_view() into the numbers every screen-space projection in
+def camera(_self=None):
+    """Parse get_view() into the numbers every screen-space projection in
     this module needs, or None when there is no view.
+
+    _self is a PyMOL instance's cmd (a pymol2 instance passes its own); None
+    uses the singleton pymol.cmd. The view and the field_of_view fallback
+    are both read from it.
 
     Returns a _Camera with:
       rot         9 floats, ROW-major 3x3 model->camera rotation
@@ -276,8 +280,9 @@ def camera():
     tan(arg/2), so the effective half-height slope is tan(GetFovWidth/2) — NOT
     tan(radians(fov)/2). It depends only on the FOV, so it is aspect-independent
     and safe to reuse across grid cells."""
-    from pymol import cmd
-    v = cmd.get_view()
+    if _self is None:
+        from pymol import cmd as _self
+    v = _self.get_view()
     if not v:
         return None
     if len(v) >= 25:
@@ -306,7 +311,7 @@ def camera():
         fov_deg = abs(v[17])
         clip_front, clip_back = v[15], v[16]  # slab: pickable only in [front,back]
     if fov_deg <= 1.0:
-        fov_deg = cmd.get_setting_float('field_of_view')
+        fov_deg = _self.get_setting_float('field_of_view')
     fov_width = 2.0 * math.tan(math.radians(fov_deg) / 2.0)
     tan_half = math.tan(fov_width / 2.0)
     if tan_half <= 0.0:
