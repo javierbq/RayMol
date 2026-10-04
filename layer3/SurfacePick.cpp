@@ -169,6 +169,14 @@ const cRep_t kPickReps[] = {cRepSurface, cRepCartoon, cRepSphere, cRepCyl};
  * the object's TTT after the state matrix (ObjectPrepareContext, then
  * ObjectStatePushAndApplyMatrix when the object-level matrix_mode > 0, as in
  * ObjectMolecule::render).
+ *
+ * Known gap, kept on purpose: the Metal renderer does not draw the state
+ * matrix yet. ObjectStatePushAndApplyMatrix multiplies it into the scene
+ * modelview but never loads it into G->Renderer (ObjectPrepareContext's TTT
+ * branch does), and Metal draws read the renderer's cached modelview. So for
+ * an object with matrix_mode > 0 and a stored state matrix, the app draws it
+ * without that matrix while this pick (like GL and the ray tracer) places it
+ * with it. The fix belongs in ObjectStatePushAndApplyMatrix, not here.
  */
 Affine coordSetToWorld(const ObjectMolecule* obj,
     const CoordSet* cs, bool use_matrices)
