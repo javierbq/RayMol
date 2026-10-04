@@ -28,6 +28,7 @@ the presets, keywords and aliases are tables here. Nothing runs at import.
 
 import copy
 import math
+import numbers
 import re
 import sys
 
@@ -240,7 +241,7 @@ def _wrap_degrees(deg):
 
 
 def _out_of_range(where, field, value, lo, hi):
-    unit = _UNITS.get(field)
+    unit = _UNITS.get(ALIASES.get(field, field))
     return _error(where, '%s=%s is out of range %s to %s%s' % (
         field, _shown(value), _num(lo), _num(hi),
         ' (%s)' % unit if unit else ''))
@@ -343,17 +344,19 @@ class _Fields(object):
     def names(self, scope):
         return list(self.scopes.get(scope, {}))
 
-    def parse(self, where, scope, name, value):
-        '''One value of a numeric or boolean field, strictly typed.'''
+    def parse(self, where, scope, name, value, label=None):
+        '''One value of a numeric or boolean field, strictly typed. Messages
+        name the field as `label` (the alias the user typed) when given.'''
         kind, _default, lo, hi = self.scopes[scope][name]
+        label = label or name
         if kind == 'bool':
-            return _parse_bool(where, name, value)
+            return _parse_bool(where, label, value)
         if kind == 'int':
-            return _parse_int(where, name, value, lo, hi)
+            return _parse_int(where, label, value, lo, hi)
         if kind in ('float', 'angle'):
-            return _parse_number(where, name, value, lo, hi,
+            return _parse_number(where, label, value, lo, hi,
                                  angle=(kind == 'angle'))
-        raise _error(where, '%s cannot be set this way' % name)
+        raise _error(where, '%s cannot be set this way' % label)
 
     def defaults(self, scope):
         return {name: copy.deepcopy(entry[1])
@@ -534,6 +537,440 @@ def _aim_offset_step(index, offset, _self):
                  for k in range(3)]
         lighting._light_set(index, 'aim_point', point, _self=_self)
     return step
+
+
+# --- values: vectors, colours, aim -----------------------------------------
+
+def _split_parts(text, parens):
+    '''The parts of "x/y/z" or "[x,y,z]" (and "(x,y,z)" when `parens`), or
+    None for any other text.'''
+    t = text.strip()
+    if len(t) >= 2 and ((t[0] == '[' and t[-1] == ']')
+                        or (parens and t[0] == '(' and t[-1] == ')')):
+        return [p.strip() for p in t[1:-1].split(',')]
+    if '/' in t:
+        return [p.strip() for p in t.split('/')]
+    return None
+
+
+def _is_real(value):
+    return isinstance(value, numbers.Real) and not isinstance(value, bool)
+
+
+def _parse_vec(where, field, value, n=3, parens=False,
+               form='x/y/z or [x,y,z]'):
+    '''n finite numbers: a list or tuple (from Python), or text in `form`.'''
+    if isinstance(value, (list, tuple)):
+        parts = list(value)
+    elif isinstance(value, str):
+        parts = _split_parts(value, parens)
+    else:
+        parts = None
+    if parts is None or len(parts) != n:
+        raise _error(where, '%s=%s: give %s%s' % (
+            field, _shown(value), form, _comma_hint(where, value)))
+    out = []
+    for part in parts:
+        if _is_real(part):
+            v = float(part)
+        elif isinstance(part, str) and part.strip():
+            try:
+                v = float(part)
+            except (ValueError, OverflowError):
+                raise _error(where, "%s=%s: '%s' is not a number%s" % (
+                    field, _shown(value), part.strip(),
+                    _comma_hint(where, value))) from None
+        else:
+            raise _error(where, '%s=%s: give %s' % (
+                field, _shown(value), form))
+        if not math.isfinite(v):
+            raise _error(where, '%s=%s: each value must be a finite number'
+                         % (field, _shown(value)))
+        out.append(v)
+    return out
+
+
+def _parse_rgb(where, field, value):
+    '''r/g/b, [r,g,b], (r,g,b) or a sequence: each 0 to 1, or all whole
+    numbers 0 to 255 when any is above 1.'''
+    rgb = _parse_vec(where, field, value, 3, parens=True,
+                     form='r/g/b or [r,g,b]')
+    if max(rgb) > 1.0:
+        if all(c.is_integer() and 0.0 <= c <= 255.0 for c in rgb):
+            return [c / 255.0 for c in rgb]
+    elif min(rgb) >= 0.0:
+        return rgb
+    raise _error(where, '%s=%s: each value is 0 to 1, or all are whole '
+                 'numbers 0 to 255' % (field, _shown(value)))
+
+
+# Colours PyMOL resolves from context (an atom, an object, the background):
+# they have no RGB of their own, and "auto" would advance auto_color_next.
+SPECIAL_COLOURS = ('auto', 'current', 'default', 'atomic', 'object',
+                   'front', 'back')
+_HEX_RE = re.compile(r'^0[xX][0-9a-fA-F]{6}$')
+_DIGITS_RE = re.compile(r'^[-+0-9]+$')
+_COLOUR_USE = 'use a colour name, 0xRRGGBB, r/g/b, rgb= or warmth='
+
+
+def _parse_colour(where, field, value, _self):
+    '''A light colour, as (rgb, warmth): warmth is the kelvin of the colour
+    words warm, neutral and cool (white plus a warmth), else None.
+
+    Nothing here writes state: special colours, digit-only text (a colour
+    index; -2 would advance auto_color_next) and malformed 0x text are
+    refused as text, hex is decoded here, names are matched here (exact,
+    then a unique prefix, ignoring case), and C++ is only asked for the RGB
+    of a listed index.'''
+    if isinstance(value, (list, tuple)):
+        return _parse_rgb(where, field, value), None
+    if not isinstance(value, str):
+        raise _error(where, '%s=%s: colour indices are not accepted; %s' % (
+            field, _shown(value), _COLOUR_USE))
+    text = value.strip()
+    low = text.lower()
+    if not text:
+        raise _error(where, '%s= needs a value' % field)
+    if low in COLOUR_WARMTH:
+        return list(_WHITE), COLOUR_WARMTH[low]
+    if low in SPECIAL_COLOURS:
+        raise _error(where, '%s=%s: special colours have no RGB value; %s'
+                     % (field, text, _COLOUR_USE))
+    if low.startswith('0x'):
+        if not _HEX_RE.match(text):
+            raise _error(where, '%s=%s is not a hex colour (0xRRGGBB)' % (
+                field, text))
+        return [int(text[i:i + 2], 16) / 255.0 for i in (2, 4, 6)], None
+    if _DIGITS_RE.match(text):
+        raise _error(where, '%s=%s: colour indices are not accepted; %s' % (
+            field, text, _COLOUR_USE))
+    if '/' in text or text[0] in '[(':
+        return _parse_rgb(where, field, text), None
+    names = {}
+    for name, index in _self.get_color_indices(all=1) or []:
+        key = name.lower()
+        if index >= 0 and key not in SPECIAL_COLOURS:
+            names.setdefault(key, (name, index))
+    hit = names.get(low)
+    if hit is None:
+        matches = [entry for key, entry in names.items()
+                   if key.startswith(low)]
+        if len(matches) > 1:
+            shown = ', '.join(name for name, _ in matches[:8])
+            more = len(matches) - 8
+            raise _error(where, '%s=%s is ambiguous: %s%s' % (
+                field, text, shown,
+                ' and %d more' % more if more > 0 else ''))
+        if not matches:
+            ramps = [n.lower() for n in
+                     (_self.get_names_of_type('object:ramp') or [])]
+            if low in ramps:
+                raise _error(where, '%s=%s is a colour ramp, not a colour'
+                             % (field, text))
+            raise _error(where, '%s=%s is not a PyMOL colour%s' % (
+                field, text, _comma_hint(where, text)))
+        hit = matches[0]
+    rgb = _self.get_color_tuple(str(hit[1]))
+    if not rgb:
+        raise _error(where, '%s=%s has no RGB value' % (field, text))
+    return [float(c) for c in rgb], None
+
+
+def _parse_aim(where, field, value):
+    '''aim=: ('centre',), ('point', xyz, '') or ('selection', text). Three
+    numbers are a world point; parentheses force a selection.'''
+    if isinstance(value, (list, tuple)):
+        return ('point', _parse_vec(where, field, value), '')
+    if not isinstance(value, str):
+        raise _error(where, '%s=%s: give centre, x/y/z, [x,y,z] or a '
+                     'selection' % (field, _shown(value)))
+    text = value.strip()
+    if not text:
+        raise _error(where, '%s= needs a value' % field)
+    if text.lower() in ('centre', 'center'):
+        return ('centre',)
+    if text[0] == '[':
+        return ('point', _parse_vec(where, field, text), '')
+    if text[0] != '(':
+        parts = _split_parts(text, False)
+        if parts is not None and len(parts) == 3:
+            try:
+                point = [float(p) for p in parts]
+            except ValueError:
+                point = None
+            if point is not None:
+                return ('point', _parse_vec(where, field, text), '')
+    return ('selection', text)
+
+
+def _selection_atoms(where, field, sele, _self):
+    '''The atoms of a selection in the current state, in world space (object
+    matrices applied, as the frame capture and the pick use).'''
+    try:
+        model = _self.get_model(sele, state=-1)
+    except CmdException:
+        raise _error(where, '%s=%s is not a valid selection%s' % (
+            field, sele, _comma_hint(where, sele))) from None
+    if not model.atom:
+        raise _error(where, '%s=%s: the selection has no atoms' % (
+            field, sele))
+    return [a.coord for a in model.atom]
+
+
+def _centroid(coords):
+    n = float(len(coords))
+    return [sum(c[k] for c in coords) / n for k in range(3)]
+
+
+# --- light fields -----------------------------------------------------------
+
+_PLACE = ('orbit', 'pitch', 'radius')
+_PICKS = ('click', 'highlight')         # helpers that pick a surface point
+
+
+def _looks_numeric(value):
+    '''highlight=: a number (or a value meant as one) is the strength; any
+    other text is the placement helper (Q4).'''
+    if not isinstance(value, str):
+        return True
+    text = value.strip()
+    if not text:
+        return True
+    try:
+        float(text)
+    except (ValueError, OverflowError):
+        return False
+    return True
+
+
+class _LightSpec(object):
+    '''The parsed fields of one "lights <name>, ..." or "lights add, ...".
+
+    values    stored fields set straight in the light's dict (beam,
+              softness, color, warmth, intensity, highlight, falloff,
+              shadow, outline)
+    place     orbit, pitch and radius: in the dict for a camera light,
+              through the setter (a re-pin) for a pinned one
+    pin       True or False (pin= or anchor=), or None
+    position  a world point, or None
+    aim       None, ('centre',), ('point', xyz, '') or
+              ('point', xyz, selection text)
+    name      the new name, or None
+    helpers   the placement helpers as given: target, click, highlight
+              (a selection) and rim
+    given     role -> the field name as typed, for messages
+    raw       role -> the value as given, for messages
+    colour_word  warm, neutral or cool when color= was one, else None
+    '''
+
+    def __init__(self):
+        self.values = {}
+        self.place = {}
+        self.pin = None
+        self.position = None
+        self.aim = None
+        self.name = None
+        self.helpers = {}
+        self.given = {}
+        self.raw = {}
+        self.colour_word = None
+
+    def typed(self, role):
+        '''"field=value" as the user typed it.'''
+        return '%s=%s' % (self.given[role], _shown(self.raw[role]))
+
+
+def _role(given, value):
+    '''What a typed light field sets: its canonical field, 'pin' for pin=
+    and anchor=, or the helper's name.'''
+    name = ALIASES.get(given, given)
+    if name == 'anchor':
+        return 'pin'
+    if given == 'highlight' and not _looks_numeric(value):
+        return 'highlight=<sele>'
+    return name
+
+
+def _parse_light_fields(where, table, fields, _self):
+    '''Phase 1 for one light: parse and check every field, resolve colours
+    and aim selections. Changes nothing.'''
+    spec = _LightSpec()
+    raw = []
+    for given, value in fields.items():
+        if _field_class(given, table) != 'light':
+            raise _field_error(where, given, value, table, 'light')
+        role = _role(given, value)
+        if role in spec.given:
+            if role == 'pin':
+                raise _error(where, 'pin= and anchor= both set the anchor: '
+                             'give one')
+            raise _error(where, '%s is given twice (%s= and %s=)' % (
+                ALIASES.get(given, given), spec.given[role], given))
+        spec.given[role] = given
+        spec.raw[role] = value
+        raw.append((role, given, value))
+
+    for role, given, value in raw:
+        if role == 'name':
+            name = _word(value)
+            if not name:
+                raise _error(where, '%s= needs a value' % given)
+            spec.name = name
+        elif role == 'pin':
+            if given == 'pin':
+                spec.pin = _parse_bool(where, given, value)
+            else:
+                text = str(value).strip().lower()
+                if text not in ('camera', 'pinned'):
+                    raise _error(where, '%s=%s: use camera or pinned%s' % (
+                        given, _shown(value), _comma_hint(where, value)))
+                spec.pin = text == 'pinned'
+        elif role == 'position':
+            spec.position = _parse_vec(where, given, value, parens=True)
+        elif role == 'aim':
+            spec.aim = _parse_aim(where, given, value)
+        elif role == 'color':
+            rgb, kelvin = _parse_colour(where, given, value, _self)
+            spec.values['color'] = rgb
+            if kelvin is not None:
+                spec.values['warmth'] = kelvin
+                spec.colour_word = value.strip().lower()
+        elif role == 'rgb':
+            spec.values['color'] = _parse_rgb(where, given, value)
+        elif role in ('target', 'click', 'rim', 'highlight=<sele>'):
+            spec.helpers[role.split('=')[0]] = value
+        elif role in _PLACE:
+            spec.place[role] = table.parse(where, 'light', role, value, given)
+        else:
+            spec.values[role] = table.parse(where, 'light', role, value,
+                                            given)
+
+    _check_conflicts(where, spec)
+
+    if spec.aim is not None and spec.aim[0] == 'selection':
+        sele = spec.aim[1]
+        spec.aim = ('point', _centroid(_selection_atoms(
+            where, spec.given['aim'], sele, _self)), sele)
+    return spec
+
+
+def _check_conflicts(where, spec):
+    '''Fields that set the same thing, or that a helper computes.'''
+    g = spec.given
+
+    def say(a, b, why):
+        return _error(where, '%s= and %s= %s' % (g[a], g[b], why))
+
+    if 'color' in g and 'rgb' in g:
+        raise say('color', 'rgb', 'both set the colour: give one')
+    if spec.colour_word is not None and 'warmth' in g:
+        raise _error(where, '%s sets white with warmth %s K: give %s= or '
+                     '%s=, not both' % (
+                         spec.typed('color'),
+                         _num(COLOUR_WARMTH[spec.colour_word]),
+                         g['warmth'], g['color']))
+    if spec.position is not None:
+        if spec.pin is False:
+            raise say('position', 'pin', 'disagree: position= pins the '
+                      'light')
+        for f in _PLACE:
+            if f in g:
+                raise say('position', f, 'both place the light: give one')
+    placing = [h for h in ('target', 'click', 'highlight')
+               if h in spec.helpers]
+    if len(placing) > 1:
+        raise _error(where, '%s: give one placement helper' % ', '.join(
+            '%s=' % h for h in placing))
+    if spec.helpers and 'aim' in g:
+        helper = (placing or ['rim'])[0]
+        raise _error(where, 'aim= and %s= both set the aim: give one'
+                     % helper)
+    picks = [h for h in _PICKS if h in spec.helpers]
+    if 'rim' in spec.helpers and not picks:
+        raise _error(where, 'rim= needs click= or highlight=<selection>')
+    if picks:
+        for f in ('orbit', 'pitch'):
+            if f in g:
+                raise _error(where, '%s= and %s= both place the light: %s= '
+                             'computes the direction' % (
+                                 g[f], picks[0], picks[0]))
+        if spec.position is not None:
+            raise _error(where, '%s= and %s= both place the light: give one'
+                         % (g['position'], picks[0]))
+
+
+def _setter(index, field, value, _self):
+    '''A post-step: one field through the C++ setter (it needs the frame or
+    the live camera: pin, unpin, re-pin).'''
+    return lambda: lighting._light_set(index, field, value, _self=_self)
+
+
+def _apply_light(where, rig, index, spec, change, _self, label):
+    '''Put the parsed fields into light `index` of the new rig, and queue
+    the post-steps that need the frame or the camera, in order: unpin
+    first; orbit, pitch and radius on a pinned light re-pin it; pin last.'''
+    light = rig['lights'][index]
+    light.update(spec.values)
+    if spec.name is not None:
+        light['name'] = spec.name
+    if spec.aim is not None:
+        if spec.aim[0] == 'centre':
+            light['aim'] = 'centre'
+            light['aim_selection'] = ''
+        else:
+            light['aim'] = 'point'
+            light['aim_point'] = list(spec.aim[1])
+            light['aim_selection'] = spec.aim[2]
+
+    pinned = light['anchor'] == 'pinned'
+    place = [(f, spec.place[f]) for f in _PLACE if f in spec.place]
+    pin_field = spec.given.get('pin', 'pin')
+    if spec.position is not None:
+        light['anchor'] = 'pinned'
+        light['position'] = list(spec.position)
+    elif pinned and spec.pin is False:
+        change.steps.append((label, pin_field, _setter(index, 'anchor', 0,
+                                                       _self)))
+        for f, v in place:
+            change.steps.append((label, f, _setter(index, f, v, _self)))
+    elif pinned:
+        for f, v in place:
+            change.steps.append((label, f, _setter(index, f, v, _self)))
+    else:
+        light.update(dict(place))
+        if spec.pin:
+            change.steps.append((label, pin_field, _setter(
+                index, 'anchor', 1, _self)))
+
+    if spec.values.get('shadow'):
+        others = [l['name'] for i, l in enumerate(rig['lights'])
+                  if l['shadow'] and i != index]
+        if len(others) >= MAX_SHADOWS:
+            raise _error(where, '%s: at most %d lights cast shadows (%s '
+                         'already do)' % (spec.typed('shadow'), MAX_SHADOWS,
+                                          ', '.join(others)))
+
+    if spec.helpers:
+        _apply_helpers(where, rig, index, spec, change, _self, label)
+
+
+def _apply_helpers(where, rig, index, spec, change, _self, label):
+    '''The placement helpers (target, click, highlight, rim): #612 part 3.'''
+    helper = next(iter(spec.helpers))
+    raise _error(where, '%s= is not available yet' % helper)
+
+
+def _light_report(change, index, header, _self, returns_name):
+    '''A finish(): print light `index` as it is now, under the lines
+    header(name, rig) gives; return its name when `returns_name` (add),
+    else None.'''
+    def finish():
+        rig = lighting.get_lights(_self=_self)
+        light = rig['lights'][index]
+        change.lines += header(light['name'], rig)
+        change.lines += _light_lines(light, _eye_lights(rig, _self)[index])
+        return light['name'] if returns_name else None
+    return finish
 
 
 # --- the transaction --------------------------------------------------------
@@ -774,8 +1211,12 @@ LIGHT FIELDS
     color (colour)   sRGB, each channel 0 to 1, default white: a PyMOL
                      colour name, 0xRRGGBB or r/g/b. color=warm, neutral
                      or cool set white with warmth 3200, 6500 or 9000 K.
-    rgb              r/g/b or [r,g,b], each 0 to 1 (or 0 to 255 when any is
-                     above 1); sets color
+                     Names match ignoring case, and a unique start of a
+                     name is enough (oran is orange). Colours that depend
+                     on context (auto, current, default, atomic, object,
+                     front, back) and colour numbers are refused.
+    rgb              r/g/b or [r,g,b], each 0 to 1 (or whole numbers 0 to
+                     255 when any is above 1); sets color
     warmth (kelvin)  kelvin, 1500 to 15000, default 6500 (neutral); it
                      multiplies color
     intensity (int)  0 to 4, default 1 (above about 2 clips)
@@ -806,7 +1247,12 @@ LIGHT FIELDS
     around the rig centre as the camera sees it. A pinned light stays put
     in world space, so it turns with the molecules; "lights name" shows its
     current orbit, pitch and radius, and setting one of them moves it there
-    and keeps it pinned.
+    and keeps it pinned. With pin=1, the light is placed first (orbit,
+    pitch, radius) and then pinned; with pin=0, it is unpinned first.
+
+    Fields that set the same thing cannot be given together: color with
+    rgb, color=warm/neutral/cool with warmth, pin with anchor, position
+    with orbit, pitch, radius or pin=0, and a field with its alias.
 
     Stored fields set by other forms (get_lights shows them):
 
@@ -854,9 +1300,10 @@ PLACEMENT
     camera light (add pin=1 to pin it there). The beam is fitted (about a
     10 A patch for highlight and click) unless beam= is given. When the
     picked point lies beyond the light's radius, the radius is raised with
-    a note; past 8 it is an error ("lights recenter" first). orbit and
-    pitch cannot be given with highlight or click, and rim needs one of
-    them.
+    a note; past 8 it is an error ("lights recenter" first). One helper
+    at a time (rim goes with highlight or click); orbit, pitch and
+    position cannot be given with highlight or click, and aim cannot be
+    given with any helper.
 
 EXAMPLES
 
@@ -983,9 +1430,19 @@ def _edit_rig(old, table, fields):
 
 
 def _edit_light(old, table, index, fields, _self):
-    '''lights name, field=value ...: the per-light edits (#612 part 2).'''
-    raise _error('lights: %s' % old['lights'][index]['name'],
-                 'light fields cannot be edited yet (%s)' % ', '.join(fields))
+    '''lights name, field=value ...: edit one light (and rename it).'''
+    where = 'lights: %s' % old['lights'][index]['name']
+    spec = _parse_light_fields(where, table, fields, _self)
+    rig = copy.deepcopy(old)
+    if spec.name is not None:
+        _check_name(where, spec.name, rig['lights'], skip=index)
+    change = _Change(rig)
+    label = spec.name or old['lights'][index]['name']
+    _apply_light(where, rig, index, spec, change, _self, label)
+    typed = ', '.join(spec.given[role] for role in spec.given)
+    change.finish = _light_report(change, index, lambda name, rig_now: [
+        " lights: edited '%s' (%s)" % (name, typed)], _self, False)
+    return change
 
 
 def _apply_preset(name, old, table, light, fields, _self):
@@ -1040,16 +1497,19 @@ def _kw_add(old, table, light, fields, _self):
         name = given
         if not name:
             raise _error(where, 'name= needs a value')
-    if fields:
-        raise _error(where, 'light fields cannot be given yet (%s); add the '
-                     'light, then edit it' % ', '.join(fields))
     lights_now = old['lights'] if old is not None else []
     if len(lights_now) >= MAX_LIGHTS:
         raise _error(where, 'the rig already has %d lights, the most it '
                      'holds' % MAX_LIGHTS)
     if name:
         _check_name(where, name, lights_now)
-    new_light = {'name': name} if name else {}
+    spec = _parse_light_fields(where, table, fields, _self)
+    # A full default light, so the field logic sees its anchor and
+    # placement; without a name, set_lights assigns key, fill, rim, ...
+    new_light = table.defaults('light')
+    new_light.pop('name', None)
+    if name:
+        new_light['name'] = name
     if old is None:
         rig = {'version': 1, 'enabled': True, 'centre': None, 'size': None,
                'lights': [new_light]}
@@ -1062,16 +1522,16 @@ def _kw_add(old, table, light, fields, _self):
             rig['size'] = None
         rig['lights'].append(new_light)
     change = _Change(rig)
+    index = len(rig['lights']) - 1
+    _apply_light(where, rig, index, spec, change, _self, name or 'add')
 
-    def finish():
-        added = lighting.get_lights(_self=_self)['lights'][-1]['name']
-        change.lines.append(" lights: added '%s'" % added)
-        if not rig['enabled']:
-            change.lines.append(" lights: the rig is off ('lights on' shows "
-                                "it)")
-        return added
+    def header(added, rig_now):
+        lines = [" lights: added '%s'" % added]
+        if not rig_now['enabled']:
+            lines.append(" lights: the rig is off ('lights on' shows it)")
+        return lines
 
-    change.finish = finish
+    change.finish = _light_report(change, index, header, _self, True)
     return change
 
 
