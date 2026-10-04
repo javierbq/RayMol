@@ -250,11 +250,19 @@ public:
 
 private:
   void buildImpostorPipelines();
+  // The light rig's sphere pipelines (#613): one opaque and one OIT pipeline
+  // per material family, specialised from the retained sphere library the
+  // first time a rig-on frame draws spheres, so a session without lights
+  // never compiles them. One attempt per build (_sphereRigBuilt).
+  void ensureSphereRigPipelines();
+  void releaseSphereRigPipelines();
   // The cylinder VBO layout (stride/offsets/formats) varies with the rep, so
   // the cylinder pipeline is built lazily from the first draw call's layout
-  // and rebuilt only if a later call has a different stride.
+  // and rebuilt only if a later call has a different stride. `lightRig`
+  // builds the light rig's variant (#613), cached apart under its own key.
   void releaseCylinderPipelines();
-  void buildCylinderImpostorPipeline(const CylinderImpostorDrawCall& call);
+  void buildCylinderImpostorPipeline(const CylinderImpostorDrawCall& call,
+                                     bool lightRig = false);
   void buildLabelPipeline();
   // (Re)upload the glyph atlas to an MTLTexture if the generation changed.
   void ensureLabelAtlas(const unsigned char* pixels, int w, int h,
@@ -374,6 +382,20 @@ private:
   // specialisation must not stop the other families, nor make every frame
   // recompile the library to retry it.
   bool _sphereImpostorsBuilt = false;
+  // What buildImpostorPipelines compiled, kept for the light rig's variants
+  // (#613): the library, and the opaque and OIT pipeline descriptors (which
+  // hold the vertex function and vertex descriptor), so a rig pipeline
+  // differs from its classic twin only in its fragment function. +1 owned;
+  // released by rebuildDrawPipelines and the dtor. Retaining them also ends
+  // the per-build leak of the library, functions and descriptors.
+  id<MTLLibrary> _sphereLib = nil;
+  MTLRenderPipelineDescriptor* _sphereOpaqueDesc = nil;
+  MTLRenderPipelineDescriptor* _sphereOitDesc = nil;
+  // The light rig's sphere pipelines (#613), per family; nil until a rig-on
+  // frame draws spheres (ensureSphereRigPipelines). +1 owned.
+  id<MTLRenderPipelineState> _sphereRigPipeline[cMaterialFamily_count] = {};
+  id<MTLRenderPipelineState> _sphereRigOitPipeline[cMaterialFamily_count] = {};
+  bool _sphereRigBuilt = false;
   // Cylinder impostor pipelines are cached PER VERTEX LAYOUT — (stride, a_cap
   // offset) — not in a single slot. a_cap's offset is part of the vertex
   // descriptor, so a stick VBO (per-vertex a_cap) and a CGO VBO (one constant
@@ -388,10 +410,13 @@ private:
     id<MTLRenderPipelineState> shadow = nil;
     id<MTLRenderPipelineState> peel = nil;   // depth-only, peel-depth format
   };
-  // Keyed by (stride, a_cap offset, MATERIAL FAMILY): a marble stick and a
-  // default stick at the same layout need different pipelines, and whichever
-  // drew first would otherwise decide how both looked.
-  std::map<std::tuple<NSUInteger, int, int>, CylinderPipelines> _cylinderPipelines;
+  // Keyed by (stride, a_cap offset, MATERIAL FAMILY, LIGHT RIG): a marble
+  // stick and a default stick at the same layout need different pipelines,
+  // and whichever drew first would otherwise decide how both looked. The
+  // light rig's variant (#613) is its own entry, built only while a rig is
+  // on; it has no shadow or peel pipeline (those passes never take the rig).
+  std::map<std::tuple<NSUInteger, int, int, bool>, CylinderPipelines>
+      _cylinderPipelines;
   id<MTLRenderPipelineState> _cylinderImpostorPipeline = nil; // alias, not owned
 
   // Post-processing: the scene renders to offscreen color+depth, then
