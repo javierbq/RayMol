@@ -13,12 +13,15 @@ shader compile) prove on a Mac:
 * every lit colour fragment of a rig library takes the rig at buffer(9)
   under kLightRig, and every other fragment never sees it;
 * every rig statement sits under `if (kLightRig)`, so the classic
-  specialisation (kLightRig false) removes all of it;
+  specialisation (kLightRig false) removes all of it, and what is left is
+  today's code;
+* the impostors' rig helpers are copies of the classic ones plus the light,
+  and glass, jelly and the other families take the rig as on the VBO path;
 * the specialisation always sets the constant, and the indices agree between
   C++ and MSL;
 * the MSL LightRigU mirrors layer1/LightRigBlock.h;
-* the rig is bound only while it is on, and rig pipelines are chosen only
-  then;
+* the rig is bound only while it is on, and rig pipelines (VBO, sphere,
+  cylinder) are chosen only then, with a classic fallback;
 * SceneRenderMetal reads the rig once per frame, before the shadow pre-pass.
 
 Pure source parsing (skipped, not passed, outside a repo checkout).
@@ -61,15 +64,27 @@ HELPERS = ('light_response_neutral', 'light_response', 'light_visibility',
            'light_glass_glints')
 STRUCTS = ('LightRigLight', 'LightRigU', 'LightResponse', 'LightTerms')
 
-# Libraries whose lit fragments take the rig. The impostor libraries join
-# when their rig paths do; until then none of their fragments may see it.
-RIG_LIBRARIES = ('kVBOSrc',)
+# Libraries whose lit fragments take the rig (the bezier tube has its own
+# rig library and is checked apart).
+RIG_LIBRARIES = ('kVBOSrc', 'kSphereImpostorSrc', 'kCylinderImpostorSrc')
 LIT_LIBRARIES = ('kVBOSrc', 'kSphereImpostorSrc', 'kCylinderImpostorSrc')
 # The fragments of RIG_LIBRARIES that must take the rig, so the generic
 # detection below cannot pass by finding nothing.
 EXPECTED_RIG_FRAGMENTS = {
     'kVBOSrc': {'vbo_fragment', 'vbo_fragment_oit'},
+    'kSphereImpostorSrc': {'sphere_impostor_fragment',
+                           'sphere_impostor_fragment_oit'},
+    'kCylinderImpostorSrc': {'cyl_impostor_fragment',
+                             'cyl_impostor_fragment_oit'},
 }
+# The impostors' rig helpers: (library, rig copy, classic helper, the base
+# colour light_apply takes).
+IMPOSTOR_RIG_HELPERS = (
+    ('kSphereImpostorSrc', 'sphere_shade_material_rig', 'sphere_shade_material',
+     'in.color.rgb'),
+    ('kCylinderImpostorSrc', 'cyl_shade_material_rig', 'cyl_shade_material',
+     'base'),
+)
 # A fragment shades colour with the classic lights when it calls one of these.
 LIT_MARKERS = ('vbo_material_shade', 'sphere_shade_material',
                'cyl_shade_material', 'mat_impostor_composite',
@@ -80,7 +95,7 @@ RIG_ARGUMENT = re.compile(
 RIG_GUARD = re.compile(r'if\s*\(\s*kLightRig\s*\)')
 # What a rig statement can mention; none of it may survive outside the guard.
 RIG_TOKENS = re.compile(r'\brig\b|\blight_\w+|\bLightTerms\b|\bLightRigU\b|'
-                        r'\bkLightRig\b|\bLightResponse\b')
+                        r'\bkLightRig\b|\bLightResponse\b|\w+_rig\b')
 # Functions of RendererMetal.mm allowed to bind the rig.
 BIND_CALLERS = {'bindRepMaterial'}
 
@@ -144,8 +159,9 @@ def is_lit(body):
 
 
 def remove_rig_statements(body):
-    """`body` with every `if (kLightRig) { ... }` block and every
-    `if (kLightRig) statement;` removed."""
+    """`body` as the classic specialisation (kLightRig false) runs it: every
+    `if (kLightRig) { ... }` block and every `if (kLightRig) statement;`
+    removed, and for `if (kLightRig) A else B` only B kept."""
     while True:
         m = RIG_GUARD.search(body)
         if not m:
@@ -168,11 +184,10 @@ def remove_rig_statements(body):
                     break
                 end += 1
             end += 1
-        # an `else` after a guarded block would run the classic code only
-        # with the rig off; nothing uses that form, so reject it outright
-        if re.match(r'\s*else\b', body[end:]):
-            raise AssertionError('`if (kLightRig) ... else` is not a form the '
-                                 'rig statements use')
+        # `if (kLightRig) A else B`: with the rig off only B runs
+        alternative = re.match(r'\s*else\b', body[end:])
+        if alternative:
+            end += alternative.end()
         body = body[:m.start()] + body[end:]
 
 
@@ -193,6 +208,16 @@ def cpp_function(source, qualified_name):
 def depth_at(body, index):
     """Brace depth of `body` at `index` (1 = the function's top level)."""
     return body[:index].count('{') - body[:index].count('}')
+
+
+def squash(text):
+    """`text` with all whitespace removed, for comparing copied code."""
+    return re.sub(r'\s+', '', text)
+
+
+def statements_after(body, marker):
+    """The text of `body` from the first occurrence of `marker`."""
+    return body[body.index(marker):]
 
 
 class LightMSLCase(testing.PyMOLTestCase):
@@ -311,6 +336,25 @@ class TestLightBlock(LightMSLCase):
         self.assertNotIn('mat_soft_knee', functions['light_terms'][1])
 
 
+class TestRemoveRigStatements(LightMSLCase):
+    """The helper the classic-code checks rest on."""
+
+    def testForms(self):
+        self.assertEqual(
+            squash(remove_rig_statements(
+                '{ a(); if (kLightRig) { b(rig); } c(); '
+                'if (kLightRig) d(rig, f(x)); e(); }')),
+            '{a();c();e();}')
+        self.assertEqual(
+            squash(remove_rig_statements(
+                '{ if (kLightRig)\n  x_rig(a, rig, b);\nelse\n  x(a, b); y(); }')),
+            '{x(a,b);y();}')
+        self.assertEqual(
+            squash(remove_rig_statements(
+                '{ if (kLightRig) { p(rig); } else { q(); } }')),
+            '{{q();}}')
+
+
 class TestLitFragments(LightMSLCase):
 
     def testEveryLitFragmentTakesTheRig(self):
@@ -323,8 +367,8 @@ class TestLitFragments(LightMSLCase):
                                     'take the rig' % (lib, name))
                     found.add(name)
                 else:
-                    # shadow, peel, unlit, cap and coverage fragments (and the
-                    # impostors until their rig paths land) never see it
+                    # shadow, peel, unlit, cap and coverage fragments never
+                    # see it
                     self.assertNotRegex(sig + body, r'LightRigU|kLightRig|\blight_',
                                         '%s.%s' % (lib, name))
             if lib in RIG_LIBRARIES:
@@ -354,6 +398,103 @@ class TestLitFragments(LightMSLCase):
             'lt,mat,envMap,envSmp),in.color.a)')
         rig = body[RIG_GUARD.search(body).end():]
         self.assertIn('light_apply(', rig[:rig.index('return float4(vbo')])
+
+    def testImpostorRigHelpersCopyTheClassicOnes(self):
+        """sphere_shade_material_rig and cyl_shade_material_rig are today's
+        helpers plus the rig argument and ONE added statement: the light on
+        the lit surface, after the material and after the interior cap's
+        early return."""
+        for lib, rig_name, classic_name, base in IMPOSTOR_RIG_HELPERS:
+            functions = msl_functions(self.msl[lib])
+            self.assertIn(rig_name, functions, lib)
+            rig_sig, rig_body = functions[rig_name]
+            classic_sig, classic_body = functions[classic_name]
+            # the signature: the classic one with the rig before the outputs
+            self.assertEqual(
+                squash(rig_sig),
+                squash(classic_sig)
+                .replace(classic_name + '(', rig_name + '(')
+                .replace('threadfloat3&rgb', 'constantLightRigU&rig,threadfloat3&rgb'),
+                rig_name)
+            light = re.findall(r'\n[ \t]*rgb\s*=\s*light_apply\(([^;]*)\);',
+                               rig_body)
+            self.assertEqual(len(light), 1, rig_name)
+            self.assertEqual(squash(light[0]),
+                             squash('rgb, %s, n, pt, rig, light_response(mat)'
+                                    % base), rig_name)
+            # the last statement, after the cap's return and the material
+            tail = rig_body[rig_body.index('light_apply('):]
+            self.assertEqual(squash(tail[tail.index(';'):]), ';}', rig_name)
+            self.assertLess(rig_body.index('if (!lit) return;'),
+                            rig_body.index('light_apply('), rig_name)
+            self.assertLess(rig_body.index('mat_impostor_composite('),
+                            rig_body.index('light_apply('), rig_name)
+            # remove it and what is left is the classic helper, verbatim
+            stripped = re.sub(r'\n[ \t]*rgb\s*=\s*light_apply\([^;]*\);', '',
+                              rig_body)
+            self.assertEqual(squash(stripped), squash(classic_body), rig_name)
+
+    def testImpostorFragmentsChooseTheRigHelperUnderTheConstant(self):
+        """Every impostor colour fragment calls the rig helper under the
+        constant and today's helper otherwise, with the same arguments."""
+        choose = re.compile(r'if\s*\(\s*kLightRig\s*\)\s*(\w+)\(([^;]*)\);'
+                            r'\s*else\s*(\w+)\(([^;]*)\);')
+        for lib, rig_name, classic_name, _ in IMPOSTOR_RIG_HELPERS:
+            for name in EXPECTED_RIG_FRAGMENTS[lib]:
+                body = fragments(self.msl[lib])[name][1]
+                found = choose.findall(body)
+                self.assertEqual(len(found), 1, name)
+                rig_call, rig_args, classic_call, classic_args = found[0]
+                self.assertEqual((rig_call, classic_call),
+                                 (rig_name, classic_name), name)
+                self.assertEqual(squash(rig_args).replace('rig,', '', 1),
+                                 squash(classic_args), name)
+                self.assertNotIn(classic_name + '(',
+                                 body.replace(classic_name + '(' + classic_args,
+                                              '', 1), name)
+
+    def testImpostorGlassFamilyTakesTheRig(self):
+        """Glass sticks split the rig as the VBO glass does; jelly sticks
+        and the sphere impostors' glass family (jelly, and other reps' glass
+        spheres) take light_apply on top of the composite, before the
+        refraction, inside the lit branch."""
+        cyl = fragments(self.msl['kCylinderImpostorSrc'])['cyl_impostor_fragment_oit'][1]
+        glass = cyl[:cyl.index('} else if (kMatGlass)')]
+        jelly = cyl[cyl.index('} else if (kMatGlass)'):cyl.index('} else {')]
+        cover = glass.index('mat_glass_cover(')
+        terms = glass.index('light_terms(')
+        self.assertLess(glass.index('mat_glass_shade('), terms)
+        self.assertLess(terms, cover)
+        self.assertRegex(glass[terms:cover],
+                         r'light_terms\(rig,\s*base,\s*n,\s*pt,\s*'
+                         r'light_response\(mat\)\)')
+        self.assertRegex(glass[terms:cover],
+                         r'body\s*\+=\s*base\s*\*\s*'
+                         r'kMatGlassBaseAttenuation\s*\*\s*\w+\.diffuse')
+        self.assertRegex(glass[terms:cover],
+                         r'hi\s*\+=\s*light_glass_glints\(\w+\.specular\)\s*\*\s*'
+                         r'\(kMatGlassReflection\s*\*\s*saturate\(mat\.p\[0\]\)\)')
+        outline = re.search(r'if\s*\(kLightRig\)\s*rgb\s*=\s*'
+                            r'light_outline\(rgb,\s*pt,\s*rig\);', glass)
+        self.assertIsNotNone(outline)
+        self.assertGreater(outline.start(), glass.index('rgb = g.rgb;'))
+        self.assertNotIn('light_apply(', glass)
+        for label, branch, base in (
+                ('jelly sticks', jelly, 'base'),
+                ('glass-family spheres',
+                 fragments(self.msl['kSphereImpostorSrc'])
+                 ['sphere_impostor_fragment_oit'][1].split('} else {')[0],
+                 'in.color.rgb')):
+            lit = statements_after(branch, 'if (lit)')
+            apply_ = re.search(r'if\s*\(kLightRig\)\s*rgb\s*=\s*light_apply\('
+                               r'rgb,\s*%s,\s*n,\s*pt,\s*rig,\s*'
+                               r'light_response\(mat\)\);' % re.escape(base), lit)
+            self.assertIsNotNone(apply_, label)
+            self.assertLess(lit.index('mat_impostor_composite('), apply_.start(),
+                            label)
+            self.assertLess(apply_.start(), lit.index('mat_glass_refraction('),
+                            label)
+            self.assertNotIn('light_terms(', branch, label)
 
     def testGlassSplitsTheRig(self):
         """Clear and frosted glass: the rig's diffuse lights the body at its
@@ -407,6 +548,12 @@ class TestPipelines(LightMSLCase):
         rig_fn = cpp_function(self.mm, 'RendererMetal::vboRigFragmentFunction')
         self.assertRegex(rig_fn, r'materialFragmentFunction\([^;]*true\);')
         build = cpp_function(self.mm, 'RendererMetal::buildVBOPipelines')
+        calls = re.findall(r'materialFragmentFunction\(([^;]*)\);', build)
+        self.assertEqual(len(calls), 2)
+        for args in calls:
+            self.assertEqual(len(args.split(',')), 3, args)
+        # ...and so does every classic sphere build
+        build = cpp_function(self.mm, 'RendererMetal::buildImpostorPipelines')
         calls = re.findall(r'materialFragmentFunction\(([^;]*)\);', build)
         self.assertEqual(len(calls), 2)
         for args in calls:
@@ -512,6 +659,110 @@ class TestPipelines(LightMSLCase):
         rebuild = cpp_function(self.mm, 'RendererMetal::rebuildDrawPipelines')
         self.assertLess(rebuild.index('_vboPipelineCache.clear();'),
                         rebuild.index('buildVBOPipelines();'))
+
+
+class TestImpostorPipelines(LightMSLCase):
+
+    def testSphereRigPipelinesComeFromTheClassicBuild(self):
+        build = cpp_function(self.mm, 'RendererMetal::buildImpostorPipelines')
+        # the library and both descriptors are kept (+1), released first
+        for kept, value in (('_sphereLib', 'lib'), ('_sphereOpaqueDesc', 'psd'),
+                            ('_sphereOitDesc', 'op')):
+            self.assertIn('%s = %s;' % (kept, value), build)
+            self.assertLess(build.index('[%s release];' % kept),
+                            build.index('newLibraryWithSource:'), kept)
+        # the functions it no longer leaks
+        for released in ('[vfn release];', '[sfn release];', '[sp release];'):
+            self.assertIn(released, build)
+        rig = cpp_function(self.mm, 'RendererMetal::ensureSphereRigPipelines')
+        first = re.match(r'\{\s*if\s*\(\s*_sphereRigBuilt\s*\)\s*return\s*;'
+                         r'\s*_sphereRigBuilt\s*=\s*true\s*;', rig)
+        self.assertIsNotNone(first, 'one attempt per build')
+        calls = re.findall(r'materialFragmentFunction\(([^;]*)\);', rig)
+        self.assertEqual(sorted(squash(c).split(',')[1] for c in calls),
+                         ['@"sphere_impostor_fragment"',
+                          '@"sphere_impostor_fragment_oit"'])
+        for args in calls:
+            self.assertTrue(squash(args).startswith('_sphereLib,'), args)
+            self.assertTrue(squash(args).endswith('true'), args)
+        # the classic descriptors, with only the fragment function changed
+        self.assertIn('newRenderPipelineStateWithDescriptor:_sphereOpaqueDesc', rig)
+        self.assertIn('newRenderPipelineStateWithDescriptor:_sphereOitDesc', rig)
+        self.assertNotIn('alloc]', rig)
+        self.assertRegex(rig, r'setOitRefractAttachment\(_sphereOitDesc\.'
+                              r'colorAttachments\[2\],\s*_oitRefractEnabled,'
+                              r'\s*f == cMaterialFamily_glass\)')
+        # released and rebuilt with every classic rebuild, and in the dtor
+        release = cpp_function(self.mm, 'RendererMetal::releaseSphereRigPipelines')
+        for member in ('_sphereRigPipeline[f]', '_sphereRigOitPipeline[f]'):
+            self.assertIn('[%s release];' % member, release)
+        self.assertIn('_sphereRigBuilt = false;', release)
+        for fn in ('RendererMetal::rebuildDrawPipelines',
+                   'RendererMetal::~RendererMetal'):
+            body = cpp_function(self.mm, fn)
+            self.assertIn('releaseSphereRigPipelines();', body, fn)
+            for kept in ('_sphereLib', '_sphereOpaqueDesc', '_sphereOitDesc'):
+                self.assertIn('[%s release];' % kept, body, fn)
+
+    def testSphereDrawPicksTheRigOnlyWhenOn(self):
+        body = cpp_function(self.mm, 'RendererMetal::drawSphereImpostors')
+        block = re.search(r'if\s*\(\s*_lightRigOn\s*&&\s*!_shadowMode\s*&&\s*'
+                          r'!_peelMode\s*\)\s*\{', body)
+        self.assertIsNotNone(block)
+        end = match_brace(body, block.end() - 1)
+        inside = body[block.end():end]
+        self.assertIn('ensureSphereRigPipelines();', inside)
+        self.assertRegex(inside, r'_oitActive\s*\?\s*_sphereRigOitPipeline\s*:\s*'
+                                 r'_sphereRigPipeline')
+        # this family's rig pipeline, else the rig's default, else classic
+        self.assertIn('rigSet[cMaterialFamily_default]', inside)
+        self.assertIn('_lightRigWarned = true;', inside)
+        self.assertEqual(body.count('ensureSphereRigPipelines('), 1)
+        # starts nil, so with the rig off the classic pipelines are chosen
+        self.assertRegex(body, r'id<MTLRenderPipelineState>\s+rigPipeline\s*=\s*nil;')
+        self.assertRegex(body, r'setRenderPipelineState:rigPipeline\s*\?\s*rigPipeline'
+                               r'\s*:\s*_sphereOitPipeline\[sphereFam\]\]')
+        self.assertRegex(body, r'setRenderPipelineState:rigPipeline\s*\?\s*rigPipeline'
+                               r'\s*:\s*_sphereImpostorPipeline\[sphereFam\]\]')
+        # shadow and peel never take it
+        self.assertIn('setRenderPipelineState:_sphereShadowPipeline]', body)
+        self.assertIn('setRenderPipelineState:_spherePeelPipeline]', body)
+        # the rig is bound with the material on every colour draw
+        self.assertLess(body.rindex('setRenderPipelineState:'),
+                        body.index('bindRepMaterial();'))
+
+    def testCylinderRigEntriesAreKeyedApart(self):
+        header = strip_comments(read(METAL_MM.replace('.mm', '.h')))
+        self.assertRegex(header, r'std::map<std::tuple<NSUInteger,\s*int,\s*int,'
+                                 r'\s*bool>,\s*CylinderPipelines>')
+        build = cpp_function(self.mm, 'RendererMetal::buildCylinderImpostorPipeline')
+        self.assertRegex(build, r'std::make_tuple\([^;]*cylFam,\s*lightRig\)')
+        calls = re.findall(r'materialFragmentFunction\(([^;]*)\);', build)
+        self.assertEqual(len(calls), 4)
+        for args in calls:
+            self.assertEqual(squash(args).split(',')[-1], 'lightRig', args)
+        # no shadow or peel pipeline for a rig entry
+        self.assertRegex(build, r'sfn\s*=\s*lightRig\s*\?\s*nil\s*:')
+        # a failed rig entry is cached, so it is not recompiled every frame
+        self.assertIn('if (_cylinderImpostorPipeline || lightRig)', build)
+
+    def testCylinderDrawPicksTheRigOnlyWhenOn(self):
+        body = cpp_function(self.mm, 'RendererMetal::drawCylinderImpostors')
+        self.assertRegex(body, r'const bool cylRig\s*=\s*_lightRigOn\s*&&\s*'
+                               r'!_shadowMode\s*&&\s*!_peelMode;')
+        calls = re.findall(r'buildCylinderImpostorPipeline\(([^;]*)\);', body)
+        self.assertEqual([squash(c) for c in calls], ['call,cylRig', 'call,false'])
+        fallback = re.search(r'if\s*\(\s*cylRig\s*&&', body)
+        self.assertIsNotNone(fallback)
+        end = match_brace(body, body.index('{', fallback.end()))
+        inside = body[fallback.end():end]
+        self.assertIn('_lightRigWarned = true;', inside)
+        self.assertIn('buildCylinderImpostorPipeline(call, false);', inside)
+        # the only caller
+        code = strip_comments(self.mm)
+        self.assertEqual(len(re.findall(r'buildCylinderImpostorPipeline\(call', code)), 2)
+        self.assertLess(body.rindex('setRenderPipelineState:'),
+                        body.index('bindRepMaterial();'))
 
 
 class TestLayout(LightMSLCase):
