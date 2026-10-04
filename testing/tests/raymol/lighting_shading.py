@@ -35,6 +35,23 @@ from pymol import cmd, lighting, metal_pick, testing
 ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir,
                                      os.pardir, os.pardir))
 
+# A repo checkout is decided by ONE file every checkout has. In a checkout,
+# the sources these tests read are required: a renamed or removed file fails
+# the test instead of skipping it (CI always runs from a checkout, and a skip
+# there would hide exactly that).
+SENTINEL = os.path.join('layerGraphics', 'metal', 'RendererMetal.mm')
+
+
+def checkout_source(test, rel):
+    """The path of `rel` in the checkout; skips outside one, fails when the
+    checkout lacks the file."""
+    if not os.path.isfile(os.path.join(ROOT, SENTINEL)):
+        test.skipTest('not a repo checkout (no %s)' % SENTINEL)
+    path = os.path.join(ROOT, rel)
+    test.assertTrue(os.path.isfile(path), '%s is missing from the checkout' % rel)
+    return path
+
+
 IDENTITY = [1.0, 0.0, 0.0, 0.0,
             0.0, 1.0, 0.0, 0.0,
             0.0, 0.0, 1.0, 0.0,
@@ -585,9 +602,7 @@ class TestBlockLayout(LightingCase):
     def testBlockSourceMatchesTheDocumentedLayout(self):
         """LightRigBlock.h: a float4 head and six lights of four float4,
         400 bytes, asserted at compile time."""
-        path = os.path.join(ROOT, 'layer1', 'LightRigBlock.h')
-        if not os.path.isfile(path):
-            self.skipTest('layer1/LightRigBlock.h not present; not a repo checkout')
+        path = checkout_source(self, os.path.join('layer1', 'LightRigBlock.h'))
         with open(path, encoding='utf-8') as handle:
             text = strip_comments(handle.read())
         light = re.search(r'struct LightRigBlockLight\s*\{(.*?)\};', text, re.S)
@@ -760,11 +775,7 @@ class TestNoPython(testing.PyMOLTestCase):
                         r'|\bPy_\w+|PyMOLGlobals|LightRigPy\.h')
 
     def read(self, rel):
-        path = os.path.join(ROOT, rel)
-        if not os.path.isfile(path):
-            # Skipped, not passed: a source-reading test that cannot find
-            # its source has checked nothing.
-            self.skipTest('%s not present; not a repo checkout' % rel)
+        path = checkout_source(self, rel)
         with open(path, encoding='utf-8') as handle:
             return strip_comments(handle.read())
 
