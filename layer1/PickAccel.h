@@ -32,11 +32,14 @@ struct PickAccelKey {
   const void* aux0 = nullptr; ///< e.g. the indexed mesh's normals
   const void* aux1 = nullptr; ///< e.g. the indexed mesh's triangle indices
   std::size_t aux_size = 0;   ///< e.g. the indexed mesh's triangle count
+  /// Shape settings the rules apply (the pointed nub's overlap and length).
+  float shape[2] = {0.f, 0.f};
 
   bool operator==(const PickAccelKey& o) const
   {
     return source == o.source && size == o.size && rules == o.rules &&
-           aux0 == o.aux0 && aux1 == o.aux1 && aux_size == o.aux_size;
+           aux0 == o.aux0 && aux1 == o.aux1 && aux_size == o.aux_size &&
+           shape[0] == o.shape[0] && shape[1] == o.shape[1];
   }
   bool operator!=(const PickAccelKey& o) const { return !(*this == o); }
 };
@@ -54,12 +57,36 @@ struct PickCGORules {
   /// culls nothing. Off for reps whose draw path drops them (the stick
   /// impostor path keeps only cylinders and spheres).
   bool triangles = false;
+  /// The `stick_round_nub` argument the rep's CGOSimplify call passes: true
+  /// (its default) draws a Mesh-rule cylinder's round end as a hemisphere,
+  /// false as CGOSimpleCylinder's pointed nub, shaped by `nub`
+  /// (PickCap::Pointed). Impostors always draw a hemisphere.
+  bool round_nub = true;
+  /// stick_overlap and stick_nub, read globally as CGOSimpleCylinder reads
+  /// them. Only used when pointed().
+  PickNubShape nub;
+
+  bool pointed() const { return !round_nub && cylinder == PickRule::Mesh; }
 
   std::uintptr_t bits() const
   {
     return std::uintptr_t(sphere) | (std::uintptr_t(cylinder) << 2) |
            (std::uintptr_t(simplified_cylinders) << 4) |
-           (std::uintptr_t(triangles) << 5);
+           (std::uintptr_t(triangles) << 5) | (std::uintptr_t(pointed()) << 6);
+  }
+
+  /// The grid key for a CGO built under these rules.
+  PickAccelKey key(const void* source, std::size_t size) const
+  {
+    PickAccelKey k;
+    k.source = source;
+    k.size = size;
+    k.rules = bits();
+    if (pointed()) {
+      k.shape[0] = nub.overlap;
+      k.shape[1] = nub.length;
+    }
+    return k;
   }
 };
 
@@ -137,6 +164,8 @@ public:
   /// `ntri` index triples. At most one per grid; a second call replaces it.
   void setMesh(
       const float* V, const float* VN, int nverts, const int* T, int ntri);
+  /// The shape of every PickCap::Pointed end in this grid.
+  void setNubShape(const PickNubShape& nub) { m_nub = nub; }
 
   /// Bucket the items into the grid. Call once, after adding every item.
   void build();
@@ -177,6 +206,7 @@ private:
   std::vector<TriBlock> m_blocks;
   std::uint32_t m_blockTris = 0;
   Mesh m_mesh;
+  PickNubShape m_nub;
   // First item id of each kind (spheres start at 0); set by build().
   std::uint32_t m_firstCyl = 0, m_firstTri = 0, m_firstBlock = 0,
                 m_firstMesh = 0;
@@ -196,7 +226,8 @@ private:
  * Add the pickable primitives of `cgo` to `accel`, walking the ops the way
  * CGORenderRay does. Spheres and cylinder-type ops (CYLINDER,
  * SHADER_CYLINDER(_WITH_2ND_COLOR), CUSTOM_CYLINDER(_ALPHA), SAUSAGE) get the
- * caller's rules. With `rules.triangles`, DRAW_ARRAYS triangle blocks are
+ * caller's rules; with rules.pointed(), their round ends become
+ * PickCap::Pointed. With `rules.triangles`, DRAW_ARRAYS triangle blocks are
  * referenced in place and TRIANGLE ops and BEGIN/END triangle runs are
  * copied. Primitives drawn fully transparent are skipped. Cones, ellipsoids,
  * quadrics, lines, points and labels are not pickable.

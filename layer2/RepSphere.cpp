@@ -266,7 +266,7 @@ const PickAccel* RepSphere::pickPrepare(bool* built) const
   rules.sphere = rules.cylinder = rule;
   rules.simplified_cylinders = rule == PickRule::Mesh;
   const CGO* cgo = primitiveCGO;
-  PickAccelKey key{cgo, cgo->c, rules.bits()};
+  const PickAccelKey key = rules.key(cgo, cgo->c);
   return pickAccelFor(
       key, [&](PickAccel& accel) { PickAccelAddCGO(cgo, accel, rules); },
       built);

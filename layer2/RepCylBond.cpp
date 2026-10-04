@@ -177,9 +177,12 @@ static int RepCylBondCGOGenerate(RepCylBond * I, RenderInfo * info)
  * Surface pick (#614). The rule follows RepCylBondCGOGenerate as it resolves
  * on Metal (use_shaders forced on, the Metal impostor pipeline standing in for
  * the GL "cylinder" program): as_cylinders draws cylinder and sphere
- * impostors; otherwise CGOSimplify tessellates everything (stick_round_nub
- * caps), which is picked analytically under the Mesh rule. Keep in step with
- * RepCylBondCGOGenerate.
+ * impostors; otherwise CGOSimplify tessellates everything, which is picked
+ * analytically under the Mesh rule. Its round ends follow the
+ * stick_round_nub it is given: a hemisphere when on, else CGOSimpleCylinder's
+ * pointed nub (the body on by stick_overlap * r, then a cone stick_nub * r
+ * long; both read globally, as CGOSimpleCylinder reads them). Keep in step
+ * with RepCylBondCGOGenerate and CGOSimpleCylinder.
  */
 const PickAccel* RepCylBond::pickPrepare(bool* built) const
 {
@@ -197,8 +200,11 @@ const PickAccel* RepCylBond::pickPrepare(bool* built) const
   rules.sphere = rules.cylinder =
       as_cylinders ? PickRule::Impostor : PickRule::Mesh;
   rules.simplified_cylinders = !as_cylinders;
+  rules.round_nub = SettingGet<int>(G, cSetting_stick_round_nub) != 0;
+  rules.nub.overlap = SettingGetGlobal_f(G, cSetting_stick_overlap);
+  rules.nub.length = SettingGetGlobal_f(G, cSetting_stick_nub);
   const CGO* cgo = primitiveCGO;
-  PickAccelKey key{cgo, cgo->c, rules.bits()};
+  const PickAccelKey key = rules.key(cgo, cgo->c);
   return pickAccelFor(
       key, [&](PickAccel& accel) { PickAccelAddCGO(cgo, accel, rules); },
       built);

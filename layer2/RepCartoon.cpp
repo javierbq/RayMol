@@ -365,7 +365,7 @@ const PickAccel* RepCartoon::pickPrepare(bool* built) const
   rules.cylinder = PickRule::Mesh;
   rules.simplified_cylinders = true;
   rules.triangles = true;
-  PickAccelKey key{cgo, cgo->c, rules.bits()};
+  const PickAccelKey key = rules.key(cgo, cgo->c);
   return pickAccelFor(
       key, [&](PickAccel& accel) { PickAccelAddCGO(cgo, accel, rules); },
       built);

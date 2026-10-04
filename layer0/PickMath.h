@@ -56,6 +56,19 @@ enum class PickCap : unsigned char {
   None,
   Flat,
   Round,
+  /// CGOSimpleCylinder's pointed nub (a tessellated Round end with
+  /// stick_round_nub off): the body runs on PickNubShape::overlap * r past
+  /// the end, then a cone of height PickNubShape::length * r closes it. Its
+  /// triangle fan carries the axis as the tip's normal and radial normals on
+  /// the rim, so the drawn normal turns from radial to axial toward the tip.
+  Pointed,
+};
+
+/// The proportions of a PickCap::Pointed end, in units of the cylinder's
+/// radius (stick_overlap and stick_nub).
+struct PickNubShape {
+  float overlap = 0.f;
+  float length = 0.f;
 };
 
 /**
@@ -158,29 +171,73 @@ inline bool pickSphere(
 /**
  * Entry and exit of the line a + s d through a cylinder from p0 to p0 + axis
  * with radius r and the given end caps (Round is a hemisphere, so
- * Round + Round is a sausage).
+ * Round + Round is a sausage; Pointed is shaped by `nub`).
  *
  * Mirrors the Metal cylinder impostor: the entry is the front crossing of the
  * INFINITE cylinder when it falls between the end planes; beyond an end it is
- * that end's cap (flat disc or sphere), and nothing when the end is open. The
- * exit is the same construction from the back crossing. For two closed ends
- * this is exactly the convex solid's entry and exit.
+ * that end's cap (flat disc, sphere or cone), and nothing when the end is
+ * open. The exit is the same construction from the back crossing. For two
+ * closed ends this is exactly the convex solid's entry and exit.
  */
 inline bool pickCylinder(const float* a, const float* d, const float* p0,
-    const float* axis, float r, PickCap cap0, PickCap cap1, PickSpan& span)
+    const float* axis, float r, PickCap cap0, PickCap cap1, PickSpan& span,
+    const PickNubShape& nub = PickNubShape())
 {
   using namespace pickmath;
   const double ax[3] = {axis[0], axis[1], axis[2]};
   const double h = std::sqrt(dot3(ax, ax));
   if (!(r > 0.f))
     return false;
+  const double rr = r;
+  const double dv[3] = {d[0], d[1], d[2]};
+  const double dd = dot3(dv, dv);
+  if (!(dd > 0.0))
+    return false;
 
   const double c0[3] = {p0[0], p0[1], p0[2]};
   const double c1[3] = {p0[0] + ax[0], p0[1] + ax[1], p0[2] + ax[2]};
+  const bool pointed = cap0 == PickCap::Pointed || cap1 == PickCap::Pointed;
+
+  // The ray in the axis frame: along the axis md + t du, across it mp + t dp.
+  // (With no axis at all, u = 0 and nothing below reads the tube.)
+  double u[3] = {0.0, 0.0, 0.0};
+  if (h > 0.0) {
+    u[0] = ax[0] / h;
+    u[1] = ax[1] / h;
+    u[2] = ax[2] / h;
+  }
+  const double m[3] = {a[0] - c0[0], a[1] - c0[1], a[2] - c0[2]};
+  const double md = dot3(m, u);
+  const double du = dot3(dv, u);
+  const double mp[3] = {m[0] - md * u[0], m[1] - md * u[1], m[2] - md * u[2]};
+  const double dp[3] = {dv[0] - du * u[0], dv[1] - du * u[1], dv[2] - du * u[2]};
+  const double A = dot3(dp, dp);
+  const double B = dot3(mp, dp);
+  const double C = dot3(mp, mp) - rr * rr;
+
+  // Infinite-cylinder crossings. Parallel to the axis: the ray is inside the
+  // tube everywhere or nowhere, and only the end planes can stop it.
+  double t0 = -1e30, t1 = 1e30;
+  const bool parallel = A <= 1e-12 * dd;
+  bool tube;
+  if (parallel) {
+    // The tube never stops the ray, so the "crossings" are at infinity and
+    // resolve() goes straight to the end caps.
+    tube = C <= 0.0;
+  } else {
+    const double disc = B * B - A * C;
+    tube = disc >= 0.0;
+    if (tube) {
+      const double sq = std::sqrt(disc);
+      t0 = (-B - sq) / A;
+      t1 = (-B + sq) / A;
+    }
+  }
 
   // A (near) zero-length cylinder: RepCylBond draws a lone zero-order-bond
-  // atom as one with round caps, i.e. a sphere.
-  if (h < 1e-3) {
+  // atom as one (axis 1e-4) with round caps, i.e. a sphere. (Pointed ends
+  // draw a double cone there, handled below.)
+  if (h < 1e-3 && !pointed) {
     if (cap0 != PickCap::Round && cap1 != PickCap::Round)
       return false;
     double s0, s1;
@@ -193,40 +250,18 @@ inline bool pickCylinder(const float* a, const float* d, const float* p0,
     span.has_in = span.has_out = true;
     return true;
   }
-
-  const double u[3] = {ax[0] / h, ax[1] / h, ax[2] / h};
-  const double dv[3] = {d[0], d[1], d[2]};
-  const double m[3] = {a[0] - c0[0], a[1] - c0[1], a[2] - c0[2]};
-  const double md = dot3(m, u);
-  const double du = dot3(dv, u);
-  const double mp[3] = {m[0] - md * u[0], m[1] - md * u[1], m[2] - md * u[2]};
-  const double dp[3] = {dv[0] - du * u[0], dv[1] - du * u[1], dv[2] - du * u[2]};
-  const double A = dot3(dp, dp);
-  const double B = dot3(mp, dp);
-  const double C = dot3(mp, mp) - double(r) * r;
-  const double dd = dot3(dv, dv);
-  if (!(dd > 0.0))
+  if (!tube)
+    return false;
+  // CGOSimpleCylinder normalizes an axis this short to nothing: no surface.
+  if (!(h > 1e-8))
     return false;
 
-  // Infinite-cylinder crossings. Parallel to the axis: the ray is inside the
-  // tube everywhere or nowhere, and only the end planes can stop it.
-  double t0, t1;
-  bool parallel = A <= 1e-12 * dd;
-  if (parallel) {
-    if (C > 0.0)
-      return false;
-    // The tube never stops the ray, so the "crossings" are at infinity and
-    // resolve() goes straight to the end caps.
-    t0 = -1e30;
-    t1 = 1e30;
-  } else {
-    const double disc = B * B - A * C;
-    if (disc < 0.0)
-      return false;
-    const double sq = std::sqrt(disc);
-    t0 = (-B - sq) / A;
-    t1 = (-B + sq) / A;
-  }
+  // Pointed ends move their end plane out by the overlap; the cone (tip
+  // `tip` long) sits beyond it.
+  const double ext0 = cap0 == PickCap::Pointed ? double(nub.overlap) * rr : 0.0;
+  const double ext1 = cap1 == PickCap::Pointed ? double(nub.overlap) * rr : 0.0;
+  const double z_lo = -ext0, z_hi = h + ext1;
+  const double tip = std::max(0.0, double(nub.length) * rr);
 
   // Resolve one crossing of the infinite cylinder into a crossing of the
   // capped solid. `entering` picks the front (true) or back (false) root.
@@ -234,9 +269,10 @@ inline bool pickCylinder(const float* a, const float* d, const float* p0,
     // returns 1 = surface, 0 = open end (no surface), -1 = no crossing.
     // Parallel to the axis, the ray enters through the end it moves away
     // from and leaves through the other one.
-    const double z = parallel ? ((entering == (du > 0)) ? -1.0 : h + 1.0)
-                              : md + t * du;
-    if (!parallel && z >= 0.0 && z <= h) {
+    const double z = parallel
+                         ? ((entering == (du > 0)) ? z_lo - 1.0 : z_hi + 1.0)
+                         : md + t * du;
+    if (!parallel && z >= z_lo && z <= z_hi) {
       s = t;
       double p[3] = {m[0] + t * dv[0], m[1] + t * dv[1], m[2] + t * dv[2]};
       const double pz = dot3(p, u);
@@ -245,7 +281,7 @@ inline bool pickCylinder(const float* a, const float* d, const float* p0,
       store3(n, nn);
       return 1;
     }
-    const bool at_end0 = z < 0.0;
+    const bool at_end0 = z < z_lo;
     const PickCap cap = at_end0 ? cap0 : cap1;
     if (cap == PickCap::None)
       return 0;
@@ -258,11 +294,72 @@ inline bool pickCylinder(const float* a, const float* d, const float* p0,
       sphereNormal(a, d, cc, s, n);
       return 1;
     }
-    // Flat: the end plane, crossed in the right direction, inside the disc.
-    // The outward normal of end 0 is -u, of end 1 is +u.
+    const double plane_z = at_end0 ? z_lo : z_hi;
+    const double out = at_end0 ? -1.0 : 1.0; // outward along the axis
+    if (cap == PickCap::Pointed && tip > 0.0) {
+      // The cone: radius r (tip - hh) / tip at height hh = out (z - plane_z)
+      // in [0, tip]. With k = r / tip and tip - hh = e - f t, the crossings
+      // solve |mp + t dp|^2 = k^2 (e - f t)^2.
+      const double k2 = (rr / tip) * (rr / tip);
+      const double e = tip - out * (md - plane_z);
+      const double f = out * du;
+      const double qa = A - k2 * f * f;
+      const double qb = B + k2 * e * f;
+      const double qc = (C + rr * rr) - k2 * e * e;
+      double roots[2];
+      int nroots = 0;
+      if (std::fabs(qa) <= 1e-12 * (A + k2 * f * f)) {
+        // Along a generator: one crossing (the other is at infinity).
+        if (qb != 0.0)
+          roots[nroots++] = -qc / (2.0 * qb);
+      } else {
+        double disc = qb * qb - qa * qc;
+        // Through the tip (down the axis, say) the two roots meet; keep
+        // rounding from losing them.
+        if (disc < 0.0 && disc > -1e-12 * (qb * qb + std::fabs(qa * qc)))
+          disc = 0.0;
+        if (disc >= 0.0) {
+          const double sq = std::sqrt(disc);
+          roots[nroots++] = (-qb - sq) / qa;
+          roots[nroots++] = (-qb + sq) / qa;
+        }
+      }
+      // Keep the crossings on this nappe, between the rim and the tip: the
+      // first one entering, the last one leaving (the solid is convex).
+      const double eps = 1e-7 * (tip + rr);
+      bool found = false;
+      double best = 0.0;
+      for (int i = 0; i < nroots; ++i) {
+        const double hh = tip - (e - f * roots[i]);
+        if (hh < -eps || hh > tip + eps)
+          continue;
+        if (!found || (entering ? roots[i] < best : roots[i] > best)) {
+          best = roots[i];
+          found = true;
+        }
+      }
+      if (!found)
+        return -1;
+      s = best;
+      // The fan's normals interpolated: the axis at the tip, radial at the
+      // rim, weighted by height (the tip's barycentric weight).
+      double p[3] = {m[0] + s * dv[0], m[1] + s * dv[1], m[2] + s * dv[2]};
+      const double pz = dot3(p, u);
+      double q[3] = {p[0] - pz * u[0], p[1] - pz * u[1], p[2] - pz * u[2]};
+      normalize3(q);
+      const double w = std::min(1.0, std::max(0.0, out * (pz - plane_z) / tip));
+      double nn[3];
+      for (int k = 0; k < 3; ++k)
+        nn[k] = w * out * u[k] + (1.0 - w) * q[k];
+      normalize3(nn);
+      store3(n, nn);
+      return 1;
+    }
+    // Flat (or a pointed end with no tip: a flat fan): the end plane,
+    // crossed in the right direction, inside the disc. The outward normal of
+    // end 0 is -u, of end 1 is +u.
     if (std::fabs(du) < 1e-300)
       return -1;
-    const double plane_z = at_end0 ? 0.0 : h;
     const double sp = (plane_z - md) / du;
     // Entering through end 0 means moving along +u; through end 1, along -u.
     const bool moving_plus = du > 0;
@@ -271,11 +368,17 @@ inline bool pickCylinder(const float* a, const float* d, const float* p0,
     double p[3] = {m[0] + sp * dv[0], m[1] + sp * dv[1], m[2] + sp * dv[2]};
     const double pz = dot3(p, u);
     const double q[3] = {p[0] - pz * u[0], p[1] - pz * u[1], p[2] - pz * u[2]};
-    if (dot3(q, q) > double(r) * r)
+    if (dot3(q, q) > rr * rr)
       return -1;
     s = sp;
-    const double sign = at_end0 ? -1.0 : 1.0;
-    const double nn[3] = {sign * u[0], sign * u[1], sign * u[2]};
+    double nn[3] = {out * u[0], out * u[1], out * u[2]};
+    if (cap == PickCap::Pointed) {
+      // The flat fan's normals: the axis at the centre, radial at the rim.
+      const double rho = std::sqrt(dot3(q, q)) / rr;
+      for (int k = 0; k < 3; ++k)
+        nn[k] = (1.0 - rho) * out * u[k] + q[k] / rr;
+      normalize3(nn);
+    }
     store3(n, nn);
     return 1;
   };

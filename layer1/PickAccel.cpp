@@ -189,10 +189,25 @@ template <typename Fn> void PickAccel::forEachItemBounds(Fn&& fn) const
   }
   for (const auto& cy : m_cylinders) {
     // Both end points padded by the radius: covers the body and round caps.
+    // A pointed end first moves out by its overlap and tip.
+    float out0 = 0.f, out1 = 0.f;
+    const float len = std::sqrt(cy.axis[0] * cy.axis[0] +
+                                cy.axis[1] * cy.axis[1] +
+                                cy.axis[2] * cy.axis[2]);
+    if (len > 0.f) {
+      const float reach =
+          std::max(0.f, m_nub.overlap + std::max(0.f, m_nub.length)) * cy.r /
+          len;
+      if (cy.cap0 == PickCap::Pointed)
+        out0 = reach;
+      if (cy.cap1 == PickCap::Pointed)
+        out1 = reach;
+    }
     for (int k = 0; k < 3; ++k) {
-      const float e = cy.p0[k] + cy.axis[k];
-      lo[k] = std::min(cy.p0[k], e) - cy.r;
-      hi[k] = std::max(cy.p0[k], e) + cy.r;
+      const float b = cy.p0[k] - out0 * cy.axis[k];
+      const float e = cy.p0[k] + (1.f + out1) * cy.axis[k];
+      lo[k] = std::min(b, e) - cy.r;
+      hi[k] = std::max(b, e) + cy.r;
     }
     fn(id++, lo, hi);
   }
@@ -367,8 +382,8 @@ bool PickAccel::testItem(std::uint32_t id, const PickRay& ray, bool cap_on,
     rule = sp.rule;
   } else {
     const auto& cy = m_cylinders[id - m_firstCyl];
-    if (!pickCylinder(
-            ray.a, ray.d, cy.p0, cy.axis, cy.r, cy.cap0, cy.cap1, span))
+    if (!pickCylinder(ray.a, ray.d, cy.p0, cy.axis, cy.r, cy.cap0, cy.cap1,
+            span, m_nub))
       return false;
     rule = cy.rule;
   }
@@ -475,6 +490,14 @@ void PickAccelAddCGO(
     return;
   float alpha = 1.f;
 
+  // CGOSimplify with stick_round_nub off draws a round end as a pointed nub.
+  const bool pointed = rules.pointed();
+  if (pointed)
+    accel.setNubShape(rules.nub);
+  auto end = [pointed](PickCap c) {
+    return (pointed && c == PickCap::Round) ? PickCap::Pointed : c;
+  };
+
   // A BEGIN/END run: its vertices with the normal and alpha current at each
   // (CGORenderRay's walk), turned into triangles at END.
   struct RunVertex {
@@ -577,14 +600,14 @@ void PickAccelAddCGO(
       auto cyl = it.cast<cgo::draw::shadercylinder>();
       if (alpha > kInvisibleAlpha)
         accel.addCylinder(cyl->origin, cyl->axis, cyl->tube_size,
-            cap1FromShaderBits(cyl->cap), cap2FromShaderBits(cyl->cap),
-            rules.cylinder);
+            end(cap1FromShaderBits(cyl->cap)),
+            end(cap2FromShaderBits(cyl->cap)), rules.cylinder);
     } break;
     case CGO_SHADER_CYLINDER_WITH_2ND_COLOR: {
       auto cyl = it.cast<cgo::draw::shadercylinder2ndcolor>();
       if (alpha > kInvisibleAlpha) {
-        PickCap c1 = cap1FromShaderBits(cyl->cap);
-        PickCap c2 = cap2FromShaderBits(cyl->cap);
+        PickCap c1 = end(cap1FromShaderBits(cyl->cap));
+        PickCap c2 = end(cap2FromShaderBits(cyl->cap));
         // CGOSimplify hands an interpolated one to CGOSimpleCylinder as
         // (bcap, fcap) -- mirror what the tessellated mesh draws.
         if (rules.simplified_cylinders && (cyl->cap & cCylShaderInterpColor))
@@ -608,8 +631,8 @@ void PickAccelAddCGO(
           cyl->vertex2[1] - cyl->vertex1[1], cyl->vertex2[2] - cyl->vertex1[2]};
       if (alpha > kInvisibleAlpha)
         accel.addCylinder(cyl->vertex1, axis, cyl->radius,
-            capFromCylCap(cyl->get_cap1()), capFromCylCap(cyl->get_cap2()),
-            rules.cylinder);
+            end(capFromCylCap(cyl->get_cap1())),
+            end(capFromCylCap(cyl->get_cap2())), rules.cylinder);
     } break;
     case CGO_CUSTOM_CYLINDER_ALPHA: {
       auto cyl = it.cast<cgo::draw::custom_cylinder_alpha>();
@@ -617,14 +640,14 @@ void PickAccelAddCGO(
           cyl->vertex2[1] - cyl->vertex1[1], cyl->vertex2[2] - cyl->vertex1[2]};
       if (std::max(cyl->color1[3], cyl->color2[3]) > kInvisibleAlpha)
         accel.addCylinder(cyl->vertex1, axis, cyl->radius,
-            capFromCylCap(cyl->get_cap1()), capFromCylCap(cyl->get_cap2()),
-            rules.cylinder);
+            end(capFromCylCap(cyl->get_cap1())),
+            end(capFromCylCap(cyl->get_cap2())), rules.cylinder);
     } break;
     case CGO_SAUSAGE: {
       const float axis[3] = {pc[3] - pc[0], pc[4] - pc[1], pc[5] - pc[2]};
       if (alpha > kInvisibleAlpha)
-        accel.addCylinder(
-            pc, axis, pc[6], PickCap::Round, PickCap::Round, rules.cylinder);
+        accel.addCylinder(pc, axis, pc[6], end(PickCap::Round),
+            end(PickCap::Round), rules.cylinder);
     } break;
     default:
       // Cones, ellipsoids, quadrics, lines, points, labels: not pickable.

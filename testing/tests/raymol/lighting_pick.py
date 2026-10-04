@@ -633,6 +633,150 @@ class TestSticks(PickCase):
         self.assertIsNone(self.pick(*self.ndc_of((4.0, 0.0, 0.0))))
 
 
+class TestPointedNub(PickCase):
+    '''Tessellated sticks (stick_as_cylinders 0: CGOSimplify triangles on
+    Metal) with stick_round_nub off, its default. CGOSimpleCylinder then
+    draws a round end as a pointed nub, not a hemisphere: the body runs on
+    stick_overlap * r past the atom, then a triangle fan closes it in a cone
+    stick_nub * r long, whose vertex normals are radial on the rim and the
+    axis at the tip. The reference marches the ray through that solid, so it
+    shares no algebra with the pick.'''
+
+    R = 1.0  # a fat stick keeps the nub and the hemisphere far apart
+
+    def setUp(self):
+        super(TestPointedNub, self).setUp()
+        cmd.set('stick_radius', self.R)
+        cmd.set('stick_as_cylinders', 0)
+        cmd.set('stick_round_nub', 0)
+
+    def solid(self, p0, p1):
+        self.p0, self.p1 = p0, p1
+        self.h = norm(sub(p1, p0))
+        self.u = tuple(c / self.h for c in sub(p1, p0))
+        self.ov = cmd.get_setting_float('stick_overlap') * self.R
+        self.tip = cmd.get_setting_float('stick_nub') * self.R
+
+    def part(self, p):
+        '''(inside, outward normal) of the drawn solid at p: the body,
+        extended by the overlap at both ends, and a cone beyond each end,
+        with the fan's normals interpolated by height.'''
+        q = sub(p, self.p0)
+        z = dot(q, self.u)
+        radial = sub(q, tuple(c * z for c in self.u))
+        rho = norm(radial)
+        lo, hi = -self.ov, self.h + self.ov
+        if lo <= z <= hi:
+            return rho <= self.R, unit(radial) if rho > 0 else None
+        hh, out = (z - hi, 1.0) if z > hi else (lo - z, -1.0)
+        if hh > self.tip:
+            return False, None
+        w = hh / self.tip
+        n = tuple(w * out * a + ((1.0 - w) * b / rho if rho > 0 else 0.0)
+                  for a, b in zip(self.u, radial))
+        return rho <= self.R * (1.0 - w), unit(n)
+
+    def march(self, x, y):
+        '''(depth, outward normal) of the first point of the solid on the
+        ray through (x, y), or None.'''
+        d = self.ray_dir(x, y)
+
+        def inside(t):
+            return self.part(tuple(EYE[k] + t * d[k] for k in range(3)))[0]
+        t, step, end = 90.0, 0.005, 106.0
+        while t < end and not inside(t):
+            t += step
+        if t >= end:
+            return None
+        a, b = t - step, t
+        for _ in range(40):
+            m = 0.5 * (a + b)
+            a, b = (a, m) if inside(m) else (m, b)
+        return b, self.part(tuple(EYE[k] + b * d[k] for k in range(3)))[1]
+
+    def assertMatchesTheNub(self, points, min_hits):
+        hits = 0
+        for p in points:
+            x, y = self.ndc_of(p)
+            ref = self.march(x, y)
+            hit = self.pick(x, y)
+            where = 'at %r: pick %r, nub %r' % (p, hit, ref)
+            self.assertEqual(hit is None, ref is None, where)
+            if ref is None:
+                continue
+            hits += 1
+            self.assertEqual(hit.rep, 'sticks')
+            self.assertFalse(hit.inside)
+            self.assertAlmostEqual(hit.depth, ref[0], delta=1e-3, msg=where)
+            self.assertOnRay(hit, x, y)
+            self.assertOriented(hit)
+            v = unit(tuple(-c for c in self.ray_dir(x, y)))
+            self.assertNormalNear(hit, ref[1],
+                                  0.1 if dot(ref[1], v) > 0.06 else 3.1)
+        self.assertGreaterEqual(hits, min_hits)
+
+    def testAlongTheBond(self):
+        # Down the bond at its near end: the centre ray runs along the axis
+        # (pickCylinder's parallel case) to the tip, (0.2 + 0.7) r out.
+        self.solid((0.0, 0.0, -3.0), (0.0, 0.0, 3.0))
+        self.stick('nub', self.p0, self.p1)
+        hit = self.pick(0.0, 0.0)
+        self.assertHit(hit)
+        self.assertAlmostEqual(hit.depth, 97.0 - self.ov - self.tip,
+                               delta=1e-3)
+        self.assertNormalNear(hit, (0.0, 0.0, 1.0), 0.01)
+        points = [(rho * math.cos(a), rho * math.sin(a), 3.0)
+                  for rho in (0.1, 0.3, 0.5, 0.7, 0.9)
+                  for a in (0.3, 2.2, 4.1)]
+        self.assertMatchesTheNub(points, min_hits=15)
+        # The hemisphere it replaces is nearer the camera (up to 0.32 r).
+        x, y = self.ndc_of((0.5, 0.0, 3.0))
+        ball = sphere_roots(EYE, self.ray_dir(x, y), self.p1, self.R)
+        self.assertGreater(self.pick(x, y).depth - ball[0], 0.2)
+
+    def testAcrossTheBond(self):
+        # From the side: the extended body, the cone narrowing to its tip at
+        # x = 3.9, and nothing past it, where a hemisphere would still be.
+        self.solid((-3.0, 0.0, 0.0), (3.0, 0.0, 0.0))
+        self.stick('nub', self.p0, self.p1)
+        points = [(x, y, 0.0) for x in (3.1, 3.3, 3.5, 3.7, 3.85, 3.95)
+                  for y in (0.0, 0.25, -0.4)]
+        self.assertMatchesTheNub(points, min_hits=12)
+        x, y = self.ndc_of((3.95, 0.0, 0.0))
+        self.assertIsNotNone(
+            sphere_roots(EYE, self.ray_dir(x, y), self.p1, self.R))
+        self.assertIsNone(self.pick(x, y))
+        # The other end is pointed too.
+        self.assertMatchesTheNub([(-3.5, 0.0, 0.0), (-3.3, 0.3, 0.0)], 2)
+
+    def testNubSettingsShapeIt(self):
+        self.solid((0.0, 0.0, -3.0), (0.0, 0.0, 3.0))
+        self.stick('nub', self.p0, self.p1)
+        self.assertHit(self.pick(0.0, 0.0))  # builds the first grid
+        cmd.set('stick_nub', 1.5)
+        cmd.set('stick_overlap', 0.4)
+        self.solid(self.p0, self.p1)
+        self.assertAlmostEqual(self.pick(0.0, 0.0).depth,
+                               97.0 - 1.9 * self.R, delta=1e-3)
+        self.assertMatchesTheNub([(0.4, 0.2, 3.0), (-0.6, 0.3, 3.0)], 2)
+
+    def testRoundNubAndImpostorsDrawAHemisphere(self):
+        self.solid((0.0, 0.0, -3.0), (0.0, 0.0, 3.0))
+        self.stick('nub', self.p0, self.p1)
+        x, y = self.ndc_of((0.5, 0.2, 3.0))
+        ball = sphere_roots(EYE, self.ray_dir(x, y), self.p1, self.R)
+        pointed = self.pick(x, y).depth
+        self.assertGreater(pointed - ball[0], 0.2)
+        # stick_round_nub on: CGOSimplify draws a hemisphere (CGORoundNub).
+        cmd.set('stick_round_nub', 1)
+        self.assertAlmostEqual(self.pick(x, y).depth, ball[0], delta=1e-3)
+        cmd.set('stick_round_nub', 0)
+        self.assertAlmostEqual(self.pick(x, y).depth, pointed, delta=1e-3)
+        # Impostors always draw a hemisphere.
+        cmd.set('stick_as_cylinders', 1)
+        self.assertAlmostEqual(self.pick(x, y).depth, ball[0], delta=1e-3)
+
+
 class TestBranchedSticks(PickCase):
     '''Sticks at a branched atom, built as the app builds them (app_sticks):
     CB has three bonds, made in the order CA-CB, CB-CC, CB-CD, so CA-CB caps
