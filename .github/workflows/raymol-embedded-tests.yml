@@ -81,6 +81,7 @@ jobs:
               testing/tests/raymol/lighting_bridge.py \
               testing/tests/raymol/lighting_eye.py \
               testing/tests/raymol/lighting_harness.py \
+              testing/tests/raymol/lighting_ray_notice.py \
               testing/tests/raymol/lighting_rig.py \
               testing/tests/raymol/lighting_session.py \
               testing/tests/raymol/line_stick_helper.py \
