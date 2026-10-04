@@ -49,6 +49,10 @@ _PREPENDED = {
     'kVBOSrc': ('kMaterialSrc',),
     'kSphereImpostorSrc': ('kMaterialSrc', 'kMaterialImpostorSrc'),
     'kCylinderImpostorSrc': ('kMaterialSrc', 'kMaterialImpostorSrc'),
+    # The bezier tube under the light rig (#613): the classic tube's structs
+    # and the shared block's light_ helpers. The classic kBezierTubeSrc is
+    # still compiled alone.
+    'kBezierTubeRigSrc': ('kMaterialSrc', 'kBezierTubeSrc'),
 }
 
 
@@ -131,8 +135,27 @@ class TestMetalShaderSources(testing.PyMOLTestCase):
         literals = shader_literals(self.source())
         for name in ('kEyeReconSrc', 'kPostSrc', 'kRTSrc', 'kMaterialSrc',
                      'kMaterialImpostorSrc', 'kVBOSrc', 'kSphereImpostorSrc',
-                     'kCylinderImpostorSrc'):
+                     'kCylinderImpostorSrc', 'kBezierTubeSrc',
+                     'kBezierTubeRigSrc'):
             self.assertIn(name, literals)
+
+    def testPrependsMirrorTheCallSites(self):
+        """_PREPENDED is what the call sites build, not what someone last
+        wrote down: every library listed is compiled as its blocks then
+        itself, in that order, at a newLibraryWithSource: call. Otherwise
+        testEachLibraryIsSelfContained checks a library nobody compiles."""
+        literals = shader_literals(self.source())
+        code = _strip_comments(self.source())
+        built = {}
+        for expr in re.findall(r'newLibraryWithSource:(.*?)\boptions:', code, re.S):
+            names = [n for n in re.findall(r'\b(k\w+Src)\b', expr) if n in literals]
+            if names:
+                built.setdefault(names[-1], []).append(tuple(names[:-1]))
+        for lib, shared_names in sorted(_PREPENDED.items()):
+            self.assertIn(lib, built, '%s is never compiled' % lib)
+            self.assertEqual(built[lib], [shared_names],
+                             '%s is compiled as %s, not %s'
+                             % (lib, built[lib], shared_names))
 
     def testEachLibraryIsSelfContained(self):
         """Every helper a library calls is visible in shared + that library."""
