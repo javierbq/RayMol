@@ -1,0 +1,25 @@
+{
+  "comment": "#612 L2: the 7 presets of `lights` (lights <preset>) on the L1 shadows scene (cartoon and ligand sticks, metal_shadows 1), recoloured grey80 (a neutral subject), with metal_raytrace 0 and 1: 14 images. Rendered by #613 (spot shading), which posts the contact sheet; before #613 nothing in rendering reads the rig. The frozen harness (render.py) installs its own 3-light rig for \"rig\": \"on\" by calling cmd.set_lights after each scene's lines. The extra lines wrap cmd.set_lights once per process (hasattr guard: the app runs the script twice): while cmd._l612_preset names a preset, the harness's call applies that preset with cmd.lights instead. `lights` reaches the rig through pymol.lighting.set_lights, never cmd.set_lights, so the wrapper cannot recurse. The view is set before the rig block, so the spotlight's off-centre aim resolves to the same world point on both runs. Checked in CI by TestSceneFiles (testing/tests/raymol/lighting_commands.py). Follow-up (#613's F4): first-class post-rig lines in render.py.",
+  "base": null,
+  "rig": "on",
+  "extra": [
+    "if not hasattr(cmd, '_l612_set'): cmd._l612_set = cmd.set_lights",
+    "cmd.set_lights = lambda rig, _c=cmd: _c.lights(_c._l612_preset) if getattr(_c, '_l612_preset', None) else _c._l612_set(rig)"
+  ],
+  "scenes": [
+    {"tag": "three_point_rt0", "from": "shadows_rt0", "lines": ["cmd._l612_preset = 'three_point'", "cmd.color('grey80', 'm')"]},
+    {"tag": "three_point_rt1", "from": "shadows_rt1", "lines": ["cmd._l612_preset = 'three_point'", "cmd.color('grey80', 'm')"]},
+    {"tag": "softbox_rt0", "from": "shadows_rt0", "lines": ["cmd._l612_preset = 'softbox'", "cmd.color('grey80', 'm')"]},
+    {"tag": "softbox_rt1", "from": "shadows_rt1", "lines": ["cmd._l612_preset = 'softbox'", "cmd.color('grey80', 'm')"]},
+    {"tag": "spotlight_rt0", "from": "shadows_rt0", "lines": ["cmd._l612_preset = 'spotlight'", "cmd.color('grey80', 'm')"]},
+    {"tag": "spotlight_rt1", "from": "shadows_rt1", "lines": ["cmd._l612_preset = 'spotlight'", "cmd.color('grey80', 'm')"]},
+    {"tag": "rembrandt_rt0", "from": "shadows_rt0", "lines": ["cmd._l612_preset = 'rembrandt'", "cmd.color('grey80', 'm')"]},
+    {"tag": "rembrandt_rt1", "from": "shadows_rt1", "lines": ["cmd._l612_preset = 'rembrandt'", "cmd.color('grey80', 'm')"]},
+    {"tag": "neon_rt0", "from": "shadows_rt0", "lines": ["cmd._l612_preset = 'neon'", "cmd.color('grey80', 'm')"]},
+    {"tag": "neon_rt1", "from": "shadows_rt1", "lines": ["cmd._l612_preset = 'neon'", "cmd.color('grey80', 'm')"]},
+    {"tag": "sunset_rt0", "from": "shadows_rt0", "lines": ["cmd._l612_preset = 'sunset'", "cmd.color('grey80', 'm')"]},
+    {"tag": "sunset_rt1", "from": "shadows_rt1", "lines": ["cmd._l612_preset = 'sunset'", "cmd.color('grey80', 'm')"]},
+    {"tag": "underlight_rt0", "from": "shadows_rt0", "lines": ["cmd._l612_preset = 'underlight'", "cmd.color('grey80', 'm')"]},
+    {"tag": "underlight_rt1", "from": "shadows_rt1", "lines": ["cmd._l612_preset = 'underlight'", "cmd.color('grey80', 'm')"]}
+  ]
+}

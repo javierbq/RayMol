@@ -39,14 +39,28 @@ to the selection, the anchor kept), every bad value and conflict,
 metal_pick.camera(_self) and a pymol2 instance, and the non-negotiables for
 each helper (the pick runs the scene's update phase).
 
+Covers (part 4): the scene files in scripts/lighting/scenes that drive the
+frozen harness (scripts/lighting/render.py) through the commands:
+lighting_612_presets.json (L2: the 7 presets on the L1 shadows scene,
+rendered by #613) and rig_off_full.json (the L1 rig-off check with air, a
+pinned light, a point-aimed light and an outline). Each generated scene
+script runs twice in this process, as the app runs it, and the wrapped
+cmd.set_lights and cmd.keyword['lights'][0] are put back afterwards.
+
 Runs on a RayMol build:
     pymol -ckqy testing/testing.py --run testing/tests/raymol/lighting_commands.py
 """
 import contextlib
 import copy
+import importlib.util
 import io
+import json
 import math
+import os
 import re
+import shutil
+import tempfile
+import unittest
 
 import pymol
 import pymol.invocation
@@ -2628,3 +2642,238 @@ class TestChaining(CommandsCase):
         self.assertVec(key['aim_point'], [54.0 / 3, 56.0 / 3, 62.0 / 3],
                        places=5)
         self.assertEqual(key['beam'], 30.0)
+
+
+# --- scene files (part 4) ---------------------------------------------------
+
+ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir,
+                                     os.pardir, os.pardir))
+RENDER = os.path.join(ROOT, 'scripts', 'lighting', 'render.py')
+SCENES = os.path.join(ROOT, 'scripts', 'lighting', 'scenes')
+PDB = os.path.join(ROOT, 'testing', 'data', '1rx1.pdb')
+PRESETS_FILE = os.path.join(SCENES, 'lighting_612_presets.json')
+RIG_OFF_FULL_FILE = os.path.join(SCENES, 'rig_off_full.json')
+# The air of the frozen harness's RIG_OFF, which rig_off_full.json puts back
+# into the off rig.
+RIG_OFF_AIR = {'haze': 0.3, 'dust': 0.5, 'dust_size': 0.4, 'dust_speed': 1.0,
+               'scatter': 0.55, 'seed': 7}
+# What the scene files' extra lines leave on the cmd module.
+SHIM_ATTRS = ('_l612_set', '_l612_preset', '_l612_kw')
+
+
+@unittest.skipUnless(all(os.path.isfile(p) for p in
+                         (RENDER, PDB, PRESETS_FILE, RIG_OFF_FULL_FILE)),
+                     'needs a RayMol checkout (scripts/lighting)')
+class TestSceneFiles(CommandsCase):
+    """The scene files that drive the frozen harness (render.py) through the
+    commands. The harness runs a scene's lines before its rig block, so both
+    files wrap a function the rig block calls: lighting_612_presets.json
+    wraps cmd.set_lights ("rig": "on") to apply a preset, and
+    rig_off_full.json wraps cmd.keyword['lights'][0] ("rig": "off") so that
+    `three_point` also pins key, aims fill at 'm' and outlines rim.
+
+    The CI workflow runs every test file in one process: a wrapper left
+    behind would change later files (lighting_harness.py's off script), so
+    tearDown puts both functions back and deletes the attributes."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        spec = importlib.util.spec_from_file_location('lighting_render_612',
+                                                      RENDER)
+        cls.render = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.render)
+
+    def setUp(self):
+        super().setUp()
+        self.tmp = tempfile.mkdtemp(prefix='l612')
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.original_set_lights = cmd.set_lights
+        self.original_keyword = cmd.keyword['lights'][0]
+
+    def tearDown(self):
+        self.restore()
+        super().tearDown()
+
+    def restore(self):
+        cmd.set_lights = self.original_set_lights
+        cmd.keyword['lights'][0] = self.original_keyword
+        for name in SHIM_ATTRS:
+            if hasattr(cmd, name):
+                delattr(cmd, name)
+
+    def spec(self, path):
+        with open(path) as handle:
+            return json.load(handle)
+
+    def run_twice(self, job, out):
+        """Write the job's scene script and run it twice, as the app does
+        (PYMOL_AUTOCMD at launch and again before the export). Both runs
+        leave the same rig, and the harness's marker check passes. Returns
+        the rig."""
+        render = self.render
+        render.write_scripts(ROOT, out, [job])
+        rigs = []
+        for _ in range(2):
+            cmd.run(render.script_path(out, job.tag))
+            rigs.append(cmd.get_lights())
+        self.assertIsNone(render.check_marker(render.marker_path(out, job.tag),
+                                              job.tag, job.rig), job.tag)
+        self.assertEqual(rigs[0], rigs[1], job.tag)
+        return rigs[1]
+
+    def snapshot_after(self, job, out):
+        self.run_twice(job, out)
+        snap = Snapshot()
+        return snap.take()
+
+    def testPresetsFile(self):
+        render = self.render
+        extra = self.spec(PRESETS_FILE)['extra']
+        jobs = render.scene_file_jobs(PRESETS_FILE)
+        # every preset, in the order of `lights presets`, without and with
+        # metal_raytrace
+        self.assertEqual([n for n, _ in lighting_commands.presets()],
+                         PRESET_NAMES)
+        self.assertEqual([j.tag for j in jobs],
+                         ['%s_rt%d' % (p, rt) for p in PRESET_NAMES
+                          for rt in (0, 1)])
+        for job in jobs:
+            preset, rt = job.tag.rsplit('_rt', 1)
+            l1 = render.l1_job('shadows_rt' + rt, 'on')
+            self.assertEqual(
+                (job.rig, job.rep_lines, job.rt, job.shadows, job.size),
+                ('on', l1.rep_lines, l1.rt, l1.shadows, l1.size), job.tag)
+            self.assertEqual(job.extra, extra + [
+                "cmd._l612_preset = %r" % preset, "cmd.color('grey80', 'm')"],
+                job.tag)
+
+    def testPresetsScenesRun(self):
+        names = {p[0]: [l['name'] for l in p[3]] for p in PRESETS}
+        ambient = {p[0]: p[2] for p in PRESETS}
+        grey80 = cmd.get_color_index('grey80')
+        out = os.path.join(self.tmp, 'presets')
+        for job in self.render.scene_file_jobs(PRESETS_FILE):
+            preset = job.tag.rsplit('_rt', 1)[0]
+            rig = self.run_twice(job, out)
+            self.assertIs(rig['enabled'], True, job.tag)
+            self.assertEqual([l['name'] for l in rig['lights']],
+                             names[preset], job.tag)
+            self.assertEqual((rig['ambient'], rig['classic']),
+                             (ambient[preset], 0.0), job.tag)
+            # the preset, not the harness's own rig (RIG_OFF has air)
+            self.assertEqual(rig['air'], AIR_DEFAULTS, job.tag)
+            colours = set()
+            cmd.iterate('m', 'colours.add(color)', space={'colours': colours})
+            self.assertEqual(colours, {grey80}, job.tag)
+            # wrapped once: the second run kept the original reachable
+            self.assertIs(cmd._l612_set, self.original_set_lights)
+            self.assertIsNot(cmd.set_lights, self.original_set_lights)
+            if preset == 'spotlight':
+                # its off-centre aim resolved to a point (run 1 == run 2)
+                self.assertEqual(light('spot')['aim'], 'point', job.tag)
+
+    def testRigOffFullFile(self):
+        render = self.render
+        extra = self.spec(RIG_OFF_FULL_FILE)['extra']
+        jobs = render.scene_file_jobs(RIG_OFF_FULL_FILE)
+        self.assertEqual([j.tag for j in jobs], render.l1_tags())
+        for job in jobs:
+            l1 = render.l1_job(job.tag, 'off')
+            self.assertEqual(
+                (job.rig, job.rep_lines, job.rt, job.shadows, job.size),
+                ('off', l1.rep_lines, l1.rt, l1.shadows, l1.size), job.tag)
+            self.assertEqual(job.extra, extra, job.tag)
+        # the air it puts back is the frozen harness's
+        self.assertEqual(render.RIG_OFF['air'], RIG_OFF_AIR)
+
+    def testRigOffFullScenesRun(self):
+        out = os.path.join(self.tmp, 'off_full')
+        for job in self.render.scene_file_jobs(RIG_OFF_FULL_FILE):
+            rig = self.run_twice(job, out)
+            self.assertIs(rig['enabled'], False, job.tag)
+            self.assertIsNone(lighting._lights_ray_notice(), job.tag)
+            self.assertEqual([l['name'] for l in rig['lights']],
+                             ['key', 'fill', 'rim'], job.tag)
+            self.assertEqual(rig['air'], RIG_OFF_AIR, job.tag)
+            self.assertEqual(rig['ambient'], 0.1, job.tag)
+            key, fill, rim = rig['lights']
+            # key pinned where three_point put it
+            self.assertEqual(key['anchor'], 'pinned', job.tag)
+            got = eye('key')
+            for field, want in (('orbit', -45.0), ('pitch', 35.0),
+                                ('radius', 4.0)):
+                self.assertAlmostEqual(got[field], want, places=3,
+                                       msg=(job.tag, field))
+            # fill aimed at the centroid of m (a point, the text kept)
+            atoms = cmd.get_model('m').atom
+            centroid = [sum(a.coord[k] for a in atoms) / len(atoms)
+                        for k in range(3)]
+            self.assertEqual((fill['anchor'], fill['aim'],
+                              fill['aim_selection']),
+                             ('camera', 'point', 'm'), job.tag)
+            self.assertVec(fill['aim_point'], centroid, places=4,
+                           msg=job.tag)
+            # rim outlined, still a camera light aimed at the centre
+            self.assertEqual([l['outline'] for l in rig['lights']],
+                             [False, False, True], job.tag)
+            self.assertEqual((rim['anchor'], rim['aim']),
+                             ('camera', 'centre'), job.tag)
+            self.assertIs(cmd._l612_kw, self.original_keyword)
+
+    def testScenesChangeOnlyTheRig(self):
+        # The same scene without the rig: every setting, colour, material,
+        # extent, name and the view are equal, so only the rig differs (CI's
+        # stand-in for the L1 compare, which needs the Metal app). For
+        # rig_off_full the plain scene is the L1 --rig none one.
+        render = self.render
+        presets = {j.tag: j for j in render.scene_file_jobs(PRESETS_FILE)}
+        off_full = {j.tag: j for j in
+                    render.scene_file_jobs(RIG_OFF_FULL_FILE)}
+
+        def plain(job):
+            return render.Job(job.tag, job.rep_lines, job.rt, job.shadows,
+                              'none', job.extra, job.size)
+        cases = [
+            (presets['spotlight_rt1'], plain(presets['spotlight_rt1'])),
+            (presets['neon_rt0'], plain(presets['neon_rt0'])),
+            (off_full['cartoon_rt0'], render.l1_job('cartoon_rt0', 'none')),
+            (off_full['shadows_rt1'], render.l1_job('shadows_rt1', 'none')),
+        ]
+        for n, (job, bare) in enumerate(cases):
+            without = self.snapshot_after(
+                bare, os.path.join(self.tmp, 'plain%d' % n))
+            self.assertIsNone(cmd.get_lights(), job.tag)
+            with_rig = self.snapshot_after(
+                job, os.path.join(self.tmp, 'rig%d' % n))
+            self.assertIsNotNone(cmd.get_lights(), job.tag)
+            self.assertTrue(without['colors'], job.tag)
+            for key in without:
+                self.assertEqual(with_rig[key], without[key], (job.tag, key))
+            self.restore()
+
+    def testRestoreLeavesNothingBehind(self):
+        # What tearDown does. Later test files (lighting_harness.py's off
+        # script) must find the plain commands again.
+        self.assertIs(self.original_set_lights, lighting.set_lights)
+        self.assertIs(self.original_keyword, lighting_commands.lights)
+        for path in (PRESETS_FILE, RIG_OFF_FULL_FILE):
+            job = self.render.scene_file_jobs(path)[0]
+            self.run_twice(job, os.path.join(self.tmp,
+                                             os.path.basename(path)[:-5]))
+        self.assertIsNot(cmd.set_lights, lighting.set_lights)
+        self.assertIsNot(cmd.keyword['lights'][0], lighting_commands.lights)
+        self.restore()
+        self.assertIs(cmd.set_lights, lighting.set_lights)
+        self.assertIs(cmd.keyword['lights'][0], lighting_commands.lights)
+        for name in SHIM_ATTRS:
+            self.assertFalse(hasattr(cmd, name), name)
+        # the harness's off path is a bare three_point again
+        lighting.set_lights(None)
+        cmd.keyword['lights'][0]('three_point')
+        cmd.keyword['lights'][0]('off')
+        rig = cmd.get_lights()
+        self.assertEqual([(l['anchor'], l['aim'], l['outline'])
+                          for l in rig['lights']],
+                         [('camera', 'centre', False)] * 3)
+        self.assertEqual(rig['air'], AIR_DEFAULTS)
