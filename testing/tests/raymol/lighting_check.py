@@ -353,10 +353,14 @@ class TestCheckLit(testing.PyMOLTestCase):
         # white light is neither orange nor cyan
         white = self.add(dark, slice(10, 50), slice(10, 90), (100, 100, 100))
         self.fails(self.check.check_hue(white, dark, 'cartoon_rt0'))
-        # glass and transparent subjects need only a little of each
-        faint = self.add(self.add(dark, slice(20, 22), slice(20, 22), (120, 66, 24)),
-                         slice(30, 32), slice(70, 72), (24, 96, 120))
+        # glass and transparent subjects need only a little of each: 36 of
+        # the 3200 geometry pixels (1.1%) orange and as many cyan
+        faint = self.add(self.add(dark, slice(20, 26), slice(20, 26), (120, 66, 24)),
+                         slice(30, 36), slice(70, 76), (24, 96, 120))
         self.fails(self.check.check_hue(faint, dark, 'surface_rt0'))
+        fainter = self.add(self.add(dark, slice(20, 22), slice(20, 22), (120, 66, 24)),
+                           slice(30, 32), slice(70, 72), (24, 96, 120))
+        self.fails(self.check.check_hue(fainter, dark, 'glass_rt0'))   # 0.1% each
         for subject in ('glass_rt0', 'transparent_rt1', 'sticks_trans_rt0',
                         'spheres_jelly_rt0', 'sticks_glass_rt0'):
             self.assertTrue(self.check.faint(subject), subject)
@@ -392,6 +396,36 @@ class TestCheckLit(testing.PyMOLTestCase):
         by = {r.check: r for r in self.check.check_isolate(dark, rim, dark)}
         self.fails(by['isolate lit'])
         self.fails(by['left_of'])
+
+    def testLeftOfIsPerRun(self):
+        """left_of asks which SIDE of the geometry each light lands on, not
+        where in the image: two blocks, the rim on the right half of the left
+        one and the key on the left half of the right one, so the key's
+        centroid is right of the rim's (round 1's cartoon and sticks) and
+        the orbit sign still holds."""
+        dark = numpy.zeros((self.H, self.W, 3), dtype=numpy.uint8)
+        dark[10:50, 10:40] = 60
+        dark[10:50, 60:90] = 60
+        key = self.add(dark, slice(10, 50), slice(60, 75), (120, 66, 24))
+        rim = self.add(dark, slice(10, 50), slice(25, 40), (24, 96, 120))
+        by = {r.check: r for r in self.check.check_isolate(key, rim, dark)}
+        self.ok(by['left_of'])
+        self.assertIn('key side 0.250 <= rim side 0.750', by['left_of'].detail)
+        mirrored = [image[:, ::-1] for image in (key, rim, dark)]
+        by = {r.check: r for r in self.check.check_isolate(*mirrored)}
+        self.fails(by['left_of'])
+
+    def testRunSides(self):
+        geo = numpy.zeros((2, 10), dtype=bool)
+        geo[0, 1:5] = True           # a run of 4
+        geo[0, 7] = True             # a run of 1
+        geo[1, :] = True             # a whole row
+        sides = self.check.run_sides(geo)
+        self.assertEqual(list(sides[0, 1:5]), [0.125, 0.375, 0.625, 0.875])
+        self.assertEqual(sides[0, 7], 0.5)
+        self.assertEqual(sides[1, 0], 0.05)
+        self.assertEqual(sides[1, 9], 0.95)
+        self.assertTrue(numpy.isnan(sides[0, 0]) and numpy.isnan(sides[0, 6]))
 
     def testFewerLit(self):
         dark = self.dark()
@@ -437,14 +471,33 @@ class TestCheckLit(testing.PyMOLTestCase):
     def testHuePresent(self):
         image = numpy.zeros((self.H, self.W, 3), dtype=numpy.uint8)
         image[:, :] = (100, 100, 100)          # unlit grey counts as neither
-        image[0:10, 0:60] = (230, 140, 60)     # 600 warm
-        image[20:30, 0:60] = (60, 180, 230)    # 600 cyan
+        image[0:20, 0:60] = (230, 140, 60)     # 1200 warm
+        image[20:40, 0:60] = (60, 180, 230)    # 1200 cyan
         self.ok(self.check.check_hue_present(image))
-        self.assertEqual(self.check.present_counts(image), (600, 600))
-        image[20:30, 0:60] = (100, 100, 100)
+        self.assertEqual(self.check.present_counts(image), (1200, 1200))
+        # the box: only what is inside counts (the app's toolbar icons are
+        # blue enough to count as cyan, so L4 passes the viewport)
+        self.assertEqual(self.check.present_counts(image, (0, 0, 60, 20)), (1200, 0))
+        self.assertEqual(self.check.present_counts(image, (30, 10, 100, 60)), (300, 600))
+        self.fails(self.check.check_hue_present(image, box=(0, 0, 60, 20)))
+        image[20:40, 0:60] = (100, 100, 100)
         self.fails(self.check.check_hue_present(image))
-        image[0:10, 0:60] = (12, 7, 3)         # warm but too dark to count
+        image[0:20, 0:60] = (12, 7, 3)         # warm but too dark to count
         self.assertEqual(self.check.present_counts(image), (0, 0))
+
+    def testHuePresentBoxOption(self):
+        image = numpy.zeros((self.H, self.W, 3), dtype=numpy.uint8)
+        image[0:20, 0:60] = (230, 140, 60)
+        image[20:40, 0:60] = (60, 180, 230)
+        self.save('shot', image)
+        shot = os.path.join(self.tmp, 'shot.png')
+        rc, text = self.main('hue-present', shot)
+        self.assertEqual(rc, 0, text)
+        rc, text = self.main('hue-present', shot, '--box', '0,0,100,20')
+        self.assertEqual(rc, 1, text)
+        self.assertIn('warm 1200, cyan 0 (each >= 1000) in 0,0,100,20', text)
+        for bad in ('1,2,3', '10,0,5,20', 'a,b,c,d'):
+            self.assertEqual(self.main('hue-present', shot, '--box', bad)[0], 2, bad)
 
     def testTagParsing(self):
         self.assertEqual(

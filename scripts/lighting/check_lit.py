@@ -11,7 +11,9 @@
     check_lit.py warm_cool WARM COOL DARK      2500 K light is red-heavy, 12000 K blue-heavy
     check_lit.py brighter A B                  A has the higher mean luminance (decision 15)
     check_lit.py outline OUTLINE KEY           a thin ring in the key's outline colour
-    check_lit.py hue-present PNG               warm and cyan light in one image (L4)
+    check_lit.py hue-present PNG [--box X0,Y0,X1,Y1]
+                                               warm and cyan light in one image (L4),
+                                               counted inside the box (the viewport)
 
 The scene files are scripts/lighting/scenes/lighting_613.json (pairs) and
 lighting_613_params.json (isolation and parameters). Every lit image is
@@ -35,28 +37,54 @@ import re
 import sys
 
 # --- thresholds ----------------------------------------------------------------
-# Plan values (#613 plan §8.3). They are tuned ONCE, on the first full L2
-# round, with the measured numbers recorded next to each, and then frozen:
-# never re-tuned to make a later round pass.
+# Tuned ONCE, on #613's first full L2 round (round 1, head 26431e4ac: 48 pair
+# images and 31 parameter images of 1rx1 at 1280x720, plus the L4 simulator
+# screenshot), and FROZEN: never re-tuned to make a later round pass.
+#
+# The rule: a coverage threshold is about half the smallest value measured in
+# its class, rounded down, so a real regression (a path left unlit, a light
+# missing, a cone that no longer narrows) fails while a legitimate change of
+# look (#615 materials, #616 shadows, #624 HDR) keeps its margin. Definitions
+# (what counts as a changed, orange or cyan pixel) and sign checks keep the
+# plan's values. "measured" is round 1's minimum and the subject it came from.
 
-LIT_MAX_DELTA = 32       # lit: the largest channel delta is at least this
+LIT_MAX_DELTA = 50       # lit: the largest channel delta is at least this
+                         #   (plan 32; measured 100, spheres_jelly_rt0; others 161-232)
 LIT_CHANGE = 8           # a pixel "changes" when a channel moves by more than this
-LIT_FRACTION = 0.02      # lit: at least this fraction of geometry pixels change
+LIT_FRACTION = 0.20      # lit: at least this fraction of geometry pixels change
+                         #   (plan 0.02; measured 43.19%, sticks_glass_rt0; others 54.97-99.34%)
 HUE_LUMINANCE = 8.0      # hue: only pixels whose luminance delta exceeds this
 HUE_RATIO = 1.6          # orange: dr > 1.6 db and dr >= dg; cyan: db > 1.6 dr and dg > dr
-ORANGE_FRACTION = 0.01   # hue: orange pixels, as a fraction of geometry pixels
-CYAN_FRACTION = 0.005    # hue: cyan pixels, likewise
-FAINT_HUE_FRACTION = 0.0005   # both, for transparent and glass subjects
+ORANGE_FRACTION = 0.25   # hue: orange pixels, as a fraction of geometry pixels
+                         #   (plan 0.01; measured 56.72%, tube_rt0/rt1)
+CYAN_FRACTION = 0.05     # hue: cyan pixels, likewise
+                         #   (plan 0.005; measured 10.57%, meshcyl_rt1)
+FAINT_HUE_FRACTION = 0.01     # both, for transparent, glass and jelly subjects
+                              #   (plan 0.0005; measured cyan 2.33%, spheres_trans_rt0/rt1;
+                              #   orange 18.13%, sticks_glass_rt0)
 FAINT_TOKENS = ('glass', 'transparent', 'trans', 'jelly')
 ISOLATE_RATIO = 1.5      # key: sum dr >= 1.5 sum db; rim: sum db >= 1.5 sum dr
-ISOLATE_FRACTION = 0.003  # each light alone changes at least this fraction
-LEFT_OF = 0.05           # key centroid at least this fraction of the width left of the rim's
-FEWER_RATIO = 0.6        # narrow cone: fewer than 0.6 x the wide cone's lit pixels
+                         #   (plan 1.5; measured 3.32, tube key and rim)
+ISOLATE_FRACTION = 0.09  # each light alone changes at least this fraction
+                         #   (plan 0.003; measured 18.90%, surface rim)
+LEFT_OF = 0.05           # left_of: the rim's mean place across the geometry it lights
+                         #   (0 = a run's left edge, 1 = its right edge) is at least this
+                         #   right of the key's (measured gap 0.109, spheres; cartoon
+                         #   0.263, surface 0.199, sticks 0.315, tube 0.517)
+FEWER_RATIO = 0.5        # narrow cone: fewer than this x the wide cone's lit pixels
+                         #   (plan 0.6; measured 18.68% / 75.78% = 0.246)
 OUTLINE_MAX_FRACTION = 0.05   # outline: differs from the key image on at most 5%
+                              #   (measured 2.03%)
 OUTLINE_TOLERANCE = 0.15      # a ring pixel's chromaticity within this of the ring colour
 OUTLINE_MIN_BRIGHT = 64       # ... and its brightest channel at least this
-OUTLINE_MIN_PIXELS = 20       # ... at least this many ring pixels
-PRESENT_PIXELS = 500     # hue-present: at least this many warm and this many cyan pixels
+OUTLINE_MIN_PIXELS = 20       # ... at least this many ring pixels (measured 2045; a
+                              #   count, which scales with the image and the beam's
+                              #   footprint: it only shows the ring colour is there)
+PRESENT_PIXELS = 1000    # hue-present: at least this many warm and this many cyan pixels
+                         #   (plan 500; measured in the L4 viewport, 1206x2622 iPhone
+                         #   simulator, box 0,420,1206,2400: warm 456099, cyan 2058 with
+                         #   the 3-light rig, 0 and 0 without it. The app's blue toolbar
+                         #   icons alone are 2777 "cyan" pixels, so L4 passes --box)
 PRESENT_MIN_BRIGHT = 32  # ... counting only pixels at least this bright
 
 # The 2-light rig of the scene files: the key's colour (warmth 6500 K, so
@@ -216,20 +244,45 @@ def _lit_fraction(lit, ref):
     return float(((_positive(lit, ref).max(axis=2) > LIT_CHANGE) & geo).sum()) / n
 
 
-def _x_centroid(lit, ref):
+def run_sides(geo):
+    """Each geometry pixel's place across its row's run of geometry: near 0 at
+    the run's left edge, near 1 at its right edge ((x - start + 0.5) / width);
+    NaN off the geometry."""
     np = _np()
-    w = luminance(_positive(lit, ref))
+    geo = np.asarray(geo, dtype=bool)
+    h, w = geo.shape
+    xs = np.broadcast_to(np.arange(w), (h, w))
+    off = np.zeros((h, 1), dtype=bool)
+    starts = geo & ~np.concatenate([off, geo[:, :-1]], axis=1)
+    ends = geo & ~np.concatenate([geo[:, 1:], off], axis=1)
+    left = np.maximum.accumulate(np.where(starts, xs, -1), axis=1)
+    right = np.minimum.accumulate(np.where(ends, xs, w)[:, ::-1], axis=1)[:, ::-1]
+    side = (xs - left + 0.5) / np.maximum(right - left + 1, 1)
+    return np.where(geo, side, np.nan)
+
+
+def _mean_side(lit, ref, sides, geo):
+    """Where a light lands across the geometry it lights: the run_sides
+    place, weighted by the luminance the light adds. None when it adds
+    nothing."""
+    w = luminance(_positive(lit, ref))[geo]
     total = float(w.sum())
     if total <= 0.0:
         return None
-    xs = np.arange(w.shape[1], dtype='float64')
-    return float((w.sum(axis=0) * xs).sum()) / total
+    return float((w * sides[geo]).sum()) / total
 
 
 def check_isolate(key, rim, dark, subject=''):
     """Each light alone, against the rig at intensity 0: the key adds orange
     light, the rim cyan, each on enough pixels, and the key (orbit -45) lands
-    left of the rim (orbit +120): decision 12's orbit sign, in pixels."""
+    on the left sides of the geometry it lights, the rim (orbit +120) on the
+    right sides: decision 12's orbit sign, in pixels.
+
+    left_of compares sides, not image centroids: a centroid says where the
+    subject has geometry facing a light, not which side of it the light is
+    on (round 1: the cartoon rim lights the right edges of its loops and
+    helices, but most of those are in the left half of the image, so its
+    centroid lies left of the key's)."""
     bad = _same_size('isolate', subject, key, rim, dark)
     if bad:
         return [bad]
@@ -245,13 +298,15 @@ def check_isolate(key, rim, dark, subject=''):
         Result('isolate lit', subject, fk >= ISOLATE_FRACTION and fr >= ISOLATE_FRACTION,
                'key %s, rim %s (each >= %s)' % (_pct(fk), _pct(fr), _pct(ISOLATE_FRACTION))),
     ]
-    width = _np().asarray(key).shape[1]
-    ck, cr = _x_centroid(key, dark), _x_centroid(rim, dark)
-    if ck is None or cr is None:
+    geo = geometry(key, rim, dark)
+    sides = run_sides(geo)
+    sk, sr = _mean_side(key, dark, sides, geo), _mean_side(rim, dark, sides, geo)
+    if sk is None or sr is None:
         out.append(Result('left_of', subject, False, 'a light adds nothing'))
     else:
-        out.append(Result('left_of', subject, ck <= cr - LEFT_OF * width,
-                          'key x %.0f <= rim x %.0f - %.0f' % (ck, cr, LEFT_OF * width)))
+        out.append(Result('left_of', subject, sk <= sr - LEFT_OF,
+                          'key side %.3f <= rim side %.3f - %.2f (0 left edge, 1 right)'
+                          % (sk, sr, LEFT_OF)))
     return out
 
 
@@ -321,9 +376,13 @@ def check_outline(outline, key, colour=KEY_COLOUR, subject=''):
                   % (_pct(frac), _pct(OUTLINE_MAX_FRACTION), hits, OUTLINE_MIN_PIXELS))
 
 
-def present_counts(image):
-    """(warm, cyan) pixels of one image, by absolute colour."""
+def present_counts(image, box=None):
+    """(warm, cyan) pixels of one image, by absolute colour; only inside
+    box = (x0, y0, x1, y1) (pixels, end-exclusive) when given."""
     p = _rgb(image)
+    if box is not None:
+        x0, y0, x1, y1 = box
+        p = p[y0:y1, x0:x1]
     r, g, b = p[..., 0], p[..., 1], p[..., 2]
     bright = p.max(axis=2) >= PRESENT_MIN_BRIGHT
     warm = bright & (r > HUE_RATIO * b) & (r >= g)
@@ -331,12 +390,14 @@ def present_counts(image):
     return int(warm.sum()), int(cyan.sum())
 
 
-def check_hue_present(image, subject=''):
+def check_hue_present(image, subject='', box=None):
     """L4: the simulator screenshot shows both a warm and a cyan light on the
-    grey subjects (no dark reference exists there)."""
-    w, c = present_counts(image)
+    grey subjects (no dark reference exists there). Pass the viewport as box:
+    the app's own chrome has blue icons that count as cyan."""
+    w, c = present_counts(image, box)
+    where = ' in %d,%d,%d,%d' % tuple(box) if box is not None else ''
     return Result('hue-present', subject, w >= PRESENT_PIXELS and c >= PRESENT_PIXELS,
-                  'warm %d, cyan %d (each >= %d)' % (w, c, PRESENT_PIXELS))
+                  'warm %d, cyan %d (each >= %d)%s' % (w, c, PRESENT_PIXELS, where))
 
 
 # --- directories --------------------------------------------------------------
@@ -472,6 +533,16 @@ def _name(path):
     return os.path.splitext(os.path.basename(path))[0]
 
 
+def _box(text):
+    try:
+        box = tuple(int(v) for v in text.split(','))
+    except ValueError:
+        box = ()
+    if len(box) != 4 or box[0] < 0 or box[1] < 0 or box[2] <= box[0] or box[3] <= box[1]:
+        raise Usage('--box wants X0,Y0,X1,Y1 with X0 < X1 and Y0 < Y1, not %r' % text)
+    return box
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     sub = ap.add_subparsers(dest='cmd')
@@ -488,6 +559,9 @@ def main(argv=None):
         p = sub.add_parser(name)
         for a in args:
             p.add_argument(a)
+        if name == 'hue-present':
+            p.add_argument('--box', help='X0,Y0,X1,Y1: count only inside this '
+                           'rectangle (pixels, end-exclusive), e.g. the viewport')
     args = ap.parse_args(argv)
     try:
         if args.cmd == 'pairs':
@@ -511,7 +585,9 @@ def main(argv=None):
             results = [check_outline(*_files([args.outline, args.key]),
                                      subject=_name(args.outline))]
         elif args.cmd == 'hue-present':
-            results = [check_hue_present(*_files([args.png]), subject=_name(args.png))]
+            box = _box(args.box) if args.box else None
+            results = [check_hue_present(*_files([args.png]), subject=_name(args.png),
+                                         box=box)]
         else:
             ap.print_usage(sys.stderr)
             return 2
