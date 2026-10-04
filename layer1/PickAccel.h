@@ -175,9 +175,19 @@ public:
    * items' clip rules applied (`cap_on` enables impostor interior caps).
    * Triangles follow the Mesh rule. `filter` (optional) can reject indexed
    * mesh triangles. Fills `hit` in this accel's frame.
+   *
+   * With `eye`, impostors follow what Metal rasterizes at the slab's
+   * planes. A sphere's quad sits at its centre's depth, so a sphere whose
+   * centre is outside the slab draws nothing. With `cap_on`, a cylinder's
+   * box follows cyl_impostor_vertex's near-plane clamp: one wholly in front
+   * of the plane still caps it where its infinite tube runs on behind the
+   * plane, provided Metal keeps its box (the walk starts early enough to
+   * meet such cylinders). Without `eye`, every impostor proxy counts as
+   * drawn.
    */
   bool intersect(const PickRay& ray, bool cap_on, PickRayHit& hit,
-      const PickTriFilter* filter = nullptr) const;
+      const PickTriFilter* filter = nullptr,
+      const PickEyeDepth* eye = nullptr) const;
 
   std::size_t itemCount() const
   {
@@ -192,7 +202,8 @@ public:
 
 private:
   bool testItem(std::uint32_t id, const PickRay& ray, bool cap_on, float smax,
-      PickRayHit& hit, const PickTriFilter* filter) const;
+      PickRayHit& hit, const PickTriFilter* filter,
+      const PickEyeDepth* eye) const;
   /// Calls fn(id, lo, hi) for every item worth binning (triangles drawn
   /// fully transparent are left out).
   template <typename Fn> void forEachItemBounds(Fn&& fn) const;
@@ -207,6 +218,9 @@ private:
   std::uint32_t m_blockTris = 0;
   Mesh m_mesh;
   PickNubShape m_nub;
+  /// Largest length + 3.5 r of the impostor cylinders: how far in front of
+  /// the near plane (in depth) one can sit and still have its box kept.
+  float m_capReach = 0.f;
   // First item id of each kind (spheres start at 0); set by build().
   std::uint32_t m_firstCyl = 0, m_firstTri = 0, m_firstBlock = 0,
                 m_firstMesh = 0;

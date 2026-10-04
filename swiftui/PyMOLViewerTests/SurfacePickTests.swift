@@ -580,9 +580,9 @@ final class SurfacePickTests: XCTestCase {
         XCTAssertFalse(axis.cap)
 
         // The junction just in front of the near plane, interior cap on: a
-        // ray down CB-CC is capped at the plane only because CB-CC is open
-        // at CB (its far crossing runs on past CB); with every end capped it
-        // would be see-through.
+        // ray down CB-CC is capped at the plane. Its front, CC's ball, is in
+        // front of the plane, but the bond's infinite tube runs on behind
+        // it, and that is what cyl_shade decides the cap from.
         _ = python("_c.translate([0.0, 0.0, 50.4], 'lt614br', camera=0)\n"
                    + "_c.set('metal_interior_cap', 1, 'lt614br')\n")
         let aim = camera.project(SIMD3(0.03, 0.02, 51.9), aspect: sceneAspect).0
@@ -632,7 +632,7 @@ final class SurfacePickTests: XCTestCase {
         XCTAssertEqual(kept, tessellated)
 
         print("SurfacePickTests live geometry: junction axis depth \(axis.depth), "
-              + "open-end cap \(capped.cap) at \(capped.depth); ring sphere before frame nil, "
+              + "near-plane cap \(capped.cap) at \(capped.depth); ring sphere before frame nil, "
               + "after frame inside \(tessellated.inside) at \(tessellated.depth), "
               + "after transparency_mode 3 \(kept.depth)")
     }

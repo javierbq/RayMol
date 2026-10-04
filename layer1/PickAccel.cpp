@@ -13,6 +13,7 @@
 
 #include "Basis.h"
 #include "CGO.h"
+#include "Vector.h"
 
 namespace
 {
@@ -51,6 +52,49 @@ PickCap capFromCylCap(cCylCap c)
   default:
     return PickCap::None;
   }
+}
+
+/**
+ * Does Metal keep this impostor cylinder's box where it lies in front of the
+ * near plane? cyl_impostor_vertex builds the box from the axis and two
+ * radial directions (uu from h x X, or h x Y when h is near X; vv = uu x h),
+ * and moves a corner in front of the plane onto it only when that corner,
+ * pushed back by the ends' depth difference + 3.5 r, is behind the plane;
+ * otherwise the corner stays and the box is clipped there. A box counts as
+ * kept when every corner in front is moved (a partly clipped box counts as
+ * not drawn). Keep in step with cyl_impostor_vertex (RendererMetal.mm).
+ */
+bool metalCylinderBoxKept(
+    const float* p0, const float* axis, float r, const PickEyeDepth& eye)
+{
+  const float len = std::sqrt(
+      axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]);
+  if (!(len > 0.f))
+    return true;
+  const float h[3] = {axis[0] / len, axis[1] / len, axis[2] / len};
+  float uu[3] = {0.f, h[2], -h[1]}; // h x (1, 0, 0)
+  if (uu[0] * uu[0] + uu[1] * uu[1] + uu[2] * uu[2] < 0.001f) {
+    uu[0] = -h[2]; // h x (0, 1, 0)
+    uu[1] = 0.f;
+    uu[2] = h[0];
+  }
+  normalize3f(uu);
+  float vv[3];
+  cross_product3f(uu, h, vv);
+  normalize3f(vv);
+  const float p1[3] = {p0[0] + axis[0], p0[1] + axis[1], p0[2] + axis[2]};
+  const float diff = std::fabs(eye.depth(p0) - eye.depth(p1)) + 3.5f * r;
+  float nearest = std::numeric_limits<float>::max();
+  for (int up = 0; up < 2; ++up)
+    for (int right = 0; right < 2; ++right)
+      for (int out = 0; out < 2; ++out) {
+        float c[3];
+        for (int k = 0; k < 3; ++k)
+          c[k] = p0[k] + up * axis[k] + (2 * right - 1) * r * uu[k] +
+                 (2 * out - 1) * r * vv[k] + (2 * up - 1) * r * h[k];
+        nearest = std::min(nearest, eye.depth(c));
+      }
+  return nearest >= eye.near || nearest + diff > eye.near;
 }
 
 } // namespace
@@ -253,6 +297,16 @@ void PickAccel::build()
   m_built = true;
   m_cellStart.clear();
   m_refs.clear();
+  m_capReach = 0.f;
+  for (const auto& cy : m_cylinders) {
+    if (cy.rule != PickRule::Impostor)
+      continue;
+    const float len = std::sqrt(cy.axis[0] * cy.axis[0] +
+                                cy.axis[1] * cy.axis[1] +
+                                cy.axis[2] * cy.axis[2]);
+    if (std::isfinite(len) && std::isfinite(cy.r))
+      m_capReach = std::max(m_capReach, len + 3.5f * cy.r);
+  }
   m_firstCyl = std::uint32_t(m_spheres.size());
   m_firstTri = m_firstCyl + std::uint32_t(m_cylinders.size());
   m_firstBlock = m_firstTri + std::uint32_t(m_triangles.size());
@@ -345,7 +399,8 @@ void PickAccel::build()
 }
 
 bool PickAccel::testItem(std::uint32_t id, const PickRay& ray, bool cap_on,
-    float smax, PickRayHit& hit, const PickTriFilter* filter) const
+    float smax, PickRayHit& hit, const PickTriFilter* filter,
+    const PickEyeDepth* eye) const
 {
   if (id >= m_firstTri) {
     // Triangles: the Mesh rule, one crossing each.
@@ -380,24 +435,51 @@ bool PickAccel::testItem(std::uint32_t id, const PickRay& ray, bool cap_on,
     if (!pickSphere(ray.a, ray.d, sp.c, sp.r, span))
       return false;
     rule = sp.rule;
+    // sphere_impostor_vertex puts the quad at the centre's depth: with the
+    // centre outside the slab the quad is clipped, and nothing is drawn (no
+    // cap, nor a front surface inside the slab).
+    if (eye && rule == PickRule::Impostor) {
+      const float dc = eye->depth(sp.c);
+      if (dc < eye->near || dc > eye->far)
+        return false;
+    }
   } else {
     const auto& cy = m_cylinders[id - m_firstCyl];
     if (!pickCylinder(ray.a, ray.d, cy.p0, cy.axis, cy.r, cy.cap0, cy.cap1,
             span, m_nub))
       return false;
     rule = cy.rule;
+    // A cut impostor cylinder caps only where Metal keeps its box.
+    if (cap_on && eye && rule == PickRule::Impostor && span.has_in &&
+        span.s_in < ray.smin &&
+        !metalCylinderBoxKept(cy.p0, cy.axis, cy.r, *eye))
+      cap_on = false;
   }
   return pickApplyRule(rule, cap_on, span, ray.smin, smax, hit);
 }
 
 bool PickAccel::intersect(const PickRay& ray, bool cap_on, PickRayHit& hit,
-    const PickTriFilter* filter) const
+    const PickTriFilter* filter, const PickEyeDepth* eye) const
 {
   if (!m_built || m_cellStart.empty() || !(ray.smin <= ray.smax))
     return false;
 
-  // Clip the window to the grid box (slab method).
+  // Clip the window to the grid box (slab method). With the interior cap,
+  // an impostor cylinder wholly in front of the near plane can still cap it
+  // (its infinite tube runs on behind the plane), so the walk starts as far
+  // in front of the plane as a kept box can reach: its nearest corner within
+  // the ends' depth difference + 3.5 r of the plane.
   double t0 = ray.smin, t1 = ray.smax;
+  if (cap_on && eye && m_capReach > 0.f) {
+    const double rate = -(double(eye->row[0]) * ray.d[0] +
+                          double(eye->row[1]) * ray.d[1] +
+                          double(eye->row[2]) * ray.d[2]); // depth per unit s
+    const double scale = std::sqrt(double(eye->row[0]) * eye->row[0] +
+                                   double(eye->row[1]) * eye->row[1] +
+                                   double(eye->row[2]) * eye->row[2]);
+    if (rate > 0.0)
+      t0 -= std::max(1.0, scale) * m_capReach / rate;
+  }
   for (int k = 0; k < 3; ++k) {
     const double dk = ray.d[k];
     if (std::fabs(dk) < 1e-30) {
@@ -446,7 +528,7 @@ bool PickAccel::intersect(const PickRay& ray, bool cap_on, PickRayHit& hit,
     for (std::uint32_t r = m_cellStart[cell], e = m_cellStart[cell + 1]; r < e;
          ++r) {
       PickRayHit h;
-      if (testItem(m_refs[r], ray, cap_on, smax, h, filter) &&
+      if (testItem(m_refs[r], ray, cap_on, smax, h, filter, eye) &&
           (!found || h.s < best.s)) {
         best = h;
         found = true;

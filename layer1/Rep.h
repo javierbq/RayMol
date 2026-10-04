@@ -211,6 +211,17 @@ struct RepPickArgs {
   //! eye distances of the scene's near and far clip planes (s = 0 and s = 1)
   float slab_front = 0.f;
   float slab_back = 0.f;
+
+  //! Eye depth in the local frame, and the slab's planes.
+  PickEyeDepth eye() const
+  {
+    PickEyeDepth e;
+    for (int k = 0; k < 4; ++k)
+      e.row[k] = local_to_eye[8 + k];
+    e.near = slab_front;
+    e.far = slab_back;
+    return e;
+  }
 };
 
 struct Rep {

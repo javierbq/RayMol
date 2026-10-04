@@ -37,6 +37,22 @@ struct PickRay {
   float smax = 1.f; ///< the window end (shrinks to the best hit so far)
 };
 
+/**
+ * Eye depth in the ray's frame, depth(p) = -(row . (p, 1)), and the slab's
+ * near and far planes: what Metal's clipping of the impostor proxies
+ * depends on (PickAccel::intersect).
+ */
+struct PickEyeDepth {
+  float row[4] = {0.f, 0.f, -1.f, 0.f};
+  float near = 0.f;
+  float far = 1e30f;
+
+  float depth(const float* p) const
+  {
+    return -(row[0] * p[0] + row[1] * p[1] + row[2] * p[2] + row[3]);
+  }
+};
+
 /// A hit in the frame the ray was given in.
 struct PickRayHit {
   float s = 1.f;
@@ -81,6 +97,14 @@ struct PickSpan {
   float n_in[3] = {0.f, 0.f, 1.f};  ///< outward normal at the entry
   float n_out[3] = {0.f, 0.f, 1.f}; ///< outward normal at the exit
   bool has_in = false, has_out = false;
+  /**
+   * The far wall the impostor shader tests when the near plane cuts its
+   * front surface (Impostor rule, interior cap): for a sphere its exit; for
+   * a cylinder the INFINITE tube's far crossing, whatever the ends are
+   * (cyl_shade's `dist2`, RendererMetal.mm), so a round or open end does not
+   * change it.
+   */
+  float s_cap_far = 0.f;
 };
 
 namespace pickmath
@@ -162,6 +186,7 @@ inline bool pickSphere(
     return false;
   span.s_in = float(s0);
   span.s_out = float(s1);
+  span.s_cap_far = span.s_out;
   pickmath::sphereNormal(a, d, cd, s0, span.n_in);
   pickmath::sphereNormal(a, d, cd, s1, span.n_out);
   span.has_in = span.has_out = true;
@@ -235,8 +260,9 @@ inline bool pickCylinder(const float* a, const float* d, const float* p0,
   }
 
   // A (near) zero-length cylinder: RepCylBond draws a lone zero-order-bond
-  // atom as one (axis 1e-4) with round caps, i.e. a sphere. (Pointed ends
-  // draw a double cone there, handled below.)
+  // atom as one (axis 1e-4) with round caps, i.e. a sphere. The impostor
+  // still decides its interior cap from the tube about that tiny axis.
+  // (Pointed ends draw a double cone there, handled below.)
   if (h < 1e-3 && !pointed) {
     if (cap0 != PickCap::Round && cap1 != PickCap::Round)
       return false;
@@ -245,6 +271,7 @@ inline bool pickCylinder(const float* a, const float* d, const float* p0,
       return false;
     span.s_in = float(s0);
     span.s_out = float(s1);
+    span.s_cap_far = float((h > 0.0 && tube && !parallel) ? t1 : s1);
     sphereNormal(a, d, c0, s0, span.n_in);
     sphereNormal(a, d, c0, s1, span.n_out);
     span.has_in = span.has_out = true;
@@ -403,6 +430,9 @@ inline bool pickCylinder(const float* a, const float* d, const float* p0,
   span.s_out = float(rout == 1 ? s_out : t1);
   if (span.s_in > span.s_out)
     return false;
+  // cyl_shade's far body crossing. Exactly parallel to the axis it has none
+  // (the shader divides by zero there): fall back to the solid's exit.
+  span.s_cap_far = parallel ? span.s_out : float(t1);
   return true;
 }
 
@@ -510,9 +540,10 @@ inline bool pickTriangleMesh(const float* a, const float* d, const float* v0,
  * [smin, smax].
  *
  *  - Impostor: only the front surface exists. An entry in [smin, smax] is a
- *    hit. If the near plane (smin) cuts the primitive (s_in < smin < s_out),
- *    the hit is a flat cap at smin when `cap_on`, else the primitive is
- *    see-through and the ray carries on. An open end in front shows nothing.
+ *    hit. If the near plane (smin) cuts in front of it, the hit is a flat
+ *    cap at smin when `cap_on` and the shader's far wall is behind the plane
+ *    (s_cap_far > smin), else the primitive is see-through and the ray
+ *    carries on. An open end in front shows nothing.
  *  - Mesh: the first drawn crossing inside the window; when the entry is
  *    clipped away (or open) the far wall is seen from inside.
  */
@@ -533,7 +564,7 @@ inline bool pickApplyRule(PickRule rule, bool cap_on, const PickSpan& span,
       hit.cap = false;
       return true;
     }
-    if (cap_on && span.s_out > smin) {
+    if (cap_on && span.s_cap_far > smin) {
       hit.s = smin;
       hit.inside = false;
       hit.cap = true;

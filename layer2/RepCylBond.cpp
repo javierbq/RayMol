@@ -213,7 +213,8 @@ const PickAccel* RepCylBond::pickPrepare(bool* built) const
 bool RepCylBond::pickRay(const RepPickArgs& args, PickRayHit& hit) const
 {
   const PickAccel* accel = pickPrepare();
-  return accel && accel->intersect(args.ray, pickCapOn(), hit);
+  const PickEyeDepth eye = args.eye();
+  return accel && accel->intersect(args.ray, pickCapOn(), hit, nullptr, &eye);
 }
 
 void RepCylBond::render(RenderInfo * info)

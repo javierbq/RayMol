@@ -275,7 +275,8 @@ const PickAccel* RepSphere::pickPrepare(bool* built) const
 bool RepSphere::pickRay(const RepPickArgs& args, PickRayHit& hit) const
 {
   const PickAccel* accel = pickPrepare();
-  return accel && accel->intersect(args.ray, pickCapOn(), hit);
+  const PickEyeDepth eye = args.eye();
+  return accel && accel->intersect(args.ray, pickCapOn(), hit, nullptr, &eye);
 }
 
 bool RepSphere::sameVis() const

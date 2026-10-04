@@ -374,7 +374,8 @@ const PickAccel* RepCartoon::pickPrepare(bool* built) const
 bool RepCartoon::pickRay(const RepPickArgs& args, PickRayHit& hit) const
 {
   const PickAccel* accel = pickPrepare();
-  return accel && accel->intersect(args.ray, pickCapOn(), hit);
+  const PickEyeDepth eye = args.eye();
+  return accel && accel->intersect(args.ray, pickCapOn(), hit, nullptr, &eye);
 }
 
 #define NUCLEIC_NORMAL0 "C2"
