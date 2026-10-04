@@ -20,7 +20,8 @@ disabled rig and an empty rig, and with the rig on when nothing is traced
 (the prior image, the copy, the geometry test mode) or warnings are off; the
 CPU image byte-identical with no rig, the rig on and the rig off; the MCP
 `capture_viewport` result (the image first, then a `Note:` text item only
-while the rig is on) and its description.
+while the rig is on) and its description; and the policy note in the `ray`,
+`png` and `mpng` docstrings.
 
 C++ feedback is written straight to fd 1, so the console is captured there:
 contextlib.redirect_stdout never sees it (as in lighting_session.py).
@@ -419,3 +420,15 @@ class TestMcpCapture(NoticeCase):
         self.assertIn("PyMOL's lights", description)
         self.assertIn('set_lights', description)
 
+
+class TestDocs(testing.PyMOLTestCase):
+    """`help ray`, `help png` and `help mpng` state the policy: the CPU
+    tracer keeps PyMOL's own lights; studio lighting is Metal-only."""
+
+    @testing.foreach('ray', 'png', 'mpng')
+    def test_policy_note(self, name):
+        doc = ' '.join(getattr(cmd, name).__doc__.split())
+        self.assertIn('Metal renderer', doc, name)
+        self.assertIn("PyMOL's own lights", doc, name)
+        self.assertIn('see "get_lights"', doc, name)
+        self.assertIn('A notice says so once per command.', doc, name)
