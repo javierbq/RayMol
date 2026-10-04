@@ -24,6 +24,11 @@ a script that wraps cmd.set_lights (the lighting scene files do) can call
 
 Field kinds and ranges are read from the C++ field table at call time; only
 the presets, keywords and aliases are tables here. Nothing runs at import.
+
+The placement helpers (target=, click=, highlight=<sele>, rim=) read the
+instance's own camera (pymol.metal_pick.camera) and the drawn geometry
+through the native surface pick of #614 (pymol.metal_pick.surface_at),
+once, when they are given.
 '''
 
 import copy
@@ -515,14 +520,22 @@ def _is_on(rig):
                 and rig.get('centre') is not None)
 
 
+def _camera(where, _self):
+    '''This instance's camera, as metal_pick.camera parses it (rot is the
+    row-major model-to-camera rotation: its rows are the camera's x, y and
+    z axes in world space).'''
+    from . import metal_pick
+    cam = metal_pick.camera(_self)
+    if cam is None:
+        raise _error(where, 'no camera view to place the light from')
+    return cam
+
+
 def _view_rows(_self):
     '''The rows of the model-to-camera rotation (camera x, y and z axes in
-    world space), from this instance's get_view(). The rotation is
-    column-major in both layouts (see metal_pick.camera).'''
-    v = _self.get_view(quiet=1)
-    if len(v) >= 25:
-        return ((v[0], v[4], v[8]), (v[1], v[5], v[9]), (v[2], v[6], v[10]))
-    return ((v[0], v[3], v[6]), (v[1], v[4], v[7]), (v[2], v[5], v[8]))
+    world space), from this instance's camera.'''
+    rot = _camera('lights', _self).rot
+    return (tuple(rot[0:3]), tuple(rot[3:6]), tuple(rot[6:9]))
 
 
 def _aim_offset_step(index, offset, _self):
@@ -703,9 +716,9 @@ def _parse_aim(where, field, value):
     return ('selection', text)
 
 
-def _selection_atoms(where, field, sele, _self):
-    '''The atoms of a selection in the current state, in world space (object
-    matrices applied, as the frame capture and the pick use).'''
+def _selection_model(where, field, sele, _self):
+    '''The chempy atoms of a selection in the current state, in world space
+    (object matrices applied, as the frame capture and the pick use).'''
     try:
         model = _self.get_model(sele, state=-1)
     except CmdException:
@@ -714,7 +727,12 @@ def _selection_atoms(where, field, sele, _self):
     if not model.atom:
         raise _error(where, '%s=%s: the selection has no atoms' % (
             field, sele))
-    return [a.coord for a in model.atom]
+    return model.atom
+
+
+def _selection_atoms(where, field, sele, _self):
+    '''The coordinates of a selection's atoms (see _selection_model).'''
+    return [a.coord for a in _selection_model(where, field, sele, _self)]
 
 
 def _centroid(coords):
@@ -726,6 +744,36 @@ def _centroid(coords):
 
 _PLACE = ('orbit', 'pitch', 'radius')
 _PICKS = ('click', 'highlight')         # helpers that pick a surface point
+
+
+def _parse_click(where, field, value):
+    '''click=x/y: two finite numbers, each -1 to 1 (viewport NDC, +y up).'''
+    point = _parse_vec(where, field, value, 2, parens=True,
+                       form='x/y or [x,y], each from -1 to 1')
+    if not all(-1.0 <= v <= 1.0 for v in point):
+        raise _error(where, '%s=%s: each value is -1 to 1 (0/0 is the '
+                     'centre of the viewport, 1/1 its top right corner)' % (
+                         field, _shown(value)))
+    return tuple(point)
+
+
+def _parse_rim(where, field, value):
+    '''rim=deg: 0 to under 180 degrees (0 is the mirror rule).'''
+    v = _parse_number(where, field, value)
+    if not 0.0 <= v < 180.0:
+        raise _error(where, '%s=%s is out of range 0 to under 180 (degrees)'
+                     % (field, _shown(value)))
+    return v
+
+
+def _parse_selection_text(where, field, value):
+    if not isinstance(value, str):
+        raise _error(where, '%s=%s: give a selection' % (
+            field, _shown(value)))
+    text = value.strip()
+    if not text:
+        raise _error(where, '%s= needs a selection' % field)
+    return text
 
 
 def _looks_numeric(value):
@@ -756,8 +804,8 @@ class _LightSpec(object):
     aim       None, ('centre',), ('point', xyz, '') or
               ('point', xyz, selection text)
     name      the new name, or None
-    helpers   the placement helpers as given: target, click, highlight
-              (a selection) and rim
+    helpers   the placement helpers, parsed: target and highlight (the
+              selection text), click ((x, y)) and rim (degrees)
     given     role -> the field name as typed, for messages
     raw       role -> the value as given, for messages
     colour_word  warm, neutral or cool when color= was one, else None
@@ -837,8 +885,13 @@ def _parse_light_fields(where, table, fields, _self):
                 spec.colour_word = value.strip().lower()
         elif role == 'rgb':
             spec.values['color'] = _parse_rgb(where, given, value)
-        elif role in ('target', 'click', 'rim', 'highlight=<sele>'):
-            spec.helpers[role.split('=')[0]] = value
+        elif role == 'click':
+            spec.helpers['click'] = _parse_click(where, given, value)
+        elif role == 'rim':
+            spec.helpers['rim'] = _parse_rim(where, given, value)
+        elif role in ('target', 'highlight=<sele>'):
+            spec.helpers[role.split('=')[0]] = _parse_selection_text(
+                where, given, value)
         elif role in _PLACE:
             spec.place[role] = table.parse(where, 'light', role, value, given)
         else:
@@ -925,7 +978,9 @@ def _apply_light(where, rig, index, spec, change, _self, label):
     pinned = light['anchor'] == 'pinned'
     place = [(f, spec.place[f]) for f in _PLACE if f in spec.place]
     pin_field = spec.given.get('pin', 'pin')
-    if spec.position is not None:
+    if any(h in spec.helpers for h in _PICKS):
+        pass    # the pick places the light (radius, pin): _apply_helpers
+    elif spec.position is not None:
         light['anchor'] = 'pinned'
         light['position'] = list(spec.position)
     elif pinned and spec.pin is False:
@@ -954,10 +1009,258 @@ def _apply_light(where, rig, index, spec, change, _self, label):
         _apply_helpers(where, rig, index, spec, change, _self, label)
 
 
+# --- placement helpers (spec section 5, with the native pick of #614) -------
+#
+# Each helper is resolved once, when it is given. The picks and selections
+# are read in Phase 1 (the camera does not change during the call); the
+# placement itself needs the rig's frame, which set_lights may capture, so
+# it is a post-step. Helpers store a world aim point and leave a camera
+# light (#610's anchoring decision): pin=1 pins it where it was placed, and
+# target= keeps the light's anchor.
+
+_FIT_MARGIN = 1.15      # beam fit: the cone covers the patch with 15 % spare
+_TARGET_PAD = 1.5       # target=: the selection's radius plus this (A)
+_PATCH = 10.0           # click= and highlight=: the patch radius (A)
+_NEAR = 1.5             # highlight=: the hit within vdW + this of an atom (A)
+_BEYOND = 0.5           # a raised radius: this many sizes past the point
+_SURFACE_WORDS = 'a surface, cartoon, sphere or stick'
+
+
+def _sub(a, b):
+    return [x - y for x, y in zip(a, b)]
+
+
+def _dot(a, b):
+    return sum(x * y for x, y in zip(a, b))
+
+
+def _norm(a):
+    return math.sqrt(_dot(a, a))
+
+
+def _unit(a):
+    n = _norm(a)
+    return [x / n for x in a] if n > 0.0 else None
+
+
+def _rows(cam):
+    '''The camera's x, y and z axes in world space (rows of rot).'''
+    rot = cam.rot
+    return [list(rot[0:3]), list(rot[3:6]), list(rot[6:9])]
+
+
+def _camera_world(cam):
+    '''The camera's world position: origin - rot^T pos.'''
+    rows = _rows(cam)
+    return [cam.origin[i] - sum(rows[k][i] * cam.pos[k] for k in range(3))
+            for i in range(3)]
+
+
+def _towards_camera(cam, point, ortho):
+    '''Unit direction from a world point to the camera: along the camera's
+    z axis when orthoscopic (every ray runs along -z), else to the eye.'''
+    if ortho:
+        return _rows(cam)[2]
+    return _unit(_sub(_camera_world(cam), point)) or _rows(cam)[2]
+
+
+def _light_direction(normal, view, rim, cam):
+    '''Where the light sits from the picked point (unit). rim 0 is the
+    mirror rule, u = 2(N.V)N - V: the highlight lands on the point. A rim
+    of deg degrees turns V by deg towards the surface's side, around the
+    normal: u = V cos(deg) + side sin(deg), side = unit(N - V(N.V)), or
+    the camera's right (then up) when N is along V.'''
+    if not rim:
+        nv = _dot(normal, view)
+        return _unit([2.0 * nv * n - v for n, v in zip(normal, view)])
+    side = None
+    for axis in (normal,) + tuple(_rows(cam)[:2]):
+        along = _dot(axis, view)
+        rest = [a - along * v for a, v in zip(axis, view)]
+        if _norm(rest) >= 1e-6:
+            side = _unit(rest)
+            break
+    t = math.radians(rim)
+    return _unit([v * math.cos(t) + s * math.sin(t)
+                  for v, s in zip(view, side)])
+
+
+def _viewport_aspect(_self):
+    '''Scene width / height, as get_viewport reports it, read without
+    logging or printing.'''
+    with _self.lockcm:
+        width, height = _self._cmd.get_viewport(_self._COb)
+    if not (width > 0 and height > 0):
+        return None
+    return float(width) / float(height)
+
+
+def _project(cam, point, ortho, aspect):
+    '''(ndc_x, ndc_y, depth) of a world point, as the renderer projects it
+    (metal_pick.camera; the orthoscopic half-height is the pick's
+    max(1e-4, -pos.z) * tan(fov/2)).'''
+    rows = _rows(cam)
+    d = _sub(point, cam.origin)
+    eye = [_dot(rows[k], d) + cam.pos[k] for k in range(3)]
+    depth = -eye[2]
+    if ortho:
+        h = max(1e-4, -cam.pos[2]) * math.tan(math.radians(cam.fov) / 2.0)
+    else:
+        if not depth > 0.0:
+            return None, None, depth
+        h = depth * cam.tan_half
+    return eye[0] / (h * aspect), eye[1] / h, depth
+
+
+def _pick_selection(where, typed, sele, cam, ortho, _self):
+    '''highlight=<sele>: the drawn surface under the selection's centroid,
+    among the selection's objects; it must belong to the selection (within
+    vdW + 1.5 A of one of its atoms).'''
+    from . import metal_pick
+    if _self.get_setting_int('grid_mode'):
+        raise _error(where, '%s: not available in grid mode (each cell has '
+                     'its own view); use click=x/y' % typed)
+    atoms = _selection_model(where, typed.split('=', 1)[0], sele, _self)
+    centre = _centroid([a.coord for a in atoms])
+    aspect = _viewport_aspect(_self)
+    if aspect is None:
+        raise _error(where, '%s: the viewport has no size' % typed)
+    x, y, depth = _project(cam, centre, ortho, aspect)
+    if x is None:
+        raise _error(where, '%s: the selection is behind the camera' % typed)
+    if abs(x) > 1.0 or abs(y) > 1.0:
+        raise _error(where, '%s: the selection is off screen (its centre is '
+                     'at %.2f/%.2f; the viewport is -1 to 1)' % (typed, x, y))
+    objects = _self.get_object_list(sele) or []
+    hit = metal_pick.surface_at(x, y, aspect=aspect, objects=objects,
+                                _self=_self)
+    if hit is None:
+        raise _error(where, '%s: nothing drawn as %s at the selection\'s '
+                     'centre; show it (e.g. as sticks) or use click=x/y' % (
+                         typed, _SURFACE_WORDS))
+    gap = min(_norm(_sub(hit.point, a.coord)) - a.vdw for a in atoms)
+    if gap > _NEAR:
+        raise _error(where, "%s: the pick hit the %s of '%s' in front of "
+                     "the selection; show the selection (e.g. as sticks) or "
+                     "use click=x/y" % (typed, hit.rep, hit.object))
+    return hit
+
+
+def _current_radius(rig, light):
+    '''A light's radius now: stored for a camera light, derived from where
+    a pinned light is (clamped into 0.5 to 8, as an unpin does).'''
+    if light['anchor'] == 'pinned' and rig.get('centre') is not None:
+        r = _norm(_sub(light['position'], rig['centre'])) / rig['size']
+        return min(8.0, max(0.5, r))
+    return light['radius']
+
+
+def _beam_fit(index, reach, _self):
+    '''A post-step: the beam that covers a patch of radius `reach` (A) at
+    the light's aim distance, clamped into 1 to 170 degrees.'''
+    def step():
+        eye = lighting._lights_eye(_self=_self)
+        distance = eye['lights'][index]['aim_distance']
+        if distance > 0.0:
+            beam = 2.0 * math.degrees(math.atan(_FIT_MARGIN * reach /
+                                                distance))
+        else:
+            beam = 170.0
+        beam = min(170.0, max(1.0, beam))
+        lighting._light_set(index, 'beam', beam, _self=_self)
+    return step
+
+
+def _place_step(where, index, typed, point, direction, radius, pin, change,
+                _self):
+    '''A post-step: put the light on the sphere of `radius` rig sizes around
+    the rig centre, along `direction` from the picked `point`, then make it
+    a camera light there unless `pin`. When the point is on or outside that
+    sphere the radius is raised to |point - centre| / size + 0.5 (with a
+    note); past 8 it is an error.'''
+    def step():
+        rig = lighting.get_lights(_self=_self)
+        centre, size = rig['centre'], rig['size']
+        if centre is None or not size:
+            raise _error(where, '%s: the rig has no frame to place the '
+                         'light in' % typed)
+        offset = _sub(point, centre)
+        far = _norm(offset)
+        r = radius
+        if far >= r * size:
+            raised = far / size + _BEYOND
+            if raised > 8.0:
+                raise _error(where, "%s: the picked point is %.1f sizes from "
+                             "the rig centre, too far to place the light "
+                             "(at most 7.5); run 'lights recenter' first" % (
+                                 typed, far / size))
+            change.notes.append(
+                ' %s: radius raised from %s to %s so the light sits beyond '
+                'the picked point' % (where, _g(r), '%.3g' % raised))
+            r = raised
+        b = _dot(direction, offset)
+        q = far * far - (r * size) ** 2
+        t = -b + math.sqrt(b * b - q)
+        position = [p + t * u for p, u in zip(point, direction)]
+        lighting._light_set(index, 'position', position, _self=_self)
+        if not pin:
+            lighting._light_set(index, 'anchor', 0, _self=_self)
+    return step
+
+
 def _apply_helpers(where, rig, index, spec, change, _self, label):
-    '''The placement helpers (target, click, highlight, rim): #612 part 3.'''
-    helper = next(iter(spec.helpers))
-    raise _error(where, '%s= is not available yet' % helper)
+    '''target=, click=, highlight=<sele> and rim=: resolve the pick or the
+    selection now (Phase 1), store the aim point, and queue the placement
+    and the beam fit.'''
+    light = rig['lights'][index]
+    helpers = spec.helpers
+    fit = 'beam' not in spec.given
+
+    if 'target' in helpers:
+        sele = helpers['target']
+        coords = _selection_atoms(where, spec.given['target'], sele, _self)
+        centre = _centroid(coords)
+        reach = max(_norm(_sub(c, centre)) for c in coords) + _TARGET_PAD
+        light['aim'] = 'point'
+        light['aim_point'] = centre
+        light['aim_selection'] = sele
+        if fit:
+            change.steps.append((label, 'beam', _beam_fit(index, reach,
+                                                          _self)))
+        return
+
+    from . import metal_pick
+    cam = _camera(where, _self)
+    ortho = bool(_self.get_setting_boolean('orthoscopic'))
+    if 'click' in helpers:
+        role, sele = 'click', ''
+        typed = spec.typed(role)
+        x, y = helpers['click']
+        hit = metal_pick.surface_at(x, y, _self=_self)
+        if hit is None:
+            raise _error(where, 'nothing drawn as %s under %s' % (
+                _SURFACE_WORDS, typed))
+    else:
+        role = 'highlight=<sele>'
+        sele = helpers['highlight']
+        typed = spec.typed(role)
+        hit = _pick_selection(where, typed, sele, cam, ortho, _self)
+
+    point = [float(c) for c in hit.point]
+    normal = _unit(hit.normal) or _towards_camera(cam, point, ortho)
+    view = _towards_camera(cam, point, ortho)
+    direction = _light_direction(normal, view, helpers.get('rim', 0.0), cam)
+    radius = spec.place.get('radius', _current_radius(rig, light))
+    light['aim'] = 'point'
+    light['aim_point'] = point
+    light['aim_selection'] = sele
+    change.notes.append(" %s: %s picked the %s of '%s' at %s" % (
+        where, typed, hit.rep, hit.object, _xyz(point)))
+    change.steps.append((label, spec.given[role], _place_step(
+        where, index, typed, point, direction, radius, spec.pin, change,
+        _self)))
+    if fit:
+        change.steps.append((label, 'beam', _beam_fit(index, _PATCH, _self)))
 
 
 def _light_report(change, index, header, _self, returns_name):
@@ -978,14 +1281,15 @@ def _light_report(change, index, header, _self, returns_name):
 class _Change(object):
     '''What one call does. `rig` is the new rig (a dict, None to remove the
     rig, or _KEEP); `steps` are (light, field, callable) run after it, in
-    order; `lines` are printed unless quiet, `always` whatever quiet is;
-    `finish` (run under the lock after the steps) returns the result and may
-    add lines.'''
+    order; `lines` and then `notes` are printed unless quiet, `always`
+    whatever quiet is; `finish` (run under the lock after the steps)
+    returns the result and may add lines.'''
 
     def __init__(self, rig=_KEEP):
         self.rig = rig
         self.steps = []
         self.lines = []
+        self.notes = []
         self.always = []
         self.result = None
         self.finish = None
@@ -1042,7 +1346,7 @@ def _run(command, quiet, _self, build):
     for line in change.always:
         print(line)
     if not quiet:
-        for line in change.lines:
+        for line in change.lines + change.notes:
             print(line)
     return change.result
 
@@ -1281,29 +1585,38 @@ RIG FIELDS
 
 PLACEMENT
 
-    Helpers, resolved once when they are given, with the native surface
-    pick (the light does not follow the atoms afterwards):
+    Helpers, resolved once when they are given (the light does not follow
+    the atoms or the surface afterwards). highlight= and click= use the
+    native surface pick: what is drawn as a surface, cartoon, spheres or
+    sticks.
 
     target=sele      aim at the selection's centroid and fit the beam to
-                     it; the light keeps its anchor, orbit, pitch and radius
-    highlight=sele   place the light where the selection shows a highlight:
-                     along the mirror direction of the drawn surface the
-                     camera sees at the selection's centre (not in grid
-                     mode; the surface must belong to the selection)
+                     the selection (its radius plus 1.5 A); the light keeps
+                     its anchor, orbit, pitch and radius
+    highlight=sele   place the light so that the drawn surface at the
+                     selection's centre (as the camera sees it) shows a
+                     highlight: along the mirror direction of its normal.
+                     The selection must be on screen, and the surface hit
+                     must be its own (within 1.5 A of an atom's vdW
+                     sphere). Not in grid mode (use click=).
     click=x/y        the same for the surface under a point of the
-                     viewport, x and y from -1 to 1 (0/0 is the centre)
-    rim=deg          with highlight= or click=: place the light deg degrees
-                     (0 to under 180) away from the camera direction, around
-                     the surface normal, instead; 0 is the mirror rule
+                     viewport: x and y from -1 to 1, 0/0 the centre, 1/1
+                     the top right corner (in grid mode, of the whole grid)
+    rim=deg          with highlight= or click=: turn the light deg degrees
+                     (0 to under 180) away from the camera direction,
+                     towards the side of the surface, for a rim light; 0 is
+                     the mirror rule
 
-    A helper stores the picked point as the aim (aim_point) and places a
-    camera light (add pin=1 to pin it there). The beam is fitted (about a
-    10 A patch for highlight and click) unless beam= is given. When the
-    picked point lies beyond the light's radius, the radius is raised with
-    a note; past 8 it is an error ("lights recenter" first). One helper
-    at a time (rim goes with highlight or click); orbit, pitch and
-    position cannot be given with highlight or click, and aim cannot be
-    given with any helper.
+    highlight= and click= store the picked point as the aim (aim_point)
+    and place the light on its radius (radius= if given, else the light's
+    own, 4 for a new light), as a camera light; add pin=1 to pin it there.
+    When the picked point is on or beyond that radius, the radius is
+    raised to put the light half a size past it, with a note; past 8 that
+    is an error ("lights recenter" first). The beam is fitted to a 10 A
+    patch around the point (for target=, to the selection) unless beam= is
+    given. One helper at a time (rim goes with highlight or click); orbit,
+    pitch and position cannot be given with highlight or click, and aim
+    cannot be given with any helper.
 
 EXAMPLES
 
@@ -1313,7 +1626,9 @@ EXAMPLES
     lights rim, shadow=1
     lights key, aim=organic
     lights key, pin=1
+    lights key, target=organic
     lights add, spot, highlight=organic, beam=20
+    lights rim, click=0.3/0.2, rim=150, pin=1
     lights remove, rim
     lights off
     lights neon, ambient=0.1; atmosphere haze=0.3, dust=0.5
