@@ -1314,6 +1314,15 @@ class TestRayTracedReflections(LightMSLCase):
         self.assertEqual(len(re.findall(r'rtRig\s*=\s*true', post)), 1)
         self.assertEqual(len(re.findall(r'\[er setRenderPipelineState:', post)), 1)
         self.assertIn('[er setRenderPipelineState:composite];', post)
+        # which composite variant the rig path uses (613-R2-3): the transparent
+        # or default pipeline slot, flag and builder argument all follow doRTTrans
+        self.assertRegex(inside, r'rigComposite\s*=\s*doRTTrans \? &_rtResolvePipelineTRig'
+                                 r' : &_rtResolvePipelineRig;')
+        self.assertRegex(inside, r'tried\s*=\s*doRTTrans \? &_rtRigTTried : &_rtRigTried;')
+        self.assertRegex(inside, r'\*rigComposite\s*=\s*buildRTRigComposite\(doRTTrans\);')
+        builder = cpp_function(self.mm, 'RendererMetal::buildRTRigComposite')
+        self.assertRegex(builder, r'bool t = transparent;\s*\[fc setConstantValue:&t '
+                                  r'type:MTLDataTypeBool atIndex:0\];')
         bind = re.search(r'if\s*\(\s*rtRig\s*\)\s*\{[^}]*LightRigBlock block = _lightRigBlock;'
                          r'[^}]*setFragmentBytes:&block length:sizeof\(block\) '
                          r'atIndex:kRTLightRigBufferIndex\];\s*\}', post)
