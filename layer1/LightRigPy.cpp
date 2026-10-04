@@ -913,11 +913,16 @@ PyObject* LightFrameAsPyDict(
   unique_PyObject_ptr out(PyDict_New());
   if (!out)
     return nullptr;
-  PyObject* lights = PyList_New(0);
+  // Owned until `out` takes it (setItem steals it only when the chain gets
+  // that far), then borrowed for the appends below.
+  unique_PyObject_ptr lightsOwned(PyList_New(0));
+  if (!lightsOwned)
+    return nullptr;
+  PyObject* const lights = lightsOwned.get();
   if (!setItem(out.get(), "count", PyLong_FromLong(count)) ||
       !setItem(out.get(), "head", pyFloats(f, 4)) ||
       !setItem(out.get(), "block", pyFloats(f, kFloats)) ||
-      !setItem(out.get(), "lights", lights))
+      !setItem(out.get(), "lights", lightsOwned.release()))
     return nullptr;
   for (int i = 0; i < count; ++i) {
     const float* l = f + 4 + 16 * i;
