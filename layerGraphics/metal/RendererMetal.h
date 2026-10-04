@@ -343,9 +343,22 @@ private:
   id<MTLFunction> _vboVertexFunc;
   id<MTLFunction> _vboFragmentFunc[cMaterialFamily_count] = {};
   // Fragment function specialised for one material family, or nil when the
-  // family has no implemented material or specialisation failed.
+  // family has no implemented material or specialisation failed. `lightRig`
+  // is the light rig's function constant (#613), always set: false for every
+  // classic pipeline.
   id<MTLFunction> materialFragmentFunction(
-      id<MTLLibrary> lib, NSString* name, int family);
+      id<MTLLibrary> lib, NSString* name, int family, bool lightRig = false);
+  // The light rig (#613): the VBO library is kept so the rig variants of
+  // vbo_fragment and vbo_fragment_oit are specialised only when a rig is
+  // first turned on (vboRigFragmentFunction, one attempt per family). The
+  // functions are borrowed by their callers; buildVBOPipelines and the dtor
+  // release them with the library (releaseVBORigFunctions).
+  id<MTLLibrary> _vboLibrary = nil;
+  id<MTLFunction> _vboFragmentRigFunc[cMaterialFamily_count] = {};
+  id<MTLFunction> _vboFragmentOitRigFunc[cMaterialFamily_count] = {};
+  bool _vboRigFuncTried[cMaterialFamily_count][2] = {};
+  id<MTLFunction> vboRigFragmentFunction(int family, bool oit);
+  void releaseVBORigFunctions();
   id<MTLFunction> _vboVertexUnlitFunc;   // flat-color (no normal) for lines/dots
   id<MTLFunction> _vboFragmentUnlitFunc;
   // Unlit, position-ONLY (no per-vertex color attribute): used for uniform-
@@ -459,18 +472,22 @@ private:
   id<MTLRenderPipelineState> _vboOitPipelineFloat[cMaterialFamily_count] = {};
   id<MTLFunction> _vboFragmentOitFunc[cMaterialFamily_count] = {};
   // Build a weighted-blended OIT MRT pipeline (vbo_vertex + vbo_fragment_oit)
-  // for an arbitrary vertex layout (e.g. the surface's stride-44 layout).
+  // for an arbitrary vertex layout (e.g. the surface's stride-44 layout);
+  // with `lightRig`, the light rig's variant (#613).
   id<MTLRenderPipelineState> oitPipelineForVD(
-      MTLVertexDescriptor* vd, int family);
+      MTLVertexDescriptor* vd, int family, bool lightRig = false);
   // Build-once cache for one-off VBO pipelines whose vertex layout does not match
   // a prebuilt stride (e.g. the molecular-surface stride-44 layout). Without it,
   // drawVBO/drawVBOIndexed rebuilt a pipeline on EVERY such draw — a per-frame
   // MRC leak plus the (significant) cost of pipeline-state compilation. The cache
   // OWNS each +1 pipeline; callers borrow. Released in setSampleCount + the dtor.
+  // `lightRig` asks for the light rig's variant of Lit or Oit (#613): its own
+  // cache entry, keyed apart only when set; a failed one is cached as nil so
+  // the draw falls back to the classic pipeline without retrying.
   enum class VBOPipelineVariant { Lit, Unlit, UnlitFlat, Oit, Shadow, Peel };
   id<MTLRenderPipelineState> cachedVBOPipeline(VBOPipelineVariant variant,
       size_t stride, int posOffset, int normalOffset, int colorOffset,
-      int colorType, MTLVertexDescriptor* vd);
+      int colorType, MTLVertexDescriptor* vd, bool lightRig = false);
   id<MTLRenderPipelineState> _sphereOitPipeline[cMaterialFamily_count] = {};
   id<MTLRenderPipelineState> _cylinderOitPipeline = nil; // alias, not owned
   NSUInteger _cylinderOitStride = 0;
@@ -774,6 +791,9 @@ private:
   // SceneRenderMetal sets it again.
   bool _lightRigOn = false;
   LightRigBlock _lightRigBlock{};
+  // A rig pipeline that cannot be built draws classic instead; this logs it
+  // once per renderer rather than once per draw.
+  bool _lightRigWarned = false;
   // Key-light direction TOWARD the light in eye space = -normalize(cSetting_light).
   // Default reproduces the previously hard-coded normalize(0.4,0.4,1.0), which is
   // exactly -normalize(PyMOL's default light). Fed into every lit/shadow/RT shader.
