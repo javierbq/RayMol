@@ -24,11 +24,14 @@ Z* -------------------------------------------------------------------
 #include"main.h"
 #include"Feedback.h"
 #include"Rep.h"
+#include"PickAccel.h"
 #include"MemoryDebug.h"
 #include"CoordSet.h"
 #include"P.h"
 #include"Util.h"
 #include"Scene.h"
+#include"Setting.h"
+#include"PyMOLObject.h"
 
 /*========================================================================*/
 /**
@@ -197,6 +200,40 @@ Rep::Rep(CoordSet* cs_, int state)
 Rep::~Rep()
 {
   FreeP(P);
+}
+
+const PickAccel* Rep::pickAccelFor(const PickAccelKey& key,
+    const std::function<void(PickAccel&)>& fill, bool* built) const
+{
+  if (built)
+    *built = false;
+  if (m_pickAccel && m_pickAccel->key == key)
+    return m_pickAccel.get();
+  auto accel = std::make_unique<PickAccel>();
+  accel->key = key;
+  fill(*accel);
+  accel->build();
+  m_pickAccel = std::move(accel);
+  if (built)
+    *built = true;
+  return m_pickAccel.get();
+}
+
+std::size_t Rep::pickRelease() const
+{
+  if (!m_pickAccel)
+    return 0;
+  const std::size_t bytes = m_pickAccel->bytes();
+  m_pickAccel.reset();
+  return bytes;
+}
+
+bool Rep::pickCapOn() const
+{
+  if (hasTransparency() || builtTransparency() > 0.f)
+    return false;
+  return SettingGet_b(G, cs ? cs->Setting.get() : nullptr,
+      obj ? obj->Setting.get() : nullptr, cSetting_metal_interior_cap);
 }
 
 RepIterator::RepIterator(PyMOLGlobals * G, int rep_) {

@@ -97,6 +97,77 @@ struct LongPressHit: Equatable, Identifiable {
     }
 }
 
+/// The drawn surface point and normal under a screen point (#614), from
+/// `PyMOLBridge_SurfacePick`: the camera ray, clipped to the slab, against the
+/// geometry surfaces, cartoons, spheres and sticks actually draw (Metal's clip
+/// rules included). World (model) space, the same space `cmd.get_coords` uses.
+struct SurfacePick: Equatable {
+    /// The hit point.
+    var point: SIMD3<Float>
+    /// Unit normal facing the camera. On a grazing hit (`facing` < 0.05) it is
+    /// nudged toward the camera until it faces it by 0.05 (about 3° at most
+    /// when `facing` >= 0).
+    var normal: SIMD3<Float>
+    /// Eye-space distance along the view axis, in Å.
+    var depth: Float
+    /// dot(oriented normal, toward-camera direction) BEFORE the nudge: > 0 on
+    /// every hit that is not grazing.
+    var facing: Float
+    /// The ray met the geometry from inside: the far wall of a clipped closed
+    /// shape. On open two-sided geometry (cartoon sheets) it only means "back
+    /// face", so orient things with `normal` and `facing`, not with this.
+    var inside: Bool
+    /// A flat interior cap at a clip plane (`metal_interior_cap`).
+    var cap: Bool
+
+    /// Floats `PyMOLBridge_SurfacePick` writes: x, y, z, nx, ny, nz, depth, facing.
+    static let rawCount = 8
+
+    /// Parse the bridge's output. `flags` is its return value: 0 on a miss,
+    /// else 1 | inside << 1 | cap << 2. nil on a miss, a wrong count or a
+    /// non-finite value.
+    init?(raw: [Float], flags: Int32) {
+        guard flags & 1 != 0, raw.count == Self.rawCount,
+              raw.allSatisfy({ $0.isFinite }) else { return nil }
+        point = SIMD3(raw[0], raw[1], raw[2])
+        normal = SIMD3(raw[3], raw[4], raw[5])
+        depth = raw[6]
+        facing = raw[7]
+        inside = flags & 2 != 0
+        cap = flags & 4 != 0
+    }
+
+    /// View NDC (x and y in [-1, 1] over the whole view, +y up, as the viewport
+    /// computes it from the view bounds) to the scene viewport's NDC, the space
+    /// the pick takes.
+    ///
+    /// Mirrors `PyMOLBridge_RenderMetalFrame`: with a letterbox aspect the scene
+    /// is drawn into a centred sub-rect of that aspect, full height when the
+    /// view is wider than it and full width when it is taller, and PyMOL is
+    /// reshaped to that sub-rect. A `letterboxAspect` <= 0 (or not finite) means
+    /// the scene fills the view: the identity, whatever `viewAspect` is.
+    ///
+    /// nil in the bars around the sub-rect, or for a non-finite input. The
+    /// bridge rounds the sub-rect to whole pixels; this works in continuous NDC,
+    /// so the two can differ by under a pixel at its edge.
+    static func sceneNDC(viewNDC: SIMD2<Float>, viewAspect: Float,
+                         letterboxAspect: Float) -> SIMD2<Float>? {
+        guard viewNDC.x.isFinite, viewNDC.y.isFinite else { return nil }
+        guard letterboxAspect.isFinite, letterboxAspect > 0 else { return viewNDC }
+        guard viewAspect.isFinite, viewAspect > 0 else { return nil }
+        var s = viewNDC
+        if viewAspect > letterboxAspect {
+            s.x *= viewAspect / letterboxAspect   // bars left and right
+        } else {
+            s.y *= letterboxAspect / viewAspect   // bars top and bottom
+        }
+        // A point on the sub-rect's edge must not fall into the bar by rounding.
+        let slack: Float = 1e-5
+        guard abs(s.x) <= 1 + slack, abs(s.y) <= 1 + slack else { return nil }
+        return SIMD2(min(max(s.x, -1), 1), min(max(s.y, -1), 1))
+    }
+}
+
 final class PyMOLEngine: ObservableObject {
     static let shared = PyMOLEngine()
 
@@ -3390,6 +3461,96 @@ final class PyMOLEngine: ObservableObject {
     func pick(ndcX: Float, ndcY: Float, aspect: Float) {
         guard let inst = instance else { return }
         PyMOLBridge_Pick(inst, ndcX, ndcY, aspect)
+    }
+
+    // MARK: - Surface pick (#614)
+
+    /// The drawn surface point and normal under a view point, or nil on a miss
+    /// (also before the core is up, in the letterbox bars, and while a movie
+    /// export owns the core off the main thread).
+    ///
+    /// `viewNDCX/Y` and `viewAspect` are the whole view's, as the viewport
+    /// computes them from its bounds; the letterbox is applied here. Main
+    /// thread only. `updateReps` first rebuilds dirty representations, which
+    /// can reach Python: leave it false on drag ticks (the pick then sees what
+    /// the last frame drew, with no Python call) and call `prepareSurfacePick`
+    /// once beforehand, e.g. on entering a mode that picks while dragging.
+    func pickSurface(viewNDCX: Float, viewNDCY: Float, viewAspect: Float,
+                     updateReps: Bool = false) -> SurfacePick? {
+        guard Thread.isMainThread else {
+            assertionFailure("pickSurface reads the core: main thread only")
+            return nil
+        }
+        guard isReady, let instance, !exportRenderActive else { return nil }
+        guard let scene = SurfacePick.sceneNDC(
+            viewNDC: SIMD2(viewNDCX, viewNDCY), viewAspect: viewAspect,
+            letterboxAspect: Self.letterboxAspect(handle: instance)) else { return nil }
+        return Self.surfacePick(handle: instance, sceneNDCX: scene.x,
+                                sceneNDCY: scene.y, updateReps: updateReps)
+    }
+
+    /// Build the pick grid of every drawn pickable representation now, so the
+    /// first pick or drag does not pay for it. Returns how many grids are held
+    /// (0 before the core is up or during a movie export). Main thread only.
+    @discardableResult
+    func prepareSurfacePick(updateReps: Bool = true) -> Int {
+        guard Thread.isMainThread else {
+            assertionFailure("prepareSurfacePick reads the core: main thread only")
+            return 0
+        }
+        guard isReady, let instance, !exportRenderActive else { return 0 }
+        return Self.surfacePickPrepare(handle: instance, updateReps: updateReps)
+    }
+
+    /// Drop every surface-pick grid, giving its memory back; the next pick or
+    /// prepare rebuilds what it needs. Call it on leaving a mode that picks
+    /// (the counterpart of `prepareSurfacePick`) or on a memory warning: the
+    /// grids otherwise live as long as their representations. Returns how
+    /// many were dropped (0 before the core is up or during a movie export).
+    /// Main thread only.
+    @discardableResult
+    func releaseSurfacePick() -> Int {
+        guard Thread.isMainThread else {
+            assertionFailure("releaseSurfacePick touches the core: main thread only")
+            return 0
+        }
+        guard isReady, let instance, !exportRenderActive else { return 0 }
+        return Self.surfacePickRelease(handle: instance)
+    }
+
+    // The bridge calls behind the ones above, as seams whose signatures use
+    // Swift types only: the unit-test bundle has no bridging header, so it
+    // reaches the bridge (and its null-handle guards) through these.
+
+    static func surfacePick(handle: UnsafeMutableRawPointer?, sceneNDCX: Float,
+                            sceneNDCY: Float, updateReps: Bool) -> SurfacePick? {
+        var raw = [Float](repeating: 0, count: SurfacePick.rawCount)
+        let flags = raw.withUnsafeMutableBufferPointer { buffer in
+            PyMOLBridge_SurfacePick(handle, sceneNDCX, sceneNDCY, updateReps ? 1 : 0,
+                                    buffer.baseAddress, Int32(buffer.count))
+        }
+        return SurfacePick(raw: raw, flags: flags)
+    }
+
+    static func surfacePickPrepare(handle: UnsafeMutableRawPointer?, updateReps: Bool) -> Int {
+        Int(PyMOLBridge_SurfacePickPrepare(handle, updateReps ? 1 : 0))
+    }
+
+    static func surfacePickRelease(handle: UnsafeMutableRawPointer?) -> Int {
+        Int(PyMOLBridge_SurfacePickRelease(handle))
+    }
+
+    /// The live frame's letterbox aspect (0 = the scene fills the view).
+    static func letterboxAspect(handle: UnsafeMutableRawPointer?) -> Float {
+        PyMOLBridge_GetLetterboxAspect(handle)
+    }
+
+    /// The letterbox aspect the live frame renders the scene into, which
+    /// `pickSurface` maps view points through (0 = the scene fills the view,
+    /// also before the core or its renderer is up).
+    var currentLetterboxAspect: Float {
+        guard let instance else { return 0 }
+        return Self.letterboxAspect(handle: instance)
     }
 
     // MARK: - Hover pre-selection preview (issue #165)

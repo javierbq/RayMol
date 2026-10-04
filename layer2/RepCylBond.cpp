@@ -34,6 +34,7 @@
 #include"CGO.h"
 #include "Material.h"
 #include "Lex.h"
+#include "PickAccel.h"
 
 #include <iostream>
 
@@ -44,6 +45,8 @@ struct RepCylBond : Rep {
 
   cRep_t type() const override { return cRepCyl; }
   void render(RenderInfo* info) override;
+  bool pickRay(const RepPickArgs& args, PickRayHit& hit) const override;
+  const PickAccel* pickPrepare(bool* built = nullptr) const override;
 
   CGO* primitiveCGO = nullptr;
   CGO* renderCGO = nullptr;
@@ -168,6 +171,43 @@ static int RepCylBondCGOGenerate(RepCylBond * I, RenderInfo * info)
   CGOSetUseShader(I->renderCGO, use_shader);
 
   return true;
+}
+
+/**
+ * Surface pick (#614). The rule follows RepCylBondCGOGenerate as it resolves
+ * on Metal (use_shaders forced on, the Metal impostor pipeline standing in for
+ * the GL "cylinder" program): as_cylinders draws cylinder and sphere
+ * impostors; otherwise CGOSimplify tessellates everything (stick_round_nub
+ * caps), which is picked analytically under the Mesh rule. Keep in step with
+ * RepCylBondCGOGenerate.
+ */
+const PickAccel* RepCylBond::pickPrepare(bool* built) const
+{
+  if (built)
+    *built = false;
+  if (!primitiveCGO)
+    return nullptr;
+  if (builtTransparency() >= 0.999f)
+    return nullptr; // drawn invisible
+  bool const as_cylinders =
+      SettingGet<bool>(*cs, cSetting_stick_use_shader) &&
+      SettingGet<bool>(*cs, cSetting_stick_as_cylinders) &&
+      SettingGet<bool>(*cs, cSetting_render_as_cylinders);
+  PickCGORules rules;
+  rules.sphere = rules.cylinder =
+      as_cylinders ? PickRule::Impostor : PickRule::Mesh;
+  rules.simplified_cylinders = !as_cylinders;
+  const CGO* cgo = primitiveCGO;
+  PickAccelKey key{cgo, cgo->c, rules.bits()};
+  return pickAccelFor(
+      key, [&](PickAccel& accel) { PickAccelAddCGO(cgo, accel, rules); },
+      built);
+}
+
+bool RepCylBond::pickRay(const RepPickArgs& args, PickRayHit& hit) const
+{
+  const PickAccel* accel = pickPrepare();
+  return accel && accel->intersect(args.ray, pickCapOn(), hit);
 }
 
 void RepCylBond::render(RenderInfo * info)
