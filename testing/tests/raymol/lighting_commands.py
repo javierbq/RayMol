@@ -37,7 +37,11 @@ grid-mode refusal and its check that the hit belongs to the selection (a
 ligand inside a protein in one object), target=<sele> (centroid, beam fit
 to the selection, the anchor kept), every bad value and conflict,
 metal_pick.camera(_self) and a pymol2 instance, and the non-negotiables for
-each helper (the pick runs the scene's update phase).
+each helper (the pick runs the scene's update phase). The same placements
+under a turned, re-centred camera (expected values from the rotation the
+test sets), and aim=, target= and highlight= reading each object at the
+state it is drawn at (a single-state object above frame 1, an object's own
+state setting, all_states).
 
 Covers (part 4): the scene files in scripts/lighting/scenes that drive the
 frozen harness (scripts/lighting/render.py) through the commands:
@@ -2195,6 +2199,160 @@ class TestPlacement(PlacementCase):
             self.assertIsNone(cmd.get_lights())         # the singleton
         finally:
             p1.stop()
+
+
+def rot_x(deg):
+    c, s = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+    return ((1.0, 0.0, 0.0), (0.0, c, -s), (0.0, s, c))
+
+
+def rot_y(deg):
+    c, s = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+    return ((c, 0.0, s), (0.0, 1.0, 0.0), (-s, 0.0, c))
+
+
+def matmul(a, b):
+    return tuple(tuple(sum(a[i][k] * b[k][j] for k in range(3))
+                       for j in range(3)) for i in range(3))
+
+
+# A turned and re-centred camera: the model -> camera rotation
+# M = R_y(40) R_x(25), whose rows are the camera's x, y and z axes in world
+# space; the origin of rotation at (4, -3, 2); the camera 100 A back
+# (pos (0, 0, -100)); the pinned camera's slab, field of view and viewport.
+# get_view lists M column-major. Everything the tests expect is computed
+# from M here, never read back through metal_pick.camera or the code under
+# test: eye = M (world - origin) + pos, so the camera sits at
+# origin - M^T pos = origin + 100 z.
+TURNED = matmul(rot_y(40.0), rot_x(25.0))
+TURNED_ORIGIN = (4.0, -3.0, 2.0)
+TURNED_POS = (0.0, 0.0, -100.0)
+TURNED_VIEW = (tuple(TURNED[i][j] for j in range(3) for i in range(3)) +
+               TURNED_POS + TURNED_ORIGIN + (50.0, 150.0, -20.0))
+
+
+class TestPlacementTurnedView(PlacementCase):
+    """click= and highlight= under a turned, re-centred camera. With the
+    pinned camera (rotation identity, origin 0) a transposed rotation or a
+    dropped origin in the camera-to-world transform gives the same numbers;
+    here each would move the light by degrees."""
+
+    R = 2.0
+
+    def setUp(self):
+        super().setUp()
+        cmd.set_view(TURNED_VIEW)
+        self.assertVec(cmd.get_view(), TURNED_VIEW, places=5)
+        self.X, self.Y, self.Z = TURNED
+        self.C = vadd(TURNED_ORIGIN, vscale(100.0, self.Z))
+
+    def to_eye(self, w):
+        d = vsub(w, TURNED_ORIGIN)
+        return tuple(vdot(TURNED[k], d) + TURNED_POS[k] for k in range(3))
+
+    def to_world(self, e):
+        d = vsub(e, TURNED_POS)
+        return vadd(TURNED_ORIGIN, tuple(
+            sum(TURNED[k][i] * d[k] for k in range(3)) for i in range(3)))
+
+    def along(self, x, y, z):
+        """A world direction from camera-axis components."""
+        return vadd(vadd(vscale(x, self.X), vscale(y, self.Y)),
+                    vscale(z, self.Z))
+
+    def ndc(self, w, ortho=False):
+        e = self.to_eye(w)
+        if ortho:
+            h = 100.0 * math.tan(math.radians(10.0))
+        else:
+            h = -e[2] * T20
+        x, y = e[0] / (h * self.aspect()), e[1] / h
+        self.assertTrue(abs(x) < 0.9 and abs(y) < 0.9, 'test geometry')
+        return x, y
+
+    def assertTurnedPlacement(self, A, u, F, size=10.0, radius=3.0):
+        """Light key aims at A and sits where the ray A + t u (t > 0) meets
+        the sphere of radius * size around the frame centre F, as a camera
+        light: its orbit, pitch and radius are that point's as the turned
+        camera sees it, around the frame centre. Returns the point."""
+        u = vunit(u)
+        oc = vsub(A, F)
+        b, q = vdot(u, oc), vdot(oc, oc) - (radius * size) ** 2
+        P = vadd(A, vscale(-b + math.sqrt(b * b - q), u))
+        key = light('key')
+        self.assertVec(key['aim_point'], A, places=3)
+        self.assertEqual(key['anchor'], 'camera')
+        rel = vsub(self.to_eye(P), self.to_eye(F))
+        self.assertAlmostEqual(key['radius'], radius, places=4)
+        self.assertAlmostEqual(
+            key['orbit'], math.degrees(math.atan2(rel[0], rel[2])), places=2)
+        self.assertAlmostEqual(
+            key['pitch'], math.degrees(math.asin(rel[1] / vnorm(rel))),
+            places=2)
+        self.assertVec(self.to_world(eye('key')['position']), P, places=3)
+        return P
+
+    def testClickAtTheCentre(self):
+        # the ray through 0/0 runs from the camera through the origin of
+        # rotation: it meets the ball there along z, N = V = z, and the
+        # light goes straight back towards the camera
+        self.ball('ball', TURNED_ORIGIN, self.R)
+        self.frame(centre=TURNED_ORIGIN)
+        cmd.lights('key', click='0/0', radius=3)
+        A = vadd(TURNED_ORIGIN, vscale(self.R, self.Z))
+        self.assertVec(vunit(vsub(self.C, A)), self.Z, places=9)
+        P = self.assertTurnedPlacement(A, self.Z, TURNED_ORIGIN)
+        self.assertVec(P, vadd(TURNED_ORIGIN, vscale(30.0, self.Z)),
+                       places=3)
+        self.assertAlmostEqual(light('key')['orbit'], 0.0, places=3)
+        self.assertAlmostEqual(light('key')['pitch'], 0.0, places=3)
+
+    def testClickOffCentreMirror(self):
+        c = vadd(TURNED_ORIGIN, (1.0, -1.0, 0.5))
+        F = (1.0, 2.0, -1.0)
+        self.ball('ball', c, self.R)
+        self.frame(centre=F)
+        N = vunit(self.along(0.5, -0.3, 0.8))
+        A = vadd(c, vscale(self.R, N))
+        V = vunit(vsub(self.C, A))
+        self.assertGreater(vdot(N, V), 0.5, 'test geometry: A faces us')
+        x, y = self.ndc(A)
+        cmd.lights('key', click=[x, y], radius=3)
+        P = self.assertTurnedPlacement(A, mirror(N, V), F)
+        # pin=1: the same place, kept in world space
+        cmd.lights('key', click=[x, y], radius=3, pin=1)
+        key = light('key')
+        self.assertEqual(key['anchor'], 'pinned')
+        self.assertVec(key['position'], P, places=3)
+
+    def testOrthoscopicClick(self):
+        # every ray runs along the camera's -z: V is z in world space
+        cmd.set('orthoscopic', 1)
+        cmd.set_view(TURNED_VIEW[:17] + (20.0,))
+        c = vadd(TURNED_ORIGIN, (-1.0, 0.5, 1.0))
+        self.ball('ball', c, self.R)
+        self.frame(centre=TURNED_ORIGIN)
+        N = vunit(self.along(-0.4, 0.5, 0.7))
+        A = vadd(c, vscale(self.R, N))
+        x, y = self.ndc(A, ortho=True)
+        cmd.lights('key', click=[x, y], radius=3)
+        self.assertTurnedPlacement(A, mirror(N, self.Z), TURNED_ORIGIN)
+
+    def testHighlightAndRim(self):
+        # the ray through the projected centre runs through c2, so it meets
+        # the ball facing the camera: N = V there
+        c2 = vadd(TURNED_ORIGIN, self.along(1.5, 1.0, -2.0))
+        self.ball('s2', c2, self.R)
+        self.frame(centre=TURNED_ORIGIN)
+        V = vunit(vsub(self.C, c2))
+        A = vadd(c2, vscale(self.R, V))
+        cmd.lights('key', highlight='s2', radius=3)
+        self.assertTurnedPlacement(A, V, TURNED_ORIGIN)
+        # rim=90 with N along V turns towards the camera's right, x in
+        # world space (made perpendicular to V)
+        cmd.lights('key', highlight='s2', rim=90, radius=3)
+        side = vunit(vsub(self.X, vscale(vdot(self.X, V), V)))
+        self.assertTurnedPlacement(A, side, TURNED_ORIGIN)
 
 
 class TestDrawnStates(PlacementCase):
