@@ -1,5 +1,6 @@
 #pragma once
 
+#include "LightRigBlock.h"
 #include "Material.h"
 #include <cstddef>
 #include <cstdint>
@@ -438,6 +439,13 @@ public:
       float specular, float shininess, float sssWrap = 0.0f)
   {
   }
+
+  // The studio light rig (#613, epic #610): this frame's rig packed for the
+  // GPU, or nullptr when there is no rig or it is off. SceneRenderMetal calls
+  // it once per frame, right after setLightingParams() and before any draw.
+  // The block is only valid during the call: an implementation copies what it
+  // keeps. Default: no-op (the GL renderer ignores the rig).
+  virtual void setLightRig(const LightRigBlock* /*rig*/) {}
 
   // PyMOL key-light direction (cSetting_light). The direction toward the light
   // used for shading and shadow casting is -normalize(light). Default: no-op

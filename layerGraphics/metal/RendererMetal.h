@@ -196,6 +196,7 @@ public:
       int ortho = 0) override;
   void setLightingParams(float ambient, float direct, float reflect,
       float specular, float shininess, float sssWrap = 0.0f) override;
+  void setLightRig(const LightRigBlock* rig) override;
   void setKeyLightDir(const float* lightv) override;
   void setRayTraceParams(int samples, float aoRadius, float aoIntensity,
       float shadowIntensity, float scale = 1.0f) override;
@@ -486,8 +487,14 @@ private:
   };
   RefractParams refractParams() const;
   // Bind this rep's MaterialU for the draw about to be issued, and note when
-  // the draw is refracting glass inside the transparent pass.
+  // the draw is refracting glass inside the transparent pass. Outside the
+  // shadow and peel passes it also binds the light rig (bindLightRig).
   void bindRepMaterial();
+  // Bind this frame's light rig at fragment buffer kLightRigBufferIndex for
+  // the draw about to be issued, with head.z set to that draw's projection
+  // (1 = orthographic). Does nothing at all while the rig is off, so with no
+  // rig the command stream is exactly what it was before #613.
+  void bindLightRig(id<MTLRenderCommandEncoder> enc, int ortho);
   // --- Environment cubemap for the reflective materials (#493) ---
   // Six 128px RGBA16F faces with mipmaps, rebuilt only when material_env or
   // the background colour changes. Mipmaps are the roughness axis: a rough
@@ -760,6 +767,13 @@ private:
   // Defaults match the values the shaders previously hard-coded.
   float _lightAmbient = 0.14f, _lightDirect = 0.45f, _lightReflect = 0.481f;
   float _lightSpecular = 0.5f, _lightShininess = 55.0f;
+  // The studio light rig (#613): a value copy of this frame's packed rig,
+  // taken by setLightRig() at frame start (the off-main movie-export renderer
+  // holds no pointer into the scene). Valid only while _lightRigOn; off with
+  // no rig, with a rig that is off, and at every beginFrame until
+  // SceneRenderMetal sets it again.
+  bool _lightRigOn = false;
+  LightRigBlock _lightRigBlock{};
   // Key-light direction TOWARD the light in eye space = -normalize(cSetting_light).
   // Default reproduces the previously hard-coded normalize(0.4,0.4,1.0), which is
   // exactly -normalize(PyMOL's default light). Fed into every lit/shadow/RT shader.

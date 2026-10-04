@@ -29,6 +29,11 @@ namespace
 // every lit pipeline (ClipU and the impostor uniforms both sit at 1).
 constexpr NSUInteger kMaterialBufferIndex = 2;
 
+// Fragment buffer index for the light rig (#613; pymol::LightRigBlock, the MSL
+// LightRigU). Free in the VBO, sphere and cylinder libraries; bound only while
+// the rig is on (RendererMetal::bindLightRig).
+constexpr NSUInteger kLightRigBufferIndex = 9;
+
 struct MaterialU {
   simd_float4x4 invModelview;
   int family;
@@ -833,6 +838,24 @@ void RendererMetal::bindRepMaterial()
   bindMaterialU(_encoder, _repMatParams, _modelviewInv.data(), refrPx, ortho);
   if (refracts && refrPx > 0.0f)
     _oitHasRefraction = true;
+  // The light rig (#613) goes with the material on every draw that shades
+  // colour. The shadow and peel passes write only depth or coverage, so they
+  // never see it.
+  if (!_shadowMode && !_peelMode)
+    bindLightRig(_encoder, ortho);
+}
+
+void RendererMetal::bindLightRig(id<MTLRenderCommandEncoder> enc, int ortho)
+{
+  if (!_lightRigOn)
+    return;
+  if (!enc)
+    return;
+  // head.z follows this draw's projection, as MaterialU's refrOrtho does: the
+  // projection can change within a frame.
+  LightRigBlock block = _lightRigBlock;
+  block.head[2] = ortho ? 1.0f : 0.0f;
+  [enc setFragmentBytes:&block length:sizeof(block) atIndex:kLightRigBufferIndex];
 }
 
 
@@ -981,6 +1004,9 @@ void RendererMetal::beginFrame()
   // few frames. Which is exactly what it did.
   _oitCleared = false;
   _oitRefractCleared = false;
+  // The light rig (#613) is per frame: SceneRenderMetal sets it again before
+  // any draw, so a frame that never reaches it draws without the rig.
+  _lightRigOn = false;
   // Start this frame's geometry record. Only the LIST of contributing cache
   // entries is re-accumulated during the opaque pass; the geometry itself stays
   // in _rtGeomCache and is touched again only when that list changes.
@@ -2318,6 +2344,15 @@ void RendererMetal::setLightingParams(float ambient, float direct,
   _lightSpecular = specular;
   _lightShininess = shininess;
   _sssWrap = sssWrap;
+}
+
+void RendererMetal::setLightRig(const LightRigBlock* rig)
+{
+  // A value copy and nothing else: no GPU call, no allocation. A block with no
+  // lights counts as off.
+  _lightRigOn = rig && rig->head[0] >= 1.0f;
+  if (_lightRigOn)
+    _lightRigBlock = *rig;
 }
 
 void RendererMetal::setKeyLightDir(const float* lightv)
