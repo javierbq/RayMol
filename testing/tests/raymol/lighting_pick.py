@@ -1512,6 +1512,55 @@ class TestSurface(PickCase):
         self.assertAlmostEqual(hit.depth, FRONT, delta=1e-3)
         self.assertOnRay(hit, 0.0, 0.0)
 
+    def testPerRepBackPlaneHoldsWithTheCap(self):
+        # With the cap on, the parity search runs on to the far plane, past
+        # the per-rep back plane, so a first crossing beyond that plane must
+        # still be dropped. A at depth 100, B at 110: the ray through B
+        # enters it at about 108, behind the back plane at 106.48.
+        cmd.pseudoatom('m', name='A', pos=[0.0, 0.0, 0.0], vdw=self.R)
+        cmd.pseudoatom('m', name='B', pos=[6.0, 0.0, -10.0], vdw=self.R)
+        cmd.show_as('surface', 'm')
+        x, y = self.ndc_of((6.0, 0.0, -10.0))
+        entry = self.pick(x, y)
+        self.assertHit(entry)
+        self.assertFalse(entry.inside)
+        self.assertAlmostEqual(entry.depth, 108.0, delta=0.5)
+        cmd.set('surface_clip_back', 0.8, 'm')
+        front, back = self.rep_clip('m', 0.0, 0.8)
+        self.assertAlmostEqual(back, 106.48, delta=1e-3)
+        self.assertGreater(front, FRONT, 'test setup: the cap plane is live')
+        self.assertLess(back, entry.depth, 'test setup')
+        self.assertIsNone(self.pick(x, y))
+        cmd.set('metal_interior_cap', 1, 'm')
+        self.assertIsNone(self.pick(x, y))
+        # Without the back plane, the cap-on search finds the entry.
+        cmd.set('surface_clip_back', 0.0, 'm')
+        hit = self.pick(x, y)
+        self.assertHit(hit)
+        self.assertFalse(hit.cap)
+        self.assertFalse(hit.inside)
+        self.assertAlmostEqual(hit.depth, entry.depth, delta=1e-3)
+
+    def testNoCapInFrontOfTheNearPlane(self):
+        # A per-rep front at eye depth 48.84, in front of the near plane but
+        # >= 0: the window is on, but Metal's cap fill at 48.84 is clipped
+        # away, so the cut atom shows the inside of its far wall at 52.
+        cmd.pseudoatom('n', name='A', pos=[0.0, 0.0, 50.0], vdw=self.R)
+        cmd.pseudoatom('n', name='B', pos=[0.0, 0.0, 30.0], vdw=self.R)
+        cmd.show_as('surface', 'n')
+        cmd.set('surface_clip_front', 0.1, 'n')
+        front, _ = self.rep_clip('n', 0.1, 0.0)
+        self.assertAlmostEqual(front, 48.84, delta=1e-3)
+        for cap_on in (0, 1):
+            cmd.set('metal_interior_cap', cap_on, 'n')
+            hit = self.pick(0.0, 0.0)
+            self.assertHit(hit)
+            self.assertFalse(hit.cap, 'cap %d' % cap_on)
+            self.assertTrue(hit.inside, 'cap %d' % cap_on)
+            self.assertAlmostEqual(hit.depth, 52.0, delta=0.5)
+            self.assertOnRay(hit, 0.0, 0.0)
+            self.assertOriented(hit)
+
     def testRecolorKeepsTheGrid(self):
         # Colour and transparency recolor the rep in place: the grid stays,
         # and what recolor decides (here: invisible) is read at pick time.
