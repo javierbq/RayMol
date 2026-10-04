@@ -1602,6 +1602,9 @@ class TestTransforms(PickCase):
                         'test setup: no state matrix stored (%r)' % (m,))
 
     def testStateMatrixUnderMatrixMode(self):
+        # GL and ray semantics. The Metal app does not draw state matrices
+        # yet (see coordSetToWorld in layer3/SurfacePick.cpp); this pins the
+        # pick to what the renderer should draw.
         self.state_matrix_scene()
         cmd.set('matrix_mode', 1, 'mob')
         centre = (0.0, 5.0, 10.0)
