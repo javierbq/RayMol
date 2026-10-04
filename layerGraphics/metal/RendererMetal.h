@@ -1023,6 +1023,15 @@ private:
   void buildRTPipelines(bool transparent, id<MTLRenderPipelineState>* ao,
       id<MTLRenderPipelineState>* composite);
   void releaseRayTracingTransAS();
+  // The light rig on traced reflection hits (#613): rt_composite specialised
+  // with kRTLightRig, default and transparent, each built the first time a
+  // rig-on frame has something reflective (one attempt each). Used only then;
+  // every other frame keeps _rtResolvePipeline / _rtResolvePipelineT.
+  id<MTLRenderPipelineState> _rtResolvePipelineRig = nil;
+  id<MTLRenderPipelineState> _rtResolvePipelineTRig = nil;
+  bool _rtRigTried = false;
+  bool _rtRigTTried = false;
+  id<MTLRenderPipelineState> buildRTRigComposite(bool transparent);
 
   // Drop the cached RT geometry derived from a CPU buffer that is about to be
   // freed (or whose contents changed). Handles both primary and alias keys.
