@@ -1,3 +1,5 @@
+import CoreGraphics
+import ImageIO
 import XCTest
 @testable import RayMol
 
@@ -145,6 +147,7 @@ final class SurfacePickTests: XCTestCase {
         XCTAssertNil(PyMOLEngine.surfacePick(handle: nil, sceneNDCX: 0, sceneNDCY: 0,
                                              updateReps: true))
         XCTAssertEqual(PyMOLEngine.surfacePickPrepare(handle: nil, updateReps: true), 0)
+        XCTAssertEqual(PyMOLEngine.surfacePickRelease(handle: nil), 0)
         XCTAssertEqual(PyMOLEngine.letterboxAspect(handle: nil), 0)
     }
 
@@ -165,8 +168,10 @@ final class SurfacePickTests: XCTestCase {
         if liveSceneBuilt {
             engine.runPython(
                 "from pymol import cmd as _c\n"
-                + "for _n in ('lt614probe', 'lt614surf', 'lt614pep'):\n"
+                + "for _n in ('lt614probe', 'lt614surf', 'lt614pep', 'lt614dna', 'lt614br'):\n"
                 + "    _c.delete(_n)\n"
+                + "if '_lt614_transparency_mode' in globals():\n"
+                + "    _c.set('transparency_mode', globals().pop('_lt614_transparency_mode'))\n"
                 + "for _n in globals().pop('_lt614_enabled', []):\n"
                 + "    _c.enable(_n)\n")
             liveSceneBuilt = false
@@ -259,6 +264,34 @@ final class SurfacePickTests: XCTestCase {
 
     private func length(_ v: SIMD3<Float>) -> Float {
         (v * v).sum().squareRoot()
+    }
+
+    /// RGBA8 pixels of a PNG, top row first.
+    private func pngPixels(_ path: String) -> (width: Int, height: Int, rgba: [UInt8])? {
+        guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+        let w = image.width, h = image.height
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        return drawn ? (w, h, rgba) : nil
+    }
+
+    /// Render an offscreen Metal frame (the full pipeline, rasterized) and
+    /// return its pixels; nil when no frame was written.
+    private func renderFrame(width: Int, height: Int)
+        -> (width: Int, height: Int, rgba: [UInt8])? {
+        let png = NSTemporaryDirectory() + "lt614_surface_pick.png"
+        try? FileManager.default.removeItem(atPath: png)
+        engine.renderHiResPNG(png, width: width, height: height, rayTraced: 0)
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        return pngPixels(png)
     }
 
     /// The hit lies on the camera ray through `scene` at its reported depth,
@@ -387,14 +420,57 @@ final class SurfacePickTests: XCTestCase {
         }
 
         // 3. A real offscreen Metal frame: RepCartoon::render with a GUI runs
-        // the preshader-to-ray swap.
-        let png = NSTemporaryDirectory() + "lt614_surface_pick.png"
-        try? FileManager.default.removeItem(atPath: png)
-        engine.renderHiResPNG(png, width: 64, height: 48, rayTraced: 0)
-        let attributes = try? FileManager.default.attributesOfItem(atPath: png)
-        let size = (attributes?[.size] as? NSNumber)?.intValue ?? 0
-        XCTAssertGreaterThan(size, 0, "no frame rendered (is there a Metal renderer?)")
-        try? FileManager.default.removeItem(atPath: png)
+        // the preshader-to-ray swap. First the same frame with the helix
+        // disabled (a disabled object is not rendered, so no swap yet), to
+        // tell the helix's pixels from the background, whatever it is.
+        let (fw, fh) = (128, 96)
+        _ = python("_c.disable('lt614pep')\n")
+        let empty = try XCTUnwrap(renderFrame(width: fw, height: fh),
+                                  "no frame rendered (is there a Metal renderer?)")
+        _ = python("_c.enable('lt614pep')\n")
+        let frame = try XCTUnwrap(renderFrame(width: fw, height: fh),
+                                  "no frame rendered (is there a Metal renderer?)")
+        XCTAssertEqual(frame.width, fw)
+        XCTAssertEqual(frame.height, fh)
+        XCTAssertEqual(empty.rgba.count, frame.rgba.count)
+        // The frame is composed at its own aspect: where the helix projects
+        // in it (the central 60% of its projected box, in pixels).
+        let frameAspect = Double(fw) / Double(fh)
+        var boxLo = SIMD2(Double.infinity, Double.infinity)
+        var boxHi = -boxLo
+        for x in [extent[0][0], extent[1][0]] {
+            for y in [extent[0][1], extent[1][1]] {
+                for z in [extent[0][2], extent[1][2]] {
+                    let ndc = camera.project(SIMD3(x, y, z), aspect: frameAspect).0
+                    let pixel = SIMD2((ndc.x + 1) / 2 * Double(fw), (1 - ndc.y) / 2 * Double(fh))
+                    boxLo = SIMD2(min(boxLo.x, pixel.x), min(boxLo.y, pixel.y))
+                    boxHi = SIMD2(max(boxHi.x, pixel.x), max(boxHi.y, pixel.y))
+                }
+            }
+        }
+        let inLo = boxLo + (boxHi - boxLo) * 0.2, inHi = boxHi - (boxHi - boxLo) * 0.2
+        var inside = 0, changed = 0, outsideChanged = 0, outside = 0
+        for row in 0..<fh {
+            for col in 0..<fw {
+                let i = 4 * (row * fw + col)
+                let delta = (0..<3).map { abs(Int(frame.rgba[i + $0]) - Int(empty.rgba[i + $0])) }.max()!
+                let c = SIMD2(Double(col) + 0.5, Double(row) + 0.5)
+                if c.x >= inLo.x && c.x <= inHi.x && c.y >= inLo.y && c.y <= inHi.y {
+                    inside += 1
+                    if delta > 24 { changed += 1 }
+                } else if c.x < boxLo.x - 2 || c.x > boxHi.x + 2 || c.y < boxLo.y - 2 || c.y > boxHi.y + 2 {
+                    outside += 1
+                    if delta > 24 { outsideChanged += 1 }
+                }
+            }
+        }
+        // The helix was drawn in this frame: a good share of its box changed,
+        // and (nearly) nothing well outside it did.
+        XCTAssertGreaterThan(inside, 50, "the helix projects to too few pixels")
+        XCTAssertGreaterThan(changed, max(20, inside / 10),
+                             "the frame did not draw the cartoon (\(changed)/\(inside) changed)")
+        XCTAssertLessThan(outsideChanged, max(4, outside / 50),
+                          "pixels changed away from the helix (\(outsideChanged)/\(outside))")
 
         // 4. The same grid, without an update: the same answers from the same
         // grid -- no stale or dangling reference across the swap.
@@ -428,15 +504,136 @@ final class SurfacePickTests: XCTestCase {
         XCTAssertFalse(surface.inside)
         assertOnRay(surface, scene: SIMD2(0, 0), camera: camera, aspect: sceneAspect)
 
-        // 6. Prepare reports the grids it holds.
+        // 6. Prepare reports the grids it holds; release drops them all (the
+        // memory goes back), and the next pick builds what it needs again.
         let prepared = engine.prepareSurfacePick()
         XCTAssertGreaterThanOrEqual(prepared, 1)
+        let released = engine.releaseSurfacePick()
+        XCTAssertGreaterThanOrEqual(released, prepared)
+        XCTAssertEqual(engine.releaseSurfacePick(), 0, "a grid survived the release")
+        let again = try XCTUnwrap(pick(SIMD2(0, 0), false), "no pick after the release")
+        XCTAssertEqual(again, surface)
+        engine.exportRenderActive = true
+        XCTAssertEqual(engine.releaseSurfacePick(), 0, "released during a movie export")
+        engine.exportRenderActive = false
 
         // One line in the test log saying which steps ran (L5 evidence).
         print("SurfacePickTests live: probe \(probe.point) n \(probe.normal) depth \(probe.depth); "
               + "cartoon \(hits.count)/\(grid.count) hits, \(identical)/\(grid.count) bit-identical after the frame; "
-              + "frame \(size) B (letterbox \(letterbox), scene aspect \(sceneAspect)); "
+              + "frame \(fw)x\(fh), helix \(changed)/\(inside) px drawn "
+              + "(letterbox \(letterbox), scene aspect \(sceneAspect)); "
               + "warm \(warm); surface \(surface.point) facing \(surface.facing); "
-              + "prepare \(prepared)")
+              + "prepare \(prepared), release \(released)")
+    }
+
+    /// Live checks of what only the app builds or records: sticks with open
+    /// ends at a branched atom (use_shaders is forced on), and the cartoon
+    /// sphere treatment a frame decides (per-atom transparency, recorded by
+    /// RepCartoonCGOGenerate; transparency_mode, read only then).
+    func testLiveGeometryOnlyTheAppBuilds() throws {
+        try waitForEngine()
+        savedView = engine.captureView()
+        XCTAssertNotNil(savedView)
+        liveSceneBuilt = true
+
+        // A three-bond junction at CB, bonds made CA-CB first, so CB-CC
+        // (along the view axis, toward the camera) and CB-CD are open at CB:
+        // lighting_pick.py's TestBranchedSticks.
+        let built = python(
+            "_lt614_enabled = _c.get_names('objects', enabled_only=1)\n"
+            + "for _n in _lt614_enabled:\n"
+            + "    _c.disable(_n)\n"
+            + "_lt614_transparency_mode = _c.get('transparency_mode')\n"
+            + "for _n, _p in (('CA', (-1.45, 0.25, -0.30)), ('CB', (0.0, 0.0, 0.0)),\n"
+            + "               ('CC', (0.0, 0.0, 1.5)), ('CD', (0.85, -0.70, 0.95))):\n"
+            + "    _c.pseudoatom('lt614br', name=_n, pos=list(_p))\n"
+            + "for _a, _b in (('CA', 'CB'), ('CB', 'CC'), ('CB', 'CD')):\n"
+            + "    _c.bond('lt614br and name ' + _a, 'lt614br and name ' + _b)\n"
+            + "_c.show_as('sticks', 'lt614br')\n"
+            + "_c.set_view(\(Self.pinnedView))\n"
+            + "_out['r'] = _c.get_setting_float('stick_radius', 'lt614br')\n"
+            + "_out['use_shaders'] = _c.get_setting_int('use_shaders')\n"
+            + "_out['viewport'] = list(_c.get_viewport(output=0))\n")
+        let r = try XCTUnwrap(built["r"] as? Double, "setup failed: \(built)")
+        let viewport = try XCTUnwrap(built["viewport"] as? [Double], "setup failed: \(built)")
+        XCTAssertEqual(viewport.count, 2)
+        XCTAssertGreaterThan(viewport[1], 0)
+        let sceneAspect = viewport[0] / viewport[1]
+        XCTAssertEqual(built["use_shaders"] as? Int, 1, "the app runs with use_shaders on")
+        let camera = try XCTUnwrap(engine.captureView().flatMap(Camera.init(view:)))
+        XCTAssertEqual(camera.pos.z, -100, accuracy: 1e-3, "the pinned view was not applied")
+        let letterbox = engine.currentLetterboxAspect
+        let px = engine.viewportPixelSize
+        let viewAspect = px.width > 0 && px.height > 0
+            ? Float(px.width / px.height) : Float(sceneAspect)
+        let pick = { (scene: SIMD2<Float>, update: Bool) -> SurfacePick? in
+            let v = self.viewNDC(scene: scene, viewAspect: viewAspect, letterboxAspect: letterbox)
+            return self.engine.pickSurface(viewNDCX: v.x, viewNDCY: v.y,
+                                           viewAspect: viewAspect, updateReps: update)
+        }
+
+        // Straight down CB-CC: in through CC's ball, out through the open
+        // end at CB. The front is CC's ball, 1.5 A in front of CB's.
+        let axis = try XCTUnwrap(pick(SIMD2(0, 0), true), "the junction was not picked")
+        XCTAssertEqual(axis.depth, Float(100 - 1.5 - r), accuracy: 1e-2)
+        XCTAssertEqual(axis.normal.z, 1, accuracy: 1e-3)
+        XCTAssertFalse(axis.cap)
+
+        // The junction just in front of the near plane, interior cap on: a
+        // ray down CB-CC is capped at the plane only because CB-CC is open
+        // at CB (its far crossing runs on past CB); with every end capped it
+        // would be see-through.
+        _ = python("_c.translate([0.0, 0.0, 50.4], 'lt614br', camera=0)\n"
+                   + "_c.set('metal_interior_cap', 1, 'lt614br')\n")
+        let aim = camera.project(SIMD3(0.03, 0.02, 51.9), aspect: sceneAspect).0
+        let capped = try XCTUnwrap(pick(SIMD2(Float(aim.x), Float(aim.y)), true),
+                                   "no interior cap down the open bond")
+        XCTAssertTrue(capped.cap)
+        XCTAssertEqual(capped.depth, 50, accuracy: 1e-2)
+
+        // TTT single-strand DNA, cartoon_ring_mode 4: the middle base's ring
+        // sphere (radius 1.5) centred on the near plane, that base at
+        // per-atom cartoon_transparency 0.5 (the object's stays 0). (No
+        // numpy in the app: iterate_state, not get_coords.)
+        let dna = python(
+            "_c.disable('lt614br')\n"
+            + "_c.fnab('TTT', name='lt614dna', mode='DNA', form='B', dbl_helix=0)\n"
+            + "_c.show_as('cartoon', 'lt614dna')\n"
+            + "_c.set('cartoon_ring_mode', 4, 'lt614dna')\n"
+            + "_c.set('cartoon_ring_radius', 1.5, 'lt614dna')\n"
+            + "_r = []\n"
+            + "_c.iterate_state(1, 'lt614dna and resi 2 and name N1+C2+N3+C4+C5+C6',\n"
+            + "                 '_r.append((x, y, z))', space={'_r': _r})\n"
+            + "_m = [sum(p[k] for p in _r) / len(_r) for k in range(3)]\n"
+            + "_c.translate([-_m[0], -_m[1], 50.0 - _m[2]], 'lt614dna', camera=0)\n"
+            + "_c.set('cartoon_transparency', 0.5, 'lt614dna and resi 2')\n"
+            + "_c.set('transparency_mode', 2)\n"
+            + "_c.set_view(\(Self.pinnedView))\n"
+            + "_out['object_transparency'] = _c.get_setting_float('cartoon_transparency', 'lt614dna')\n")
+        XCTAssertEqual(dna["object_transparency"] as? Double, 0, "setup failed: \(dna)")
+
+        // Before any frame: nothing has recorded the per-atom transparency,
+        // so the sphere is an impostor, see-through where the plane cuts it.
+        XCTAssertNil(pick(SIMD2(0, 0), true), "the cut impostor sphere was picked")
+
+        // A frame: RepCartoonCGOGenerate sees the per-atom transparency and
+        // tessellates the spheres, so the cut sphere shows its far wall.
+        _ = try XCTUnwrap(renderFrame(width: 64, height: 48), "no frame rendered")
+        let tessellated = try XCTUnwrap(pick(SIMD2(0, 0), false),
+                                        "the frame's tessellated sphere was not picked")
+        XCTAssertTrue(tessellated.inside)
+        XCTAssertEqual(tessellated.depth, 51.5, accuracy: 1e-2)
+
+        // transparency_mode 3 would have kept impostors, but the frame has
+        // decided: cartoons are not rebuilt, so the pick keeps the far wall.
+        _ = python("_c.set('transparency_mode', 3)\n")
+        let kept = try XCTUnwrap(pick(SIMD2(0, 0), true),
+                                 "the pick followed transparency_mode, not the drawn spheres")
+        XCTAssertEqual(kept, tessellated)
+
+        print("SurfacePickTests live geometry: junction axis depth \(axis.depth), "
+              + "open-end cap \(capped.cap) at \(capped.depth); ring sphere before frame nil, "
+              + "after frame inside \(tessellated.inside) at \(tessellated.depth), "
+              + "after transparency_mode 3 \(kept.depth)")
     }
 }
