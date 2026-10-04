@@ -1,0 +1,4 @@
+| Check | Subject | Result | Measured |
+| --- | --- | --- | --- |
+| hue-present | sim | PASS | warm 456099, cyan 2058 (each >= 1000) in 0,420,1206,2400 |
+check_lit: 1 checks, 0 failed

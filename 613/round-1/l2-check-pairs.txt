@@ -1,0 +1,49 @@
+| Check | Subject | Result | Measured |
+| --- | --- | --- | --- |
+| lit | cartoon_rt0 | PASS | max \|d\| 229 (>= 50), changed 88.802% (>= 20.000%) |
+| hue | cartoon_rt0 | PASS | orange 66.560% (>= 25.000%), cyan 14.615% (>= 5.000%) |
+| lit | cartoon_rt1 | PASS | max \|d\| 228 (>= 50), changed 88.722% (>= 20.000%) |
+| hue | cartoon_rt1 | PASS | orange 66.481% (>= 25.000%), cyan 14.589% (>= 5.000%) |
+| lit | glass_rt0 | PASS | max \|d\| 210 (>= 50), changed 54.981% (>= 20.000%) |
+| hue | glass_rt0 | PASS | orange 32.713% (>= 1.000%), cyan 8.516% (>= 1.000%) |
+| lit | glass_rt1 | PASS | max \|d\| 208 (>= 50), changed 54.971% (>= 20.000%) |
+| hue | glass_rt1 | PASS | orange 32.679% (>= 1.000%), cyan 8.506% (>= 1.000%) |
+| equal | mesh_rt0 | PASS | max \|d\| 0 (== 0) |
+| equal | mesh_rt1 | PASS | max \|d\| 0 (== 0) |
+| lit | meshcyl_rt0 | PASS | max \|d\| 230 (>= 50), changed 83.102% (>= 20.000%) |
+| hue | meshcyl_rt0 | PASS | orange 67.462% (>= 25.000%), cyan 10.629% (>= 5.000%) |
+| lit | meshcyl_rt1 | PASS | max \|d\| 229 (>= 50), changed 82.969% (>= 20.000%) |
+| hue | meshcyl_rt1 | PASS | orange 67.305% (>= 25.000%), cyan 10.568% (>= 5.000%) |
+| lit | spheres_rt0 | PASS | max \|d\| 229 (>= 50), changed 84.785% (>= 20.000%) |
+| hue | spheres_rt0 | PASS | orange 67.541% (>= 25.000%), cyan 11.194% (>= 5.000%) |
+| lit | spheres_rt1 | PASS | max \|d\| 229 (>= 50), changed 84.563% (>= 20.000%) |
+| hue | spheres_rt1 | PASS | orange 67.314% (>= 25.000%), cyan 11.094% (>= 5.000%) |
+| lit | spheres_jelly_rt0 | PASS | max \|d\| 100 (>= 50), changed 84.651% (>= 20.000%) |
+| hue | spheres_jelly_rt0 | PASS | orange 42.979% (>= 1.000%), cyan 8.376% (>= 1.000%) |
+| lit | spheres_trans_rt0 | PASS | max \|d\| 214 (>= 50), changed 98.162% (>= 20.000%) |
+| hue | spheres_trans_rt0 | PASS | orange 75.641% (>= 1.000%), cyan 2.325% (>= 1.000%) |
+| lit | spheres_trans_rt1 | PASS | max \|d\| 214 (>= 50), changed 98.162% (>= 20.000%) |
+| hue | spheres_trans_rt1 | PASS | orange 75.641% (>= 1.000%), cyan 2.325% (>= 1.000%) |
+| lit | sticks_rt0 | PASS | max \|d\| 229 (>= 50), changed 87.537% (>= 20.000%) |
+| hue | sticks_rt0 | PASS | orange 65.800% (>= 25.000%), cyan 12.768% (>= 5.000%) |
+| lit | sticks_rt1 | PASS | max \|d\| 229 (>= 50), changed 87.511% (>= 20.000%) |
+| hue | sticks_rt1 | PASS | orange 65.746% (>= 25.000%), cyan 12.766% (>= 5.000%) |
+| lit | sticks_glass_rt0 | PASS | max \|d\| 161 (>= 50), changed 43.189% (>= 20.000%) |
+| hue | sticks_glass_rt0 | PASS | orange 18.127% (>= 1.000%), cyan 8.809% (>= 1.000%) |
+| lit | sticks_trans_rt0 | PASS | max \|d\| 222 (>= 50), changed 91.813% (>= 20.000%) |
+| hue | sticks_trans_rt0 | PASS | orange 66.102% (>= 1.000%), cyan 10.300% (>= 1.000%) |
+| lit | sticks_trans_rt1 | PASS | max \|d\| 222 (>= 50), changed 91.813% (>= 20.000%) |
+| hue | sticks_trans_rt1 | PASS | orange 66.102% (>= 1.000%), cyan 10.300% (>= 1.000%) |
+| lit | surface_rt0 | PASS | max \|d\| 229 (>= 50), changed 84.841% (>= 20.000%) |
+| hue | surface_rt0 | PASS | orange 68.470% (>= 25.000%), cyan 10.843% (>= 5.000%) |
+| lit | surface_rt1 | PASS | max \|d\| 229 (>= 50), changed 84.765% (>= 20.000%) |
+| hue | surface_rt1 | PASS | orange 68.372% (>= 25.000%), cyan 10.822% (>= 5.000%) |
+| lit | transparent_rt0 | PASS | max \|d\| 226 (>= 50), changed 99.336% (>= 20.000%) |
+| hue | transparent_rt0 | PASS | orange 68.674% (>= 1.000%), cyan 4.183% (>= 1.000%) |
+| lit | transparent_rt1 | PASS | max \|d\| 226 (>= 50), changed 99.333% (>= 20.000%) |
+| hue | transparent_rt1 | PASS | orange 68.696% (>= 1.000%), cyan 4.169% (>= 1.000%) |
+| lit | tube_rt0 | PASS | max \|d\| 221 (>= 50), changed 85.712% (>= 20.000%) |
+| hue | tube_rt0 | PASS | orange 56.718% (>= 25.000%), cyan 26.365% (>= 5.000%) |
+| lit | tube_rt1 | PASS | max \|d\| 221 (>= 50), changed 85.712% (>= 20.000%) |
+| hue | tube_rt1 | PASS | orange 56.718% (>= 25.000%), cyan 26.365% (>= 5.000%) |
+check_lit: 46 checks, 0 failed

@@ -1,0 +1,17 @@
+cartoon_marble_rt0.png max=0 differing_px=0
+cartoon_ortho_rt0.png max=0 differing_px=0
+grid_rt0.png max=0 differing_px=0
+meshcyl_rt0.png max=0 differing_px=0
+meshcyl_rt1.png max=0 differing_px=0
+spheres_jelly_rt0.png max=0 differing_px=0
+spheres_metallic_rt0.png max=0 differing_px=0
+spheres_trans_rt0.png max=0 differing_px=0
+spheres_trans_rt1.png max=0 differing_px=0
+sticks_glass_rt0.png max=0 differing_px=0
+sticks_matte_rt0.png max=0 differing_px=0
+sticks_trans_rt0.png max=0 differing_px=0
+sticks_trans_rt1.png max=0 differing_px=0
+surface_jelly_rt0.png max=0 differing_px=0
+tube_rt0.png max=0 differing_px=0
+tube_rt1.png max=0 differing_px=0
+overall max=0 images=16

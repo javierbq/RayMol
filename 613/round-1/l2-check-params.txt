@@ -1,0 +1,34 @@
+| Check | Subject | Result | Measured |
+| --- | --- | --- | --- |
+| isolate key | cartoon_rt0 | PASS | sum dr 8379723 >= 1.5 x sum db 2123753 |
+| isolate rim | cartoon_rt0 | PASS | sum db 2326548 >= 1.5 x sum dr 602324 |
+| isolate lit | cartoon_rt0 | PASS | key 76.228%, rim 25.821% (each >= 9.000%) |
+| left_of | cartoon_rt0 | PASS | key side 0.418 <= rim side 0.682 - 0.05 (0 left edge, 1 right) |
+| isolate key | spheres_rt0 | PASS | sum dr 30982304 >= 1.5 x sum db 8544969 |
+| isolate rim | spheres_rt0 | PASS | sum db 5534554 >= 1.5 x sum dr 1438888 |
+| isolate lit | spheres_rt0 | PASS | key 75.184%, rim 19.804% (each >= 9.000%) |
+| left_of | spheres_rt0 | PASS | key side 0.445 <= rim side 0.554 - 0.05 (0 left edge, 1 right) |
+| isolate key | sticks_rt0 | PASS | sum dr 12076062 >= 1.5 x sum db 3174626 |
+| isolate rim | sticks_rt0 | PASS | sum db 3010835 >= 1.5 x sum dr 791137 |
+| isolate lit | sticks_rt0 | PASS | key 76.899%, rim 25.238% (each >= 9.000%) |
+| left_of | sticks_rt0 | PASS | key side 0.415 <= rim side 0.730 - 0.05 (0 left edge, 1 right) |
+| isolate key | surface_rt0 | PASS | sum dr 30912850 >= 1.5 x sum db 8271879 |
+| isolate rim | surface_rt0 | PASS | sum db 4914902 >= 1.5 x sum dr 1282296 |
+| isolate lit | surface_rt0 | PASS | key 75.772%, rim 18.904% (each >= 9.000%) |
+| left_of | surface_rt0 | PASS | key side 0.427 <= rim side 0.626 - 0.05 (0 left edge, 1 right) |
+| isolate key | tube_rt0 | PASS | sum dr 1761398 >= 1.5 x sum db 530048 |
+| isolate rim | tube_rt0 | PASS | sum db 728335 >= 1.5 x sum dr 217797 |
+| isolate lit | tube_rt0 | PASS | key 58.588%, rim 27.511% (each >= 9.000%) |
+| left_of | tube_rt0 | PASS | key side 0.314 <= rim side 0.831 - 0.05 (0 left edge, 1 right) |
+| lit | cartoon_ortho_rt0 | PASS | max \|d\| 230 (>= 50), changed 88.000% (>= 20.000%) |
+| hue | cartoon_ortho_rt0 | PASS | orange 66.893% (>= 25.000%), cyan 14.088% (>= 5.000%) |
+| lit | shadows_rt0 | PASS | max \|d\| 229 (>= 50), changed 88.495% (>= 20.000%) |
+| hue | shadows_rt0 | PASS | orange 66.575% (>= 25.000%), cyan 14.334% (>= 5.000%) |
+| lit | shadows_rt1 | PASS | max \|d\| 228 (>= 50), changed 88.419% (>= 20.000%) |
+| hue | shadows_rt1 | PASS | orange 66.488% (>= 25.000%), cyan 14.319% (>= 5.000%) |
+| fewer_lit | surface_narrow_rt0 | PASS | narrow 18.677% < 0.5 x wide 75.782% |
+| warm_cool | surface_warm_rt0 | PASS | warm R 30912850 > B 2834435; cool B 30912850 > R 20515679 |
+| brighter | surface_classic1_rt0 | PASS | mean luminance 170.82 > 97.84 |
+| outline | surface_outline_rt0 | PASS | differs on 2.030% (0 < . <= 5.000%), 2045 ring pixels (>= 20) |
+| lit | cartoon_pinned_rt0 | PASS | max \|d\| 232 (>= 50), changed 82.119% (>= 20.000%) |
+check_lit: 31 checks, 0 failed
