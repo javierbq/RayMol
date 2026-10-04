@@ -11,12 +11,30 @@
     check_lit.py warm_cool WARM COOL DARK      2500 K light is red-heavy, 12000 K blue-heavy
     check_lit.py brighter A B                  A has the higher mean luminance (decision 15)
     check_lit.py outline OUTLINE KEY           a thin ring in the key's outline colour
+    check_lit.py highlight ON OFF              highlight 1 against 0: a few pixels, only
+                                               brighter, in the key's hue
+    check_lit.py falloff F2 F0 DARK            falloff 2 lights the side nearer the light
+                                               more, relative to the far side, than 0
+    check_lit.py softer SOFT HARD DARK         softness 1 against 0 at the same beam: less
+                                               light in all, more of it partial
+    check_lit.py reflect LIT1 DARK1 LIT0 DARK0 traced reflections (rt1) carry the rig's
+                                               light: the rt1 lit-minus-dark delta keeps
+                                               enough of the rt0 one
+    check_lit.py glass_lit LIT REF             the rig on clear glass sphere impostors:
+                                               faint, through the coverage, but warm
+    check_lit.py d15 DIR --dark DIR [--dark DIR]
+                                               every <s>_d15_rt<n> (no rig, decision 15's
+                                               terms) equals the dark twin <s>_dark_rt<n>
     check_lit.py hue-present PNG [--box X0,Y0,X1,Y1]
                                                warm and cyan light in one image (L4),
                                                counted inside the box (the viewport)
 
-The scene files are scripts/lighting/scenes/lighting_613.json (pairs) and
-lighting_613_params.json (isolation and parameters). Every lit image is
+    pairs takes --norig DIR (the L1 no-rig renders): mesh, whose lines are
+    unlit, must then also equal the no-rig mesh_rt<n> byte for byte.
+
+The scene files are scripts/lighting/scenes/lighting_613.json (pairs),
+lighting_613_params.json (isolation and parameters) and lighting_613_d15.json
+(no rig, at decision 15's terms: d15). Every lit image is
 compared with the SAME rig at intensity 0 ("dark"), never with a render
 without a rig: with a rig on, decision 15 alone changes every pixel, so a
 difference from a no-rig render proves nothing about the rig's own light.
@@ -80,6 +98,32 @@ OUTLINE_MIN_BRIGHT = 64       # ... and its brightest channel at least this
 OUTLINE_MIN_PIXELS = 20       # ... at least this many ring pixels (measured 2045; a
                               #   count, which scales with the image and the beam's
                               #   footprint: it only shows the ring colour is there)
+
+# Round 2 (#613's review round 1) added the checks below. Each has its own
+# thresholds, tuned ONCE on round 2's renders by the same rule and frozen:
+# about half the measured margin. A shading-term check compares two images
+# that differ in that term alone (lighting_613_params.json).
+HIGHLIGHT_MAX_DELTA = 55      # highlight: its brightest added channel at least this
+                              #   (measured 111, surface and ortho)
+HIGHLIGHT_MIN_FRACTION = 0.038  # ... on at least this fraction of the geometry
+                                #   (measured 7.77% ortho, 8.35% perspective)
+HIGHLIGHT_MAX_FRACTION = 0.20   # ... and at most this: a highlight, not a diffuse
+                                #   (the key alone lights 75.8% of the surface)
+HIGHLIGHT_NEGATIVE = 0.01     # ... taking away at most this x what it adds (measured 0)
+FALLOFF_RATIO = 1.6           # falloff: near/far ratio at falloff 2 over that at 0
+                              #   (measured 8.712 / 2.596 = 3.36; inverted < 1)
+SOFT_TOTAL = 0.83             # softer: softness 1 adds at most this x softness 0's light
+                              #   (measured 0.670; a hard edge at both gives 1)
+SOFT_PARTIAL = 0.08           # ... and its share of partly lit pixels is higher by this
+                              #   (measured 70.78% against 53.66%: +17.1 points)
+REFLECT_RATIO = 0.57          # reflect: rt1's added light over rt0's, metallic spheres
+                              #   (measured 0.693 with the hits rig-lit; 0.450 before
+                              #   the fix, when the hits took decision 15 alone)
+GLASS_LIT_MAX_DELTA = 9       # glass_lit: clear glass on sphere impostors (surface
+GLASS_LIT_FRACTION = 0.11     #   dots), lit through its coverage: measured max 18,
+                              #   changed 23.3%, sum dr 1.44 x sum db
+D15_TOLERANCE = 1             # d15: a dark twin equals its no-rig render at decision
+                              #   15's terms within this (the reviewer's bound; measured 0)
 PRESENT_PIXELS = 1000    # hue-present: at least this many warm and this many cyan pixels
                          #   (plan 500; measured in the L4 viewport, 1206x2622 iPhone
                          #   simulator, box 0,420,1206,2400: warm 456099, cyan 2058 with
@@ -100,7 +144,26 @@ PARAM_CHECKS = (
     ('brighter', ('surface_classic1_rt0', 'surface_2l_rt0')),
     ('outline', ('surface_outline_rt0', 'surface_key_rt0')),
     ('lit', ('cartoon_pinned_rt0', 'cartoon_dark_rt0')),
+    # review round 1: each shading term on its own
+    ('highlight', ('surface_hl1_rt0', 'surface_hl0_rt0')),
+    ('highlight', ('surface_hl1_ortho_rt0', 'surface_hl0_ortho_rt0')),
+    ('falloff', ('surface_fall2_rt0', 'surface_fall0_rt0', 'surface_dark_rt0')),
+    ('softer', ('surface_soft1_rt0', 'surface_soft0_rt0', 'surface_dark_rt0')),
+    # traced reflection hits take the rig (pairs images, through --pairs)
+    ('reflect', ('spheres_metallic_2l_rt1', 'spheres_metallic_dark_rt1',
+                 'spheres_metallic_2l_rt0', 'spheres_metallic_dark_rt0')),
+    # the harness's 3-light rig: lit against itself at intensity 0, and the
+    # pinned rim's outline against the same rig without it
+    ('lit', ('cartoon_rig3_rt0', 'cartoon_rig3dark_rt0')),
+    ('lit', ('cartoon_rig3_rt1', 'cartoon_rig3dark_rt1')),
+    ('lit', ('surface_rig3_rt1', 'surface_rig3dark_rt1')),
+    ('outline_white', ('cartoon_rig3_rt0', 'cartoon_rig3plain_rt0')),
+    ('outline_white', ('cartoon_rig3_rt1', 'cartoon_rig3plain_rt1')),
+    # clear glass on sphere impostors, lit through its coverage
+    ('glass_lit', ('surfdots_glass_lit_rt0', 'surfdots_glass_dark_rt0')),
 )
+
+_D15_RE = re.compile(r'^(?P<s>[a-z0-9_]+)_d15_rt(?P<rt>[01])$')
 
 _RT_RE = re.compile(r'^(?P<base>[a-z0-9_]+)_rt(?P<rt>[01])$')
 
@@ -378,6 +441,177 @@ def check_outline(outline, key, colour=KEY_COLOUR, subject=''):
                   % (_pct(frac), _pct(OUTLINE_MAX_FRACTION), hits, OUTLINE_MIN_PIXELS))
 
 
+def check_highlight(on, off, colour=KEY_COLOUR, subject=''):
+    """A light's highlight (Blinn-Phong, coloured): the same rig with the
+    light's highlight 1 (ON) and 0 (OFF). The highlight only ADDS light, on a
+    small part of the geometry (where the surface turns its half-vector
+    toward the viewer), in the light's colour. A highlight that is missing,
+    ignores the light's highlight value, or lights most of the geometry
+    fails."""
+    bad = _same_size('highlight', subject, on, off)
+    if bad:
+        return bad
+    np = _np()
+    geo = geometry(on, off)
+    n = max(int(geo.sum()), 1)
+    d = delta(on, off)
+    pos, neg = np.maximum(d, 0), np.maximum(-d, 0)
+    frac = float(((pos.max(axis=2) > LIT_CHANGE) & geo).sum()) / n
+    pmass, nmass = float(pos.sum()), float(neg.sum())
+    top = int(pos.max())
+    # hue: the light's dominant channel over its weakest one
+    hi_c = int(max(range(3), key=lambda c: colour[c]))
+    lo_c = int(min(range(3), key=lambda c: colour[c]))
+    hi_sum, lo_sum = float(pos[..., hi_c].sum()), float(pos[..., lo_c].sum())
+    hued = hi_sum > 0 and (colour[hi_c] == colour[lo_c] or
+                           hi_sum >= ISOLATE_RATIO * lo_sum)
+    ok = (top >= HIGHLIGHT_MAX_DELTA and
+          HIGHLIGHT_MIN_FRACTION <= frac <= HIGHLIGHT_MAX_FRACTION and
+          nmass <= HIGHLIGHT_NEGATIVE * pmass and hued)
+    return Result('highlight', subject, ok,
+                  'max +d %d (>= %d), on %s (%s..%s), negative %.4f x positive (<= %.2f), '
+                  'sum d%s %.0f >= %.1f x sum d%s %.0f'
+                  % (top, HIGHLIGHT_MAX_DELTA, _pct(frac), _pct(HIGHLIGHT_MIN_FRACTION),
+                     _pct(HIGHLIGHT_MAX_FRACTION), nmass / max(pmass, 1.0),
+                     HIGHLIGHT_NEGATIVE, 'rgb'[hi_c], hi_sum, ISOLATE_RATIO,
+                     'rgb'[lo_c], lo_sum))
+
+
+def _thirds(geo):
+    """(near, far): the geometry in the left and the right third of its own
+    width (columns)."""
+    np = _np()
+    cols = np.nonzero(geo.any(axis=0))[0]
+    if not len(cols):
+        return geo & False, geo & False
+    x0, x1 = int(cols[0]), int(cols[-1]) + 1
+    third = (x1 - x0) / 3.0
+    xs = np.broadcast_to(np.arange(geo.shape[1]), geo.shape)
+    return geo & (xs < x0 + third), geo & (xs >= x1 - third)
+
+
+def _near_far(lit, dark, near, far):
+    added = luminance(_positive(lit, dark))
+    mn = float(added[near].mean()) if near.any() else 0.0
+    mf = float(added[far].mean()) if far.any() else 0.0
+    return mn, mf
+
+
+def check_falloff(f2, f0, dark, subject=''):
+    """Distance falloff, normalised at the aim point: a light pinned left of
+    and in front of the subject, aimed at its centre, at falloff 2 (F2) and
+    0 (F0), against the rig at intensity 0. At falloff 2 the left third
+    (nearer the light than the aim point) gains and the right third loses,
+    so the near/far ratio of added light is clearly higher than at falloff 0,
+    where distance does not matter. An inverted falloff (far side brighter)
+    or none fails."""
+    bad = _same_size('falloff', subject, f2, f0, dark)
+    if bad:
+        return bad
+    near, far = _thirds(geometry(f2, f0, dark))
+    n2, d2 = _near_far(f2, dark, near, far)
+    n0, d0 = _near_far(f0, dark, near, far)
+    if min(n2, d2, n0, d0) <= 0.0:
+        return Result('falloff', subject, False,
+                      'a third gets no light (near/far: falloff 2 %.2f/%.2f, 0 %.2f/%.2f)'
+                      % (n2, d2, n0, d0))
+    r2, r0 = n2 / d2, n0 / d0
+    return Result('falloff', subject, r2 >= FALLOFF_RATIO * r0,
+                  'near/far falloff 2 %.3f >= %.2f x falloff 0 %.3f'
+                  % (r2, FALLOFF_RATIO, r0))
+
+
+def _partial_share(lit, dark):
+    """Of the pixels a light changes, the share it lights only partly: added
+    luminance under half of what its brightest 2% get."""
+    np = _np()
+    geo = geometry(lit, dark)
+    pos = _positive(lit, dark)
+    lit_px = geo & (pos.max(axis=2) > LIT_CHANGE)
+    if not lit_px.any():
+        return 0.0, 0.0
+    added = luminance(pos)[lit_px]
+    top = float(np.percentile(added, 98))
+    return float((added < 0.5 * top).sum()) / len(added), float(added.sum())
+
+
+def check_softer(soft, hard, dark, subject=''):
+    """The cone's soft edge: the same beam at softness 1 (SOFT) and 0 (HARD),
+    against the rig at intensity 0. Softness 1 fades the light from the beam
+    axis to its edge, so it adds less light in all and more of what it adds
+    is partial; a hard edge (softness ignored, or the edge band inverted)
+    gives the same image at both."""
+    bad = _same_size('softer', subject, soft, hard, dark)
+    if bad:
+        return bad
+    ps, ss = _partial_share(soft, dark)
+    ph, sh = _partial_share(hard, dark)
+    if sh <= 0.0:
+        return Result('softer', subject, False, 'the hard beam adds no light')
+    ok = ss <= SOFT_TOTAL * sh and ps >= ph + SOFT_PARTIAL
+    return Result('softer', subject, ok,
+                  'light %.3f x hard (<= %.2f); partial %s >= hard %s + %s'
+                  % (ss / sh, SOFT_TOTAL, _pct(ps), _pct(ph), _pct(SOFT_PARTIAL)))
+
+
+def check_reflect(lit1, dark1, lit0, dark0, subject=''):
+    """Traced reflections take the rig (metal_raytrace 1): a reflective
+    subject lit and dark at rt1 and at rt0. At rt1 the composite mixes each
+    pixel with what its reflection ray hits, by a Fresnel weight of at least
+    the material's reflectance. If the hits ignore the rig, the rt1
+    lit-minus-dark delta keeps only the unreflected share of the rt0 one
+    (1 - F); if they take it, the reflected neighbours add theirs."""
+    bad = _same_size('reflect', subject, lit1, dark1, lit0, dark0)
+    if bad:
+        return bad
+    geo = geometry(lit1, dark1, lit0, dark0)
+    s1 = float(luminance(_positive(lit1, dark1))[geo].sum())
+    s0 = float(luminance(_positive(lit0, dark0))[geo].sum())
+    if s0 <= 0.0:
+        return Result('reflect', subject, False, 'the rt0 pair adds no light')
+    return Result('reflect', subject, s1 >= REFLECT_RATIO * s0,
+                  'rt1 added light %.3f x rt0 (>= %.2f)' % (s1 / s0, REFLECT_RATIO))
+
+
+def check_glass_lit(lit, dark, subject=''):
+    """The rig on clear glass that sphere impostors draw (another rep's glass
+    spheres: surface dots): the light reaches the screen only at the glass's
+    coverage (orchestrator decision Q1), so far more faintly than on an
+    opaque subject, but it is there, on enough of the geometry, and warm
+    (the key's orange outweighs the rim's cyan)."""
+    bad = _same_size('glass_lit', subject, lit, dark)
+    if bad:
+        return bad
+    np = _np()
+    geo = geometry(lit, dark)
+    n = max(int(geo.sum()), 1)
+    pos = _positive(lit, dark)
+    top = int(pos.max())
+    frac = float(((pos.max(axis=2) > LIT_CHANGE) & geo).sum()) / n
+    dr, db = float(pos[..., 0].sum()), float(pos[..., 2].sum())
+    ok = top >= GLASS_LIT_MAX_DELTA and frac >= GLASS_LIT_FRACTION and dr > db
+    return Result('glass_lit', subject, ok,
+                  'max +d %d (>= %d), changed %s (>= %s), sum dr %.0f > sum db %.0f'
+                  % (top, GLASS_LIT_MAX_DELTA, _pct(frac), _pct(GLASS_LIT_FRACTION),
+                     dr, db))
+
+
+def check_same(a, b, subject='', tolerance=D15_TOLERANCE):
+    """Equal decoded pixels within `tolerance` levels per channel."""
+    bad = _same_size('d15', subject, a, b)
+    if bad:
+        return bad
+    d = _np().abs(delta(a, b)).max(axis=2)
+    top = int(d.max())
+    return Result('d15', subject, top <= tolerance,
+                  'max |d| %d (<= %d), %d pixels differ' % (top, tolerance, int((d > 0).sum())))
+
+
+def check_outline_white(outline, plain, subject=''):
+    """check_outline for a white light (the harness rig's pinned rim)."""
+    return check_outline(outline, plain, colour=(1.0, 1.0, 1.0), subject=subject)
+
+
 def present_counts(image, box=None):
     """(warm, cyan) pixels of one image, by absolute colour; only inside
     box = (x0, y0, x1, y1) (pixels, end-exclusive) when given."""
@@ -449,11 +683,17 @@ def _path(dirs, tag):
     return None
 
 
-def run_pairs(directory):
+def run_pairs(directory, norig_dir=None):
+    """Every pair in `directory`. With norig_dir (the L1 no-rig renders),
+    mesh is also compared with the no-rig mesh_rt<n>: its lines are unlit on
+    Metal, so the rig must change nothing at all (orchestrator decision Q3),
+    not merely the same thing in the lit and the dark image."""
     tags = _tags(directory)
     found = pair_tags(tags)
     if not found:
         raise Usage('%s holds no <s>_2l..._rt<n> images' % directory)
+    if norig_dir is not None and not os.path.isdir(norig_dir):
+        raise Usage('%s is not a directory' % norig_dir)
     results = []
     for subject, lit_tag, dark_tag in found:
         dark = _path([directory], dark_tag)
@@ -463,6 +703,15 @@ def run_pairs(directory):
         lit, ref = load(os.path.join(directory, lit_tag + '.png')), load(dark)
         if _RT_RE.match(subject).group('base') == 'mesh':
             results.append(check_equal(lit, ref, subject))
+            if norig_dir is not None:
+                norig = _path([norig_dir], subject)
+                if not norig:
+                    results.append(Result('equal no rig', subject, False,
+                                          'missing %s.png in %s' % (subject, norig_dir)))
+                else:
+                    r = check_equal(lit, load(norig), subject)
+                    r.check = 'equal no rig'
+                    results.append(r)
             continue
         results.append(check_lit(lit, ref, subject))
         results.append(check_hue(lit, ref, subject))
@@ -492,7 +741,37 @@ _PARAM_FUNCS = {
     'brighter': check_brighter,
     'outline': check_outline,
     'lit': check_lit,
+    'highlight': check_highlight,
+    'falloff': check_falloff,
+    'softer': check_softer,
+    'reflect': check_reflect,
+    'outline_white': check_outline_white,
+    'glass_lit': check_glass_lit,
 }
+
+
+def run_d15(directory, dark_dirs):
+    """Every <s>_d15_rt<n> in `directory` (no rig, the classic settings at
+    decision 15's terms) against the rig-on dark twin <s>_dark_rt<n>, looked
+    up in dark_dirs: the rig variant keeps the family's own look."""
+    tags = [t for t in _tags(directory) if _D15_RE.match(t)]
+    if not tags:
+        raise Usage('%s holds no <s>_d15_rt<n> images' % directory)
+    for d in dark_dirs:
+        if not os.path.isdir(d):
+            raise Usage('%s is not a directory' % d)
+    results = []
+    for tag in tags:
+        m = _D15_RE.match(tag)
+        dark_tag = '%s_dark_rt%s' % (m.group('s'), m.group('rt'))
+        subject = '%s_rt%s' % (m.group('s'), m.group('rt'))
+        dark = _path(dark_dirs, dark_tag)
+        if not dark:
+            results.append(Result('d15', subject, False, 'missing %s.png' % dark_tag))
+            continue
+        results.append(check_same(load(dark), load(os.path.join(directory, tag + '.png')),
+                                  subject))
+    return results
 
 
 def run_params(directory, pairs_dir=None):
@@ -548,8 +827,15 @@ def _box(text):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     sub = ap.add_subparsers(dest='cmd')
-    for name in ('pairs', 'isolate'):
-        sub.add_parser(name).add_argument('dir')
+    p = sub.add_parser('pairs')
+    p.add_argument('dir')
+    p.add_argument('--norig', help='the L1 no-rig render directory: mesh must '
+                   'also equal its mesh_rt<n> there')
+    sub.add_parser('isolate').add_argument('dir')
+    p = sub.add_parser('d15')
+    p.add_argument('dir')
+    p.add_argument('--dark', action='append', default=[], required=True,
+                   help='a directory with the rig-on dark twins (repeatable)')
     p = sub.add_parser('params')
     p.add_argument('dir')
     p.add_argument('--pairs', help='the lighting_613.json render directory')
@@ -557,6 +843,11 @@ def main(argv=None):
                        ('fewer_lit', ('narrow', 'wide', 'dark')),
                        ('warm_cool', ('warm', 'cool', 'dark')),
                        ('brighter', ('a', 'b')), ('outline', ('outline', 'key')),
+                       ('highlight', ('on', 'off')),
+                       ('falloff', ('f2', 'f0', 'dark')),
+                       ('softer', ('soft', 'hard', 'dark')),
+                       ('reflect', ('lit1', 'dark1', 'lit0', 'dark0')),
+                       ('glass_lit', ('lit', 'ref')),
                        ('hue-present', ('png',))):
         p = sub.add_parser(name)
         for a in args:
@@ -567,13 +858,16 @@ def main(argv=None):
     args = ap.parse_args(argv)
     try:
         if args.cmd == 'pairs':
-            results = run_pairs(args.dir)
+            results = run_pairs(args.dir, args.norig)
         elif args.cmd == 'isolate':
             results = run_isolate(args.dir)
+        elif args.cmd == 'd15':
+            results = run_d15(args.dir, args.dark)
         elif args.cmd == 'params':
             results = run_params(args.dir, args.pairs)
-        elif args.cmd in ('lit', 'hue'):
-            func = check_lit if args.cmd == 'lit' else check_hue
+        elif args.cmd in ('lit', 'hue', 'glass_lit'):
+            func = {'lit': check_lit, 'hue': check_hue,
+                    'glass_lit': check_glass_lit}[args.cmd]
             results = [func(*_files([args.lit, args.ref]), subject=_name(args.lit))]
         elif args.cmd == 'fewer_lit':
             results = [check_fewer_lit(*_files([args.narrow, args.wide, args.dark]),
@@ -586,6 +880,19 @@ def main(argv=None):
         elif args.cmd == 'outline':
             results = [check_outline(*_files([args.outline, args.key]),
                                      subject=_name(args.outline))]
+        elif args.cmd == 'highlight':
+            results = [check_highlight(*_files([args.on, args.off]),
+                                       subject=_name(args.on))]
+        elif args.cmd == 'falloff':
+            results = [check_falloff(*_files([args.f2, args.f0, args.dark]),
+                                     subject=_name(args.f2))]
+        elif args.cmd == 'softer':
+            results = [check_softer(*_files([args.soft, args.hard, args.dark]),
+                                    subject=_name(args.soft))]
+        elif args.cmd == 'reflect':
+            results = [check_reflect(*_files([args.lit1, args.dark1, args.lit0,
+                                              args.dark0]),
+                                     subject=_name(args.lit1))]
         elif args.cmd == 'hue-present':
             box = _box(args.box) if args.box else None
             results = [check_hue_present(*_files([args.png]), subject=_name(args.png),

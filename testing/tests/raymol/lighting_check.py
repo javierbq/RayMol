@@ -3,23 +3,28 @@
 L2 for #613 renders every lit path with a 2-light rig and decides with
 scripts/lighting/check_lit.py. CI has no GPU, so this pins what it can:
 
-* the four scripts/lighting/scenes/lighting_613*.json files load with the
+* the five scripts/lighting/scenes/lighting_613*.json files load with the
   frozen harness, and are complete: every lit image has its dark reference
-  (the same rig at intensity 0), every parameter check its images, and the
-  two default-path files differ only in "rig";
+  (the same rig at intensity 0), every parameter check its images, the two
+  default-path files differ only in "rig", and every no-rig decision-15
+  render (lighting_613_d15.json) has its dark twin and the same classic
+  terms;
 * every scene script runs in-process (the way the app runs it) and leaves
   the rig its scene asks for, including through the cmd.set_lights shim the
   pairs and params files install, which is restored afterwards;
 * check_lit.py's decisions on synthetic images: a pass and a fail for every
   check, including the negative control (dark equal to lit fails).
 
-Source-reading, so skipped (not passed) outside a repo checkout; the pixel
-checks are skipped without numpy or Pillow.
+Source-reading, so skipped (not passed) outside a repo checkout, which is
+decided by one file every checkout has; in a checkout the ticket's own files
+are required, so renaming or removing one fails instead of skipping. The
+pixel checks are skipped without numpy or Pillow.
 
 Runs on a RayMol build:
     pymol -ckqy testing/testing.py --run testing/tests/raymol/lighting_check.py
 """
 import contextlib
+import math
 import importlib.util
 import io
 import json
@@ -42,10 +47,20 @@ FILES = {
     'params': os.path.join(SCENES, 'lighting_613_params.json'),
     'default': os.path.join(SCENES, 'lighting_613_default.json'),
     'default_off': os.path.join(SCENES, 'lighting_613_default_off.json'),
+    'd15': os.path.join(SCENES, 'lighting_613_d15.json'),
 }
-HAVE_CHECKOUT = (os.path.isfile(os.path.join(LIGHTING, 'render.py')) and
-                 os.path.isfile(os.path.join(LIGHTING, 'check_lit.py')) and
-                 os.path.isfile(PDB) and all(map(os.path.isfile, FILES.values())))
+# A repo checkout is decided by ONE file every checkout has, never by this
+# ticket's own files: in a checkout those are required (assert_present), so a
+# rename fails the suites instead of skipping them.
+HAVE_CHECKOUT = os.path.isfile(os.path.join(ROOT, 'layerGraphics', 'metal',
+                                            'RendererMetal.mm'))
+
+
+def assert_present(*paths):
+    """Raise (failing the class, not skipping it) when a file is missing."""
+    missing = [os.path.relpath(p, ROOT) for p in paths if not os.path.isfile(p)]
+    if missing:
+        raise AssertionError('missing from the checkout: %s' % ', '.join(missing))
 
 try:
     import numpy
@@ -81,6 +96,8 @@ class TestSceneFiles(testing.PyMOLTestCase):
 
     @classmethod
     def setUpClass(cls):
+        assert_present(os.path.join(LIGHTING, 'render.py'),
+                       os.path.join(LIGHTING, 'check_lit.py'), PDB, *FILES.values())
         cls.render = load_module('lighting_render', 'render.py')
         cls.check = load_module('lighting_check_lit', 'check_lit.py')
         cls.jobs = {k: cls.render.scene_file_jobs(v) for k, v in FILES.items()}
@@ -108,7 +125,8 @@ class TestSceneFiles(testing.PyMOLTestCase):
 
     def testSceneFilesLoad(self):
         self.assertEqual({k: len(v) for k, v in self.jobs.items()},
-                         {'pairs': 48, 'params': 31, 'default': 16, 'default_off': 16})
+                         {'pairs': 60, 'params': 46, 'default': 16, 'default_off': 16,
+                          'd15': 5})
         for which in ('pairs', 'params'):
             spec = self.specs[which]
             self.assertEqual((spec['base'], spec['rig']), (None, 'on'), which)
@@ -119,10 +137,11 @@ class TestSceneFiles(testing.PyMOLTestCase):
                 own = job.extra[len(spec['extra']):]
                 self.assertEqual([l for l in own if l.startswith(RIG_LINE)], [own[-1]],
                                  job.tag)
-        for which in ('default', 'default_off'):
+        for which in ('default', 'default_off', 'd15'):
             for job in self.jobs[which]:
                 self.assertFalse(any('_l613_rig' in l or 'set_lights' in l
                                      for l in job.extra), job.tag)
+        self.assertEqual((self.specs['d15']['base'], self.specs['d15']['rig']), (None, 'none'))
         # the default-path files differ only in "rig"
         a, b = self.specs['default'], self.specs['default_off']
         self.assertEqual((a['rig'], b['rig']), ('none', 'off'))
@@ -141,6 +160,13 @@ class TestSceneFiles(testing.PyMOLTestCase):
                   'transparent', 'glass', 'tube', 'sticks_trans', 'spheres_trans'):
             self.assertLessEqual({s + '_rt0', s + '_rt1'}, subjects, s)
         self.assertLessEqual({'sticks_glass_rt0', 'spheres_jelly_rt0'}, subjects)
+        # review round 1: the other material families (procedural,
+        # reflective; jelly on the VBO and cylinder paths), clear glass on
+        # sphere impostors (surface dots), and the ray tracer's reflection
+        # hits (rt1), with the transparent layer in front of them
+        self.assertLessEqual({'cartoon_marble_rt0', 'spheres_metallic_rt0',
+                              'spheres_metallic_rt1', 'surface_jelly_rt0',
+                              'sticks_jelly_rt0', 'metallic_trans_rt1'}, subjects)
         # dark and lit differ only in the light intensities
         jobs = {j.tag: j for j in self.jobs['pairs']}
         for subject, lit, dark in pairs:
@@ -167,6 +193,31 @@ class TestSceneFiles(testing.PyMOLTestCase):
             self.assertIn(dark, params, lit)
         self.assertLessEqual({'cartoon_rig3_rt0', 'cartoon_rig3_rt1', 'surface_rig3_rt1'},
                              set(params))
+        # every 3-light image is checked: lit against its dark twin, and the
+        # outline against the same rig without it
+        checked = {t for _, refs in self.check.PARAM_CHECKS for t in refs}
+        for tag in ('cartoon_rig3_rt0', 'cartoon_rig3_rt1', 'surface_rig3_rt1',
+                    'cartoon_rig3dark_rt0', 'cartoon_rig3dark_rt1',
+                    'surface_rig3dark_rt1', 'cartoon_rig3plain_rt0',
+                    'cartoon_rig3plain_rt1'):
+            self.assertIn(tag, checked)
+        # every params image is used by some check
+        used = checked | {t for f in self.check.isolate_tags(params) for t in f[1:]}
+        used |= {t for f in self.check.pair_tags(params) for t in f[1:]}
+        self.assertEqual(set(params) - used, set())
+        # a term's two images differ only in that term (the rig line), and
+        # the falloff, softness and highlight images keep everything else
+        jobs = {j.tag: j for j in self.jobs['params']}
+        for a, b in (('surface_hl0_rt0', 'surface_hl1_rt0'),
+                     ('surface_hl0_ortho_rt0', 'surface_hl1_ortho_rt0'),
+                     ('surface_fall0_rt0', 'surface_fall2_rt0'),
+                     ('surface_soft0_rt0', 'surface_soft1_rt0')):
+            self.assertEqual(jobs[a].extra[:-1], jobs[b].extra[:-1], a)
+            self.assertEqual((jobs[a].rep_lines, jobs[a].rt), (jobs[b].rep_lines, jobs[b].rt))
+            la, lb = jobs[a].extra[-1], jobs[b].extra[-1]
+            diff = [(x, y) for x, y in zip(re.split(r'(\d+\.\d+)', la),
+                                           re.split(r'(\d+\.\d+)', lb)) if x != y]
+            self.assertEqual(len(diff), 1, (a, diff))
         # A tag in both files (the params file carries its own dark references)
         # is the same image in both.
         pairs = {j.tag: j for j in self.jobs['pairs']}
@@ -181,7 +232,50 @@ class TestSceneFiles(testing.PyMOLTestCase):
                              (twin.rep_lines, twin.rt, twin.shadows, twin.rig, twin.size,
                               twin.extra), job.tag)
 
+    def testD15Complete(self):
+        """Every no-rig decision-15 render has a rig-on dark twin with the
+        same representation, material and camera, in the pairs or params
+        file; the default family is the control, and each family with its own
+        rig specialisation is there."""
+        dark = {j.tag: j for w in ('pairs', 'params') for j in self.jobs[w]}
+        subjects = set()
+        for job in self.jobs['d15']:
+            m = self.check._D15_RE.match(job.tag)
+            self.assertIsNotNone(m, job.tag)
+            twin = dark.get('%s_dark_rt%s' % (m.group('s'), m.group('rt')))
+            self.assertIsNotNone(twin, job.tag)
+            self.assertEqual((job.rep_lines, job.rt, job.shadows, job.size),
+                             (twin.rep_lines, twin.rt, twin.shadows, twin.size), job.tag)
+            self.assertEqual(job.rig, 'none')
+            # the twin's own lines (material, colour), then the four settings
+            own = [l for l in twin.extra if l not in self.specs['pairs']['extra']
+                   and l not in self.specs['params']['extra']
+                   and not l.startswith(RIG_LINE)]
+            self.assertEqual(job.extra[:len(own)], own, job.tag)
+            self.assertEqual(job.extra[len(own):],
+                             ["cmd.set('ambient', 0.06)", "cmd.set('direct', 0.0)",
+                              "cmd.set('reflect', 0.0)", "cmd.set('specular', 0.0)"],
+                             job.tag)
+            subjects.add(m.group('s'))
+        self.assertEqual(subjects, {'cartoon', 'cartoon_marble', 'spheres_metallic',
+                                    'surfdots_glass'})
+
     # --- the scripts, run in-process the way the app runs them ---------------
+
+    def testD15MatchesDecision15(self):
+        """A d15 render's classic terms are exactly what the rig-on dark twin
+        hands the renderer (decision 15 at classic 0, ambient 0.06)."""
+        self.run_job(self.job('pairs', 'spheres_metallic_dark_rt1'))
+        rig_on = lighting._light_frame()
+        self.assertTrue(rig_on['rig_on'])
+        restore_set_lights()
+        cmd.set_lights(None)
+        self.run_job(self.job('d15', 'spheres_metallic_d15_rt1'))
+        no_rig = lighting._light_frame()
+        self.assertFalse(no_rig['rig_on'])
+        self.assertIsNone(no_rig['rig'])
+        for term in ('ambient', 'direct', 'reflect', 'specular', 'shininess'):
+            self.assertEqual(no_rig[term], rig_on[term], term)
 
     def run_job(self, job, times=1):
         out = os.path.join(self.tmp, 'out')
@@ -198,7 +292,7 @@ class TestSceneFiles(testing.PyMOLTestCase):
         return {j.tag: j for j in self.jobs[which]}[tag]
 
     def testEveryScriptRunsInProcess(self):
-        for which in ('pairs', 'params', 'default', 'default_off'):
+        for which in ('pairs', 'params', 'default', 'default_off', 'd15'):
             for job in self.jobs[which]:
                 marker = self.run_job(job)
                 with open(marker) as handle:
@@ -223,7 +317,11 @@ class TestSceneFiles(testing.PyMOLTestCase):
                     continue
                 self.assertIs(got['enabled'], job.rig == 'on', job.tag)
                 names = [l['name'] for l in got['lights']]
-                if job.rig == 'on' and job.extra[-1] != RIG_LINE + 'None':
+                # the harness's own rig: as it is (None) or changed by a
+                # function of it (lambda)
+                harness = (job.extra[-1] == RIG_LINE + 'None' or
+                           job.extra[-1].startswith(RIG_LINE + 'lambda'))
+                if job.rig == 'on' and not harness:
                     self.assertEqual(names, ['key', 'rim'], job.tag)
                 else:
                     self.assertEqual(names, ['key', 'fill', 'rim'], job.tag)
@@ -261,6 +359,16 @@ class TestSceneFiles(testing.PyMOLTestCase):
         for light in frame['rig']['lights']:
             self.assertEqual(light['radiance'], [0.0, 0.0, 0.0])
 
+        # a FUNCTION of the harness's rig (the params file's 3-light twins):
+        # the shim applies it to the rig the harness installs
+        self.run_job(self.job('params', 'cartoon_rig3dark_rt0'), times=2)
+        self.assertIs(cmd._l613_set, self.original_set_lights)
+        rig = cmd.get_lights()
+        self.assertIs(rig['enabled'], True)
+        self.assertEqual([l['name'] for l in rig['lights']], ['key', 'fill', 'rim'])
+        self.assertEqual([l['intensity'] for l in rig['lights']], [0.0, 0.0, 0.0])
+        self.assertEqual([l['outline'] for l in rig['lights']], [False, False, True])
+
     def testParamScenesInProcess(self):
         # classic 1: PyMOL's lights at full strength, the rig's ambient
         self.run_job(self.job('params', 'surface_classic1_rt0'))
@@ -290,6 +398,46 @@ class TestSceneFiles(testing.PyMOLTestCase):
         self.run_job(self.job('params', 'cartoon_2l_ortho_rt0'))
         self.assertEqual(cmd.get_setting_int('orthoscopic'), 1)
 
+        # review round 1: each shading term's scenes set what they say
+        for tag, want in (('surface_hl0_rt0', 0.0), ('surface_hl1_rt0', 1.0),
+                          ('surface_hl0_ortho_rt0', 0.0),
+                          ('surface_hl1_ortho_rt0', 1.0)):
+            self.run_job(self.job('params', tag))
+            key = lighting._light_frame()['rig']['lights'][0]
+            self.assertEqual(key['highlight'], want, tag)
+            self.assertEqual(cmd.get_setting_int('orthoscopic'), int('ortho' in tag), tag)
+        for tag, want in (('surface_fall0_rt0', 0.0), ('surface_fall2_rt0', 2.0)):
+            self.run_job(self.job('params', tag))
+            key = lighting._light_frame()['rig']['lights'][0]
+            self.assertEqual((key['falloff'], key['highlight']), (want, 0.0), tag)
+            # pinned 35 A left of and 25 A in front of the centre, aimed at
+            # it: the left of the subject is nearer the light than the aim
+            eye = lighting._lights_eye()
+            for got, centre, off in zip(eye['lights'][0]['position'], eye['centre'],
+                                        (-35.0, 0.0, 25.0)):
+                self.assertAlmostEqual(got - centre, off, delta=1e-3, msg=tag)
+            self.assertAlmostEqual(key['falloff_ref'], math.hypot(35.0, 25.0),
+                                   delta=1e-3, msg=tag)
+        cones = {}
+        for tag in ('surface_soft0_rt0', 'surface_soft1_rt0'):
+            self.run_job(self.job('params', tag))
+            key = lighting._light_frame()['rig']['lights'][0]
+            cones[tag] = (key['cos_outer'], key['cos_inner'])
+        hard, soft = cones['surface_soft0_rt0'], cones['surface_soft1_rt0']
+        self.assertEqual(hard[0], soft[0])                       # the same beam
+        self.assertAlmostEqual(hard[1] - hard[0], 1e-4, delta=1e-5)   # a hard edge
+        self.assertEqual(soft[1], 1.0)                           # soft to the axis
+        # the 3-light twins: the harness rig at intensity 0, and without the
+        # rim's outline
+        self.run_job(self.job('params', 'cartoon_rig3plain_rt1'))
+        lights = lighting._light_frame()['rig']['lights']
+        self.assertEqual([l['outline'] for l in lights], [False, False, False])
+        self.assertTrue(all(max(l['radiance']) > 0.0 for l in lights))
+        self.run_job(self.job('params', 'surface_rig3dark_rt1'))
+        lights = lighting._light_frame()['rig']['lights']
+        self.assertEqual(len(lights), 3)
+        self.assertTrue(all(l['radiance'] == [0.0, 0.0, 0.0] for l in lights))
+
 
 @unittest.skipUnless(HAVE_CHECKOUT, 'needs a RayMol checkout (scripts/lighting)')
 @unittest.skipUnless(HAVE_PIXELS, 'needs numpy and Pillow')
@@ -301,6 +449,7 @@ class TestCheckLit(testing.PyMOLTestCase):
 
     @classmethod
     def setUpClass(cls):
+        assert_present(os.path.join(LIGHTING, 'check_lit.py'))
         cls.check = load_module('lighting_check_lit', 'check_lit.py')
 
     def setUp(self):
@@ -469,6 +618,143 @@ class TestCheckLit(testing.PyMOLTestCase):
         flood[10:50, 10:90] = ring.astype(numpy.uint8)
         self.fails(self.check.check_outline(flood, key))       # not thin
 
+    # --- review round 1: one shading term at a time --------------------------
+
+    def keyed(self):
+        """The key's diffuse on the whole block: what highlight 0 shows."""
+        return self.add(self.dark(), slice(10, 50), slice(10, 90), (90, 50, 18))
+
+    def testHighlight(self):
+        off = self.keyed()
+        on = self.add(off, slice(20, 30), slice(30, 50), (100, 55, 20))   # 200 px, 6.25%
+        self.ok(self.check.check_highlight(on, off))
+        self.fails(self.check.check_highlight(off, off))     # no highlight at all
+        # ...on most of the geometry: diffuse, not a highlight
+        self.fails(self.check.check_highlight(
+            self.add(off, slice(10, 50), slice(10, 90), (100, 55, 20)), off))
+        # ...in the wrong hue (the rim's, on the key's highlight)
+        self.fails(self.check.check_highlight(
+            self.add(off, slice(20, 30), slice(30, 50), (20, 80, 100)), off))
+        # ...taking light away elsewhere
+        darker = self.add(on, slice(30, 50), slice(10, 90), (-30, -30, -30))
+        self.fails(self.check.check_highlight(darker, off))
+        # ...too faint to be a highlight
+        self.fails(self.check.check_highlight(
+            self.add(off, slice(20, 30), slice(30, 50), (10, 6, 2)), off))
+        # a white light: any hue passes the hue part
+        white = self.add(off, slice(20, 30), slice(30, 50), (90, 90, 90))
+        self.ok(self.check.check_highlight(white, off, colour=(1.0, 1.0, 1.0)))
+        self.fails(self.check.check_highlight(white, off))
+
+    def thirds(self, left, middle, right):
+        image = self.dark()
+        image = self.add(image, slice(10, 50), slice(10, 37), (left,) * 3)
+        image = self.add(image, slice(10, 50), slice(37, 63), (middle,) * 3)
+        return self.add(image, slice(10, 50), slice(63, 90), (right,) * 3)
+
+    def testFalloff(self):
+        dark = self.dark()
+        f0 = self.thirds(40, 40, 40)
+        f2 = self.thirds(90, 40, 15)          # nearer the light: brighter
+        self.ok(self.check.check_falloff(f2, f0, dark))
+        self.fails(self.check.check_falloff(self.thirds(15, 40, 90), f0, dark))  # inverted
+        self.fails(self.check.check_falloff(f0, f0, dark))                       # none
+        self.fails(self.check.check_falloff(self.thirds(90, 40, 0), f0, dark))   # far unlit
+        # relative to falloff 0, not absolute: a light that already favours
+        # the near side at falloff 0 must favour it more at falloff 2
+        self.fails(self.check.check_falloff(self.thirds(90, 40, 15),
+                                            self.thirds(80, 40, 15), dark))
+        near, far = self.check._thirds(self.check.geometry(dark))
+        self.assertEqual((int(near.sum()), int(far.sum())), (40 * 27, 40 * 26))
+
+    def spot(self, soft):
+        """A 20x40 beam footprint: flat at softness 0, fading out from its
+        middle row at softness 1."""
+        image = self.dark().astype(numpy.int32)
+        for r in range(20, 40):
+            v = 100 if not soft else int(round(100 * (1.0 - abs(r - 29.5) / 10.0)))
+            image[r, 30:70] += v
+        return numpy.clip(image, 0, 255).astype(numpy.uint8)
+
+    def testSofter(self):
+        dark = self.dark()
+        soft, hard = self.spot(True), self.spot(False)
+        self.ok(self.check.check_softer(soft, hard, dark))
+        self.fails(self.check.check_softer(hard, hard, dark))   # softness ignored
+        self.fails(self.check.check_softer(hard, soft, dark))   # the wrong way round
+        self.fails(self.check.check_softer(soft, dark, dark))   # no hard beam
+        # less light but no more of it partial (the beam only dimmer): fails
+        self.fails(self.check.check_softer(self.add(dark, slice(20, 40), slice(30, 70),
+                                                    (50, 50, 50)), hard, dark))
+
+    def testReflect(self):
+        dark = self.dark()
+        lit0 = self.add(dark, slice(10, 50), slice(10, 90), (100, 100, 100))
+        taken = self.add(dark, slice(10, 50), slice(10, 90), (85, 85, 85))
+        ignored = self.add(dark, slice(10, 50), slice(10, 90), (40, 40, 40))
+        self.ok(self.check.check_reflect(taken, dark, lit0, dark))
+        self.fails(self.check.check_reflect(ignored, dark, lit0, dark))
+        self.fails(self.check.check_reflect(dark, dark, lit0, dark))
+        self.fails(self.check.check_reflect(taken, dark, dark, dark))   # no rt0 light
+
+    def testGlassLit(self):
+        dark = self.dark()
+        warm = self.add(dark, slice(10, 30), slice(10, 90), (16, 12, 8))   # 50%, faint
+        self.ok(self.check.check_glass_lit(warm, dark))
+        self.fails(self.check.check_glass_lit(dark, dark))                 # unlit
+        self.fails(self.check.check_glass_lit(
+            self.add(dark, slice(10, 30), slice(10, 90), (8, 12, 16)), dark))   # cool
+        self.fails(self.check.check_glass_lit(
+            self.add(dark, slice(10, 12), slice(10, 90), (16, 12, 8)), dark))   # 5%
+        self.fails(self.check.check_glass_lit(
+            self.add(dark, slice(10, 30), slice(10, 90), (6, 4, 2)), dark))     # too faint
+
+    def testD15Directory(self):
+        dark = self.dark()
+        twins = os.path.join(self.tmp, 'pairs')
+        d15 = os.path.join(self.tmp, 'd15')
+        os.makedirs(twins)
+        os.makedirs(d15)
+        PIL.Image.fromarray(dark).save(os.path.join(twins, 'cartoon_dark_rt0.png'))
+        PIL.Image.fromarray(dark).save(os.path.join(twins, 'spheres_metallic_dark_rt1.png'))
+        PIL.Image.fromarray(dark).save(os.path.join(d15, 'cartoon_d15_rt0.png'))
+        # one level off: within the tolerance
+        PIL.Image.fromarray(self.add(dark, slice(10, 50), slice(10, 90), (1, 0, 1))).save(
+            os.path.join(d15, 'spheres_metallic_d15_rt1.png'))
+        rc, text = self.main('d15', d15, '--dark', twins)
+        self.assertEqual(rc, 0, text)
+        self.assertIn('| d15 | cartoon_rt0 | PASS | max \\|d\\| 0 (<= 1), 0 pixels differ |', text)
+        self.assertIn('| d15 | spheres_metallic_rt1 | PASS |', text)
+        # a family look lost under the rig (a fallback to another variant)
+        PIL.Image.fromarray(self.lit()).save(os.path.join(d15, 'cartoon_d15_rt0.png'))
+        rc, text = self.main('d15', d15, '--dark', twins)
+        self.assertEqual(rc, 1, text)
+        self.assertIn('| d15 | cartoon_rt0 | FAIL |', text)
+        # the twin may live in a second directory; a missing one fails
+        params = os.path.join(self.tmp, 'params')
+        os.makedirs(params)
+        PIL.Image.fromarray(dark).save(os.path.join(d15, 'surfdots_glass_d15_rt0.png'))
+        rc, text = self.main('d15', d15, '--dark', twins)
+        self.assertIn('| d15 | surfdots_glass_rt0 | FAIL | missing surfdots_glass_dark_rt0.png |',
+                      text)
+        PIL.Image.fromarray(dark).save(os.path.join(params, 'surfdots_glass_dark_rt0.png'))
+        rc, text = self.main('d15', d15, '--dark', twins, '--dark', params)
+        self.assertIn('| d15 | surfdots_glass_rt0 | PASS |', text)
+        # usage: no d15 images, a missing directory
+        self.assertEqual(self.main('d15', twins, '--dark', twins)[0], 2)
+        self.assertEqual(self.main('d15', d15, '--dark', os.path.join(self.tmp, 'no'))[0], 2)
+
+    def testOutlineWhite(self):
+        plain = self.lit(cyan=False)
+        outline = plain.copy()
+        outline[30, 15:45] = 230                          # a white ring
+        outline[29, 15:45] = 8
+        self.ok(self.check.check_outline_white(outline, plain))
+        self.fails(self.check.check_outline_white(plain, plain))
+        orange = plain.copy()
+        orange[30, 15:45] = (230, 150, 90)                # the key's ring, not white
+        self.fails(self.check.check_outline_white(orange, plain))
+
     def testHuePresent(self):
         image = numpy.zeros((self.H, self.W, 3), dtype=numpy.uint8)
         image[:, :] = (100, 100, 100)          # unlit grey counts as neither
@@ -555,6 +841,41 @@ class TestCheckLit(testing.PyMOLTestCase):
         self.assertEqual(rc, 1)
         self.assertIn('| pair | cartoon_rt0 | FAIL | missing cartoon_dark_rt0.png |', text)
 
+    def testPairsMeshAgainstNoRig(self):
+        """--norig: mesh must also equal the no-rig (L1) render, not only its
+        own dark twin: a rig-on change common to both would pass the pair."""
+        dark = self.dark()
+        self.save('cartoon_dark_rt0', dark)
+        self.save('cartoon_2l_rt0', self.lit())
+        self.save('mesh_dark_rt0', dark)
+        self.save('mesh_2l_rt0', dark)
+        norig = os.path.join(self.tmp, 'l1')
+        os.makedirs(norig)
+        PIL.Image.fromarray(dark).save(os.path.join(norig, 'mesh_rt0.png'))
+        rc, text = self.main('pairs', self.tmp, '--norig', norig)
+        self.assertEqual(rc, 0, text)
+        self.assertIn('| equal | mesh_rt0 | PASS |', text)
+        self.assertIn('| equal no rig | mesh_rt0 | PASS |', text)
+        # the rig changes the lit and the dark mesh alike: the pair passes,
+        # the no-rig comparison does not
+        self.save('mesh_dark_rt0', self.lit())
+        self.save('mesh_2l_rt0', self.lit())
+        rc, text = self.main('pairs', self.tmp, '--norig', norig)
+        self.assertEqual(rc, 1, text)
+        self.assertIn('| equal | mesh_rt0 | PASS |', text)
+        self.assertIn('| equal no rig | mesh_rt0 | FAIL |', text)
+        # without --norig, today's pair check only
+        rc, text = self.main('pairs', self.tmp)
+        self.assertEqual(rc, 0, text)
+        self.assertNotIn('equal no rig', text)
+        # a missing no-rig image fails; a missing directory is a usage error
+        os.remove(os.path.join(norig, 'mesh_rt0.png'))
+        rc, text = self.main('pairs', self.tmp, '--norig', norig)
+        self.assertEqual(rc, 1, text)
+        self.assertIn('| equal no rig | mesh_rt0 | FAIL | missing mesh_rt0.png', text)
+        self.assertEqual(self.main('pairs', self.tmp, '--norig',
+                                   os.path.join(self.tmp, 'nope'))[0], 2)
+
     def testParamsDirectory(self):
         dark = self.dark()
         key = self.lit(cyan=False)
@@ -571,16 +892,54 @@ class TestCheckLit(testing.PyMOLTestCase):
             'surface_outline_rt0': outline,
             'cartoon_dark_rt0': dark, 'cartoon_pinned_rt0': key,
         }
+        # review round 1's terms and the 3-light rig
+        keyed = self.keyed()
+        hl = self.add(keyed, slice(20, 30), slice(30, 50), (100, 55, 20))
+        white_ring = self.lit().copy()
+        white_ring[30, 15:45] = 230
+        images.update({
+            'surface_hl0_rt0': keyed, 'surface_hl1_rt0': hl,
+            'surface_hl0_ortho_rt0': keyed, 'surface_hl1_ortho_rt0': hl,
+            'surface_fall0_rt0': self.thirds(40, 40, 40),
+            'surface_fall2_rt0': self.thirds(90, 40, 15),
+            'surface_soft0_rt0': self.spot(False), 'surface_soft1_rt0': self.spot(True),
+            'cartoon_rig3_rt0': white_ring, 'cartoon_rig3_rt1': white_ring,
+            'surface_rig3_rt1': white_ring,
+            'cartoon_rig3dark_rt0': dark, 'cartoon_rig3dark_rt1': dark,
+            'surface_rig3dark_rt1': dark,
+            'cartoon_rig3plain_rt0': self.lit(), 'cartoon_rig3plain_rt1': self.lit(),
+            'surfdots_glass_dark_rt0': dark,
+            'surfdots_glass_lit_rt0': self.add(dark, slice(10, 30), slice(10, 90),
+                                               (16, 12, 8)),
+        })
         for name, image in images.items():
             self.save(name, image)
         pairs = os.path.join(self.tmp, 'pairs')
         os.makedirs(pairs)
-        PIL.Image.fromarray(dark).save(os.path.join(pairs, 'surface_2l_rt0.png'))
+        lit = self.add(dark, slice(10, 50), slice(10, 90), (100, 100, 100))
+        for name, image in (('surface_2l_rt0', dark),
+                            ('spheres_metallic_2l_rt1', lit),
+                            ('spheres_metallic_dark_rt1', dark),
+                            ('spheres_metallic_2l_rt0', lit),
+                            ('spheres_metallic_dark_rt0', dark)):
+            PIL.Image.fromarray(image).save(os.path.join(pairs, name + '.png'))
         rc, text = self.main('params', self.tmp, '--pairs', pairs)
         self.assertEqual(rc, 0, text)
         for check in ('isolate key', 'isolate rim', 'isolate lit', 'left_of', 'fewer_lit',
-                      'warm_cool', 'brighter', 'outline', 'lit'):
+                      'warm_cool', 'brighter', 'outline', 'lit', 'highlight', 'falloff',
+                      'softer', 'reflect', 'glass_lit'):
             self.assertIn('| %s |' % check, text)
+        self.assertEqual(len(re.findall(r'^\| highlight \|', text, re.M)), 2)
+        self.assertEqual(len(re.findall(r'^\| lit \| \w*rig3_rt\d \| PASS', text, re.M)), 3)
+        self.assertEqual(len(re.findall(r'^\| outline \| cartoon_rig3_rt\d \| PASS', text,
+                                        re.M)), 2)
+        # a traced reflection that ignores the rig fails reflect
+        PIL.Image.fromarray(self.add(dark, slice(10, 50), slice(10, 90), (40, 40, 40))).save(
+            os.path.join(pairs, 'spheres_metallic_2l_rt1.png'))
+        rc, text = self.main('params', self.tmp, '--pairs', pairs)
+        self.assertEqual(rc, 1, text)
+        self.assertIn('| reflect | spheres_metallic_2l_rt1 | FAIL |', text)
+        PIL.Image.fromarray(lit).save(os.path.join(pairs, 'spheres_metallic_2l_rt1.png'))
         # without the pairs directory, surface_2l_rt0 is missing: a failure
         rc, text = self.main('params', self.tmp)
         self.assertEqual(rc, 1)

@@ -1,5 +1,5 @@
 {
-  "comment": "#613 L2 pairs: every lit path with the same 2-light rig (an orange key at orbit -45, a cyan rim at orbit +120; classic 0) at intensity 0 (<s>_dark_rt<n>) and at full intensity (<s>_2l_rt<n>), so a difference is the rig's light and never decision 15. Subjects are grey80, except mesh: its lines are unlit on Metal and must not change. Checked with scripts/lighting/check_lit.py pairs. The frozen harness (render.py) installs its own 3-light rig for \"rig\": \"on\" by calling cmd.set_lights after each scene's lines. The extra lines here wrap cmd.set_lights once per process (hasattr guard: the app runs the script twice): while cmd._l613_rig is a dict, that rig is installed instead; None keeps the harness rig. Every scene sets cmd._l613_rig. Follow-up: a first-class \"rig\" dict key in render.py (needs a new L1 baseline).",
+  "comment": "#613 L2 pairs: every lit path with the same 2-light rig (an orange key at orbit -45, a cyan rim at orbit +120; classic 0) at intensity 0 (<s>_dark_rt<n>) and at full intensity (<s>_2l_rt<n>), so a difference is the rig's light and never decision 15. Subjects are grey80, except mesh: its lines are unlit on Metal and must not change. Review round 1 added the other material families under the rig (marble, the procedural family, on the VBO path; metallic, the reflective family, on sphere impostors at rt0 and rt1, where rt1's reflection hits must take the rig too; jelly on the VBO and cylinder paths) and the transparent layer in front of a reflection hit (metallic_trans: metal_rt_transparent 1). Checked with scripts/lighting/check_lit.py pairs (and params, whose reflect check reads the metallic pairs). The frozen harness (render.py) installs its own 3-light rig for \"rig\": \"on\" by calling cmd.set_lights after each scene's lines. The extra lines here wrap cmd.set_lights once per process (hasattr guard: the app runs the script twice): while cmd._l613_rig is a dict, that rig is installed instead; a function is applied to the harness rig; None keeps the harness rig. Every scene sets cmd._l613_rig. Follow-up: a first-class \"rig\" dict key in render.py (needs a new L1 baseline).",
   "base": null,
   "rig": "on",
   "extra": [
@@ -9,7 +9,7 @@
     "_l613_mn, _l613_mx = cmd.get_extent('m')",
     "_l613_c = [(a + b) / 2.0 for a, b in zip(_l613_mn, _l613_mx)]",
     "if not hasattr(cmd, '_l613_set'): cmd._l613_set = cmd.set_lights",
-    "cmd.set_lights = lambda rig, _c=cmd: _c._l613_set(rig if getattr(_c, '_l613_rig', None) is None else _c._l613_rig)"
+    "cmd.set_lights = lambda rig, _c=cmd: _c._l613_set(rig if getattr(_c, '_l613_rig', None) is None else (_c._l613_rig(rig) if callable(_c._l613_rig) else _c._l613_rig))"
   ],
   "scenes": [
     {"tag": "cartoon_dark_rt0", "from": "cartoon_rt0", "lines": ["cmd.color('grey80', 'm')", "cmd._l613_rig = _l613_make([dict(_l613_key, intensity=0.0), dict(_l613_rim, intensity=0.0)])"]},
@@ -59,6 +59,18 @@
     {"tag": "sticks_glass_dark_rt0", "from": "sticks_rt0", "lines": ["cmd.set('stick_material', 'glass')", "cmd.color('grey80', 'm')", "cmd._l613_rig = _l613_make([dict(_l613_key, intensity=0.0), dict(_l613_rim, intensity=0.0)])"]},
     {"tag": "sticks_glass_2l_rt0", "from": "sticks_rt0", "lines": ["cmd.set('stick_material', 'glass')", "cmd.color('grey80', 'm')", "cmd._l613_rig = _l613_make([_l613_key, _l613_rim])"]},
     {"tag": "spheres_jelly_dark_rt0", "from": "spheres_rt0", "lines": ["cmd.set('sphere_material', 'jelly')", "cmd.color('grey80', 'm')", "cmd._l613_rig = _l613_make([dict(_l613_key, intensity=0.0), dict(_l613_rim, intensity=0.0)])"]},
-    {"tag": "spheres_jelly_2l_rt0", "from": "spheres_rt0", "lines": ["cmd.set('sphere_material', 'jelly')", "cmd.color('grey80', 'm')", "cmd._l613_rig = _l613_make([_l613_key, _l613_rim])"]}
+    {"tag": "spheres_jelly_2l_rt0", "from": "spheres_rt0", "lines": ["cmd.set('sphere_material', 'jelly')", "cmd.color('grey80', 'm')", "cmd._l613_rig = _l613_make([_l613_key, _l613_rim])"]},
+    {"tag": "cartoon_marble_dark_rt0", "from": "cartoon_rt0", "lines": ["cmd.set('cartoon_material', 'marble')", "cmd.color('grey80', 'm')", "cmd._l613_rig = _l613_make([dict(_l613_key, intensity=0.0), dict(_l613_rim, intensity=0.0)])"]},
+    {"tag": "cartoon_marble_2l_rt0", "from": "cartoon_rt0", "lines": ["cmd.set('cartoon_material', 'marble')", "cmd.color('grey80', 'm')", "cmd._l613_rig = _l613_make([_l613_key, _l613_rim])"]},
+    {"tag": "spheres_metallic_dark_rt0", "from": "spheres_rt0", "lines": ["cmd.set('sphere_material', 'metallic')", "cmd.color('grey80', 'm')", "cmd._l613_rig = _l613_make([dict(_l613_key, intensity=0.0), dict(_l613_rim, intensity=0.0)])"]},
+    {"tag": "spheres_metallic_2l_rt0", "from": "spheres_rt0", "lines": ["cmd.set('sphere_material', 'metallic')", "cmd.color('grey80', 'm')", "cmd._l613_rig = _l613_make([_l613_key, _l613_rim])"]},
+    {"tag": "spheres_metallic_dark_rt1", "from": "spheres_rt1", "lines": ["cmd.set('sphere_material', 'metallic')", "cmd.color('grey80', 'm')", "cmd._l613_rig = _l613_make([dict(_l613_key, intensity=0.0), dict(_l613_rim, intensity=0.0)])"]},
+    {"tag": "spheres_metallic_2l_rt1", "from": "spheres_rt1", "lines": ["cmd.set('sphere_material', 'metallic')", "cmd.color('grey80', 'm')", "cmd._l613_rig = _l613_make([_l613_key, _l613_rim])"]},
+    {"tag": "surface_jelly_dark_rt0", "from": "surface_rt0", "lines": ["cmd.set('surface_material', 'jelly')", "cmd.color('grey80', 'm')", "cmd._l613_rig = _l613_make([dict(_l613_key, intensity=0.0), dict(_l613_rim, intensity=0.0)])"]},
+    {"tag": "surface_jelly_2l_rt0", "from": "surface_rt0", "lines": ["cmd.set('surface_material', 'jelly')", "cmd.color('grey80', 'm')", "cmd._l613_rig = _l613_make([_l613_key, _l613_rim])"]},
+    {"tag": "sticks_jelly_dark_rt0", "from": "sticks_rt0", "lines": ["cmd.set('stick_material', 'jelly')", "cmd.color('grey80', 'm')", "cmd._l613_rig = _l613_make([dict(_l613_key, intensity=0.0), dict(_l613_rim, intensity=0.0)])"]},
+    {"tag": "sticks_jelly_2l_rt0", "from": "sticks_rt0", "lines": ["cmd.set('stick_material', 'jelly')", "cmd.color('grey80', 'm')", "cmd._l613_rig = _l613_make([_l613_key, _l613_rim])"]},
+    {"tag": "metallic_trans_dark_rt1", "from": "spheres_rt1", "lines": ["cmd.set('sphere_material', 'metallic')", "cmd.show('surface', 'm and polymer')", "cmd.set('transparency', 0.5)", "cmd.set('metal_rt_transparent', 1)", "cmd.color('grey80', 'm')", "cmd._l613_rig = _l613_make([dict(_l613_key, intensity=0.0), dict(_l613_rim, intensity=0.0)])"]},
+    {"tag": "metallic_trans_2l_rt1", "from": "spheres_rt1", "lines": ["cmd.set('sphere_material', 'metallic')", "cmd.show('surface', 'm and polymer')", "cmd.set('transparency', 0.5)", "cmd.set('metal_rt_transparent', 1)", "cmd.color('grey80', 'm')", "cmd._l613_rig = _l613_make([_l613_key, _l613_rim])"]}
   ]
 }
