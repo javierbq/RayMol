@@ -10,6 +10,9 @@ only thread where the embedded core is safe to touch (it races
 
 ``capture_viewport`` renders with the CPU ray-tracer (cmd.png ray=1) because
 cmd.png without ray reads a GL framebuffer the Metal app does not have.
+It uses PyMOL's lights: studio lights (set_lights) are drawn only by the Metal
+renderer, so they are not in this image, and a text note follows the image
+when a rig is on (#626).
 """
 
 import base64
@@ -146,15 +149,21 @@ def _capture_viewport(args):
         # cmd.ray + cmd.png(prior=1) fails with "no prior image available" when
         # driven from the MCP server thread. Runs on the main thread (touches the
         # scene/renderer); the tempfile create/read/cleanup stay off-main.
+        # The CPU tracer keeps PyMOL's lights, so the rig's notice (#626) is
+        # read in the same main-thread call: the rig cannot change in between.
         def _render():
-            from pymol import cmd
+            from pymol import cmd, lighting
             cmd.png(path, width=width, height=height, ray=1)
-        run_on_main(_render)
+            return lighting._lights_ray_notice()
+        notice = run_on_main(_render)
 
         with open(path, "rb") as f:
             data = base64.b64encode(f.read()).decode("ascii")
-        return {"content": [{"type": "image", "data": data,
-                             "mimeType": "image/png"}], "isError": False}
+        # The image stays first: clients read content[0].
+        content = [{"type": "image", "data": data, "mimeType": "image/png"}]
+        if notice:
+            content.append({"type": "text", "text": "Note: " + notice})
+        return {"content": content, "isError": False}
     except Exception:
         return _error(traceback.format_exc())
     finally:
@@ -226,7 +235,11 @@ TOOLS = [
         "name": "capture_viewport",
         "description": ("Ray-trace the current view and return it as a PNG image "
                         "so you can see the structure. Optional width/height "
-                        "(default 640x480). CPU ray-tracing may take a moment."),
+                        "(default 640x480). CPU ray-tracing may take a moment. "
+                        "It uses PyMOL's lights: studio lights (set_lights) "
+                        "are drawn only by the Metal renderer, so they are not "
+                        "in this image, and a text note follows the image when "
+                        "a rig is on."),
         "inputSchema": {
             "type": "object",
             "properties": {

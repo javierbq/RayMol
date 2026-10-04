@@ -17,8 +17,10 @@ once per call). It is FB_Ray warnings feedback: it ignores `quiet`, and
 Covers: the accessor (_lights_ray_notice -> _cmd.get_lights_ray_notice); the
 notice on every CPU path, exactly once per command; silence with no rig, a
 disabled rig and an empty rig, and with the rig on when nothing is traced
-(the prior image, the copy, the geometry test mode) or warnings are off; and
-the CPU image byte-identical with no rig, the rig on and the rig off.
+(the prior image, the copy, the geometry test mode) or warnings are off; the
+CPU image byte-identical with no rig, the rig on and the rig off; the MCP
+`capture_viewport` result (the image first, then a `Note:` text item only
+while the rig is on) and its description.
 
 C++ feedback is written straight to fd 1, so the console is captured there:
 contextlib.redirect_stdout never sees it (as in lighting_session.py).
@@ -26,6 +28,7 @@ contextlib.redirect_stdout never sees it (as in lighting_session.py).
 Runs on a RayMol build:
     pymol -ckqy testing/testing.py --run testing/tests/raymol/lighting_ray_notice.py
 """
+import base64
 import contextlib
 import copy
 import glob
@@ -42,6 +45,9 @@ from PIL import Image
 import pymol
 import pymol.invocation
 from pymol import _cmd, cmd, lighting, testing
+
+import raymol_mcp.mainthread as mainthread
+import raymol_mcp.tools as tools
 
 NOTICE = "studio lights are Metal-only; this ray-traced image uses PyMOL's lights."
 LINE = ' Ray: ' + NOTICE
@@ -342,3 +348,74 @@ class TestCpuImageUnchanged(NoticeCase):
             diff = int(np.abs(out['img'] - base).max())
             self.assertEqual(diff, 0, '%s: max pixel difference %d'
                              % (label, diff))
+
+
+def claim_main_thread(testcase):
+    """Make the calling thread pass for the app's main thread, so
+    run_on_main runs the tool body inline (headless, nothing drains its
+    queue). Restores the process-global _main_ident afterwards. Copied from
+    test_mcp_tools.py."""
+    testcase.addCleanup(setattr, mainthread, '_main_ident',
+                        mainthread._main_ident)
+    mainthread.drain_main_thread_queue()
+
+
+class TestMcpCapture(NoticeCase):
+    """MCP capture_viewport traces on the CPU (cmd.png ray=1). The image stays
+    first (clients read content[0]); while the rig is on, a text note with
+    the notice follows it, read in the same main-thread call."""
+
+    NOTE = {'type': 'text', 'text': 'Note: ' + NOTICE}
+
+    def setUp(self):
+        super().setUp()
+        claim_main_thread(self)
+
+    def capture(self):
+        """Run the tool; check it succeeded with a 24 x 18 PNG first."""
+        out = {}
+
+        def run():
+            out['result'] = tools._capture_viewport(
+                {'width': 24, 'height': 18})
+        self.console = self.lines(run)
+        result = out['result']
+        self.assertIs(result['isError'], False, result)
+        content = result['content']
+        image = content[0]
+        self.assertEqual(image['type'], 'image')
+        self.assertEqual(image['mimeType'], 'image/png')
+        data = base64.b64decode(image['data'])
+        self.assertEqual(data[:8], PNG_MAGIC)
+        with Image.open(io.BytesIO(data)) as img:
+            self.assertEqual(img.size, (24, 18))
+        return content
+
+    @testing.foreach('none', 'off', 'empty')
+    def test_no_note(self, label):
+        cmd.set_lights(NOT_ON[label])
+        content = self.capture()
+        self.assertEqual([item['type'] for item in content], ['image'], label)
+        self.assertEqual(self.console, [], label)
+
+    def test_note_with_rig_on(self):
+        cmd.set_lights(RIG_ON)
+        content = self.capture()
+        self.assertEqual(len(content), 2)
+        self.assertEqual(content[1], self.NOTE)
+        # The console line still prints, once (CmdPNG), not once more.
+        self.assertEqual(self.console, [LINE])
+
+    def test_note_follows_the_rig(self):
+        cmd.set_lights(RIG_ON)
+        self.assertEqual(self.capture()[1:], [self.NOTE])
+        lighting._light_set(-1, 'enabled', 0)
+        self.assertEqual(self.capture()[1:], [])
+
+    def test_description(self):
+        tool = next(t for t in tools.TOOLS if t['name'] == 'capture_viewport')
+        description = tool['description']
+        self.assertIn('Metal', description)
+        self.assertIn("PyMOL's lights", description)
+        self.assertIn('set_lights', description)
+
