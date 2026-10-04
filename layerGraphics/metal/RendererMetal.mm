@@ -405,6 +405,10 @@ void RendererMetal::rebuildDrawPipelines()
   [_sphereShadowPipeline release];     _sphereShadowPipeline = nil;
   [_spherePeelPipeline release];       _spherePeelPipeline = nil;
   [_bezierTubePipeline release];       _bezierTubePipeline = nil;
+  // The tube's light-rig pipeline (#613): lazy, rebuilt at the new sample
+  // count the next time a rig-on frame draws a tube.
+  [_bezierTubeRigPipeline release];    _bezierTubeRigPipeline = nil;
+  _bezierTubeRigTried = false;
   [_labelPipeline release];            _labelPipeline = nil;
   [_connectorPipeline release];        _connectorPipeline = nil;
   _connectorStride = 0;
@@ -524,6 +528,7 @@ RendererMetal::~RendererMetal()
   [_aoExemptMaskTex release];         [_aoMaskPipeline release];
   [_aoMaskDepthState release];
   [_vboLinePipeline release];         [_bezierTubePipeline release];
+  [_bezierTubeRigPipeline release];   // the tube's light-rig pipeline (#613)
   [_blitPipeline release];            [_ssaoPipeline release];
   [_fxaaPipeline release];            [_outlinePipeline release];
   [_tonemapPipeline release];         [_dofPipeline release];
@@ -10500,6 +10505,91 @@ fragment float4 bezier_tube_fragment(TubeOut in [[stage_in]],
 }
 )";
 
+// The bezier tube under the studio light rig (#613). The classic tube library
+// above is compiled alone and stays exactly as it was, so a tube with no rig
+// is byte-identical; this is a SEPARATE library, kMaterialSrc + kBezierTubeSrc
+// + kBezierTubeRigSrc, used only while a rig is on. It reuses CP, TubeU and
+// LightU from the classic source and the light_ helpers from the shared
+// material block.
+//
+// The two functions are copies of the classic ones: the vertex stage adds the
+// eye-space position the spot cones need, and the fragment adds the rig on
+// top of the classic two-light colour. lighting_msl.py keeps the copies equal
+// to the originals. Neither reads a function constant (nor does any helper
+// they reach), so the builder takes them with plain newFunctionWithName:. The
+// rig is a plain buffer(9) argument for the same reason: this library is
+// never specialised, and the rig pipeline is only ever drawn with the rig on.
+// Every material takes the rig the same way until #615, and a tube has no
+// material, so it uses the neutral response directly.
+static NSString* const kBezierTubeRigSrc = @R"(
+struct TubeRigOut {
+  float4 position [[position]];
+  float3 eyeNormal;
+  float4 color;
+  float3 posEye;
+};
+
+[[patch(quad, 4)]]
+vertex TubeRigOut bezier_tube_vertex_rig(
+    patch_control_point<CP> cp [[stage_in]],
+    float2 uv [[position_in_patch]],
+    constant TubeU& U [[buffer(1)]]) {
+  float t = uv.x;
+  float omt = 1.0 - t;
+  float3 p0 = cp[0].pos, p1 = cp[1].pos, p2 = cp[2].pos, p3 = cp[3].pos;
+  // cubic Bezier position + tangent (derivative)
+  float3 P = omt*omt*omt*p0 + 3.0*omt*omt*t*p1 + 3.0*omt*t*t*p2 + t*t*t*p3;
+  float3 T = 3.0*omt*omt*(p1-p0) + 6.0*omt*t*(p2-p1) + 3.0*t*t*(p3-p2);
+  // Robust tangent: fall back to the chord if the derivative degenerates
+  // (coincident control points at sharp turns) to avoid collapsed/flipped
+  // rings and gaps at joints.
+  if (dot(T, T) < 1e-6) T = p3 - p0;
+  T = normalize(T);
+  // a stable frame around the tangent
+  float3 up = (abs(T.y) < 0.99) ? float3(0.0,1.0,0.0) : float3(1.0,0.0,0.0);
+  float3 N = normalize(cross(up, T));
+  float3 B = normalize(cross(T, N));
+  float ang = uv.y * 6.28318530718;
+  float3 radial = cos(ang) * N + sin(ang) * B;
+  float3 world = P + radial * U.radius;
+  float4 eye = U.modelview * float4(world, 1.0);
+  TubeRigOut o;
+  o.position = U.projection * eye;
+  o.position.z = 0.5 * (o.position.z + o.position.w);  // GL z [-1,1] -> Metal [0,1]
+  o.eyeNormal = normalize((U.modelview * float4(radial, 0.0)).xyz);
+  o.color = U.color;
+  o.posEye = eye.xyz;   // the rig's cones and falloff are eye-space
+  return o;
+}
+
+fragment float4 bezier_tube_fragment_rig(TubeRigOut in [[stage_in]],
+    constant LightU& lt [[buffer(0)]],
+    constant LightRigU& rig [[buffer(9)]]) {
+  // PyMOL two-light model driven by the live lighting settings (Scene sliders).
+  // Two-sided via the view vector: orient the normal toward the camera
+  // (eye-space +z) so both the outer surface and the open tube ends/interior
+  // are lit, never black.
+  float3 nrm = normalize(in.eyeNormal);
+  if (nrm.z < 0.0) nrm = -nrm;
+  float ambient = lt.ambient, direct = lt.direct, reflectv = lt.reflect;
+  float spec_value = lt.spec, shininess = max(lt.shininess, 1.0);
+  const float3 L0 = float3(0.0,0.0,1.0);
+  const float3 L1 = normalize(float3(lt.klx, lt.kly, lt.klz));  // key light (cSetting_light)
+  float intensity = ambient, specular = 0.0;
+  float n0 = dot(nrm, L0);
+  intensity += direct * saturate((n0 + lt.wrap) / (1.0 + lt.wrap));
+  float n1 = dot(nrm, L1);
+  intensity += reflectv * saturate((n1 + lt.wrap) / (1.0 + lt.wrap));
+  if (n1 > 0.0) {
+    float3 H1 = normalize(L1 + float3(0.0,0.0,1.0));
+    specular += spec_value * pow(max(dot(nrm, H1), 0.0), shininess);
+  }
+  float3 rgb = in.color.rgb * min(intensity, 1.0) + specular;
+  rgb = light_apply(rgb, in.color.rgb, nrm, in.posEye, rig, light_response_neutral());
+  return float4(rgb, in.color.a);
+}
+)";
+
 void RendererMetal::buildBezierTubePipeline()
 {
   if (_bezierTubePipeline) return;
@@ -10536,6 +10626,81 @@ void RendererMetal::buildBezierTubePipeline()
     NSLog(@"RendererMetal: bezier tube pipeline failed: %@", err);
 }
 
+// One of the tube rig library's functions (#613). They read no function
+// constant, so plain newFunctionWithName: is enough. The library still
+// DECLARES kMaterialSrc's constants; should Metal ever list one against a
+// function that does not read it, the function specialised with
+// kMatFamily = default and kLightRig = false is the same code, so take that.
+// +1, caller owns; nil (logged) on failure.
+static id<MTLFunction> bezierTubeRigFunction(id<MTLLibrary> lib, NSString* name)
+{
+  id<MTLFunction> fn = [lib newFunctionWithName:name];
+  if (fn && fn.functionConstantsDictionary.count == 0)
+    return fn;
+  [fn release];
+  MTLFunctionConstantValues* cv = [[MTLFunctionConstantValues alloc] init];
+  int fam = cMaterialFamily_default;
+  [cv setConstantValue:&fam type:MTLDataTypeInt atIndex:0];
+  bool rig = false;
+  [cv setConstantValue:&rig type:MTLDataTypeBool atIndex:kLightRigConstantIndex];
+  NSError* err = nil;
+  fn = [lib newFunctionWithName:name constantValues:cv error:&err];
+  [cv release];   // MRC: alloc/init is +1
+  if (!fn)
+    NSLog(@"RendererMetal: bezier tube rig function %@ failed: %@", name, err);
+  return fn;
+}
+
+// The bezier tube's light-rig pipeline (#613): the classic tube's descriptor
+// (lighting_msl.py keeps the two equal) with the rig library's functions.
+// Built the first time a rig-on frame draws a tube, so a session without
+// lights never compiles it; one attempt per build (_bezierTubeRigTried), so a
+// failure is not recompiled every draw. Unlike the classic builder it
+// releases what it creates: only the pipeline state is kept.
+void RendererMetal::buildBezierTubeRigPipeline()
+{
+  if (_bezierTubeRigPipeline || _bezierTubeRigTried) return;
+  _bezierTubeRigTried = true;
+  NSError* err = nil;
+  id<MTLLibrary> lib = [_device newLibraryWithSource:[[kMaterialSrc stringByAppendingString:kBezierTubeSrc]
+                                                   stringByAppendingString:kBezierTubeRigSrc]
+                                             options:nil error:&err];
+  if (!lib) { NSLog(@"RendererMetal: bezier tube rig compile failed: %@", err); return; }
+  id<MTLFunction> vfn = bezierTubeRigFunction(lib, @"bezier_tube_vertex_rig");
+  id<MTLFunction> ffn = bezierTubeRigFunction(lib, @"bezier_tube_fragment_rig");
+  if (!vfn || !ffn) {
+    NSLog(@"RendererMetal: bezier tube rig funcs missing");
+    [vfn release]; [ffn release]; [lib release];
+    return;
+  }
+
+  MTLVertexDescriptor* vd = [MTLVertexDescriptor vertexDescriptor];
+  vd.attributes[0].format = MTLVertexFormatFloat3;  // control point position
+  vd.attributes[0].offset = 0;
+  vd.attributes[0].bufferIndex = 0;
+  vd.layouts[0].stride = 12;
+  vd.layouts[0].stepFunction = MTLVertexStepFunctionPerPatchControlPoint;
+
+  MTLRenderPipelineDescriptor* psd = [[MTLRenderPipelineDescriptor alloc] init];
+  psd.vertexFunction = vfn;
+  psd.fragmentFunction = ffn;
+  psd.vertexDescriptor = vd;
+  psd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+  psd.rasterSampleCount = _sampleCount;
+  psd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+  psd.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+  psd.maxTessellationFactor = 64;
+  psd.tessellationFactorStepFunction = MTLTessellationFactorStepFunctionConstant;
+  psd.tessellationFactorFormat = MTLTessellationFactorFormatHalf;
+  psd.tessellationOutputWindingOrder = MTLWindingClockwise;
+  psd.tessellationPartitionMode = MTLTessellationPartitionModeInteger;
+  _bezierTubeRigPipeline = [_device newRenderPipelineStateWithDescriptor:psd error:&err];
+  if (!_bezierTubeRigPipeline)
+    NSLog(@"RendererMetal: bezier tube rig pipeline failed: %@", err);
+  // MRC: the pipeline state keeps what it needs; vd is autoreleased.
+  [psd release]; [vfn release]; [ffn release]; [lib release];
+}
+
 // half-float bit pattern for a tessellation factor
 static inline uint16_t f16(float v) {
   _Float16 h = (_Float16) v;
@@ -10558,6 +10723,21 @@ void RendererMetal::drawBezierTubes(const void* cp, size_t dataSize,
   if (!_encoder) return;
   buildBezierTubePipeline();
   if (!_bezierTubePipeline) return;
+  // The light rig (#613): its own tube pipeline while the rig is on (the
+  // shadow and peel passes returned above), else today's. A rig pipeline that
+  // cannot be built draws the classic tube and logs once.
+  id<MTLRenderPipelineState> tubePipeline = _bezierTubePipeline;
+  bool tubeRig = false;
+  if (_lightRigOn) {
+    buildBezierTubeRigPipeline();
+    if (_bezierTubeRigPipeline) {
+      tubePipeline = _bezierTubeRigPipeline;
+      tubeRig = true;
+    } else if (!_lightRigWarned) {
+      NSLog(@"RendererMetal: light-rig bezier tube pipeline failed; drawing without the rig");
+      _lightRigWarned = true;
+    }
+  }
 
   NSUInteger numPatches = dataSize / 48;  // 4 control points * 3 floats * 4 B
   if (numPatches == 0) return;
@@ -10593,7 +10773,7 @@ void RendererMetal::drawBezierTubes(const void* cp, size_t dataSize,
     _bezierTessPatchCap = numPatches;
   }
 
-  [_encoder setRenderPipelineState:_bezierTubePipeline];
+  [_encoder setRenderPipelineState:tubePipeline];
   // Opaque geometry: standard depth test + write.
   [_encoder setDepthStencilState:bezierDepthState()];
   [_encoder setCullMode:MTLCullModeNone];
@@ -10617,6 +10797,11 @@ void RendererMetal::drawBezierTubes(const void* cp, size_t dataSize,
       _lightReflect, _lightSpecular, _lightShininess, _sssWrap,
       _keyLightEye[0], _keyLightEye[1], _keyLightEye[2] };
     [_encoder setFragmentBytes:&_lt length:sizeof(_lt) atIndex:0]; }
+  // The rig for bezier_tube_fragment_rig at fragment buffer(9). The tube
+  // never goes through bindRepMaterial, so it binds the rig itself, with the
+  // ortho flag derived as bindRepMaterial derives it.
+  if (tubeRig)
+    bindLightRig(_encoder, _projectionMatrix[15] != 0.0f ? 1 : 0);
 
   [_encoder setTessellationFactorBuffer:_bezierTessFactors offset:0 instanceStride:0];
   [_encoder drawPatches:4

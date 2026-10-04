@@ -110,6 +110,7 @@ As in Materials Checklist A, step 1:
 | --- | --- |
 | `kVBOSrc` | `kMaterialSrc` |
 | `kSphereImpostorSrc`, `kCylinderImpostorSrc` | `kMaterialSrc`, `kMaterialImpostorSrc` |
+| `kBezierTubeRigSrc` | `kMaterialSrc`, `kBezierTubeSrc` |
 | `kRTSrc`, `kPostSrc` | `kEyeReconSrc` |
 
 Lighting code lives in `kMaterialSrc` (shading, shadows, outlines) and
