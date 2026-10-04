@@ -15,9 +15,12 @@ once per call). It is FB_Ray warnings feedback: it ignores `quiet`, and
 `feedback disable, ray, warnings` silences it.
 
 Covers: the accessor (_lights_ray_notice -> _cmd.get_lights_ray_notice); the
-notice on every CPU path, exactly once per command; silence with no rig, a
+notice on every CPU path, exactly once per command (an `mpng` again on each
+call, and on its first frame actually traced); silence with no rig, a
 disabled rig and an empty rig, and with the rig on when nothing is traced
-(the prior image, the copy, the geometry test mode) or warnings are off; the
+(the prior image, the copy, the geometry test mode, an `mpng` with every
+frame preserved), for geometry and scene exports (`get_povray`, `.pov`,
+`.wrl`, `.obj`, `.idtf`, `.dae`), or when warnings are off; the
 CPU image byte-identical with no rig, the rig on and the rig off; the MCP
 `capture_viewport` result (the image first, then a `Note:` text item only
 while the rig is on) and its description; and the policy note in the `ray`,
@@ -105,6 +108,11 @@ def notices(text):
 def png_size(path):
     with Image.open(path) as img:
         return img.size
+
+
+def read_bytes(path):
+    with open(path, 'rb') as handle:
+        return handle.read()
 
 
 class NoticeCase(testing.PyMOLTestCase):
@@ -249,6 +257,35 @@ class TestNoticeFires(NoticeCase):
         for frame in frames:
             self.assertEqual(png_size(frame), (24, 18))
 
+    def test_mpng_each_call(self):
+        # The latch is on CMovieModal, which MoviePNG resets on every call
+        # (`*M = CMovieModal()`): a second mpng prints again.
+        cmd.mset('1x2')
+        prefix = self.path('again')
+
+        def run():
+            cmd.mpng(prefix, mode=2, width=24, height=18)
+        self.assertEqual(self.lines(run), [LINE], 'first mpng')
+        self.assertEqual(self.lines(run), [LINE], 'second mpng')
+        self.assertEqual(len(glob.glob(prefix + '*.png')), 2)
+
+    def test_mpng_preserve_partial(self):
+        # preserve=1 skips the frames on disk; the notice prints once, for
+        # the one frame traced again. TestNoticeSilent.test_mpng_preserved
+        # has every frame on disk, so nothing is traced and nothing prints.
+        cmd.mset('1x3')
+        prefix = self.path('part')
+
+        def run(**kwargs):
+            cmd.mpng(prefix, mode=2, width=24, height=18, **kwargs)
+        self.assertEqual(self.lines(run), [LINE])
+        frames = sorted(glob.glob(prefix + '*.png'))
+        self.assertEqual(len(frames), 3)
+        os.remove(frames[-1])
+        self.assertEqual(self.lines(lambda: run(preserve=1)), [LINE])
+        self.assertEqual(sorted(glob.glob(prefix + '*.png')), frames)
+        self.assertEqual(png_size(frames[-1]), (24, 18))
+
     @unittest.skipIf(shutil.which('true') is None, 'no `true` on PATH')
     def test_povray_immediate(self):
         # POV-Ray immediate mode: render_from_string shells out to
@@ -266,7 +303,8 @@ class TestNoticeFires(NoticeCase):
 
 
 class TestNoticeSilent(NoticeCase):
-    """Never otherwise: no rig, rig off or empty, or nothing CPU-traced."""
+    """Never otherwise: no rig, rig off or empty, nothing CPU-traced, or a
+    geometry or scene export."""
 
     def traces(self):
         return [
@@ -311,6 +349,47 @@ class TestNoticeSilent(NoticeCase):
         # renderer 2 tests the geometry and makes no image.
         cmd.set_lights(RIG_ON)
         self.assertEqual(self.lines(lambda: cmd.ray(24, 18, renderer=2)), [])
+
+    def test_mpng_preserved(self):
+        # Every frame already on disk: preserve=1 traces nothing, so the
+        # notice must not print at MoviePNG entry, only for a traced frame.
+        cmd.set_lights(RIG_ON)
+        cmd.mset('1x2')
+        prefix = self.path('kept')
+
+        def run(**kwargs):
+            cmd.mpng(prefix, mode=2, width=24, height=18, **kwargs)
+        self.assertEqual(self.lines(run), [LINE])
+        frames = sorted(glob.glob(prefix + '*.png'))
+        self.assertEqual(len(frames), 2)
+        before = [read_bytes(f) for f in frames]
+        self.assertEqual(self.lines(lambda: run(preserve=1)), [])
+        self.assertEqual([read_bytes(f) for f in frames], before)
+
+    def test_geometry_exports(self):
+        # Geometry and scene exports make no image and never carry the rig,
+        # so they print nothing. get_povray and `save x.pov` call SceneRay
+        # in mode 1, the same value as POV-Ray immediate mode (which
+        # prints, test_povray_immediate): only where the notice is called
+        # keeps them silent.
+        cmd.set_lights(RIG_ON)
+        cmd.show('surface', 'pep')  # triangles, so the .obj is not empty
+        out = {}
+
+        def povray():
+            out['pov'] = cmd.get_povray()
+        self.assertEqual(self.lines(povray), [], 'get_povray')
+        header, geometry = out['pov']
+        self.assertIn('light_source', header)
+        self.assertTrue(geometry)
+
+        exts = ['pov', 'wrl', 'obj', 'idtf']
+        if 'collada' in pymol.get_capabilities():
+            exts.append('dae')
+        for ext in exts:
+            path = self.path('g.' + ext)
+            self.assertEqual(self.lines(lambda: cmd.save(path)), [], ext)
+            self.assertGreater(os.path.getsize(path), 0, ext)
 
     def test_warnings_disabled(self):
         # Real PyMOL feedback: `feedback disable, ray, warnings` silences it.
