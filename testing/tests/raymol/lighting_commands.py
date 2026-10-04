@@ -697,7 +697,10 @@ class TestQueries(CommandsCase):
             result, text = output(cmd.lights, quiet=quiet)
             self.assertEqual(result, cmd.get_lights())
             self.assertIn('lights: on, 3 lights, ambient 0.1, classic 0', text)
-            self.assertIn('key: camera, orbit -45, pitch 35, radius 4', text)
+            # the radius in scene sizes with its A alongside (decision 2)
+            self.assertIn('key: camera, orbit -45, pitch 35, radius 4 '
+                          '(%.1f A), aim centre' % (4.0 * result['size']),
+                          text)
             self.assertIn('beam 55, softness 0.5, color 1/1/1, warmth 4500, '
                           'intensity 1.15', text)
             self.assertIn('air: haze 0, dust 0, dust_size 0.35', text)
@@ -729,10 +732,15 @@ class TestQueries(CommandsCase):
             {'name': 'fill', 'aim': 'point', 'aim_point': [1.0, 2.0, 3.0],
              'aim_selection': 'resi 1'}]})
         eye = lighting._lights_eye()['lights'][0]
+        size = cmd.get_lights()['size']
         _, text = output(cmd.lights)
         self.assertIn('key: pinned at (30.00, 3.00, 6.00), now orbit %g, '
-                      'pitch %g, radius %g' % (eye['orbit'], eye['pitch'],
-                                               eye['radius']), text)
+                      'pitch %g, radius %g (%.1f A), aim' % (
+                          eye['orbit'], eye['pitch'], eye['radius'],
+                          eye['radius'] * size), text)
+        _, text = output(cmd.lights, 'fill')
+        self.assertIn('fill: camera, orbit 0, pitch 30, radius 4 (%.1f A)'
+                      % (4.0 * size), text)
         self.assertIn("aim (1.00, 2.00, 3.00) from 'resi 1'", text)
         self.assertNotEqual(eye['orbit'], 0.0)
 
@@ -1915,8 +1923,9 @@ class TestPlacement(PlacementCase):
         self.frame()
         _, text = output(cmd.lights, 'key', click='0/0', radius=0.5,
                          quiet=0)
-        self.assertIn('lights: key: radius raised from 0.5 to 1.2 so the '
-                      'light sits beyond the picked point', text)
+        self.assertIn('lights: key: radius raised from 0.5 (5.0 A) to 1.2 '
+                      '(12.0 A) so the light sits beyond the picked point',
+                      text)
         self.assertVec(world_position('key'), (0.0, 0.0, 12.0), places=3)
         self.assertAlmostEqual(light('key')['radius'], 1.2, places=4)
         # quiet: no note, same placement

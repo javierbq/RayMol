@@ -1224,7 +1224,8 @@ def _place_step(where, index, typed, point, direction, radius, pin, change,
                                  typed, far / size))
             change.notes.append(
                 ' %s: radius raised from %s to %s so the light sits beyond '
-                'the picked point' % (where, _g(r), '%.3g' % raised))
+                'the picked point' % (where, _radius_text(r, size),
+                                      _radius_text(raised, size, '%.3g')))
             r = raised
         b = _dot(direction, offset)
         q = far * far - (r * size) ** 2
@@ -1299,7 +1300,8 @@ def _light_report(change, index, header, _self, returns_name):
         rig = lighting.get_lights(_self=_self)
         light = rig['lights'][index]
         change.lines += header(light['name'], rig)
-        change.lines += _light_lines(light, _eye_lights(rig, _self)[index])
+        change.lines += _light_lines(light, _eye_lights(rig, _self)[index],
+                                     _frame_size(rig))
         return light['name'] if returns_name else None
     return finish
 
@@ -1389,9 +1391,24 @@ def _g(x):
     return '%g' % (x + 0.0)
 
 
-def _light_lines(light, eye):
+def _radius_text(radius, size, form='%g'):
+    '''A radius in scene sizes, with its Angstrom alongside when the rig has
+    a frame (spec decision 2): "4 (28.0 A)".'''
+    text = form % (radius + 0.0)
+    if size:
+        text += ' (%.1f A)' % (radius * size)
+    return text
+
+
+def _frame_size(rig):
+    '''The rig's size in Angstrom, or None while it has no frame.'''
+    return rig['size'] if rig.get('centre') is not None else None
+
+
+def _light_lines(light, eye, size):
     '''A light as three lines. `eye` is its _lights_eye() entry (for a
-    pinned light's current orbit, pitch and radius), or None.'''
+    pinned light's current orbit, pitch and radius), or None; `size` is
+    the rig's size in Angstrom (_frame_size), for the radius in A.'''
     name = light['name']
     kind = _reserved(name)
     tag = ' (shadowed by the %s)' % kind if kind else ''
@@ -1399,10 +1416,12 @@ def _light_lines(light, eye):
         place = 'pinned at %s' % _xyz(light['position'])
         if eye is not None:
             place += ', now orbit %s, pitch %s, radius %s' % (
-                _g(eye['orbit']), _g(eye['pitch']), _g(eye['radius']))
+                _g(eye['orbit']), _g(eye['pitch']),
+                _radius_text(eye['radius'], size))
     else:
         place = 'camera, orbit %s, pitch %s, radius %s' % (
-            _g(light['orbit']), _g(light['pitch']), _g(light['radius']))
+            _g(light['orbit']), _g(light['pitch']),
+            _radius_text(light['radius'], size))
     if light['aim'] == 'point':
         aim = 'aim %s' % _xyz(light['aim_point'])
         if light['aim_selection']:
@@ -1452,7 +1471,7 @@ def _rig_lines(rig, _self):
         lines.append('   (no lights: PyMOL\'s own lights are used until a '
                      'preset or "lights add")')
     for light, eye in zip(rig['lights'], _eye_lights(rig, _self)):
-        lines += _light_lines(light, eye)
+        lines += _light_lines(light, eye, _frame_size(rig))
     lines.append(_air_line(rig['air']))
     return lines
 
@@ -1749,7 +1768,8 @@ def _query_light(old, index, _self):
     light = old['lights'][index]
     change.always = [' lights: %s (%s)' % (
         light['name'], 'on' if old['enabled'] else 'rig off')]
-    change.always += _light_lines(light, _eye_lights(old, _self)[index])
+    change.always += _light_lines(light, _eye_lights(old, _self)[index],
+                                  _frame_size(old))
     change.result = light
     return change
 
