@@ -43,7 +43,8 @@ not to them. While a rig is on (enabled, with at least one light), each such
 command prints one line:
 ` Ray: studio lights are Metal-only; this ray-traced image uses PyMOL's lights.`
 MCP `capture_viewport` adds the same note to its result. Geometry and scene
-exports (`.pov`, `.wrl`, `.obj`, `.dae`) carry PyMOL's lights without a
+exports (`.pov`, `.wrl`, `.obj`, `.dae`) never carry the studio rig (`.pov`,
+`.wrl` and `.dae` write PyMOL's own lights; `.obj` has none), and print no
 notice. The app's image and movie exports, including *Ray-traced*, render
 through Metal and keep the studio look.
 
