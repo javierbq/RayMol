@@ -267,10 +267,12 @@ class TestRegistration(CommandsCase):
         self.assertIs(rig['enabled'], True)
 
     def testHelp(self):
-        for name in ('lights', 'atmosphere'):
+        for name, opening in (
+                ('lights', '"lights" sets up studio lighting'),
+                ('atmosphere', '"atmosphere" sets the air of the light rig')):
             _, text = output(cmd.help, name)
             self.assertIn('DESCRIPTION', text)
-            self.assertIn('"%s"' % name, text)
+            self.assertIn(opening, text)
 
     def testAtIsNowAmbiguous(self):
         # 'at' expanded to 'attach' (the only command starting with 'at')
@@ -752,10 +754,25 @@ class TestQueries(CommandsCase):
     def testShadowedNameIsMarked(self):
         # Q6: reserved names are enforced by the command only, so a rig
         # from set_lights can hold one; the keyword wins at dispatch.
-        cmd.set_lights({'lights': [{'name': 'off'}, {'name': 'neon'}]})
+        cmd.set_lights({'enabled': True,
+                        'lights': [{'name': 'off'}, {'name': 'neon'}]})
         _, text = output(cmd.lights)
         self.assertIn('off (shadowed by the keyword)', text)
         self.assertIn('neon (shadowed by the preset)', text)
+        # "lights off" turns the rig off: it does not print the light
+        before = cmd.get_lights()
+        result, text = output(cmd.lights, 'off')
+        self.assertIsNone(result)
+        rig = cmd.get_lights()
+        self.assertIs(rig['enabled'], False)
+        self.assertEqual(rig['lights'], before['lights'])
+        self.assertNotIn('shadowed', text)
+        # "lights neon" applies the preset over both lights
+        cmd.lights('neon')
+        rig = cmd.get_lights()
+        self.assertEqual([l['name'] for l in rig['lights']],
+                         ['magenta', 'cyan', 'front'])
+        self.assertIs(rig['enabled'], True)
 
 
 # --- rig fields -------------------------------------------------------------
@@ -2914,8 +2931,7 @@ RIG_OFF_AIR = {'haze': 0.3, 'dust': 0.5, 'dust_size': 0.4, 'dust_speed': 1.0,
 SHIM_ATTRS = ('_l612_set', '_l612_preset', '_l612_kw')
 
 
-@unittest.skipUnless(all(os.path.isfile(p) for p in
-                         (RENDER, PDB, PRESETS_FILE, RIG_OFF_FULL_FILE)),
+@unittest.skipUnless(os.path.isfile(RENDER) and os.path.isfile(PDB),
                      'needs a RayMol checkout (scripts/lighting)')
 class TestSceneFiles(CommandsCase):
     """The scene files that drive the frozen harness (render.py) through the
@@ -2979,6 +2995,12 @@ class TestSceneFiles(CommandsCase):
         self.run_twice(job, out)
         snap = Snapshot()
         return snap.take()
+
+    def testTheFilesExist(self):
+        # in a checkout, a moved or renamed scene file fails here rather
+        # than skipping the class
+        for path in (PRESETS_FILE, RIG_OFF_FULL_FILE):
+            self.assertTrue(os.path.isfile(path), path)
 
     def testPresetsFile(self):
         render = self.render
