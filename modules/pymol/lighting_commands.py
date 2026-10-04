@@ -716,18 +716,46 @@ def _parse_aim(where, field, value):
     return ('selection', text)
 
 
+def _drawn_atoms(sele, _self):
+    '''The chempy atoms of a selection as they are drawn now, in world space
+    (object matrices applied, as the frame capture and the pick use). Each
+    object is read at its own effective state (get_object_state): a
+    single-state object at every frame (static_singletons), the object's
+    own state setting, every state with all_states. An object whose state
+    is past its last one is not drawn and gives no atoms. (get_model at
+    the global state would drop single-state objects above frame 1.)'''
+    atoms = []
+    for obj in _self.get_object_list('(%s)' % sele) or []:
+        try:
+            state = _self.get_object_state(obj)
+        except CmdException:
+            continue
+        if state == 0:
+            states = range(1, _self.count_states('%' + obj) + 1)
+        else:
+            states = (state,)
+        part = '(%s) and %%%s' % (sele, obj)
+        for s in states:
+            atoms += _self.get_model(part, state=s).atom
+    return atoms
+
+
 def _selection_model(where, field, sele, _self):
-    '''The chempy atoms of a selection in the current state, in world space
-    (object matrices applied, as the frame capture and the pick use).'''
+    '''The chempy atoms of a selection as drawn now (see _drawn_atoms).'''
     try:
-        model = _self.get_model(sele, state=-1)
+        atoms = _drawn_atoms(sele, _self)
+        hidden = not atoms and _self.count_atoms('(%s)' % sele) > 0
     except CmdException:
         raise _error(where, '%s=%s is not a valid selection%s' % (
             field, sele, _comma_hint(where, sele))) from None
-    if not model.atom:
+    if hidden:
+        raise _error(where, '%s=%s: none of the selection\'s atoms is drawn '
+                     'in the current state (%d)' % (
+                         field, sele, _self.get_state()))
+    if not atoms:
         raise _error(where, '%s=%s: the selection has no atoms' % (
             field, sele))
-    return model.atom
+    return atoms
 
 
 def _selection_atoms(where, field, sele, _self):
@@ -1535,8 +1563,9 @@ LIGHT FIELDS
                      geometry
     aim              centre or center (default), a world point x/y/z or
                      [x,y,z] in Angstrom, or a selection: the light aims at
-                     the selection's centroid as it is now (aim again to
-                     follow moved atoms). Parentheses force a selection:
+                     the selection's centroid as it is drawn now, each
+                     object in the state it shows (aim again to follow
+                     moved atoms). Parentheses force a selection:
                      aim=(1/2/3).
     pin              boolean: 1 pins the light to the molecules where it is
                      now, 0 makes it a camera light again (stored as anchor)

@@ -2197,6 +2197,92 @@ class TestPlacement(PlacementCase):
             p1.stop()
 
 
+class TestDrawnStates(PlacementCase):
+    """aim=, target= and highlight= read each object at the state it is
+    drawn at: a single-state 'rec' (drawn at every frame, static_singletons)
+    next to a 9-state 'lig' at (3, s - 5, 0) in state s, at frame 5."""
+
+    R = 2.0
+
+    def setUp(self):
+        super().setUp()
+        self.ball('rec', (0.0, 0.0, 0.0), self.R)
+        for s in range(1, 10):
+            cmd.pseudoatom('lig', pos=[3.0, s - 5.0, 0.0], vdw=1.0, state=s)
+        cmd.show_as('spheres', 'lig')
+        cmd.frame(5)
+        self.assertEqual(cmd.get_state(), 5)
+        self.assertEqual((cmd.count_states('rec'), cmd.count_states('lig')),
+                         (1, 9))
+        self.frame()
+
+    def testAim(self):
+        cmd.lights('key', aim='rec')
+        self.assertVec(light('key')['aim_point'], (0.0, 0.0, 0.0), places=5)
+        # rec (its one state) and lig (state 5): (0,0,0) and (3,0,0)
+        cmd.lights('key', aim='rec or lig')
+        self.assertVec(light('key')['aim_point'], (1.5, 0.0, 0.0), places=5)
+        cmd.frame(2)
+        cmd.lights('key', aim='rec or lig')
+        self.assertVec(light('key')['aim_point'], (1.5, -1.5, 0.0),
+                       places=5)
+
+    def testTarget(self):
+        cmd.lights('key', target='rec')
+        key = light('key')
+        self.assertVec(key['aim_point'], (0.0, 0.0, 0.0), places=5)
+        self.assertAlmostEqual(
+            key['beam'], fitted_beam(1.5, eye('key')['aim_distance']),
+            places=3)
+        # F: the farthest drawn atom (1.5 A from the centroid) + 1.5 A
+        cmd.lights('key', target='rec or lig')
+        key = light('key')
+        self.assertVec(key['aim_point'], (1.5, 0.0, 0.0), places=5)
+        self.assertAlmostEqual(
+            key['beam'], fitted_beam(3.0, eye('key')['aim_distance']),
+            places=3)
+
+    def testHighlight(self):
+        cmd.lights('key', highlight='rec', radius=3)
+        self.assertPlaced('key', (0.0, 0.0, self.R), (0.0, 0.0, 1.0), None)
+        # the ray through the drawn atoms' centroid (1.5, 0, 0) meets rec,
+        # which is within vdW + 1.5 A of a drawn atom of the selection
+        x, y = self.ndc_of((1.5, 0.0, 0.0))
+        A = self.ray_sphere(x, y, (0.0, 0.0, 0.0), self.R)
+        cmd.lights('key', highlight='rec or lig', radius=3)
+        self.assertPlaced('key', A, mirror(vunit(A),
+                                           vunit(vsub(CAMERA, A))), None)
+
+    def testWhatIsNotDrawn(self):
+        # an object whose state is past its last one is not drawn
+        for s in range(1, 4):
+            cmd.pseudoatom('short', pos=[0.0, 8.0, 0.0], state=s)
+        self.assertError(r"lights: key: aim=short: none of the selection's "
+                         r"atoms is drawn in the current state \(5\)",
+                         cmd.lights, 'key', aim='short')
+        cmd.lights('key', aim='rec or short')
+        self.assertVec(light('key')['aim_point'], (0.0, 0.0, 0.0), places=5)
+        # without static_singletons rec is drawn in state 1 only
+        cmd.set('static_singletons', 0)
+        self.assertError(r"lights: key: target=rec: none of the selection's "
+                         r"atoms is drawn", cmd.lights, 'key', target='rec')
+        cmd.lights('key', aim='rec or lig')
+        self.assertVec(light('key')['aim_point'], (3.0, 0.0, 0.0), places=5)
+
+    def testObjectStateAndAllStates(self):
+        cmd.frame(2)
+        cmd.lights('key', aim='lig')
+        self.assertVec(light('key')['aim_point'], (3.0, -3.0, 0.0), places=5)
+        # the object's own state setting
+        cmd.set('state', 7, 'lig')
+        cmd.lights('key', aim='lig')
+        self.assertVec(light('key')['aim_point'], (3.0, 2.0, 0.0), places=5)
+        # all_states draws every state: the centroid of all nine
+        cmd.set('all_states', 1, 'lig')
+        cmd.lights('key', aim='lig')
+        self.assertVec(light('key')['aim_point'], (3.0, 0.0, 0.0), places=5)
+
+
 # --- docs -------------------------------------------------------------------
 
 class TestDocs(testing.PyMOLTestCase):
