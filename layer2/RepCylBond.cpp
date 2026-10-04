@@ -34,6 +34,7 @@
 #include"CGO.h"
 #include "Material.h"
 #include "Lex.h"
+#include "PickAccel.h"
 
 #include <iostream>
 
@@ -44,6 +45,8 @@ struct RepCylBond : Rep {
 
   cRep_t type() const override { return cRepCyl; }
   void render(RenderInfo* info) override;
+  bool pickRay(const RepPickArgs& args, PickRayHit& hit) const override;
+  const PickAccel* pickPrepare(bool* built = nullptr) const override;
 
   CGO* primitiveCGO = nullptr;
   CGO* renderCGO = nullptr;
@@ -168,6 +171,50 @@ static int RepCylBondCGOGenerate(RepCylBond * I, RenderInfo * info)
   CGOSetUseShader(I->renderCGO, use_shader);
 
   return true;
+}
+
+/**
+ * Surface pick (#614). The rule follows RepCylBondCGOGenerate as it resolves
+ * on Metal (use_shaders forced on, the Metal impostor pipeline standing in for
+ * the GL "cylinder" program): as_cylinders draws cylinder and sphere
+ * impostors; otherwise CGOSimplify tessellates everything, which is picked
+ * analytically under the Mesh rule. Its round ends follow the
+ * stick_round_nub it is given: a hemisphere when on, else CGOSimpleCylinder's
+ * pointed nub (the body on by stick_overlap * r, then a cone stick_nub * r
+ * long; both read globally, as CGOSimpleCylinder reads them). Keep in step
+ * with RepCylBondCGOGenerate and CGOSimpleCylinder.
+ */
+const PickAccel* RepCylBond::pickPrepare(bool* built) const
+{
+  if (built)
+    *built = false;
+  if (!primitiveCGO)
+    return nullptr;
+  if (builtTransparency() >= 0.999f)
+    return nullptr; // drawn invisible
+  bool const as_cylinders =
+      SettingGet<bool>(*cs, cSetting_stick_use_shader) &&
+      SettingGet<bool>(*cs, cSetting_stick_as_cylinders) &&
+      SettingGet<bool>(*cs, cSetting_render_as_cylinders);
+  PickCGORules rules;
+  rules.sphere = rules.cylinder =
+      as_cylinders ? PickRule::Impostor : PickRule::Mesh;
+  rules.simplified_cylinders = !as_cylinders;
+  rules.round_nub = SettingGet<int>(G, cSetting_stick_round_nub) != 0;
+  rules.nub.overlap = SettingGetGlobal_f(G, cSetting_stick_overlap);
+  rules.nub.length = SettingGetGlobal_f(G, cSetting_stick_nub);
+  const CGO* cgo = primitiveCGO;
+  const PickAccelKey key = rules.key(cgo, cgo->c);
+  return pickAccelFor(
+      key, [&](PickAccel& accel) { PickAccelAddCGO(cgo, accel, rules); },
+      built);
+}
+
+bool RepCylBond::pickRay(const RepPickArgs& args, PickRayHit& hit) const
+{
+  const PickAccel* accel = pickPrepare();
+  const PickEyeDepth eye = args.eye();
+  return accel && accel->intersect(args.ray, pickCapOn(), hit, nullptr, &eye);
 }
 
 void RepCylBond::render(RenderInfo * info)

@@ -83,6 +83,7 @@ Z* -------------------------------------------------------------------
 
 #include "MoleculeExporter.h"
 #include "MetalPick.h"
+#include "SurfacePick.h"
 
 #include "LightRigPy.h"
 #include "SceneLights.h"
@@ -2338,6 +2339,123 @@ static PyObject *CmdMetalPick(PyObject * self, PyObject * args)
 
   APIExitBlocked(G);
   return result;
+}
+
+/**
+ * Optional object-name list: None, or a list of names (PConvFromPyObject).
+ */
+static bool SurfacePickObjects(PyMOLGlobals* G, PyObject* objects_py,
+    std::vector<std::string>& names, bool& have)
+{
+  have = objects_py && objects_py != Py_None;
+  if (!have)
+    return true;
+  return PConvFromPyObject(G, objects_py, names);
+}
+
+/**
+ * _cmd.surface_pick(self, ndc_x, ndc_y, aspect, objects, rep_mask, update)
+ *
+ * The drawn surface point and normal under a scene-viewport NDC point (#614,
+ * layer3/SurfacePick.h). aspect <= 0 uses the scene's own; objects is None or
+ * a list of names; update runs the frame's update phase first.
+ *
+ * Returns None on a miss, else
+ * (x, y, z, nx, ny, nz, depth, facing, object, state, rep, inside, cap)
+ * with state 1-based and rep a cRep_t index.
+ *
+ * Not modal-safe by design: refuses (CmdException) while a modal draw owns
+ * the core. The GIL is released while it runs, since the update can wait on
+ * async build threads.
+ */
+static PyObject* CmdSurfacePick(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  float ndc_x, ndc_y, aspect;
+  PyObject* objects_py;
+  int rep_mask, update;
+  API_SETUP_ARGS(G, self, args, "OfffOii", &self, &ndc_x, &ndc_y, &aspect,
+      &objects_py, &rep_mask, &update);
+
+  std::vector<std::string> names;
+  bool have_names = false;
+  API_ASSERT(SurfacePickObjects(G, objects_py, names, have_names));
+
+  SurfacePickRequest req;
+  req.ndc_x = ndc_x;
+  req.ndc_y = ndc_y;
+  req.aspect = aspect;
+  req.rep_mask = rep_mask;
+  req.objects = have_names ? &names : nullptr;
+  req.update = update != 0;
+
+  API_ASSERT(APIEnterNotModal(G));
+  // Everything the result needs is copied into `hit` (the name included)
+  // before the API is released.
+  const SurfacePickHit hit = ScenePickSurface(G, req);
+  APIExit(G);
+
+  if (!hit.hit)
+    return PConvAutoNone(nullptr);
+  return Py_BuildValue("(ffffffffsiiOO)", hit.point[0], hit.point[1],
+      hit.point[2], hit.normal[0], hit.normal[1], hit.normal[2], hit.depth,
+      hit.facing, hit.object.c_str(), hit.state + 1, hit.rep,
+      hit.inside ? Py_True : Py_False, hit.cap ? Py_True : Py_False);
+}
+
+/**
+ * _cmd.surface_pick_prepare(self, objects, rep_mask, update, build)
+ *
+ * Build the surface-pick grid of every drawn pickable rep without picking, so
+ * the first pick does not pay for it. build=0 only runs the update (when
+ * update) and reports what is cached. Returns (accels, bytes, built).
+ */
+static PyObject* CmdSurfacePickPrepare(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  PyObject* objects_py;
+  int rep_mask, update, build;
+  API_SETUP_ARGS(G, self, args, "OOiii", &self, &objects_py, &rep_mask,
+      &update, &build);
+
+  std::vector<std::string> names;
+  bool have_names = false;
+  API_ASSERT(SurfacePickObjects(G, objects_py, names, have_names));
+
+  API_ASSERT(APIEnterNotModal(G));
+  const SurfacePickPrepareStats stats = ScenePickSurfacePrepare(G, rep_mask,
+      have_names ? &names : nullptr, update != 0, build != 0);
+  APIExit(G);
+
+  return Py_BuildValue("(iKi)", stats.accels,
+      static_cast<unsigned long long>(stats.bytes), stats.built);
+}
+
+/**
+ * _cmd.surface_pick_release(self, objects, rep_mask)
+ *
+ * Drop the surface-pick grids of the given molecules' reps (objects None:
+ * every molecule), in every state, to give their memory back. The next pick
+ * or prepare rebuilds them. Returns (accels, bytes) dropped.
+ */
+static PyObject* CmdSurfacePickRelease(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  PyObject* objects_py;
+  int rep_mask;
+  API_SETUP_ARGS(G, self, args, "OOi", &self, &objects_py, &rep_mask);
+
+  std::vector<std::string> names;
+  bool have_names = false;
+  API_ASSERT(SurfacePickObjects(G, objects_py, names, have_names));
+
+  API_ASSERT(APIEnterNotModal(G));
+  const SurfacePickReleaseStats stats = ScenePickSurfaceRelease(
+      G, rep_mask, have_names ? &names : nullptr);
+  APIExit(G);
+
+  return Py_BuildValue("(iK)", stats.accels,
+      static_cast<unsigned long long>(stats.bytes));
 }
 
 static PyObject *CmdGetType(PyObject * self, PyObject * args)
@@ -7366,6 +7484,9 @@ static PyMethodDef Cmd_methods[] = {
   {"memory_available", CmdMemoryAvailable, METH_VARARGS},
   {"memory_usage", CmdMemoryUsage, METH_VARARGS},
   {"metal_pick", CmdMetalPick, METH_VARARGS},
+  {"surface_pick", CmdSurfacePick, METH_VARARGS},
+  {"surface_pick_prepare", CmdSurfacePickPrepare, METH_VARARGS},
+  {"surface_pick_release", CmdSurfacePickRelease, METH_VARARGS},
   {"mmodify", CmdMModify, METH_VARARGS},
   {"move", CmdMove, METH_VARARGS},
   {"mset", CmdMSet, METH_VARARGS},

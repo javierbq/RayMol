@@ -38,6 +38,7 @@
 #include"ObjectMolecule.h"
 #include "Lex.h"
 #include "CoordSet.h"
+#include "PickAccel.h"
 
 #define SPHERE_NORMAL_RANGE 6.f
 #define SPHERE_NORMAL_RANGE2 (SPHERE_NORMAL_RANGE*SPHERE_NORMAL_RANGE)
@@ -211,6 +212,71 @@ void RepSphere::render(RenderInfo* info)
         CGORender(I->renderCGO, nullptr, nullptr, nullptr, info, I);
     }
   }
+}
+
+/**
+ * The sphere mode the METAL renderer ends up drawing (#614 pick). Same switch
+ * as RepGetSphereMode, evaluated the way it resolves inside the app: Metal
+ * forces use_shaders on (PyMOL.cpp) and a renderer exists, so only
+ * sphere_use_shader can drop mode 9 to 0. RepGetSphereMode itself is not used
+ * because headless (CI) it falls back to mode 0 for lack of a GL "sphere"
+ * program -- the pick must follow the app, not the host it runs in.
+ * Keep in step with RepGetSphereMode.
+ */
+static int RepSphereMetalMode(PyMOLGlobals* G, const RepSphere* I)
+{
+  int sphere_mode = SettingGet_i(
+      G, I->cs->Setting.get(), I->obj->Setting.get(), cSetting_sphere_mode);
+  switch (sphere_mode) {
+  case 5:
+  case 4:
+  case -1:
+    sphere_mode = 9;
+    /* fall through */
+  case 9:
+    if (!SettingGetGlobal_b(G, cSetting_sphere_use_shader))
+      sphere_mode = 0;
+  }
+  return sphere_mode;
+}
+
+const PickAccel* RepSphere::pickPrepare(bool* built) const
+{
+  if (built)
+    *built = false;
+  // Spheroids (an ellipsoidal triangle mesh) are not modelled.
+  if (spheroidCGO || !primitiveCGO)
+    return nullptr;
+  if (builtTransparency() >= 0.999f)
+    return nullptr; // drawn invisible
+  // 9: analytic impostors. 0: tessellated (CGOSimplify) triangles. Point
+  // sprites (1-3, 6-8) and the cube/tetrahedron modes are not picked.
+  PickRule rule;
+  switch (RepSphereMetalMode(G, this)) {
+  case 9:
+    rule = PickRule::Impostor;
+    break;
+  case 0:
+    rule = PickRule::Mesh;
+    break;
+  default:
+    return nullptr;
+  }
+  PickCGORules rules;
+  rules.sphere = rules.cylinder = rule;
+  rules.simplified_cylinders = rule == PickRule::Mesh;
+  const CGO* cgo = primitiveCGO;
+  const PickAccelKey key = rules.key(cgo, cgo->c);
+  return pickAccelFor(
+      key, [&](PickAccel& accel) { PickAccelAddCGO(cgo, accel, rules); },
+      built);
+}
+
+bool RepSphere::pickRay(const RepPickArgs& args, PickRayHit& hit) const
+{
+  const PickAccel* accel = pickPrepare();
+  const PickEyeDepth eye = args.eye();
+  return accel && accel->intersect(args.ray, pickCapOn(), hit, nullptr, &eye);
 }
 
 bool RepSphere::sameVis() const

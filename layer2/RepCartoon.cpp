@@ -40,6 +40,7 @@ Z* -------------------------------------------------------------------
 #include "Material.h"
 #include "Lex.h"
 #include "CoordSet.h"
+#include "PickAccel.h"
 
 #include "AtomIterators.h"
 #include "AtomNeighbors.h"
@@ -74,19 +75,34 @@ struct RepCartoon : Rep {
   void render(RenderInfo* info) override;
   void invalidate(cRepInv_t level) override;
   bool sameVis() const override;
+  bool pickRay(const RepPickArgs& args, PickRayHit& hit) const override;
+  const PickAccel* pickPrepare(bool* built = nullptr) const override;
 
   CGO* ray = nullptr;
   CGO* std = nullptr;
   CGO* preshader = nullptr;
 
   /**
+   * What RepCartoonCGOGenerate made of the spheres when it built `std`
+   * (#614 pick): -1 not built yet, 1 tessellated (CGOSimplify), 0 impostors.
+   * Settings it read that do not rebuild the rep (transparency_mode) cannot
+   * change what is drawn after that, so the pick follows this, not them.
+   */
+  signed char stdSpheresTessellated = -1;
+
+  /**
    * Free the preshader CGO or move to another owner.
    * @post preshader == nullptr
+   *
+   * The swap keeps the same CGO object (the pick source, `ray ? ray :
+   * preshader`, is unchanged across it). Before any CGOFree the pick grid,
+   * which references that CGO's arrays in place, is dropped (#614).
    */
   void disposePreshaderCGO() {
     if (!ray) {
       std::swap(ray, preshader);
     } else {
+      m_pickAccel.reset();
       CGOFree(preshader);
     }
   }
@@ -102,6 +118,7 @@ RepCartoon::~RepCartoon()
 {
   auto I = this;
   assert(I->ray != I->preshader);
+  m_pickAccel.reset(); // references the CGOs below in place (#614)
   CGOFree(I->preshader);
   CGOFree(I->ray);
   CGOFree(I->std);
@@ -157,6 +174,12 @@ static int RepCartoonCGOGenerate(RepCartoon * I, RenderInfo * info)
   I->setHasTransparency(hasAlpha);
 
   use_shaders = SettingGetGlobal_b(G, cSetting_use_shaders) && SettingGetGlobal_b(G, cSetting_cartoon_use_shader);
+  // The sphere treatment the branches below give `std` (#614 pick).
+  I->stdSpheresTessellated =
+      (!use_shaders ||
+          (hasAlpha && SettingGetGlobal_i(G, cSetting_transparency_mode) != 3))
+          ? 1
+          : 0;
   has_cylinders_to_optimize = G->ShaderMgr->Get_CylinderShader(info->pass, 0) && 
                               SettingGetGlobal_i(G, cSetting_cartoon_nucleic_acid_as_cylinders) && 
                               SettingGetGlobal_b(G, cSetting_render_as_cylinders) && 
@@ -262,6 +285,7 @@ void RepCartoon::render(RenderInfo* info)
                       I->cs->Setting.get(), I->obj->Setting.get())) {
       PRINTFB(G, FB_RepCartoon, FB_Warnings)
         " %s-Warning: ray rendering failed\n", __func__ ENDFB(G);
+      I->m_pickAccel.reset(); // the pick grid references I->ray (#614)
       CGOFree(I->ray);
     }
 #endif
@@ -292,6 +316,66 @@ void RepCartoon::render(RenderInfo* info)
       }
     }
   }
+}
+
+/**
+ * Surface pick (#614). The source is the primitive CGO the ray tracer reads,
+ * `ray ? ray : preshader` -- one CGO object before and after
+ * disposePreshaderCGO's swap, so the cached grid stays valid across the
+ * first frame.
+ *
+ * Rules, from RepCartoonCGOGenerate as it resolves on Metal (use_shaders is
+ * forced on; there is no GL "cylinder" program, so has_cylinders_to_optimize
+ * is false):
+ *  - triangles: Mesh (VBO triangles of the same vertices, nothing culled);
+ *  - cylinder-type ops: Mesh (CGOSimplify tessellates them);
+ *  - spheres: impostors (CGOOptimizeSpheresToVBONonIndexed) unless
+ *    cartoon_use_shader is off or the rep is transparent with
+ *    transparency_mode != 3, where CGOSimplify tessellates everything.
+ *    Once a frame has built `std`, the treatment it chose
+ *    (stdSpheresTessellated) is what is drawn, whatever those settings say
+ *    later: transparency_mode does not rebuild cartoons. Before that, the
+ *    settings say what the first frame will choose, with "transparent" read
+ *    as the built transparency (per-atom cartoon_transparency only counts
+ *    once a frame has looked at it; the grid is rebuilt when the rule
+ *    changes).
+ * Keep in step with RepCartoonCGOGenerate.
+ */
+const PickAccel* RepCartoon::pickPrepare(bool* built) const
+{
+  if (built)
+    *built = false;
+  const CGO* cgo = ray ? ray : preshader;
+  if (!cgo)
+    return nullptr;
+  if (builtTransparency() >= 0.999f)
+    return nullptr; // drawn invisible
+  bool simplified_all;
+  if (std && stdSpheresTessellated >= 0) {
+    simplified_all = stdSpheresTessellated != 0; // what the frame drew
+  } else {
+    bool const transparent = builtTransparency() > 0.f || hasTransparency();
+    simplified_all =
+        !SettingGetGlobal_b(G, cSetting_cartoon_use_shader) ||
+        (transparent &&
+            SettingGetGlobal_i(G, cSetting_transparency_mode) != 3);
+  }
+  PickCGORules rules;
+  rules.sphere = simplified_all ? PickRule::Mesh : PickRule::Impostor;
+  rules.cylinder = PickRule::Mesh;
+  rules.simplified_cylinders = true;
+  rules.triangles = true;
+  const PickAccelKey key = rules.key(cgo, cgo->c);
+  return pickAccelFor(
+      key, [&](PickAccel& accel) { PickAccelAddCGO(cgo, accel, rules); },
+      built);
+}
+
+bool RepCartoon::pickRay(const RepPickArgs& args, PickRayHit& hit) const
+{
+  const PickAccel* accel = pickPrepare();
+  const PickEyeDepth eye = args.eye();
+  return accel && accel->intersect(args.ray, pickCapOn(), hit, nullptr, &eye);
 }
 
 #define NUCLEIC_NORMAL0 "C2"
