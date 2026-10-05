@@ -114,10 +114,15 @@ LIT_MARKERS = ('vbo_material_shade', 'sphere_shade_material',
 RIG_ARGUMENT = re.compile(
     r'constant\s+LightRigU\s*&\s*rig\s*\[\[\s*buffer\(9\)\s*,\s*'
     r'function_constant\(kLightRig\)\s*\]\]')
-RIG_GUARD = re.compile(r'if\s*\(\s*kLightRig\s*\)')
+# `if (kLightRig && kLightShadow)` (#616) implies the rig, so it guards rig
+# statements too: the classic specialisation removes it with the rest.
+RIG_GUARD = re.compile(r'if\s*\(\s*kLightRig(?:\s*&&\s*kLightShadow)?\s*\)')
 # What a rig statement can mention; none of it may survive outside the guard.
+# The studio shadow maps' (#616) constant, arguments and _shadowed copies
+# included.
 RIG_TOKENS = re.compile(r'\brig\b|\blight_\w+|\bLightTerms\b|\bLightRigU\b|'
-                        r'\bkLightRig\b|\bLightResponse\b|\w+_rig\b')
+                        r'\bkLightRig\b|\bLightResponse\b|\w+_rig\b|'
+                        r'\bkLightShadow\b|\blightShadow\w*|\w+_shadowed\b')
 # Functions of RendererMetal.mm allowed to bind the rig: every VBO, sphere
 # and cylinder draw through bindRepMaterial, and the bezier tube, which never
 # calls it.
@@ -443,6 +448,17 @@ class TestRemoveRigStatements(LightMSLCase):
             squash(remove_rig_statements(
                 '{ if (kLightRig) { p(rig); } else { q(); } }')),
             '{{q();}}')
+        # #616's three-way form: the shadow arm, then #613's, then classic
+        self.assertEqual(
+            squash(remove_rig_statements(
+                '{ if (kLightRig && kLightShadow)\n  x_rig_shadowed(a, rig, m, s, b);'
+                '\nelse if (kLightRig)\n  x_rig(a, rig, b);\nelse\n  x(a, b); y(); }')),
+            '{x(a,b);y();}')
+        self.assertEqual(
+            squash(remove_rig_statements(
+                '{ if (kLightRig && kLightShadow) r = g_shadowed(rig, m, s); '
+                'else if (kLightRig) r = g(rig); z(); }')),
+            '{z();}')
 
 
 class TestLitFragments(LightMSLCase):
@@ -668,14 +684,31 @@ class TestPipelines(LightMSLCase):
                         r'atIndex:kLightRigConstantIndex\]', body)
         self.assertIsNotNone(family)
         self.assertIsNotNone(rig, 'the light rig constant is not set')
+        # the studio shadow maps' constant (#616), likewise: set on every
+        # specialisation, to lightRig && lightShadow, from the MSL index
+        shadow_index = re.search(r'kLightShadow\s*\[\[\s*function_constant\((\d+)\)',
+                                 material).group(1)
+        self.assertRegex(code, r'constexpr NSUInteger kLightShadowConstantIndex = %s;'
+                         % shadow_index)
+        shadow = re.search(r'setConstantValue:&shadow type:MTLDataTypeBool '
+                           r'atIndex:kLightShadowConstantIndex\]', body)
+        self.assertIsNotNone(shadow, 'the shadow maps constant is not set')
+        self.assertRegex(body, r'bool shadow = lightRig && lightShadow;')
         specialise = body.index('constantValues:')
-        for m in (family, rig):
+        for m in (family, rig, shadow):
             # set unconditionally, before the function is specialised
             self.assertEqual(depth_at(body, m.start()), 1)
             self.assertLess(m.start(), specialise)
         # the rig variant asks for true; every classic VBO build passes nothing
         rig_fn = cpp_function(self.mm, 'RendererMetal::vboRigFragmentFunction')
         self.assertRegex(rig_fn, r'materialFragmentFunction\([^;]*true\);')
+        # ...and only the rig: its fourth argument is the last (#616)
+        self.assertEqual(len(re.findall(r'materialFragmentFunction\(([^;]*)\);',
+                                        rig_fn)[0].split(',')), 4)
+        shadow_fn = cpp_function(self.mm,
+                                 'RendererMetal::vboRigShadowFragmentFunction')
+        self.assertRegex(re.sub(r'/\*.*?\*/', '', shadow_fn),
+                         r'materialFragmentFunction\([^;]*true,\s*true\);')
         build = cpp_function(self.mm, 'RendererMetal::buildVBOPipelines')
         calls = re.findall(r'materialFragmentFunction\(([^;]*)\);', build)
         self.assertEqual(len(calls), 2)
@@ -761,6 +794,13 @@ class TestPipelines(LightMSLCase):
         rig_mix = re.search(r'if\s*\(\s*lightRig\s*\)\s*mix\(', body)
         self.assertIsNotNone(rig_mix)
         self.assertLess(family_mix, rig_mix.start())
+        # the studio shadow maps' bit (#616): after the rig's, only for a rig
+        # variant while the maps are ready, so a #613 rig key is unchanged
+        shadow_mix = re.search(r'if\s*\(\s*lightShadow\s*\)\s*mix\(', body)
+        self.assertIsNotNone(shadow_mix)
+        self.assertLess(rig_mix.start(), shadow_mix.start())
+        self.assertRegex(body, r'const bool lightShadow = lightRig && '
+                               r'lightShadowsReady\(\);')
         # today's seven layout fields, then the family: a classic key is
         # exactly what it was
         self.assertEqual(len(re.findall(r'\bmix\(', body[:family_mix])), 7)
@@ -854,6 +894,15 @@ class TestImpostorPipelines(LightMSLCase):
         self.assertIn('rigSet[cMaterialFamily_default]', inside)
         self.assertIn('_lightRigWarned = true;', inside)
         self.assertEqual(body.count('ensureSphereRigPipelines('), 1)
+        # the studio shadow maps' variant (#616): after the rig's block, only
+        # in place of a rig pipeline, only while the maps are ready
+        shadow = re.search(r'if\s*\(\s*rigPipeline\s*&&\s*lightShadowsReady\(\)'
+                           r'\s*\)\s*\{', body)
+        self.assertIsNotNone(shadow)
+        self.assertGreater(shadow.start(), end)
+        self.assertIn('ensureSphereRigShadowPipelines();',
+                      body[shadow.end():match_brace(body, shadow.end() - 1)])
+        self.assertEqual(body.count('ensureSphereRigShadowPipelines('), 1)
         # starts nil, so with the rig off the classic pipelines are chosen
         self.assertRegex(body, r'id<MTLRenderPipelineState>\s+rigPipeline\s*=\s*nil;')
         self.assertRegex(body, r'setRenderPipelineState:rigPipeline\s*\?\s*rigPipeline'
@@ -869,14 +918,19 @@ class TestImpostorPipelines(LightMSLCase):
 
     def testCylinderRigEntriesAreKeyedApart(self):
         header = strip_comments(read(METAL_MM.replace('.mm', '.h')))
+        # (stride, a_cap offset, family, light rig, studio shadow maps
+        # (#616)): the 5th element is false for every classic and #613 entry
         self.assertRegex(header, r'std::map<std::tuple<NSUInteger,\s*int,\s*int,'
-                                 r'\s*bool>,\s*CylinderPipelines>')
+                                 r'\s*bool,\s*bool>,\s*CylinderPipelines>')
         build = cpp_function(self.mm, 'RendererMetal::buildCylinderImpostorPipeline')
-        self.assertRegex(build, r'std::make_tuple\([^;]*cylFam,\s*lightRig\)')
+        self.assertRegex(build, r'std::make_tuple\([^;]*cylFam,\s*lightRig,'
+                                r'\s*lightShadow\)')
+        self.assertRegex(build, r'^\{\s*lightShadow\s*=\s*lightShadow\s*&&\s*lightRig;')
         calls = re.findall(r'materialFragmentFunction\(([^;]*)\);', build)
         self.assertEqual(len(calls), 4)
         for args in calls:
-            self.assertEqual(squash(args).split(',')[-1], 'lightRig', args)
+            self.assertEqual(squash(args).split(',')[-2:],
+                             ['lightRig', 'lightShadow'], args)
         # no shadow or peel pipeline for a rig entry
         self.assertRegex(build, r'sfn\s*=\s*lightRig\s*\?\s*nil\s*:')
         # a failed rig entry is cached, so it is not recompiled every frame
@@ -887,16 +941,21 @@ class TestImpostorPipelines(LightMSLCase):
         self.assertRegex(body, r'const bool cylRig\s*=\s*_lightRigOn\s*&&\s*'
                                r'!_shadowMode\s*&&\s*!_peelMode;')
         calls = re.findall(r'buildCylinderImpostorPipeline\(([^;]*)\);', body)
-        self.assertEqual([squash(c) for c in calls], ['call,cylRig', 'call,false'])
+        # #613's two calls first, as written; then the studio shadow maps'
+        # (#616): the shadow entry, and back to the rig entry
+        self.assertEqual([squash(c) for c in calls][:2], ['call,cylRig', 'call,false'])
+        self.assertEqual([squash(re.sub(r'/\*.*?\*/', '', c)) for c in calls][2:],
+                         ['call,true,true', 'call,true'])
         fallback = re.search(r'if\s*\(\s*cylRig\s*&&', body)
         self.assertIsNotNone(fallback)
         end = match_brace(body, body.index('{', fallback.end()))
         inside = body[fallback.end():end]
         self.assertIn('_lightRigWarned = true;', inside)
         self.assertIn('buildCylinderImpostorPipeline(call, false);', inside)
-        # the only caller
+        # the only caller: every call is one of the four above
         code = strip_comments(self.mm)
-        self.assertEqual(len(re.findall(r'buildCylinderImpostorPipeline\(call', code)), 2)
+        self.assertEqual(len(re.findall(r'buildCylinderImpostorPipeline\(call', code)),
+                         len(calls))
         self.assertLess(body.rindex('setRenderPipelineState:'),
                         body.index('bindRepMaterial();'))
 
@@ -1033,6 +1092,12 @@ class TestBezierTube(LightMSLCase):
         self.assertIn('bool rig = false;', fn)
         self.assertRegex(fn, r'type:MTLDataTypeInt atIndex:0\]')
         self.assertRegex(fn, r'type:MTLDataTypeBool atIndex:kLightRigConstantIndex\]')
+        # the studio shadow maps' constant (#616): false, so tubes never
+        # receive
+        self.assertIn('bool shadow = false;', fn)
+        self.assertRegex(fn, r'setConstantValue:&shadow type:MTLDataTypeBool '
+                             r'atIndex:kLightShadowConstantIndex\]')
+        self.assertLess(fn.index('bool shadow = false;'), fn.index('constantValues:'))
         self.assertIn('[cv release];', fn)
 
     def testTubeRigPipeline(self):
