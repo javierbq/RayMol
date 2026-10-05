@@ -44,7 +44,14 @@ L1, the regression renders against master and L3 prove on a Mac:
   cell before its early returns; bindLightRig gives each draw its cell's
   tile (zero outside every cell); today's grid loops are master's (sha);
   the classic pass (beginShadowPass, endShadowPass, SceneBuildLightViewProjEye,
-  the pre-pass body) pinned by sha against master aea4e74c6.
+  the pre-pass body) pinned by sha against master aea4e74c6;
+* the GPU-time readout (Part 6): SceneRenderMetal hands metal_gpu_timing to
+  the renderer every frame; endFrame adds its completed handler only while
+  the mode is above 0 (the store and the frame's maps captured by value),
+  endOffscreen records one line per frame after its wait, and both log only
+  what GpuFrameTimes::record returns; the log text (in GpuFrameTimes.cpp) has
+  none of the words the L4 console checks grep for; RAYMOL_GPU_TIMING's
+  blocks are master's (sha).
 
 Pure source parsing (skipped, not passed, outside a repo checkout).
 
@@ -1196,3 +1203,139 @@ class TestGridTiles(ShadowMSLCase):
 
     def testBeginFrameClearsTheCell(self):
         self.assertIn('_currentGridSlot = 0;', self.body('RendererMetal::beginFrame'))
+
+
+GPU_TIMES_CPP = os.path.join(ROOT, 'layer0', 'GpuFrameTimes.cpp')
+
+# The RAYMOL_GPU_TIMING dev diagnostics on master (aea4e74c6): sha256 of each
+# block (comments stripped, whitespace removed, the first 16 hex digits),
+# from its `static const char* ... = getenv("RAYMOL_GPU_TIMING");` to the end
+# of the `if` that follows, in endFrame then endOffscreen. Taken from master,
+# never from this branch: metal_gpu_timing sits beside them and leaves them
+# alone (L6 reads their file).
+MASTER_RAYMOL_GPU_TIMING = ['f8326c4fd98f7c2a', '3514914210f5879a']
+
+# What gate.sh sim greps the console for (case-insensitive), and the L4 grep
+# for renderer failures: no readout line may contain any of them.
+SIM_GREP = re.compile(r'validation|MTLDebug|failed assertion|-\[MTL|fail|missing', re.I)
+
+
+def raymol_gpu_timing_blocks(source):
+    code = strip_comments(source)
+    blocks = []
+    for m in re.finditer(r'static const char\*\s*\w+\s*=\s*getenv\("RAYMOL_GPU_TIMING"\);',
+                         code):
+        open_brace = code.index('{', code.index('if', m.end()))
+        blocks.append(code[m.start():match_brace(code, open_brace) + 1])
+    return blocks
+
+
+def string_literals(code):
+    """Each C string literal of `code`, adjacent literals joined."""
+    literals = []
+    for m in re.finditer(r'"(?:[^"\\\n]|\\.)*"(?:\s*"(?:[^"\\\n]|\\.)*")*', code):
+        literals.append(''.join(re.findall(r'"((?:[^"\\\n]|\\.)*)"', m.group(0))))
+    return literals
+
+
+class TestGpuTiming(ShadowMSLCase):
+    """The GPU-time readout behind metal_gpu_timing (Part 6 of #616)."""
+
+    def setUp(self):
+        super().setUp()
+        self.header = strip_comments(read(METAL_H))
+
+    def body(self, name):
+        return strip_block_comments(cpp_function(self.mm, name))
+
+    def guarded(self, body):
+        """The text inside the `if (_gpuTimingMode > 0...) {` of `body`."""
+        found = list(re.finditer(r'if\s*\(\s*_gpuTimingMode > 0\b[^{]*\{', body))
+        self.assertEqual(len(found), 1)
+        m = found[0]
+        return m, body[m.end():match_brace(body, m.end() - 1)]
+
+    def testLiveFramesAddAHandlerOnlyWhenOn(self):
+        body = self.body('RendererMetal::endFrame')
+        m, inside = self.guarded(body)
+        # the one record() call is the handler's, inside the guard
+        self.assertEqual(body.count('->record('), 1)
+        self.assertEqual(inside.count('->record('), 1)
+        self.assertEqual(inside.count('addCompletedHandler'), 1)
+        self.assertIn('if (cb.status != MTLCommandBufferStatusCompleted)', inside)
+        self.assertIn('gpuMaps, gpuSize, gpuMode, false, cb.GPUEndTime);', inside)
+        self.assertRegex(inside, r'NSLog\(@"%s", line\.c_str\(\)\);')
+        # the store is captured by value (it outlives the renderer), and the
+        # mode and maps are this frame's
+        for text in ('auto gpuTimes = _gpuTiming;', 'const int gpuMode = _gpuTimingMode;',
+                     'const int gpuMaps = gpuFrameShadowMaps();',
+                     'const int gpuSize = gpuFrameShadowSize();'):
+            self.assertIn(text, inside)
+        handler = inside[inside.index('addCompletedHandler'):]
+        self.assertNotRegex(handler, r'\b_gpuTiming\b|\b_gpuTimingMode\b|\bthis\b'
+                                     r'|\b_lightShadow\w*')
+        # before the commit, beside the in-flight count
+        self.assertLess(m.start(), body.index('[_cmdBuffer commit];'))
+
+    def testOffscreenFramesLogOneLineEach(self):
+        body = self.body('RendererMetal::endOffscreen')
+        m, inside = self.guarded(body)
+        self.assertIn('_cmdBuffer.status == MTLCommandBufferStatusCompleted',
+                      body[m.start():m.end()])
+        self.assertEqual(body.count('->record('), 1)
+        self.assertIn('gpuFrameShadowMaps(), gpuFrameShadowSize(), _gpuTimingMode, true,',
+                      inside)
+        self.assertEqual(len(re.findall(r'NSLog\(', inside)), 1)
+        self.assertRegex(inside, r'NSLog\(@"%s", line\.c_str\(\)\);')
+        # after the wait, before the buffer is dropped
+        self.assertLess(body.index('[_cmdBuffer waitUntilCompleted];'), m.start())
+        self.assertLess(m.start(), body.index('_cmdBuffer = nil;'))
+
+    def testOnlyTheTwoFrameEndsRecord(self):
+        self.assertEqual(len(re.findall(r'->record\(', self.code)), 2)
+        self.assertNotIn('RendererMetal: gpu_ms', self.code,
+                         'the log text lives in GpuFrameTimes.cpp')
+
+    def testLogTextIsGrepSafe(self):
+        code = strip_comments(read(GPU_TIMES_CPP))
+        literals = [s for s in string_literals(code) if 'RendererMetal' in s]
+        self.assertEqual(literals, [
+            'RendererMetal: gpu_ms window n=%d median=%.2f p95=%.2f max=%.2f '
+            'shadow_maps=%d shadow_size=%d',
+            'RendererMetal: gpu_ms frame=%.2f shadow_maps=%d shadow_size=%d '
+            'offscreen=%d'])
+        for text in string_literals(code):
+            self.assertIsNone(SIM_GREP.search(text), text)
+
+    def testModeAndStats(self):
+        body = self.body('RendererMetal::setGpuTiming')
+        self.assertIn('mode = std::clamp(mode, 0, 2);', body)
+        self.assertRegex(body, r'if\s*\(\s*mode != _gpuTimingMode\s*\)\s*_gpuTiming->clear\(\);')
+        self.assertIn('_gpuTimingMode = mode;', body)
+        stats = self.body('RendererMetal::getGpuFrameStats')
+        self.assertRegex(stats, r'if\s*\(\s*!out \|\| _gpuTimingMode <= 0\s*\)\s*return false;')
+        self.assertIn('return _gpuTiming->report(*out, _gpuTimingMode);', stats)
+        self.assertIn('void setGpuTiming(int mode) override;', self.header)
+        self.assertIn('bool getGpuFrameStats(GpuFrameReport* out) const override;',
+                      self.header)
+        self.assertIn('std::shared_ptr<GpuFrameTimes> _gpuTiming;', self.header)
+        self.assertIn('int _gpuTimingMode = 0;', self.header)
+        self.assertIn(', _gpuTiming(std::make_shared<GpuFrameTimes>())', self.code)
+        # only setGpuTiming writes the mode
+        writes = re.findall(r'\b_gpuTimingMode\s*=(?!=)', self.code)
+        self.assertEqual(len(writes), 1)
+
+    def testSceneRenderSetsTheModeEveryFrame(self):
+        body = cpp_function(read(SCENE_RENDER), 'SceneRenderMetal')
+        calls = re.findall(r'G->Renderer->setGpuTiming\(([^;]*)\);', body)
+        self.assertEqual(calls, ['SettingGetGlobal_i(G, cSetting_metal_gpu_timing)'])
+        self.assertLess(body.index('G->Renderer->setLightShadowFrame('),
+                        body.index('G->Renderer->setGpuTiming('))
+
+    def testRaymolGpuTimingIsMasters(self):
+        blocks = raymol_gpu_timing_blocks(self.mm)
+        self.assertEqual([digest(b) for b in blocks], MASTER_RAYMOL_GPU_TIMING)
+        self.assertIn(blocks[0], cpp_function(self.mm, 'RendererMetal::endFrame'))
+        self.assertIn(blocks[1], cpp_function(self.mm, 'RendererMetal::endOffscreen'))
+        for block in blocks:
+            self.assertNotIn('_gpuTiming', block)

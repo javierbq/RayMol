@@ -6,11 +6,11 @@ frustum (LightShadowFrustum, layer1/LightShadows.cpp), the map size
 (LightShadowMapSize, setting metal_light_shadow_size), the grid tiles
 (LightShadowTileRect) and the casters (overlays never cast, #433). The plan
 is written into the tail of the packed block (layer1/LightRigBlock.h). The
-GPU frame-time statistics behind metal_gpu_timing live in
-layer0/GpuFrameTimes.cpp. These tests reach that C++ through _cmd
+GPU frame-time statistics, windows and log lines behind metal_gpu_timing
+live in layer0/GpuFrameTimes.cpp. These tests reach that C++ through _cmd
 (pymol.lighting._light_frame, _light_shadow_frustum, _light_shadow_map_size,
 _light_shadow_tile, _light_shadow_casters, _gpu_time_summary,
-_gpu_frame_stats). No CI job builds catch2 or has a GPU, so this is how the
+_gpu_time_replay, _gpu_frame_stats). No CI job builds catch2 or has a GPU, so this is how the
 C++ is tested (lighting checklist, "What CI must cover").
 
 Expected values never come from the code under test: they come from
@@ -828,6 +828,99 @@ class TestGpuTime(ShadowCase):
     def testNoRendererNoStats(self):
         # CI and the headless tests have no Metal renderer
         self.assertIsNone(lighting._gpu_frame_stats())
+        cmd.set('metal_gpu_timing', 2)
+        try:
+            self.assertIsNone(lighting._gpu_frame_stats())
+        finally:
+            cmd.set('metal_gpu_timing', 0)
+
+    # The readout's log lines (the plan's D14), written out here.
+    WINDOW = re.compile(r'^RendererMetal: gpu_ms window n=(\d+) median=(\d+\.\d\d) '
+                        r'p95=(\d+\.\d\d) max=(\d+\.\d\d) shadow_maps=(\d+) '
+                        r'shadow_size=(\d+)$')
+    FRAME = re.compile(r'^RendererMetal: gpu_ms frame=(\d+\.\d\d) shadow_maps=(\d+) '
+                       r'shadow_size=(\d+) offscreen=([01])$')
+    # What gate.sh sim greps the console for (case-insensitive), and the
+    # L4 grep for renderer failures.
+    BANNED = re.compile(r'validation|MTLDebug|failed assertion|-\[MTL|fail|missing',
+                        re.I)
+
+    def replay(self, frames, mode):
+        out = lighting._gpu_time_replay(frames, mode)
+        for line in out['lines']:
+            self.assertIsNone(self.BANNED.search(line), line)
+            self.assertTrue(self.WINDOW.match(line) or self.FRAME.match(line), line)
+        return out
+
+    def testWindowMode(self):
+        """Mode 1: the first frame logs at once (n=1), then one summary per
+        window of >= 1 s of live frames, with the latest frame's maps."""
+        frames = [(4.0, 1, 1024, False, 10.0),     # first frame: a window of one
+                  (2.0, 1, 1024, False, 10.3),
+                  (6.0, 1, 1024, False, 10.6),
+                  (3.0, 3, 2048, False, 10.99),    # still inside the window
+                  (5.0, 3, 2048, False, 11.0),     # 1 s after the last line
+                  (9.0, 0, 0, False, 11.5),
+                  (1.0, 0, 0, False, 12.25)]
+        out = self.replay(frames, 1)
+        windows = [self.WINDOW.match(line).groups() for line in out['lines']]
+        self.assertEqual(windows, [
+            ('1', '4.00', '4.00', '4.00', '1', '1024'),
+            # 2, 6, 3, 5: median 4, nearest-rank p95 the 4th, max 6
+            ('4', '4.00', '6.00', '6.00', '3', '2048'),
+            ('2', '5.00', '9.00', '9.00', '0', '0'),
+        ])
+        stats = out['stats']
+        self.assertEqual(stats['count'], 7)
+        self.assertEqual((stats['last_ms'], stats['mode'], stats['shadow_maps'],
+                          stats['shadow_size']), (1.0, 1, 0, 0))
+        self.assertEqual((stats['median'], stats['max']), (4.0, 9.0))
+
+    def testFrameModeAndOffscreen(self):
+        """Mode 2 logs every live frame; offscreen frames log in modes 1 and
+        2 and never enter a mode-1 window."""
+        out = self.replay([(1.5, 1, 1024, False, 0.0), (2.25, 1, 1024, False, 0.01),
+                           (12.346, 3, 2048, True, 0.02)], 2)
+        self.assertEqual([self.FRAME.match(line).groups() for line in out['lines']],
+                         [('1.50', '1', '1024', '0'), ('2.25', '1', '1024', '0'),
+                          ('12.35', '3', '2048', '1')])
+        out = self.replay([(2.0, 0, 0, False, 0.0), (7.0, 1, 1024, True, 0.5),
+                           (3.0, 0, 0, False, 1.2)], 1)
+        self.assertEqual(out['lines'], [
+            'RendererMetal: gpu_ms window n=1 median=2.00 p95=2.00 max=2.00 '
+            'shadow_maps=0 shadow_size=0',
+            'RendererMetal: gpu_ms frame=7.00 shadow_maps=1 shadow_size=1024 offscreen=1',
+            # the offscreen frame is not in this window
+            'RendererMetal: gpu_ms window n=1 median=3.00 p95=3.00 max=3.00 '
+            'shadow_maps=0 shadow_size=0'])
+        self.assertEqual(out['stats']['count'], 3)
+
+    def testOffRecordsNothing(self):
+        for mode in (0, -1):
+            out = self.replay([(2.0, 1, 1024, False, 0.0), (3.0, 1, 1024, True, 1.0)],
+                              mode)
+            self.assertEqual(out, {'lines': [], 'stats': None})
+
+    def testBadFramesIgnored(self):
+        out = self.replay([(float('nan'), 1, 1024, False, 0.0),
+                           (-1.0, 1, 1024, False, 0.1),
+                           (float('inf'), 1, 1024, True, 0.2)], 2)
+        self.assertEqual(out, {'lines': [], 'stats': None})
+        # a bad frame does not open the first window either
+        out = self.replay([(float('nan'), 1, 1024, False, 0.0),
+                           (2.0, 1, 1024, False, 0.1)], 1)
+        self.assertEqual(len(out['lines']), 1)
+        self.assertTrue(out['lines'][0].startswith('RendererMetal: gpu_ms window n=1 '))
+
+    def testRingHoldsTheLast120(self):
+        frames = [(float(i), 0, 0, True, i * 0.01) for i in range(1, 131)]
+        stats = self.replay(frames, 2)['stats']
+        # frames 11..130 remain
+        self.assertEqual(stats['count'], 120)
+        self.assertEqual(stats['last_ms'], 130.0)
+        self.assertEqual(stats['max'], 130.0)
+        self.assertEqual(stats['median'], 70.5)
+        self.assertEqual(stats['p95'], 124.0)    # ceil(0.95 x 120) = 114th of 11..130
 
 
 class TestSource(testing.PyMOLTestCase):
