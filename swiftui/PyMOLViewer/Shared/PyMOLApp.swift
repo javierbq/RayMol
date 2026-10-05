@@ -329,13 +329,14 @@ struct PyMOLApp: App {
             }
             // TOOLS — every exclusive interaction mode, in one menu.
             //
-            // These six are mutually exclusive: entering any one leaves the other
-            // five (see PyMOLEngine's clearing setters and
+            // These seven are mutually exclusive: entering any one leaves the other
+            // six (see PyMOLEngine's clearing setters and
             // `exitActiveInteractionMode`). Split across four top-level menus --
             // Mouse, Design, Predict, Binder Design -- that relationship was
             // invisible, and a tool's shortcut could only be found by opening the
             // menu it happened to live in. One menu makes the exclusion set legible
-            // and puts all six key equivalents on screen together.
+            // and puts the key equivalents on screen together (Lights, #619, has
+            // none: ⌃L is PyMOL's CTRL-L).
             //
             // It also matches the in-app Tools pill, which already carries this
             // exact list (`ContentView.interactionToolItems`) under this exact
@@ -371,6 +372,10 @@ struct PyMOLApp: App {
                 // Then the tools that raise a bar or an overlay rather than
                 // reinterpreting the pointer. Same exclusion set, different shape,
                 // which is what the divider says.
+                Button(engine.interactionMode == .lights ? "Exit Lights Mode" : "Enter Lights Mode") {
+                    engine.setInteractionMode(engine.interactionMode == .lights ? .viewing : .lights)
+                }
+                .disabled(isDesignLocked)
                 #if RAYMOL_MPNN
                 Button(engine.designMode ? "Exit Design Mode" : "Enter Design Mode") {
                     engine.setDesignMode(!engine.designMode)

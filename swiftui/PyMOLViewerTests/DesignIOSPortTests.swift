@@ -706,6 +706,39 @@ final class DesignIOSPortTests: XCTestCase {
         XCTAssertFalse(engine.designController.isCalculating)
     }
 
+    // Lights mode (#619) carries the same isCalculating gate: entering is refused
+    // before anything changes (so the controller never takes a snapshot), and
+    // Done / Esc are refused too, so Esc is not consumed by an exit that did not happen.
+    func testLightsBlockedByIsCalculating() {
+        let engine = PyMOLEngine.shared
+        engine.setInteractionMode(.viewing)
+        engine.setDesignMode(false)
+        engine.setMeasureMode(nil)
+        defer {
+            engine.designController.isScoring = false
+            engine.setInteractionMode(.viewing)
+        }
+
+        engine.designController.isScoring = true
+        XCTAssertTrue(engine.designController.isCalculating)
+        engine.setInteractionMode(.lights)
+        XCTAssertEqual(engine.interactionMode, .viewing,
+            "setInteractionMode(.lights) must not enter while isCalculating is true")
+        XCTAssertFalse(engine.lightsController.isActive, "begin() must not have run")
+        engine.designController.isScoring = false
+
+        engine.setInteractionMode(.lights)
+        XCTAssertEqual(engine.interactionMode, .lights)
+        engine.designController.isScoring = true
+        engine.setInteractionMode(.viewing)               // Done
+        XCTAssertEqual(engine.interactionMode, .lights, "Done is blocked like every other exit")
+        XCTAssertTrue(engine.lightsController.isActive)
+        XCTAssertFalse(engine.exitActiveInteractionMode(),
+            "a blocked Esc must report no exit so the key propagates")
+        XCTAssertEqual(engine.interactionMode, .lights)
+        XCTAssertTrue(engine.lightsController.isActive)
+    }
+
     // 5. exitActiveInteractionMode returns false when all setters are blocked.
     //    A false return lets the Esc monitor propagate the key rather than silently
     //    consuming it with nothing happening.

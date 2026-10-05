@@ -837,6 +837,9 @@ extension MetalViewport {
                 return
             }
             guard engine?.measureMode == nil else { return }
+            // Lights mode (#619) skips the atom hover pick: its readout would
+            // cover the Lights bar's Done. #622 adds knob hit-tests here.
+            guard engine?.interactionMode != .lights else { return }
             let w = view.bounds.width, h = view.bounds.height
             guard w > 0, h > 0 else { return }
             let ndcX = Float(loc.x / w) * 2 - 1
@@ -1347,6 +1350,8 @@ extension MetalViewport {
                     return
                 }
                 guard engine.measureMode == nil else { return }
+                // Lights mode (#619) skips the atom hover pick (see macOS).
+                guard engine.interactionMode != .lights else { return }
                 let w = view.bounds.width, h = view.bounds.height
                 guard w > 0, h > 0 else { return }
                 let ndcX = Float(p.x / w) * 2 - 1

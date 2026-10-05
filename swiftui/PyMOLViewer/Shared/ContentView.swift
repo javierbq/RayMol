@@ -835,6 +835,7 @@ struct ContentView: View {
                         if !mv.isEmpty { engine.setActiveMoveObject(mv) }
                     }
                 }
+                autoEnterLightsModeFromEnv()
                 installEscKeyMonitor()
                 installPyMOLKeyMonitor()
                 installSelectionModeKeyMonitor()
@@ -871,14 +872,16 @@ struct ContentView: View {
 
     // Is anything docked at the top of the left column? Mirrors the iOS layouts'
     // `anyTop`: the rail sits on a chrome band above the panes when one is open and
-    // floats over the viewport otherwise. Move / Measure / Design are included even
-    // though their macOS bars float over the viewport rather than docking — with the
-    // rail floating too they would land on the same spot. Predict is NOT: PredictBar
-    // docks inside macViewportStack, ABOVE the rail's overlay.
+    // floats over the viewport otherwise. Move / Measure / Design / Lights are
+    // included even though their macOS bars float over the viewport rather than
+    // docking — with the rail floating too they would land on the same spot.
+    // Predict is NOT: PredictBar docks inside macViewportStack, ABOVE the rail's
+    // overlay.
     private var macAnyTopPane: Bool {
         showCommandPanel || engine.sequenceVisible
             || engine.interactionMode == .move || engine.measureMode != nil
             || engine.designMode || engine.binderDesignMode
+            || engine.interactionMode == .lights
     }
 
     // The viewport column in the macOS HSplitView: PredictBar (when active) + the
@@ -1058,6 +1061,7 @@ struct ContentView: View {
             .overlay(alignment: .top) {
                 if engine.measureMode != nil { measureOverlay }
                 else if engine.interactionMode == .move { moveOverlay }
+                else if engine.interactionMode == .lights { lightsBar }
             }
             #if RAYMOL_MPNN
             // Design mode overlay: a separate overlay so the #if guard does not
@@ -1103,8 +1107,9 @@ struct ContentView: View {
             }
             // Live hover readout (issue #359), top-trailing. Only ever populated
             // in viewing mode — the hover pick bails out under move/measure and
-            // Design mode runs its own hover path — so it can never collide with
-            // the mode bars that occupy the top edge above.
+            // Lights (#619), and Design mode runs its own hover path — so it can
+            // never collide with the mode bars that occupy the top edge above
+            // (the Lights bar's Done sits right there).
             .overlay(alignment: .topTrailing) { hoverReadoutOverlay }
             // Mouse-mode legend as a compact floating card at the bottom-trailing
             // corner, so it's reachable even when the right column is collapsed
@@ -1899,6 +1904,7 @@ struct ContentView: View {
                     if !mv.isEmpty { engine.setActiveMoveObject(mv) }
                 }
             }
+            autoEnterLightsModeFromEnv()
             if let e = ProcessInfo.processInfo.environment["PYMOL_AUTOEXPORTMOVIE"] {
                 // "fmt,first,last[,WxH[,quality]]" — fmt: mp4|hevc|mov|gif|png.
                 let parts = e.split(separator: ",").map(String.init)
@@ -2073,7 +2079,8 @@ struct ContentView: View {
         let cTerm = showCommandPanel && !iosFullScreen
         let anyTop = !iosFullScreen && (cTerm || engine.sequenceVisible
             || engine.interactionMode == .move || engine.measureMode != nil
-            || engine.designMode || engine.predictMode)
+            || engine.designMode || engine.predictMode
+            || engine.interactionMode == .lights)
         VStack(spacing: 0) {
             // Top row, right under the status bar (nav bar is hidden on iPhone):
             // RayMol title on the left, Open/Save/Export on the right. It takes the
@@ -2101,6 +2108,7 @@ struct ContentView: View {
                     Rectangle().fill(hairlineColor).frame(height: 1)
                 }
                 if engine.interactionMode == .move { moveOverlay }
+                else if engine.interactionMode == .lights { lightsBar }
                 else if engine.measureMode != nil { measureOverlay }
                 else if engine.designMode { designModeBar }
                 else if engine.predictMode { predictModeBar }
@@ -2163,7 +2171,8 @@ struct ContentView: View {
         let cTerm = consoleBinding.wrappedValue && !iosFullScreen
         let anyTop = !iosFullScreen && (cTerm || engine.sequenceVisible
             || engine.interactionMode == .move || engine.measureMode != nil
-            || engine.designMode || engine.predictMode)
+            || engine.designMode || engine.predictMode
+            || engine.interactionMode == .lights)
         HStack(spacing: 0) {
             // Left: the molecular viewer (+ optional sequence strip), with the
             // toolbar buttons floating over its top edge. The 3D viewport bleeds
@@ -2185,6 +2194,7 @@ struct ContentView: View {
                         Rectangle().fill(hairlineColor).frame(height: 1)
                     }
                     if engine.interactionMode == .move { moveOverlay }
+                    else if engine.interactionMode == .lights { lightsBar }
                     else if engine.measureMode != nil { measureOverlay }
                     else if engine.designMode { designModeBar }
                     else if engine.predictMode { predictModeBar }
@@ -2301,6 +2311,7 @@ struct ContentView: View {
         let anyTop = cTerm || engine.sequenceVisible
             || engine.interactionMode == .move || engine.measureMode != nil
             || engine.designMode || engine.predictMode
+            || engine.interactionMode == .lights
 
         if landscape {
             // LANDSCAPE (iPad + iPhone landscape): left stack (terminal/sequence/
@@ -2326,6 +2337,7 @@ struct ContentView: View {
                         // Move / Measure bar — bottom of the top stack, mutually
                         // exclusive, on matching chrome.
                         if engine.interactionMode == .move { moveOverlay }
+                        else if engine.interactionMode == .lights { lightsBar }
                         else if engine.measureMode != nil { measureOverlay }
                         else if engine.designMode { designModeBar }
                         else if engine.predictMode { predictModeBar }
@@ -2392,6 +2404,7 @@ struct ContentView: View {
                         Rectangle().fill(hairlineColor).frame(height: 1)
                     }
                     if engine.interactionMode == .move { moveOverlay }
+                    else if engine.interactionMode == .lights { lightsBar }
                     else if engine.measureMode != nil { measureOverlay }
                     else if engine.designMode { designModeBar }
                     else if engine.predictMode { predictModeBar }
@@ -3458,7 +3471,7 @@ struct ContentView: View {
     /// The active exclusive interaction mode, if any. Drives each platform's Tools
     /// control so the active mode stays legible without opening the menu — the
     /// affordance the separate toggle buttons/pills used to provide.
-    /// At most one can be active: the engine's setters clear the other two.
+    /// At most one can be active: the engine's setters clear the others.
     ///
     /// Two icons because the platforms already disagreed and consolidating is not a
     /// licence to restyle: the Mac toolbar used filled variants and a `flask` for
@@ -3466,6 +3479,7 @@ struct ContentView: View {
     private var activeInteractionTool: (name: String, macIcon: String, railIcon: String)? {
         if engine.interactionMode == .move { return ("Move", "move.3d", "move.3d") }
         if engine.measureMode != nil { return ("Measure", "ruler.fill", "ruler") }
+        if engine.interactionMode == .lights { return ("Lights", "lightbulb.fill", "lightbulb") }
         #if RAYMOL_MPNN
         if engine.designMode { return ("Design", "flask.fill", "wand.and.stars") }
         #endif
@@ -3480,7 +3494,7 @@ struct ContentView: View {
         return nil
     }
 
-    /// The Move / Measure / Design menu items, shared by the macOS toolbar menu and
+    /// The Move / Measure / Lights / Design / Predict menu items, shared by the macOS toolbar menu and
     /// the iOS rail menu so the two cannot drift. Each item toggles — choosing the
     /// active mode leaves it, which is what the standalone buttons/pills did — and
     /// marks itself with a `checkmark` Label when active, matching SelectionModeMenu.
@@ -3520,6 +3534,19 @@ struct ContentView: View {
         }
         .disabled(isDesignLocked)
         .keyboardShortcut(AppShortcuts.measureTool)
+
+        // Lights (#619): raises the Lights bar. No shortcut: ⌃L is PyMOL's
+        // CTRL-L, and this row has no AppShortcuts constant to mirror.
+        Button {
+            engine.setInteractionMode(engine.interactionMode == .lights ? .viewing : .lights)
+        } label: {
+            if engine.interactionMode == .lights {
+                Label("Lights", systemImage: "checkmark")
+            } else {
+                Text("Lights")
+            }
+        }
+        .disabled(isDesignLocked)
 
         #if RAYMOL_MPNN
         // Also gated on DesignAvailability: Design needs a minimum iOS version, and
@@ -3592,7 +3619,8 @@ struct ContentView: View {
         // Shortcut hints come from the same AppShortcuts constants the rows
         // register (#360), so the tooltip cannot drift from the menu.
         var parts = ["Move objects (\(AppShortcuts.hint(AppShortcuts.moveTool)))",
-                     "Measure distances (\(AppShortcuts.hint(AppShortcuts.measureTool)))"]
+                     "Measure distances (\(AppShortcuts.hint(AppShortcuts.measureTool)))",
+                     "Light the scene"]
         #if RAYMOL_MPNN
         if DesignAvailability.isSupported {
             parts.append("Design with MPNN (\(AppShortcuts.hint(AppShortcuts.designTool)))")
@@ -3982,6 +4010,36 @@ struct ContentView: View {
         .padding(.horizontal, 12).padding(.vertical, 8)
         .background(themeManager.active.panelBackground.color)
         .tint(themeManager.active.accent.color)
+    }
+
+    // Lights-mode bar (#619): the chips and rig actions of LightsBar, styled like
+    // the bars above. Every placement (the macOS top overlay, the four iOS top
+    // stacks) names only this property, so ContentView's type-checker load stays
+    // flat. Done = leave the mode keeping the edits (Esc does the same).
+    private var lightsBar: some View {
+        LightsBar(controller: engine.lightsController,
+                  style: LightsBarStyle(accent: themeManager.active.accent.color,
+                                        text: themeManager.active.panelText.color,
+                                        background: themeManager.active.panelBackground.color),
+                  onDone: { engine.setInteractionMode(.viewing) })
+    }
+
+    /// Test affordance: PYMOL_AUTOLIGHTS=<1|light name> enters Lights mode after
+    /// 4.0 s (after PYMOL_AUTOMOVE's 3.8 s; PYMOL_AUTOLOAD and PYMOL_AUTOCMD run
+    /// during engine init, before it) and, unless the value is 1, selects that
+    /// light, so the bar can be screenshotted without a tap. The NSLog line lets
+    /// a simulator console prove the state.
+    private func autoEnterLightsModeFromEnv() {
+        guard let value = ProcessInfo.processInfo.environment["PYMOL_AUTOLIGHTS"] else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+            engine.setInteractionMode(.lights)
+            MainActor.assumeIsolated {
+                let lights = engine.lightsController
+                if !value.isEmpty && value != "1" { lights.select(name: value) }
+                let names = (lights.rig?.lights ?? []).map(\.name).joined(separator: ",")
+                NSLog("PYMOL_AUTOLIGHTS: active=\(lights.isActive) lights=\(names) selected=\(lights.selection.name ?? "none")")
+            }
+        }
     }
 
     // MARK: - Initialization

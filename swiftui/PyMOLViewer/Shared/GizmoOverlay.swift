@@ -23,6 +23,13 @@ enum InteractionMode {
     /// Box Select (#358): drags draw/adjust a rubber-band rectangle instead of
     /// orbiting, and accepting it selects every atom under the rectangle.
     case boxSelect
+    /// Lights (#619): the Lights bar edits the scene's light rig. Exclusive
+    /// with Move, Box Select, Measure, Design, Predict and Binder Design, like
+    /// them. Gestures stay those of viewing (orbit, tap to pick) except that
+    /// the atom hover pick is skipped, so the hover readout never covers the
+    /// bar. Entering snapshots the rig for Revert and writes nothing; leaving
+    /// (Done, Esc, another mode) keeps the edits. See LightsController.
+    case lights
 }
 
 /// A draggable gizmo handle: .x/.y/.z axis arrows (translate along a frame axis),

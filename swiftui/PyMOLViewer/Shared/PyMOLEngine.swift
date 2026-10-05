@@ -1159,7 +1159,17 @@ final class PyMOLEngine: ObservableObject {
         }
     }
 
+#if DEBUG
+    /// Test seam: observes every console command `runCommand` is asked to run
+    /// (the Lights bar's buttons go through it). Placed before the isReady guard,
+    /// like ``pythonTap``. Compiled out of Release.
+    var commandTap: ((String) -> Void)? = nil
+#endif
+
     func runCommand(_ command: String) {
+#if DEBUG
+        commandTap?(command)
+#endif
         guard isReady else { return }
         // A plain `png <file>` (ray=0) wants the RENDERED frame, but PyMOL's
         // ScenePNG reads a GL framebuffer we don't have → it writes nothing.
@@ -1202,6 +1212,7 @@ final class PyMOLEngine: ObservableObject {
     // never runCommand, so it can't re-enter the heavy-dispatch path.
     private func runCommandCore(_ command: String) {
         PyMOLBridge_RunCommand(command)
+        noteCommandForLightsMode(command)
         handleSessionViewport(for: command)
         maybeWidenClipForSurface(for: command)
         // A per-object `set state, N, obj` (and the related all_states / unset
@@ -2478,7 +2489,7 @@ final class PyMOLEngine: ObservableObject {
         #endif
         measureMode = k
         if let k = k {
-            if interactionMode == .move { setInteractionMode(.viewing) }   // mutually exclusive
+            leaveViewportTool()                                             // mutually exclusive
             setDesignMode(false)                                            // mutually exclusive
             setPredictMode(false)                                            // mutually exclusive
             clearBinderDesignMode()                                          // mutually exclusive
@@ -2580,7 +2591,7 @@ final class PyMOLEngine: ObservableObject {
         if on {
             // Recursion-free: both setters only touch designMode in their
             // ENTERING branch, and the clearing block below is `if on`-guarded.
-            if interactionMode == .move { setInteractionMode(.viewing) }
+            leaveViewportTool()
             if measureMode != nil { setMeasureMode(nil) }
             setPredictMode(false)        // mutually exclusive
             clearBinderDesignMode()      // mutually exclusive
@@ -2642,7 +2653,7 @@ final class PyMOLEngine: ObservableObject {
         if MainActor.assumeIsolated({ designController.isCalculating }) { return }
         #endif
         if on {
-            if interactionMode == .move { setInteractionMode(.viewing) }
+            leaveViewportTool()
             if measureMode != nil { setMeasureMode(nil) }
             setDesignMode(false)
             setPredictMode(false)
@@ -2668,7 +2679,7 @@ final class PyMOLEngine: ObservableObject {
         if MainActor.assumeIsolated({ designController.isCalculating }) { return }
         #endif
         if on {
-            if interactionMode == .move { setInteractionMode(.viewing) }
+            leaveViewportTool()
             if measureMode != nil { setMeasureMode(nil) }
             setDesignMode(false)
             // Not setBinderDesignMode(false): that would recurse back into this function.
@@ -2683,8 +2694,16 @@ final class PyMOLEngine: ObservableObject {
         }
     }
 
+    /// Leave the viewport tool a docked-bar mode cannot share the screen with: Move
+    /// (its gizmo takes the drags) and Lights (its bar takes the strip above the
+    /// viewport). Used by the Measure, Design, Predict and Binder Design setters on
+    /// entry. Box Select is left alone, as it was before Lights joined.
+    private func leaveViewportTool() {
+        if interactionMode == .move || interactionMode == .lights { setInteractionMode(.viewing) }
+    }
+
     // MARK: - Exclusive interaction modes
-    //         (Move / Box Select / Design / Measure / Predict / Binder Design)
+    //         (Move / Box Select / Lights / Design / Measure / Predict / Binder Design)
 
     /// Leave whichever exclusive interaction mode is active, each through that
     /// mode's OWN existing exit path — so the Esc key (see
@@ -2697,9 +2716,10 @@ final class PyMOLEngine: ObservableObject {
     /// are checked independently rather than with early returns so a desynchronized
     /// state still unwinds completely instead of leaving one mode stranded.
     ///
-    /// EVERY exclusive mode must appear here. A mode that enters but is not listed is
-    /// one Esc cannot leave, which is how Binder Design shipped its bar with no keyboard
-    /// way out (#342).
+    /// EVERY exclusive mode must appear here: Move, Box Select, Lights, Design, Measure,
+    /// Predict and Binder Design. A mode that enters but is not listed is one Esc cannot
+    /// leave, which is how Binder Design shipped its bar with no keyboard way out (#342).
+    /// Lights leaves like its Done button does (edits kept; only Revert discards).
     ///
     /// - Returns: whether any mode was actually exited. Callers use this to fall
     ///   through to their next behavior (Esc clears the selection) when Escape
@@ -2716,6 +2736,7 @@ final class PyMOLEngine: ObservableObject {
         if interactionMode == .boxSelect {
             setInteractionMode(.viewing); exited = exited || interactionMode != .boxSelect
         }
+        if interactionMode == .lights { setInteractionMode(.viewing); exited = exited || interactionMode != .lights }
         if measureMode != nil { setMeasureMode(nil);    exited = exited || measureMode == nil }
         if predictMode { setPredictMode(false); exited = exited || !predictMode }
         // Binder Design reports its own exit rather than being re-read afterwards: the
@@ -3096,6 +3117,168 @@ final class PyMOLEngine: ObservableObject {
 
     private var predictCancellables = Set<AnyCancellable>()
 
+    // MARK: - Lights mode (#619)
+
+    /// The one Lights model: the rig mirror, the shared light selection, the
+    /// identity colours, the entry snapshot and the bar's actions. Built on first
+    /// use, like ``predictController``. Continuous edits go through the bridge
+    /// setters only (no Python per drag tick, #610); button presses run a `lights`
+    /// console command, and Revert one Python call (pymol.appkit_lights.restore).
+    lazy var lightsController: LightsController = {
+        // LightsController is @MainActor; lazy vars run in a nonisolated context.
+        // assumeIsolated is safe: it is first reached from setInteractionMode or a
+        // view, both on the main thread (the predictController pattern above).
+        MainActor.assumeIsolated {
+            let lc = LightsController(seams: LightsSeams(
+                rigJSON: { [weak self] in self?.lightRigJSON() },
+                setNumber: { [weak self] index, field, value in
+                    self?.setLight(index, field, value) ?? .noRig
+                },
+                setVector: { [weak self] index, field, vector in
+                    self?.setLight(index, field, vector) ?? .noRig
+                },
+                perform: { [weak self] action in self?.performLightsAction(action) },
+                loadPresets: { [weak self] in self?.loadLightPresets() ?? [] },
+                isReady: { [weak self] in self?.isReady ?? false },
+                // A movie export reads the rig off the main thread; bridge light
+                // calls are main-thread only, so the controller keeps off it.
+                isBusy: { [weak self] in self?.exportRenderActive ?? false },
+                now: { ProcessInfo.processInfo.systemUptime }))
+            // Console, MCP and scene-recall edits reach the bar within one object
+            // poll (~500 ms). refresh() publishes only when the rig's JSON changed.
+            self.panelPolled
+                .sink { [weak self, weak lc] in
+                    guard let self, self.interactionMode == .lights else { return }
+                    lc?.refresh()
+                }
+                .store(in: &self.lightsCancellables)
+            return lc
+        }
+    }()
+
+    private var lightsCancellables = Set<AnyCancellable>()
+
+    /// The preset menu, read once per process (empty until a read succeeds).
+    private var cachedLightPresets: [LightPreset] = []
+
+    /// Run one Lights bar button press: its `lights` console command (echoed in the
+    /// console like a typed one, so the bar teaches the command) or, for Revert,
+    /// one Python call. Never called per drag tick.
+    func performLightsAction(_ action: LightsAction) {
+        guard let invocation = action.invocation else {
+            // Names come from the core (which enforces the same rule) and presets
+            // from #612's table, so this is defence in depth: run nothing.
+            logLine(" lights: not a light or preset name; nothing was run")
+            return
+        }
+        switch invocation {
+        case .command(let command): runCommand(command)
+        case .python(let code): runPython(code)
+        }
+        requestViewportRedraw()
+    }
+
+    /// The `lights` presets for the bar's menu, in display order: one Python call
+    /// (pymol.appkit_lights.write_presets into a temp file, the noteResidues
+    /// pattern), then cached for the process. Empty when the read failed, so the
+    /// next entry into the mode tries again.
+    func loadLightPresets() -> [LightPreset] {
+        if !cachedLightPresets.isEmpty { return cachedLightPresets }
+        guard isReady else { return [] }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("raymol-light-presets-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let encodedPath = Data(url.path.utf8).base64EncodedString()
+        runPython("from pymol import appkit_lights as _al\n_al.write_presets('\(encodedPath)')")
+        guard let data = try? Data(contentsOf: url),
+              let presets = try? LightPreset.decodeList(data) else { return [] }
+        cachedLightPresets = presets
+        return presets
+    }
+
+    /// A command that replaces the whole document ends Lights mode the way Done
+    /// does (edits kept), so Revert does not put the previous document's rig into
+    /// the new one. Called by runCommandCore after the command ran, so it sees the
+    /// command forms this app and the console type (`load`, `reinitialize` and its
+    /// abbreviations); a replacement that never goes through runCommandCore (MCP,
+    /// Python `cmd.load(...)`, scripts) is not seen (follow-up). Internal so a
+    /// test can drive it without running the command in the shared host.
+    func noteCommandForLightsMode(_ command: String) {
+        guard interactionMode == .lights, Self.endsLightsMode(command: command) else { return }
+        setInteractionMode(.viewing)
+    }
+
+    /// Whether `command` replaces the whole document (and with it the rig): a
+    /// full session load (.pse / .psw, or their gzipped .pze / .pzw, or an explicit
+    /// `format=pse|psw`) without a true `partial`, or `reinitialize` /
+    /// `reinitialize everything` with no object named. A partial session load
+    /// skips the rig (spec §6) and `reinitialize settings` and the other settings
+    /// codes leave it alone (spec §4.4), so those return false, as does anything
+    /// that does not replace the document (`save x.pse`, `load x.pdb`, `fetch`).
+    /// Several commands joined with `;` end the mode when any of them would.
+    static func endsLightsMode(command: String) -> Bool {
+        command.split(separator: ";").contains { endsLightsModeOne(String($0)) }
+    }
+
+    private static func endsLightsModeOne(_ command: String) -> Bool {
+        let text = command.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let verbEnd = text.firstIndex(where: { $0 == " " || $0 == "\t" || $0 == "," })
+            ?? text.endIndex
+        let verb = text[..<verbEnd]
+        let args = String(text[verbEnd...])
+            .split(separator: ",", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        // PyMOL's own argument rules: positional first, then `key=value`.
+        func argument(_ name: String, at position: Int) -> String? {
+            for arg in args {
+                if let eq = arg.firstIndex(of: "="),
+                   arg[..<eq].trimmingCharacters(in: .whitespaces) == name {
+                    return arg[arg.index(after: eq)...].trimmingCharacters(in: .whitespaces)
+                }
+            }
+            guard args.indices.contains(position), !args[position].contains("=") else { return nil }
+            return args[position]
+        }
+        func unquoted(_ value: String) -> String {
+            var v = value
+            if v.count >= 2, let first = v.first, first == v.last, first == "\"" || first == "'" {
+                v = String(v.dropFirst().dropLast())
+            }
+            return v
+        }
+        // PyMOL accepts any unambiguous prefix of a command; `rei`, `rein` and
+        // `reinit` all reach reinitialize (`re` and `r` are ambiguous).
+        let isReinitialize = verb.count >= 3 && "reinitialize".hasPrefix(verb)
+        switch isReinitialize ? "reinitialize" : verb {
+        case "reinitialize":
+            // `what` is completed as PyMOL's Shortcut does: any prefix of
+            // "everything" means everything. Naming an object resets only its
+            // settings, which leaves the rig.
+            let what = unquoted(argument("what", at: 0) ?? "")
+            let object = unquoted(argument("object", at: 1) ?? "")
+            return object.isEmpty && (what.isEmpty || "everything".hasPrefix(what))
+        case "load":
+            guard let file = argument("filename", at: 0).map(unquoted), !file.isEmpty
+            else { return false }
+            let format = unquoted(argument("format", at: 3) ?? "")
+            let isSession: Bool
+            if !format.isEmpty {
+                isSession = format == "pse" || format == "psw"
+            } else {
+                var name = (file as NSString).lastPathComponent
+                if name.hasSuffix(".gz") || name.hasSuffix(".bz2") {
+                    name = (name as NSString).deletingPathExtension
+                }
+                isSession = ["pse", "psw", "pze", "pzw"].contains((name as NSString).pathExtension)
+            }
+            guard isSession else { return false }
+            let partial = unquoted(argument("partial", at: 9) ?? "0")
+            return ["", "0", "false", "no", "off"].contains(partial)
+        default:
+            return false
+        }
+    }
+
     // MARK: - Box Select (rubber-band selection, #358)
 
     // Leading-edge throttle for the live commit, mirroring hoverPreview: a drag
@@ -3192,14 +3375,16 @@ final class PyMOLEngine: ObservableObject {
         #if RAYMOL_MPNN
         if MainActor.assumeIsolated({ designController.isCalculating }) { return }
         #endif
+        let previous = interactionMode
         interactionMode = mode
         // Leaving Box Select (for viewing OR for another tool) must drop the
         // rectangle and its preview highlight, or the cyan atoms stay lit with no
         // box on screen to explain them.
         if mode != .boxSelect { clearBoxState() }
-        // Both viewport tools are exclusive with the other modes; .viewing is not
-        // a tool and leaves them alone (Esc unwinds them via their own setters).
-        if mode == .move || mode == .boxSelect {
+        // The viewport tools (Move, Box Select) and Lights are exclusive with the
+        // other modes; .viewing is not a tool and leaves them alone (Esc unwinds
+        // them via their own setters).
+        if mode == .move || mode == .boxSelect || mode == .lights {
             if measureMode != nil { setMeasureMode(nil) }   // mutually exclusive
             setDesignMode(false)                             // mutually exclusive
             setPredictMode(false)                            // mutually exclusive
@@ -3216,6 +3401,17 @@ final class PyMOLEngine: ObservableObject {
             // empty viewport would just look like nothing happened.
             beginBoxSession()
             setBoxRect(.initial)
+        }
+        if mode == .lights {
+            // Lights mode skips the hover pick (MetalViewport), so nothing would
+            // clear a readout left from viewing; drop it now (it would cover the
+            // bar's Done on macOS).
+            clearHoverPreview()
+            // Entering twice keeps the first entry snapshot (Revert's target).
+            if previous != .lights { MainActor.assumeIsolated { lightsController.begin() } }
+        } else if previous == .lights {
+            // Done, Esc or another mode: the edits stay, the snapshot goes.
+            MainActor.assumeIsolated { lightsController.end() }
         }
         if mode == .move {
             refreshGizmo()
@@ -4414,3 +4610,49 @@ final class PyMOLEngine: ObservableObject {
 // ObjectEntry is the canonical model, defined in ObjectPanel.swift.
 // MoleculeObject is a typealias for backward compatibility.
 typealias MoleculeObject = ObjectEntry
+
+// MARK: - Lights bar actions (#619)
+
+extension LightsAction {
+    /// What the engine runs for a Lights bar button: a `lights` console command,
+    /// or (Revert) one Python call.
+    enum Invocation: Equatable {
+        case command(String)
+        case python(String)
+    }
+
+    /// The command or Python for this action; nil when a name is not a light or
+    /// preset name, so nothing is run (no quoting is ever needed). The command
+    /// strings are pinned by LightsActionInvocationTests and, run through the
+    /// core, by testing/tests/raymol/lighting_mode.py TestBarCommands: change
+    /// them together.
+    var invocation: Invocation? {
+        switch self {
+        case .add:
+            return .command("lights add")
+        case .remove(let name):
+            return Self.isValidName(name) ? .command("lights remove, \(name)") : nil
+        case .preset(let name):
+            return Self.isValidName(name) ? .command("lights \(name)") : nil
+        case .recenter:
+            return .command("lights recenter")
+        case .setEnabled(let on):
+            return .command(on ? "lights on" : "lights off")
+        case .restore(let json):
+            // base64, so the JSON is never quoted into Python source.
+            let encoded = Data(json.utf8).base64EncodedString()
+            return .python("from pymol import appkit_lights as _al\n_al.restore('\(encoded)')")
+        }
+    }
+
+    /// The core's light-name rule (LightNameValid; lighting_commands.NAME_RE):
+    /// ^[A-Za-z_][A-Za-z0-9_]{0,31}$, ASCII only.
+    static func isValidName(_ name: String) -> Bool {
+        let bytes = Array(name.utf8)
+        guard (1...32).contains(bytes.count) else { return false }
+        func isLetter(_ b: UInt8) -> Bool { (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 95 }
+        func isDigit(_ b: UInt8) -> Bool { b >= 48 && b <= 57 }
+        guard isLetter(bytes[0]) else { return false }
+        return bytes.dropFirst().allSatisfy { isLetter($0) || isDigit($0) }
+    }
+}
