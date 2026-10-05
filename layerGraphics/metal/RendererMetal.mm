@@ -2592,9 +2592,16 @@ struct LightRigLight {
   float4 radiance;  // rgb colour * warmth * intensity; w cos(inner cone)
   float4 misc;      // x highlight, y falloff, z falloff reference, w outline
 };
+struct LightRigShadow {
+  float4x4 viewProj; // eye space -> the light's clip space (#616)
+  float4 info;       // tan(half fov), map size, normal offset, depth bias
+};
 struct LightRigU {
-  float4 head;      // x light count, y shininess, z orthographic, w (#616)
+  float4 head;      // x light count, y shininess, z orthographic, w shadow maps
   LightRigLight L[6];
+  LightRigShadow S[3];  // read by no RT function (#616: hits stay unshadowed)
+  float4 shadowGrid;
+  float4 shadowTile;
 };
 struct LightResponse {
   float diffuse;
@@ -7071,11 +7078,23 @@ struct LightRigLight {
                     // distance (A, >= 1e-3), w outline 0|1
 };
 
-// The whole rig, 400 bytes. Mirrors pymol::LightRigBlock.
+// One studio shadow map (#616), 80 bytes. Mirrors pymol::LightRigBlockShadow.
+struct LightRigShadow {
+  float4x4 viewProj; // camera eye space -> the light's clip space (GL z)
+  float4 info;       // x tan(half fov), y map size (texels), z normal offset
+                     // (texels), w depth bias (window z)
+};
+
+// The whole rig, 672 bytes: #613's 400 (head and lights), then #616's shadow
+// maps. Mirrors pymol::LightRigBlock.
 struct LightRigU {
   float4 head;      // x light count, y shininess, z 1 = this draw is
-                    // orthographic, w shadow maps this frame (#616; 0)
+                    // orthographic, w shadow maps this frame (#616)
   LightRigLight L[6];
+  LightRigShadow S[3];  // shadow maps 0..head.w-1 (#616)
+  float4 shadowGrid;    // tiles per side (1 = no grid), first grid slot,
+                        // columns, rows (#616)
+  float4 shadowTile;    // this draw's tile in slice uv: u0, v0, du, dv (#616)
 };
 
 // How a material takes the rig's light: diffuse and highlight strength, the

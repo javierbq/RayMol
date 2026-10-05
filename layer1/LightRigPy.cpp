@@ -14,6 +14,10 @@
 #include <utility>
 #include <vector>
 
+#include <glm/gtc/type_ptr.hpp>
+
+#include "GpuFrameTimes.h"
+#include "LightShadows.h"
 #include "SceneLights.h"
 
 using pymol::Light;
@@ -879,7 +883,122 @@ PyObject* pyFloats(const float* v, int n)
   }
   return list.release();
 }
+
+/// A 4x4 as 16 floats, column-major (new reference, nullptr on error).
+PyObject* pyMat4(const glm::mat4& m)
+{
+  return pyFloats(glm::value_ptr(m), 16);
+}
+
+/// The block's layout in floats (LightRigBlock.h), for decoding by offset.
+constexpr int kBlockShadowAt = 100;
+constexpr int kBlockShadowFloats = 20;
+constexpr int kBlockGridAt = 160;
+constexpr int kBlockTileAt = 164;
+
+/// One map of the frame's plan, decoded from the block at its documented
+/// offsets plus the plan's own matrices (new reference, nullptr on error).
+PyObject* shadowSlotAsPyDict(const float* f, int slot, int light,
+    const std::string& name, const pymol::LightShadowView& v)
+{
+  const float* s = f + kBlockShadowAt + kBlockShadowFloats * slot;
+  unique_PyObject_ptr d(PyDict_New());
+  if (!d)
+    return nullptr;
+  const bool ok =
+      setItem(d.get(), "slot", PyLong_FromLong(slot)) &&
+      setItem(d.get(), "light", PyLong_FromLong(light)) &&
+      setItem(d.get(), "name", pyString(name)) &&
+      setItem(d.get(), "view", pyMat4(v.view)) &&
+      setItem(d.get(), "proj", pyMat4(v.proj)) &&
+      setItem(d.get(), "view_proj", pyFloats(s, 16)) &&
+      setItem(d.get(), "tan_half_fov", PyFloat_FromDouble(s[16])) &&
+      setItem(d.get(), "map_size", PyFloat_FromDouble(s[17])) &&
+      setItem(d.get(), "normal_offset", PyFloat_FromDouble(s[18])) &&
+      setItem(d.get(), "depth_bias", PyFloat_FromDouble(s[19])) &&
+      setItem(d.get(), "near", PyFloat_FromDouble(v.nearZ)) &&
+      setItem(d.get(), "far", PyFloat_FromDouble(v.farZ)) &&
+      setItem(d.get(), "beam_fit", PyBool_FromLong(v.beamFit));
+  return ok ? d.release() : nullptr;
+}
+
+/// The frame's maps: None, or {'count', 'size', 'tiles', 'first_slot',
+/// 'slots': [...]} (new reference, nullptr on error).
+PyObject* shadowsAsPyDict(
+    const LightRig* rig, const SceneLightFrame& frame, const float* f)
+{
+  if (!frame.shadows)
+    return pyNone();
+  const auto& plan = *frame.shadows;
+  unique_PyObject_ptr d(PyDict_New());
+  unique_PyObject_ptr slots(PyList_New(0));
+  if (!d || !slots)
+    return nullptr;
+  for (int s = 0; s < plan.count; ++s) {
+    const int i = plan.light[s];
+    const std::string name =
+        rig && i >= 0 && size_t(i) < rig->lights.size() ? rig->lights[i].name
+                                                        : "";
+    unique_PyObject_ptr slot(shadowSlotAsPyDict(f, s, i, name, plan.view[s]));
+    if (!slot || PyList_Append(slots.get(), slot.get()) != 0)
+      return nullptr;
+  }
+  const bool ok = setItem(d.get(), "count", PyLong_FromLong(plan.count)) &&
+                  setItem(d.get(), "size", PyLong_FromLong(plan.size)) &&
+                  setItem(d.get(), "tiles", PyLong_FromLong(plan.tiles)) &&
+                  setItem(d.get(), "first_slot",
+                      PyLong_FromLong(plan.firstSlot)) &&
+                  setItem(d.get(), "slots", slots.release());
+  return ok ? d.release() : nullptr;
+}
 } // namespace
+
+PyObject* LightShadowViewAsPyDict(const pymol::LightShadowView& v)
+{
+  unique_PyObject_ptr d(PyDict_New());
+  if (!d)
+    return nullptr;
+  const bool ok =
+      setItem(d.get(), "view", pyMat4(v.view)) &&
+      setItem(d.get(), "proj", pyMat4(v.proj)) &&
+      setItem(d.get(), "view_proj", pyMat4(v.proj * v.view)) &&
+      setItem(d.get(), "tan_half_fov", PyFloat_FromDouble(v.tanHalfFov)) &&
+      setItem(d.get(), "near", PyFloat_FromDouble(v.nearZ)) &&
+      setItem(d.get(), "far", PyFloat_FromDouble(v.farZ)) &&
+      setItem(d.get(), "beam_fit", PyBool_FromLong(v.beamFit));
+  return ok ? d.release() : nullptr;
+}
+
+PyObject* LightShadowTileAsPyDict(const pymol::LightShadowTile& t)
+{
+  unique_PyObject_ptr d(PyDict_New());
+  if (!d)
+    return nullptr;
+  const bool ok = setItem(d.get(), "x", PyLong_FromLong(t.x)) &&
+                  setItem(d.get(), "y", PyLong_FromLong(t.y)) &&
+                  setItem(d.get(), "size", PyLong_FromLong(t.size)) &&
+                  setItem(d.get(), "uv", pyFloats(t.uv, 4));
+  return ok ? d.release() : nullptr;
+}
+
+PyObject* GpuFrameSummaryAsPyDict(const pymol::GpuFrameSummary& s)
+{
+  return Py_BuildValue("{s:i,s:d,s:d,s:d,s:d}", "count", s.count, "mean",
+      s.mean, "median", s.median, "p95", s.p95, "max", s.max);
+}
+
+PyObject* GpuFrameReportAsPyDict(const pymol::GpuFrameReport& r)
+{
+  unique_PyObject_ptr d(GpuFrameSummaryAsPyDict(r.summary));
+  if (!d)
+    return nullptr;
+  const bool ok =
+      setItem(d.get(), "last_ms", PyFloat_FromDouble(r.lastMs)) &&
+      setItem(d.get(), "mode", PyLong_FromLong(r.mode)) &&
+      setItem(d.get(), "shadow_maps", PyLong_FromLong(r.shadowMaps)) &&
+      setItem(d.get(), "shadow_size", PyLong_FromLong(r.shadowSize));
+  return ok ? d.release() : nullptr;
+}
 
 PyObject* LightFrameAsPyDict(
     const LightRig* rig, const SceneLightFrame& frame)
@@ -893,10 +1012,15 @@ PyObject* LightFrameAsPyDict(
       !setItem(dict.get(), "reflect", PyFloat_FromDouble(c.reflect)) ||
       !setItem(dict.get(), "specular", PyFloat_FromDouble(c.specular)) ||
       !setItem(dict.get(), "shininess", PyFloat_FromDouble(frame.shininess)) ||
-      !setItem(dict.get(), "rig_on", PyBool_FromLong(frame.rig.has_value())))
+      !setItem(dict.get(), "rig_on", PyBool_FromLong(frame.rig.has_value())) ||
+      !setItem(dict.get(), "studio_shadows",
+          PyBool_FromLong(frame.studioShadows)) ||
+      !setItem(dict.get(), "shadow_map_size",
+          PyLong_FromLong(frame.shadowMapSize)))
     return nullptr;
   if (!frame.rig) {
-    if (!setItem(dict.get(), "rig", pyNone()))
+    if (!setItem(dict.get(), "rig", pyNone()) ||
+        !setItem(dict.get(), "shadows", pyNone()))
       return nullptr;
     return dict.release();
   }
@@ -905,7 +1029,8 @@ PyObject* LightFrameAsPyDict(
   // offsets LightRigBlock.h documents (not through the struct's fields), so
   // a layout change shows up in the tests.
   constexpr int kFloats = int(sizeof(pymol::LightRigBlock) / sizeof(float));
-  static_assert(kFloats == 100, "LightRigBlock is 100 floats");
+  static_assert(kFloats == 168, "LightRigBlock is 168 floats");
+  static_assert(kBlockTileAt + 4 == kFloats, "the tile is the last float4");
   float f[kFloats];
   std::memcpy(f, &*frame.rig, sizeof f);
   const int count = std::clamp(int(f[0]), 0, pymol::kLightRigBlockSlots);
@@ -922,6 +1047,8 @@ PyObject* LightFrameAsPyDict(
   if (!setItem(out.get(), "count", PyLong_FromLong(count)) ||
       !setItem(out.get(), "head", pyFloats(f, 4)) ||
       !setItem(out.get(), "block", pyFloats(f, kFloats)) ||
+      !setItem(out.get(), "shadow_grid", pyFloats(f + kBlockGridAt, 4)) ||
+      !setItem(out.get(), "shadow_tile", pyFloats(f + kBlockTileAt, 4)) ||
       !setItem(out.get(), "lights", lightsOwned.release()))
     return nullptr;
   for (int i = 0; i < count; ++i) {
@@ -946,7 +1073,8 @@ PyObject* LightFrameAsPyDict(
     if (!ok || PyList_Append(lights, d.get()) != 0) // lights is borrowed
       return nullptr;
   }
-  if (!setItem(dict.get(), "rig", out.release()))
+  if (!setItem(dict.get(), "rig", out.release()) ||
+      !setItem(dict.get(), "shadows", shadowsAsPyDict(rig, frame, f)))
     return nullptr;
   return dict.release();
 }

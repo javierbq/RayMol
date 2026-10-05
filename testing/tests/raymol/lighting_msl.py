@@ -19,7 +19,8 @@ shader compile) prove on a Mac:
   and glass, jelly and the other families take the rig as on the VBO path;
 * the specialisation always sets the constant, and the indices agree between
   C++ and MSL;
-* the MSL LightRigU mirrors layer1/LightRigBlock.h;
+* the MSL LightRigU mirrors layer1/LightRigBlock.h, #616's shadow maps
+  (LightRigShadow) appended after #613's 400 bytes;
 * the rig is bound only while it is on, and rig pipelines (VBO, sphere,
   cylinder, bezier tube) are chosen only then, with a classic fallback;
 * the classic bezier tube library is untouched; the tube's rig library is
@@ -82,7 +83,8 @@ RT_RIG_ARGUMENT = re.compile(
     r'constant\s+LightRigU\s*&\s*rig\s*\[\[\s*buffer\(13\)\s*,\s*'
     r'function_constant\(kRTLightRig\)\s*\]\]')
 RT_RIG_GUARD = re.compile(r'if\s*\(\s*kRTLightRig\s*\)')
-STRUCTS = ('LightRigLight', 'LightRigU', 'LightResponse', 'LightTerms')
+STRUCTS = ('LightRigLight', 'LightRigShadow', 'LightRigU', 'LightResponse',
+           'LightTerms')
 
 # Libraries whose lit fragments take the rig (the bezier tube has its own
 # rig library and is checked apart).
@@ -1110,20 +1112,43 @@ class TestLayout(LightMSLCase):
         self.assertEqual(light_fields, [('float4', 'pos'), ('float4', 'axis'),
                                         ('float4', 'radiance'), ('float4', 'misc')])
         rig_fields = re.findall(r'(\w+)\s+(\w+)(?:\[(\d+)\])?\s*;', rig.group(1))
-        self.assertEqual(rig_fields, [('float4', 'head', ''),
-                                      ('LightRigLight', 'L', '6')])
-        size = 16 + int(rig_fields[1][2]) * 16 * len(light_fields)
-        self.assertEqual(size, 400)
+        # #613's head and lights first, unchanged, then #616's tail
+        self.assertEqual(rig_fields[:2], [('float4', 'head', ''),
+                                          ('LightRigLight', 'L', '6')])
+        prefix = 16 + int(rig_fields[1][2]) * 16 * len(light_fields)
+        self.assertEqual(prefix, 400)
+        self.assertEqual(rig_fields[2:], [('LightRigShadow', 'S', '3'),
+                                          ('float4', 'shadowGrid', ''),
+                                          ('float4', 'shadowTile', '')])
+        shadow = re.search(r'struct LightRigShadow\s*\{(.*?)\};', material, re.S)
+        shadow_fields = re.findall(r'(\w+)\s+(\w+)\s*;', shadow.group(1))
+        self.assertEqual(shadow_fields, [('float4x4', 'viewProj'),
+                                         ('float4', 'info')])
+        shadow_size = 64 + 16
+        # float4x4 and float4 are 16-byte aligned: no padding anywhere
+        size = prefix + int(rig_fields[2][2]) * shadow_size + 16 + 16
+        self.assertEqual(size, 672)
         header = strip_comments(read(BLOCK_H))
         cpp_light = re.search(r'struct LightRigBlockLight\s*\{(.*?)\};', header, re.S)
         cpp_rig = re.search(r'struct LightRigBlock\s*\{(.*?)\};', header, re.S)
+        cpp_shadow = re.search(r'struct LightRigBlockShadow\s*\{(.*?)\};',
+                               header, re.S)
         self.assertEqual(re.findall(r'float\s+(\w+)\[4\];', cpp_light.group(1)),
                          [name for _, name in light_fields])
         self.assertEqual(re.findall(r'float\s+(\w+)\[4\];', cpp_rig.group(1)),
-                         ['head'])
+                         ['head', 'shadowGrid', 'shadowTile'])
+        self.assertEqual(re.findall(r'float\s+(\w+)\[(\d+)\];', cpp_shadow.group(1)),
+                         [('viewProj', '16'), ('info', '4')])
         slots = re.search(r'kLightRigBlockSlots\s*=\s*(\d+);', header).group(1)
         self.assertEqual(slots, rig_fields[1][2])
+        shadow_slots = re.search(r'kLightRigBlockShadowSlots\s*=\s*(\d+);',
+                                 header).group(1)
+        self.assertEqual(shadow_slots, rig_fields[2][2])
         self.assertRegex(header, r'sizeof\(LightRigBlock\)\s*==\s*%d' % size)
+        self.assertRegex(header, r'sizeof\(LightRigBlockShadow\)\s*==\s*%d'
+                         % shadow_size)
+        self.assertRegex(header, r'offsetof\(LightRigBlock,\s*shadow\)\s*==\s*%d'
+                         % prefix)
         # the rig model's light limit is the block's
         self.assertRegex(strip_comments(read(SHADING_H)),
                          r'static_assert\(kLightRigMaxLights\s*==\s*'

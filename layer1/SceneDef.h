@@ -146,6 +146,10 @@ class CScene : public Block {
   bool ShadowExtentValid{};
   bool ShadowExtentFlag{}; /* false = nothing to bound (empty scene) */
   float ShadowExtentMin[3]{}, ShadowExtentMax[3]{};
+  /* The same box without overlays: the studio shadow casters (#616). */
+  bool LightShadowExtentValid{};
+  bool LightShadowExtentFlag{};
+  float LightShadowExtentMin[3]{}, LightShadowExtentMax[3]{};
   bool DofExtentValid{};
   bool DofExtentFlag{}; /* false = 'dof_focus' is empty/undefined */
   float DofExtentCenter[3]{};

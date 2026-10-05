@@ -17,6 +17,13 @@
 #ifndef _PYMOL_NOPY
 
 struct SceneLightFrame; // SceneLights.h
+namespace pymol
+{
+struct LightShadowView;  // LightShadows.h
+struct LightShadowTile;  // LightShadows.h
+struct GpuFrameSummary;  // GpuFrameTimes.h
+struct GpuFrameReport;   // GpuFrameTimes.h
+} // namespace pymol
 
 /**
  * The rig as cmd.get_lights() returns it (version 1):
@@ -111,22 +118,46 @@ PyObject* LightRigEyeAsPyDict(
     const pymol::LightRig& rig, const pymol::LightRigEye& eye);
 
 /**
- * One frame's lighting (SceneLightsFrame, #613), for _cmd.get_light_frame():
+ * One frame's lighting (SceneLightsFrame, #613, #616), for
+ * _cmd.get_light_frame():
  *   {'ambient', 'direct', 'reflect', 'specular', 'shininess',
- *    'rig_on': bool,
- *    'rig': None | {'count': int, 'head': [4 floats], 'block': [100 floats],
+ *    'rig_on': bool, 'studio_shadows': bool, 'shadow_map_size': int,
+ *    'rig': None | {'count': int, 'head': [4 floats], 'block': [168 floats],
+ *                   'shadow_grid': [4 floats], 'shadow_tile': [4 floats],
  *                   'lights': [{'name', 'position': [3], 'shadow_slot': int,
  *                               'direction': [3], 'cos_outer',
  *                               'radiance': [3], 'cos_inner', 'highlight',
  *                               'falloff', 'falloff_ref', 'outline': bool},
- *                              ...]}}
+ *                              ...]},
+ *    'shadows': None | {'count', 'size', 'tiles', 'first_slot',
+ *                       'slots': [{'slot', 'light', 'name', 'view': [16],
+ *                                  'proj': [16], 'view_proj': [16],
+ *                                  'tan_half_fov', 'map_size',
+ *                                  'normal_offset', 'depth_bias', 'near',
+ *                                  'far', 'beam_fit'}, ...]}}
  * 'block' is the LightRigBlock as the GPU reads it, float by float, and
- * 'lights' is decoded from it at the offsets LightRigBlock.h documents, so
- * the tests pin the layout as well as the values. Names come from `rig`.
- * New reference.
+ * 'lights', 'shadow_grid', 'shadow_tile' and each slot's 'view_proj' to
+ * 'depth_bias' are decoded from it at the offsets LightRigBlock.h documents,
+ * so the tests pin the layout as well as the values; 'view', 'proj', 'near',
+ * 'far' and 'beam_fit' come from the plan (LightShadowFrame). Matrices are
+ * column-major. Names come from `rig`. New reference.
  */
 PyObject* LightFrameAsPyDict(
     const pymol::LightRig* rig, const SceneLightFrame& frame);
+
+/// LightShadowFrustum()'s result for _cmd.light_shadow_frustum():
+/// {'view', 'proj', 'view_proj': [16 floats, column-major], 'tan_half_fov',
+///  'near', 'far', 'beam_fit'}. New reference.
+PyObject* LightShadowViewAsPyDict(const pymol::LightShadowView& v);
+
+/// LightShadowTileRect()'s result: {'x', 'y', 'size', 'uv': [4]}.
+PyObject* LightShadowTileAsPyDict(const pymol::LightShadowTile& t);
+
+/// GpuFrameSummarize()'s result: {'count', 'mean', 'median', 'p95', 'max'}.
+PyObject* GpuFrameSummaryAsPyDict(const pymol::GpuFrameSummary& s);
+
+/// The summary plus {'last_ms', 'mode', 'shadow_maps', 'shadow_size'}.
+PyObject* GpuFrameReportAsPyDict(const pymol::GpuFrameReport& r);
 
 /// A world->eye matrix from 16 numbers in column-major order (as
 /// glm::make_mat4 reads them).

@@ -1999,10 +1999,12 @@ static void SceneRenderPostProcessStack(PyMOLGlobals* G, const GLFramebufferConf
  *
  * @param[out] mn,mx model-space min/max corners
  * @param skip_solvent exclude atoms flagged as solvent
+ * @param skip_overlays exclude overlays (SceneObjectIsOverlay: gadgets,
+ *        gizmos, the Move gizmo's CGO), which never cast studio shadows (#616)
  * @return false if nothing contributed (mn/mx untouched)
  */
-static bool SceneComputeShadowExtent(
-    PyMOLGlobals* G, float* mn, float* mx, bool skip_solvent)
+static bool SceneComputeShadowExtent(PyMOLGlobals* G, float* mn, float* mx,
+    bool skip_solvent, bool skip_overlays = false)
 {
   CScene* I = G->Scene;
   bool have_extent = false;
@@ -2019,6 +2021,8 @@ static bool SceneComputeShadowExtent(
   };
 
   for (auto* obj : I->Obj) {
+    if (skip_overlays && SceneObjectIsOverlay(obj))
+      continue;
     if (obj->type != cObjectMolecule) {
       // Maps, meshes, surfaces, CGOs: they already carry a cached extent.
       if (obj->ExtentFlag) {
@@ -2086,6 +2090,31 @@ bool SceneGetShadowExtent(PyMOLGlobals* G, float* mn, float* mx)
     copy3f(I->ShadowExtentMax, mx);
   }
   return I->ShadowExtentFlag;
+}
+
+/**
+ * The studio shadow casters' box (#616): SceneGetShadowExtent()'s, without
+ * overlays (#433), cached the same way in its own fields and dropped by
+ * SceneInvalidateExtentCache(). The studio frusta are fitted to it, so the
+ * Move gizmo never widens them.
+ */
+bool SceneGetLightShadowExtent(PyMOLGlobals* G, float* mn, float* mx)
+{
+  CScene* I = G->Scene;
+  if (!I->LightShadowExtentValid) {
+    I->LightShadowExtentFlag = SceneComputeShadowExtent(
+        G, I->LightShadowExtentMin, I->LightShadowExtentMax, true, true);
+    if (!I->LightShadowExtentFlag) {
+      I->LightShadowExtentFlag = SceneComputeShadowExtent(
+          G, I->LightShadowExtentMin, I->LightShadowExtentMax, false, true);
+    }
+    I->LightShadowExtentValid = true;
+  }
+  if (I->LightShadowExtentFlag) {
+    copy3f(I->LightShadowExtentMin, mn);
+    copy3f(I->LightShadowExtentMax, mx);
+  }
+  return I->LightShadowExtentFlag;
 }
 
 // Build the directional key light's view*projection in EYE space, so the post
@@ -2264,6 +2293,9 @@ void SceneRenderMetal(PyMOLGlobals* G)
       G, I->m_view.m_clipSafe().m_front, I->m_view.m_clipSafe().m_back, aspRat);
   ScenePrepareMatrix(G, 0);
 
+  // This frame's lighting, read once in the block below (SceneLightsFrame).
+  SceneLightFrame lights;
+
   // Load matrices into the Metal renderer
   {
     const float* proj = SceneGetProjectionMatrixPtr(G);
@@ -2427,8 +2459,9 @@ void SceneRenderMetal(PyMOLGlobals* G)
     // applies to the classic terms here, the single place they enter the
     // Metal renderer. No rig, or a rig that is off: the settings bit for bit,
     // no resolve and no block.
-    const SceneLightFrame lights =
-        SceneLightsFrame(G, glm::dmat4(glm::make_mat4(mv)));
+    // The frame is kept past this block: the shadow pre-pass below reads it
+    // (#616).
+    lights = SceneLightsFrame(G, glm::dmat4(glm::make_mat4(mv)));
     G->Renderer->setLightingParams(lights.classic.ambient,
         lights.classic.direct, lights.classic.reflect, lights.classic.specular,
         lights.shininess, SettingGetGlobal_f(G, cSetting_metal_sss_wrap));
