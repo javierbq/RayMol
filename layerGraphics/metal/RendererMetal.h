@@ -255,14 +255,21 @@ private:
   // first time a rig-on frame draws spheres, so a session without lights
   // never compiles them. One attempt per build (_sphereRigBuilt).
   void ensureSphereRigPipelines();
+  // The studio shadow maps' variants of those (#616), built the same way the
+  // first time a frame with maps draws spheres (_sphereRigShadowBuilt).
+  // releaseSphereRigPipelines releases both sets.
+  void ensureSphereRigShadowPipelines();
   void releaseSphereRigPipelines();
   // The cylinder VBO layout (stride/offsets/formats) varies with the rep, so
   // the cylinder pipeline is built lazily from the first draw call's layout
   // and rebuilt only if a later call has a different stride. `lightRig`
-  // builds the light rig's variant (#613), cached apart under its own key.
+  // builds the light rig's variant (#613), cached apart under its own key;
+  // `lightShadow` (with `lightRig`) the studio shadow maps' variant (#616),
+  // keyed apart again.
   void releaseCylinderPipelines();
   void buildCylinderImpostorPipeline(const CylinderImpostorDrawCall& call,
-                                     bool lightRig = false);
+                                     bool lightRig = false,
+                                     bool lightShadow = false);
   void buildLabelPipeline();
   // (Re)upload the glyph atlas to an MTLTexture if the generation changed.
   void ensureLabelAtlas(const unsigned char* pixels, int w, int h,
@@ -354,8 +361,11 @@ private:
   // family has no implemented material or specialisation failed. `lightRig`
   // is the light rig's function constant (#613), always set: false for every
   // classic pipeline.
+  // `lightShadow` is the studio shadow maps' constant (#616), always set too:
+  // true only with `lightRig`, for the shadow variants.
   id<MTLFunction> materialFragmentFunction(
-      id<MTLLibrary> lib, NSString* name, int family, bool lightRig = false);
+      id<MTLLibrary> lib, NSString* name, int family, bool lightRig = false,
+      bool lightShadow = false);
   // The light rig (#613): the VBO library is kept so the rig variants of
   // vbo_fragment and vbo_fragment_oit are specialised only when a rig is
   // first turned on (vboRigFragmentFunction, one attempt per family). The
@@ -366,6 +376,13 @@ private:
   id<MTLFunction> _vboFragmentOitRigFunc[cMaterialFamily_count] = {};
   bool _vboRigFuncTried[cMaterialFamily_count][2] = {};
   id<MTLFunction> vboRigFragmentFunction(int family, bool oit);
+  // The studio shadow maps' variants of the same two fragments (#616),
+  // specialised lazily from the same library the first time a frame with
+  // maps needs one; released with the rig functions.
+  id<MTLFunction> _vboFragmentRigShadowFunc[cMaterialFamily_count] = {};
+  id<MTLFunction> _vboFragmentOitRigShadowFunc[cMaterialFamily_count] = {};
+  bool _vboRigShadowFuncTried[cMaterialFamily_count][2] = {};
+  id<MTLFunction> vboRigShadowFragmentFunction(int family, bool oit);
   void releaseVBORigFunctions();
   id<MTLFunction> _vboVertexUnlitFunc;   // flat-color (no normal) for lines/dots
   id<MTLFunction> _vboFragmentUnlitFunc;
@@ -396,6 +413,11 @@ private:
   id<MTLRenderPipelineState> _sphereRigPipeline[cMaterialFamily_count] = {};
   id<MTLRenderPipelineState> _sphereRigOitPipeline[cMaterialFamily_count] = {};
   bool _sphereRigBuilt = false;
+  // The studio shadow maps' sphere pipelines (#616), per family; nil until a
+  // frame with maps draws spheres (ensureSphereRigShadowPipelines). +1 owned.
+  id<MTLRenderPipelineState> _sphereRigShadowPipeline[cMaterialFamily_count] = {};
+  id<MTLRenderPipelineState> _sphereRigShadowOitPipeline[cMaterialFamily_count] = {};
+  bool _sphereRigShadowBuilt = false;
   // Cylinder impostor pipelines are cached PER VERTEX LAYOUT — (stride, a_cap
   // offset) — not in a single slot. a_cap's offset is part of the vertex
   // descriptor, so a stick VBO (per-vertex a_cap) and a CGO VBO (one constant
@@ -410,12 +432,15 @@ private:
     id<MTLRenderPipelineState> shadow = nil;
     id<MTLRenderPipelineState> peel = nil;   // depth-only, peel-depth format
   };
-  // Keyed by (stride, a_cap offset, MATERIAL FAMILY, LIGHT RIG): a marble
-  // stick and a default stick at the same layout need different pipelines,
-  // and whichever drew first would otherwise decide how both looked. The
-  // light rig's variant (#613) is its own entry, built only while a rig is
-  // on; it has no shadow or peel pipeline (those passes never take the rig).
-  std::map<std::tuple<NSUInteger, int, int, bool>, CylinderPipelines>
+  // Keyed by (stride, a_cap offset, MATERIAL FAMILY, LIGHT RIG, STUDIO
+  // SHADOW): a marble stick and a default stick at the same layout need
+  // different pipelines, and whichever drew first would otherwise decide how
+  // both looked. The light rig's variant (#613) is its own entry, built only
+  // while a rig is on; it has no shadow or peel pipeline (those passes never
+  // take the rig). The studio shadow maps' variant (#616) is another, built
+  // only while a frame's maps are ready; the 5th element is false for every
+  // classic and #613 rig entry.
+  std::map<std::tuple<NSUInteger, int, int, bool, bool>, CylinderPipelines>
       _cylinderPipelines;
   id<MTLRenderPipelineState> _cylinderImpostorPipeline = nil; // alias, not owned
 
@@ -826,6 +851,15 @@ private:
   // A rig pipeline that cannot be built draws classic instead; this logs it
   // once per renderer rather than once per draw.
   bool _lightRigWarned = false;
+  // The studio shadow maps (#616). _lightShadowMapsReady: this frame's maps
+  // were rendered (cleared at every beginFrame; set by the map pass, Part 4
+  // of #616). lightShadowsReady() is the one predicate that chooses the
+  // shadow variants of the rig pipelines and, with them, binds the maps.
+  // A shadow variant that cannot be built draws the rig without its maps,
+  // logged once (_lightShadowWarned).
+  bool _lightShadowMapsReady = false;
+  bool _lightShadowWarned = false;
+  bool lightShadowsReady() const;
   // Key-light direction TOWARD the light in eye space = -normalize(cSetting_light).
   // Default reproduces the previously hard-coded normalize(0.4,0.4,1.0), which is
   // exactly -normalize(PyMOL's default light). Fed into every lit/shadow/RT shader.
