@@ -2534,6 +2534,10 @@ void SceneRenderMetal(PyMOLGlobals* G)
     // Studio shadows (#616): whether they are on (the whole-pixel shadow is
     // then off) and each map's size. Two scalars; false and 0 with no rig.
     G->Renderer->setLightShadowFrame(lights.studioShadows, lights.shadowMapSize);
+    // GPU frame times (#616, metal_gpu_timing; with or without a rig, so
+    // #623 can time the frame without one too). At 0, the default, the
+    // renderer adds nothing to the frame.
+    G->Renderer->setGpuTiming(SettingGetGlobal_i(G, cSetting_metal_gpu_timing));
     // Key-light direction: feed cSetting_light so shading AND shadows follow it
     // (and become user-adjustable via `set light`). The renderer stores
     // -normalize(light) as the direction toward the light; PyMOL's default light

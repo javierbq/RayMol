@@ -5634,6 +5634,44 @@ static PyObject* CmdGpuTimeSummary(PyObject* self, PyObject* args)
   return GpuFrameSummaryAsPyDict(pymol::GpuFrameSummarize(std::move(values)));
 }
 
+/// GpuFrameTimes::record() over given frames, as the renderer feeds it:
+/// `frames` is a sequence of (ms, shadow_maps, shadow_size, offscreen,
+/// now_seconds) and `mode` the metal_gpu_timing value. Returns {'lines':
+/// [each non-empty line record() returned, in order], 'stats': the report
+/// (GpuFrameReportAsPyDict) or None}.
+static PyObject* CmdGpuTimeReplay(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  PyObject* frames = nullptr;
+  int mode = 0;
+  API_SETUP_ARGS(G, self, args, "OOi", &self, &frames, &mode);
+  unique_PyObject_ptr seq(PySequence_Fast(frames,
+      "frames must be a sequence of (ms, maps, size, offscreen, now)"));
+  if (!seq)
+    return nullptr;
+  pymol::GpuFrameTimes times;
+  std::vector<std::string> lines;
+  const Py_ssize_t n = PySequence_Fast_GET_SIZE(seq.get());
+  for (Py_ssize_t i = 0; i < n; ++i) {
+    double ms = 0.0, now = 0.0;
+    int maps = 0, size = 0, offscreen = 0;
+    if (!PyArg_ParseTuple(PySequence_Fast_GET_ITEM(seq.get(), i), "diipd",
+            &ms, &maps, &size, &offscreen, &now))
+      return nullptr;
+    std::string line = times.record(ms, maps, size, mode, offscreen != 0, now);
+    if (!line.empty())
+      lines.push_back(std::move(line));
+  }
+  pymol::GpuFrameReport report;
+  PyObject* stats = times.report(report, mode)
+                        ? GpuFrameReportAsPyDict(report)
+                        : APIAutoNone(Py_None);
+  if (!stats)
+    return nullptr;
+  return Py_BuildValue("{s:N,s:N}", "lines", PConvToPyObject(lines), "stats",
+      stats);
+}
+
 /// The renderer's GPU frame times (metal_gpu_timing > 0): a dict
 /// (GpuFrameReportAsPyDict), or None with no Metal renderer or no frames.
 static PyObject* CmdGetGpuFrameStats(PyObject* self, PyObject* args)
@@ -7654,6 +7692,7 @@ static PyMethodDef Cmd_methods[] = {
   {"get_light_shadow_casters", CmdGetLightShadowCasters, METH_VARARGS},
   {"gpu_time_summary", CmdGpuTimeSummary, METH_VARARGS},
   {"get_gpu_frame_stats", CmdGetGpuFrameStats, METH_VARARGS},
+  {"gpu_time_replay", CmdGpuTimeReplay, METH_VARARGS},
   /* end light shading */
   {"get_mtl_obj", CmdGetMtlObj, METH_VARARGS},
   {"get_model", CmdGetModel, METH_VARARGS},

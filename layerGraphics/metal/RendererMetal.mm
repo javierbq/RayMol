@@ -14,6 +14,7 @@
 #include "MyPNG.h"
 #include "Image.h"
 #include "LightShadows.h"
+#include "GpuFrameTimes.h"
 
 // MaterialU, the fragment-stage mirror of MaterialParams (#503). Mirrored field
 // for field by the `MaterialU` struct in every lit MSL library; the inverse
@@ -263,6 +264,7 @@ RendererMetal::RendererMetal(id<MTLDevice> device, id<MTLCommandQueue> queue)
     , _cylinderImpostorPipeline(nil)
     , _depthStencilState(nil)
     , _inFlight(std::make_shared<std::atomic<int>>(0))
+    , _gpuTiming(std::make_shared<GpuFrameTimes>())
 {
   _modelviewMatrix = identityMatrix();
   _modelviewInv = identityMatrix();
@@ -1174,6 +1176,26 @@ void RendererMetal::endFrame()
         }
       }];
     }
+    // metal_gpu_timing (#616): this frame's GPU time into the shared store,
+    // logged as GpuFrameTimes::record decides (mode 1 a ~1 s window, mode 2
+    // every frame). Nothing is added at mode 0. The handler captures the
+    // store and this frame's map count and size by value: it runs on Metal's
+    // thread, possibly after this renderer is gone.
+    if (_gpuTimingMode > 0) {
+      auto gpuTimes = _gpuTiming;
+      const int gpuMode = _gpuTimingMode;
+      const int gpuMaps = gpuFrameShadowMaps();
+      const int gpuSize = gpuFrameShadowSize();
+      [_cmdBuffer addCompletedHandler:^(id<MTLCommandBuffer> cb) {
+        if (cb.status != MTLCommandBufferStatusCompleted)
+          return;
+        const std::string line =
+            gpuTimes->record((cb.GPUEndTime - cb.GPUStartTime) * 1000.0,
+                gpuMaps, gpuSize, gpuMode, false, cb.GPUEndTime);
+        if (!line.empty())
+          NSLog(@"%s", line.c_str());
+      }];
+    }
     // Count this frame as in flight until the GPU reports it done, so the
     // render loop can throttle itself instead of queueing frames faster than
     // they retire (#396). The handler runs on a background thread and can fire
@@ -1246,6 +1268,18 @@ void RendererMetal::endOffscreen()
                 (_cmdBuffer.GPUEndTime - _cmdBuffer.GPUStartTime) * 1000.0);
         fclose(f);
       }
+    }
+    // metal_gpu_timing (#616): one line per offscreen frame (an export is
+    // the only frame a headless run times), into the same store as the live
+    // frames. The wait above has completed the buffer.
+    if (_gpuTimingMode > 0 &&
+        _cmdBuffer.status == MTLCommandBufferStatusCompleted) {
+      const std::string line = _gpuTiming->record(
+          (_cmdBuffer.GPUEndTime - _cmdBuffer.GPUStartTime) * 1000.0,
+          gpuFrameShadowMaps(), gpuFrameShadowSize(), _gpuTimingMode, true,
+          _cmdBuffer.GPUEndTime);
+      if (!line.empty())
+        NSLog(@"%s", line.c_str());
     }
     _cmdBuffer = nil;
   }
@@ -2436,6 +2470,24 @@ void RendererMetal::setLightShadowFrame(bool studioShadows, int mapSize)
   // allocated by the first beginLightShadowMap that needs it).
   _lightStudioShadows = studioShadows;
   _lightShadowSize = studioShadows && mapSize > 0 ? mapSize : 0;
+}
+
+void RendererMetal::setGpuTiming(int mode)
+{
+  // metal_gpu_timing, every frame: 0 off, 1 a summary per ~1 s window,
+  // 2 every frame (larger values read as 2). Turning it on, off or to the
+  // other mode starts a fresh readout, so a window never mixes modes.
+  mode = std::clamp(mode, 0, 2);
+  if (mode != _gpuTimingMode)
+    _gpuTiming->clear();
+  _gpuTimingMode = mode;
+}
+
+bool RendererMetal::getGpuFrameStats(GpuFrameReport* out) const
+{
+  if (!out || _gpuTimingMode <= 0)
+    return false;
+  return _gpuTiming->report(*out, _gpuTimingMode);
 }
 
 void RendererMetal::setKeyLightDir(const float* lightv)

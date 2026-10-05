@@ -38,8 +38,9 @@ scene movies carry on the interior frames of each transition
 
 Per-light shadow maps (#616): ``_light_frame`` also returns the frame's
 studio shadow plan, and ``_light_shadow_frustum``, ``_light_shadow_map_size``,
-``_light_shadow_tile``, ``_light_shadow_casters``, ``_gpu_time_summary`` and
-``_gpu_frame_stats`` reach the same C++ as the renderer.
+``_light_shadow_tile``, ``_light_shadow_casters``, ``_gpu_time_summary``,
+``_gpu_time_replay`` and ``_gpu_frame_stats`` reach the same C++ as the
+renderer.
 '''
 
 import sys
@@ -293,10 +294,24 @@ def _gpu_time_summary(samples, *, _self=cmd):
             _self._COb, [float(v) for v in samples])
 
 
+def _gpu_time_replay(frames, mode, *, _self=cmd):
+    '''The GPU-time readout's store fed `frames` as the renderer feeds it
+    (#616): each frame is (ms, shadow_maps, shadow_size, offscreen,
+    now_seconds), `mode` is a metal_gpu_timing value. Returns {'lines': the
+    'RendererMetal: gpu_ms ...' lines the renderer would log, in order,
+    'stats': what _gpu_frame_stats would then return, or None}.'''
+    frames = [(float(ms), int(maps), int(size), bool(offscreen), float(now))
+              for ms, maps, size, offscreen, now in frames]
+    with _self.lockcm:
+        return _self._cmd.gpu_time_replay(_self._COb, frames, int(mode))
+
+
 def _gpu_frame_stats(*, _self=cmd):
     '''The renderer's recent GPU frame times while metal_gpu_timing is on
     (#616): the _gpu_time_summary keys plus 'last_ms', 'mode', 'shadow_maps'
-    and 'shadow_size'; None with no Metal renderer or no frames yet.'''
+    and 'shadow_size' (the latest frame's studio maps); None with no Metal
+    renderer (as in CI), at metal_gpu_timing 0, or before the first timed
+    frame. Turning the setting on or changing its mode starts afresh.'''
     with _self.lockcm:
         return _self._cmd.get_gpu_frame_stats(_self._COb)
 

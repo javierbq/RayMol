@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <utility>
 
 namespace pymol
@@ -37,10 +38,33 @@ GpuFrameSummary GpuFrameSummarize(std::vector<double> samples)
   return s;
 }
 
-void GpuFrameTimes::add(double ms, int shadowMaps, int shadowSize)
+std::string GpuFrameWindowLine(
+    const GpuFrameSummary& s, int shadowMaps, int shadowSize)
 {
-  if (!std::isfinite(ms) || ms < 0.0)
-    return;
+  char line[192];
+  std::snprintf(line, sizeof line,
+      "RendererMetal: gpu_ms window n=%d median=%.2f p95=%.2f max=%.2f "
+      "shadow_maps=%d shadow_size=%d",
+      s.count, s.median, s.p95, s.max, shadowMaps, shadowSize);
+  return line;
+}
+
+std::string GpuFrameLine(
+    double ms, int shadowMaps, int shadowSize, bool offscreen)
+{
+  char line[160];
+  std::snprintf(line, sizeof line,
+      "RendererMetal: gpu_ms frame=%.2f shadow_maps=%d shadow_size=%d "
+      "offscreen=%d",
+      ms, shadowMaps, shadowSize, offscreen ? 1 : 0);
+  return line;
+}
+
+std::string GpuFrameTimes::record(double ms, int shadowMaps, int shadowSize,
+    int mode, bool offscreen, double nowSec)
+{
+  if (mode <= 0 || !std::isfinite(ms) || ms < 0.0)
+    return {};
   std::lock_guard<std::mutex> lock(m_mutex);
   if (m_ring.size() < kCapacity) {
     m_ring.push_back(ms);
@@ -51,6 +75,17 @@ void GpuFrameTimes::add(double ms, int shadowMaps, int shadowSize)
   m_lastMs = ms;
   m_shadowMaps = shadowMaps;
   m_shadowSize = shadowSize;
+
+  if (offscreen || mode >= 2)
+    return GpuFrameLine(ms, shadowMaps, shadowSize, offscreen);
+  m_window.push_back(ms);
+  if (m_windowStarted && nowSec - m_windowStart < kWindowSeconds)
+    return {};
+  const GpuFrameSummary s = GpuFrameSummarize(m_window);
+  m_window.clear();
+  m_windowStarted = true;
+  m_windowStart = nowSec;
+  return GpuFrameWindowLine(s, shadowMaps, shadowSize);
 }
 
 bool GpuFrameTimes::report(GpuFrameReport& out, int mode) const
@@ -78,6 +113,9 @@ void GpuFrameTimes::clear()
   m_lastMs = 0.0;
   m_shadowMaps = 0;
   m_shadowSize = 0;
+  m_window.clear();
+  m_windowStarted = false;
+  m_windowStart = 0.0;
 }
 
 } // namespace pymol

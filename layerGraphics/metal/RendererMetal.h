@@ -20,6 +20,8 @@
 
 namespace pymol {
 
+class GpuFrameTimes; // layer0/GpuFrameTimes.h (#616)
+
 class RendererMetal : public Renderer {
 public:
   RendererMetal(id<MTLDevice> device, id<MTLCommandQueue> queue);
@@ -204,6 +206,11 @@ public:
   bool beginLightShadowMap(int slot, const float* view) override;
   void setLightShadowViewport(int x, int y, int w, int h) override;
   void endLightShadowMaps() override;
+  // GPU frame times (#616): see Renderer.h. setGpuTiming takes
+  // metal_gpu_timing every frame (SceneRenderMetal); a mode change starts a
+  // fresh readout. getGpuFrameStats is false at mode 0.
+  void setGpuTiming(int mode) override;
+  bool getGpuFrameStats(GpuFrameReport* out) const override;
   void setKeyLightDir(const float* lightv) override;
   void setRayTraceParams(int samples, float aoRadius, float aoIntensity,
       float shadowIntensity, float scale = 1.0f) override;
@@ -899,6 +906,20 @@ private:
   // and the loops' setGridSlot(0)). bindLightRig picks that cell's tile of
   // the studio maps from it (shadowTile).
   int _currentGridSlot = 0;
+  // GPU frame times (#616, metal_gpu_timing). While _gpuTimingMode > 0,
+  // endFrame adds a completed handler that records the frame's GPU time in
+  // _gpuTiming and NSLogs the line it returns, and endOffscreen does the same
+  // after its wait. The store sits behind a shared_ptr because the handler
+  // runs on Metal's thread and may outlive this renderer (as _inFlight).
+  std::shared_ptr<GpuFrameTimes> _gpuTiming;
+  int _gpuTimingMode = 0;
+  // This frame's studio shadow maps for the readout: the slices the map pass
+  // rendered, and their size (0 without maps).
+  int gpuFrameShadowMaps() const { return _lightShadowSlicesOpened; }
+  int gpuFrameShadowSize() const
+  {
+    return _lightShadowSlicesOpened > 0 ? _lightShadowArraySize : 0;
+  }
   // Key-light direction TOWARD the light in eye space = -normalize(cSetting_light).
   // Default reproduces the previously hard-coded normalize(0.4,0.4,1.0), which is
   // exactly -normalize(PyMOL's default light). Fed into every lit/shadow/RT shader.
