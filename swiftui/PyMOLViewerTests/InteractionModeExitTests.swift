@@ -98,6 +98,7 @@ final class InteractionModeExitTests: XCTestCase {
             ("Move", { self.engine.setInteractionMode(.move) }),
             ("Box Select", { self.engine.setInteractionMode(.boxSelect) }),
             ("Predict", { self.engine.setPredictMode(true) }),
+            ("Lights", { self.engine.setInteractionMode(.lights) }),
         ]
         for (name, enter) in entries {
             engine.setBinderDesignMode(true)
@@ -122,6 +123,75 @@ final class InteractionModeExitTests: XCTestCase {
         XCTAssertTrue(engine.binderDesignMode)
     }
     #endif
+
+    // MARK: - Lights joins the exclusion set (#619)
+
+    func testExitsLightsMode() {
+        engine.setInteractionMode(.lights)
+        XCTAssertEqual(engine.interactionMode, .lights)
+        XCTAssertTrue(engine.lightsController.isActive)
+
+        XCTAssertTrue(engine.exitActiveInteractionMode(), "Esc must leave Lights mode like every other mode")
+        XCTAssertEqual(engine.interactionMode, .viewing)
+        XCTAssertFalse(engine.lightsController.isActive)
+    }
+
+    func testSecondExitAfterLightsIsANoOp() {
+        engine.setInteractionMode(.lights)
+        XCTAssertTrue(engine.exitActiveInteractionMode())
+        XCTAssertFalse(engine.exitActiveInteractionMode(),
+                       "a second Esc must fall through to the selection stages")
+        XCTAssertFalse(engine.lightsController.isActive)
+    }
+
+    /// Every other exclusive mode, with how to enter it and whether it is on.
+    private var otherModes: [(name: String, enter: () -> Void, isOn: () -> Bool)] {
+        var modes: [(name: String, enter: () -> Void, isOn: () -> Bool)] = [
+            ("Move", { self.engine.setInteractionMode(.move) }, { self.engine.interactionMode == .move }),
+            ("Box Select", { self.engine.setInteractionMode(.boxSelect) },
+             { self.engine.interactionMode == .boxSelect }),
+            ("Measure", { self.engine.setMeasureMode(.distance) }, { self.engine.measureMode != nil }),
+            ("Predict", { self.engine.setPredictMode(true) }, { self.engine.predictMode }),
+        ]
+        #if RAYMOL_MPNN
+        modes.append(("Design", { self.engine.setDesignMode(true) }, { self.engine.designMode }))
+        #endif
+        #if os(macOS)
+        modes.append(("Binder Design", { self.engine.setBinderDesignMode(true) },
+                      { self.engine.binderDesignMode }))
+        #endif
+        return modes
+    }
+
+    func testEnteringLightsLeavesEveryOtherMode() {
+        for mode in otherModes {
+            mode.enter()
+            XCTAssertTrue(mode.isOn(), "precondition for \(mode.name)")
+            XCTAssertEqual(engine.lightsController.isActive, engine.interactionMode == .lights, mode.name)
+
+            engine.setInteractionMode(.lights)
+            XCTAssertFalse(mode.isOn(), "entering Lights must leave \(mode.name)")
+            XCTAssertEqual(engine.interactionMode, .lights, mode.name)
+            XCTAssertEqual(engine.lightsController.isActive, engine.interactionMode == .lights, mode.name)
+            resetToViewing()
+            XCTAssertFalse(engine.lightsController.isActive, "after leaving from \(mode.name)")
+        }
+    }
+
+    func testEveryOtherModeLeavesLights() {
+        for mode in otherModes {
+            engine.setInteractionMode(.lights)
+            XCTAssertTrue(engine.lightsController.isActive, "precondition for \(mode.name)")
+
+            mode.enter()
+            XCTAssertTrue(mode.isOn(), "\(mode.name) did not enter")
+            XCTAssertNotEqual(engine.interactionMode, .lights,
+                              "entering \(mode.name) must leave Lights: two bars cannot share the strip")
+            XCTAssertFalse(engine.lightsController.isActive, mode.name)
+            XCTAssertEqual(engine.lightsController.isActive, engine.interactionMode == .lights, mode.name)
+            resetToViewing()
+        }
+    }
 
     // MARK: - No-op when nothing is active
 

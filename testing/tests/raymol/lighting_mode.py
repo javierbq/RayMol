@@ -18,7 +18,7 @@ Lights model never runs Python or a console command itself.
 TestBarCommands runs the bar's exact command strings through cmd.do (the path
 of the app's runCommand -> PyMOLBridge_RunCommand) and checks what the
 controller expects of each. The same literals are pinned on the Swift side by
-LightsActionInvocationTests (#619 part 3); change both together.
+LightsActionInvocationTests (LightsModeTests.swift); change both together.
 
 CI builds the GLUT flavour without a GPU, so this exercises _cmd and Python
 only. A small peptide (cmd.fab) gives the rig a real frame.
@@ -364,6 +364,31 @@ def strip_comments(text):
     return re.sub(r'//[^\n]*', '', text)
 
 
+ENGINE = os.path.join(SHARED, 'PyMOLEngine.swift')
+
+# A call into the helper module as the engine writes it: `_al.<function>(`,
+# usually right after a `\n` escape inside a Swift string literal.
+HELPER_CALL = re.compile(r'(?:\\n|\b)_al\.(\w+)\(')
+
+
+def function_body(text, signature):
+    """The body of the Swift function whose declaration starts with
+    `signature`, braces matched (None when it is not there)."""
+    start = text.find(signature)
+    if start < 0:
+        return None
+    open_at = text.find('{', start)
+    depth = 0
+    for i in range(open_at, len(text)):
+        if text[i] == '{':
+            depth += 1
+        elif text[i] == '}':
+            depth -= 1
+            if depth == 0:
+                return text[open_at:i + 1]
+    return None
+
+
 class TestSwiftSource(testing.PyMOLTestCase):
 
     def read(self, rel):
@@ -380,6 +405,27 @@ class TestSwiftSource(testing.PyMOLTestCase):
             with self.subTest(rel):
                 found = NO_PYTHON.search(strip_comments(self.read(rel)))
                 self.assertIsNone(found, '%s names %r' % (rel, found and found.group(0)))
+
+    def testSwiftHelpersExist(self):
+        """Every appkit_lights function the engine calls exists and is
+        callable: a renamed helper would otherwise fail only in the app, as
+        one swallowed error line."""
+        called = set(HELPER_CALL.findall(strip_comments(self.read(ENGINE))))
+        self.assertEqual(called, {'restore', 'write_presets'},
+                         'the engine calls appkit_lights for Revert and the '
+                         'preset menu only')
+        for name in sorted(called):
+            with self.subTest(name):
+                self.assertTrue(callable(getattr(appkit_lights, name, None)),
+                                'appkit_lights.%s is not a function' % name)
+
+    def testExitNamesLights(self):
+        """Esc goes through exitActiveInteractionMode, which must know Lights
+        (a mode it does not list is one Esc cannot leave, #342)."""
+        body = function_body(strip_comments(self.read(ENGINE)),
+                             'func exitActiveInteractionMode()')
+        self.assertIsNotNone(body, 'exitActiveInteractionMode not found')
+        self.assertIn('.lights', body)
 
     def testTheCheckCatchesEachEntryPoint(self):
         """The pattern matches every name it is meant to forbid (and not a

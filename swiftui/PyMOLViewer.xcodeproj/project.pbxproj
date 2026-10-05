@@ -194,6 +194,7 @@
 		AA36D034CEC68207CFC82340 /* WhatsNewModal.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4D170B35BCCF683A6B3D655 /* WhatsNewModal.swift */; };
 		AC4CB915ECB531A4406CF387 /* InferenceRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71574A2074A14803B91ED695 /* InferenceRouter.swift */; };
 		ACBE8F70B980BCCE6730141A /* MovieBuilderSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0ED5BFF3FEE9D6621BB40AE5 /* MovieBuilderSheet.swift */; };
+		AD903558AFD4C6F1FF807D13 /* LightsModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A08DDE3F66EA94988BF884F /* LightsModeTests.swift */; };
 		AF7D82103248D30E0CD32311 /* ProgressTray.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4857D1284B60EB0C750C02F /* ProgressTray.swift */; };
 		B238B98768632BEFAD9327E4 /* MLXRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86E93358875495F499780A00 /* MLXRuntime.swift */; };
 		B2697EF48D85EF14D4A19163 /* RayMol.icon in Resources */ = {isa = PBXBuildFile; fileRef = BB5ABD1A8C45E5BC97AB0B80 /* RayMol.icon */; };
@@ -320,6 +321,7 @@
 		14F3D56C490BC7C6166DD79F /* MCPServerManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPServerManager.swift; sourceTree = "<group>"; };
 		1926971439F96C03DB81AA8E /* whatsnew-1120-sidechains.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = "whatsnew-1120-sidechains.jpg"; sourceTree = "<group>"; };
 		193D4D739151970412BB6EDF /* BoltzJobManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoltzJobManagerTests.swift; sourceTree = "<group>"; };
+		1A08DDE3F66EA94988BF884F /* LightsModeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsModeTests.swift; sourceTree = "<group>"; };
 		1A18D8A6B0FB56FCD3C31211 /* MCPBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPBridge.swift; sourceTree = "<group>"; };
 		1A55383922D69D691CA1BAB1 /* 1ubq.cif */ = {isa = PBXFileReference; path = 1ubq.cif; sourceTree = "<group>"; };
 		1A75842F74BFC453CE7BA777 /* BoltzJobManagerMSATests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoltzJobManagerMSATests.swift; sourceTree = "<group>"; };
@@ -704,6 +706,7 @@
 				F61B9A042E88CAE1E21BC506 /* KeyRoutingTests.swift */,
 				B6A770F5FB9E51200305DDAF /* LightRigBridgeTests.swift */,
 				43806DC3D1AEE6532E3F262D /* LightsControllerTests.swift */,
+				1A08DDE3F66EA94988BF884F /* LightsModeTests.swift */,
 				DB57918069BC56804621C327 /* MaterialDropdownTests.swift */,
 				6BCABF57679F5F6462F91B73 /* MaterialInspectorTests.swift */,
 				0C47FBC551127AB2D73BC6CE /* MetalViewportResponderTests.swift */,
@@ -1473,6 +1476,7 @@
 				EF9A088B19E39220CC72469D /* KeyRoutingTests.swift in Sources */,
 				E3E4D527F2D9B262BA530D00 /* LightRigBridgeTests.swift in Sources */,
 				5FC43853E90D1328E52B67B1 /* LightsControllerTests.swift in Sources */,
+				AD903558AFD4C6F1FF807D13 /* LightsModeTests.swift in Sources */,
 				7F9C46E519B7180C507053BB /* MLXRuntimeTests.swift in Sources */,
 				A49F8811F64CD501FF007ECD /* MaterialDropdownTests.swift in Sources */,
 				925BACD42F7BFAB94F42F03C /* MaterialInspectorTests.swift in Sources */,
