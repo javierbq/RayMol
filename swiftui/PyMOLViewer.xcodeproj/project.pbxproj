@@ -34,6 +34,7 @@
 		142D8657C5BC7DCD8648D407 /* DesignCompactPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D7FF883D3762DC6E40908F /* DesignCompactPanel.swift */; };
 		154AFFF34817365145396F33 /* whatsnew-1110-raytrace.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = B402EB5834127D4E6B217EFE /* whatsnew-1110-raytrace.mp4 */; };
 		154E7F765059977CA80711DA /* RFD3Kit in Frameworks */ = {isa = PBXBuildFile; productRef = C723443B5003DD836EF6A008 /* RFD3Kit */; };
+		15630C292DBEE7FBA8DA1D44 /* LightsController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40FC41A2798A30FE8E223CEC /* LightsController.swift */; };
 		1624BC38CDD73398C68FC135 /* MPNNGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56BE219EF1CF1EB2B05E44AD /* MPNNGate.swift */; };
 		174EA423F2E0ED999474C506 /* DesignInferenceSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B45634C95AE991CC91CFBA75 /* DesignInferenceSmokeTests.swift */; };
 		17D4129435A0B8E793A5B687 /* whatsnew-1120-looks.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 00A00E2879DD065A94A31D21 /* whatsnew-1120-looks.jpg */; };
@@ -111,6 +112,7 @@
 		5D0883E6462ADA97AEAA823D /* PredictBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = F14E7328C4421ADC9E81417D /* PredictBar.swift */; };
 		5D4BC69196C1256F5164E56A /* PyMOLBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = 356FC561FA1515B3D15A26E2 /* PyMOLBridge.mm */; };
 		5E0DDAA214299444AB084E74 /* KeyboardDismissUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B158150C93613716ED3CE572 /* KeyboardDismissUITests.swift */; };
+		5FC43853E90D1328E52B67B1 /* LightsControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43806DC3D1AEE6532E3F262D /* LightsControllerTests.swift */; };
 		600E5AC8003783270FBBB117 /* whatsnew-190-raymolrc.png in Resources */ = {isa = PBXBuildFile; fileRef = 7D10B5CB9ECF81346BD9CAE8 /* whatsnew-190-raymolrc.png */; };
 		615CCED824D7A973408A6CBD /* PredictMSAMemorySweepTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 48793845CB95A609CD9F37BF /* PredictMSAMemorySweepTests.swift */; };
 		64DDBC57197D8C3A9AB0B68D /* MCPServerManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14F3D56C490BC7C6166DD79F /* MCPServerManager.swift */; };
@@ -247,6 +249,7 @@
 		E08AF23E9A696D29B94CA999 /* dylib-Info-template.plist in Resources */ = {isa = PBXBuildFile; fileRef = 57E9E81F5C4757D03AAF7ABD /* dylib-Info-template.plist */; };
 		E1A1B102C1E6B06ACB270F5E /* RFD3ResultWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FC150B0707033AB3B186189 /* RFD3ResultWriter.swift */; };
 		E260BED24CBA34D49088686D /* whatsnew-1120-materials.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 8342C6A3FDF28A858D7E1AA4 /* whatsnew-1120-materials.mp4 */; };
+		E2F5A088F804B59B38054C81 /* LightsController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40FC41A2798A30FE8E223CEC /* LightsController.swift */; };
 		E3E4D527F2D9B262BA530D00 /* LightRigBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6A770F5FB9E51200305DDAF /* LightRigBridgeTests.swift */; };
 		E51EFBE3A58396C4934721ED /* PredictScreenAwake.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4847B7F5C09AD3E9412C3EB /* PredictScreenAwake.swift */; };
 		E777A44381A854B382874738 /* MCPConnectSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE692F1547C53D28B5F9A9AD /* MCPConnectSheet.swift */; };
@@ -342,8 +345,10 @@
 		3F5377EE69A856479317FD61 /* WhatsNewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhatsNewModel.swift; sourceTree = "<group>"; };
 		3FC150B0707033AB3B186189 /* RFD3ResultWriter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RFD3ResultWriter.swift; sourceTree = "<group>"; };
 		3FDAAF431094900F3FC21293 /* whatsnew-1100-metrics.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-1100-metrics.png"; sourceTree = "<group>"; };
+		40FC41A2798A30FE8E223CEC /* LightsController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsController.swift; sourceTree = "<group>"; };
 		42F41684D508836307667157 /* RFD3Trajectory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RFD3Trajectory.swift; sourceTree = "<group>"; };
 		4300265954DF2B8309EDAA6C /* DesignAvailability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignAvailability.swift; sourceTree = "<group>"; };
+		43806DC3D1AEE6532E3F262D /* LightsControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsControllerTests.swift; sourceTree = "<group>"; };
 		45BCB83A35EA5E97D5BBD172 /* ObjectActionMenuUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObjectActionMenuUITests.swift; sourceTree = "<group>"; };
 		474D18A43D0D9A6BDD69EEFD /* SequencePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SequencePanel.swift; sourceTree = "<group>"; };
 		48793845CB95A609CD9F37BF /* PredictMSAMemorySweepTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictMSAMemorySweepTests.swift; sourceTree = "<group>"; };
@@ -629,6 +634,7 @@
 				71574A2074A14803B91ED695 /* InferenceRouter.swift */,
 				3697F74BD2283492B5A7790C /* KeyRouting.swift */,
 				ED82B93C6739F52D7124AE90 /* LightRigBridge.swift */,
+				40FC41A2798A30FE8E223CEC /* LightsController.swift */,
 				1A18D8A6B0FB56FCD3C31211 /* MCPBridge.swift */,
 				786939619F7871E32E2BB123 /* MCPDesktopInstaller.swift */,
 				14F3D56C490BC7C6166DD79F /* MCPServerManager.swift */,
@@ -697,6 +703,7 @@
 				1FF072CB363743CAF805155E /* KeyBindingDispatchTests.swift */,
 				F61B9A042E88CAE1E21BC506 /* KeyRoutingTests.swift */,
 				B6A770F5FB9E51200305DDAF /* LightRigBridgeTests.swift */,
+				43806DC3D1AEE6532E3F262D /* LightsControllerTests.swift */,
 				DB57918069BC56804621C327 /* MaterialDropdownTests.swift */,
 				6BCABF57679F5F6462F91B73 /* MaterialInspectorTests.swift */,
 				0C47FBC551127AB2D73BC6CE /* MetalViewportResponderTests.swift */,
@@ -1465,6 +1472,7 @@
 				CAC9B9F8A93BC4B71C3DB0D6 /* KeyBindingDispatchTests.swift in Sources */,
 				EF9A088B19E39220CC72469D /* KeyRoutingTests.swift in Sources */,
 				E3E4D527F2D9B262BA530D00 /* LightRigBridgeTests.swift in Sources */,
+				5FC43853E90D1328E52B67B1 /* LightsControllerTests.swift in Sources */,
 				7F9C46E519B7180C507053BB /* MLXRuntimeTests.swift in Sources */,
 				A49F8811F64CD501FF007ECD /* MaterialDropdownTests.swift in Sources */,
 				925BACD42F7BFAB94F42F03C /* MaterialInspectorTests.swift in Sources */,
@@ -1519,6 +1527,7 @@
 				AC4CB915ECB531A4406CF387 /* InferenceRouter.swift in Sources */,
 				2C2D4B24DF4807FA1407582D /* KeyRouting.swift in Sources */,
 				B4FDB90D6B4940BF353A4001 /* LightRigBridge.swift in Sources */,
+				15630C292DBEE7FBA8DA1D44 /* LightsController.swift in Sources */,
 				B33C0620EDD48195A59B7DD8 /* MCPBridge.swift in Sources */,
 				55F78301BAF8CD914D86069D /* MCPConnectSheet.swift in Sources */,
 				4852173B3AB34D6B4FF76415 /* MCPDesktopInstaller.swift in Sources */,
@@ -1596,6 +1605,7 @@
 				966C6886E3CE816365256220 /* InferenceRouter.swift in Sources */,
 				768E23FCAB4D2B27205900B6 /* KeyRouting.swift in Sources */,
 				0289EAA2F61546F2DD2430BA /* LightRigBridge.swift in Sources */,
+				E2F5A088F804B59B38054C81 /* LightsController.swift in Sources */,
 				42D3395698D37E4BF7055EEA /* MCPBridge.swift in Sources */,
 				E777A44381A854B382874738 /* MCPConnectSheet.swift in Sources */,
 				F58726A64F44A9435AD8517D /* MCPDesktopInstaller.swift in Sources */,

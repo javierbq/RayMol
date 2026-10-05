@@ -12,6 +12,9 @@ calls Python for two things only, both in pymol.appkit_lights:
   in the order of lighting_commands.presets(), the format the Swift
   LightPreset decoder reads.
 
+TestSwiftSource reads the Swift sources (skipped outside a checkout): the
+Lights model never runs Python or a console command itself.
+
 TestBarCommands runs the bar's exact command strings through cmd.do (the path
 of the app's runCommand -> PyMOLBridge_RunCommand) and checks what the
 controller expects of each. The same literals are pinned on the Swift side by
@@ -29,6 +32,7 @@ import copy
 import io
 import json
 import os
+import re
 import shutil
 import tempfile
 
@@ -335,3 +339,56 @@ class TestBarCommands(ModeCase):
                 text = do(line)
                 self.assertIn('lights', text)
                 self.assertIsNone(lighting.get_lights())
+
+
+# --- the Swift sources ----------------------------------------------------------
+
+ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir,
+                                     os.pardir, os.pardir))
+SHARED = os.path.join('swiftui', 'PyMOLViewer', 'Shared')
+
+# The Lights model (and, once it exists, the bar): every button press goes
+# through LightsSeams.perform and every drag tick through the bridge setter
+# seams the engine wires, so these files name no Python or console entry
+# point, no helper and no bridge function.
+NO_PYTHON_SOURCES = [os.path.join(SHARED, 'LightsController.swift')]
+NO_PYTHON = re.compile(
+    r'\brunPython\w*|\bRunPython\w*|\brunCommand\w*|\bRunCommand\w*'
+    r'|appkit_lights|\bPyMOLBridge_\w+\s*\(')
+
+
+def strip_comments(text):
+    """Swift comments removed (as lighting_bridge.strip_comments), so a
+    comment can neither satisfy nor trip a check."""
+    text = re.sub(r'/\*.*?\*/', '', text, flags=re.S)
+    return re.sub(r'//[^\n]*', '', text)
+
+
+class TestSwiftSource(testing.PyMOLTestCase):
+
+    def read(self, rel):
+        path = os.path.join(ROOT, rel)
+        if not os.path.isfile(path):
+            # Skipped, not passed: a source check that cannot find its source
+            # has checked nothing. Only reached outside a checkout.
+            self.skipTest('%s not present; not a repo checkout' % rel)
+        with open(path, encoding='utf-8') as handle:
+            return handle.read()
+
+    def testControllerAndBarRunNoPython(self):
+        for rel in NO_PYTHON_SOURCES:
+            with self.subTest(rel):
+                found = NO_PYTHON.search(strip_comments(self.read(rel)))
+                self.assertIsNone(found, '%s names %r' % (rel, found and found.group(0)))
+
+    def testTheCheckCatchesEachEntryPoint(self):
+        """The pattern matches every name it is meant to forbid (and not a
+        mere mention of the rig's JSON or the light-count constant)."""
+        for text in ('engine.runPython("x")', 'engine.runPythonQuiet(x)',
+                     'runCommand("lights add")', 'PyMOLBridge_RunCommand(h, c)',
+                     'from pymol import appkit_lights',
+                     'PyMOLBridge_LightSet (instance, 0, f, v)'):
+            self.assertIsNotNone(NO_PYTHON.search(text), text)
+        for text in ('Int(PYMOL_LIGHTS_MAX)', 'seams.rigJSON()',
+                     'seams.perform(.add)', '// runPython is never called'):
+            self.assertIsNone(NO_PYTHON.search(strip_comments(text)), text)
