@@ -1,5 +1,5 @@
 {
- "comment": "#616 L2 grid mode, checked with scripts/lighting/check_shadows.py grid: a light (amber, orbit 0, pitch 70, shadowed; explicit centre and size from m) and a two-sided slab CGO halfway between it and m, outside the view. With grid_mode 1 the slab is its own cell, and each cell is shadowed only by its own objects, so m's cell is byte-equal whether the slab's cgo rep is shown or hidden (the hidden slab keeps its extent, so the frustum and the grid layout are the same). The control, grid_mode 0, shows the slab shadow on m. rt0 is required, rt1 informational. Same cmd.set_lights shim as lighting_616.json.",
+ "comment": "#616 L2 grid mode, checked with scripts/lighting/check_shadows.py grid: a light (amber, orbit 0, pitch 70, shadowed; explicit centre and size from m) and a two-sided slab CGO halfway between it and m, outside the view. With grid_mode 1 the slab is its own cell, and each cell is shadowed only by its own objects, so m's cell is byte-equal whether the slab's cgo rep is shown or hidden (the hidden slab keeps its extent, so the frustum and the grid layout are the same). The control, grid_mode 0, shows the slab shadow on m. rt0 is required, rt1 informational. Same cmd.set_lights shim as lighting_616.json. The positive control, grid_unshadowed (the same light without `shadow`, so no map at all: grid frames have no whole-pixel shadow either), is LIGHTER than grid_slabhid in m's cell: the cell's own tile shadows m (the cartoon on itself).",
  "base": null,
  "rig": "on",
  "size": [
@@ -56,6 +56,18 @@
    ]
   },
   {
+   "tag": "grid_unshadowed_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_slab()",
+    "cmd.hide('cgo', 'slab')",
+    "cmd.set('grid_mode', 1)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_ovl, shadow=False)])"
+   ]
+  },
+  {
    "tag": "nogrid_slab_rt0",
    "from": "cartoon_rt0",
    "lines": [
@@ -99,6 +111,18 @@
     "cmd.set('grid_mode', 1)",
     "cmd.set('metal_shadows', 1)",
     "cmd._l616_rig = _l616_make([_l616_ovl])"
+   ]
+  },
+  {
+   "tag": "grid_unshadowed_rt1",
+   "from": "cartoon_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_slab()",
+    "cmd.hide('cgo', 'slab')",
+    "cmd.set('grid_mode', 1)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_ovl, shadow=False)])"
    ]
   },
   {

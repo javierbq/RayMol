@@ -286,6 +286,27 @@ class TestChecks(testing.PyMOLTestCase):
         # no control shadow
         self.assertFalse(self.c.check_grid(base, base, base, base, layout=(2, 1, 0)).ok)
 
+    def testGridPositiveControl(self):
+        # grid_self: m's cell darker with its light shadowed than unshadowed,
+        # read inside m's cell only, and required at rt0
+        plan = {p[1]: p for p in self.c.grid_plan()}
+        for rt in (0, 1):
+            check, subject, func, tags, kwargs = plan['grid_self_rt%d' % rt]
+            self.assertEqual((check, func), ('differs', self.c.check_differs))
+            self.assertEqual(tags, ['grid_slabhid_rt%d' % rt, 'grid_unshadowed_rt%d' % rt])
+            self.assertEqual(kwargs, {'darken': True,
+                                      'crop': (16, 16, 640 - 16, 720 - 16)})
+        self.assertEqual(self.c.GRID_REQUIRED, ('grid_rt0', 'grid_self_rt0'))
+        h, w = 720, 1280
+        base = lit(img(h, w), (120.0, 120.0, 120.0))
+        crop = plan['grid_self_rt0'][4]['crop']
+        in_cell = whole_pixel(base, region((h, w), 100, 300, 100, 400))
+        in_other = whole_pixel(base, region((h, w), 100, 300, 800, 1100))
+        self.assertTrue(self.c.check_differs(in_cell, base, darken=True, crop=crop).ok)
+        # a shadow in the other cell only, or none, fails
+        self.assertFalse(self.c.check_differs(in_other, base, darken=True, crop=crop).ok)
+        self.assertFalse(self.c.check_differs(base, base, darken=True, crop=crop).ok)
+
     def testPlansNameEveryCheck(self):
         names = {p[0] for p in self.c.l2_plan()} | {p[0] for p in self.c.grid_plan()}
         self.assertEqual(names, {'coloured', 'own', 'independent', 'no_extra', 'speckle',
@@ -359,7 +380,7 @@ def expected(which, tag):
         if base.startswith('cartoon_ab_s'):
             return ['amber', 'cyan'], [1.0, 1.0], 1
     if which == 'grid':
-        return ['amber'], [1.0], 1
+        return ([] if base.startswith('grid_unshadowed') else ['amber']), [1.0], 1
     if which == 'noshadow':
         if base.startswith('rig3key_'):
             return ['key'], None, 0
@@ -435,7 +456,7 @@ class TestSceneFiles(testing.PyMOLTestCase):
 
     def testSceneFilesLoad(self):
         self.assertEqual(len(self.jobs['l2']), 87)
-        self.assertEqual(len(self.jobs['grid']), 8)
+        self.assertEqual(len(self.jobs['grid']), 10)
         self.assertEqual(len(self.jobs['noshadow']), 60)
         for which, spec in self.specs.items():
             self.assertEqual(spec['rig'], 'on', which)
@@ -507,7 +528,7 @@ class TestSceneFiles(testing.PyMOLTestCase):
                     self.assertEqual('backdrop' in cmd.get_names('objects'), not plain,
                                      job.tag)
             restore_set_lights()
-        self.assertEqual(ran, 87 + 8 + 60)
+        self.assertEqual(ran, 87 + 10 + 60)
 
     def testShimInProcess(self):
         job = self.job('l2', 'cartoon_ab_rt0')

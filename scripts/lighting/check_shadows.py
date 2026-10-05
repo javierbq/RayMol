@@ -531,20 +531,37 @@ def l2_plan():
     return plan
 
 
+# The size every scene file renders at (render.py's job size).
+SCENE_SHAPE = (720, 1280)
+
+
 def grid_plan():
-    """[(check, subject, func, tags, kwargs)] for lighting_616_grid.json."""
-    return [('grid', 'grid_rt%d' % rt, check_grid,
-             ['grid_slab_rt%d' % rt, 'grid_slabhid_rt%d' % rt,
-              'nogrid_slab_rt%d' % rt, 'nogrid_slabhid_rt%d' % rt], {})
-            for rt in RTS]
+    """[(check, subject, func, tags, kwargs)] for lighting_616_grid.json.
+
+    grid: the slab (another cell) never shadows m's cell, with the no-grid
+    control. grid_self, the positive control: m's cell is darker with its
+    light shadowed than with the same light unshadowed, so the cell's own
+    tile does shadow it (without it, `grid` would also pass with no maps at
+    all in grid frames)."""
+    plan = []
+    for rt in RTS:
+        plan.append(('grid', 'grid_rt%d' % rt, check_grid,
+                     ['grid_slab_rt%d' % rt, 'grid_slabhid_rt%d' % rt,
+                      'nogrid_slab_rt%d' % rt, 'nogrid_slabhid_rt%d' % rt], {}))
+        plan.append(('differs', 'grid_self_rt%d' % rt, check_differs,
+                     ['grid_slabhid_rt%d' % rt, 'grid_unshadowed_rt%d' % rt],
+                     {'darken': True, 'crop': grid_cell(SCENE_SHAPE)}))
+    return plan
 
 
 # Images the scene files render for the eye only (the contact sheet): no check.
 INFORMATIONAL = ('rig3_rt0', 'rig3_rt1', 'cartoon_ab_s512_rt0', 'cartoon_ab_s1024_rt0',
                  'cartoon_ab_s4096_rt0')
 
-# The required grid result is rt0; rt1 is informational (plan 10.3).
-GRID_REQUIRED = ('grid_rt0',)
+# The required grid results are rt0; rt1 is informational (plan 10.3). At
+# rt1 grid_unshadowed has the traced whole-pixel shadow (no studio shadow is
+# on), so grid_self_rt1 compares two kinds of shadow and only informs.
+GRID_REQUIRED = ('grid_rt0', 'grid_self_rt0')
 
 
 def run_plan(directory, plan, checks=None, required=None):
