@@ -153,6 +153,24 @@ def _msa_search_shortcut():
         return Shortcut([])
 
 
+def _lights_shortcut(self_cmd):
+    """Keywords, presets and light names for `lights` (#612). Never raises."""
+    try:
+        from pymol import lighting_commands
+        return lighting_commands._lights_shortcut(self_cmd)
+    except Exception:
+        return Shortcut([])
+
+
+def _light_names_shortcut(self_cmd):
+    """The rig's light names (`lights remove, <Tab>`). Never raises."""
+    try:
+        from pymol import lighting_commands
+        return lighting_commands._light_names_shortcut(self_cmd)
+    except Exception:
+        return Shortcut([])
+
+
 def get_auto_arg_list(self_cmd=cmd):
     self_cmd = self_cmd._weakrefproxy
 
@@ -171,6 +189,10 @@ def get_auto_arg_list(self_cmd=cmd):
     aa_design_card_c = [_design_card_shortcut, 'object', ', ']
     aa_msa_c = [_msa_shortcut, 'alignment', ', ']
     aa_msa_search_c = [_msa_search_shortcut, 'search id', ', ']
+    aa_lights_c = [lambda c=self_cmd: _lights_shortcut(c),
+                   'light, preset or keyword', ', ']
+    aa_light_names_c = [lambda c=self_cmd: _light_names_shortcut(c),
+                        'light', ', ']
 
     return [
 # 1st
@@ -195,6 +217,7 @@ def get_auto_arg_list(self_cmd=cmd):
         'alphatoall'     : aa_sel_c,
         'api'            : [ self_cmd.kwhash, 'command', '' ],
         'assign_stereo'  : aa_sel_e,
+        'atmosphere'     : [ lambda: Shortcut(['off'])     , 'keyword'         , ', ' ],
         'bond'           : aa_sel_e,
         'as'             : aa_rem_c,
         'bg_color'       : [ lambda c=self_cmd:c._get_color_sc(c), 'color'       , ''   ],
@@ -247,6 +270,7 @@ def get_auto_arg_list(self_cmd=cmd):
         'indicate'       : aa_sel_e,
         'intra_fit'      : aa_sel_e,
         'label'          : aa_sel_e,
+        'lights'         : aa_lights_c,
         'map_set'        : aa_map_c,
         'mask'           : aa_sel_e,
         'mview'          : [ self_cmd.moving.mview_action_sc , 'action'          , ''   ],
@@ -352,6 +376,7 @@ def get_auto_arg_list(self_cmd=cmd):
         'select'         : aa_sel_e,
         'save'           : aa_sel_c,
         'label'          : aa_exp_e,
+        'lights'         : aa_light_names_c,
         'load'           : aa_sel_c,
         'load_traj'      : aa_obj_c,
         'msa_attach'     : aa_obj_c,

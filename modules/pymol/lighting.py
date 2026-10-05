@@ -12,7 +12,8 @@ with at least one light) PyMOL's own lights are scaled by the rig's
 `classic` and its `ambient` replaces the `ambient` setting (decision 15).
 That happens at render time: no setting is ever written, and with no rig, or
 a rig that is off, rendering is exactly what it was. The `lights` and
-`atmosphere` commands land in #612. This module is the scripting access:
+`atmosphere` commands (#612, lighting_commands.py) edit the rig from the
+command line through this module. This module is the scripting access:
 
 * ``get_lights()`` returns the rig as a dict, or None when there is no rig.
 * ``set_lights(rig)`` replaces it from such a dict (None removes it).

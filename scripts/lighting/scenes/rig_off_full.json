@@ -1,0 +1,10 @@
+{
+  "comment": "#612 L1 extra: rig off with air, a pinned light, a point-aimed light and an outline. From #612 on the harness's --rig off path runs `lights three_point` then `lights off` (render.py, frozen), a bare 3-light rig: the air, the pin and the aimed light of its RIG_OFF dict no longer reach the off rig. This file puts them back through the frozen harness and the new commands. The extra lines run before the rig block: `atmosphere` sets the air (with no rig it creates an empty rig that is off; a preset keeps the air), and cmd.keyword['lights'][0] is wrapped once per process (hasattr guard: the app runs the script twice) so that the harness's `three_point` also pins key (lights key, pin=1), aims fill at the centroid of m (lights fill, aim=m) and outlines rim (lights rim, outline=1); the harness's `off` then switches the rig off. Nothing else changes: no setting, colour or view. Compare with the master L1 no-rig baseline (render.py --compare <baseline>/renders <out>): max 0 on every image. Checked in CI by TestSceneFiles (testing/tests/raymol/lighting_commands.py).",
+  "base": "l1",
+  "rig": "off",
+  "extra": [
+    "cmd.atmosphere(haze=0.3, dust=0.5, dust_size=0.4, dust_speed=1.0, seed=7)",
+    "if not hasattr(cmd, '_l612_kw'): cmd._l612_kw = cmd.keyword['lights'][0]",
+    "cmd.keyword['lights'][0] = lambda word='', *a, _k=cmd._l612_kw, **kw: [_k(word, *a, **kw)] + ([_k('key', pin=1), _k('fill', aim='m'), _k('rim', outline=1)] if word == 'three_point' else [])"
+  ]
+}
