@@ -45,7 +45,7 @@ state setting, all_states).
 
 Covers (part 4): the scene files in scripts/lighting/scenes that drive the
 frozen harness (scripts/lighting/render.py) through the commands:
-lighting_612_presets.json (L2: the 7 presets on the L1 shadows scene,
+lighting_612_rigs.json (L2: the 7 presets on the L1 shadows scene,
 lit by #613's shading) and rig_off_full.json (the L1 rig-off check with air, a
 pinned light, a point-aimed light and an outline). Each generated scene
 script runs twice in this process, as the app runs it, and the wrapped
@@ -2943,7 +2943,7 @@ ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir,
 RENDER = os.path.join(ROOT, 'scripts', 'lighting', 'render.py')
 SCENES = os.path.join(ROOT, 'scripts', 'lighting', 'scenes')
 PDB = os.path.join(ROOT, 'testing', 'data', '1rx1.pdb')
-PRESETS_FILE = os.path.join(SCENES, 'lighting_612_presets.json')
+PRESETS_FILE = os.path.join(SCENES, 'lighting_612_rigs.json')
 RIG_OFF_FULL_FILE = os.path.join(SCENES, 'rig_off_full.json')
 # The air of the frozen harness's RIG_OFF, which rig_off_full.json puts back
 # into the off rig.
@@ -2958,7 +2958,7 @@ SHIM_ATTRS = ('_l612_set', '_l612_preset', '_l612_kw')
 class TestSceneFiles(CommandsCase):
     """The scene files that drive the frozen harness (render.py) through the
     commands. The harness runs a scene's lines before its rig block, so both
-    files wrap a function the rig block calls: lighting_612_presets.json
+    files wrap a function the rig block calls: lighting_612_rigs.json
     wraps cmd.set_lights ("rig": "on") to apply a preset, and
     rig_off_full.json wraps cmd.keyword['lights'][0] ("rig": "off") so that
     `three_point` also pins key, aims fill at 'm' and outlines rim.
@@ -3023,6 +3023,22 @@ class TestSceneFiles(CommandsCase):
         # than skipping the class
         for path in (PRESETS_FILE, RIG_OFF_FULL_FILE):
             self.assertTrue(os.path.isfile(path), path)
+
+    def testHarnessAcceptsThePaths(self):
+        # render.py refuses a --scenes path, tag, scene script or image
+        # name the app would split or act on (FORBIDDEN_WORDS are matched
+        # as substrings: "preset" contains "reset"). Checked on the part of
+        # each path this checkout controls, so the checkout's own location
+        # does not matter.
+        render = self.render
+        out = os.path.join('out', 'l2')
+        for path in (PRESETS_FILE, RIG_OFF_FULL_FILE):
+            render.check_path('--scenes', os.path.relpath(path, ROOT))
+            for job in render.scene_file_jobs(path):
+                render.check_path('tag', job.tag)
+                render.check_path('scene script',
+                                  render.script_path(out, job.tag))
+                render.check_path('image', render.png_path(out, job.tag))
 
     def testPresetsFile(self):
         render = self.render
