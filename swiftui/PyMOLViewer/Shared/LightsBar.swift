@@ -65,6 +65,9 @@ struct LightsBarState: Equatable {
 
     /// The only status text the bar ever shows: the rig has no lights.
     static let noLightsText = "No lights · add one or pick a preset"
+    /// The same status where the chip area is too narrow for `noLightsText`
+    /// (iPhone portrait), where Presets sits in the overflow menu.
+    static let noLightsShortText = "No lights"
 
     /// VoiceOver's name for a chip.
     static func chipAccessibilityLabel(_ name: String) -> String {
@@ -171,7 +174,7 @@ struct LightsBar: View {
             presetsMenu(state)
             recentreButton(state)
             powerButton(state)
-            revertButton(state)
+            revertButton(state, showsRevertWord: true)
             doneButton
         }
     }
@@ -198,21 +201,44 @@ struct LightsBar: View {
     @ViewBuilder
     private func chipArea(_ state: LightsBarState) -> some View {
         if let status = state.status {
-            Text(status)
-                .font(.system(size: 12))
-                .foregroundColor(style.text.opacity(0.55))
-                .lineLimit(1)
-                .accessibilityIdentifier("lights.status")
+            ViewThatFits(in: .horizontal) {
+                statusText(status)
+                statusText(LightsBarState.noLightsShortText)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(status)
+            .accessibilityIdentifier("lights.status")
         } else {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 4) {
-                    ForEach(state.chips) { chip in
-                        chipButton(chip, rigOn: state.isOn)
+            // The selected chip scrolls into view (a light added at the end of a
+            // long rig, or picked from the gizmo) so + and - never act on a light
+            // the user cannot see.
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 4) {
+                        ForEach(state.chips) { chip in
+                            chipButton(chip, rigOn: state.isOn).id(chip.id)
+                        }
                     }
+                    .padding(.vertical, 1)
                 }
-                .padding(.vertical, 1)
+                .onAppear { scrollToSelected(state, proxy) }
+                .onChange(of: state.chips.first(where: \.isSelected)?.id) {
+                    scrollToSelected(state, proxy)
+                }
             }
         }
+    }
+
+    private func statusText(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 12))
+            .foregroundColor(style.text.opacity(0.7))
+            .lineLimit(1)
+    }
+
+    private func scrollToSelected(_ state: LightsBarState, _ proxy: ScrollViewProxy) {
+        guard let id = state.chips.first(where: \.isSelected)?.id else { return }
+        proxy.scrollTo(id)
     }
 
     private func chipButton(_ chip: LightsBarState.Chip, rigOn: Bool) -> some View {
@@ -221,16 +247,16 @@ struct LightsBar: View {
                 Circle()
                     .fill(LightPalette.color(chip.slot))
                     .frame(width: 8, height: 8)
+                    .opacity(rigOn ? 1 : 0.45)
                 Text(chip.name)
                     .font(.system(size: 12, weight: chip.isSelected ? .semibold : .regular))
-                    .foregroundColor(style.text)
+                    .foregroundColor(style.text.opacity(rigOn ? 1 : 0.75))
                     .lineLimit(1)
             }
             .padding(.horizontal, 8).padding(.vertical, 3)
             .background(Capsule().fill(chip.isSelected ? style.accent.opacity(0.15) : Color.clear))
             .overlay(Capsule().stroke(chip.isSelected ? style.accent : style.text.opacity(0.2),
                                       lineWidth: chip.isSelected ? 1.5 : 1))
-            .opacity(rigOn ? 1 : 0.55)
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -344,8 +370,20 @@ struct LightsBar: View {
         .accessibilityIdentifier("lights.more")
     }
 
-    private func revertButton(_ state: LightsBarState) -> some View {
-        Button { controller.revert() } label: { icon("arrow.uturn.backward") }
+    private func revertButton(_ state: LightsBarState, showsRevertWord: Bool = false) -> some View {
+        Button { controller.revert() } label: {
+            if showsRevertWord {
+                // The word, not a bare undo glyph: Revert drops every edit made
+                // since the mode opened, not one step.
+                HStack(spacing: 3) {
+                    icon("arrow.uturn.backward")
+                    Text("Revert").font(.system(size: 12, weight: .medium))
+                }
+                .foregroundColor(style.text)
+            } else {
+                icon("arrow.uturn.backward")
+            }
+        }
             .buttonStyle(.plain)
             .disabled(!state.canRevert)
             .help(Self.revertHelp)

@@ -213,7 +213,17 @@ final class LightsModeEngineTests: XCTestCase {
             ("load x.pse.pdb", false),
             ("fetch 1ubq", false),
             ("lights three_point", false),
-            ("reinit", false),
+            // PyMOL's unambiguous prefixes of reinitialize reach it too
+            ("reinit", true),
+            ("rein", true),
+            ("rei", true),
+            ("REI everything", true),
+            ("rei settings", false),
+            ("re", false),
+            ("r", false),
+            ("reinitializ", true),
+            ("reinitializes", false),
+            ("reload", false),
             ("", false),
             // a `;` chain ends the mode when any command in it would
             ("zoom; reinitialize", true),
@@ -450,6 +460,27 @@ final class LightsRevertBridgeTests: XCTestCase {
         engine.commandTap = nil
         XCTAssertEqual(commands.lines, ["lights add", "lights three_point", "lights remove, fill",
                                         "lights recenter", "lights off", "lights on"])
+    }
+
+    func testPanelPollMirrorsConsoleEditsOnlyInLightsMode() throws {
+        try LightsLive.requireEngine()
+        let entry = try XCTUnwrap(LightsLive.setRig(LightsLive.threeLights(enabled: true)))
+        engine.setInteractionMode(.lights)
+        XCTAssertFalse(controller.canRevert)
+
+        // A console edit reaches the bar on the next poll, not before.
+        engine.runCommand("lights softbox")
+        XCTAssertNotEqual(engine.lightRigJSON(), entry)
+        XCTAssertFalse(controller.canRevert, "no poll yet: the bar still shows the entry rig")
+        engine.panelPolled.send()
+        XCTAssertTrue(controller.canRevert, "the poll must mirror the console edit into the bar")
+        let shown = controller.rig
+
+        // Outside Lights mode the poll leaves the controller alone.
+        engine.setInteractionMode(.viewing)
+        engine.runCommand("lights three_point")
+        engine.panelPolled.send()
+        XCTAssertEqual(controller.rig, shown, "the poll must not refresh outside Lights mode")
     }
 
     func testPresetMenuMatchesPython() throws {

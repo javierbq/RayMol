@@ -61,6 +61,7 @@ final class LightsBarModelTests: XCTestCase {
         XCTAssertTrue(state.chips.isEmpty)
         XCTAssertEqual(state.status, "No lights · add one or pick a preset")
         XCTAssertEqual(state.status, LightsBarState.noLightsText)
+        XCTAssertEqual(LightsBarState.noLightsShortText, "No lights")
         XCTAssertTrue(state.canAdd)
         XCTAssertTrue(state.canPickPreset)
         XCTAssertFalse(state.canRemove)

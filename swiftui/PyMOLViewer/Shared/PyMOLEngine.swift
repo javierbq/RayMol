@@ -3197,8 +3197,11 @@ final class PyMOLEngine: ObservableObject {
     }
 
     /// A command that replaces the whole document ends Lights mode the way Done
-    /// does (edits kept), so Revert can never put the previous document's rig into
-    /// the new one. Called by runCommandCore after the command ran. Internal so a
+    /// does (edits kept), so Revert does not put the previous document's rig into
+    /// the new one. Called by runCommandCore after the command ran, so it sees the
+    /// command forms this app and the console type (`load`, `reinitialize` and its
+    /// abbreviations); a replacement that never goes through runCommandCore (MCP,
+    /// Python `cmd.load(...)`, scripts) is not seen (follow-up). Internal so a
     /// test can drive it without running the command in the shared host.
     func noteCommandForLightsMode(_ command: String) {
         guard interactionMode == .lights, Self.endsLightsMode(command: command) else { return }
@@ -3243,7 +3246,10 @@ final class PyMOLEngine: ObservableObject {
             }
             return v
         }
-        switch verb {
+        // PyMOL accepts any unambiguous prefix of a command; `rei`, `rein` and
+        // `reinit` all reach reinitialize (`re` and `r` are ambiguous).
+        let isReinitialize = verb.count >= 3 && "reinitialize".hasPrefix(verb)
+        switch isReinitialize ? "reinitialize" : verb {
         case "reinitialize":
             // `what` is completed as PyMOL's Shortcut does: any prefix of
             // "everything" means everything. Naming an object resets only its

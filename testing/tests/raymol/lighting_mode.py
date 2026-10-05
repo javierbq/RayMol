@@ -432,6 +432,20 @@ class TestSwiftSource(testing.PyMOLTestCase):
         self.assertIsNotNone(body, 'exitActiveInteractionMode not found')
         self.assertIn('.lights', body)
 
+    def testRunCommandCoreEndsLightsModeAfterTheCommand(self):
+        """Every command the app runs reaches noteCommandForLightsMode after
+        the core ran it: without the call a File > Open of another session
+        leaves Lights mode open and Revert writes the old rig into it."""
+        body = function_body(strip_comments(self.read(ENGINE)),
+                             'private func runCommandCore(')
+        self.assertIsNotNone(body, 'runCommandCore not found')
+        ran = body.find('PyMOLBridge_RunCommand(command)')
+        noted = body.find('noteCommandForLightsMode(command)')
+        self.assertGreaterEqual(ran, 0, 'runCommandCore no longer runs the command')
+        self.assertGreater(noted, ran,
+                           'runCommandCore must call noteCommandForLightsMode(command) '
+                           'after PyMOLBridge_RunCommand(command)')
+
     def testEveryTopStackNamesLights(self):
         """The Lights bar is placed wherever the Move bar is: each iOS top
         stack opens for Lights (all three `anyTop`), the macOS rail docks for
