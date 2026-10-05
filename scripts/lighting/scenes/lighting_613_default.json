@@ -1,0 +1,23 @@
+{
+  "comment": "#613 default paths the 16 L1 images do not draw (the tube, lit mesh cylinders, impostor OIT, impostor glass and jelly, non-glass material families, ortho, grid_mode), in their own colours. Rendered with no rig and with the harness's 3-light rig switched off (lighting_613_default.json and lighting_613_default_off.json, identical but for \"rig\"), and on master: every pair of renders must have max difference 0.",
+  "base": null,
+  "rig": "none",
+  "scenes": [
+    {"tag": "tube_rt0", "rt": 0, "lines": ["_l613_mn, _l613_mx = cmd.get_extent('m')", "_l613_c = [(a + b) / 2.0 for a, b in zip(_l613_mn, _l613_mx)]", "cmd.load_cgo([6.0, 0.8, 0.8, 0.8, 66.0] + [p[i] + _l613_c[i] for p in [(-14.0, -8.0, 0.0), (-5.0, 14.0, 4.0), (5.0, -14.0, -4.0), (14.0, 8.0, 0.0)] for i in range(3)], 'tube', zoom=0)", "cmd.set('cartoon_tube_radius', 1.5)"]},
+    {"tag": "tube_rt1", "rt": 1, "lines": ["_l613_mn, _l613_mx = cmd.get_extent('m')", "_l613_c = [(a + b) / 2.0 for a, b in zip(_l613_mn, _l613_mx)]", "cmd.load_cgo([6.0, 0.8, 0.8, 0.8, 66.0] + [p[i] + _l613_c[i] for p in [(-14.0, -8.0, 0.0), (-5.0, 14.0, 4.0), (5.0, -14.0, -4.0), (14.0, 8.0, 0.0)] for i in range(3)], 'tube', zoom=0)", "cmd.set('cartoon_tube_radius', 1.5)"]},
+    {"tag": "meshcyl_rt0", "from": "mesh_rt0", "lines": ["cmd.set('mesh_as_cylinders', 1)"]},
+    {"tag": "meshcyl_rt1", "from": "mesh_rt1", "lines": ["cmd.set('mesh_as_cylinders', 1)"]},
+    {"tag": "sticks_trans_rt0", "from": "sticks_rt0", "lines": ["cmd.set('stick_transparency', 0.5)"]},
+    {"tag": "sticks_trans_rt1", "from": "sticks_rt1", "lines": ["cmd.set('stick_transparency', 0.5)"]},
+    {"tag": "spheres_trans_rt0", "from": "spheres_rt0", "lines": ["cmd.set('sphere_transparency', 0.5)"]},
+    {"tag": "spheres_trans_rt1", "from": "spheres_rt1", "lines": ["cmd.set('sphere_transparency', 0.5)"]},
+    {"tag": "sticks_glass_rt0", "from": "sticks_rt0", "lines": ["cmd.set('stick_material', 'glass')"]},
+    {"tag": "spheres_jelly_rt0", "from": "spheres_rt0", "lines": ["cmd.set('sphere_material', 'jelly')"]},
+    {"tag": "cartoon_marble_rt0", "from": "cartoon_rt0", "lines": ["cmd.set('cartoon_material', 'marble')"]},
+    {"tag": "spheres_metallic_rt0", "from": "spheres_rt0", "lines": ["cmd.set('sphere_material', 'metallic')"]},
+    {"tag": "sticks_matte_rt0", "from": "sticks_rt0", "lines": ["cmd.set('stick_material', 'matte')"]},
+    {"tag": "surface_jelly_rt0", "from": "surface_rt0", "lines": ["cmd.set('surface_material', 'jelly')"]},
+    {"tag": "cartoon_ortho_rt0", "from": "cartoon_rt0", "lines": ["cmd.set('orthoscopic', 1)"]},
+    {"tag": "grid_rt0", "from": "cartoon_rt0", "lines": ["cmd.create('m2', 'm and resi 1-80', zoom=0)", "cmd.show('cartoon', 'm2')", "cmd.set('grid_mode', 1)"]}
+  ]
+}

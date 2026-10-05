@@ -29,6 +29,22 @@ namespace
 // every lit pipeline (ClipU and the impostor uniforms both sit at 1).
 constexpr NSUInteger kMaterialBufferIndex = 2;
 
+// Fragment buffer index for the light rig (#613; pymol::LightRigBlock, the MSL
+// LightRigU). Free in the VBO, sphere and cylinder libraries; bound only while
+// the rig is on (RendererMetal::bindLightRig).
+constexpr NSUInteger kLightRigBufferIndex = 9;
+
+// Function constant index of the MSL kLightRig (kMaterialSrc). Every lit
+// fragment is specialised with it, false for the classic pipelines and true
+// for the rig variants (RendererMetal::materialFragmentFunction).
+constexpr NSUInteger kLightRigConstantIndex = 1;
+
+// The ray tracer's light rig (#613): kRTSrc's kRTLightRig and the composite's
+// LightRigU argument. The RT library has its own indices (kRTTrans is 0, and
+// buffers 0-12 are taken by the RT pass), so these are not the ones above.
+constexpr NSUInteger kRTLightRigConstantIndex = 1;
+constexpr NSUInteger kRTLightRigBufferIndex = 13;
+
 struct MaterialU {
   simd_float4x4 invModelview;
   int family;
@@ -380,6 +396,13 @@ void RendererMetal::rebuildDrawPipelines()
     [_sphereOitPipeline[f] release];      _sphereOitPipeline[f] = nil;
   }
   _sphereImpostorsBuilt = false;
+  // The light rig's sphere pipelines (#613) and what they are built from:
+  // rebuilt from the next build's library at the new sample count or OIT
+  // attachments.
+  releaseSphereRigPipelines();
+  [_sphereLib release];         _sphereLib = nil;
+  [_sphereOpaqueDesc release];  _sphereOpaqueDesc = nil;
+  [_sphereOitDesc release];     _sphereOitDesc = nil;
   releaseCylinderPipelines();
   // buildImpostorPipelines' guard is reset above, so it re-runs and
   // re-assigns these two over live +1 references.
@@ -388,6 +411,10 @@ void RendererMetal::rebuildDrawPipelines()
   [_sphereShadowPipeline release];     _sphereShadowPipeline = nil;
   [_spherePeelPipeline release];       _spherePeelPipeline = nil;
   [_bezierTubePipeline release];       _bezierTubePipeline = nil;
+  // The tube's light-rig pipeline (#613): lazy, rebuilt at the new sample
+  // count the next time a rig-on frame draws a tube.
+  [_bezierTubeRigPipeline release];    _bezierTubeRigPipeline = nil;
+  _bezierTubeRigTried = false;
   [_labelPipeline release];            _labelPipeline = nil;
   [_connectorPipeline release];        _connectorPipeline = nil;
   _connectorStride = 0;
@@ -495,6 +522,10 @@ RendererMetal::~RendererMetal()
   [_vboShadowPipelineUByte release];  [_vboShadowPipelineFloat release];
   [_vboPeelPipelineUByte release];    [_vboPeelPipelineFloat release];
   [_sphereShadowPipeline release];    [_spherePeelPipeline release];
+  // The light rig's sphere pipelines and the kept sphere build (#613).
+  releaseSphereRigPipelines();
+  [_sphereLib release];               [_sphereOpaqueDesc release];
+  [_sphereOitDesc release];
   releaseCylinderPipelines(); // per-layout cylinder pipelines (owner)
   [_shadowDebugPipeline release];
   [_capMarkPipeline release];         [_capFillPipeline release];
@@ -503,6 +534,7 @@ RendererMetal::~RendererMetal()
   [_aoExemptMaskTex release];         [_aoMaskPipeline release];
   [_aoMaskDepthState release];
   [_vboLinePipeline release];         [_bezierTubePipeline release];
+  [_bezierTubeRigPipeline release];   // the tube's light-rig pipeline (#613)
   [_blitPipeline release];            [_ssaoPipeline release];
   [_fxaaPipeline release];            [_outlinePipeline release];
   [_tonemapPipeline release];         [_dofPipeline release];
@@ -510,6 +542,7 @@ RendererMetal::~RendererMetal()
   [_exportAlphaPipeline release];
   [_rtAOPipeline release];            [_rtResolvePipeline release];
   [_rtAOPipelineT release];           [_rtResolvePipelineT release];
+  [_rtResolvePipelineRig release];    [_rtResolvePipelineTRig release];  // #613
   [_rtLib release];
   releaseRayTracingTransAS();
   [_rtAOAccumPipeline release];       [_labelPipeline release];
@@ -526,6 +559,9 @@ RendererMetal::~RendererMetal()
   [_vboVertexUnlitFunc release];      [_vboFragmentUnlitFunc release];
   [_vboVertexUnlitFlatFunc release];
   [_vboFragmentShadowFunc release];
+  // The light rig's VBO fragments and the library they come from (#613).
+  releaseVBORigFunctions();
+  [_vboLibrary release];              _vboLibrary = nil;
   [_capMarkVtxFunc release];          [_capMarkFragFunc release];
   [_capFillVtxFunc release];          [_capFillFragFunc release];
   [_lineAAVtxFunc release];           [_lineAAFragFunc release];
@@ -833,6 +869,24 @@ void RendererMetal::bindRepMaterial()
   bindMaterialU(_encoder, _repMatParams, _modelviewInv.data(), refrPx, ortho);
   if (refracts && refrPx > 0.0f)
     _oitHasRefraction = true;
+  // The light rig (#613) goes with the material on every draw that shades
+  // colour. The shadow and peel passes write only depth or coverage, so they
+  // never see it.
+  if (!_shadowMode && !_peelMode)
+    bindLightRig(_encoder, ortho);
+}
+
+void RendererMetal::bindLightRig(id<MTLRenderCommandEncoder> enc, int ortho)
+{
+  if (!_lightRigOn)
+    return;
+  if (!enc)
+    return;
+  // head.z follows this draw's projection, as MaterialU's refrOrtho does: the
+  // projection can change within a frame.
+  LightRigBlock block = _lightRigBlock;
+  block.head[2] = ortho ? 1.0f : 0.0f;
+  [enc setFragmentBytes:&block length:sizeof(block) atIndex:kLightRigBufferIndex];
 }
 
 
@@ -981,6 +1035,9 @@ void RendererMetal::beginFrame()
   // few frames. Which is exactly what it did.
   _oitCleared = false;
   _oitRefractCleared = false;
+  // The light rig (#613) is per frame: SceneRenderMetal sets it again before
+  // any draw, so a frame that never reaches it draws without the rig.
+  _lightRigOn = false;
   // Start this frame's geometry record. Only the LIST of contributing cache
   // entries is re-accumulated during the opaque pass; the geometry itself stays
   // in _rtGeomCache and is touched again only when that list changes.
@@ -2320,6 +2377,15 @@ void RendererMetal::setLightingParams(float ambient, float direct,
   _sssWrap = sssWrap;
 }
 
+void RendererMetal::setLightRig(const LightRigBlock* rig)
+{
+  // A value copy and nothing else: no GPU call, no allocation. A block with no
+  // lights counts as off.
+  _lightRigOn = rig && rig->head[0] >= 1.0f;
+  if (_lightRigOn)
+    _lightRigBlock = *rig;
+}
+
 void RendererMetal::setKeyLightDir(const float* lightv)
 {
   // Direction TOWARD the light (used in dot(N,L) and for shadow/RT rays) is
@@ -2500,6 +2566,129 @@ static float2 rt_hammersley(uint i, uint n) {
 // default ones are built with it false, which compiles every use below out, so
 // a frame without the setting runs exactly the shaders it always did.
 constant bool kRTTrans [[function_constant(0)]];
+
+// --- The studio light rig on traced reflection hits (#613) -------------------
+// rt_composite shades what a reflection ray hits (and the transparent layer in
+// front of it) with the classic two-light model, whose terms decision 15 scales
+// while a rig is on. With a rig on it adds the rig's lights there too, as every
+// lit raster path adds them to its own colour, so a mirror shows rig-lit
+// geometry rig-lit. Specialised per PIPELINE, as kRTTrans is: every composite
+// is built with it false except the rig variants, used only while a rig is on
+// and something reflects, so a frame without a rig runs exactly the shaders it
+// always did.
+//
+// This library cannot take kMaterialSrc (that block's function constant 0 is
+// kMatFamily, an int; here it is kRTTrans), so it carries COPIES of the rig's
+// structs and of the helpers the hit shading needs. Each copy is kMaterialSrc's
+// code verbatim, comments aside; lighting_msl.py fails if one drifts. No
+// light_outline: the beam outlines are an overlay, and overlays never enter ray
+// tracing. The response is light_response_neutral(), as on the bezier tube:
+// #615's light_response needs MaterialU, which this library has no copy of.
+constant bool kRTLightRig [[function_constant(1)]];
+
+struct LightRigLight {
+  float4 pos;       // xyz eye-space position (A); w shadow slot (#616)
+  float4 axis;      // xyz unit beam direction; w cos(outer cone)
+  float4 radiance;  // rgb colour * warmth * intensity; w cos(inner cone)
+  float4 misc;      // x highlight, y falloff, z falloff reference, w outline
+};
+struct LightRigU {
+  float4 head;      // x light count, y shininess, z orthographic, w (#616)
+  LightRigLight L[6];
+};
+struct LightResponse {
+  float diffuse;
+  float highlight;
+  float sharpness;
+  float tint;
+  float wrap;
+};
+struct LightTerms {
+  float3 diffuse;
+  float3 specular;
+};
+
+__attribute__((unused)) static LightResponse light_response_neutral() {
+  LightResponse r;
+  r.diffuse = 1.0;
+  r.highlight = 1.0;
+  r.sharpness = 1.0;
+  r.tint = 0.0;
+  r.wrap = 0.0;
+  return r;
+}
+
+__attribute__((unused)) static float light_visibility(constant LightRigU& rig,
+    int i, float3 p, float3 n, float3 ld, float d) {
+  return 1.0;
+}
+
+__attribute__((unused)) static LightTerms light_terms_view(
+    constant LightRigU& rig, float3 base, float3 nEye, float3 pEye, float3 V,
+    LightResponse r) {
+  LightTerms t;
+  t.diffuse = float3(0.0);
+  t.specular = float3(0.0);
+  const int n = int(rig.head.x);
+  const float nl = length(nEye);
+  float3 N = nl > 1e-8 ? nEye / nl : V;
+  if (dot(N, V) < 0.0) N = -N;
+  const float shin = max(rig.head.y * r.sharpness, 1.0);
+  for (int i = 0; i < 6; ++i) {
+    if (i >= n) break;
+    const float3 Lv = rig.L[i].pos.xyz - pEye;
+    const float d = max(length(Lv), 1e-3);
+    const float3 Ld = Lv / d;
+    const float band = max(rig.L[i].radiance.w - rig.L[i].axis.w, 1e-7);
+    const float s = saturate((dot(-Ld, rig.L[i].axis.xyz) - rig.L[i].axis.w) / band);
+    const float spot = s * s * (3.0 - 2.0 * s);
+    const float ndl = dot(N, Ld);
+    const float wd = saturate((ndl + r.wrap) / (1.0 + r.wrap));
+    if (spot <= 0.0 || wd <= 0.0) continue;
+    const float fall = rig.L[i].misc.y > 0.0
+        ? min(pow(rig.L[i].misc.z / d, rig.L[i].misc.y), 1e4) : 1.0;
+    const float3 rad = rig.L[i].radiance.rgb *
+        (spot * fall * light_visibility(rig, i, pEye, N, Ld, d));
+    t.diffuse += rad * (wd * r.diffuse);
+    const float3 H = Ld + V;
+    if (ndl > 0.0 && dot(H, H) > 1e-8) {
+      t.specular += rad * (rig.L[i].misc.x * r.highlight *
+                           pow(saturate(dot(N, normalize(H))), shin));
+    }
+  }
+  t.specular *= mix(float3(1.0), base, r.tint);
+  return t;
+}
+
+__attribute__((unused)) static float3 mat_soft_knee(float3 c) {
+  const float knee = 0.8;
+  float3 over = max(c - float3(knee), float3(0.0));
+  return min(c, float3(knee)) + over / (float3(1.0) + over) * (1.0 - knee);
+}
+
+__attribute__((unused)) static float3 light_finish(float3 c) {
+  return mat_soft_knee(c);
+}
+
+// A reflection hit's colour with the rig's light added. `shaded` is the hit's
+// classic colour, `base` its own colour; the hit point, its normal and the
+// reflected ray's direction are in MODEL space, where the rays are traced.
+// The rig is in eye space: the inverse modelview is a rotation plus a
+// translation, so model -> eye is its transposed rotation (as Re is below).
+// The view vector is the way the ray came, -R, as for the classic highlight
+// of a hit. Called only under `if (kRTLightRig)`.
+static float3 rt_rig_hit(constant LightRigU& rig, constant RTU& u,
+    float3 shaded, float3 base, float3 pModel, float3 nModel, float3 R) {
+  const float3x3 toEye = transpose(float3x3(u.invModelview[0].xyz,
+                                            u.invModelview[1].xyz,
+                                            u.invModelview[2].xyz));
+  const float3 pEye = toEye * (pModel - u.invModelview[3].xyz);
+  const float3 nEye = toEye * nModel;
+  const float3 V = -normalize(toEye * R);
+  const LightTerms t = light_terms_view(rig, base, nEye, pEye, V,
+                                        light_response_neutral());
+  return light_finish(shaded + base * t.diffuse + t.specular);
+}
 
 // Transmittance along a ray through the transparent structure: the product of
 // (1 - alpha) over the transparent reps it crosses. Each occurrence (one
@@ -2786,7 +2975,8 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
     device const float4* mats [[buffer(8)]],
     primitive_acceleration_structure tas [[buffer(9), function_constant(kRTTrans)]],
     device const float4* tcols [[buffer(10), function_constant(kRTTrans)]],
-    device const packed_float3* tnrms [[buffer(11), function_constant(kRTTrans)]]) {
+    device const packed_float3* tnrms [[buffer(11), function_constant(kRTTrans)]],
+    constant LightRigU& rig [[buffer(13), function_constant(kRTLightRig)]]) {
   float3 col = colorTex.sample(s, in.uv).rgb;
   float3 colRaw = col;   // lit colour before AO/shadow: tints the reflection
   float d = depthTex.sample(s, in.uv);
@@ -2918,7 +3108,8 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
   // material and a barycentric-smooth normal. If the material reflects, one
   // reflection ray (NS jittered rays for glossy exports) is traced against the
   // same instance AS the AO/shadow rays use; the hit is shaded with the
-  // two-light model from the per-primitive colour + normal buffers, a miss
+  // two-light model from the per-primitive colour + normal buffers (and, while
+  // a light rig is on, the rig's lights: kRTLightRig), a miss
   // returns the environment. Blended with a Schlick Fresnel whose F0 is the
   // material strength, so grazing angles reflect more like real dielectrics.
   if (u.matCount > 0.5) {
@@ -3028,6 +3219,10 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
             specv = u.lSpec * pow(max(dot(hn, H), 0.0), max(u.lShin, 1.0));
           }
           reflCol = hc * min(inten, 1.0) + specv;
+          // The light rig (#613) on top of the hit's classic colour, as the
+          // raster path puts it on top of the surface the mirror shows.
+          if (kRTLightRig)
+            reflCol = rt_rig_hit(rig, u, reflCol, hc, hitP, hn, R);
           // Fade distant hits toward the environment so far-off geometry does
           // not read as a hard mirror image (cheap "reflection fog").
           reflCol = mix(reflCol, envCol, saturate(res.distance / 120.0));
@@ -3059,6 +3254,9 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
               specv = u.lSpec * pow(max(dot(hn, H), 0.0), max(u.lShin, 1.0));
             }
             float3 tcol = tc.rgb * min(inten, 1.0) + specv;
+            if (kRTLightRig)
+              tcol = rt_rig_hit(rig, u, tcol, tc.rgb, tr.origin + R * th.distance,
+                                hn, R);
             tcol = mix(tcol, envCol, saturate(th.distance / 120.0));
             reflCol = mix(reflCol, tcol, saturate(tc.a));
           }
@@ -3948,7 +4146,10 @@ void RendererMetal::ensureRayTracingAS()
   }
 }
 
-// The RT pass pipelines, specialised on kRTTrans (function constant 0).
+// The RT pass pipelines, specialised on kRTTrans (function constant 0). The
+// light rig's constant (kRTLightRig) is always set, false: these are the
+// pipelines every frame without a rig runs. Its variants come from
+// buildRTRigComposite.
 void RendererMetal::buildRTPipelines(bool transparent,
     id<MTLRenderPipelineState>* ao, id<MTLRenderPipelineState>* composite)
 {
@@ -3956,6 +4157,8 @@ void RendererMetal::buildRTPipelines(bool transparent,
   MTLFunctionConstantValues* fc = [[MTLFunctionConstantValues alloc] init];
   bool t = transparent;
   [fc setConstantValue:&t type:MTLDataTypeBool atIndex:0];
+  bool rig = false;
+  [fc setConstantValue:&rig type:MTLDataTypeBool atIndex:kRTLightRigConstantIndex];
   id<MTLFunction> vtx = [_rtLib newFunctionWithName:@"rt_vertex"];
   id<MTLFunction> fao = [_rtLib newFunctionWithName:@"rt_ao" constantValues:fc error:&err];
   id<MTLFunction> fco = fao ? [_rtLib newFunctionWithName:@"rt_composite" constantValues:fc error:&err] : nil;
@@ -3982,6 +4185,39 @@ void RendererMetal::buildRTPipelines(bool transparent,
       NSLog(@"RendererMetal RT: AO/composite pipeline failed: %@", err);
   }
   [vtx release]; [fao release]; [fco release];
+}
+
+// The light rig's composite (#613): rt_composite specialised with kRTLightRig
+// true (and kRTTrans as asked), with the default composite's descriptor. The
+// AO pass never sees the rig, so it has no variant. Returns +1, or nil after
+// logging; the caller tries once and draws the classic composite otherwise.
+id<MTLRenderPipelineState> RendererMetal::buildRTRigComposite(bool transparent)
+{
+  if (!_rtLib)
+    return nil;
+  NSError* err = nil;
+  MTLFunctionConstantValues* fc = [[MTLFunctionConstantValues alloc] init];
+  bool t = transparent;
+  [fc setConstantValue:&t type:MTLDataTypeBool atIndex:0];
+  bool rig = true;
+  [fc setConstantValue:&rig type:MTLDataTypeBool atIndex:kRTLightRigConstantIndex];
+  id<MTLFunction> vtx = [_rtLib newFunctionWithName:@"rt_vertex"];
+  id<MTLFunction> fco = [_rtLib newFunctionWithName:@"rt_composite" constantValues:fc error:&err];
+  [fc release];
+  id<MTLRenderPipelineState> pipeline = nil;
+  if (vtx && fco) {
+    MTLRenderPipelineDescriptor* pd = [[MTLRenderPipelineDescriptor alloc] init];
+    pd.vertexFunction = vtx;
+    pd.fragmentFunction = fco;
+    pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+    pipeline = [_device newRenderPipelineStateWithDescriptor:pd error:&err];
+    [pd release];
+  }
+  if (!pipeline)
+    NSLog(@"RendererMetal RT: light-rig %s composite failed: %@",
+          transparent ? "transparent" : "default", err);
+  [vtx release]; [fco release];
+  return pipeline;
 }
 
 // Screen-space AO (metal_ssao) tuning shared by the raster pass (post_ssao_fog)
@@ -4214,12 +4450,39 @@ void RendererMetal::runPostChain()
     pd.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> er =
         [_cmdBuffer renderCommandEncoderWithDescriptor:pd];
-    [er setRenderPipelineState:doRTTrans ? _rtResolvePipelineT : _rtResolvePipeline];
+    // The light rig on the reflection hits (#613): its composite only while a
+    // rig is on AND something reflects (the rig code lives in the reflection
+    // block, which matCount 0 skips). Otherwise, or if the variant cannot be
+    // built, today's composite.
+    id<MTLRenderPipelineState> composite =
+        doRTTrans ? _rtResolvePipelineT : _rtResolvePipeline;
+    bool rtRig = false;
+    if (_lightRigOn && u.matCount > 0.5f) {
+      id<MTLRenderPipelineState>* rigComposite =
+          doRTTrans ? &_rtResolvePipelineTRig : &_rtResolvePipelineRig;
+      bool* tried = doRTTrans ? &_rtRigTTried : &_rtRigTried;
+      if (!*rigComposite && !*tried) {
+        *tried = true;
+        *rigComposite = buildRTRigComposite(doRTTrans);
+      }
+      if (*rigComposite) {
+        composite = *rigComposite;
+        rtRig = true;
+      }
+    }
+    [er setRenderPipelineState:composite];
     if (doRTTrans) {
       [er useResource:_rtTransAS usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
       [er setFragmentAccelerationStructure:_rtTransAS atBufferIndex:9];
       [er setFragmentBuffer:_rtTColBuffer offset:0 atIndex:10];
       [er setFragmentBuffer:_rtTNrmBuffer offset:0 atIndex:11];
+    }
+    if (rtRig) {
+      // This frame's rig, as bindLightRig binds it for a raster draw; head.z
+      // follows the projection (the hits use the ray's own view vector).
+      LightRigBlock block = _lightRigBlock;
+      block.head[2] = _projOrtho > 0.5f ? 1.0f : 0.0f;
+      [er setFragmentBytes:&block length:sizeof(block) atIndex:kRTLightRigBufferIndex];
     }
     [er setFragmentTexture:_sceneColor atIndex:0];
     [er setFragmentTexture:_sceneDepth atIndex:1];
@@ -6783,6 +7046,217 @@ static float3 mat_shade_procedural(float3 base, float3 N, float3 pModel,
   return mat_matte_shade(base, N, pModel, ambient, direct, reflectAmt, keyDir, m);
 }
 
+// --- Studio light rig (#613, lighting epic #610) ------------------------------
+// The rig's spot lights, added on top of what each lit fragment already
+// shades. Specialised per PIPELINE, as kMatFamily is: a lit colour fragment
+// declares the rig at buffer(9) under this constant and wraps every rig
+// statement in `if (kLightRig)`. The classic pipelines specialise it false,
+// which removes the argument and every rig statement before code generation,
+// so with no rig a render is byte-identical to the build before the rig.
+// RendererMetal::materialFragmentFunction always sets it.
+//
+// The light_ helpers below never read a function constant, so a library can
+// call them unspecialised. Each carries __attribute__((unused)), as
+// mat_glass_cover does: a library that skips one gets no new warning.
+constant bool kLightRig [[function_constant(1)]];
+
+// One light as the GPU reads it. Mirrors pymol::LightRigBlockLight
+// (layer1/LightRigBlock.h), and kRTSrc carries a verbatim copy of these
+// structs: change all of them together; append-only.
+struct LightRigLight {
+  float4 pos;       // xyz eye-space position (A); w shadow slot, -1 = none (#616)
+  float4 axis;      // xyz unit beam direction, light -> aim; w cos(outer cone)
+  float4 radiance;  // rgb colour * warmth * intensity; w cos(inner cone)
+  float4 misc;      // x highlight, y falloff exponent, z falloff reference
+                    // distance (A, >= 1e-3), w outline 0|1
+};
+
+// The whole rig, 400 bytes. Mirrors pymol::LightRigBlock.
+struct LightRigU {
+  float4 head;      // x light count, y shininess, z 1 = this draw is
+                    // orthographic, w shadow maps this frame (#616; 0)
+  LightRigLight L[6];
+};
+
+// How a material takes the rig's light: diffuse and highlight strength, the
+// highlight's sharpness (times the scene shininess), how far the highlight is
+// tinted toward the base colour, and the diffuse wrap past the terminator.
+struct LightResponse {
+  float diffuse;
+  float highlight;
+  float sharpness;
+  float tint;
+  float wrap;
+};
+
+// The rig's light at one point: radiance sums, diffuse and specular kept
+// apart so glass can take them differently (light_glass_glints).
+struct LightTerms {
+  float3 diffuse;
+  float3 specular;
+};
+
+// The response every material has until #615: plain diffuse, the highlight
+// as the light sets it, the scene's sharpness, no tint, no wrap.
+__attribute__((unused)) static LightResponse light_response_neutral() {
+  LightResponse r;
+  r.diffuse = 1.0;
+  r.highlight = 1.0;
+  r.sharpness = 1.0;
+  r.tint = 0.0;
+  r.wrap = 0.0;
+  return r;
+}
+
+// How THIS material takes the rig. #613: neutral for every material. #615
+// replaces only this body (from the material's parameters); no call site
+// changes.
+__attribute__((unused)) static LightResponse light_response(
+    constant MaterialU& mat) {
+  return light_response_neutral();
+}
+
+// How much of light i reaches p. #613: all of it. #616 replaces this with the
+// light's own shadow lookup (its slot is pos.w) and adds the shadow texture
+// arguments.
+__attribute__((unused)) static float light_visibility(constant LightRigU& rig,
+    int i, float3 p, float3 n, float3 ld, float d) {
+  return 1.0;
+}
+
+// Every light's diffuse and specular at the eye-space point pEye with normal
+// nEye, seen from the unit direction V: a smoothstep spot cone between the
+// outer and inner cosines, a (reference / distance)^falloff falloff, wrapped
+// Lambert diffuse and a Blinn-Phong highlight, all in the light's own colour.
+// Two-sided, as the classic model is.
+//
+// light_terms gives it the camera's V. The ray tracer's reflection hits give
+// it the reflected ray's: kRTSrc carries a verbatim copy of this function,
+// because its library cannot take kMaterialSrc (see kRTLightRig there).
+//
+// Nothing here can produce a NaN, which would not stay local under OIT (it
+// contaminates the whole resolve for that pixel): the distance and the
+// falloff reference are both at least 1e-3, the cone never divides by a zero
+// band, pow() is skipped at falloff 0, and the zero vectors normalize() would
+// turn into 0/0 are guarded.
+__attribute__((unused)) static LightTerms light_terms_view(
+    constant LightRigU& rig, float3 base, float3 nEye, float3 pEye, float3 V,
+    LightResponse r) {
+  LightTerms t;
+  t.diffuse = float3(0.0);
+  t.specular = float3(0.0);
+  const int n = int(rig.head.x);
+  const float nl = length(nEye);
+  float3 N = nl > 1e-8 ? nEye / nl : V;
+  if (dot(N, V) < 0.0) N = -N;
+  const float shin = max(rig.head.y * r.sharpness, 1.0);
+  for (int i = 0; i < 6; ++i) {
+    if (i >= n) break;
+    const float3 Lv = rig.L[i].pos.xyz - pEye;
+    const float d = max(length(Lv), 1e-3);
+    const float3 Ld = Lv / d;
+    // smoothstep(cos outer, cos inner, cos angle off the axis), written out
+    // so a zero-width band cannot divide by zero.
+    const float band = max(rig.L[i].radiance.w - rig.L[i].axis.w, 1e-7);
+    const float s = saturate((dot(-Ld, rig.L[i].axis.xyz) - rig.L[i].axis.w) / band);
+    const float spot = s * s * (3.0 - 2.0 * s);
+    const float ndl = dot(N, Ld);
+    const float wd = saturate((ndl + r.wrap) / (1.0 + r.wrap));
+    if (spot <= 0.0 || wd <= 0.0) continue;
+    // Capped so a surface touching the light stays finite: the knee then
+    // takes it to white rather than to inf / inf.
+    const float fall = rig.L[i].misc.y > 0.0
+        ? min(pow(rig.L[i].misc.z / d, rig.L[i].misc.y), 1e4) : 1.0;
+    const float3 rad = rig.L[i].radiance.rgb *
+        (spot * fall * light_visibility(rig, i, pEye, N, Ld, d));
+    t.diffuse += rad * (wd * r.diffuse);
+    const float3 H = Ld + V;
+    if (ndl > 0.0 && dot(H, H) > 1e-8) {
+      t.specular += rad * (rig.L[i].misc.x * r.highlight *
+                           pow(saturate(dot(N, normalize(H))), shin));
+    }
+  }
+  t.specular *= mix(float3(1.0), base, r.tint);
+  return t;
+}
+
+// light_terms_view seen from the camera: toward the eye for a perspective
+// draw, +z for an orthographic one (head.z, set per draw by bindLightRig).
+__attribute__((unused)) static LightTerms light_terms(constant LightRigU& rig,
+    float3 base, float3 nEye, float3 pEye, LightResponse r) {
+  const float pl = length(pEye);
+  const float3 V = (rig.head.z > 0.5 || pl <= 1e-6) ? float3(0.0, 0.0, 1.0)
+                                                    : -pEye / pl;
+  return light_terms_view(rig, base, nEye, pEye, V, r);
+}
+
+// The ONLY knee on the rig path: mat_soft_knee (#494), so several bright
+// lights compress toward white instead of clipping flat. #624 replaces it
+// with HDR. (Clear and frosted glass knee their body in mat_glass_cover
+// instead, which #624 replaces too.)
+__attribute__((unused)) static float3 light_finish(float3 c) {
+  return mat_soft_knee(c);
+}
+
+// Beam outlines (a light's `outline`): the cone's footprint painted ON the
+// geometry -- a solid line where the beam ends (the outer cone), a dashed one
+// where it reaches full strength (the inner cone) and a dot where its axis
+// lands -- in the light's own colour, lifted toward white, over a dark halo
+// so it reads on lit and unlit surfaces alike. Widths are in pixels, from
+// fwidth of the angle off the beam axis. Paint only: nothing here is geometry,
+// so outlines never cast shadows, reach the ray tracer or widen the extent.
+__attribute__((unused)) static float3 light_outline(float3 rgb, float3 pEye,
+    constant LightRigU& rig) {
+  const int n = int(rig.head.x);
+  for (int i = 0; i < 6; ++i) {
+    if (i >= n) break;
+    if (rig.L[i].misc.w < 0.5) continue;   // uniform: the same for every fragment
+    const float3 ax = rig.L[i].axis.xyz;
+    const float3 off = pEye - rig.L[i].pos.xyz;
+    const float ol = length(off);
+    const float3 toP = ol > 1e-6 ? off / ol : ax;
+    const float ang = acos(clamp(dot(toP, ax), -1.0, 1.0));
+    const float aOut = acos(clamp(rig.L[i].axis.w, -1.0, 1.0));
+    const float aIn = acos(clamp(rig.L[i].radiance.w, -1.0, 1.0));
+    const float px = max(fwidth(ang), 1e-6);
+    const float3 u = normalize(cross(ax, abs(ax.y) < 0.9 ? float3(0.0, 1.0, 0.0)
+                                                         : float3(1.0, 0.0, 0.0)));
+    const float3 v = cross(ax, u);
+    const float phi = atan2(dot(toP, v), dot(toP, u));
+    const float dash = step(0.5, fract(phi * (24.0 / 6.2831853)));
+    const float dOut = abs(ang - aOut) / px;
+    const float dIn = abs(ang - aIn) / px;
+    const float dCtr = ang / px;
+    const float halo = max(max(1.0 - smoothstep(2.2, 3.8, dOut),
+                               (1.0 - smoothstep(1.8, 3.2, dIn)) * dash),
+                           1.0 - smoothstep(5.5, 7.0, dCtr));
+    const float core = max(max(1.0 - smoothstep(0.7, 1.7, dOut),
+                               (1.0 - smoothstep(0.5, 1.3, dIn)) * dash),
+                           1.0 - smoothstep(3.5, 4.8, dCtr));
+    float3 c = rig.L[i].radiance.rgb;
+    c = mix(c / max(max(max(c.r, c.g), c.b), 1e-4), float3(1.0), 0.4);
+    rgb = mix(rgb, rgb * 0.12, halo * 0.85);
+    rgb = mix(rgb, c, core);
+  }
+  return rgb;
+}
+
+// The rig added to an already-shaded colour `rgb`: the lights' diffuse on the
+// base colour plus their highlights, through the knee, then the outlines.
+__attribute__((unused)) static float3 light_apply(float3 rgb, float3 base,
+    float3 nEye, float3 pEye, constant LightRigU& rig, LightResponse r) {
+  const LightTerms t = light_terms(rig, base, nEye, pEye, r);
+  return light_outline(light_finish(rgb + base * t.diffuse + t.specular),
+                       pEye, rig);
+}
+
+// Glass's glints from the rig: its specular through the same soft saturation
+// as the classic glints, 1 - exp(-2 s) (mat_glass_shade), per channel. The
+// caller scales it by the Reflection knob as mat_glass_shade does.
+__attribute__((unused)) static float3 light_glass_glints(float3 s) {
+  return float3(1.0) - exp(-2.0 * s);
+}
+
 )";
 
 // The impostor half of the shared material block: prepended to the sphere and
@@ -7052,9 +7526,21 @@ fragment float4 vbo_fragment(VBOVertexOut in [[stage_in]],
     sampler envSmp [[sampler(6)]],
     constant LightU& lt [[buffer(0)]],
     constant ClipU& clip [[buffer(1)]],
-    constant MaterialU& mat [[buffer(2)]])
+    constant MaterialU& mat [[buffer(2)]],
+    constant LightRigU& rig [[buffer(9), function_constant(kLightRig)]])
 {
   apply_rep_clip(clip, in.eyeDist);
+  // The light rig (#613): the classic shading, then the rig's lights on top.
+  // Compiled out of the classic pipelines, which return below exactly as
+  // before.
+  if (kLightRig) {
+    const float3 shaded = vbo_material_shade(in.color.rgb, in.normalEye,
+                                             in.posModel, lt, mat, envMap,
+                                             envSmp);
+    return float4(light_apply(shaded, in.color.rgb, in.normalEye, in.posEye,
+                              rig, light_response(mat)),
+                  in.color.a);
+  }
   return float4(vbo_material_shade(in.color.rgb, in.normalEye, in.posModel, lt, mat, envMap, envSmp),
                 in.color.a);
 }
@@ -7185,7 +7671,8 @@ fragment OITFragOut vbo_fragment_oit(VBOVertexOut in [[stage_in]],
     sampler envSmp [[sampler(6)]],
     constant LightU& lt [[buffer(0)]],
     constant ClipU& clip [[buffer(1)]],
-    constant MaterialU& mat [[buffer(2)]])
+    constant MaterialU& mat [[buffer(2)]],
+    constant LightRigU& rig [[buffer(9), function_constant(kLightRig)]])
 {
   apply_rep_clip(clip, in.eyeDist);
   float4 c;
@@ -7210,7 +7697,20 @@ fragment OITFragOut vbo_fragment_oit(VBOVertexOut in [[stage_in]],
                                   mat.rough, mat.p[0], taps,
                                   float3(lt.klx, lt.kly, lt.klz), envMap,
                                   envSmp, hi);
+    // The light rig (#613) splits as the classic light does: its diffuse
+    // lights the BODY, which reaches the screen at the glass's own coverage,
+    // so a beam never turns glass opaque; its highlights join the glints in
+    // `hi`, through the classic glint curve and scaled by the Reflection knob
+    // exactly as the key light's are, so they buy coverage the same way.
+    if (kLightRig) {
+      const LightTerms rigLight = light_terms(rig, in.color.rgb, N, in.posEye,
+                                              light_response(mat));
+      body += in.color.rgb * kMatGlassBaseAttenuation * rigLight.diffuse;
+      hi += light_glass_glints(rigLight.specular) *
+            (kMatGlassReflection * saturate(mat.p[0]));
+    }
     c = mat_glass_cover(body, hi, in.color.a);
+    if (kLightRig) c.rgb = light_outline(c.rgb, in.posEye, rig);
     // The far wall is not recorded. Flipped to face the viewer, its slope is
     // the exact opposite of the near wall's, and averaged with it the bend
     // would cancel wherever the whole object lies in front of what is seen.
@@ -7220,6 +7720,12 @@ fragment OITFragOut vbo_fragment_oit(VBOVertexOut in [[stage_in]],
   } else {
     c = float4(vbo_material_shade(in.color.rgb, in.normalEye, in.posModel, lt, mat, envMap, envSmp),
                in.color.a);
+    // The light rig (#613), on top of the classic shading; the coverage is
+    // the material's, unchanged.
+    if (kLightRig) {
+      c.rgb = light_apply(c.rgb, in.color.rgb, in.normalEye, in.posEye, rig,
+                          light_response(mat));
+    }
     if (kMatGlass) {
       // Jelly bends the view through it too (#590), with the same near-wall
       // rule as glass.
@@ -7299,8 +7805,13 @@ fragment float4 line_aa_fragment(LineAAOut in [[stage_in]],
 // form can FAIL AT RUNTIME (a missing constant, a wrong MTLDataType), so the
 // error is checked and logged rather than trapping: a failure degrades to "no
 // pipeline for this family", which draws `default`.
+//
+// `lightRig` is the light rig's constant (#613, kLightRig), set on EVERY
+// specialisation, as kRTTrans is: a lit fragment that declares the rig cannot
+// be specialised with the constant unset. Every classic caller passes nothing,
+// so false removes the rig argument and every rig statement.
 id<MTLFunction> RendererMetal::materialFragmentFunction(
-    id<MTLLibrary> lib, NSString* name, int family)
+    id<MTLLibrary> lib, NSString* name, int family, bool lightRig)
 {
   if (!lib || !MaterialFamilyIsImplemented(family)) {
     return nil;
@@ -7308,14 +7819,46 @@ id<MTLFunction> RendererMetal::materialFragmentFunction(
   MTLFunctionConstantValues* cv = [[MTLFunctionConstantValues alloc] init];
   int fam = family;
   [cv setConstantValue:&fam type:MTLDataTypeInt atIndex:0];
+  bool rig = lightRig;
+  [cv setConstantValue:&rig type:MTLDataTypeBool atIndex:kLightRigConstantIndex];
   NSError* err = nil;
   id<MTLFunction> fn = [lib newFunctionWithName:name constantValues:cv error:&err];
   [cv release];   // MRC: MTLFunctionConstantValues alloc/init is +1
   if (!fn) {
-    NSLog(@"RendererMetal: specialising %@ for material family %d failed: %@",
-          name, family, err);
+    NSLog(@"RendererMetal: specialising %@ for material family %d%s failed: %@",
+          name, family, lightRig ? " with the light rig" : "", err);
   }
   return fn;      // +1, caller owns
+}
+
+// The light-rig variant of vbo_fragment (or vbo_fragment_oit) for one material
+// family (#613), specialised from the retained VBO library the first time a
+// rig-on frame needs it, so a session without lights never compiles one.
+// One attempt per family: a failed specialisation is not retried every draw.
+// Borrowed; released with the library in buildVBOPipelines and the dtor.
+id<MTLFunction> RendererMetal::vboRigFragmentFunction(int family, bool oit)
+{
+  if (family < 0 || family >= cMaterialFamily_count)
+    family = cMaterialFamily_default;
+  id<MTLFunction>* slot =
+      oit ? &_vboFragmentOitRigFunc[family] : &_vboFragmentRigFunc[family];
+  bool& tried = _vboRigFuncTried[family][oit ? 1 : 0];
+  if (!*slot && !tried) {
+    tried = true;
+    *slot = materialFragmentFunction(
+        _vboLibrary, oit ? @"vbo_fragment_oit" : @"vbo_fragment", family,
+        /*lightRig*/ true);
+  }
+  return *slot;
+}
+
+void RendererMetal::releaseVBORigFunctions()
+{
+  for (int f = 0; f < cMaterialFamily_count; ++f) {
+    [_vboFragmentRigFunc[f] release];     _vboFragmentRigFunc[f] = nil;
+    [_vboFragmentOitRigFunc[f] release];  _vboFragmentOitRigFunc[f] = nil;
+    _vboRigFuncTried[f][0] = _vboRigFuncTried[f][1] = false;
+  }
 }
 
 void RendererMetal::buildVBOPipelines()
@@ -7348,6 +7891,12 @@ void RendererMetal::buildVBOPipelines()
   [_capMarkDSS release];              _capMarkDSS = nil;
   [_capFillDSS release];              _capFillDSS = nil;
   [_capFillPipeline release];         _capFillPipeline = nil;
+  // The light rig's lazily specialised fragments (#613) belong to the library
+  // they came from; rebuilt from the new one on the next rig-on frame. The
+  // rig pipelines that used them sit in _vboPipelineCache, which every caller
+  // has already emptied.
+  releaseVBORigFunctions();
+  [_vboLibrary release];              _vboLibrary = nil;
 
   NSError* error = nil;
   id<MTLLibrary> lib = [_device newLibraryWithSource:[kMaterialSrc stringByAppendingString:kVBOSrc]
@@ -7546,7 +8095,10 @@ void RendererMetal::buildVBOPipelines()
           oitPipelineForVD(mkvd(MTLVertexFormatFloat4, 40), f);
     }
   }
-  [lib release];  // MRC: library (+1) no longer needed once functions are created
+  // MRC: the library (+1) is kept, not released: the light rig's fragments
+  // (#613) are specialised from it lazily (vboRigFragmentFunction). Released
+  // at the next build and in the dtor.
+  _vboLibrary = lib;
 
   // Depth-only shadow pipelines (light-POV pre-pass) for the common layouts.
   buildShadowPipelines();
@@ -7840,13 +8392,16 @@ static void setOitRefractAttachment(
 }
 
 id<MTLRenderPipelineState> RendererMetal::oitPipelineForVD(
-    MTLVertexDescriptor* vd, int family)
+    MTLVertexDescriptor* vd, int family, bool lightRig)
 {
   if (family < 0 || family >= cMaterialFamily_count) family = cMaterialFamily_default;
-  if (!_vboVertexFunc || !_vboFragmentOitFunc[family]) return nil;
+  // The light rig's variant (#613) differs only in its fragment function.
+  id<MTLFunction> ffn = lightRig ? vboRigFragmentFunction(family, true)
+                                 : _vboFragmentOitFunc[family];
+  if (!_vboVertexFunc || !ffn) return nil;
   MTLRenderPipelineDescriptor* p = [[MTLRenderPipelineDescriptor alloc] init];
   p.vertexFunction = _vboVertexFunc;
-  p.fragmentFunction = _vboFragmentOitFunc[family];
+  p.fragmentFunction = ffn;
   p.vertexDescriptor = vd;
   p.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
   p.colorAttachments[0].blendingEnabled = YES;
@@ -7881,7 +8436,7 @@ id<MTLRenderPipelineState> RendererMetal::oitPipelineForVD(
 // +1 pipeline every frame (and paid full pipeline compilation each time).
 id<MTLRenderPipelineState> RendererMetal::cachedVBOPipeline(
     VBOPipelineVariant variant, size_t stride, int posOffset, int normalOffset,
-    int colorOffset, int colorType, MTLVertexDescriptor* vd)
+    int colorOffset, int colorType, MTLVertexDescriptor* vd, bool lightRig)
 {
   // Stable FNV-1a key over the layout + variant + sample count.
   uint64_t key = 1469598103934665603ULL;
@@ -7902,14 +8457,20 @@ id<MTLRenderPipelineState> RendererMetal::cachedVBOPipeline(
     family = cMaterialFamily_default;   // only the lit variants read a material
   }
   mix((uint64_t)family);
+  // The light rig's variants (#613) of Lit and Oit: mixed in only when asked
+  // for, so every classic key is exactly what it was. The family is kept, so
+  // a marble surface under the rig is still marble.
+  lightRig = lightRig && (variant == VBOPipelineVariant::Lit ||
+                          variant == VBOPipelineVariant::Oit);
+  if (lightRig) mix(0x4C52);
   auto it = _vboPipelineCache.find(key);
   if (it != _vboPipelineCache.end()) return it->second;  // borrowed (cache-owned)
 
   id<MTLRenderPipelineState> ps = nil;
   if (variant == VBOPipelineVariant::Oit) {
-    ps = oitPipelineForVD(vd, family);   // +1
+    ps = oitPipelineForVD(vd, family, lightRig);   // +1
     if (!ps && family != cMaterialFamily_default)
-      ps = oitPipelineForVD(vd, cMaterialFamily_default);   // draw default, not nothing
+      ps = oitPipelineForVD(vd, cMaterialFamily_default, lightRig);   // draw default, not nothing
   } else if (variant == VBOPipelineVariant::Shadow) {
     ps = shadowPipelineForVD(vd);    // +1
   } else if (variant == VBOPipelineVariant::Peel) {
@@ -7925,7 +8486,10 @@ id<MTLRenderPipelineState> RendererMetal::cachedVBOPipeline(
     // this cache serves the non-prebuilt lit layouts, the molecular surface
     // among them, and returning nil here hides the geometry outright.
     id<MTLFunction> ffn = _vboFragmentUnlitFunc;
-    if (variant == VBOPipelineVariant::Lit) {
+    if (variant == VBOPipelineVariant::Lit && lightRig) {
+      ffn = vboRigFragmentFunction(family, false);
+      if (!ffn) ffn = vboRigFragmentFunction(cMaterialFamily_default, false);
+    } else if (variant == VBOPipelineVariant::Lit) {
       ffn = _vboFragmentFunc[family] ? _vboFragmentFunc[family]
                                      : _vboFragmentFunc[cMaterialFamily_default];
     }
@@ -7953,7 +8517,9 @@ id<MTLRenderPipelineState> RendererMetal::cachedVBOPipeline(
       [psd release];  // MRC: descriptor (+1) consumed by pipeline creation
     }
   }
-  if (ps) _vboPipelineCache[key] = ps;  // cache takes ownership of the +1
+  // A failed rig variant is cached as nil, so the draw falls back to the
+  // classic pipeline without rebuilding (and re-logging) on every draw.
+  if (ps || lightRig) _vboPipelineCache[key] = ps;  // cache owns the +1
   return ps;                            // borrowed
 }
 
@@ -8099,8 +8665,23 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
     if (!pipeline) { _peelUnseeded = true; return; }
   }
 
+  // The light rig (#613): while it is on, a lit colour draw takes the rig
+  // variant of its pipeline, built once per layout and family through the
+  // layout cache (the same vertex function and descriptor as the classic
+  // one, so the peel's EQUAL depth still matches). With the rig off
+  // `pipeline` stays nil here and the selection below is today's.
+  if (_lightRigOn && !_shadowMode && !_peelMode && !unlit) {
+    pipeline = cachedVBOPipeline(
+        _oitActive ? VBOPipelineVariant::Oit : VBOPipelineVariant::Lit, stride,
+        posOffset, normalOffset, colorOffset, colorType, vd, /*lightRig*/ true);
+    if (!pipeline && !_lightRigWarned) {
+      NSLog(@"RendererMetal: light-rig VBO pipeline failed; drawing without the rig");
+      _lightRigWarned = true;
+    }
+  }
+
   // Check if layout matches pre-built pipelines
-  if (!_shadowMode && !_peelMode && !unlit && posOffset == 0 && normalOffset == 12 &&
+  if (!pipeline && !_shadowMode && !_peelMode && !unlit && posOffset == 0 && normalOffset == 12 &&
       colorOffset == 24) {
     int fam = _repMatParams.family;
     if (fam < 0 || fam >= cMaterialFamily_count) fam = cMaterialFamily_default;
@@ -8406,7 +8987,17 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
     // this geometry never wrote, which would reject it at every pixel.
     if (!pipeline) { _peelUnseeded = true; return; }
   }
-  if (!_shadowMode && !_peelMode && !unlit && posOffset == 0 && normalOffset == 12 &&
+  // The light rig (#613), as in drawVBO.
+  if (_lightRigOn && !_shadowMode && !_peelMode && !unlit) {
+    pipeline = cachedVBOPipeline(
+        _oitActive ? VBOPipelineVariant::Oit : VBOPipelineVariant::Lit, stride,
+        posOffset, normalOffset, colorOffset, colorType, vd, /*lightRig*/ true);
+    if (!pipeline && !_lightRigWarned) {
+      NSLog(@"RendererMetal: light-rig VBO pipeline failed; drawing without the rig");
+      _lightRigWarned = true;
+    }
+  }
+  if (!pipeline && !_shadowMode && !_peelMode && !unlit && posOffset == 0 && normalOffset == 12 &&
       colorOffset == 24) {
     int fam = _repMatParams.family;
     if (fam < 0 || fam >= cMaterialFamily_count) fam = cMaterialFamily_default;
@@ -8841,24 +9432,77 @@ static void sphere_shade_material(SphereVOut in, constant SphereU& u,
                                intensity, specular, u.lSSSWrap, envMap, envSmp);
 }
 
+// The light rig's copy of sphere_shade_material (#613): the same statements,
+// then the rig's lights on top of the lit surface. An interior cap returns
+// before the light as it returns before the material, so caps stay as they
+// are. Called only under `if (kLightRig)`, so the classic pipelines drop it.
+static void sphere_shade_material_rig(SphereVOut in, constant SphereU& u,
+    constant MaterialU& mat, texturecube<float> envMap, sampler envSmp,
+    constant LightRigU& rig,
+    thread float3& rgb, thread float& alpha, thread float& depth) {
+  float3 n = float3(0.0), pt = float3(0.0);
+  float intensity = 0.0, specular = 0.0;
+  bool lit = true;
+  sphere_shade(in, u, rgb, alpha, depth, n, pt, intensity, specular, lit);
+  if (!lit) return;   // interior cap: already a final colour
+  rgb = mat_impostor_composite(in.color.rgb, n, pt, u.lAmbient, u.lDirect,
+                               u.lReflect, float3(u.klx, u.kly, u.klz), mat,
+                               intensity, specular, u.lSSSWrap, envMap, envSmp);
+  rgb = light_apply(rgb, in.color.rgb, n, pt, rig, light_response(mat));
+}
+
 fragment SphereFOut sphere_impostor_fragment(SphereVOut in [[stage_in]],
     texturecube<float> envMap [[texture(6)]],
     sampler envSmp [[sampler(6)]],
     constant SphereU& u [[buffer(1)]],
-    constant MaterialU& mat [[buffer(2)]]) {
+    constant MaterialU& mat [[buffer(2)]],
+    constant LightRigU& rig [[buffer(9), function_constant(kLightRig)]]) {
   float3 rgb; float a; float depth;
-  sphere_shade_material(in, u, mat, envMap, envSmp, rgb, a, depth);
+  // The light rig (#613): its copy of the shading while the rig is on. The
+  // classic pipelines specialise kLightRig false and run today's call.
+  if (kLightRig)
+    sphere_shade_material_rig(in, u, mat, envMap, envSmp, rig, rgb, a, depth);
+  else
+    sphere_shade_material(in, u, mat, envMap, envSmp, rgb, a, depth);
   SphereFOut out;
   out.color = float4(rgb, a);
   out.depth = depth;
   return out;
 }
 
+// The light rig (#613) on a glass-family sphere impostor's composite colour
+// `rgb`. Jelly takes light_apply, as on the opaque path. Clear and frosted
+// glass (other reps' glass spheres: cartoon rings, surface dots) split the rig
+// as the VBO and cylinder glass do (orchestrator decision Q1): the rig's
+// diffuse lights the body at the glass's coverage (base x
+// kMatGlassBaseAttenuation), and its highlights join the glints through the
+// classic glint curve, scaled by the Reflection knob. This path folds its
+// glints into the colour (it has no mat_glass_cover), so the rig's are folded
+// the same way: mat_impostor_composite's glass branch is redone with the rig's
+// light inside it, then the outlines. Called only under `if (kLightRig)`.
+static float3 sphere_glass_rig(float3 rgb, float3 base, float3 n, float3 pt,
+    constant SphereU& u, constant MaterialU& mat, texturecube<float> envMap,
+    sampler envSmp, constant LightRigU& rig) {
+  if (mat.mode == kMatMode_jelly)
+    return light_apply(rgb, base, n, pt, rig, light_response(mat));
+  int taps = (mat.mode == kMatMode_frosted_glass) ? int(max(1.0, mat.p[5])) : 1;
+  float3 hi;
+  float3 body = mat_glass_shade(base, n, float3(0.0, 0.0, 1.0), mat.rough,
+                                mat.p[0], taps, float3(u.klx, u.kly, u.klz),
+                                envMap, envSmp, hi);
+  const LightTerms rigLight = light_terms(rig, base, n, pt, light_response(mat));
+  body += base * kMatGlassBaseAttenuation * rigLight.diffuse;
+  hi += light_glass_glints(rigLight.specular) *
+        (kMatGlassReflection * saturate(mat.p[0]));
+  return light_outline(mat_soft_knee(body + hi), pt, rig);
+}
+
 fragment SphereOITOut sphere_impostor_fragment_oit(SphereVOut in [[stage_in]],
     texturecube<float> envMap [[texture(6)]],
     sampler envSmp [[sampler(6)]],
     constant SphereU& u [[buffer(1)]],
-    constant MaterialU& mat [[buffer(2)]]) {
+    constant MaterialU& mat [[buffer(2)]],
+    constant LightRigU& rig [[buffer(9), function_constant(kLightRig)]]) {
   float3 rgb; float a; float depth;
   float4 refr = float4(0.0, 0.0, 0.0, kOitRefractFar);
   if (kMatGlass) {
@@ -8875,10 +9519,19 @@ fragment SphereOITOut sphere_impostor_fragment_oit(SphereVOut in [[stage_in]],
                                    u.lReflect, float3(u.klx, u.kly, u.klz),
                                    mat, intensity, specular, u.lSSSWrap,
                                    envMap, envSmp);
+      // The light rig (#613): jelly takes it on top, as on the opaque path;
+      // clear and frosted glass split it as the VBO and cylinder glass do
+      // (sphere_glass_rig). The coverage is the material's, unchanged.
+      if (kLightRig)
+        rgb = sphere_glass_rig(rgb, in.color.rgb, n, pt, u, mat, envMap, envSmp,
+                               rig);
       refr = mat_glass_refraction(n, pt, mat.refrPx, mat.refrOrtho);
     }
   } else {
-    sphere_shade_material(in, u, mat, envMap, envSmp, rgb, a, depth);
+    if (kLightRig)
+      sphere_shade_material_rig(in, u, mat, envMap, envSmp, rig, rgb, a, depth);
+    else
+      sphere_shade_material(in, u, mat, envMap, envSmp, rgb, a, depth);
   }
   float w = sph_oit_weight(a, depth);
   SphereOITOut out;
@@ -8906,11 +9559,19 @@ fragment SphereShadowOut sphere_impostor_fragment_shadow(
 void RendererMetal::buildImpostorPipelines()
 {
   if (_sphereImpostorsBuilt) return;
+  // What an earlier build kept (rebuildDrawPipelines has normally released
+  // it already, so these are no-ops); MRC.
+  [_sphereLib release];         _sphereLib = nil;
+  [_sphereOpaqueDesc release];  _sphereOpaqueDesc = nil;
+  [_sphereOitDesc release];     _sphereOitDesc = nil;
   NSError* err = nil;
   id<MTLLibrary> lib = [_device newLibraryWithSource:[[kMaterialSrc stringByAppendingString:kMaterialImpostorSrc]
                                                    stringByAppendingString:kSphereImpostorSrc]
                                              options:nil error:&err];
   if (!lib) { NSLog(@"RendererMetal: sphere impostor compile failed: %@", err); return; }
+  // Kept: the light rig's variants (#613) are specialised from it later
+  // (ensureSphereRigPipelines). Owned here, so it no longer leaks per build.
+  _sphereLib = lib;
   id<MTLFunction> vfn = [lib newFunctionWithName:@"sphere_impostor_vertex"];
   if (!vfn) { NSLog(@"RendererMetal: sphere impostor vertex function missing"); return; }
   // From here the build counts as done even if some family fails: each family
@@ -8953,6 +9614,8 @@ void RendererMetal::buildImpostorPipelines()
     if (!_sphereImpostorPipeline[f])
       NSLog(@"RendererMetal: sphere impostor pipeline failed (family %d): %@", f, err);
   }
+  // Kept (+1, from alloc/init above) for the light rig's opaque variants.
+  _sphereOpaqueDesc = psd;
 
   // Transparent sphere OIT variant: same vertex shader + geometry, MRT
   // accum/reveal output, ray-cast depth retained for occlusion.
@@ -8991,6 +9654,8 @@ void RendererMetal::buildImpostorPipelines()
     }
     if (!_sphereOitPipeline[cMaterialFamily_default])
       NSLog(@"RendererMetal: sphere OIT pipeline failed: %@", err);
+    // Kept (+1) for the light rig's OIT variants.
+    _sphereOitDesc = op;
   }
 
   // Shadow-map variant: depth-only, single-sample (no color, Depth32Float).
@@ -9016,7 +9681,59 @@ void RendererMetal::buildImpostorPipelines()
     if (!_spherePeelPipeline)
       NSLog(@"RendererMetal: sphere peel pipeline failed: %@", err);
     [pp release];
+    [sp release];
+    [sfn release];
   }
+  // MRC: the pipelines and the kept descriptors hold their own references.
+  [vfn release];
+}
+
+void RendererMetal::ensureSphereRigPipelines()
+{
+  if (_sphereRigBuilt) return;
+  // One attempt per build: a failed specialisation is logged once by
+  // materialFragmentFunction, and the draw falls back, rather than
+  // recompiling every frame.
+  _sphereRigBuilt = true;
+  if (!_sphereLib || !_sphereOpaqueDesc || !_sphereOitDesc) return;
+  // The classic builds' own descriptors, so a rig pipeline has the same
+  // vertex function, vertex descriptor, blending, formats and sample count
+  // as its classic twin; only the fragment function differs.
+  NSError* err = nil;
+  for (int f = 0; f < cMaterialFamily_count; ++f) {
+    id<MTLFunction> fn = materialFragmentFunction(
+        _sphereLib, @"sphere_impostor_fragment", f, /*lightRig*/ true);
+    if (fn) {
+      _sphereOpaqueDesc.fragmentFunction = fn;
+      _sphereRigPipeline[f] =
+          [_device newRenderPipelineStateWithDescriptor:_sphereOpaqueDesc error:&err];
+      [fn release];   // MRC: the pipeline and the descriptor hold their own
+      if (!_sphereRigPipeline[f])
+        NSLog(@"RendererMetal: light-rig sphere pipeline failed (family %d): %@", f, err);
+    }
+    id<MTLFunction> ofn = materialFragmentFunction(
+        _sphereLib, @"sphere_impostor_fragment_oit", f, /*lightRig*/ true);
+    if (ofn) {
+      _sphereOitDesc.fragmentFunction = ofn;
+      // The same refraction-target rule as the classic OIT loop.
+      setOitRefractAttachment(_sphereOitDesc.colorAttachments[2],
+                              _oitRefractEnabled, f == cMaterialFamily_glass);
+      _sphereRigOitPipeline[f] =
+          [_device newRenderPipelineStateWithDescriptor:_sphereOitDesc error:&err];
+      [ofn release];
+      if (!_sphereRigOitPipeline[f])
+        NSLog(@"RendererMetal: light-rig sphere OIT pipeline failed (family %d): %@", f, err);
+    }
+  }
+}
+
+void RendererMetal::releaseSphereRigPipelines()
+{
+  for (int f = 0; f < cMaterialFamily_count; ++f) {
+    [_sphereRigPipeline[f] release];     _sphereRigPipeline[f] = nil;
+    [_sphereRigOitPipeline[f] release];  _sphereRigOitPipeline[f] = nil;
+  }
+  _sphereRigBuilt = false;
 }
 
 void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
@@ -9040,6 +9757,23 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
   // pixel and the impostors VANISHED. _peelUnseeded makes the OIT draw below
   // fall back to the ordinary LessEqual test, which is the pre-#488 look.
   if (_peelMode && !_spherePeelPipeline) { _peelUnseeded = true; return; }
+
+  // The light rig (#613): while it is on, a colour draw takes the rig
+  // variant of its family's pipeline, else the rig's `default` one, else
+  // the classic pipeline chosen above (logged once). With the rig off
+  // `rigPipeline` stays nil and the selection below is today's.
+  id<MTLRenderPipelineState> rigPipeline = nil;
+  if (_lightRigOn && !_shadowMode && !_peelMode) {
+    ensureSphereRigPipelines();
+    id<MTLRenderPipelineState>* rigSet =
+        _oitActive ? _sphereRigOitPipeline : _sphereRigPipeline;
+    rigPipeline = rigSet[sphereFam] ? rigSet[sphereFam]
+                                    : rigSet[cMaterialFamily_default];
+    if (!rigPipeline && !_lightRigWarned) {
+      NSLog(@"RendererMetal: light-rig sphere pipeline failed; drawing without the rig");
+      _lightRigWarned = true;
+    }
+  }
 
   // Only the canonical packing (pos@0, color@16, rightUp@20 Float, stride 24)
   // is handled by the prebuilt pipeline. Log and bail otherwise (revisit if hit).
@@ -9115,10 +9849,12 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
     [_encoder setDepthStencilState:peelWriteState()];
     [_encoder setCullMode:MTLCullModeNone];
   } else if (_oitActive) {
-    [_encoder setRenderPipelineState:_sphereOitPipeline[sphereFam]];
+    [_encoder setRenderPipelineState:rigPipeline ? rigPipeline
+                                                 : _sphereOitPipeline[sphereFam]];
     [_encoder setDepthStencilState:oitDepthPeelAwareState()];
   } else {
-    [_encoder setRenderPipelineState:_sphereImpostorPipeline[sphereFam]];
+    [_encoder setRenderPipelineState:rigPipeline ? rigPipeline
+                                                 : _sphereImpostorPipeline[sphereFam]];
     applyDepthStencilState();
     if (_depthStencilState) [_encoder setDepthStencilState:_depthStencilState];
   }
@@ -9441,13 +10177,35 @@ static void cyl_shade_material(CylVOut in, constant CylU& u,
                                intensity, specular, u.lSSSWrap, envMap, envSmp);
 }
 
+// The light rig's copy of cyl_shade_material (#613); see
+// sphere_shade_material_rig.
+static void cyl_shade_material_rig(CylVOut in, constant CylU& u,
+    constant MaterialU& mat, texturecube<float> envMap, sampler envSmp,
+    constant LightRigU& rig,
+    thread float3& rgb, thread float& alpha, thread float& depth) {
+  float3 n = float3(0.0), pt = float3(0.0), base = float3(0.0);
+  float intensity = 0.0, specular = 0.0;
+  bool lit = true;
+  cyl_shade(in, u, rgb, alpha, depth, n, pt, base, intensity, specular, lit);
+  if (!lit) return;   // interior cap: already a final colour
+  rgb = mat_impostor_composite(base, n, pt, u.lAmbient, u.lDirect, u.lReflect,
+                               float3(u.klx, u.kly, u.klz), mat,
+                               intensity, specular, u.lSSSWrap, envMap, envSmp);
+  rgb = light_apply(rgb, base, n, pt, rig, light_response(mat));
+}
+
 fragment CylFOut cyl_impostor_fragment(CylVOut in [[stage_in]],
     texturecube<float> envMap [[texture(6)]],
     sampler envSmp [[sampler(6)]],
     constant CylU& u [[buffer(1)]],
-    constant MaterialU& mat [[buffer(2)]]) {
+    constant MaterialU& mat [[buffer(2)]],
+    constant LightRigU& rig [[buffer(9), function_constant(kLightRig)]]) {
   float3 rgb; float a; float depth;
-  cyl_shade_material(in, u, mat, envMap, envSmp, rgb, a, depth);
+  // The light rig (#613), as in sphere_impostor_fragment.
+  if (kLightRig)
+    cyl_shade_material_rig(in, u, mat, envMap, envSmp, rig, rgb, a, depth);
+  else
+    cyl_shade_material(in, u, mat, envMap, envSmp, rgb, a, depth);
   CylFOut o;
   o.color = float4(rgb, a);
   o.depth = depth;
@@ -9458,7 +10216,8 @@ fragment CylOITOut cyl_impostor_fragment_oit(CylVOut in [[stage_in]],
     texturecube<float> envMap [[texture(6)]],
     sampler envSmp [[sampler(6)]],
     constant CylU& u [[buffer(1)]],
-    constant MaterialU& mat [[buffer(2)]]) {
+    constant MaterialU& mat [[buffer(2)]],
+    constant LightRigU& rig [[buffer(9), function_constant(kLightRig)]]) {
   float3 rgb; float a; float depth;
   float4 refr = float4(0.0, 0.0, 0.0, kOitRefractFar);
   if (kMatGlass && mat.mode != kMatMode_jelly) {
@@ -9475,8 +10234,19 @@ fragment CylOITOut cyl_impostor_fragment_oit(CylVOut in [[stage_in]],
       float3 body = mat_glass_shade(base, n, float3(0.0, 0.0, 1.0), mat.rough,
                                     mat.p[0], taps, float3(u.klx, u.kly, u.klz),
                                     envMap, envSmp, hi);
+      // The light rig (#613) splits as on the VBO glass (vbo_fragment_oit):
+      // its diffuse lights the body at the glass's coverage, its highlights
+      // join the glints through the classic curve and the Reflection knob.
+      if (kLightRig) {
+        const LightTerms rigLight = light_terms(rig, base, n, pt,
+                                                light_response(mat));
+        body += base * kMatGlassBaseAttenuation * rigLight.diffuse;
+        hi += light_glass_glints(rigLight.specular) *
+              (kMatGlassReflection * saturate(mat.p[0]));
+      }
       float4 g = mat_glass_cover(body, hi, a);
       rgb = g.rgb;
+      if (kLightRig) rgb = light_outline(rgb, pt, rig);
       a = g.a;
       // The ray-cast hit is the stick's near wall, so it always refracts. pt
       // is the hit in eye space.
@@ -9494,10 +10264,16 @@ fragment CylOITOut cyl_impostor_fragment_oit(CylVOut in [[stage_in]],
                                    u.lReflect, float3(u.klx, u.kly, u.klz),
                                    mat, intensity, specular, u.lSSSWrap,
                                    envMap, envSmp);
+      // The light rig (#613) on top; the coverage is jelly's, unchanged.
+      if (kLightRig)
+        rgb = light_apply(rgb, base, n, pt, rig, light_response(mat));
       refr = mat_glass_refraction(n, pt, mat.refrPx, mat.refrOrtho);
     }
   } else {
-    cyl_shade_material(in, u, mat, envMap, envSmp, rgb, a, depth);
+    if (kLightRig)
+      cyl_shade_material_rig(in, u, mat, envMap, envSmp, rig, rgb, a, depth);
+    else
+      cyl_shade_material(in, u, mat, envMap, envSmp, rgb, a, depth);
   }
   float w = cyl_oit_weight(a, depth);
   CylOITOut o;
@@ -9522,7 +10298,7 @@ fragment CylShadowOut cyl_impostor_fragment_shadow(CylVOut in [[stage_in]],
 )";
 
 void RendererMetal::buildCylinderImpostorPipeline(
-    const CylinderImpostorDrawCall& call)
+    const CylinderImpostorDrawCall& call, bool lightRig)
 {
   // Cache per vertex layout. a_cap's offset is part of the descriptor, so a
   // stick VBO (per-vertex a_cap) and a CGO VBO (constant a_cap) need different
@@ -9536,9 +10312,10 @@ void RendererMetal::buildCylinderImpostorPipeline(
   }
   // Keyed on the family that was ASKED for, not the one that may be fallen back
   // to below, so a family whose specialisation fails caches its default-family
-  // pipeline here and is not recompiled on every later frame.
+  // pipeline here and is not recompiled on every later frame. The light rig's
+  // variant (#613) is keyed apart, so the classic entry is today's.
   const auto layout = std::make_tuple(
-      static_cast<NSUInteger>(call.stride), call.capOff, cylFam);
+      static_cast<NSUInteger>(call.stride), call.capOff, cylFam, lightRig);
   {
     auto it = _cylinderPipelines.find(layout);
     if (it != _cylinderPipelines.end()) {
@@ -9558,21 +10335,32 @@ void RendererMetal::buildCylinderImpostorPipeline(
   id<MTLLibrary> lib = [_device newLibraryWithSource:[[kMaterialSrc stringByAppendingString:kMaterialImpostorSrc]
                                                    stringByAppendingString:kCylinderImpostorSrc]
                                              options:nil error:&err];
-  if (!lib) { NSLog(@"RendererMetal: cyl impostor compile failed: %@", err); return; }
+  if (!lib) {
+    NSLog(@"RendererMetal: cyl impostor compile failed: %@", err);
+    // A light-rig entry (#613) is cached empty, so the draw falls back to the
+    // classic pipeline instead of recompiling the library every frame.
+    if (lightRig) _cylinderPipelines[layout] = CylinderPipelines{};
+    return;
+  }
   id<MTLFunction> vfn = [lib newFunctionWithName:@"cyl_impostor_vertex"];
   // The cylinder fragments read the kMatFamily function constant, so they MUST
   // be specialised: -newFunctionWithName: alone fails at runtime for a function
   // with an unset constant, and sticks would silently stop drawing.
   id<MTLFunction> ffn =
-      materialFragmentFunction(lib, @"cyl_impostor_fragment", cylFam);
+      materialFragmentFunction(lib, @"cyl_impostor_fragment", cylFam, lightRig);
   if (!ffn && cylFam != cMaterialFamily_default) {
     // Draw as `default` rather than not at all. Returning here would also leave
     // the layout UNCACHED, so the MSL library would be recompiled on every
     // frame that tried this material.
     cylFam = cMaterialFamily_default;
-    ffn = materialFragmentFunction(lib, @"cyl_impostor_fragment", cylFam);
+    ffn = materialFragmentFunction(lib, @"cyl_impostor_fragment", cylFam,
+                                   lightRig);
   }
-  if (!vfn || !ffn) { NSLog(@"RendererMetal: cyl impostor funcs missing"); return; }
+  if (!vfn || !ffn) {
+    NSLog(@"RendererMetal: cyl impostor funcs missing");
+    if (lightRig) _cylinderPipelines[layout] = CylinderPipelines{};
+    return;
+  }
 
   MTLVertexDescriptor* vd = [MTLVertexDescriptor vertexDescriptor];
   vd.attributes[0].format = MTLVertexFormatFloat3;       // attr_vertex1
@@ -9623,11 +10411,12 @@ void RendererMetal::buildCylinderImpostorPipeline(
   // the layout was cached that way because the OPAQUE pipeline had compiled,
   // and transparent sticks disappeared permanently for that layout.
   int cylOitFam = cylFam;
-  id<MTLFunction> offn =
-      materialFragmentFunction(lib, @"cyl_impostor_fragment_oit", cylOitFam);
+  id<MTLFunction> offn = materialFragmentFunction(
+      lib, @"cyl_impostor_fragment_oit", cylOitFam, lightRig);
   if (!offn && cylOitFam != cMaterialFamily_default) {
     cylOitFam = cMaterialFamily_default;
-    offn = materialFragmentFunction(lib, @"cyl_impostor_fragment_oit", cylOitFam);
+    offn = materialFragmentFunction(lib, @"cyl_impostor_fragment_oit",
+                                    cylOitFam, lightRig);
   }
   if (offn) {
     MTLRenderPipelineDescriptor* op = [[MTLRenderPipelineDescriptor alloc] init];
@@ -9653,8 +10442,11 @@ void RendererMetal::buildCylinderImpostorPipeline(
       NSLog(@"RendererMetal: cyl OIT pipeline failed: %@", err);
   }
 
-  // Shadow-map variant: depth-only, single-sample.
-  id<MTLFunction> sfn = [lib newFunctionWithName:@"cyl_impostor_fragment_shadow"];
+  // Shadow-map variant: depth-only, single-sample. Not for a light-rig entry
+  // (#613): the shadow and peel passes never take the rig, so they always
+  // draw from the classic entry.
+  id<MTLFunction> sfn = lightRig
+      ? nil : [lib newFunctionWithName:@"cyl_impostor_fragment_shadow"];
   if (sfn) {
     MTLRenderPipelineDescriptor* sp = [[MTLRenderPipelineDescriptor alloc] init];
     sp.vertexFunction = vfn; sp.fragmentFunction = sfn; sp.vertexDescriptor = vd;
@@ -9691,7 +10483,11 @@ void RendererMetal::buildCylinderImpostorPipeline(
   // structurally the same as the sphere and VBO ones, and beginTransparentOIT
   // already gates the entire OIT pass on the default VBO OIT pipeline, so the
   // pass would be off before this could bite.
-  if (_cylinderImpostorPipeline) {
+  //
+  // A light-rig entry (#613) is cached even when it failed: its failure is a
+  // specialisation's, which a retry cannot fix, and the draw falls back to
+  // the classic entry rather than recompiling the library every frame.
+  if (_cylinderImpostorPipeline || lightRig) {
     _cylinderPipelines[layout] = CylinderPipelines{
         _cylinderImpostorPipeline, _cylinderOitPipeline, _cylinderShadowPipeline,
         _cylinderPeelPipeline};
@@ -9733,7 +10529,20 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
   }
   ensureEncoder();
   if (!_encoder) return;
-  buildCylinderImpostorPipeline(call);
+  // The light rig (#613): while it is on, a colour draw takes the rig's
+  // entry for this layout and family; if that could not be built, the
+  // classic one (logged once). Shadow and peel always take the classic entry.
+  // With the rig off this is today's call.
+  const bool cylRig = _lightRigOn && !_shadowMode && !_peelMode;
+  buildCylinderImpostorPipeline(call, cylRig);
+  if (cylRig && (!_cylinderImpostorPipeline ||
+                 (_oitActive && !_cylinderOitPipeline))) {
+    if (!_lightRigWarned) {
+      NSLog(@"RendererMetal: light-rig cylinder pipeline failed; drawing without the rig");
+      _lightRigWarned = true;
+    }
+    buildCylinderImpostorPipeline(call, false);
+  }
   if (!_cylinderImpostorPipeline) return;
   if (_oitActive && !_cylinderOitPipeline) return; // no OIT variant: skip
   if (_shadowMode && !_cylinderShadowPipeline) return; // can't cast: skip safely
@@ -9942,6 +10751,91 @@ fragment float4 bezier_tube_fragment(TubeOut in [[stage_in]],
 }
 )";
 
+// The bezier tube under the studio light rig (#613). The classic tube library
+// above is compiled alone and stays exactly as it was, so a tube with no rig
+// is byte-identical; this is a SEPARATE library, kMaterialSrc + kBezierTubeSrc
+// + kBezierTubeRigSrc, used only while a rig is on. It reuses CP, TubeU and
+// LightU from the classic source and the light_ helpers from the shared
+// material block.
+//
+// The two functions are copies of the classic ones: the vertex stage adds the
+// eye-space position the spot cones need, and the fragment adds the rig on
+// top of the classic two-light colour. lighting_msl.py keeps the copies equal
+// to the originals. Neither reads a function constant (nor does any helper
+// they reach), so the builder takes them with plain newFunctionWithName:. The
+// rig is a plain buffer(9) argument for the same reason: this library is
+// never specialised, and the rig pipeline is only ever drawn with the rig on.
+// Every material takes the rig the same way until #615, and a tube has no
+// material, so it uses the neutral response directly.
+static NSString* const kBezierTubeRigSrc = @R"(
+struct TubeRigOut {
+  float4 position [[position]];
+  float3 eyeNormal;
+  float4 color;
+  float3 posEye;
+};
+
+[[patch(quad, 4)]]
+vertex TubeRigOut bezier_tube_vertex_rig(
+    patch_control_point<CP> cp [[stage_in]],
+    float2 uv [[position_in_patch]],
+    constant TubeU& U [[buffer(1)]]) {
+  float t = uv.x;
+  float omt = 1.0 - t;
+  float3 p0 = cp[0].pos, p1 = cp[1].pos, p2 = cp[2].pos, p3 = cp[3].pos;
+  // cubic Bezier position + tangent (derivative)
+  float3 P = omt*omt*omt*p0 + 3.0*omt*omt*t*p1 + 3.0*omt*t*t*p2 + t*t*t*p3;
+  float3 T = 3.0*omt*omt*(p1-p0) + 6.0*omt*t*(p2-p1) + 3.0*t*t*(p3-p2);
+  // Robust tangent: fall back to the chord if the derivative degenerates
+  // (coincident control points at sharp turns) to avoid collapsed/flipped
+  // rings and gaps at joints.
+  if (dot(T, T) < 1e-6) T = p3 - p0;
+  T = normalize(T);
+  // a stable frame around the tangent
+  float3 up = (abs(T.y) < 0.99) ? float3(0.0,1.0,0.0) : float3(1.0,0.0,0.0);
+  float3 N = normalize(cross(up, T));
+  float3 B = normalize(cross(T, N));
+  float ang = uv.y * 6.28318530718;
+  float3 radial = cos(ang) * N + sin(ang) * B;
+  float3 world = P + radial * U.radius;
+  float4 eye = U.modelview * float4(world, 1.0);
+  TubeRigOut o;
+  o.position = U.projection * eye;
+  o.position.z = 0.5 * (o.position.z + o.position.w);  // GL z [-1,1] -> Metal [0,1]
+  o.eyeNormal = normalize((U.modelview * float4(radial, 0.0)).xyz);
+  o.color = U.color;
+  o.posEye = eye.xyz;   // the rig's cones and falloff are eye-space
+  return o;
+}
+
+fragment float4 bezier_tube_fragment_rig(TubeRigOut in [[stage_in]],
+    constant LightU& lt [[buffer(0)]],
+    constant LightRigU& rig [[buffer(9)]]) {
+  // PyMOL two-light model driven by the live lighting settings (Scene sliders).
+  // Two-sided via the view vector: orient the normal toward the camera
+  // (eye-space +z) so both the outer surface and the open tube ends/interior
+  // are lit, never black.
+  float3 nrm = normalize(in.eyeNormal);
+  if (nrm.z < 0.0) nrm = -nrm;
+  float ambient = lt.ambient, direct = lt.direct, reflectv = lt.reflect;
+  float spec_value = lt.spec, shininess = max(lt.shininess, 1.0);
+  const float3 L0 = float3(0.0,0.0,1.0);
+  const float3 L1 = normalize(float3(lt.klx, lt.kly, lt.klz));  // key light (cSetting_light)
+  float intensity = ambient, specular = 0.0;
+  float n0 = dot(nrm, L0);
+  intensity += direct * saturate((n0 + lt.wrap) / (1.0 + lt.wrap));
+  float n1 = dot(nrm, L1);
+  intensity += reflectv * saturate((n1 + lt.wrap) / (1.0 + lt.wrap));
+  if (n1 > 0.0) {
+    float3 H1 = normalize(L1 + float3(0.0,0.0,1.0));
+    specular += spec_value * pow(max(dot(nrm, H1), 0.0), shininess);
+  }
+  float3 rgb = in.color.rgb * min(intensity, 1.0) + specular;
+  rgb = light_apply(rgb, in.color.rgb, nrm, in.posEye, rig, light_response_neutral());
+  return float4(rgb, in.color.a);
+}
+)";
+
 void RendererMetal::buildBezierTubePipeline()
 {
   if (_bezierTubePipeline) return;
@@ -9978,6 +10872,81 @@ void RendererMetal::buildBezierTubePipeline()
     NSLog(@"RendererMetal: bezier tube pipeline failed: %@", err);
 }
 
+// One of the tube rig library's functions (#613). They read no function
+// constant, so plain newFunctionWithName: is enough. The library still
+// DECLARES kMaterialSrc's constants; should Metal ever list one against a
+// function that does not read it, the function specialised with
+// kMatFamily = default and kLightRig = false is the same code, so take that.
+// +1, caller owns; nil (logged) on failure.
+static id<MTLFunction> bezierTubeRigFunction(id<MTLLibrary> lib, NSString* name)
+{
+  id<MTLFunction> fn = [lib newFunctionWithName:name];
+  if (fn && fn.functionConstantsDictionary.count == 0)
+    return fn;
+  [fn release];
+  MTLFunctionConstantValues* cv = [[MTLFunctionConstantValues alloc] init];
+  int fam = cMaterialFamily_default;
+  [cv setConstantValue:&fam type:MTLDataTypeInt atIndex:0];
+  bool rig = false;
+  [cv setConstantValue:&rig type:MTLDataTypeBool atIndex:kLightRigConstantIndex];
+  NSError* err = nil;
+  fn = [lib newFunctionWithName:name constantValues:cv error:&err];
+  [cv release];   // MRC: alloc/init is +1
+  if (!fn)
+    NSLog(@"RendererMetal: bezier tube rig function %@ failed: %@", name, err);
+  return fn;
+}
+
+// The bezier tube's light-rig pipeline (#613): the classic tube's descriptor
+// (lighting_msl.py keeps the two equal) with the rig library's functions.
+// Built the first time a rig-on frame draws a tube, so a session without
+// lights never compiles it; one attempt per build (_bezierTubeRigTried), so a
+// failure is not recompiled every draw. Unlike the classic builder it
+// releases what it creates: only the pipeline state is kept.
+void RendererMetal::buildBezierTubeRigPipeline()
+{
+  if (_bezierTubeRigPipeline || _bezierTubeRigTried) return;
+  _bezierTubeRigTried = true;
+  NSError* err = nil;
+  id<MTLLibrary> lib = [_device newLibraryWithSource:[[kMaterialSrc stringByAppendingString:kBezierTubeSrc]
+                                                   stringByAppendingString:kBezierTubeRigSrc]
+                                             options:nil error:&err];
+  if (!lib) { NSLog(@"RendererMetal: bezier tube rig compile failed: %@", err); return; }
+  id<MTLFunction> vfn = bezierTubeRigFunction(lib, @"bezier_tube_vertex_rig");
+  id<MTLFunction> ffn = bezierTubeRigFunction(lib, @"bezier_tube_fragment_rig");
+  if (!vfn || !ffn) {
+    NSLog(@"RendererMetal: bezier tube rig funcs missing");
+    [vfn release]; [ffn release]; [lib release];
+    return;
+  }
+
+  MTLVertexDescriptor* vd = [MTLVertexDescriptor vertexDescriptor];
+  vd.attributes[0].format = MTLVertexFormatFloat3;  // control point position
+  vd.attributes[0].offset = 0;
+  vd.attributes[0].bufferIndex = 0;
+  vd.layouts[0].stride = 12;
+  vd.layouts[0].stepFunction = MTLVertexStepFunctionPerPatchControlPoint;
+
+  MTLRenderPipelineDescriptor* psd = [[MTLRenderPipelineDescriptor alloc] init];
+  psd.vertexFunction = vfn;
+  psd.fragmentFunction = ffn;
+  psd.vertexDescriptor = vd;
+  psd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+  psd.rasterSampleCount = _sampleCount;
+  psd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+  psd.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+  psd.maxTessellationFactor = 64;
+  psd.tessellationFactorStepFunction = MTLTessellationFactorStepFunctionConstant;
+  psd.tessellationFactorFormat = MTLTessellationFactorFormatHalf;
+  psd.tessellationOutputWindingOrder = MTLWindingClockwise;
+  psd.tessellationPartitionMode = MTLTessellationPartitionModeInteger;
+  _bezierTubeRigPipeline = [_device newRenderPipelineStateWithDescriptor:psd error:&err];
+  if (!_bezierTubeRigPipeline)
+    NSLog(@"RendererMetal: bezier tube rig pipeline failed: %@", err);
+  // MRC: the pipeline state keeps what it needs; vd is autoreleased.
+  [psd release]; [vfn release]; [ffn release]; [lib release];
+}
+
 // half-float bit pattern for a tessellation factor
 static inline uint16_t f16(float v) {
   _Float16 h = (_Float16) v;
@@ -10000,6 +10969,21 @@ void RendererMetal::drawBezierTubes(const void* cp, size_t dataSize,
   if (!_encoder) return;
   buildBezierTubePipeline();
   if (!_bezierTubePipeline) return;
+  // The light rig (#613): its own tube pipeline while the rig is on (the
+  // shadow and peel passes returned above), else today's. A rig pipeline that
+  // cannot be built draws the classic tube and logs once.
+  id<MTLRenderPipelineState> tubePipeline = _bezierTubePipeline;
+  bool tubeRig = false;
+  if (_lightRigOn) {
+    buildBezierTubeRigPipeline();
+    if (_bezierTubeRigPipeline) {
+      tubePipeline = _bezierTubeRigPipeline;
+      tubeRig = true;
+    } else if (!_lightRigWarned) {
+      NSLog(@"RendererMetal: light-rig bezier tube pipeline failed; drawing without the rig");
+      _lightRigWarned = true;
+    }
+  }
 
   NSUInteger numPatches = dataSize / 48;  // 4 control points * 3 floats * 4 B
   if (numPatches == 0) return;
@@ -10035,7 +11019,7 @@ void RendererMetal::drawBezierTubes(const void* cp, size_t dataSize,
     _bezierTessPatchCap = numPatches;
   }
 
-  [_encoder setRenderPipelineState:_bezierTubePipeline];
+  [_encoder setRenderPipelineState:tubePipeline];
   // Opaque geometry: standard depth test + write.
   [_encoder setDepthStencilState:bezierDepthState()];
   [_encoder setCullMode:MTLCullModeNone];
@@ -10059,6 +11043,11 @@ void RendererMetal::drawBezierTubes(const void* cp, size_t dataSize,
       _lightReflect, _lightSpecular, _lightShininess, _sssWrap,
       _keyLightEye[0], _keyLightEye[1], _keyLightEye[2] };
     [_encoder setFragmentBytes:&_lt length:sizeof(_lt) atIndex:0]; }
+  // The rig for bezier_tube_fragment_rig at fragment buffer(9). The tube
+  // never goes through bindRepMaterial, so it binds the rig itself, with the
+  // ortho flag derived as bindRepMaterial derives it.
+  if (tubeRig)
+    bindLightRig(_encoder, _projectionMatrix[15] != 0.0f ? 1 : 0);
 
   [_encoder setTessellationFactorBuffer:_bezierTessFactors offset:0 instanceStride:0];
   [_encoder drawPatches:4

@@ -15,6 +15,7 @@
 #include "Scene.h"
 #include "SceneDef.h"
 #include "Selector.h"
+#include "Setting.h"
 
 const pymol::LightRig* SceneGetLightRig(PyMOLGlobals* G)
 {
@@ -186,11 +187,8 @@ pymol::Result<> SceneLightsRecenter(PyMOLGlobals* G)
 
 bool SceneLightsOn(PyMOLGlobals* G)
 {
-  // TODO(#613): return pymol::LightRigIsOn(SceneGetLightRig(G)) from
-  // layer1/LightShading.h once #613 lands. This is the same test, inlined.
-  const auto* rig = SceneGetLightRig(G);
-  return rig && rig->enabled && !rig->lights.empty() && rig->centre &&
-         rig->size;
+  // The one rig-on predicate (#613), shared with the renderer.
+  return pymol::LightRigIsOn(SceneGetLightRig(G));
 }
 
 const char* SceneLightsRayNoticeText(PyMOLGlobals* G)
@@ -216,4 +214,28 @@ bool SceneLightsRayNotice(PyMOLGlobals* G, int mode)
     " Ray: %s\n", text ENDFB(G);
   return true;
 #endif
+}
+
+SceneLightFrame SceneLightsFrame(PyMOLGlobals* G, const glm::dmat4& worldToEye)
+{
+  // The settings SceneRenderMetal has always read (issue #72 explains the
+  // specular adjustment).
+  float specReflect, specPower, specDirect, specDirectPower;
+  SceneGetAdjustedLightValues(
+      G, &specReflect, &specPower, &specDirect, &specDirectPower);
+  const pymol::LightClassicTerms settings{
+      SettingGetGlobal_f(G, cSetting_ambient),
+      SettingGetGlobal_f(G, cSetting_direct),
+      SettingGetGlobal_f(G, cSetting_reflect),
+      specReflect,
+  };
+
+  // The frame's one read of the rig.
+  const pymol::LightRig* rig = SceneGetLightRig(G);
+
+  SceneLightFrame frame;
+  frame.classic = pymol::LightRigClassic(rig, settings);
+  frame.shininess = specPower;
+  frame.rig = pymol::LightRigFrameBlock(rig, worldToEye, specPower);
+  return frame;
 }

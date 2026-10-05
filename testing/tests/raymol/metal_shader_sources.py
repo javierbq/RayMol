@@ -27,15 +27,17 @@ from pymol import testing
 SOURCE = os.path.join('layerGraphics', 'metal', 'RendererMetal.mm')
 
 _LITERAL = re.compile(r'static NSString\* const (k\w+) = @R"\((.*?)\)"(.)', re.S)
-# Hand-written helpers in these literals are post_* / rt_* / mat_*; everything
-# else that looks like a call is an MSL builtin (smoothstep, sample_compare...).
-# An optional __attribute__((...)) prefix is allowed: mat_glass_cover carries
-# one, because it lives in the shared block and the sphere library never calls it.
+# Hand-written helpers in these literals are post_* / rt_* / mat_* / light_*
+# (the light rig, #613); everything else that looks like a call is an MSL
+# builtin (smoothstep, sample_compare...).
+# An optional __attribute__((...)) prefix is allowed: mat_glass_cover and the
+# light_ helpers carry one, because they live in the shared block and some
+# libraries never call them.
 _DEF = re.compile(
     r'^\s*(?:__attribute__\(\(\w+\)\)\s+)?(?:static\s+|fragment\s+|vertex\s+)?'
-    r'[\w:<>]+\s+((?:post|rt|mat)_\w+)\s*\(',
+    r'[\w:<>]+\s+((?:post|rt|mat|light)_\w+)\s*\(',
     re.M)
-_CALL = re.compile(r'\b((?:post|rt|mat)_\w+)\s*\(')
+_CALL = re.compile(r'\b((?:post|rt|mat|light)_\w+)\s*\(')
 
 # Which shared block(s) each library is compiled with. Mirrors the
 # newLibraryWithSource: call sites in RendererMetal.mm; a library that gained a
@@ -47,6 +49,10 @@ _PREPENDED = {
     'kVBOSrc': ('kMaterialSrc',),
     'kSphereImpostorSrc': ('kMaterialSrc', 'kMaterialImpostorSrc'),
     'kCylinderImpostorSrc': ('kMaterialSrc', 'kMaterialImpostorSrc'),
+    # The bezier tube under the light rig (#613): the classic tube's structs
+    # and the shared block's light_ helpers. The classic kBezierTubeSrc is
+    # still compiled alone.
+    'kBezierTubeRigSrc': ('kMaterialSrc', 'kBezierTubeSrc'),
 }
 
 
@@ -108,7 +114,7 @@ def shader_literals(source):
 
 
 def undefined_helpers(body):
-    """post_/rt_ helpers that `body` calls but does not define."""
+    """post_/rt_/mat_/light_ helpers that `body` calls but does not define."""
     return set(_CALL.findall(body)) - set(_DEF.findall(body))
 
 
@@ -129,8 +135,27 @@ class TestMetalShaderSources(testing.PyMOLTestCase):
         literals = shader_literals(self.source())
         for name in ('kEyeReconSrc', 'kPostSrc', 'kRTSrc', 'kMaterialSrc',
                      'kMaterialImpostorSrc', 'kVBOSrc', 'kSphereImpostorSrc',
-                     'kCylinderImpostorSrc'):
+                     'kCylinderImpostorSrc', 'kBezierTubeSrc',
+                     'kBezierTubeRigSrc'):
             self.assertIn(name, literals)
+
+    def testPrependsMirrorTheCallSites(self):
+        """_PREPENDED is what the call sites build, not what someone last
+        wrote down: every library listed is compiled as its blocks then
+        itself, in that order, at a newLibraryWithSource: call. Otherwise
+        testEachLibraryIsSelfContained checks a library nobody compiles."""
+        literals = shader_literals(self.source())
+        code = _strip_comments(self.source())
+        built = {}
+        for expr in re.findall(r'newLibraryWithSource:(.*?)\boptions:', code, re.S):
+            names = [n for n in re.findall(r'\b(k\w+Src)\b', expr) if n in literals]
+            if names:
+                built.setdefault(names[-1], []).append(tuple(names[:-1]))
+        for lib, shared_names in sorted(_PREPENDED.items()):
+            self.assertIn(lib, built, '%s is never compiled' % lib)
+            self.assertEqual(built[lib], [shared_names],
+                             '%s is compiled as %s, not %s'
+                             % (lib, built[lib], shared_names))
 
     def testEachLibraryIsSelfContained(self):
         """Every helper a library calls is visible in shared + that library."""

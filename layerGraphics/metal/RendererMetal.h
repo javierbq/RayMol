@@ -196,6 +196,7 @@ public:
       int ortho = 0) override;
   void setLightingParams(float ambient, float direct, float reflect,
       float specular, float shininess, float sssWrap = 0.0f) override;
+  void setLightRig(const LightRigBlock* rig) override;
   void setKeyLightDir(const float* lightv) override;
   void setRayTraceParams(int samples, float aoRadius, float aoIntensity,
       float shadowIntensity, float scale = 1.0f) override;
@@ -249,11 +250,19 @@ public:
 
 private:
   void buildImpostorPipelines();
+  // The light rig's sphere pipelines (#613): one opaque and one OIT pipeline
+  // per material family, specialised from the retained sphere library the
+  // first time a rig-on frame draws spheres, so a session without lights
+  // never compiles them. One attempt per build (_sphereRigBuilt).
+  void ensureSphereRigPipelines();
+  void releaseSphereRigPipelines();
   // The cylinder VBO layout (stride/offsets/formats) varies with the rep, so
   // the cylinder pipeline is built lazily from the first draw call's layout
-  // and rebuilt only if a later call has a different stride.
+  // and rebuilt only if a later call has a different stride. `lightRig`
+  // builds the light rig's variant (#613), cached apart under its own key.
   void releaseCylinderPipelines();
-  void buildCylinderImpostorPipeline(const CylinderImpostorDrawCall& call);
+  void buildCylinderImpostorPipeline(const CylinderImpostorDrawCall& call,
+                                     bool lightRig = false);
   void buildLabelPipeline();
   // (Re)upload the glyph atlas to an MTLTexture if the generation changed.
   void ensureLabelAtlas(const unsigned char* pixels, int w, int h,
@@ -342,9 +351,22 @@ private:
   id<MTLFunction> _vboVertexFunc;
   id<MTLFunction> _vboFragmentFunc[cMaterialFamily_count] = {};
   // Fragment function specialised for one material family, or nil when the
-  // family has no implemented material or specialisation failed.
+  // family has no implemented material or specialisation failed. `lightRig`
+  // is the light rig's function constant (#613), always set: false for every
+  // classic pipeline.
   id<MTLFunction> materialFragmentFunction(
-      id<MTLLibrary> lib, NSString* name, int family);
+      id<MTLLibrary> lib, NSString* name, int family, bool lightRig = false);
+  // The light rig (#613): the VBO library is kept so the rig variants of
+  // vbo_fragment and vbo_fragment_oit are specialised only when a rig is
+  // first turned on (vboRigFragmentFunction, one attempt per family). The
+  // functions are borrowed by their callers; buildVBOPipelines and the dtor
+  // release them with the library (releaseVBORigFunctions).
+  id<MTLLibrary> _vboLibrary = nil;
+  id<MTLFunction> _vboFragmentRigFunc[cMaterialFamily_count] = {};
+  id<MTLFunction> _vboFragmentOitRigFunc[cMaterialFamily_count] = {};
+  bool _vboRigFuncTried[cMaterialFamily_count][2] = {};
+  id<MTLFunction> vboRigFragmentFunction(int family, bool oit);
+  void releaseVBORigFunctions();
   id<MTLFunction> _vboVertexUnlitFunc;   // flat-color (no normal) for lines/dots
   id<MTLFunction> _vboFragmentUnlitFunc;
   // Unlit, position-ONLY (no per-vertex color attribute): used for uniform-
@@ -360,6 +382,20 @@ private:
   // specialisation must not stop the other families, nor make every frame
   // recompile the library to retry it.
   bool _sphereImpostorsBuilt = false;
+  // What buildImpostorPipelines compiled, kept for the light rig's variants
+  // (#613): the library, and the opaque and OIT pipeline descriptors (which
+  // hold the vertex function and vertex descriptor), so a rig pipeline
+  // differs from its classic twin only in its fragment function. +1 owned;
+  // released by rebuildDrawPipelines and the dtor. Retaining them also ends
+  // the per-build leak of the library, functions and descriptors.
+  id<MTLLibrary> _sphereLib = nil;
+  MTLRenderPipelineDescriptor* _sphereOpaqueDesc = nil;
+  MTLRenderPipelineDescriptor* _sphereOitDesc = nil;
+  // The light rig's sphere pipelines (#613), per family; nil until a rig-on
+  // frame draws spheres (ensureSphereRigPipelines). +1 owned.
+  id<MTLRenderPipelineState> _sphereRigPipeline[cMaterialFamily_count] = {};
+  id<MTLRenderPipelineState> _sphereRigOitPipeline[cMaterialFamily_count] = {};
+  bool _sphereRigBuilt = false;
   // Cylinder impostor pipelines are cached PER VERTEX LAYOUT — (stride, a_cap
   // offset) — not in a single slot. a_cap's offset is part of the vertex
   // descriptor, so a stick VBO (per-vertex a_cap) and a CGO VBO (one constant
@@ -374,10 +410,13 @@ private:
     id<MTLRenderPipelineState> shadow = nil;
     id<MTLRenderPipelineState> peel = nil;   // depth-only, peel-depth format
   };
-  // Keyed by (stride, a_cap offset, MATERIAL FAMILY): a marble stick and a
-  // default stick at the same layout need different pipelines, and whichever
-  // drew first would otherwise decide how both looked.
-  std::map<std::tuple<NSUInteger, int, int>, CylinderPipelines> _cylinderPipelines;
+  // Keyed by (stride, a_cap offset, MATERIAL FAMILY, LIGHT RIG): a marble
+  // stick and a default stick at the same layout need different pipelines,
+  // and whichever drew first would otherwise decide how both looked. The
+  // light rig's variant (#613) is its own entry, built only while a rig is
+  // on; it has no shadow or peel pipeline (those passes never take the rig).
+  std::map<std::tuple<NSUInteger, int, int, bool>, CylinderPipelines>
+      _cylinderPipelines;
   id<MTLRenderPipelineState> _cylinderImpostorPipeline = nil; // alias, not owned
 
   // Post-processing: the scene renders to offscreen color+depth, then
@@ -458,18 +497,22 @@ private:
   id<MTLRenderPipelineState> _vboOitPipelineFloat[cMaterialFamily_count] = {};
   id<MTLFunction> _vboFragmentOitFunc[cMaterialFamily_count] = {};
   // Build a weighted-blended OIT MRT pipeline (vbo_vertex + vbo_fragment_oit)
-  // for an arbitrary vertex layout (e.g. the surface's stride-44 layout).
+  // for an arbitrary vertex layout (e.g. the surface's stride-44 layout);
+  // with `lightRig`, the light rig's variant (#613).
   id<MTLRenderPipelineState> oitPipelineForVD(
-      MTLVertexDescriptor* vd, int family);
+      MTLVertexDescriptor* vd, int family, bool lightRig = false);
   // Build-once cache for one-off VBO pipelines whose vertex layout does not match
   // a prebuilt stride (e.g. the molecular-surface stride-44 layout). Without it,
   // drawVBO/drawVBOIndexed rebuilt a pipeline on EVERY such draw — a per-frame
   // MRC leak plus the (significant) cost of pipeline-state compilation. The cache
   // OWNS each +1 pipeline; callers borrow. Released in setSampleCount + the dtor.
+  // `lightRig` asks for the light rig's variant of Lit or Oit (#613): its own
+  // cache entry, keyed apart only when set; a failed one is cached as nil so
+  // the draw falls back to the classic pipeline without retrying.
   enum class VBOPipelineVariant { Lit, Unlit, UnlitFlat, Oit, Shadow, Peel };
   id<MTLRenderPipelineState> cachedVBOPipeline(VBOPipelineVariant variant,
       size_t stride, int posOffset, int normalOffset, int colorOffset,
-      int colorType, MTLVertexDescriptor* vd);
+      int colorType, MTLVertexDescriptor* vd, bool lightRig = false);
   id<MTLRenderPipelineState> _sphereOitPipeline[cMaterialFamily_count] = {};
   id<MTLRenderPipelineState> _cylinderOitPipeline = nil; // alias, not owned
   NSUInteger _cylinderOitStride = 0;
@@ -486,8 +529,14 @@ private:
   };
   RefractParams refractParams() const;
   // Bind this rep's MaterialU for the draw about to be issued, and note when
-  // the draw is refracting glass inside the transparent pass.
+  // the draw is refracting glass inside the transparent pass. Outside the
+  // shadow and peel passes it also binds the light rig (bindLightRig).
   void bindRepMaterial();
+  // Bind this frame's light rig at fragment buffer kLightRigBufferIndex for
+  // the draw about to be issued, with head.z set to that draw's projection
+  // (1 = orthographic). Does nothing at all while the rig is off, so with no
+  // rig the command stream is exactly what it was before #613.
+  void bindLightRig(id<MTLRenderCommandEncoder> enc, int ortho);
   // --- Environment cubemap for the reflective materials (#493) ---
   // Six 128px RGBA16F faces with mipmaps, rebuilt only when material_env or
   // the background colour changes. Mipmaps are the roughness axis: a rough
@@ -706,6 +755,13 @@ private:
   id<MTLBuffer> _bezierTessFactors = nil;  // MTLQuadTessellationFactorsHalf/patch
   NSUInteger _bezierTessPatchCap = 0;      // patches the factor buffer covers
   void buildBezierTubePipeline();
+  // The tube under the light rig (#613): a separate library and pipeline
+  // (kMaterialSrc + kBezierTubeSrc + kBezierTubeRigSrc), so the classic tube
+  // above is untouched. Built lazily on the first rig-on tube draw, one
+  // attempt per build; released with the classic one.
+  id<MTLRenderPipelineState> _bezierTubeRigPipeline = nil;
+  bool _bezierTubeRigTried = false;
+  void buildBezierTubeRigPipeline();
   // Per-frame post params (fog/depth-cue + SSAO), set by SceneRenderMetal.
   int _postFogEnabled = 0;
   float _fogStart = 0.f, _fogEnd = 1.f;
@@ -760,6 +816,16 @@ private:
   // Defaults match the values the shaders previously hard-coded.
   float _lightAmbient = 0.14f, _lightDirect = 0.45f, _lightReflect = 0.481f;
   float _lightSpecular = 0.5f, _lightShininess = 55.0f;
+  // The studio light rig (#613): a value copy of this frame's packed rig,
+  // taken by setLightRig() at frame start (the off-main movie-export renderer
+  // holds no pointer into the scene). Valid only while _lightRigOn; off with
+  // no rig, with a rig that is off, and at every beginFrame until
+  // SceneRenderMetal sets it again.
+  bool _lightRigOn = false;
+  LightRigBlock _lightRigBlock{};
+  // A rig pipeline that cannot be built draws classic instead; this logs it
+  // once per renderer rather than once per draw.
+  bool _lightRigWarned = false;
   // Key-light direction TOWARD the light in eye space = -normalize(cSetting_light).
   // Default reproduces the previously hard-coded normalize(0.4,0.4,1.0), which is
   // exactly -normalize(PyMOL's default light). Fed into every lit/shadow/RT shader.
@@ -957,6 +1023,15 @@ private:
   void buildRTPipelines(bool transparent, id<MTLRenderPipelineState>* ao,
       id<MTLRenderPipelineState>* composite);
   void releaseRayTracingTransAS();
+  // The light rig on traced reflection hits (#613): rt_composite specialised
+  // with kRTLightRig, default and transparent, each built the first time a
+  // rig-on frame has something reflective (one attempt each). Used only then;
+  // every other frame keeps _rtResolvePipeline / _rtResolvePipelineT.
+  id<MTLRenderPipelineState> _rtResolvePipelineRig = nil;
+  id<MTLRenderPipelineState> _rtResolvePipelineTRig = nil;
+  bool _rtRigTried = false;
+  bool _rtRigTTried = false;
+  id<MTLRenderPipelineState> buildRTRigComposite(bool transparent);
 
   // Drop the cached RT geometry derived from a CPU buffer that is about to be
   // freed (or whose contents changed). Handles both primary and alias keys.

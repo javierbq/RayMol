@@ -1,0 +1,12 @@
+{
+  "comment": "#613 review round 1: no rig, with the classic settings at decision 15's terms for the scene files' rig (ambient 0.06, classic 0: direct, reflect and specular 0). Each <s>_d15_rt<n> must equal the rig-on dark twin <s>_dark_rt<n> (lighting_613.json, or lighting_613_params.json for surfdots_glass) within 1 level: the rig variant of each material family keeps the family's own look, and a variant that failed to build (and fell back) would not. The default family (cartoon) is the control; procedural (marble), reflective (metallic, rt0 and rt1) and clear glass on sphere impostors (surface dots) are the families with their own rig specialisations. Jelly is left out: its own shading ends in the soft knee and the rig path knees again (light_finish), which moves its brightest pixels by up to 20 levels even with every light at 0 (a proposed follow-up). Checked with scripts/lighting/check_lit.py d15.",
+  "base": null,
+  "rig": "none",
+  "scenes": [
+    {"tag": "cartoon_d15_rt0", "from": "cartoon_rt0", "lines": ["cmd.color('grey80', 'm')", "cmd.set('ambient', 0.06)", "cmd.set('direct', 0.0)", "cmd.set('reflect', 0.0)", "cmd.set('specular', 0.0)"]},
+    {"tag": "cartoon_marble_d15_rt0", "from": "cartoon_rt0", "lines": ["cmd.set('cartoon_material', 'marble')", "cmd.color('grey80', 'm')", "cmd.set('ambient', 0.06)", "cmd.set('direct', 0.0)", "cmd.set('reflect', 0.0)", "cmd.set('specular', 0.0)"]},
+    {"tag": "spheres_metallic_d15_rt0", "from": "spheres_rt0", "lines": ["cmd.set('sphere_material', 'metallic')", "cmd.color('grey80', 'm')", "cmd.set('ambient', 0.06)", "cmd.set('direct', 0.0)", "cmd.set('reflect', 0.0)", "cmd.set('specular', 0.0)"]},
+    {"tag": "spheres_metallic_d15_rt1", "from": "spheres_rt1", "lines": ["cmd.set('sphere_material', 'metallic')", "cmd.color('grey80', 'm')", "cmd.set('ambient', 0.06)", "cmd.set('direct', 0.0)", "cmd.set('reflect', 0.0)", "cmd.set('specular', 0.0)"]},
+    {"tag": "surfdots_glass_d15_rt0", "from": "surface_rt0", "lines": ["cmd.set('surface_type', 1)", "cmd.set('dot_as_spheres', 1)", "cmd.set('surface_material', 'glass')", "cmd.color('grey80', 'm')", "cmd.set('ambient', 0.06)", "cmd.set('direct', 0.0)", "cmd.set('reflect', 0.0)", "cmd.set('specular', 0.0)"]}
+  ]
+}

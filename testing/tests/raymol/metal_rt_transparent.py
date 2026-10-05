@@ -97,7 +97,12 @@ class TestTheDefaultIsCompiledOut(testing.PyMOLTestCase):
         self.assertRegex(src, r'const bool doRTTrans = doRT && _rtTransparent && _rtTReady && '
                               r'_rtTransAS &&\s*_rtAOPipelineT && _rtResolvePipelineT;')
         self.assertIn('setRenderPipelineState:doRTTrans ? _rtAOPipelineT : _rtAOPipeline]', src)
-        self.assertIn('setRenderPipelineState:doRTTrans ? _rtResolvePipelineT : _rtResolvePipeline]', src)
+        # the composite is picked into a local first: the light rig (#613)
+        # swaps in its own variant of the same pair while a rig is on
+        # (lighting_msl.py checks that part)
+        self.assertRegex(src, r'id<MTLRenderPipelineState> composite =\s*'
+                              r'doRTTrans \? _rtResolvePipelineT : _rtResolvePipeline;')
+        self.assertIn('[er setRenderPipelineState:composite];', src)
 
     def testEveryUseOfTheTransparentStructureIsBehindTheConstant(self):
         """The declarations are gated (above), and so must every read be: the

@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <vector>
 
+#include <glm/gtc/type_ptr.hpp>
+
 #include "AtomInfo.h"
 #include "CGO.h"
 #include "Control.h"
@@ -21,6 +23,7 @@
 #include "Picking.h"
 #include "PyMOLOptions.h"
 #include "Scene.h"
+#include "SceneLights.h"
 #include "ScenePicking.h"
 #include "SceneRay.h"
 #include "ShaderMgr.h"
@@ -2416,16 +2419,20 @@ void SceneRenderMetal(PyMOLGlobals* G)
     // as rounded/lumpy (issue #72). The Metal lit shader applies specular only
     // from the reflect light (direct spec is 0, matching GL's default), so we
     // pass the adjusted reflect specular/shininess into the spec/shininess slots.
-    float specReflect, specPower, specDirect, specDirectPower;
-    SceneGetAdjustedLightValues(
-        G, &specReflect, &specPower, &specDirect, &specDirectPower);
-    G->Renderer->setLightingParams(
-        SettingGetGlobal_f(G, cSetting_ambient),
-        SettingGetGlobal_f(G, cSetting_direct),
-        SettingGetGlobal_f(G, cSetting_reflect),
-        specReflect,
-        specPower,
-        SettingGetGlobal_f(G, cSetting_metal_sss_wrap));
+    //
+    // Light rig (#613): SceneLightsFrame() performs exactly those reads and
+    // reads the rig ONCE per frame, resolved with THIS frame's render
+    // modelview; the renderer keeps only a value copy of the packed block
+    // (movie export renders off-main). While the rig is on, decision 15
+    // applies to the classic terms here, the single place they enter the
+    // Metal renderer. No rig, or a rig that is off: the settings bit for bit,
+    // no resolve and no block.
+    const SceneLightFrame lights =
+        SceneLightsFrame(G, glm::dmat4(glm::make_mat4(mv)));
+    G->Renderer->setLightingParams(lights.classic.ambient,
+        lights.classic.direct, lights.classic.reflect, lights.classic.specular,
+        lights.shininess, SettingGetGlobal_f(G, cSetting_metal_sss_wrap));
+    G->Renderer->setLightRig(lights.rig ? &*lights.rig : nullptr);
     // Key-light direction: feed cSetting_light so shading AND shadows follow it
     // (and become user-adjustable via `set light`). The renderer stores
     // -normalize(light) as the direction toward the light; PyMOL's default light

@@ -79,12 +79,15 @@ jobs:
               testing/tests/raymol/inspector_command_names.py \
               testing/tests/raymol/inspector_materials.py \
               testing/tests/raymol/lighting_bridge.py \
+              testing/tests/raymol/lighting_check.py \
               testing/tests/raymol/lighting_eye.py \
               testing/tests/raymol/lighting_harness.py \
+              testing/tests/raymol/lighting_msl.py \
               testing/tests/raymol/lighting_pick.py \
               testing/tests/raymol/lighting_ray_notice.py \
               testing/tests/raymol/lighting_rig.py \
               testing/tests/raymol/lighting_session.py \
+              testing/tests/raymol/lighting_shading.py \
               testing/tests/raymol/line_stick_helper.py \
               testing/tests/raymol/material_custom.py \
               testing/tests/raymol/material_docs.py \
