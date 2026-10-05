@@ -197,6 +197,12 @@ public:
   void setLightingParams(float ambient, float direct, float reflect,
       float specular, float shininess, float sssWrap = 0.0f) override;
   void setLightRig(const LightRigBlock* rig) override;
+  // Per-light shadow maps (#616): see Renderer.h. The maps are chained slices
+  // of one array (beginLightShadowMap per slot), and one scene-pass reopen
+  // (endLightShadowMaps) ends them.
+  void setLightShadowFrame(bool studioShadows, int mapSize) override;
+  bool beginLightShadowMap(int slot, const float* view) override;
+  void endLightShadowMaps() override;
   void setKeyLightDir(const float* lightv) override;
   void setRayTraceParams(int samples, float aoRadius, float aoIntensity,
       float shadowIntensity, float scale = 1.0f) override;
@@ -860,6 +866,33 @@ private:
   bool _lightShadowMapsReady = false;
   bool _lightShadowWarned = false;
   bool lightShadowsReady() const;
+  // Studio shadows are on this frame (setLightShadowFrame; cleared at every
+  // beginFrame): the whole-pixel shadow is then off, raster and traced
+  // (runPostChain), whether or not the maps could be rendered.
+  bool _lightStudioShadows = false;
+  // Each map's texels per side this frame (setLightShadowFrame).
+  int _lightShadowSize = 0;
+  // The maps: one Depth32Float 2D array of kLightRigBlockShadowSlots slices,
+  // allocated on the first frame with maps and reallocated only when the size
+  // changes (kept across frames without maps). _lightShadowArrayFailedSize
+  // remembers a size that could not be allocated (logged once, not retried).
+  id<MTLTexture> _lightShadowArray = nil;
+  int _lightShadowArraySize = 0;
+  int _lightShadowArrayFailedSize = 0;
+  MTLRenderPassDescriptor* _lightShadowPassDesc = nil;
+  bool ensureLightShadowArray();
+  // The map pass of this frame. _lightShadowSlotOpen: the slot whose slice is
+  // the attachment (-1 outside the pass); while it is >= 0, loadMatrixf and
+  // loadIdentity store _lightShadowView x M in modelview mode (light-facing
+  // impostor casters) and the impostor draws use u.ortho = 0.
+  // _lightShadowPassActive: the scene encoder was ended for the pass, so
+  // endLightShadowMaps must reopen it. The maps are ready only when every
+  // planned slice (head.w) was opened and nothing failed.
+  int _lightShadowSlotOpen = -1;
+  float _lightShadowView[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+  bool _lightShadowPassActive = false;
+  int _lightShadowSlicesOpened = 0;
+  bool _lightShadowFailed = false;
   // Key-light direction TOWARD the light in eye space = -normalize(cSetting_light).
   // Default reproduces the previously hard-coded normalize(0.4,0.4,1.0), which is
   // exactly -normalize(PyMOL's default light). Fed into every lit/shadow/RT shader.

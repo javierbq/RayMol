@@ -518,10 +518,12 @@ RendererMetal::~RendererMetal()
   [_rtAO release];           [_rtAOHistory release];    [_rtAOAccum release];
   [_dofTex release];
   [_shadowDepth release];    [_labelAtlas release];
+  [_lightShadowArray release]; // the studio shadow maps (#616)
 
   // Render-pass descriptors ([[MTLRenderPassDescriptor alloc] init], +1).
   [_scenePassDesc release];  [_oitPassDesc release];    [_shadowPassDesc release];
   [_peelPassDesc release];   [_oitPeelPassDesc release];
+  [_lightShadowPassDesc release];
 
   // Pipeline states (newRenderPipelineStateWithDescriptor, +1).
   [_batchPipeline release];
@@ -895,6 +897,18 @@ void RendererMetal::bindLightRig(id<MTLRenderCommandEncoder> enc, int ortho)
   // projection can change within a frame.
   LightRigBlock block = _lightRigBlock;
   block.head[2] = ortho ? 1.0f : 0.0f;
+  // This frame's studio shadow maps (#616), with the pipelines' predicate
+  // (lightShadowsReady): bindLightRig is reached only outside the shadow and
+  // peel passes, so the array is never read while a slice is the attachment.
+  // Without a grid each map is the whole slice.
+  if (_lightShadowMapsReady) {
+    block.shadowTile[0] = 0.0f;
+    block.shadowTile[1] = 0.0f;
+    block.shadowTile[2] = 1.0f;
+    block.shadowTile[3] = 1.0f;
+    [enc setFragmentTexture:_lightShadowArray atIndex:kLightShadowTextureIndex];
+    [enc setFragmentSamplerState:_shadowSampler atIndex:kLightShadowSamplerIndex];
+  }
   [enc setFragmentBytes:&block length:sizeof(block) atIndex:kLightRigBufferIndex];
 }
 
@@ -1049,6 +1063,11 @@ void RendererMetal::beginFrame()
   _lightRigOn = false;
   // So are its studio shadow maps (#616): no frame reads another's.
   _lightShadowMapsReady = false;
+  _lightStudioShadows = false;
+  _lightShadowSlotOpen = -1;
+  _lightShadowPassActive = false;
+  _lightShadowSlicesOpened = 0;
+  _lightShadowFailed = false;
   // Start this frame's geometry record. Only the LIST of contributing cache
   // entries is re-accumulated during the opaque pass; the geometry itself stays
   // in _rtGeomCache and is touched again only when that list changes.
@@ -2395,6 +2414,14 @@ void RendererMetal::setLightRig(const LightRigBlock* rig)
   _lightRigOn = rig && rig->head[0] >= 1.0f;
   if (_lightRigOn)
     _lightRigBlock = *rig;
+}
+
+void RendererMetal::setLightShadowFrame(bool studioShadows, int mapSize)
+{
+  // Two scalars and nothing else: no GPU call, no allocation (the array is
+  // allocated by the first beginLightShadowMap that needs it).
+  _lightStudioShadows = studioShadows;
+  _lightShadowSize = studioShadows && mapSize > 0 ? mapSize : 0;
 }
 
 void RendererMetal::setKeyLightDir(const float* lightv)
@@ -4268,7 +4295,9 @@ void RendererMetal::runPostChain()
   static bool noShadow = getenv("PYMOL_NO_SHADOW") != nullptr;
   bool doAO = _ssaoPipeline && _aoEnabled && !noAO;
   bool doFog = _ssaoPipeline && _postFogEnabled;
-  bool doShadow = _ssaoPipeline && _shadowEnabled && !noShadow;
+  // Studio shadows (#616) replace the whole-pixel shadow: while any is on,
+  // neither the raster map nor the traced key-light ray darkens the frame.
+  bool doShadow = _ssaoPipeline && _shadowEnabled && !noShadow && !_lightStudioShadows;
   // The shadow MAP may only be sampled when this frame rendered it. In
   // grid_mode the pre-pass is skipped, so the raster path renders unshadowed
   // and the RT path keeps only its traced shadow (metal_rt_shadows).
@@ -4342,7 +4371,8 @@ void RendererMetal::runPostChain()
     // metal_rt_shadows: trace a hard shadow ray in rt_ao instead of sampling the
     // shadow map in rt_composite. Only meaningful when shadows are on (the
     // composite still gates on shadowIntensity). Default off -> shadow-map path.
-    u.rtShadow = _rtShadowEnabled ? 1.0f : 0.0f;
+    // Studio shadows (#616) switch the traced key-light shadow off as well.
+    u.rtShadow = (_rtShadowEnabled && !_lightStudioShadows) ? 1.0f : 0.0f;
     std::memcpy(u.lightViewProj, _lightViewProjEye, 16 * sizeof(float));
     u.shadowRadius = _shadowRadius;
     u.shadowBias = _shadowBias;
@@ -5386,6 +5416,168 @@ void RendererMetal::endShadowPass()
 }
 
 // ---------------------------------------------------------------------------
+#pragma mark - Studio shadow maps (#616)
+// ---------------------------------------------------------------------------
+//
+// One perspective depth map per shadowed light of the rig, each a slice of
+// one Depth32Float 2D array. SceneRenderMetal (SceneRenderLightShadowMaps)
+// calls beginLightShadowMap for each slot in turn -- the slices are chained,
+// never reopening the scene pass between them -- then endLightShadowMaps once,
+// which reopens the scene pass with CLEAR exactly as endShadowPass does. The
+// classic whole-pixel pass (beginShadowPass/endShadowPass) is untouched and
+// never runs in the same frame (studio shadows switch it off).
+
+bool RendererMetal::ensureLightShadowArray()
+{
+  const int size = _lightShadowSize;
+  if (size <= 0)
+    return false;
+  if (_lightShadowArray && _lightShadowArraySize == size)
+    return true;
+  if (size == _lightShadowArrayFailedSize)
+    return false;
+  // A size change: the old maps go (an in-flight command buffer keeps its own
+  // reference until it completes).
+  [_lightShadowArray release];
+  _lightShadowArray = nil;
+  _lightShadowArraySize = 0;
+  MTLTextureDescriptor* d = [[MTLTextureDescriptor alloc] init];
+  d.textureType = MTLTextureType2DArray;
+  d.pixelFormat = MTLPixelFormatDepth32Float;
+  d.width = (NSUInteger)size;
+  d.height = (NSUInteger)size;
+  d.arrayLength = kLightRigBlockShadowSlots;
+  d.mipmapLevelCount = 1;
+  d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+  d.storageMode = MTLStorageModePrivate;
+  _lightShadowArray = [_device newTextureWithDescriptor:d];
+  [d release];  // MRC: descriptor (+1) consumed by texture creation
+  if (!_lightShadowArray) {
+    _lightShadowArrayFailedSize = size;
+    NSLog(@"RendererMetal: studio shadow maps (%dx%d x %d) allocation failed; "
+          @"drawing the rig without its shadow maps", size, size,
+          kLightRigBlockShadowSlots);
+    return false;
+  }
+  _lightShadowArraySize = size;
+  _lightShadowArrayFailedSize = 0;
+  if (!_lightShadowPassDesc) {
+    _lightShadowPassDesc = [[MTLRenderPassDescriptor alloc] init];
+    _lightShadowPassDesc.depthAttachment.clearDepth = 1.0;
+    _lightShadowPassDesc.depthAttachment.storeAction = MTLStoreActionStore;
+  }
+  _lightShadowPassDesc.depthAttachment.texture = _lightShadowArray;
+  return true;
+}
+
+bool RendererMetal::beginLightShadowMap(int slot, const float* view)
+{
+  if (slot < 0 || slot >= kLightRigBlockShadowSlots || !view)
+    return false;
+  if (!_cmdBuffer || !_lightRigOn || !_lightStudioShadows)
+    return false;
+  buildShadowPipelines();  // no-op if already built
+  // Everything that can fail before the open encoder is ended: the depth-only
+  // pipelines, the compare sampler the shading samples the maps with (built
+  // with the post pipelines) and the array.
+  if (!_vboShadowPipelineUByte || !_shadowSampler) {
+    if (!_lightShadowWarned) {
+      NSLog(@"RendererMetal: studio shadow maps failed: no depth-only pipeline or "
+            @"compare sampler; drawing the rig without its shadow maps");
+      _lightShadowWarned = true;
+    }
+    _lightShadowFailed = true;
+    return false;
+  }
+  if (!ensureLightShadowArray()) {
+    _lightShadowFailed = true;
+    return false;
+  }
+  // End the open encoder: the frame's clear-only scene encoder for the first
+  // slice, the previous slice after that.
+  if (_encoder) { [_encoder endEncoding]; _encoder = nil; }
+  _lightShadowPassActive = true;
+  _lightShadowPassDesc.depthAttachment.slice = (NSUInteger)slot;
+  _lightShadowPassDesc.depthAttachment.loadAction = MTLLoadActionClear;
+  _passDesc = _lightShadowPassDesc;
+  _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:_lightShadowPassDesc];
+  // Should anything reopen the encoder mid-slice (ensureEncoder), it must keep
+  // what the slice already holds.
+  _lightShadowPassDesc.depthAttachment.loadAction = MTLLoadActionLoad;
+  bindNeutralMaterialU(_encoder);
+  // The environment every reflective material samples (#493), with the
+  // neutral material, as on every encoder.
+  bindEnvironment(_encoder);
+  // The pass state stays set even without an encoder, so endLightShadowMaps
+  // still reopens the scene pass.
+  _shadowMode = true;
+  _lightShadowSlotOpen = slot;
+  std::memcpy(_lightShadowView, view, sizeof(_lightShadowView));
+  if (!_encoder) {
+    _lightShadowFailed = true;
+    return false;
+  }
+  ++_lightShadowSlicesOpened;
+  const double side = (double)_lightShadowArraySize;
+  MTLViewport vp = {0.0, 0.0, side, side, 0.0, 1.0};
+  [_encoder setViewport:vp];
+  MTLScissorRect sr = {0, 0, (NSUInteger)_lightShadowArraySize,
+                       (NSUInteger)_lightShadowArraySize};
+  [_encoder setScissorRect:sr];
+  if (!_shadowDepthState) {
+    MTLDepthStencilDescriptor* d = [[MTLDepthStencilDescriptor alloc] init];
+    d.depthCompareFunction = MTLCompareFunctionLess;
+    d.depthWriteEnabled = YES;
+    _shadowDepthState = [_device newDepthStencilStateWithDescriptor:d];
+    [d release];  // MRC: descriptor (+1) consumed by state creation
+  }
+  [_encoder setDepthStencilState:_shadowDepthState];
+  [_encoder setCullMode:MTLCullModeNone];
+  return true;
+}
+
+void RendererMetal::endLightShadowMaps()
+{
+  // No slice was opened: the scene encoder is still the frame's own.
+  if (!_lightShadowPassActive)
+    return;
+  _lightShadowPassActive = false;
+  if (_encoder) { [_encoder endEncoding]; _encoder = nil; }
+  _shadowMode = false;
+  _lightShadowSlotOpen = -1;
+  // Ready only when every planned map (head.w) was rendered: a light whose
+  // map is missing would otherwise sample a slice nobody cleared.
+  _lightShadowMapsReady = _lightRigOn && !_lightShadowFailed &&
+                          _lightShadowSlicesOpened > 0 &&
+                          _lightShadowSlicesOpened == (int)_lightRigBlock.head[3];
+  // Re-open the scene pass with a fresh CLEAR, as endShadowPass does (the
+  // statements below are its own, copied verbatim; CI compares them).
+  _passDesc = _scenePassDesc;
+  _scenePassDesc.colorAttachments[0].loadAction = MTLLoadActionClear;
+  _scenePassDesc.colorAttachments[0].clearColor =
+      MTLClearColorMake(_clearR, _clearG, _clearB, _clearA);
+  _scenePassDesc.depthAttachment.loadAction = MTLLoadActionClear;
+  _scenePassDesc.depthAttachment.clearDepth = 1.0;
+  _scenePassDesc.stencilAttachment.loadAction = MTLLoadActionClear;
+  _scenePassDesc.stencilAttachment.clearStencil = 0;
+  _encoder = [_cmdBuffer renderCommandEncoderWithDescriptor:_scenePassDesc];
+  bindNeutralMaterialU(_encoder);
+  // The environment every reflective material samples (#493). Bound with the
+  // neutral material so no encoder can exist without it, and identical on the
+  // scene and OIT passes -- a reflective object must reflect the same room
+  // whichever pass draws it.
+  bindEnvironment(_encoder);
+  if (_encoder) {
+    [_encoder setViewport:_viewport];
+    _depthTestEnabled = true;
+    _depthWriteEnabled = true;
+    _depthStencilDirty = true;
+    applyDepthStencilState();
+    [_encoder setCullMode:_cullFaceEnabled ? MTLCullModeBack : MTLCullModeNone];
+  }
+}
+
+// ---------------------------------------------------------------------------
 #pragma mark - Viewport and clear
 // ---------------------------------------------------------------------------
 
@@ -6176,6 +6368,10 @@ void RendererMetal::loadIdentity()
 {
   if (_matrixMode == 0) {
     _modelviewMatrix = identityMatrix();
+    // While a studio shadow map is open (#616) every modelview is seen from
+    // its light: the map's eye-space view, premultiplied (see loadMatrixf).
+    if (_lightShadowSlotOpen >= 0)
+      std::memcpy(_modelviewMatrix.data(), _lightShadowView, 16 * sizeof(float));
   } else {
     _projectionMatrix = identityMatrix();
   }
@@ -6186,6 +6382,17 @@ void RendererMetal::loadMatrixf(const float* m)
   if (!m) return;
   Mat4& mat = (_matrixMode == 0) ? _modelviewMatrix : _projectionMatrix;
   std::memcpy(mat.data(), m, 16 * sizeof(float));
+  // While a studio shadow map is open (#616), the modelview is premultiplied
+  // by the map's view (camera eye space -> the light's view): every reload --
+  // the scene's camera, an object's TTT, a matrix pop -- comes through here,
+  // so VBO geometry lands in the light's clip space and sphere and cylinder
+  // impostors face the light and ray-cast from it, with no new shaders. The
+  // view is rigid, so the impostors' radius scale holds.
+  if (_matrixMode == 0 && _lightShadowSlotOpen >= 0) {
+    Mat4 lightView;
+    std::memcpy(lightView.data(), _lightShadowView, 16 * sizeof(float));
+    mat = multiplyMatrices(lightView, mat);
+  }
   if (_matrixMode == 0) {
     // Keep the inverse modelview current for ray tracing (eye → model space).
     // Column-major layout matches simd_float4x4.
@@ -10251,7 +10458,9 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
   u.lSSSWrap = _sssWrap;
   u.klx = _keyLightEye[0]; u.kly = _keyLightEye[1]; u.klz = _keyLightEye[2];
   u.sphere_size_scale = call.sphereSizeScale;
-  u.ortho = (float)call.ortho;
+  // A studio shadow map (#616) is a perspective view from its light: the
+  // impostors ray-cast from the light, whatever the camera's projection.
+  u.ortho = _lightShadowSlotOpen >= 0 ? 0.0f : (float)call.ortho;
   // Projection is GL-convention ([-1,1] clip Z): remap to [0,1] for Metal's
   // fragment depth (matches the GL sphere.fs `0.5 + 0.5 * clipZ/clipW`).
   u.depthZeroToOne = 0.0f;
@@ -11069,7 +11278,8 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
   u.lSSSWrap = _sssWrap;
   u.klx = _keyLightEye[0]; u.kly = _keyLightEye[1]; u.klz = _keyLightEye[2];
   u.uni_radius = call.uniRadius;
-  u.ortho = (float)call.ortho;
+  // A studio shadow map (#616): ray-cast from its light (as the spheres).
+  u.ortho = _lightShadowSlotOpen >= 0 ? 0.0f : (float)call.ortho;
   u.depthZeroToOne = 0.0f; // GL-convention clip Z (matches the sphere path)
   u.no_flat_caps = (float)call.noFlatCaps;
   // Negative tells the shader to read a_cap per-vertex (attribute 6) instead.

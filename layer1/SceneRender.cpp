@@ -2161,6 +2161,51 @@ static glm::mat4 SceneBuildLightViewProjEye(PyMOLGlobals* G, float* outRadius = 
   return lightProj * lightView;
 }
 
+/*
+ * The studio shadow pre-pass (#616): one perspective depth map per shadowed
+ * light of the rig, each in its own slice of the renderer's map array
+ * (`shadows` is this frame's plan, SceneLightsFrame). For each slot the
+ * renderer opens the slice (beginLightShadowMap), then the light's projection
+ * and the camera modelview are loaded -- the renderer premultiplies the
+ * light's view onto every modelview while the slice is open, so impostors
+ * face the light -- and the opaque geometry is drawn, depth only, without the
+ * overlays (#433: gadgets, gizmos and the Move gizmo never cast). One reopen
+ * of the scene pass ends the maps (endLightShadowMaps), and the camera
+ * matrices are restored.
+ *
+ * Grid frames get no studio maps yet (the per-cell tile atlas is Part 5 of
+ * #616): their lights are drawn unshadowed, and the whole-pixel shadow stays
+ * off.
+ */
+static void SceneRenderLightShadowMaps(PyMOLGlobals* G,
+    SceneUnitContext* context, float* normal,
+    const pymol::LightShadowFrame& shadows)
+{
+  CScene* I = G->Scene;
+  if (I->grid.active)
+    return;
+  const std::vector<pymol::CObject*> overlays = SceneLightShadowOverlays(G);
+  const float* mv = SceneGetModelViewMatrixPtr(G);
+  for (int slot = 0; slot < shadows.count; ++slot) {
+    if (!G->Renderer->beginLightShadowMap(
+            slot, glm::value_ptr(shadows.view[slot].view)))
+      break;
+    G->Renderer->matrixMode(0x1701); // PROJECTION = the light's perspective
+    G->Renderer->loadMatrixf(glm::value_ptr(shadows.view[slot].proj));
+    G->Renderer->matrixMode(0x1700); // MODELVIEW = camera (x the light's view)
+    G->Renderer->loadMatrixf(mv);
+    SceneRenderAll(G, context, normal, nullptr, RenderPass::Opaque, false, 0.0f,
+        &I->grid, 0, SceneRenderWhich::All, SceneRenderOrder::GadgetsLast,
+        nullptr, &overlays);
+  }
+  G->Renderer->endLightShadowMaps();
+  // Restore the camera matrices for the normal scene pass.
+  G->Renderer->matrixMode(0x1701);
+  G->Renderer->loadMatrixf(SceneGetProjectionMatrixPtr(G));
+  G->Renderer->matrixMode(0x1700);
+  G->Renderer->loadMatrixf(mv);
+}
+
 /*========================================================================
  * SceneRenderMetal: Lightweight render path for Metal backend.
  *
@@ -2466,6 +2511,9 @@ void SceneRenderMetal(PyMOLGlobals* G)
         lights.classic.direct, lights.classic.reflect, lights.classic.specular,
         lights.shininess, SettingGetGlobal_f(G, cSetting_metal_sss_wrap));
     G->Renderer->setLightRig(lights.rig ? &*lights.rig : nullptr);
+    // Studio shadows (#616): whether they are on (the whole-pixel shadow is
+    // then off) and each map's size. Two scalars; false and 0 with no rig.
+    G->Renderer->setLightShadowFrame(lights.studioShadows, lights.shadowMapSize);
     // Key-light direction: feed cSetting_light so shading AND shadows follow it
     // (and become user-adjustable via `set light`). The renderer stores
     // -normalize(light) as the direction toward the light; PyMOL's default light
@@ -2516,7 +2564,14 @@ void SceneRenderMetal(PyMOLGlobals* G)
   // can't be made per-cell, and a shared map would leak shadows between cells
   // (an object visible only in cell B darkening an object in cell A). Grid mode
   // therefore renders unshadowed (geometry-only parity for now).
-  if (!I->grid.active && SettingGetGlobal_b(G, cSetting_metal_shadows)) {
+  //
+  // Studio shadows (#616) replace it: while the rig has a shadowed light (and
+  // metal_shadows is on), each such light renders its own map instead
+  // (SceneRenderLightShadowMaps), and this whole-pixel pass does not run.
+  if (lights.shadows) {
+    SceneRenderLightShadowMaps(G, &context, normal, *lights.shadows);
+  } else if (!lights.studioShadows && !I->grid.active &&
+             SettingGetGlobal_b(G, cSetting_metal_shadows)) {
     float shadowRadius = 1.0f;
     glm::mat4 lightVP_eye = SceneBuildLightViewProjEye(G, &shadowRadius);
     const float* mvp = SceneGetModelViewMatrixPtr(G);
