@@ -202,6 +202,7 @@ public:
   // (endLightShadowMaps) ends them.
   void setLightShadowFrame(bool studioShadows, int mapSize) override;
   bool beginLightShadowMap(int slot, const float* view) override;
+  void setLightShadowViewport(int x, int y, int w, int h) override;
   void endLightShadowMaps() override;
   void setKeyLightDir(const float* lightv) override;
   void setRayTraceParams(int samples, float aoRadius, float aoIntensity,
@@ -893,6 +894,11 @@ private:
   bool _lightShadowPassActive = false;
   int _lightShadowSlicesOpened = 0;
   bool _lightShadowFailed = false;
+  // The grid cell the following draws belong to (grid_mode): stored by
+  // setGridSlot before anything else, 0 outside the grid loops (beginFrame
+  // and the loops' setGridSlot(0)). bindLightRig picks that cell's tile of
+  // the studio maps from it (shadowTile).
+  int _currentGridSlot = 0;
   // Key-light direction TOWARD the light in eye space = -normalize(cSetting_light).
   // Default reproduces the previously hard-coded normalize(0.4,0.4,1.0), which is
   // exactly -normalize(PyMOL's default light). Fed into every lit/shadow/RT shader.

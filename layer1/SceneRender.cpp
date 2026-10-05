@@ -2173,17 +2173,21 @@ static glm::mat4 SceneBuildLightViewProjEye(PyMOLGlobals* G, float* outRadius = 
  * of the scene pass ends the maps (endLightShadowMaps), and the camera
  * matrices are restored.
  *
- * Grid frames get no studio maps yet (the per-cell tile atlas is Part 5 of
- * #616): their lights are drawn unshadowed, and the whole-pixel shadow stays
- * off.
+ * grid_mode (decision D7 of #616): each map is a tile atlas, still one pass
+ * per light. Every cell draws its own objects into its own tile (the encoder
+ * viewport and scissor, in map pixels, through setLightShadowViewport) with
+ * I->grid.slot set to the cell, so SceneRenderAll picks that cell's objects
+ * and states as the grid loops do. A cell is therefore shadowed only by its
+ * own objects: the draws of cell c read tile c (bindLightRig, from the cell
+ * setGridSlot stored). Neither SceneSetMetalGridCell nor setGridSlot is
+ * called here: the camera viewport and the ray tracer's cell table are the
+ * scene passes' own. Each cell gets floor(size / tiles)² texels.
  */
 static void SceneRenderLightShadowMaps(PyMOLGlobals* G,
     SceneUnitContext* context, float* normal,
     const pymol::LightShadowFrame& shadows)
 {
   CScene* I = G->Scene;
-  if (I->grid.active)
-    return;
   const std::vector<pymol::CObject*> overlays = SceneLightShadowOverlays(G);
   const float* mv = SceneGetModelViewMatrixPtr(G);
   for (int slot = 0; slot < shadows.count; ++slot) {
@@ -2194,9 +2198,25 @@ static void SceneRenderLightShadowMaps(PyMOLGlobals* G,
     G->Renderer->loadMatrixf(glm::value_ptr(shadows.view[slot].proj));
     G->Renderer->matrixMode(0x1700); // MODELVIEW = camera (x the light's view)
     G->Renderer->loadMatrixf(mv);
-    SceneRenderAll(G, context, normal, nullptr, RenderPass::Opaque, false, 0.0f,
-        &I->grid, 0, SceneRenderWhich::All, SceneRenderOrder::GadgetsLast,
-        nullptr, &overlays);
+    if (I->grid.active) {
+      for (int cell = I->grid.first_slot; cell <= I->grid.last_slot; ++cell) {
+        const pymol::LightShadowTile tile = pymol::LightShadowTileRect(
+            cell - I->grid.first_slot, shadows.tiles, shadows.size);
+        if (tile.size <= 0)
+          continue;
+        G->Renderer->setLightShadowViewport(
+            tile.x, tile.y, tile.size, tile.size);
+        I->grid.slot = cell;
+        SceneRenderAll(G, context, normal, nullptr, RenderPass::Opaque, false,
+            0.0f, &I->grid, 0, SceneRenderWhich::All,
+            SceneRenderOrder::GadgetsLast, nullptr, &overlays);
+      }
+      I->grid.slot = 0;
+    } else {
+      SceneRenderAll(G, context, normal, nullptr, RenderPass::Opaque, false,
+          0.0f, &I->grid, 0, SceneRenderWhich::All,
+          SceneRenderOrder::GadgetsLast, nullptr, &overlays);
+    }
   }
   G->Renderer->endLightShadowMaps();
   // Restore the camera matrices for the normal scene pass.

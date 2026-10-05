@@ -13,6 +13,7 @@
 #include <iterator>
 #include "MyPNG.h"
 #include "Image.h"
+#include "LightShadows.h"
 
 // MaterialU, the fragment-stage mirror of MaterialParams (#503). Mirrored field
 // for field by the `MaterialU` struct in every lit MSL library; the inverse
@@ -900,12 +901,24 @@ void RendererMetal::bindLightRig(id<MTLRenderCommandEncoder> enc, int ortho)
   // This frame's studio shadow maps (#616), with the pipelines' predicate
   // (lightShadowsReady): bindLightRig is reached only outside the shadow and
   // peel passes, so the array is never read while a slice is the attachment.
-  // Without a grid each map is the whole slice.
+  // Without a grid (shadowGrid.y, the first grid slot, is 0) each map is the
+  // whole slice. In grid_mode it is the tile of the draw's cell -- where the
+  // map pass drew that cell's own casters (SceneRenderLightShadowMaps) -- and
+  // no tile at all (zero, so the lookup leaves the light unshadowed) for a
+  // draw outside every cell.
   if (_lightShadowMapsReady) {
-    block.shadowTile[0] = 0.0f;
-    block.shadowTile[1] = 0.0f;
-    block.shadowTile[2] = 1.0f;
-    block.shadowTile[3] = 1.0f;
+    const int firstGridSlot = (int)_lightRigBlock.shadowGrid[1];
+    if (firstGridSlot <= 0) {
+      block.shadowTile[0] = 0.0f;
+      block.shadowTile[1] = 0.0f;
+      block.shadowTile[2] = 1.0f;
+      block.shadowTile[3] = 1.0f;
+    } else {
+      const pymol::LightShadowTile tile = pymol::LightShadowTileRect(
+          _currentGridSlot - firstGridSlot, (int)_lightRigBlock.shadowGrid[0],
+          _lightShadowArraySize);
+      std::memcpy(block.shadowTile, tile.uv, sizeof(block.shadowTile));
+    }
     [enc setFragmentTexture:_lightShadowArray atIndex:kLightShadowTextureIndex];
     [enc setFragmentSamplerState:_shadowSampler atIndex:kLightShadowSamplerIndex];
   }
@@ -1068,6 +1081,7 @@ void RendererMetal::beginFrame()
   _lightShadowPassActive = false;
   _lightShadowSlicesOpened = 0;
   _lightShadowFailed = false;
+  _currentGridSlot = 0;
   // Start this frame's geometry record. Only the LIST of contributing cache
   // entries is re-accumulated during the opaque pass; the geometry itself stays
   // in _rtGeomCache and is touched again only when that list changes.
@@ -5536,6 +5550,28 @@ bool RendererMetal::beginLightShadowMap(int slot, const float* view)
   return true;
 }
 
+// grid_mode: the tile of the open slice that the following draws write (map
+// pixels, top-left origin; LightShadowTileRect). Only the encoder's viewport
+// and scissor change: the camera's viewport (_viewport) is never touched, and
+// nothing happens outside a slice. The scene passes only valid tiles.
+void RendererMetal::setLightShadowViewport(int x, int y, int w, int h)
+{
+  if (_lightShadowSlotOpen < 0 || !_encoder)
+    return;
+  const int side = _lightShadowArraySize;
+  x = std::clamp(x, 0, side);
+  y = std::clamp(y, 0, side);
+  w = std::clamp(w, 0, side - x);
+  h = std::clamp(h, 0, side - y);
+  if (w <= 0 || h <= 0)
+    return;
+  MTLViewport vp = {(double)x, (double)y, (double)w, (double)h, 0.0, 1.0};
+  [_encoder setViewport:vp];
+  MTLScissorRect sr = {(NSUInteger)x, (NSUInteger)y, (NSUInteger)w,
+                       (NSUInteger)h};
+  [_encoder setScissorRect:sr];
+}
+
 void RendererMetal::endLightShadowMaps()
 {
   // No slice was opened: the scene encoder is still the frame's own.
@@ -5619,9 +5655,12 @@ bool RendererMetal::getViewportRect(int& x, int& y, int& w, int& h) const
 // (same top-left origin as the post-pass uv). The OIT and selection replays
 // visit each slot again after the opaque pass; they note no RT geometry, so a
 // slot already recorded this frame is ignored rather than opened twice. Slot 0
-// (end of the grid loop) records nothing.
+// (end of the grid loop) records nothing. Whatever the slot, it is first
+// stored as the current cell, so each draw binds that cell's tile of the
+// studio shadow maps (bindLightRig, #616).
 void RendererMetal::setGridSlot(int slot)
 {
+  _currentGridSlot = slot;
   if (slot <= 0) return;
   for (const RTFrameCell& c : _rtFrameCells)
     if (c.slot == slot) return;
