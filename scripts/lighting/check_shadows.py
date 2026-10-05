@@ -66,10 +66,22 @@ import os
 import sys
 
 # --- thresholds ----------------------------------------------------------------
-# PROVISIONAL: the plan's values (plans/616.md section 10.3). They are tuned
-# ONCE on #616's first full L2 round (round 1), recorded here beside the
-# measured values by the same rule as check_lit.py (about half the measured
-# margin), and then FROZEN: never re-tuned to make a later round pass.
+# Tuned ONCE, on #616's first full L2 round (round 1, head f477900a0: the 87
+# images of lighting_616.json and the 10 of lighting_616_grid.json, 1rx1 at
+# 1280x720), and FROZEN: never re-tuned to make a later round pass.
+# testing/tests/raymol/lighting_shadow_check.py pins these values.
+#
+# The rule, as in check_lit.py, keeps about half the measured margin:
+# - a coverage (the share of pixels that show an effect) needs about half the
+#   smallest value measured in its class, rounded down;
+# - a share that should be all but 100% (a light kept, the sum holding, the
+#   hue right) allows about twice the largest measured miss, rounded down;
+# - a rare defect (no_extra, speckle, the fit's residual) may reach about
+#   twice the largest measured value, rounded up to a round number;
+# - none is looser than the ticket plan's value, and the definitions (what a
+#   darkened, reached, blocked or kept pixel is) keep the plan's values.
+# "measured" is round 1's extreme and the subject it came from; "plan" is the
+# provisional value the checks ran with before round 1.
 
 DARKEN = 8.0             # a pixel is darkened when its luminance drops by more than this
 LIGHT_MIN = 6.0          # a light reaches a pixel when its contribution's largest
@@ -83,25 +95,41 @@ SHADOWED = 0.5           # v < this: the light is (mostly) blocked at the pixel
 KEPT = 0.9               # v > this: the light (mostly) still reaches the pixel
 HUE_MIN = 8.0            # coloured: the pixel's added light has the other light's
                          #   hue: (b - r) for cyan, (r - b) for amber, above this
-COLOURED_MIN = 0.002     # coloured: each light's coloured shadow covers at least this
+COLOURED_MIN = 0.06      # coloured: each light's coloured shadow covers at least this
                          #   fraction of the pixels both lights reach
-COLOURED_HUE_SHARE = 0.8  # ... and at least this share of it has the other light's hue
-RESIDUAL = 6.0           # the fit's residual (largest channel) at the 95th percentile
-OWN_KEEP = 0.98          # own: the unshadowed light keeps v >= KEPT on this share of
-                         #   the pixels it reaches
-OWN_SHADOW_MIN = 0.01    # own: the shadowed light is blocked (v < SHADOWED) on at
+                         #   (plan 0.002; measured 12.770%, A's in cartoon_rt0; others
+                         #   12.776-39.342%)
+COLOURED_HUE_SHARE = 0.90  # ... and at least this share of it has the other light's hue
+                           #   (plan 0.8; measured 95.963%, B's in sticks_rt0)
+RESIDUAL = 3.0           # the fit's residual (largest channel) at the 95th percentile
+                         #   (plan 6; measured 1.18, cartoon_rt1 a and b)
+OWN_KEEP = 0.99          # own: the unshadowed light keeps v >= KEPT on this share of
+                         #   the pixels it reaches (plan 0.98; measured 99.773%, surface_b_rt1)
+OWN_SHADOW_MIN = 0.06    # own: the shadowed light is blocked (v < SHADOWED) on at
                          #   least this share of the pixels it reaches
+                         #   (plan 0.01; measured 13.790%, cartoon_a_rt0)
 INDEPENDENT_TOL = 3      # independent: |ab - (a + b - none)| <= this, every channel
-INDEPENDENT_SHARE = 0.99  # ... on at least this share of the pixels under the knee
-NO_EXTRA_MAX = 0.002     # no_extra: at most this fraction of the geometry
-SPECKLE_MAX = 0.002      # speckle: isolated darkened pixels, at most this fraction
+INDEPENDENT_SHARE = 0.995  # ... on at least this share of the pixels under the knee
+                           #   (plan 0.99; measured 99.812%, spheres_rt1)
+NO_EXTRA_MAX = 0.0005    # no_extra: at most this fraction of the geometry
+                         #   (plan 0.002; measured 0.0001%, 1 pixel in sticks_rt1; 0 elsewhere)
+SPECKLE_MAX = 0.001      # speckle: isolated darkened pixels, at most this fraction
+                         #   (plan 0.002; measured 0.026%, surface_ab_rt0/rt1)
 SILHOUETTE_RATIO = 0.5   # silhouette: side area >= this x the front area
-SILHOUETTE_MIN = 0.005   # ... and the front light's shadow covers at least this
+                         #   (plan 0.5, kept: half the measured 0.727, sticks_rt0, would
+                         #   be looser; spheres 1.084, ortho 0.939)
+SILHOUETTE_MIN = 0.12    # ... and the front light's shadow covers at least this
                          #   fraction of the geometry
+                         #   (plan 0.005; measured 25.907%, spheres_rt0)
 OIT_DARKEN = 4.0         # oit: a faint path: darkened by more than this
-OIT_MIN = 0.002          # ... on at least this fraction of the geometry
-OIT_HUE_RATIO = 1.5      # ... the light taken away is A's hue: sum dr >= this x sum db
-DIFFERS_MIN = 200        # differs: at least this many pixels change (or darken)
+OIT_MIN = 0.03           # ... on at least this fraction of the geometry
+                         #   (plan 0.002; measured 7.397%, glass_rt0; transparent 26.415%)
+OIT_HUE_RATIO = 3.0      # ... the light taken away is A's hue: sum dr >= this x sum db
+                         #   (plan 1.5; measured 6.78, glass_rt0; transparent 6.79)
+DIFFERS_MIN = 200        # differs: at least this many pixels change (or darken).
+                         #   A count, kept at the plan's value: it only shows that a
+                         #   control can fail (measured 9345, grid_self_rt0 in m's cell;
+                         #   45314 grid control, 68281 overlay blob, 82204 dark pair rt1)
 GRID_MARGIN = 16         # grid: the molecule's cell, this many pixels inside its edges
 GRID_LAYOUT = (2, 1, 0)  # grid: (columns, rows, the molecule's cell) of the
                          #   lighting_616_grid.json renders (m, then the slab)

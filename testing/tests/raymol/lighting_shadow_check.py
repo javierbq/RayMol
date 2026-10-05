@@ -245,10 +245,11 @@ class TestChecks(testing.PyMOLTestCase):
     def testSilhouette(self):
         base = lit(img(), (120.0, 120.0, 120.0))
         shape = base.shape[:2]
-        front = whole_pixel(base, region(shape, 10, 30, 10, 30))      # 400 px
-        side = whole_pixel(base, region(shape, 10, 30, 40, 55))       # 300 px
+        # 4800 px images: the front shadow must cover SILHOUETTE_MIN (12%)
+        front = whole_pixel(base, region(shape, 10, 50, 5, 35))       # 1200 px
+        side = whole_pixel(base, region(shape, 10, 50, 40, 65))       # 1000 px
         self.assertTrue(self.c.check_silhouette(front, base, side, base).ok)
-        thin = whole_pixel(base, region(shape, 10, 30, 40, 42))       # 40 px: billboards
+        thin = whole_pixel(base, region(shape, 10, 50, 40, 42))       # 80 px: billboards
         r = self.c.check_silhouette(front, base, thin, base)
         self.assertFalse(r.ok, r)
         # no shadow from the front either: nothing proved
@@ -306,6 +307,28 @@ class TestChecks(testing.PyMOLTestCase):
         # a shadow in the other cell only, or none, fails
         self.assertFalse(self.c.check_differs(in_other, base, darken=True, crop=crop).ok)
         self.assertFalse(self.c.check_differs(base, base, darken=True, crop=crop).ok)
+
+    def testThresholdsFrozen(self):
+        # Tuned once on round 1 (#616) and frozen beside the measured values:
+        # a later round that needs a different value is a finding, not a
+        # re-tune. The definitions keep the plan's values.
+        frozen = {
+            'DARKEN': 8.0, 'LIGHT_MIN': 6.0, 'KNEE': 0.7 * 255, 'COND': 0.05,
+            'SHADOWED': 0.5, 'KEPT': 0.9, 'HUE_MIN': 8.0,
+            'COLOURED_MIN': 0.06, 'COLOURED_HUE_SHARE': 0.90, 'RESIDUAL': 3.0,
+            'OWN_KEEP': 0.99, 'OWN_SHADOW_MIN': 0.06,
+            'INDEPENDENT_TOL': 3, 'INDEPENDENT_SHARE': 0.995,
+            'NO_EXTRA_MAX': 0.0005, 'SPECKLE_MAX': 0.001,
+            'SILHOUETTE_RATIO': 0.5, 'SILHOUETTE_MIN': 0.12,
+            'OIT_DARKEN': 4.0, 'OIT_MIN': 0.03, 'OIT_HUE_RATIO': 3.0,
+            'DIFFERS_MIN': 200, 'GRID_MARGIN': 16, 'GRID_LAYOUT': (2, 1, 0),
+        }
+        for name, value in frozen.items():
+            self.assertEqual(getattr(self.c, name), value, name)
+        with open(os.path.join(LIGHTING, 'check_shadows.py')) as fh:
+            src = fh.read()
+        self.assertIn('FROZEN', src)
+        self.assertNotIn('PROVISIONAL', src)
 
     def testPlansNameEveryCheck(self):
         names = {p[0] for p in self.c.l2_plan()} | {p[0] for p in self.c.grid_plan()}
