@@ -36,8 +36,13 @@ L1, the regression renders against master and L3 prove on a Mac:
   is open; the maps bound with the rig only when ready; the whole-pixel
   shadow off, raster and traced, while studio shadows are on;
 * SceneRenderMetal: the frame read once, the studio maps only under
-  lights.shadows (no grid yet) with every caster but the overlays, the
-  classic pre-pass as the else branch, the camera matrices restored; and
+  lights.shadows with every caster but the overlays, the classic pre-pass
+  as the else branch, the camera matrices restored;
+* grid_mode (Part 5): the map pass draws each cell into its own tile of the
+  atlas (setLightShadowViewport, I->grid.slot per cell, reset after) and
+  never calls SceneSetMetalGridCell or setGridSlot; setGridSlot stores the
+  cell before its early returns; bindLightRig gives each draw its cell's
+  tile (zero outside every cell); today's grid loops are master's (sha);
   the classic pass (beginShadowPass, endShadowPass, SceneBuildLightViewProjEye,
   the pre-pass body) pinned by sha against master aea4e74c6.
 
@@ -756,6 +761,19 @@ MASTER_CLASSIC = {
     'classic pre-pass body': 'b3b5919caf1bbff4',
 }
 # The statements both passes end with: the scene pass reopened with CLEAR.
+# Today's grid code on master (aea4e74c6), hashed as MASTER_CLASSIC is: the
+# studio tile atlas (Part 5 of #616) lives in the map pass alone, so the grid
+# loops of SceneRenderMetal (from `auto const peeled` to the selection pass),
+# SceneSetMetalGridCell and SceneRenderMetalSelections are master's, and so
+# is RendererMetal::setGridSlot once its first statement (the stored cell) is
+# taken out.
+MASTER_GRID = {
+    'SceneRenderMetal grid and scene passes': '2f21cf55fa47c5af',
+    'SceneSetMetalGridCell': '034aaa521b356a8c',
+    'SceneRenderMetalSelections': '37c869d18ac858bd',
+}
+MASTER_SET_GRID_SLOT = 'bd39d8b8d26168bd'
+
 REOPEN_MARKER = '_passDesc = _scenePassDesc;'
 
 
@@ -1015,10 +1033,13 @@ class TestSceneRenderPass(ShadowMSLCase):
         self.assertRegex(maps, r'const std::vector<pymol::CObject\*> overlays = '
                                r'SceneLightShadowOverlays\(G\);')
         calls = re.findall(r'SceneRenderAll\(([^;]*)\);', maps)
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(squash(calls[0]),
-                         'G,context,normal,nullptr,RenderPass::Opaque,false,0.0f,&I->grid,0,'
-                         'SceneRenderWhich::All,SceneRenderOrder::GadgetsLast,nullptr,&overlays')
+        # one draw per slice without a grid, one per cell with it
+        self.assertEqual(len(calls), 2)
+        for call in calls:
+            self.assertEqual(squash(call),
+                             'G,context,normal,nullptr,RenderPass::Opaque,false,0.0f,&I->grid,'
+                             '0,SceneRenderWhich::All,SceneRenderOrder::GadgetsLast,nullptr,'
+                             '&overlays')
         # never a grid cell or the RT cell table
         for call in ('SceneSetMetalGridCell', 'setGridSlot'):
             self.assertNotIn(call, maps)
@@ -1048,7 +1069,130 @@ class TestSceneRenderPass(ShadowMSLCase):
         self.assertIsNotNone(restore)
         self.assertLess(end, restore.start())
 
-    def testGridFramesSkipTheMapsForNow(self):
-        # Part 5 of #616 brings the per-cell tile atlas
-        self.assertRegex(self.maps, r'^\{\s*CScene\* I = G->Scene;\s*'
-                                    r'if\s*\(\s*I->grid\.active\s*\)\s*return;')
+    def testGridFramesDrawEachCellIntoItsTile(self):
+        maps = self.maps
+        # no early return for grid frames any more
+        self.assertRegex(maps, r'^\{\s*CScene\* I = G->Scene;\s*const std::vector')
+        loop = re.search(r'for\s*\(\s*int slot = 0;\s*slot < shadows\.count;\s*\+\+slot\s*\)'
+                         r'\s*\{', maps)
+        inside = maps[loop.end():match_brace(maps, loop.end() - 1)]
+        grid = re.search(r'if\s*\(\s*I->grid\.active\s*\)\s*\{', inside)
+        self.assertIsNotNone(grid)
+        # after the slice opens and the matrices are loaded
+        self.assertLess(inside.index('loadMatrixf(mv);'), grid.start())
+        branch = inside[grid.end():match_brace(inside, grid.end() - 1)]
+        cells = re.search(r'for\s*\(\s*int cell = I->grid\.first_slot;\s*'
+                          r'cell <= I->grid\.last_slot;\s*\+\+cell\s*\)\s*\{', branch)
+        self.assertIsNotNone(cells)
+        cell = branch[cells.end():match_brace(branch, cells.end() - 1)]
+        tile = re.search(r'const pymol::LightShadowTile tile = pymol::LightShadowTileRect\('
+                         r'\s*cell - I->grid\.first_slot,\s*shadows\.tiles,\s*shadows\.size\);',
+                         cell)
+        self.assertIsNotNone(tile)
+        skip = re.search(r'if\s*\(\s*tile\.size <= 0\s*\)\s*continue;', cell)
+        viewport = re.search(r'G->Renderer->setLightShadowViewport\(\s*tile\.x,\s*tile\.y,'
+                             r'\s*tile\.size,\s*tile\.size\);', cell)
+        slot = cell.index('I->grid.slot = cell;')
+        draw = cell.index('SceneRenderAll(')
+        self.assertIsNotNone(skip)
+        self.assertIsNotNone(viewport)
+        self.assertTrue(tile.end() <= skip.start() < viewport.start() < slot < draw, cell)
+        # the grid slot is reset after the cells, and only set to a cell
+        after = branch[match_brace(branch, cells.end() - 1):]
+        self.assertRegex(after, r'^\}\s*I->grid\.slot = 0;')
+        self.assertEqual(re.findall(r'I->grid\.slot\s*=\s*([^;]*);', maps), ['cell', '0'])
+        # nothing in the pass touches the camera viewport, the scissor or the
+        # ray tracer's cell table
+        for call in ('SceneSetMetalGridCell', 'setGridSlot', 'Renderer->viewport(',
+                     'Renderer->scissor(', 'ScissorTest', 'cur_viewport_size'):
+            self.assertNotIn(call, maps, call)
+        # only the map pass picks a tile
+        self.assertEqual(len(re.findall(r'\bsetLightShadowViewport\(',
+                                        strip_comments(self.scene_render))), 1)
+
+    def testTheGridLoopsAreMasters(self):
+        body = self.render
+        start = body.index('auto const peeled')
+        end = body.index('if (G->Renderer && G->Renderer->hasActiveEncoder())')
+        found = {
+            'SceneRenderMetal grid and scene passes': digest(body[start:end]),
+            'SceneSetMetalGridCell':
+                digest(cpp_function(self.scene_render, 'SceneSetMetalGridCell')),
+            'SceneRenderMetalSelections':
+                digest(cpp_function(self.scene_render, 'SceneRenderMetalSelections')),
+        }
+        self.assertEqual(found, MASTER_GRID)
+
+
+class TestGridTiles(ShadowMSLCase):
+    """The renderer's side of the grid tile atlas (Part 5 of #616)."""
+
+    def setUp(self):
+        super().setUp()
+        self.header = strip_comments(read(METAL_H))
+
+    def body(self, name):
+        return strip_block_comments(cpp_function(self.mm, name))
+
+    def testSetGridSlotStoresTheCellFirst(self):
+        body = self.body('RendererMetal::setGridSlot')
+        self.assertRegex(body, r'^\{\s*_currentGridSlot = slot;')
+        self.assertLess(body.index('_currentGridSlot = slot;'), body.index('return'))
+        # the rest is master's (the RT cell table, #478)
+        self.assertEqual(digest(body.replace('_currentGridSlot = slot;', '', 1)),
+                         MASTER_SET_GRID_SLOT)
+        # only setGridSlot and the frame start write it
+        owners = {}
+        for m in re.finditer(r'\b_currentGridSlot\s*=(?!=)\s*([^;]*);', self.code):
+            owner = re.findall(r'^[\w<>:\*\s]*RendererMetal::(\w+)\s*\(',
+                               self.code[:m.start()], re.M)[-1]
+            owners.setdefault(owner, []).append(m.group(1).strip())
+        self.assertEqual(owners, {'beginFrame': ['0'], 'setGridSlot': ['slot']})
+        self.assertRegex(self.header, r'int _currentGridSlot = 0;')
+
+    def testEachDrawReadsItsCellsTile(self):
+        bind = self.body('RendererMetal::bindLightRig')
+        block = re.search(r'if\s*\(\s*_lightShadowMapsReady\s*\)\s*\{', bind)
+        inside = bind[block.end():match_brace(bind, block.end() - 1)]
+        first = re.search(r'const int firstGridSlot = \(int\)_lightRigBlock\.shadowGrid\[1\];',
+                          inside)
+        self.assertIsNotNone(first)
+        no_grid = re.search(r'if\s*\(\s*firstGridSlot <= 0\s*\)\s*\{', inside)
+        self.assertIsNotNone(no_grid)
+        whole = inside[no_grid.end():match_brace(inside, no_grid.end() - 1)]
+        self.assertEqual(re.findall(r'block\.shadowTile\[(\d)\]\s*=\s*([\d.]+)f;', whole),
+                         [('0', '0.0'), ('1', '0.0'), ('2', '1.0'), ('3', '1.0')])
+        rest = inside[match_brace(inside, no_grid.end() - 1) + 1:]
+        grid = re.match(r'\s*else\s*\{', rest)
+        self.assertIsNotNone(grid)
+        cell = rest[grid.end():match_brace(rest, grid.end() - 1)]
+        self.assertEqual(
+            squash(cell),
+            'constpymol::LightShadowTiletile=pymol::LightShadowTileRect('
+            '_currentGridSlot-firstGridSlot,(int)_lightRigBlock.shadowGrid[0],'
+            '_lightShadowArraySize);'
+            'std::memcpy(block.shadowTile,tile.uv,sizeof(block.shadowTile));')
+        # the tile is written before the block is bound
+        self.assertLess(block.end(), bind.index('setFragmentBytes:&block'))
+        self.assertIn('#include "LightShadows.h"', self.mm)
+
+    def testTileViewportIsTheEncodersOnly(self):
+        body = self.body('RendererMetal::setLightShadowViewport')
+        self.assertRegex(body, r'^\{\s*if\s*\(\s*_lightShadowSlotOpen < 0 \|\| !_encoder\s*\)'
+                               r'\s*return;')
+        self.assertIn('const int side = _lightShadowArraySize;', body)
+        for v in ('x', 'y'):
+            self.assertIn('%s = std::clamp(%s, 0, side);' % (v, v), body)
+        self.assertIn('w = std::clamp(w, 0, side - x);', body)
+        self.assertIn('h = std::clamp(h, 0, side - y);', body)
+        self.assertRegex(body, r'if\s*\(\s*w <= 0 \|\| h <= 0\s*\)\s*return;')
+        self.assertIn('[_encoder setViewport:vp];', body)
+        self.assertIn('[_encoder setScissorRect:sr];', body)
+        # never the camera's viewport or scissor state
+        for name in ('_viewport', '_scissorRect', '_scissorEnabled', '_renderScale'):
+            self.assertNotRegex(body, r'\b%s\b' % name, name)
+        self.assertRegex(self.header,
+                         r'void setLightShadowViewport\(int x, int y, int w, int h\) override;')
+
+    def testBeginFrameClearsTheCell(self):
+        self.assertIn('_currentGridSlot = 0;', self.body('RendererMetal::beginFrame'))

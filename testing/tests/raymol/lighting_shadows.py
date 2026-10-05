@@ -736,6 +736,48 @@ class TestTiles(ShadowCase):
         with self.assertRaises(Exception):
             lighting._light_frame(M, grid=(0, 2, 1))
 
+    def testEveryGridCellHasItsOwnTile(self):
+        # Every cell a grid of n_col x n_row can hold (cell = slot - first
+        # slot, row-major as the grid loops number them) gets a whole tile of
+        # the max(n_col, n_row)² atlas, and no two cells share texels: a cell
+        # is shadowed only by what the map pass drew into its own tile.
+        size = 2048
+        for n_col in range(1, 7):
+            for n_row in range(1, 7):
+                tiles = max(n_col, n_row)
+                side = size // tiles
+                seen = set()
+                for cell in range(n_col * n_row):
+                    t = lighting._light_shadow_tile(cell, tiles, size)
+                    label = (n_col, n_row, cell)
+                    self.assertEqual(t['size'], side, label)
+                    self.assertGreaterEqual(min(t['x'], t['y']), 0, label)
+                    self.assertLessEqual(max(t['x'], t['y']) + side, size, label)
+                    self.assertNotIn((t['x'], t['y']), seen, label)
+                    seen.add((t['x'], t['y']))
+                    # the texels the pass writes are the uv the lookup reads
+                    self.assertEqual(t['uv'], [f32(t['x'] / size), f32(t['y'] / size),
+                                               f32(side / size), f32(side / size)],
+                                     label)
+
+    def testGridKeepsTheFramesAndTheMapSize(self):
+        # One frustum per light framed on the whole scene, grid or not: the
+        # tiles split a map, never the light's view. info.y stays the map's
+        # side (the lookup takes the tile's texels from shadow_tile.z).
+        self.load_m()
+        self.rig([light('key', orbit=-40.0, pitch=30.0, shadow=True),
+                  light('fill', orbit=50.0, pitch=10.0, shadow=True)])
+        plain = lighting._light_frame(M)['shadows']
+        for grid in ((2, 1, 1), (2, 2, 1), (3, 2, 1)):
+            gridded = lighting._light_frame(M, grid=grid)['shadows']
+            self.assertEqual(gridded['count'], plain['count'], grid)
+            self.assertEqual(gridded['size'], plain['size'], grid)
+            self.assertEqual(gridded['tiles'], max(grid[0], grid[1]), grid)
+            for a, b in zip(plain['slots'], gridded['slots']):
+                self.assertEqual(a['view_proj'], b['view_proj'], grid)
+                self.assertEqual(a['map_size'], b['map_size'], grid)
+                self.assertEqual(b['map_size'], float(DESKTOP), grid)
+
 
 class TestSettings(ShadowCase):
 
