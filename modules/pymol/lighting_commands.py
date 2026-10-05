@@ -515,9 +515,11 @@ def _empty_rig():
 
 
 def _is_on(rig):
-    '''The rig draws (SceneLightsOn): enabled, with lights and a frame.'''
+    '''The rig draws (LightRigIsOn, #613): enabled, with lights and a frame
+    (centre and size).'''
     return bool(rig and rig['enabled'] and rig['lights']
-                and rig.get('centre') is not None)
+                and rig.get('centre') is not None
+                and rig.get('size') is not None)
 
 
 def _camera(where, _self):

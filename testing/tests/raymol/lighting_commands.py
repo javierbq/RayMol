@@ -46,7 +46,7 @@ state setting, all_states).
 Covers (part 4): the scene files in scripts/lighting/scenes that drive the
 frozen harness (scripts/lighting/render.py) through the commands:
 lighting_612_presets.json (L2: the 7 presets on the L1 shadows scene,
-rendered by #613) and rig_off_full.json (the L1 rig-off check with air, a
+lit by #613's shading) and rig_off_full.json (the L1 rig-off check with air, a
 pinned light, a point-aimed light and an outline). Each generated scene
 script runs twice in this process, as the app runs it, and the wrapped
 cmd.set_lights and cmd.keyword['lights'][0] are put back afterwards.
