@@ -366,6 +366,10 @@ def strip_comments(text):
 
 
 ENGINE = os.path.join(SHARED, 'PyMOLEngine.swift')
+CONTENT_VIEW = os.path.join(SHARED, 'ContentView.swift')
+
+# `let anyTop = ...` with its `|| ...` continuation lines.
+ANY_TOP = re.compile(r'let anyTop = [^\n]*(?:\n[ \t]*\|\|[^\n]*)*')
 
 # A call into the helper module as the engine writes it: `_al.<function>(`,
 # usually right after a `\n` escape inside a Swift string literal.
@@ -427,6 +431,26 @@ class TestSwiftSource(testing.PyMOLTestCase):
                              'func exitActiveInteractionMode()')
         self.assertIsNotNone(body, 'exitActiveInteractionMode not found')
         self.assertIn('.lights', body)
+
+    def testEveryTopStackNamesLights(self):
+        """The Lights bar is placed wherever the Move bar is: each iOS top
+        stack opens for Lights (all three `anyTop`), the macOS rail docks for
+        it (`macAnyTopPane`), and every mode-bar chain that shows moveOverlay
+        (the macOS overlay and the four iOS stacks) shows lightsBar too. A
+        layout that forgets one would show no bar, and so no Done, there."""
+        text = strip_comments(self.read(CONTENT_VIEW))
+        any_tops = ANY_TOP.findall(text)
+        self.assertEqual(len(any_tops), 3, 'expected the three iOS anyTop')
+        for expr in any_tops:
+            with self.subTest(expr=expr):
+                self.assertIn('.lights', expr)
+        body = function_body(text, 'private var macAnyTopPane')
+        self.assertIsNotNone(body, 'macAnyTopPane not found')
+        self.assertIn('.lights', body)
+        moves = len(re.findall(r'\{\s*moveOverlay\s*\}', text))
+        bars = len(re.findall(r'\{\s*lightsBar\s*\}', text))
+        self.assertEqual(moves, 5, 'expected the macOS overlay and four iOS chains')
+        self.assertEqual(bars, moves, 'a mode-bar chain shows moveOverlay but not lightsBar')
 
     def testTheCheckCatchesEachEntryPoint(self):
         """The pattern matches every name it is meant to forbid (and not a
