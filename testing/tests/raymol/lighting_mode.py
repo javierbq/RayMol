@@ -347,11 +347,12 @@ ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir,
                                      os.pardir, os.pardir))
 SHARED = os.path.join('swiftui', 'PyMOLViewer', 'Shared')
 
-# The Lights model (and, once it exists, the bar): every button press goes
-# through LightsSeams.perform and every drag tick through the bridge setter
-# seams the engine wires, so these files name no Python or console entry
-# point, no helper and no bridge function.
-NO_PYTHON_SOURCES = [os.path.join(SHARED, 'LightsController.swift')]
+# The Lights model and the bar: every button press goes through
+# LightsSeams.perform and every drag tick through the bridge setter seams the
+# engine wires, so these files name no Python or console entry point, no
+# helper and no bridge function.
+NO_PYTHON_SOURCES = [os.path.join(SHARED, 'LightsController.swift'),
+                     os.path.join(SHARED, 'LightsBar.swift')]
 NO_PYTHON = re.compile(
     r'\brunPython\w*|\bRunPython\w*|\brunCommand\w*|\bRunCommand\w*'
     r'|appkit_lights|\bPyMOLBridge_\w+\s*\(')
