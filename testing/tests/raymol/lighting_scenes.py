@@ -25,9 +25,15 @@ Runs on a RayMol build:
 import base64
 import contextlib
 import copy
+import importlib.util
 import io
 import json
 import math
+import os
+import shutil
+import sys
+import tempfile
+import unittest
 
 import pymol
 from pymol import cmd, colorprinting, lighting, setting, testing
@@ -1297,3 +1303,200 @@ class TestSceneMovieBlend(_BlendCase):
             if f >= 40:
                 self.assertEqual(got, self.b, f)
         self.assertEqual(played(1), self.a)
+
+
+# --- the L2 scene file (scripts/lighting/scenes/lighting_617_movie.json) ----
+
+ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     os.pardir, os.pardir, os.pardir))
+RENDER = os.path.join(ROOT, 'scripts', 'lighting', 'render.py')
+MOVIE_FILE = os.path.join(ROOT, 'scripts', 'lighting', 'scenes',
+                          'lighting_617_movie.json')
+PDB_1RX1 = os.path.join(ROOT, 'testing', 'data', '1rx1.pdb')
+MOVIE_FILE_TAGS = ['movie_f01_rt0', 'movie_f07_rt0', 'movie_f13_rt0',
+                   'movie_f19_rt0', 'movie_f25_rt0', 'movie_f01_rt1',
+                   'movie_f13_rt1', 'movie_f25_rt1', 'recall_b_rt0']
+# The light count the harness marker records per frame: A's 3, the union of
+# A and B (key, rim, top, fill) while blending, B's 3.
+MARKER_LIGHTS = {1: 3, 7: 4, 13: 4, 19: 4, 25: 3}
+
+
+@contextlib.contextmanager
+def capture_console():
+    """Collect what is written to fd 1 while open (yields a getter). The
+    core's feedback (a Movie-Error) is printed by C straight to fd 1, where
+    contextlib.redirect_stdout never sees it (as in lighting_session.py);
+    Python's own prints are caught as well."""
+    sys.stdout.flush()
+    saved = os.dup(1)
+    tmp = tempfile.TemporaryFile(mode='w+b')
+    buf = io.StringIO()
+    result = {}
+    try:
+        os.dup2(tmp.fileno(), 1)
+        with contextlib.redirect_stdout(buf):
+            yield lambda: result['text']
+        sys.stdout.flush()
+    finally:
+        os.dup2(saved, 1)
+        os.close(saved)
+        tmp.seek(0)
+        result['text'] = tmp.read().decode(errors='replace') + buf.getvalue()
+        tmp.close()
+
+
+def job_frame(tag):
+    """The movie frame of a movie tag ('movie_f07_rt0' -> 7), else None."""
+    if not tag.startswith('movie_f'):
+        return None
+    return int(tag[len('movie_f'):].split('_', 1)[0])
+
+
+@unittest.skipUnless(os.path.isfile(RENDER) and os.path.isfile(PDB_1RX1),
+                     'needs a RayMol checkout (scripts/lighting)')
+class TestMovieSceneFile(_BlendCase):
+    """The L2 scene file: the frozen harness's scene scripts build the
+    2-scene movie through appkit_movie.rebuild and go to one frame each,
+    or recall scene B. Each script runs twice in this process, as the app
+    runs PYMOL_AUTOCMD (at launch and again before the export).
+
+    The CI workflow runs every test file in one process: the file wraps
+    cmd.set_lights, so tearDown puts it back and deletes every cmd._l617_*
+    attribute (lighting_harness.py's scripts call cmd.set_lights)."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        spec = importlib.util.spec_from_file_location('lighting_render_617',
+                                                      RENDER)
+        cls.render = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.render)
+
+    def setUp(self):
+        super().setUp()
+        self.tmp = tempfile.mkdtemp(prefix='l617')
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.original_set_lights = cmd.set_lights
+
+    def tearDown(self):
+        cmd.set_lights = self.original_set_lights
+        for name in [n for n in dir(cmd) if n.startswith('_l617_')]:
+            delattr(cmd, name)
+        super().tearDown()
+
+    def run_twice(self, job, out):
+        """Write the job's scene script and run it twice. Returns the rig
+        after each run and what the second run printed."""
+        render = self.render
+        render.write_scripts(ROOT, out, [job])
+        path = render.script_path(out, job.tag)
+        cmd.run(path)
+        first = cmd.get_lights()
+        with capture_console() as printed:
+            cmd.run(path)
+        return first, cmd.get_lights(), printed()
+
+    def testTheFileAndItsPaths(self):
+        # render.py refuses a --scenes path, tag, scene script or image name
+        # the app would split or act on (FORBIDDEN_WORDS are substrings).
+        render = self.render
+        self.assertTrue(os.path.isfile(MOVIE_FILE), MOVIE_FILE)
+        render.check_path('--scenes', os.path.relpath(MOVIE_FILE, ROOT))
+        jobs = render.scene_file_jobs(MOVIE_FILE)
+        self.assertEqual([j.tag for j in jobs], MOVIE_FILE_TAGS)
+        out = os.path.join('out', 'l2')
+        with open(MOVIE_FILE) as handle:
+            extra = json.load(handle)['extra']
+        for job in jobs:
+            render.check_path('tag', job.tag)
+            render.check_path('scene script', render.script_path(out, job.tag))
+            render.check_path('image', render.png_path(out, job.tag))
+            # the L1 shadows scene with the harness's rig on, recoloured
+            l1 = render.l1_job('shadows_rt%d' % job.rt, 'on')
+            self.assertEqual(
+                (job.rig, job.rep_lines, job.shadows, job.size),
+                ('on', l1.rep_lines, l1.shadows, l1.size), job.tag)
+            self.assertEqual(job.rt, int(job.tag[-1]), job.tag)
+            self.assertEqual(job.extra[:len(extra)], extra, job.tag)
+            self.assertEqual(job.extra[-1], "cmd.color('grey80', 'm')",
+                             job.tag)
+
+    def testLighting617MovieFile(self):
+        render = self.render
+        out = os.path.join(self.tmp, 'l2')
+        got = {}
+        for job in render.scene_file_jobs(MOVIE_FILE):
+            first, second, printed = self.run_twice(job, out)
+            tag, frame = job.tag, job_frame(job.tag)
+            # the harness's own check: both runs left their line, rig on
+            marker = render.marker_path(out, tag)
+            self.assertIsNone(render.check_marker(marker, tag, job.rig), tag)
+            with open(marker) as handle:
+                rows = [json.loads(line) for line in handle]
+            want = MARKER_LIGHTS[frame] if frame else 3
+            self.assertEqual([r['rig']['lights'] for r in rows], [want, want],
+                             tag)
+            # both runs agree, and the second (after reinitialize, with the
+            # first run's movie gone) authors cleanly
+            self.assertEqual(first, second, tag)
+            self.assertNotIn('Movie-Error', printed, tag)
+            self.assertNotIn('MOVIE_ERR', printed, tag)
+            self.assertNotIn('Traceback', printed, tag)
+            if frame:
+                self.assertEqual(cmd.get_frame(), frame, tag)
+                self.assertEqual(cmd.get_movie_length(), 25, tag)
+            # wrapped once: the original stays reachable
+            self.assertIs(cmd._l617_set, self.original_set_lights)
+            got[tag] = (second, raymol_scenes.scene_lights('A'),
+                        raymol_scenes.scene_lights('B'))
+
+        a = got['movie_f01_rt0'][1]
+        b = got['movie_f01_rt0'][2]
+        self.assertEqual([l['name'] for l in a['lights']], ['key', 'rim', 'top'])
+        self.assertEqual([l['name'] for l in b['lights']], ['key', 'rim', 'fill'])
+        self.assertTrue(self.light(b, 'key')['shadow'])
+        for tag, (rig_now, sa, sb) in got.items():
+            # every script stores the same two rigs
+            self.assertEqual((sa, sb), (a, b), tag)
+            frame = job_frame(tag)
+            if frame == 1:
+                self.assertEqual(rig_now, a, tag)
+            elif frame == 25 or tag == 'recall_b_rt0':
+                self.assertEqual(rig_now, b, tag)
+            else:
+                self.assertRigAlmostEqual(
+                    rig_now, anim.blend_rigs(a, b, eased_t(frame)), tag)
+        self.assertEqual(eased_t(13), 0.5)
+        mid = got['movie_f13_rt0'][0]
+        self.assertAlmostEqual(self.light(mid, 'key')['orbit'], 0.0, places=4)
+        self.assertAlmostEqual(abs(self.light(mid, 'rim')['orbit']), 180.0,
+                               places=4)
+        self.assertEqual(got['movie_f13_rt1'][0], mid)
+
+        # the capture sees the core's feedback (so the checks above bite)
+        with capture_console() as printed:
+            cmd.mdo(cmd.get_movie_length() + 5, '')
+        self.assertIn('Movie-Error', printed())
+
+    def testBuilderChecksBite(self):
+        # a wrong frame or rig raises from the builder, which stops the
+        # scene script before the harness marker
+        render = self.render
+        out = os.path.join(self.tmp, 'bite')
+        jobs = {j.tag: j for j in render.scene_file_jobs(MOVIE_FILE)}
+        self.run_twice(jobs['movie_f13_rt0'], out)
+        cmd._l617_check(cmd, 13)                       # passes as built
+        with self.assertRaisesRegex(RuntimeError, 'l617 frame 7'):
+            cmd._l617_check(cmd, 7)                    # the rig is f13's
+        cmd._l617_expect[13] = (4, 0.0, 1.4, True, 180.0)
+        with self.assertRaisesRegex(RuntimeError, 'l617 frame 13'):
+            cmd._l617_check(cmd, 13)                   # key shadow differs
+        self.run_twice(jobs['recall_b_rt0'], out)
+        cmd._l617_rig_b = rig(MOVIE_A)
+        with self.assertRaisesRegex(RuntimeError, 'l617 recall of scene B'):
+            cmd._l617_recall_b(cmd)
+        # with neither attribute set the wrapper is the plain setter
+        cmd._l617_frame, cmd._l617_recall = 0, False
+        cmd.set_lights(copy.deepcopy(MOVIE_B))
+        self.assertEqual([l['name'] for l in cmd.get_lights()['lights']],
+                         ['key', 'rim', 'fill'])
