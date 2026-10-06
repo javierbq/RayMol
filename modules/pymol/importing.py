@@ -166,6 +166,12 @@ if True:
 
             error = None
 
+            # Restore tasks that keep per-scene or movie state read this to
+            # leave it alone on a partial restore, as the core does for the
+            # scenes, the movie and the light rig (#617). Task signatures are
+            # unchanged, so third-party tasks are not affected.
+            _pymol._session_partial_restore = bool(int(partial))
+
             for a in _pymol._session_restore_tasks:
                 assert a is not None
                 # don't stop on errors...try to complete anyway
@@ -175,6 +181,7 @@ if True:
                     error = f'session-restore-task "{a.__name__}" failed'
 
         finally:
+            _pymol._session_partial_restore = False
             # if the movie contains commands...activate security
             if _self.get_movie_locked() > 0:
                 _self.wizard("security")

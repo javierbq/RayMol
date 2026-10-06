@@ -5299,6 +5299,77 @@ static PyObject* CmdGetLightFields(PyObject* self, PyObject* args)
   return LightFieldsAsPyList();
 }
 
+/**
+ * #617: a rig dict (as cmd.get_lights() returns it) -> the positional list
+ * the 'light_rig' session key holds, for the per-scene rigs saved under
+ * 'raymol_scene_lights'. Strict like set_lights, then validated (a rig with
+ * lights must carry its frame). Pure: reads no PyMOLGlobals state and never
+ * touches the scene's rig.
+ */
+static PyObject* CmdLightRigToSession(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  PyObject* obj = nullptr;
+  API_SETUP_ARGS(G, self, args, "OO", &self, &obj);
+  pymol::Result<> result;
+  PyObject* list = nullptr;
+  if (auto rig = LightRigFromPyDict(obj)) {
+    result = pymol::LightRigValidate(*rig);
+    if (result)
+      list = LightRigAsPyList(*rig);
+  } else {
+    result = rig.error_move();
+  }
+  if (list)
+    return list;
+  if (result) // LightRigAsPyList failed (out of memory)
+    return PyErr_Occurred() ? nullptr : APIFailure(G, "light_rig_to_session");
+  result = pymol::make_error("light_rig_to_session: ", result.error().what());
+  return APIResult(G, result);
+}
+
+/**
+ * #617: a per-scene session list (the 'light_rig' format) -> (dict,
+ * [warning, ...]), read as leniently as the top-level key: the known prefix
+ * of a newer version loads with a warning, the caps apply as policy and
+ * UTF-8 bytes from the legacy pickler are accepted. Pure, like the above.
+ */
+static PyObject* CmdLightRigFromSession(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  PyObject* obj = nullptr;
+  API_SETUP_ARGS(G, self, args, "OO", &self, &obj);
+  std::vector<std::string> warnings;
+  auto rig = LightRigFromPyList(obj, &warnings);
+  if (!rig) {
+    pymol::Result<> result = pymol::make_error(
+        "light_rig_from_session: ", rig.error().what());
+    return APIResult(G, result);
+  }
+  PyObject* dict = LightRigAsPyDict(*rig);
+  if (!dict)
+    return nullptr;
+  PyObject* lines = PyList_New(Py_ssize_t(warnings.size()));
+  if (!lines) {
+    Py_DECREF(dict);
+    return nullptr;
+  }
+  for (size_t i = 0; i < warnings.size(); ++i) {
+    PyObject* line = PyUnicode_DecodeUTF8(warnings[i].data(),
+        Py_ssize_t(warnings[i].size()), "replace");
+    if (!line) {
+      Py_DECREF(dict);
+      Py_DECREF(lines);
+      return nullptr;
+    }
+    PyList_SET_ITEM(lines, Py_ssize_t(i), line);
+  }
+  PyObject* pair = PyTuple_Pack(2, dict, lines);
+  Py_DECREF(dict);
+  Py_DECREF(lines);
+  return pair;
+}
+
 /// "<status>: <message>", e.g. "refused: at most 3 lights can cast shadows"
 static PyObject* APILightFailure(
     PyMOLGlobals* G, pymol::LightSetStatus status, const std::string& msg)
@@ -7444,6 +7515,8 @@ static PyMethodDef Cmd_methods[] = {
   {"light_get", CmdLightGet, METH_VARARGS},
   {"get_lights_json", CmdGetLightsJson, METH_VARARGS},
   {"get_lights_ray_notice", CmdGetLightsRayNotice, METH_VARARGS},
+  {"light_rig_to_session", CmdLightRigToSession, METH_VARARGS},
+  {"light_rig_from_session", CmdLightRigFromSession, METH_VARARGS},
   /* end light rig */
   /* light shading (#613) */
   {"get_light_frame", CmdGetLightFrame, METH_VARARGS},

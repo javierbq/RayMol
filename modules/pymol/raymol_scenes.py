@@ -1,4 +1,5 @@
-"""Per-scene "extras" snapshot for RayMol (settings + object TTT + autofocus target).
+"""Per-scene "extras" snapshot for RayMol (settings + object TTT + autofocus
+target + light rig).
 
 Classic PyMOL scenes store the camera + representations + colors but NOT setting
 values, per-object Move-mode transforms, or the depth-of-field autofocus target,
@@ -14,14 +15,26 @@ tasks (see cmd._deferred_init_pymol_internals):
   * the autofocus target selection 'dof_focus' — _scene_focus; a single GLOBAL
     named selection the native scene never stored, so without it every auto-lock
     DOF scene focused on whichever target was locked LAST.
+  * the light rig and its air (#617, spec §6) — _scene_lights: the rig as
+    lighting.get_lights() returns it (a dict) when the rig is on (it exists, is
+    enabled and has at least one light), else the string 'off'. Recalling an
+    'off' scene turns a live rig off (its lights are kept); a scene with no
+    entry (from an older .pse) leaves the rig alone. Always through the
+    pymol.lighting module functions, never cmd.set_lights (harness scene files
+    wrap that one).
 
 Camera lens / zoom / orthographic / FOV / clip slab are already restored by the
 scene's saved view, so they're intentionally NOT captured here (the view owns them).
+
+A partial session restore (`load x.pse, partial=1`) leaves every extra alone:
+the core keeps the live scenes then, so the extras keep matching them.
 
 Driven from `cmd.scene` via the central on_scene_action hook (snapshot on
 store/update, apply on recall/prev/next, prune on delete, clear_all on clear,
 rename on rename); no per-UI-call-site pairing is needed.
 """
+import copy
+
 from pymol import cmd
 
 # Render "look" settings a scene captures. All are get/set-able globals.
@@ -178,6 +191,19 @@ _scene_focus = {}
 
 _FOCUS_SEL = 'dof_focus'
 
+# {scene_name: rig dict | 'off'} — the light rig (#617). A dict exactly as
+# lighting.get_lights() returned it when the scene was stored with the rig on;
+# 'off' when it was stored with no rig, a disabled rig or a rig without lights
+# (spec §6: "a scene stored with no rig on records off"). No entry: a scene
+# from a .pse written before this existed, which leaves the rig alone.
+# Persisted under 'raymol_scene_lights' as {name: 'off' | <light_rig list>},
+# each list in the format of the top-level 'light_rig' session key.
+_scene_lights = {}
+
+# The _reported key for a rig that cannot be applied (a hand-edited or newer
+# rig): one warning per scene, not one per movie frame.
+_LIGHTS_REPORT = 'light rig'
+
 # Reentrancy guard: internal temp-scene machinery (.pse legacy convert, multi-scene
 # export) increments this so the cmd.scene hook does NOT capture/apply during its
 # throwaway store/recall/clear (see viewing.session_restore_scenes / exporting).
@@ -224,6 +250,14 @@ class _Preserved:
             self._had_focus = _FOCUS_SEL in (self._self.get_names('selections') or [])
         except Exception:
             self._had_focus = True   # unknown: never delete what may be the user's
+        # The live rig (None: no rig). Unknown when the core has no rig API;
+        # then nothing is put back.
+        try:
+            self._rig = _lighting().get_lights(_self=self._self)
+            self._rig_known = True
+        except Exception:
+            self._rig = None
+            self._rig_known = False
         return self
 
     def __exit__(self, *exc):
@@ -245,6 +279,16 @@ class _Preserved:
                         self._self.delete(_FOCUS_SEL)
                 except Exception:
                     pass
+            # A scrub that displays scene keyframes applies their rigs; put the
+            # live one back (None removes a rig the scrub created). Only when
+            # it differs, like every other write here.
+            if self._rig_known:
+                try:
+                    lighting = _lighting()
+                    if lighting.get_lights(_self=self._self) != self._rig:
+                        lighting.set_lights(self._rig, _self=self._self)
+                except Exception:
+                    pass
         finally:
             for d in (_scene_settings, _scene_object_settings,
                       _scene_object_capture, _scene_focus):
@@ -255,8 +299,9 @@ class _Preserved:
 
 
 def preserved(_self=cmd):
-    """Context manager: put every captured global, per-object override and the
-    autofocus target back as they were when the block exits (#508). Nests.
+    """Context manager: put every captured global, per-object override, the
+    autofocus target and the light rig back as they were when the block exits
+    (#508, #617). Nests.
 
     For code that has to DISPLAY movie frames only to read something off them
     -- appkit_movie._scene_keyframes scrubs every frame to find the scene cuts
@@ -639,6 +684,95 @@ def emit_object_motion(name, frame, _self=cmd):
     return done
 
 
+def _lighting():
+    from pymol import lighting
+    return lighting
+
+
+def rig_on(entry):
+    """Decision 15's "the rig is on" for a rig dict: it is enabled and has at
+    least one light. False for None, 'off' and anything that is not a dict."""
+    return (isinstance(entry, dict) and bool(entry.get('enabled'))
+            and bool(entry.get('lights')))
+
+
+def _capture_lights(_self=cmd):
+    """The current rig as a scene stores it: a deep copy of get_lights() when
+    the rig is on, else 'off'. None (store no entry) when the rig cannot be
+    read at all -- a core without the rig API, or a stand-in cmd."""
+    try:
+        rig = _lighting().get_lights(_self=_self)
+    except Exception:
+        return None
+    return copy.deepcopy(rig) if rig_on(rig) else 'off'
+
+
+def _warn_lights(name, text):
+    """One warning per (scene, 'light rig'), dropped with the scene like the
+    settings' (see _reported)."""
+    key = (name, _LIGHTS_REPORT)
+    if key in _reported:
+        return
+    _reported.add(key)
+    try:
+        from pymol import colorprinting
+        colorprinting.warning(' scene: %s' % text)
+    except Exception:
+        pass
+
+
+def _apply_lights_target(target, _self=cmd, report=None):
+    """Make the rig match a scene entry, writing only what changes.
+
+    None: nothing (an older scene). 'off': a live, enabled rig is disabled
+    (its lights are kept); no rig stays no rig. A dict: the rig is replaced
+    with lighting.set_lights, only when it differs from get_lights(). A
+    failure (a hand-edited or newer rig) leaves the rig as it was and warns
+    once for scene `report`, so a movie that applies it every frame prints one
+    line, not one per frame."""
+    if target is None:
+        return
+    try:
+        lighting = _lighting()
+        live = lighting.get_lights(_self=_self)
+        if isinstance(target, str) and target == 'off':
+            if isinstance(live, dict) and live.get('enabled'):
+                lighting._light_set(-1, 'enabled', 0, _self=_self)
+        elif isinstance(target, dict):
+            if live != target:
+                lighting.set_lights(target, _self=_self)
+    except Exception as exc:
+        _warn_lights(report, 'light rig of scene "%s" could not be restored: %s'
+                     % (report, exc))
+
+
+def apply_lights(name, _self=cmd):
+    """Apply scene `name`'s stored rig (recall, and the movie animator at a
+    scene keyframe). A scene with no entry does nothing and never touches
+    pymol.lighting."""
+    if name not in _scene_lights:
+        return
+    _apply_lights_target(_scene_lights[name], _self, report=name)
+
+
+def scene_lights(name):
+    """Scene `name`'s rig entry: a deep copy of the dict, 'off', or None when
+    the scene has no entry (an older scene)."""
+    entry = _scene_lights.get(name)
+    return copy.deepcopy(entry) if isinstance(entry, dict) else entry
+
+
+def restoring_partial(_self=cmd):
+    """True while importing.set_session runs the restore tasks of a partial
+    restore (`load x.pse, partial=1`). Read defensively: a stand-in cmd has
+    no _pymol."""
+    try:
+        return bool(getattr(getattr(_self, '_pymol', None),
+                            '_session_partial_restore', False))
+    except Exception:
+        return False
+
+
 def snapshot_current(_self=cmd):
     """Capture the current render settings AND per-object TTT for the current
     scene. Call right after `scene ..., store` / `update`."""
@@ -649,18 +783,24 @@ def snapshot_current(_self=cmd):
         _scene_object_capture[name] = tuple(OBJECT_CAPTURE)
         _scene_ttt[name] = _capture_ttt(_self)
         _scene_focus[name] = _capture_focus(_self)
+        lights = _capture_lights(_self)
+        if lights is None:
+            _scene_lights.pop(name, None)
+        else:
+            _scene_lights[name] = lights
     return name
 
 
 def apply(name, _self=cmd):
-    """Re-apply scene `name`'s captured render settings, per-object TTT, and
-    autofocus target."""
+    """Re-apply scene `name`'s captured render settings, per-object TTT,
+    autofocus target and light rig."""
     apply_settings(name, _self)
     # After the globals: a per-object override has to win over the fallback the
     # same recall just wrote.
     _apply_object_settings(name, _self)
     _apply_ttt(name, _self)
     _apply_focus(name, _self)
+    apply_lights(name, _self)
 
 
 def apply_current(_self=cmd):
@@ -695,6 +835,9 @@ def prune(_self=cmd):
     for name in list(_scene_focus.keys()):
         if name not in live:
             _scene_focus.pop(name, None)
+    for name in list(_scene_lights.keys()):
+        if name not in live:
+            _scene_lights.pop(name, None)
 
 
 def clear_all(_self=cmd):
@@ -704,6 +847,7 @@ def clear_all(_self=cmd):
     _scene_object_capture.clear()
     _scene_ttt.clear()
     _scene_focus.clear()
+    _scene_lights.clear()
     _reported.clear()
 
 
@@ -724,6 +868,8 @@ def rename(old, new, _self=cmd):
         _scene_ttt[new] = _scene_ttt.pop(old)
     if old in _scene_focus:
         _scene_focus[new] = _scene_focus.pop(old)
+    if old in _scene_lights:
+        _scene_lights[new] = _scene_lights.pop(old)
 
 
 def on_scene_action(key, action, new_key=None, _self=cmd):
@@ -760,7 +906,81 @@ def session_save(session, *, _self=cmd):
     for key in ("raymol_scene_settings", "raymol_scene_object_settings",
                 "raymol_scene_object_capture", "raymol_scene_focus"):
         session[key].pop(_LIVE, None)
+    session["raymol_scene_lights"] = _save_lights(_self)
     return 1
+
+
+def _save_lights(_self=cmd):
+    """{name: 'off' | <light_rig list>}: each rig in the format of the
+    top-level 'light_rig' key, through the same C++ writer, so the reader is
+    #611's lenient, forward-compatible one. An entry that does not convert (a
+    hand-edited rig) is left out with a warning."""
+    out = {}
+    for name, entry in _scene_lights.items():
+        if name == _LIVE:
+            continue
+        if isinstance(entry, str) and entry == 'off':
+            out[name] = 'off'
+            continue
+        try:
+            out[name] = _lighting()._rig_to_session(entry, _self=_self)
+        except Exception as exc:
+            try:
+                from pymol import colorprinting
+                colorprinting.warning(
+                    ' scene: light rig of scene "%s" not saved: %s' % (name, exc))
+            except Exception:
+                pass
+    return out
+
+
+def _restore_lights(session, _self=cmd):
+    """Read 'raymol_scene_lights' leniently. 'off' stays 'off'; a list goes
+    through #611's session reader (the known prefix of a newer version loads,
+    with its warnings printed once). Anything else, or a list that does not
+    read, is dropped with a warning: that scene then acts like an older scene
+    and leaves the rig alone. A .pse without the key has no entries."""
+    payload = session.get("raymol_scene_lights")
+    if payload is None:
+        return
+    if not isinstance(payload, dict):
+        _warn_restore(' scene: raymol_scene_lights ignored (not a dict)')
+        return
+    for name, value in payload.items():
+        if isinstance(name, bytes):     # the legacy pickler's non-ASCII text
+            try:
+                name = name.decode('utf-8')
+            except UnicodeDecodeError:
+                name = None
+        if not isinstance(name, str) or not name:
+            _warn_restore(' scene: light rig with a bad scene name dropped')
+            continue
+        if isinstance(value, bytes):
+            value = value.decode('utf-8', 'replace')
+        if isinstance(value, str) and value == 'off':
+            _scene_lights[name] = 'off'
+            continue
+        if not isinstance(value, (list, tuple)):
+            _warn_restore(" scene: light rig of scene '%s' dropped: not a rig"
+                          % (name,))
+            continue
+        try:
+            rig, warnings = _lighting()._rig_from_session(value, _self=_self)
+        except Exception as exc:
+            _warn_restore(" scene: light rig of scene '%s' dropped: %s"
+                          % (name, exc))
+            continue
+        for w in warnings:
+            _warn_restore(" scene: light rig of scene '%s': %s" % (name, w))
+        _scene_lights[name] = rig
+
+
+def _warn_restore(text):
+    try:
+        from pymol import colorprinting
+        colorprinting.warning(text)
+    except Exception:
+        pass
 
 
 def _restore_object_settings(session):
@@ -792,11 +1012,17 @@ def _restore_object_settings(session):
 
 
 def session_restore(session, *, _self=cmd):
+    # A partial restore keeps the live scenes (the core skips the session's),
+    # so their extras must stay too (#617): clearing here wiped the settings,
+    # TTT, focus and rig of every scene that survives the load.
+    if restoring_partial(_self):
+        return 1
     _scene_settings.clear()
     _scene_object_settings.clear()
     _scene_object_capture.clear()
     _scene_ttt.clear()
     _scene_focus.clear()
+    _scene_lights.clear()
     # A different .pse can hold a scene with the same NAME and a different bad
     # value; its first failure has to be reported.
     _reported.clear()
@@ -810,4 +1036,5 @@ def session_restore(session, *, _self=cmd):
     f = session.get("raymol_scene_focus")
     if isinstance(f, dict):
         _scene_focus.update({k: list(v) for k, v in f.items()})
+    _restore_lights(session, _self)
     return 1

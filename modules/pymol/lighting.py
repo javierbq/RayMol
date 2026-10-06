@@ -28,6 +28,13 @@ the rig maths (eye space, pin conversions, JSON, decision 15, the packed
 GPU block, kelvin) from Python.
 The CPU `ray` tracer never draws the rig (#626); ``_lights_ray_notice()``
 is the notice it prints.
+
+Scenes store their own rig (#617, raymol_scenes.py). ``_rig_to_session``
+and ``_rig_from_session`` convert a rig dict to and from the positional list
+the 'light_rig' session key holds, so per-scene rigs are saved in the same
+lenient, forward-compatible format. ``_lights_blend`` is the frame command
+scene movies carry on the interior frames of each transition
+(raymol_scene_anim.py): it blends the two scenes' stored rigs.
 '''
 
 import sys
@@ -215,3 +222,36 @@ def _light_warmth(kelvin, *, _self=cmd):
     (lower) kelvin is redder, cooler (higher) bluer. Clamped to 1500-15000 K.'''
     with _self.lockcm:
         return tuple(_self._cmd.light_warmth_rgb(_self._COb, float(kelvin)))
+
+
+def _rig_to_session(rig, *, _self=cmd):
+    '''A rig dict (the get_lights() format) as the positional list the
+    'light_rig' session key holds (#617). Strict like set_lights, then
+    validated; never touches the live rig. Raises CmdException
+    ("light_rig_to_session: <reason>").'''
+    with _self.lockcm:
+        return _self._cmd.light_rig_to_session(_self._COb, rig)
+
+
+def _rig_from_session(lst, *, _self=cmd):
+    '''A 'light_rig' session list read as leniently as the session key
+    (#617): returns (dict, [warning, ...]). A newer version loads its known
+    prefix with a warning, and lights past the 6th (or shadows past the 3rd)
+    are dropped with a warning. Raises CmdException
+    ("light_rig_from_session: <reason>") when the list does not read; never
+    touches the live rig.'''
+    with _self.lockcm:
+        rig, warnings = _self._cmd.light_rig_from_session(_self._COb, lst)
+    return rig, list(warnings)
+
+
+def _lights_blend(a='', b='', t='', *, _self=cmd):
+    '''Movie frame command (#617): `_lights_blend A, B, t` blends scene A's
+    stored rig towards scene B's at the eased position t (names in UTF-8
+    hex). raymol_scene_anim authors it; see lights_blend there. Bad
+    arguments are ignored: it prints nothing and never raises.'''
+    try:
+        from pymol import raymol_scene_anim
+        raymol_scene_anim.lights_blend(a, b, t, _self=_self)
+    except Exception:
+        pass
