@@ -6,28 +6,52 @@
     <description>RayMol macOS updates</description>
     <language>en</language>
     <item>
-      <title>RayMol 1.11.2</title>
+      <title>RayMol 1.12.0</title>
       <description xml:lang="en" sparkle:format="markdown"><![CDATA[
-## RayMol 1.11.2
+## RayMol 1.12.0
 
-A rendering fix for the `lines` representation with more than one object on screen.
+A feature release built around one idea: **materials**. Colour says what something is; a material says what it's made of. Plus glass that bends light, ray tracing through glass, smoother movies, and a set of rendering fixes.
 
-- **Fixed: only one object's lines were drawn when two or more objects showed
-  lines.** Loading two structures and choosing *show ▸ lines* on **all** drew the
-  lines of the last object only; the others' lines were missing, and they came
-  back the moment you toggled that object off. Every line-drawing object shared a
-  single GPU vertex buffer, so whichever object was drawn last overwrote the
-  others' geometry before the frame reached the GPU. Each object now draws from
-  its own buffer. Sticks were never affected — only lines. The label leader lines
-  drawn beside offset labels shared the same flaw and are fixed with it.
+### Materials
+
+Every cartoon, surface, stick and sphere layer can now be **matte, plastic, metallic, glass, frosted glass, jelly, marble, clay or rubber**, per object. For example, a glass surface over a marble cartoon, with metallic sticks, all in one object. Your colours stay exactly as they are.
+
+- **Pick one from the Inspector.** Each style-layer row has a *Material* menu. **Custom…** opens that material's own knobs (reflection, tint, roughness, and for jelly its absorption, inner glow and wet highlight) for that layer only; the menu then reads *Custom (metallic)*. Reset or picking another material undoes the tuning.
+- **Looks** are one-click starting points for a layer: **Gold, Copper, Bronze, Steel, Chrome, Marble (statuary)** and **Clay (terracotta)**. A Look sets the layer's material and knobs and lays a base coat of colour on the atoms, so a gold cartoon's side chains come out gold too. *By element* then recolours the heteroatoms. A Look touches nothing else: no other layer, no lighting.
+- **Side chains follow the cartoon.** While an object shows a cartoon, its sticks and spheres draw with the cartoon's material and tuning until you give them one of their own. The Inspector row reads *Cartoon's (metallic)*; pick *Inherit* to make it follow again.
+- **Or set it from the command line:** `set surface_material, glass, myprotein`, and `apply_look gold, myprotein, cartoon`. A misspelled name is an error rather than a silent fallback, and `get` shows the name back.
+- **Glass that reads as one skin.** Glass-family materials peel automatically, keeping only the nearest transparent layer of the object, so a glass surface or glass sticks read as one shell. The object-level **Translucent layers** control (*Auto / Nearest only / All*) in the Inspector, or `set transparency_peel, 1, obj`, applies the same to a translucent ball-and-stick.
+- **Glass bends light.** Glass, frosted glass and jelly refract what's behind them through the shape of the surface, most strongly toward the edges of each lobe, so a ligand seen through a glass surface looks like it's inside. Under *Custom…*, glass's **Reflection** and **Distortion** and jelly's **Distortion** are on/off toggles. Jelly also works on spheres and ball-and-stick.
+- **Reflections.** Plastic, metallic and the glass rim reflect the background, a neutral studio, or nothing (`material_env`). With Metal ray tracing on, they also reflect the structure itself. On a dark background pick the studio, or plastic and metallic look alike.
+- **Ray tracing through glass.** New *RT through transparency* toggle in the Scene panel (`metal_rt_transparent`, off by default): glass, frosted glass, jelly and any transparent rep then cast soft traced shadows and occlusion and appear in reflections.
+- **The classic `ray` command** maps materials to its own textures and highlights. Marble traces with a swirl, clay and rubber with a matte grain, and metallic with a tinted highlight.
+- **Saved with your work.** Materials are saved in scenes and sessions, and movies replay each scene's per-object materials at every cut.
+- **`default` is unchanged.** It renders exactly as before, so existing sessions look the same.
+
+The experimental `metal_rt_reflect*` settings from 1.11 are gone; `plastic` and `metallic` replace them. See [docs/materials.md](../materials.md) for every setting, what each material does on each representation, and the known limits.
+
+### Movies
+
+- **Roll spins at a constant speed.** A Roll added from the Movie tab slowed to a near-stop every third of a turn; it is now linear, as in desktop PyMOL. Rock keeps its ease.
+- **A camera item holds the model showing when it was added.** Adding a Roll to a multi-state object no longer sweeps through every model from model 1. Ensembles loaded afterwards still sweep; an explicit state pin still wins.
+- **Fixed: authoring a movie left the last scene applied to your session.** Building or scrubbing the timeline now restores your settings afterwards.
+
+### Rendering fixes
+
+- **Fog fades to the background colour**, not to black, on any RGB or themed background. Ray-traced reflections that miss the molecule show the background too. This changes the default look slightly.
+- **Fixed: the DOF aperture slider wrapped around at 0**, which gave the strongest blur instead of none.
+- **Fixed: in grid mode, ray-traced shadows and occlusion leaked between cells**, so an object in one cell darkened another.
+- **Fixed: freed GPU buffers were never released on the Metal path.** Every rebuild (a material or colour change, each transparency slider tick, every surface recompute) leaked its old vertex buffer for the life of the process. On iPhone this was an out-of-memory kill.
+- **Fixed: clay and rubber grain shimmered when zoomed out.** It fades out below the pixel size instead.
+- **The Inspector refuses object names PyMOL commands cannot carry** (a line break, `;` or `,`), instead of running a truncated command.
 
 Built on the open-source PyMOL engine. Updates install automatically via the in-app updater (**Check for Updates…** in the app menu).
 ]]></description>
-      <pubDate>Fri, 18 Sep 2026 05:21:21 +0000</pubDate>
-      <sparkle:version>30</sparkle:version>
-      <sparkle:shortVersionString>1.11.2</sparkle:shortVersionString>
+      <pubDate>Tue, 06 Oct 2026 18:45:11 +0000</pubDate>
+      <sparkle:version>32</sparkle:version>
+      <sparkle:shortVersionString>1.12.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.11.2/RayMol-1.11.2.dmg" type="application/octet-stream" sparkle:edSignature="OKCC2+fxLzE8GB1XH0xIWkdHZtotHheHxc0fzzRJVaTKdruUC+Zlz0srBjHfiij8AOQHgZgXAJbUdRFP0INtBQ==" length="83110465" />
+      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.12.0/RayMol-1.12.0.dmg" type="application/octet-stream" sparkle:edSignature="nPS3bhcMwP0MRaS0MrfjGwyBkaXB0xUpaAcbrRA7A60CWh3M8zCKY4LJEOfK9pwHtzMCDGTpclfPsBSN3QrKAA==" length="84301835" />
     </item>
   </channel>
 </rss>
