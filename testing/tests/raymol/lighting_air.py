@@ -36,7 +36,7 @@ SENTINEL = os.path.join('layerGraphics', 'metal', 'RendererMetal.mm')
 # derived from these.
 RANGE_SIZES, MIN_NEAR = 1.8, 0.5
 CELL_SIZES, MIN_CELL = 0.15, 0.5
-HAZE_DENSITY, MOTE_CELLS, DEFOCUS, OCCUPANCY = 0.5, 0.27, 0.3, 0.35
+HAZE_DENSITY, MOTE_CELLS, DEFOCUS, OCCUPANCY = 0.73, 0.18, 0.3, 0.35
 TIME_WRAP, DEFAULT_FPS = 20000.0, 30.0
 GOLDEN = 0.6180339887498949
 BLOCK_FLOATS = 20
@@ -391,9 +391,9 @@ class TestPack(AirCase):
         self.assertAlmostEqual(got['far'], 100.0 + 36.0, places=4)
         self.assertAlmostEqual(got['focus'], 100.0, places=4)
         self.assertAlmostEqual(got['cell'], 3.0, places=5)
-        self.assertAlmostEqual(got['haze_density'], 0.6 * 0.5 / 20.0, places=7)
+        self.assertAlmostEqual(got['haze_density'], 0.6 * 0.73 / 20.0, places=7)
         self.assertAlmostEqual(got['dust_occupancy'], 0.35 * 0.5, places=6)
-        self.assertAlmostEqual(got['mote_radius'], 0.4 * 0.27 * 3.0, places=6)
+        self.assertAlmostEqual(got['mote_radius'], 0.4 * 0.18 * 3.0, places=6)
         self.assertAlmostEqual(got['defocus'], 0.3 / 20.0, places=7)
 
     def testNearFloorInsideTheAir(self):

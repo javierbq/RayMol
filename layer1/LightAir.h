@@ -44,11 +44,14 @@ inline constexpr double kLightAirMinNear = 0.5;
 /// A dust cell is this many rig sizes, and at least kLightAirMinCell Å.
 inline constexpr double kLightAirCellSizes = 0.15;
 inline constexpr double kLightAirMinCell = 0.5;
-/// Haze density per Å at haze 1 is this over the rig size (0.02 / Å at a
-/// 25 Å rig, the prototype's look).
-inline constexpr double kLightAirHazeDensity = 0.5;
+/// Haze density per Å at haze 1 is this over the rig size. Calibrated once
+/// (#618) on 1rx1's captured size (36.4 Å, the half diagonal of its extent)
+/// to the prototype's 0.02 / Å, then frozen.
+inline constexpr double kLightAirHazeDensity = 0.73;
 /// A mote's radius at dust_size 1, in dust cells (before its own factor).
-inline constexpr double kLightAirMoteCells = 0.27;
+/// Calibrated once (#618) on 1rx1's captured size, where a dust cell is
+/// 0.15 x 36.4 Å, to the prototype's dust_size Å, then frozen.
+inline constexpr double kLightAirMoteCells = 0.18;
 /// Defocus: the mote blur per Å away from the focus depth, over the rig size.
 inline constexpr double kLightAirDefocus = 0.3;
 /// A dust cell holds a mote when its hash is <= this times dust.
