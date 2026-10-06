@@ -305,7 +305,7 @@ def _light_air_time(clock, speed, *, _self=cmd):
 def _light_air_resolution(setting, mobile=False, *, _self=cmd):
     '''The air pass's resolution for a metal_light_air_resolution of
     `setting` (#618): 1 full or 2 half; 0 and any other value give the
-    platform default (full, or half when `mobile`).'''
+    platform default (half on both platforms; `mobile` changes nothing).'''
     with _self.lockcm:
         return _self._cmd.light_air_resolution(
             _self._COb, int(setting), bool(mobile))

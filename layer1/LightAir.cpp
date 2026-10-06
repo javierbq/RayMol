@@ -35,9 +35,10 @@ LightAirSource LightAirSourceOf(const LightRig& rig, const glm::dmat4& worldToEy
 
 int LightAirResolution(int setting, bool mobile)
 {
+  (void) mobile; // half on both platforms (L6: full cost +36 % to +158 % s/frame)
   if (setting == kLightAirFull || setting == kLightAirHalf)
     return setting;
-  return mobile ? kLightAirHalf : kLightAirFull;
+  return kLightAirHalf;
 }
 
 int LightAirShadowFilter(int setting, bool mobile)

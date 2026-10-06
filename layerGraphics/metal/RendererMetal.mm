@@ -2387,7 +2387,7 @@ fragment float4 post_air_full(AirVOut in [[stage_in]],
   return float4(post_air_finish(c.rgb, t.rgb), c.a);
 }
 
-// Half resolution (metal_light_air_resolution 2, the iOS default) is two
+// Half resolution (metal_light_air_resolution 2, the default on both) is two
 // passes: post_air_march writes the term for every 2x2 block of pixels into a
 // half-size RGBA16Float target, and post_air_upsample spreads it back over
 // the pixels and composites. Both march with post_air_term, so half differs

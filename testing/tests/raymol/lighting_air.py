@@ -145,10 +145,11 @@ def seed_offset(seed):
     return f32((v - math.floor(v)) * 1000.0)
 
 
-def expected(centre_eye, size_eye, air, time=0.0, scale=1.0, shadow_filter=1):
+def expected(centre_eye, size_eye, air, time=0.0, scale=0.5, shadow_filter=1):
     """The block's named fields for an air source, from the model's
     constants (LightAirPack, written out). `centre_eye` and `size_eye` are
-    rounded to float32 first, as the source holds them."""
+    rounded to float32 first, as the source holds them. `scale` defaults to
+    0.5: metal_light_air_resolution 0 is half on the Mac too (L6)."""
     s = f32(size_eye)
     zc = -f32(centre_eye[2])
     cell = max(CELL_SIZES * s, MIN_CELL)
@@ -222,7 +223,8 @@ class TestSettings(AirCase):
 class TestResolution(testing.PyMOLTestCase):
 
     FN = staticmethod(lighting._light_air_resolution)
-    DESKTOP, MOBILE = 1, 2
+    # L6 (#618): 0 means half on the Mac as well as on iOS
+    DESKTOP, MOBILE = 2, 2
 
     def testDefaults(self):
         self.assertEqual(self.FN(0, False), self.DESKTOP)
@@ -238,11 +240,19 @@ class TestResolution(testing.PyMOLTestCase):
             self.assertEqual(self.FN(value, False), self.DESKTOP, value)
             self.assertEqual(self.FN(value, True), self.MOBILE, value)
 
+    def testMacDefaultIsHalf(self):
+        # L6 (#618): the desktop default is half, as on iOS; full stays at 1
+        self.assertEqual(lighting._light_air_resolution(0, False), 2)
+        self.assertEqual(lighting._light_air_resolution(1, False), 1)
+
 
 class TestShadowFilter(TestResolution):
 
     FN = staticmethod(lighting._light_air_shadow_filter)
     DESKTOP, MOBILE = 1, 1
+
+    def testMacDefaultIsHalf(self):
+        pass  # the resolution's own test, not the filter's
 
 
 class TestClock(testing.PyMOLTestCase):
@@ -487,7 +497,9 @@ class TestPack(AirCase):
 
     def testResolutionAndFilterSettings(self):
         self.rig()
-        for value, scale in ((0, 1.0), (1, 1.0), (2, 0.5), (5, 1.0)):
+        # 0 and any other value give the platform default: half on the Mac
+        # (L6), as on iOS; this build's frame shows it at 0.5
+        for value, scale in ((0, 0.5), (1, 1.0), (2, 0.5), (5, 0.5)):
             cmd.set('metal_light_air_resolution', value)
             self.assertEqual(self.frame()['scale'], scale, value)
         cmd.set('metal_light_air_resolution', 0)

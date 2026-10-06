@@ -38,7 +38,7 @@ the regression renders against master, L2 and L3 prove on a Mac:
 * TestSceneRender: SceneRenderMetal hands the air to the renderer once,
   after the rig and the GPU timing, before anything draws (lighting_air.py
   pins the two statements' text);
-* TestHalf: half resolution (metal_light_air_resolution 2, the iOS default)
+* TestHalf: half resolution (metal_light_air_resolution 2, the default on both)
   marches into an RGBA16Float _airTerm, ceil(w/2) x ceil(h/2), private, made
   lazily and re-made on a size change, with a checkerboard of each 2x2
   block's nearest and farthest depth; the upsample is a 4-tap joint-bilateral
@@ -748,17 +748,23 @@ class TestHalf(AirMSLCase):
         self.assertIn('return float4(0.0, 0.0, 0.0, zSurf);', term)
         self.assertIn('return float4(max(add, float3(0.0)), zHi);', term)
 
-    def testIOSDefaultIsHalf(self):
-        # metal_light_air_resolution 0 is the platform default: half on iOS,
-        # full on the Mac (lighting_air.TestResolution checks the function)
+    def testDefaultIsHalfOnBothPlatforms(self):
+        # metal_light_air_resolution 0 is the platform default: half on iOS
+        # and, after L6, on the Mac too (lighting_air.TestResolution checks
+        # the function)
+        air = read(os.path.join(ROOT, 'layer1', 'LightAir.cpp'))
+        res = cpp_function(air, 'LightAirResolution')
+        self.assertRegex(res, r'return kLightAirHalf;\s*\}$')
+        self.assertNotIn('kLightAirFull :', res)
+        self.assertNotIn('? kLightAirFull', res)
+        self.assertNotIn('mobile ?', res)
         lights = read(SCENE_LIGHTS)
         self.assertRegex(lights, r'#ifdef _PYMOL_IOS\s*constexpr bool kSceneLightsMobile = true;'
                                  r'\s*#else\s*constexpr bool kSceneLightsMobile = false;')
         body = cpp_function(lights, 'SceneLightsAir')
         self.assertRegex(body, r'pymol::LightAirResolution\(\s*SettingGetGlobal_i\(G, '
                                r'cSetting_metal_light_air_resolution\),\s*kSceneLightsMobile\)')
-        pack = cpp_function(read(os.path.join(ROOT, 'layer1', 'LightAir.cpp')),
-                            'LightAirPack')
+        pack = cpp_function(air, 'LightAirPack')
         self.assertIn('b.view[0] = resolution == kLightAirHalf ? 0.5f : 1.0f;', pack)
 
 

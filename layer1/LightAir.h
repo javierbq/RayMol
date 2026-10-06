@@ -101,8 +101,8 @@ bool LightAirActive(const LightAir& air);
 LightAirSource LightAirSourceOf(const LightRig& rig, const glm::dmat4& worldToEye);
 
 /// metal_light_air_resolution: 1 full or 2 half. 0 (and anything else) is the
-/// platform default: full on the desktop, half when `mobile` (provisional
-/// until #623).
+/// platform default: half on both the desktop and `mobile` (#618's L6: full
+/// added +36 % to +158 % s/frame over s3; #623 may revisit).
 int LightAirResolution(int setting, bool mobile);
 
 /// metal_light_air_shadow_filter: the haze's shadow lookup, 1 one hardware

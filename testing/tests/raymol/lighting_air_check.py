@@ -434,7 +434,8 @@ def l2_expected(tag):
     {'haze', 'dust', 'shadowed', 'ms', 'time' (None: no air in the frame),
      'res', 'filter', 'pin', 'grid'}."""
     base, _ = tag_parts(tag)
-    e = {'ms': 1, 'res': 0, 'filter': 0, 'pin': 2.0, 'grid': False, 'shadowed': ['spot']}
+    # res 1: the L2 file's extra lines pin full (L6 made 0 half on the Mac)
+    e = {'ms': 1, 'res': 1, 'filter': 0, 'pin': 2.0, 'grid': False, 'shadowed': ['spot']}
     families = [
         ('spot_none', (0.0, 0.0)), ('spot_hazedust', (0.6, 0.6)),
         ('spot_hazens_ms0', (0.6, 0.0)), ('spot_hazens', (0.6, 0.0)),
@@ -600,6 +601,9 @@ class TestSceneFiles(testing.PyMOLTestCase):
                 # (metal_light_air_* settings aside: those are guarded above)
                 self.assertIsNone(re.search(r'(?<![A-Za-z0-9])_light_air_', '\n'.join(lines)))
         self.assertIn("_l618_opt('metal_light_air_time', 2.0)", self.specs['l2']['extra'])
+        # L6 made metal_light_air_resolution 0 half on the Mac too; the L2
+        # checks were frozen on full, so the L2 file pins full (half_* set 2)
+        self.assertIn("_l618_opt('metal_light_air_resolution', 1)", self.specs['l2']['extra'])
 
     def testHarnessRigHasNoAir(self):
         """render.py's enabled rig carries no air (#618: scene files written
