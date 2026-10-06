@@ -16,6 +16,9 @@ nothing to go back to, and a default name that was removed and added again
 CI builds the GLUT flavour without a GPU, so this exercises _cmd and Python
 only. A small peptide (cmd.fab) gives the rig a real frame.
 
+The inspector's Swift sources are checked too (comments stripped; skipped
+outside a checkout): LightParameter's ranges are the core's field table.
+
 Runs on a RayMol build:
     pymol -ckqy testing/testing.py --run testing/tests/raymol/lighting_inspector.py
 """
@@ -23,6 +26,8 @@ import base64
 import contextlib
 import io
 import json
+import os
+import re
 
 import pymol
 import pymol.invocation
@@ -303,3 +308,100 @@ class TestRestoreLight(testing.PyMOLTestCase):
         reason = self.assertRefused(b64(j0), 'key')
         self.assertIn('shadow', reason)
         self.assertFalse(lighting.get_lights()['lights'][0]['shadow'])
+
+
+# --- the Swift sources ----------------------------------------------------------
+
+ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir,
+                                     os.pardir, os.pardir))
+SHARED = os.path.join('swiftui', 'PyMOLViewer', 'Shared')
+EDITING = os.path.join(SHARED, 'LightsEditing.swift')
+
+# `case .x: return a...b` (a range line of LightParameter.range).
+RANGE_CASE = re.compile(
+    r'case\s+\.(\w+)\s*:\s*return\s+(-?[0-9.]+)\s*\.\.\.\s*(-?[0-9.]+)')
+
+
+def strip_comments(text):
+    """Swift comments removed (as lighting_mode.strip_comments), so a
+    comment can neither satisfy nor trip a check."""
+    text = re.sub(r'/\*.*?\*/', '', text, flags=re.S)
+    return re.sub(r'//[^\n]*', '', text)
+
+
+def body(text, signature):
+    """The braces-matched body that follows `signature` (None when absent)."""
+    start = text.find(signature)
+    if start < 0:
+        return None
+    open_at = text.find('{', start)
+    depth = 0
+    for i in range(open_at, len(text)):
+        if text[i] == '{':
+            depth += 1
+        elif text[i] == '}':
+            depth -= 1
+            if depth == 0:
+                return text[open_at:i + 1]
+    return None
+
+
+class TestInspectorSource(testing.PyMOLTestCase):
+
+    def read(self, rel):
+        path = os.path.join(ROOT, rel)
+        if not os.path.isfile(path):
+            # Skipped, not passed: a source check that cannot find its source
+            # has checked nothing. Only reached outside a checkout.
+            self.skipTest('%s not present; not a repo checkout' % rel)
+        with open(path, encoding='utf-8') as handle:
+            return strip_comments(handle.read())
+
+    def parameters(self):
+        """(cases in declaration order, {case: (min, max)}, {wrapping cases})
+        parsed from LightParameter."""
+        text = self.read(EDITING)
+        enum = body(text, 'enum LightParameter')
+        self.assertIsNotNone(enum, 'enum LightParameter not found')
+        declared = re.search(r'\bcase\s+(\w+(?:\s*,\s*\w+)*)\s*\n', enum)
+        self.assertIsNotNone(declared, 'LightParameter has no case list')
+        cases = [name.strip() for name in declared.group(1).split(',')]
+        ranges_body = body(enum, 'var range:')
+        self.assertIsNotNone(ranges_body, 'LightParameter.range not found')
+        ranges = {}
+        for name, low, high in RANGE_CASE.findall(ranges_body):
+            self.assertNotIn(name, ranges, 'case .%s listed twice' % name)
+            ranges[name] = (float(low), float(high))
+        wraps_body = body(enum, 'var wraps:')
+        self.assertIsNotNone(wraps_body, 'LightParameter.wraps not found')
+        wraps = set(re.findall(r'case\s+\.(\w+)\s*:\s*return\s+true', wraps_body))
+        return cases, ranges, wraps
+
+    def testParametersMatchTheCoreTable(self):
+        """Every LightParameter is a light field of kind float or angle in the
+        core's table, with the core's min and max; it wraps exactly when the
+        core's kind is angle; every case has a range line."""
+        cases, ranges, wraps = self.parameters()
+        self.assertEqual(
+            cases,
+            ['orbit', 'pitch', 'radius', 'intensity', 'warmth', 'beam', 'softness'])
+        self.assertEqual(sorted(ranges), sorted(cases),
+                         'every case needs exactly one `case .x: return a...b` line')
+        table = {name: (kind, low, high)
+                 for scope, name, kind, _default, low, high
+                 in lighting._light_fields() if scope == 'light'}
+        for name in cases:
+            with self.subTest(name):
+                self.assertIn(name, table, '%s is not a light field' % name)
+                kind, low, high = table[name]
+                self.assertIn(kind, ('float', 'angle'))
+                self.assertEqual(ranges[name], (low, high))
+                self.assertEqual(name in wraps, kind == 'angle')
+
+    def testTheRangePatternReadsEachForm(self):
+        """The pattern reads the forms a range line can take."""
+        for line, expected in (('case .orbit: return -180...180', ('orbit', '-180', '180')),
+                               ('case .radius:  return 0.5 ... 8', ('radius', '0.5', '8')),
+                               ('case .warmth: return 1500...15000',
+                                ('warmth', '1500', '15000'))):
+            self.assertEqual(RANGE_CASE.search(line).groups(), expected, line)

@@ -347,12 +347,13 @@ ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir,
                                      os.pardir, os.pardir))
 SHARED = os.path.join('swiftui', 'PyMOLViewer', 'Shared')
 
-# The Lights model and the bar: every button press goes through
-# LightsSeams.perform and every drag tick through the bridge setter seams the
-# engine wires, so these files name no Python or console entry point, no
-# helper and no bridge function.
+# The Lights model, the bar and the shared edit path (#620): every button
+# press goes through LightsSeams.perform and every drag tick through the
+# bridge setter seams the engine wires, so these files name no Python or
+# console entry point, no helper and no bridge function.
 NO_PYTHON_SOURCES = [os.path.join(SHARED, 'LightsController.swift'),
-                     os.path.join(SHARED, 'LightsBar.swift')]
+                     os.path.join(SHARED, 'LightsBar.swift'),
+                     os.path.join(SHARED, 'LightsEditing.swift')]
 NO_PYTHON = re.compile(
     r'\brunPython\w*|\bRunPython\w*|\brunCommand\w*|\bRunCommand\w*'
     r'|appkit_lights|\bPyMOLBridge_\w+\s*\(')
@@ -416,9 +417,9 @@ class TestSwiftSource(testing.PyMOLTestCase):
         callable: a renamed helper would otherwise fail only in the app, as
         one swallowed error line."""
         called = set(HELPER_CALL.findall(strip_comments(self.read(ENGINE))))
-        self.assertEqual(called, {'restore', 'write_presets'},
-                         'the engine calls appkit_lights for Revert and the '
-                         'preset menu only')
+        self.assertEqual(called, {'restore', 'restore_light', 'write_presets'},
+                         'the engine calls appkit_lights for Revert, Revert '
+                         'this light and the preset menu only')
         for name in sorted(called):
             with self.subTest(name):
                 self.assertTrue(callable(getattr(appkit_lights, name, None)),
