@@ -1315,7 +1315,8 @@ MOVIE_FILE = os.path.join(ROOT, 'scripts', 'lighting', 'scenes',
 PDB_1RX1 = os.path.join(ROOT, 'testing', 'data', '1rx1.pdb')
 MOVIE_FILE_TAGS = ['movie_f01_rt0', 'movie_f07_rt0', 'movie_f13_rt0',
                    'movie_f19_rt0', 'movie_f25_rt0', 'movie_f01_rt1',
-                   'movie_f13_rt1', 'movie_f25_rt1', 'recall_b_rt0']
+                   'movie_f13_rt1', 'movie_f25_rt1', 'recall_b_rt0',
+                   'direct_b_rt0', 'direct_b_whitefill_rt0']
 # The light count the harness marker records per frame: A's 3, the union of
 # A and B (key, rim, top, fill) while blending, B's 3.
 MARKER_LIGHTS = {1: 3, 7: 4, 13: 4, 19: 4, 25: 3}
@@ -1357,7 +1358,7 @@ def job_frame(tag):
 class TestMovieSceneFile(_BlendCase):
     """The L2 scene file: the frozen harness's scene scripts build the
     2-scene movie through appkit_movie.rebuild and go to one frame each,
-    or recall scene B. Each script runs twice in this process, as the app
+    recall scene B, or (the controls) set a rig directly. Each script runs twice in this process, as the app
     runs PYMOL_AUTOCMD (at launch and again before the export).
 
     The CI workflow runs every test file in one process: the file wraps
@@ -1461,8 +1462,14 @@ class TestMovieSceneFile(_BlendCase):
             frame = job_frame(tag)
             if frame == 1:
                 self.assertEqual(rig_now, a, tag)
-            elif frame == 25 or tag == 'recall_b_rt0':
+            elif frame == 25 or tag in ('recall_b_rt0', 'direct_b_rt0'):
                 self.assertEqual(rig_now, b, tag)
+            elif tag == 'direct_b_whitefill_rt0':
+                # the control: rig B with only the fill's warmth neutral
+                white = copy.deepcopy(b)
+                self.light(white, 'fill')['warmth'] = 6500.0
+                self.assertEqual(self.light(b, 'fill')['warmth'], 3200.0)
+                self.assertEqual(rig_now, white, tag)
             else:
                 self.assertRigAlmostEqual(
                     rig_now, anim.blend_rigs(a, b, eased_t(frame)), tag)
