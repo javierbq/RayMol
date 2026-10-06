@@ -20,8 +20,10 @@ lighting_shading.py). This file pins what the plan adds:
   resolver's, and its offset from the eye-space centre decomposes into the
   orbit, pitch and radius the plan draws;
 - TestOrbitSource: the Swift sources keep the grids, the owner guard after
-  the stale re-read, the one edit path and the inspector's gesture hook
-  (comments stripped; skipped outside a checkout).
+  the stale re-read, the one edit path and the inspector's gesture hook; the
+  card sits above the inspector, writes only through the interaction, runs a
+  pinch beside its drag, starts collapsed on every iPhone and is logged as
+  plan= (comments stripped; skipped outside a checkout).
 
 CI builds the GLUT flavour without a GPU, so this exercises _cmd and Python
 only. A small peptide (cmd.fab) gives the rig a real frame.
@@ -229,6 +231,9 @@ EDITING = os.path.join(SHARED, 'LightsEditing.swift')
 INSPECTOR = os.path.join(SHARED, 'LightsInspector.swift')
 CONTROLLER = os.path.join(SHARED, 'LightsController.swift')
 MODEL = os.path.join(SHARED, 'LightsOrbitModel.swift')
+VIEW = os.path.join(SHARED, 'LightsOrbitView.swift')
+SIDE_COLUMN = os.path.join(SHARED, 'LightsSideColumn.swift')
+CONTENT_VIEW = os.path.join(SHARED, 'ContentView.swift')
 
 # What the orbit model must not name: it writes only through the controller's
 # owner-guarded set, and never drives the mirror or the eye reads itself.
@@ -351,3 +356,83 @@ class TestOrbitSource(testing.PyMOLTestCase):
         rows = body(text, 'struct LightPlacementRows')
         self.assertIsNotNone(rows, 'LightPlacementRows not found')
         self.assertEqual(rows.count('gestureGeneration: controller.gestureGeneration'), 2)
+
+    def testTheCardSitsAboveTheInspector(self):
+        """LightsSideColumn builds the orbit card before (above) the
+        inspector, with its collapse seed."""
+        column = body(self.read(SIDE_COLUMN), 'var body: some View')
+        self.assertIsNotNone(column, 'LightsSideColumn.body not found')
+        orbit = column.find('LightsOrbitView(')
+        inspector = column.find('LightsInspector(')
+        self.assertGreaterEqual(orbit, 0, 'the column builds no LightsOrbitView')
+        self.assertGreater(inspector, orbit, 'the orbit card must come above the inspector')
+        self.assertIn('initiallyCollapsed: orbitStartsCollapsed', column)
+
+    def testTheViewWritesOnlyThroughTheInteraction(self):
+        """LightsOrbitView.swift names no seam, write path or mirror driver,
+        and no controller setter: every edit goes through
+        LightsOrbitInteraction (the owner-guarded shared path). It draws only
+        with its state, and its canvases (not the card) observe the eye."""
+        text = self.read(VIEW)
+        for name in FORBIDDEN + ('controller.set(', 'controller.step(', 'controller.setPlacement(',
+                                 'controller.select(', 'beginGesture('):
+            with self.subTest(name):
+                self.assertNotIn(name, text)
+        self.assertIn('LightsOrbitInteraction(controller: controller)', text)
+        card = body(text, 'struct LightsOrbitView: View')
+        self.assertIsNotNone(card, 'LightsOrbitView not found')
+        self.assertRegex(body(card, 'var body: some View') or '',
+                         r'if\s+let\s+state\s*=\s*LightsOrbitState\(controller\b')
+        self.assertNotRegex(card, r'@ObservedObject\s+var\s+eye\b',
+                            'the card itself must not observe the eye')
+        canvases = body(text, 'struct OrbitCanvases: View')
+        self.assertIsNotNone(canvases, 'OrbitCanvases not found')
+        self.assertRegex(canvases, r'@ObservedObject\s+var\s+eye:\s*LightsEyeState')
+        summary = body(text, 'struct OrbitCollapsedSummary: View')
+        self.assertIsNotNone(summary, 'OrbitCollapsedSummary not found')
+        self.assertRegex(summary, r'@ObservedObject\s+var\s+eye:\s*LightsEyeState')
+
+    def testThePlanPinchesBesideItsDrag(self):
+        """The plan's pinch is a simultaneous MagnifyGesture beside its
+        DragGesture (the gesture wiring is otherwise checked by eye)."""
+        canvases = body(self.read(VIEW), 'struct OrbitCanvases: View')
+        self.assertIsNotNone(canvases, 'OrbitCanvases not found')
+        found = re.search(r'\.simultaneousGesture\(\s*MagnifyGesture\(\)', canvases)
+        self.assertIsNotNone(found, 'the plan has no simultaneous MagnifyGesture')
+        self.assertEqual(len(re.findall(r'DragGesture\(minimumDistance:\s*0', canvases)), 2,
+                         'one drag on the plan, one on the arc')
+        self.assertIn('accessibilityAdjustableAction', canvases)
+
+    def testTheCardStartsCollapsedOnEveryIPhone(self):
+        """ContentView seeds the orbit card collapsed on compact width or
+        compact height (every iPhone, both orientations), never on macOS,
+        and passes the seed to the column."""
+        content = self.read(CONTENT_VIEW)
+        seed = body(content, 'private var lightsOrbitStartsCollapsed')
+        self.assertIsNotNone(seed, 'lightsOrbitStartsCollapsed not found')
+        ios, _, mac = seed.partition('#else')
+        self.assertIn('hSize == .compact', ios)
+        self.assertIn('vSize == .compact', ios)
+        self.assertIn('!lightsInspectorExpandOverride', ios)
+        self.assertIn('return false', mac)
+        site = body(content, 'private var lightsSideColumn')
+        self.assertIsNotNone(site, 'lightsSideColumn not found')
+        self.assertIn('orbitStartsCollapsed: lightsOrbitStartsCollapsed', site)
+
+    def testBothLogLinesCarryThePlan(self):
+        """Both PYMOL_AUTOLIGHTS log lines carry plan=<LightsOrbitState
+        summary> beside inspector=, and LightsAutoEdit hands the gesture
+        tokens to OrbitAutoGesture."""
+        hook = body(self.read(CONTENT_VIEW), 'private func autoEnterLightsModeFromEnv()')
+        self.assertIsNotNone(hook, 'autoEnterLightsModeFromEnv not found')
+        lines = re.findall(r'NSLog\("PYMOL_AUTOLIGHTS(?:_EDIT)?:[^\n]*', hook)
+        self.assertEqual(len(lines), 2)
+        for line in lines:
+            with self.subTest(line[:30]):
+                self.assertIn('inspector=', line)
+                self.assertIn(' plan=\\(plan)', line)
+        self.assertEqual(len(re.findall(r'LightsOrbitState\(lights\)\?\.summary', hook)), 2)
+        edit = body(self.read(INSPECTOR), 'enum LightsAutoEdit')
+        self.assertIsNotNone(edit, 'LightsAutoEdit not found')
+        self.assertIn('OrbitAutoGesture.claims(', edit)
+        self.assertIn('OrbitAutoGesture.apply(', edit)
