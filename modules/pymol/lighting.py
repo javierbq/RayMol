@@ -41,6 +41,11 @@ studio shadow plan, and ``_light_shadow_frustum``, ``_light_shadow_map_size``,
 ``_light_shadow_tile``, ``_light_shadow_casters``, ``_gpu_time_summary``,
 ``_gpu_time_replay`` and ``_gpu_frame_stats`` reach the same C++ as the
 renderer.
+
+The air (#618): ``_light_air_frame`` returns the air block a frame packs
+(haze and dust, in eye space and rig sizes), and ``_light_air_clock``,
+``_light_air_time``, ``_light_air_resolution``, ``_light_air_shadow_filter``
+and ``_light_air_animating`` reach the same C++ as the renderer and the app.
 '''
 
 import sys
@@ -241,6 +246,87 @@ def _light_frame(matrix=None, grid=None, *, _self=cmd):
         grid = tuple(int(v) for v in grid)
     with _self.lockcm:
         return _self._cmd.get_light_frame(_self._COb, matrix, grid)
+
+
+def _light_air_frame(matrix=None, offscreen=None, wall=None, grid=None, *,
+                     _self=cmd):
+    '''One frame's air block as the Metal renderer receives it (#618), or
+    None when the frame draws no air: no rig, a rig that is off, haze and
+    dust both 0, nothing to light (overlays alone do not count), grid mode,
+    or the rig behind the camera. `matrix` is as for _light_frame;
+    `offscreen` None reads the renderer's flag (False without one), else the
+    frame is taken as offscreen (an export) or live; `wall` None reads the
+    live clock, else the live clock's seconds; `grid` None for the scene's
+    grid, or (n_col, n_row, first_slot) for an active grid. Reads only.
+
+    {'block': [20 floats], 'haze_density', 'dust_occupancy', 'scatter',
+     'seed_offset', 'near', 'far', 'focus', 'cell', 'time', 'mote_radius',
+     'defocus', 'shadow_filter', 'scale'}
+
+    'block' is the 80-byte block the GPU reads (layer1/LightAirBlock.h has
+    the offsets): medium (haze density per A, dust occupancy, scatter g,
+    seed offset), range (near, far, focus depth, dust cell), motion (dust
+    time, mote radius, defocus gain, haze shadow filter), view (scale, then
+    the renderer's ortho flag) and proj (the renderer's). The rest is decoded
+    from it.'''
+    if matrix is not None:
+        matrix = [float(v) for v in matrix]
+    if offscreen is not None:
+        offscreen = bool(offscreen)
+    if wall is not None:
+        wall = float(wall)
+    if grid is not None:
+        grid = tuple(int(v) for v in grid)
+    with _self.lockcm:
+        return _self._cmd.get_light_air_frame(
+            _self._COb, matrix, offscreen, wall, grid)
+
+
+def _light_air_clock(pinned=-1.0, offscreen=False, playing=False, frames=1,
+                     frame=0, fps=30.0, wall=0.0, *, _self=cmd):
+    '''The dust clock in seconds, before dust_speed (#618): `pinned` (the
+    metal_light_air_time setting) when it is 0 or more; else movie time
+    frame / fps (fps 0 or less reads as 30; `frame` 0-based) when there is a
+    movie (`frames` > 1) and the frame is offscreen or the movie plays; else 0
+    offscreen, and `wall` live.'''
+    with _self.lockcm:
+        return _self._cmd.light_air_clock(
+            _self._COb, float(pinned), bool(offscreen), bool(playing),
+            int(frames), int(frame), float(fps), float(wall))
+
+
+def _light_air_time(clock, speed, *, _self=cmd):
+    '''The dust time (#618): fmod(max(clock, 0) * max(speed, 0), 20000);
+    never negative.'''
+    with _self.lockcm:
+        return _self._cmd.light_air_time(_self._COb, float(clock), float(speed))
+
+
+def _light_air_resolution(setting, mobile=False, *, _self=cmd):
+    '''The air pass's resolution for a metal_light_air_resolution of
+    `setting` (#618): 1 full or 2 half; 0 and any other value give the
+    platform default (half on both platforms; `mobile` changes nothing).'''
+    with _self.lockcm:
+        return _self._cmd.light_air_resolution(
+            _self._COb, int(setting), bool(mobile))
+
+
+def _light_air_shadow_filter(setting, mobile=False, *, _self=cmd):
+    '''The haze's shadow lookup for a metal_light_air_shadow_filter of
+    `setting` (#618): 1 one tap or 2 the 3x3 lookup; 0 and any other value
+    give the platform default (one tap on both).'''
+    with _self.lockcm:
+        return _self._cmd.light_air_shadow_filter(
+            _self._COb, int(setting), bool(mobile))
+
+
+def _light_air_animating(*, _self=cmd):
+    '''True when the dust moves on its own and the live view must redraw
+    for it (#618): the rig is on with dust and dust_speed above 0, the dust
+    clock is not pinned, no movie plays, no grid, and something is shown.
+    What the app's redraw policy asks.'''
+    with _self.lockcm:
+        return _self._cmd.light_air_animating(_self._COb)
 
 
 def _light_shadow_frustum(pos, axis, cos_outer, centre, radius, *, _self=cmd):

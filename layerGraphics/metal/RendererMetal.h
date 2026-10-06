@@ -211,6 +211,10 @@ public:
   // fresh readout. getGpuFrameStats is false at mode 0.
   void setGpuTiming(int mode) override;
   bool getGpuFrameStats(GpuFrameReport* out) const override;
+  // The air (#618): see Renderer.h. setLightAir takes a value copy of the
+  // frame's air block; offscreenFrame is _offscreen.
+  void setLightAir(const LightAirBlock* air) override;
+  bool offscreenFrame() const override;
   void setKeyLightDir(const float* lightv) override;
   void setRayTraceParams(int samples, float aoRadius, float aoIntensity,
       float shadowIntensity, float scale = 1.0f) override;
@@ -508,6 +512,35 @@ private:
   // MetalFX (the typed id<MTLFXSpatialScaler> lives in _upscaler / the .mm).
   void ensureUpscaler(NSUInteger inW, NSUInteger inH, NSUInteger outW, NSUInteger outH);
   void runPostChain();
+
+  // The air (#618, haze and dust): its own pass in runPostChain, after Pass 1
+  // (raster or traced) and before the OIT resolve, only while _lightAirOn and
+  // the rig is on. Its library (kEyeReconSrc + kMaterialSrc + kAirSrc) is
+  // compiled on the first frame that draws air, one attempt per renderer
+  // (_airPipelinesTried; a failure is logged once and the air is skipped).
+  // Only the pipeline state is kept. _airNoMaps: a 1x1, 3-slice depth array
+  // bound in place of the studio maps on a frame without them (never
+  // sampled: the rig copy's head.w is 0 then), so one pipeline serves both.
+  // Half resolution (the air block's view.x 0.5) marches into _airTerm
+  // (RGBA16Float, ceil(w/2) x ceil(h/2), private; made on the first half
+  // frame and re-made on a size change; _airTermW/_airTermH the half size it
+  // was made, or tried, for) with _airMarchPipeline, then upsamples and
+  // composites with _airUpsamplePipeline. Without those pipelines or the term
+  // the frame draws the air at full resolution.
+  id<MTLRenderPipelineState> _airFullPipeline = nil;
+  id<MTLRenderPipelineState> _airMarchPipeline = nil;
+  id<MTLRenderPipelineState> _airUpsamplePipeline = nil;
+  bool _airPipelinesTried = false;
+  id<MTLTexture> _airNoMaps = nil;
+  id<MTLTexture> _airTerm = nil;
+  NSUInteger _airTermW = 0;
+  NSUInteger _airTermH = 0;
+  bool ensureAirPipelines();
+  id<MTLTexture> ensureAirNoMaps();
+  bool ensureAirTerm(NSUInteger w, NSUInteger h);
+  // Encodes the air over sceneSrc into the other ping-pong target, on
+  // _cmdBuffer, and returns that target (sceneSrc when it cannot draw).
+  id<MTLTexture> encodeAirPass(id<MTLTexture> sceneSrc);
 
   // Real-time ray tracing: build the shared unit-icosphere primitive
   // acceleration structure (once) + (re)build the per-atom instance
@@ -862,6 +895,12 @@ private:
   // SceneRenderMetal sets it again.
   bool _lightRigOn = false;
   LightRigBlock _lightRigBlock{};
+  // The air (#618): a value copy of this frame's air block, taken by
+  // setLightAir() (SceneRenderMetal, after setGpuTiming). Valid only while
+  // _lightAirOn; off with no air, and at every beginFrame until
+  // SceneRenderMetal sets it again.
+  bool _lightAirOn = false;
+  LightAirBlock _lightAirBlock{};
   // A rig pipeline that cannot be built draws classic instead; this logs it
   // once per renderer rather than once per draw.
   bool _lightRigWarned = false;

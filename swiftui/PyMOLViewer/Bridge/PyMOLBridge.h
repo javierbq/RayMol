@@ -100,6 +100,18 @@ int PyMOLBridge_LightSetVector(PyMOLHandle instance, int index, const char *fiel
 // -1 when there is no rig. PYMOL_LIGHTS_MAX entries always suffice.
 int PyMOLBridge_LightsEyeSpace(PyMOLHandle instance, PyMOLLightRigEye *rig, PyMOLLightEye *lights, int capacity);
 
+// --- The rig's air (#618) ---
+// 1 when the rig's dust moves on its own, so the live view needs a frame per
+// air tick even though nothing else changed (SceneLightsAirAnimating: the rig
+// is on, dust and dust_speed > 0, metal_light_air_time does not pin the clock,
+// no movie plays, grid_mode is off and something is shown); 0 otherwise.
+// Plain C++ on the scene's rig, no Python. The render loop asks it at most
+// once per air tick, and only when its redraw policy (AirRedrawGate,
+// MetalViewport.swift) allows a tick. MAIN THREAD ONLY (it asks whether a
+// movie plays), never while a movie export renders off-main. Named outside
+// PyMOLBridge_Light*, whose set lighting_bridge.py pins.
+int PyMOLBridge_AirAnimating(PyMOLHandle instance);
+
 // Tab autocomplete: runs PyMOL's own command-line completion (cmd._parser.complete)
 // on the current input and returns the completed string (extended to the
 // unambiguous prefix; the candidate list, when ambiguous, is printed to the

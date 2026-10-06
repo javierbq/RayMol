@@ -2538,6 +2538,11 @@ void SceneRenderMetal(PyMOLGlobals* G)
     // #623 can time the frame without one too). At 0, the default, the
     // renderer adds nothing to the frame.
     G->Renderer->setGpuTiming(SettingGetGlobal_i(G, cSetting_metal_gpu_timing));
+    // The air (#618): this frame's haze and dust block, or none (no rig that
+    // is on with air, no geometry, grid mode). Nothing is read without the
+    // rig's air; the renderer keeps a value copy.
+    const auto air = SceneLightsAir(G, lights);
+    G->Renderer->setLightAir(air ? &*air : nullptr);
     // Key-light direction: feed cSetting_light so shading AND shadows follow it
     // (and become user-adjustable via `set light`). The renderer stores
     // -normalize(light) as the direction toward the light; PyMOL's default light

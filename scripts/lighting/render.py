@@ -62,13 +62,20 @@ scripts/materials_gallery/render.py):
 --scenes FILE (JSON) lets later tickets define their own image lists without
 editing this file:
     {"base": "l1" | null,             reproduce the 16 L1 tags (default null)
-     "rig": "none" | "off" | "on",    default "none"; "on" = the rig, enabled
+     "rig": "none" | "off" | "on",    default "none"; "on" = the rig, enabled,
+                                      WITHOUT its air (see below)
      "only": [tag, ...],              optional subset
      "extra": [python line, ...],     appended to every scene, after the view
      "size": [w, h],                  default [1280, 720]
      "scenes": [{"tag": t, "from": <l1 tag>, "rt": 0|1, "rig": ..., "size": [w, h],
                  "lines": [python line, ...]}, ...]}   add or override tags
 A scene's lines run after the file's extra lines, before the rig block.
+
+"rig": "on" installs RIG_OFF's lights enabled but drops its air (haze and
+dust 0), so that a scene file written before the air pass (#618) renders as
+it did then. A scene that wants air sets it itself (its own rig, or a shim of
+cmd.set_lights). --rig off is unchanged, RIG_OFF's air included: an off rig
+must ignore its air.
 
 Exit codes: 0 ok; 1 an image failed, or --compare found a difference;
 2 a refusal or usage error.
@@ -290,6 +297,8 @@ def _rig_block(rig):
         ]
     else:
         lines += [
+            '# no air on an enabled harness rig (#618): a scene asks for it',
+            "_lh_rig.pop('air', None)",
             "if not hasattr(cmd, 'set_lights'):",
             "    raise RuntimeError('no light rig API')",
             "cmd.set_lights(_lh_rig)",

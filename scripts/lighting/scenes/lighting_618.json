@@ -1,0 +1,606 @@
+{
+ "comment": "#618 L2: haze and dust, checked with scripts/lighting/check_air.py l2 (its docstring names what every check reads). 1rx1 at 1280x720 on black: a grey80 surface plus organic sticks, metal_shadows 1, depth_cue 0. Every rig is the scene's own (cmd._l618_rig, the cmd.set_lights shim of lighting_616.json: the frozen harness calls cmd.set_lights after the scene's lines, and the shim installs cmd._l618_rig instead; hasattr guard, the app runs the script twice), with an explicit centre and size (the extent of m) and its own air. metal_light_air_time is pinned at 2.0 s except in the clock tags (still, movie_*, pinned05, speed0_*). Every line that sets a #618 setting goes through _l618_opt (set only where the setting exists). spot: a warm shadowed spot (orbit -50, pitch 45, beam 30, intensity 2) plus a dim fill; none = no air, haze 0.6, hazedust 0.6/0.6, dust only (beam 22, dust 1, dust_size 0.45); hazens: the spot unshadowed; _ms0: metal_shadows 0. backlit: a shadowed back light (orbit 165, pitch 18) and a front fill, haze 0.18, dust 0.5; g09: scatter 0.9, haze 0.6; *_noair: the same lights, no air (the no-air twins of rt_match). cross: red A (orbit -80, pitch 25) and blue B (orbit 100, pitch -25), beam 28, haze 0.5; the molecule is each shaft's caster (the beams are narrower than it at the centre); noair: no air (the background mask), none: no shadowed light, a/b/ab: the shadowed lights; dust: dust 0.8, no haze. s3: three shadowed lights, haze 0.3, dust 0.5. The extra lines set metal_light_air_resolution 1 (full: since L6 the platform default 0 is half on the Mac too, and the checks were frozen on full); half: metal_light_air_resolution 2; filter9: metal_light_air_shadow_filter 2. t<s>_dust/_haze: pinned at <s> seconds (05 = 0.5). Clock tags: mset 1 x48, movie_fps 30, frame N (f16b goes to 40 first). ovl: m disabled, only a _move_gizmo sphere at the rig centre shown (an overlay: no geometry; a scene with nothing shown renders one colour, which the harness refuses); airoff: haze 0 and dust 0 with the other air fields non-default; grid: grid_mode 1, m and m2; whitebg: bg_rgb white, cross_none's lights (red and blue, unshadowed; no air, haze 0.5): unlike the spot scene's fill, their beams leave part of the frame unlit, which unchanged needs. ortho, glass, transparent and rttrans (metal_rt_transparent 1) are for the eye only. Checked in CI by testing/tests/raymol/lighting_air_check.py.",
+ "base": null,
+ "rig": "on",
+ "size": [
+  1280,
+  720
+ ],
+ "extra": [
+  "import math as _l618_math",
+  "_l618_mn, _l618_mx = cmd.get_extent('m')",
+  "_l618_c = [(a + b) / 2.0 for a, b in zip(_l618_mn, _l618_mx)]",
+  "_l618_s = _l618_math.sqrt(sum((b - a) ** 2 for a, b in zip(_l618_mn, _l618_mx))) / 2.0",
+  "_l618_opt = lambda name, value: cmd.set(name, value) if name in cmd.setting.get_name_list() else None",
+  "if not hasattr(cmd, '_l618_set'): cmd._l618_set = cmd.set_lights",
+  "cmd.set_lights = lambda rig, _c=cmd: _c._l618_set(rig if getattr(_c, '_l618_rig', None) is None else (_c._l618_rig(rig) if callable(_c._l618_rig) else _c._l618_rig))",
+  "if hasattr(cmd, '_l618_get'): cmd.get_lights = cmd._l618_get",
+  "_l618_spot = {'name': 'spot', 'orbit': -50.0, 'pitch': 45.0, 'radius': 3.0, 'beam': 30.0, 'softness': 0.45, 'color': [1.0, 0.8, 0.55], 'intensity': 2.0, 'highlight': 0.0, 'shadow': True}",
+  "_l618_fill = {'name': 'fill', 'orbit': 60.0, 'pitch': 0.0, 'radius': 3.0, 'beam': 60.0, 'softness': 0.8, 'intensity': 0.2, 'highlight': 0.0}",
+  "_l618_air = lambda **kw: dict({'haze': 0.0, 'dust': 0.0, 'dust_size': 0.35, 'dust_speed': 1.0, 'scatter': 0.55, 'seed': 7}, **kw)",
+  "_l618_make = lambda lights, **air: {'version': 1, 'enabled': True, 'ambient': 0.05, 'classic': 0.0, 'centre': list(_l618_c), 'size': _l618_s, 'lights': lights, 'air': _l618_air(**air)}",
+  "_l618_ns = lambda light: dict(light, shadow=False)",
+  "_l618_gizmo = lambda: cmd.load_cgo([6.0, 0.9, 0.6, 0.2, 7.0] + list(_l618_c) + [0.2 * _l618_s], '_move_gizmo', zoom=0)",
+  "_l618_back = {'name': 'back', 'orbit': 165.0, 'pitch': 18.0, 'radius': 3.0, 'beam': 40.0, 'softness': 0.4, 'color': [1.0, 0.9, 0.75], 'intensity': 2.2, 'highlight': 0.0, 'shadow': True}",
+  "_l618_front = {'name': 'front', 'orbit': 20.0, 'pitch': 10.0, 'radius': 3.0, 'beam': 70.0, 'softness': 0.8, 'intensity': 0.3, 'highlight': 0.0}",
+  "_l618_third = {'name': 'third', 'orbit': 70.0, 'pitch': -30.0, 'radius': 3.0, 'beam': 35.0, 'softness': 0.4, 'color': [0.7, 0.85, 1.0], 'intensity': 1.4, 'highlight': 0.0, 'shadow': True}",
+  "_l618_red = {'name': 'red', 'orbit': -80.0, 'pitch': 25.0, 'radius': 3.0, 'beam': 28.0, 'softness': 0.3, 'color': [1.0, 0.05, 0.0], 'intensity': 2.0, 'highlight': 0.0}",
+  "_l618_blue = {'name': 'blue', 'orbit': 100.0, 'pitch': -25.0, 'radius': 3.0, 'beam': 28.0, 'softness': 0.3, 'color': [0.0, 0.05, 1.0], 'intensity': 2.0, 'highlight': 0.0}",
+  "_l618_sh = lambda light: dict(light, shadow=True)",
+  "_l618_base = lambda: (cmd.color('grey80', 'm'), cmd.show('sticks', 'm and organic and not hydro'), util.cbag('m and organic'), cmd.set('metal_shadows', 1))",
+  "cmd.set('depth_cue', 0)",
+  "_l618_opt('metal_light_air_time', 2.0)",
+  "_l618_opt('metal_light_air_resolution', 1)"
+ ],
+ "scenes": [
+  {
+   "tag": "spot_none_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill])"
+   ]
+  },
+  {
+   "tag": "spot_haze_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], haze=0.6)"
+   ]
+  },
+  {
+   "tag": "spot_hazedust_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], haze=0.6, dust=0.6)"
+   ]
+  },
+  {
+   "tag": "spot_dust_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([dict(_l618_spot, beam=22.0), _l618_fill], dust=1.0, dust_size=0.45)"
+   ]
+  },
+  {
+   "tag": "spot_none_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill])"
+   ]
+  },
+  {
+   "tag": "spot_haze_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], haze=0.6)"
+   ]
+  },
+  {
+   "tag": "spot_hazedust_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], haze=0.6, dust=0.6)"
+   ]
+  },
+  {
+   "tag": "spot_dust_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([dict(_l618_spot, beam=22.0), _l618_fill], dust=1.0, dust_size=0.45)"
+   ]
+  },
+  {
+   "tag": "spot_hazens_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([_l618_ns(_l618_spot), _l618_fill], haze=0.6)"
+   ],
+   "comment": "The spot unshadowed at metal_shadows 1: no shaft behind the molecule (the whole-pixel shadow still darkens the surface)."
+  },
+  {
+   "tag": "spot_haze_ms0_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], haze=0.6)"
+   ]
+  },
+  {
+   "tag": "spot_hazens_ms0_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l618_rig = _l618_make([_l618_ns(_l618_spot), _l618_fill], haze=0.6)"
+   ]
+  },
+  {
+   "tag": "backlit_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([_l618_back, _l618_front], haze=0.18, dust=0.5)"
+   ]
+  },
+  {
+   "tag": "backlit_noair_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([_l618_back, _l618_front])"
+   ]
+  },
+  {
+   "tag": "backlit_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([_l618_back, _l618_front], haze=0.18, dust=0.5)"
+   ]
+  },
+  {
+   "tag": "backlit_noair_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([_l618_back, _l618_front])"
+   ]
+  },
+  {
+   "tag": "backlit_g09_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([_l618_back, _l618_front], haze=0.6, dust=0.5, scatter=0.9)"
+   ]
+  },
+  {
+   "tag": "cross_noair_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([_l618_red, _l618_blue])"
+   ]
+  },
+  {
+   "tag": "cross_none_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([_l618_red, _l618_blue], haze=0.5)"
+   ]
+  },
+  {
+   "tag": "cross_a_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([_l618_sh(_l618_red), _l618_blue], haze=0.5)"
+   ]
+  },
+  {
+   "tag": "cross_b_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([_l618_red, _l618_sh(_l618_blue)], haze=0.5)"
+   ]
+  },
+  {
+   "tag": "cross_ab_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([_l618_sh(_l618_red), _l618_sh(_l618_blue)], haze=0.5)"
+   ]
+  },
+  {
+   "tag": "cross_noair_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([_l618_red, _l618_blue])"
+   ]
+  },
+  {
+   "tag": "cross_none_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([_l618_red, _l618_blue], haze=0.5)"
+   ]
+  },
+  {
+   "tag": "cross_a_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([_l618_sh(_l618_red), _l618_blue], haze=0.5)"
+   ]
+  },
+  {
+   "tag": "cross_b_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([_l618_red, _l618_sh(_l618_blue)], haze=0.5)"
+   ]
+  },
+  {
+   "tag": "cross_ab_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([_l618_sh(_l618_red), _l618_sh(_l618_blue)], haze=0.5)"
+   ]
+  },
+  {
+   "tag": "cross_dust_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([_l618_red, _l618_blue], dust=0.8)"
+   ]
+  },
+  {
+   "tag": "s3_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_back, _l618_third], haze=0.3, dust=0.5)"
+   ]
+  },
+  {
+   "tag": "s3_noair_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_back, _l618_third])"
+   ]
+  },
+  {
+   "tag": "s3_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_back, _l618_third], haze=0.3, dust=0.5)"
+   ]
+  },
+  {
+   "tag": "s3_noair_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_back, _l618_third])"
+   ]
+  },
+  {
+   "tag": "half_hazedust_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "_l618_opt('metal_light_air_resolution', 2)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], haze=0.6, dust=0.6)"
+   ]
+  },
+  {
+   "tag": "half_hazedust_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "_l618_base()",
+    "_l618_opt('metal_light_air_resolution', 2)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], haze=0.6, dust=0.6)"
+   ]
+  },
+  {
+   "tag": "filter9_haze_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "_l618_opt('metal_light_air_shadow_filter', 2)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], haze=0.6)"
+   ]
+  },
+  {
+   "tag": "t0_dust_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "_l618_opt('metal_light_air_time', 0.0)",
+    "cmd._l618_rig = _l618_make([dict(_l618_spot, beam=22.0), _l618_fill], dust=1.0, dust_size=0.45)"
+   ]
+  },
+  {
+   "tag": "t05_dust_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "_l618_opt('metal_light_air_time', 0.5)",
+    "cmd._l618_rig = _l618_make([dict(_l618_spot, beam=22.0), _l618_fill], dust=1.0, dust_size=0.45)"
+   ]
+  },
+  {
+   "tag": "t1_dust_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "_l618_opt('metal_light_air_time', 1.0)",
+    "cmd._l618_rig = _l618_make([dict(_l618_spot, beam=22.0), _l618_fill], dust=1.0, dust_size=0.45)"
+   ]
+  },
+  {
+   "tag": "t2_dust_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "_l618_opt('metal_light_air_time', 2.0)",
+    "cmd._l618_rig = _l618_make([dict(_l618_spot, beam=22.0), _l618_fill], dust=1.0, dust_size=0.45)"
+   ]
+  },
+  {
+   "tag": "t4_dust_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "_l618_opt('metal_light_air_time', 4.0)",
+    "cmd._l618_rig = _l618_make([dict(_l618_spot, beam=22.0), _l618_fill], dust=1.0, dust_size=0.45)"
+   ]
+  },
+  {
+   "tag": "t2_haze_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "_l618_opt('metal_light_air_time', 2.0)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], haze=0.6)"
+   ]
+  },
+  {
+   "tag": "t4_haze_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "_l618_opt('metal_light_air_time', 4.0)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], haze=0.6)"
+   ]
+  },
+  {
+   "tag": "still_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "_l618_opt('metal_light_air_time', -1.0)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], haze=0.6, dust=0.6)"
+   ],
+   "comment": "No movie, unpinned: an offscreen still has dust time 0."
+  },
+  {
+   "tag": "movie_f1_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "_l618_opt('metal_light_air_time', -1.0)",
+    "cmd.mset('1 x48')",
+    "cmd.set('movie_fps', 30)",
+    "cmd.frame(1)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], haze=0.6, dust=0.6)"
+   ]
+  },
+  {
+   "tag": "movie_f16_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "_l618_opt('metal_light_air_time', -1.0)",
+    "cmd.mset('1 x48')",
+    "cmd.set('movie_fps', 30)",
+    "cmd.frame(16)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], haze=0.6, dust=0.6)"
+   ]
+  },
+  {
+   "tag": "movie_f16b_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "_l618_opt('metal_light_air_time', -1.0)",
+    "cmd.mset('1 x48')",
+    "cmd.set('movie_fps', 30)",
+    "cmd.frame(40)",
+    "cmd.frame(16)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], haze=0.6, dust=0.6)"
+   ]
+  },
+  {
+   "tag": "movie_f17_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "_l618_opt('metal_light_air_time', -1.0)",
+    "cmd.mset('1 x48')",
+    "cmd.set('movie_fps', 30)",
+    "cmd.frame(17)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], haze=0.6, dust=0.6)"
+   ]
+  },
+  {
+   "tag": "pinned05_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "_l618_opt('metal_light_air_time', 0.5)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], haze=0.6, dust=0.6)"
+   ],
+   "comment": "No movie, pinned at 0.5 s: equals movie frame 16 at 30 fps."
+  },
+  {
+   "tag": "speed0_still_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "_l618_opt('metal_light_air_time', -1.0)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], haze=0.6, dust=0.6, dust_speed=0.0)"
+   ]
+  },
+  {
+   "tag": "speed0_f16_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "_l618_opt('metal_light_air_time', -1.0)",
+    "cmd.mset('1 x48')",
+    "cmd.set('movie_fps', 30)",
+    "cmd.frame(16)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], haze=0.6, dust=0.6, dust_speed=0.0)"
+   ]
+  },
+  {
+   "tag": "ovl_air_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "cmd.disable('m')",
+    "_l618_gizmo()",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], haze=0.6, dust=0.6)"
+   ],
+   "comment": "m disabled; only a _move_gizmo CGO sphere at the rig centre (an overlay) is shown."
+  },
+  {
+   "tag": "ovl_noair_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "cmd.disable('m')",
+    "_l618_gizmo()",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill])"
+   ]
+  },
+  {
+   "tag": "airoff_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], dust_size=1.2, dust_speed=3.0, scatter=-0.4, seed=99)"
+   ],
+   "comment": "haze 0 and dust 0, every other air field non-default: no air."
+  },
+  {
+   "tag": "airoff_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "_l618_base()",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], dust_size=1.2, dust_speed=3.0, scatter=-0.4, seed=99)"
+   ],
+   "comment": "haze 0 and dust 0, every other air field non-default: no air."
+  },
+  {
+   "tag": "grid_air_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "cmd.create('m2', 'm and resi 1-80', zoom=0)",
+    "cmd.set('grid_mode', 1)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], haze=0.6, dust=0.6)"
+   ]
+  },
+  {
+   "tag": "grid_noair_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "cmd.create('m2', 'm and resi 1-80', zoom=0)",
+    "cmd.set('grid_mode', 1)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill])"
+   ]
+  },
+  {
+   "tag": "whitebg_none_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "cmd.set('bg_rgb', [1.0, 1.0, 1.0])",
+    "cmd._l618_rig = _l618_make([_l618_red, _l618_blue])"
+   ]
+  },
+  {
+   "tag": "whitebg_haze_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "cmd.set('bg_rgb', [1.0, 1.0, 1.0])",
+    "cmd._l618_rig = _l618_make([_l618_red, _l618_blue], haze=0.5)"
+   ]
+  },
+  {
+   "tag": "whitebg_none_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "_l618_base()",
+    "cmd.set('bg_rgb', [1.0, 1.0, 1.0])",
+    "cmd._l618_rig = _l618_make([_l618_red, _l618_blue])"
+   ]
+  },
+  {
+   "tag": "whitebg_haze_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "_l618_base()",
+    "cmd.set('bg_rgb', [1.0, 1.0, 1.0])",
+    "cmd._l618_rig = _l618_make([_l618_red, _l618_blue], haze=0.5)"
+   ]
+  },
+  {
+   "tag": "ortho_haze_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l618_base()",
+    "cmd.set('orthoscopic', 1)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], haze=0.6)"
+   ]
+  },
+  {
+   "tag": "glass_haze_rt0",
+   "from": "glass_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], haze=0.6)"
+   ]
+  },
+  {
+   "tag": "transparent_haze_rt0",
+   "from": "transparent_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], haze=0.6)"
+   ]
+  },
+  {
+   "tag": "transparent_haze_rt1",
+   "from": "transparent_rt1",
+   "lines": [
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], haze=0.6)"
+   ]
+  },
+  {
+   "tag": "rttrans_haze_rt1",
+   "from": "transparent_rt1",
+   "lines": [
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('metal_rt_transparent', 1)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], haze=0.6)"
+   ],
+   "comment": "metal_rt_transparent 1 (not the default): the air lands over the transparent surface with RT on (the documented caveat)."
+  }
+ ]
+}

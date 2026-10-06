@@ -13,12 +13,15 @@
 
 #include "Executive.h"
 #include "Feedback.h"
+#include "Movie.h"
 #include "PyMOLGlobals.h"
 #include "PyMOLObject.h"
+#include "Renderer.h"
 #include "Scene.h"
 #include "SceneDef.h"
 #include "Selector.h"
 #include "Setting.h"
+#include "Util.h"
 
 const pymol::LightRig* SceneGetLightRig(PyMOLGlobals* G)
 {
@@ -310,7 +313,82 @@ SceneLightFrame SceneLightsFrame(PyMOLGlobals* G, const glm::dmat4& worldToEye,
       frame.shadows = pymol::LightShadowPlan(*frame.rig, *rig, in);
     }
   }
+
+  // The air (#618): only while the rig is on with haze or dust, a copy of the
+  // rig's air and its frame in eye space, from the read above. Nothing else
+  // is read here: SceneLightsAir applies the gates, the clock and the
+  // settings.
+  if (frame.rig && pymol::LightAirActive(rig->air))
+    frame.airSource = pymol::LightAirSourceOf(*rig, worldToEye);
   return frame;
+}
+
+/* ---- The air (#618) ------------------------------------------------------ */
+
+std::optional<pymol::LightAirBlock> SceneLightsAir(PyMOLGlobals* G,
+    const SceneLightFrame& frame, const SceneLightAirOptions* options)
+{
+  // No rig that is on with haze or dust: nothing more is read.
+  if (!frame.airSource)
+    return std::nullopt;
+
+  // D8: no air in grid mode (each cell has its own view; the pass marches
+  // one ray per full-frame pixel).
+  const bool grid = options && options->grid ? options->grid->active
+                                             : G->Scene->grid.active;
+  if (grid)
+    return std::nullopt;
+
+  // D7: no air without geometry. The overlay-free extent (cached), so a
+  // scene holding only gadgets or the Move gizmo gets none.
+  float mn[3], mx[3];
+  if (!SceneGetLightShadowExtent(G, mn, mx))
+    return std::nullopt;
+
+  // D9: the dust clock. Offscreen frames (exports, png, the RT throwaway
+  // frame) follow the movie frame; MoviePlaying (which may write Playing on
+  // an interrupt) is asked only on live, unpinned frames.
+  pymol::LightAirClockInputs in;
+  in.pinned = SettingGetGlobal_f(G, cSetting_metal_light_air_time);
+  in.offscreen = options && options->offscreen
+                     ? *options->offscreen
+                     : (G->Renderer && G->Renderer->offscreenFrame());
+  in.frames = SceneCountFrames(G);
+  in.frame = SceneGetFrame(G);
+  in.fps = SettingGetGlobal_f(G, cSetting_movie_fps);
+  if (!in.offscreen && !(in.pinned >= 0.0))
+    in.playing = MoviePlaying(G) != 0;
+  in.wallSeconds = options && options->wallSeconds ? *options->wallSeconds
+                                                   : UtilGetSeconds(G);
+
+  const int resolution = pymol::LightAirResolution(
+      SettingGetGlobal_i(G, cSetting_metal_light_air_resolution),
+      kSceneLightsMobile);
+  const int filter = pymol::LightAirShadowFilter(
+      SettingGetGlobal_i(G, cSetting_metal_light_air_shadow_filter),
+      kSceneLightsMobile);
+  return pymol::LightAirPack(
+      *frame.airSource, pymol::LightAirClock(in), resolution, filter);
+}
+
+bool SceneLightsAirAnimating(PyMOLGlobals* G)
+{
+  const pymol::LightRig* rig = SceneGetLightRig(G);
+  if (!pymol::LightRigIsOn(rig) || !(rig->air.dust > 0.0) ||
+      !(rig->air.dustSpeed > 0.0))
+    return false;
+  const double pinned = SettingGetGlobal_f(G, cSetting_metal_light_air_time);
+  if (pinned >= 0.0)
+    return false;
+  const bool grid = G->Scene->grid.active;
+  if (grid)
+    return false;
+  const bool playing = MoviePlaying(G) != 0;
+  if (playing)
+    return false;
+  float mn[3], mx[3];
+  const bool geometry = SceneGetLightShadowExtent(G, mn, mx);
+  return pymol::LightAirAnimating(rig->air, pinned, playing, geometry, grid);
 }
 
 /* ---- Studio shadow casters (#616) ---------------------------------------- */

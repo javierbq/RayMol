@@ -1,5 +1,6 @@
 #pragma once
 
+#include "LightAirBlock.h"
 #include "LightRigBlock.h"
 #include "Material.h"
 #include <cstddef>
@@ -473,6 +474,17 @@ public:
   // no-op, and no stats.
   virtual void setGpuTiming(int /*mode*/) {}
   virtual bool getGpuFrameStats(GpuFrameReport* /*out*/) const { return false; }
+
+  // The air (#618, haze and dust): this frame's air block, or nullptr when
+  // the frame draws no air. SceneRenderMetal calls it once per frame, after
+  // setGpuTiming() and before any draw. The block is only valid during the
+  // call: an implementation copies what it keeps. Default: no-op (the GL
+  // renderer draws no air).
+  virtual void setLightAir(const LightAirBlock* /*air*/) {}
+  // The frame being rendered is offscreen (an export, png, the throwaway
+  // frame before a traced one): the air's dust clock then follows the movie
+  // frame (SceneLightsAir). Default: false.
+  virtual bool offscreenFrame() const { return false; }
 
   // PyMOL key-light direction (cSetting_light). The direction toward the light
   // used for shading and shadow casting is -normalize(light). Default: no-op

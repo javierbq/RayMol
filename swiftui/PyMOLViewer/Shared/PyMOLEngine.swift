@@ -4169,6 +4169,17 @@ final class PyMOLEngine: ObservableObject {
         return PyMOLBridge_GetMetalRaytrace(inst) != 0
     }
 
+    /// Whether the light rig's dust moves on its own (#618): the rig is on
+    /// with dust and dust_speed, the dust clock is not pinned, no movie plays
+    /// and something is shown. The render loop asks this only on a tick its
+    /// redraw policy (AirRedrawGate) allows, and renders a frame when it is
+    /// true. Plain C++ through the bridge, no Python. Main thread only, and
+    /// false while a movie export owns the core.
+    var lightAirAnimating: Bool {
+        guard let inst = instance, !exportRenderActive else { return false }
+        return PyMOLBridge_AirAnimating(inst) != 0
+    }
+
     // MARK: - Polling
 
     private func pollFeedback() {

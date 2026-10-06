@@ -482,6 +482,19 @@ int PyMOLBridge_LightsEyeSpace(PyMOLHandle h, PyMOLLightRigEye *rig, PyMOLLightE
     return count;
 }
 
+// --- The rig's air (#618) ---
+// Main thread only. Calls only SceneLightsAirAnimating (layer1/SceneLights.h),
+// plain C++ that writes nothing and requests no redisplay: the render loop's
+// air tick asks it, so it must stay as cheap as the light functions above.
+// lighting_air_msl.py (TestBridgeAndApp) checks this body in CI.
+int PyMOLBridge_AirAnimating(PyMOLHandle h)
+{
+    if (!h) return 0;
+    PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
+    if (!G) return 0;
+    return SceneLightsAirAnimating(G) ? 1 : 0;
+}
+
 char *PyMOLBridge_Complete(const char *text)
 {
     if (!text) return nullptr;

@@ -1,0 +1,323 @@
+{
+ "comment": "#618 regression vs master (plans/618.md 10.2; gate.sh baseline-scenes, then render.py --compare, max 0): no air may show, and nothing may change, where the air is zero, off or suppressed. zero_<rep>_s<0|1>_rt<n>: a 2-light rig (a warm spot and a dim fill) with haze and dust 0 and every other air field non-default, on cartoon, surface, sticks, spheres and a bezier tube, without (s0, metal_shadows 0) and with (s1, the spot shadowed, metal_shadows 1) a shadowed light; zero_ortho, zero_oit (a 50% surface over the cartoon plus a glass surface) and zero_grid (grid_mode 1). rigoff_air_*: atmosphere sets haze 0.3 and dust 0.5, then the harness's --rig off path (lights three_point keeps the air; lights off): a rig that is off with lights and air. atmo_norig: atmosphere with no rig (an off rig with no lights; see its comment). suppressed_*: a rig that is on WITH air, but grid_mode 1, or m disabled with only a _move_gizmo CGO shown. The #618 settings (metal_light_air_time 2, metal_light_air_resolution 2, metal_light_air_shadow_filter 2) are set through _l618_opt in every scene: they exist only on the branch and change nothing without air. Every line runs on master; no _light_air_* helper is called. Same cmd.set_lights shim as lighting_618.json (rigs with an explicit centre and size, the extent of m). Checked in CI by testing/tests/raymol/lighting_air_check.py.",
+ "base": null,
+ "rig": "on",
+ "size": [
+  1280,
+  720
+ ],
+ "extra": [
+  "import math as _l618_math",
+  "_l618_mn, _l618_mx = cmd.get_extent('m')",
+  "_l618_c = [(a + b) / 2.0 for a, b in zip(_l618_mn, _l618_mx)]",
+  "_l618_s = _l618_math.sqrt(sum((b - a) ** 2 for a, b in zip(_l618_mn, _l618_mx))) / 2.0",
+  "_l618_opt = lambda name, value: cmd.set(name, value) if name in cmd.setting.get_name_list() else None",
+  "if not hasattr(cmd, '_l618_set'): cmd._l618_set = cmd.set_lights",
+  "cmd.set_lights = lambda rig, _c=cmd: _c._l618_set(rig if getattr(_c, '_l618_rig', None) is None else (_c._l618_rig(rig) if callable(_c._l618_rig) else _c._l618_rig))",
+  "if hasattr(cmd, '_l618_get'): cmd.get_lights = cmd._l618_get",
+  "_l618_spot = {'name': 'spot', 'orbit': -50.0, 'pitch': 45.0, 'radius': 3.0, 'beam': 30.0, 'softness': 0.45, 'color': [1.0, 0.8, 0.55], 'intensity': 2.0, 'highlight': 0.0, 'shadow': True}",
+  "_l618_fill = {'name': 'fill', 'orbit': 60.0, 'pitch': 0.0, 'radius': 3.0, 'beam': 60.0, 'softness': 0.8, 'intensity': 0.2, 'highlight': 0.0}",
+  "_l618_air = lambda **kw: dict({'haze': 0.0, 'dust': 0.0, 'dust_size': 0.35, 'dust_speed': 1.0, 'scatter': 0.55, 'seed': 7}, **kw)",
+  "_l618_make = lambda lights, **air: {'version': 1, 'enabled': True, 'ambient': 0.05, 'classic': 0.0, 'centre': list(_l618_c), 'size': _l618_s, 'lights': lights, 'air': _l618_air(**air)}",
+  "_l618_ns = lambda light: dict(light, shadow=False)",
+  "_l618_gizmo = lambda: cmd.load_cgo([6.0, 0.9, 0.6, 0.2, 7.0] + list(_l618_c) + [0.2 * _l618_s], '_move_gizmo', zoom=0)",
+  "_l618_zero = {'haze': 0.0, 'dust': 0.0, 'dust_size': 1.2, 'dust_speed': 3.0, 'scatter': -0.4, 'seed': 99}",
+  "_l618_opt('metal_light_air_time', 2.0)",
+  "_l618_opt('metal_light_air_resolution', 2)",
+  "_l618_opt('metal_light_air_shadow_filter', 2)"
+ ],
+ "scenes": [
+  {
+   "tag": "zero_cartoon_s0_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l618_rig = _l618_make([_l618_ns(_l618_spot), _l618_fill], **_l618_zero)"
+   ]
+  },
+  {
+   "tag": "zero_cartoon_s0_rt1",
+   "from": "cartoon_rt1",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l618_rig = _l618_make([_l618_ns(_l618_spot), _l618_fill], **_l618_zero)"
+   ]
+  },
+  {
+   "tag": "zero_cartoon_s1_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], **_l618_zero)"
+   ]
+  },
+  {
+   "tag": "zero_cartoon_s1_rt1",
+   "from": "cartoon_rt1",
+   "lines": [
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], **_l618_zero)"
+   ]
+  },
+  {
+   "tag": "zero_surface_s0_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l618_rig = _l618_make([_l618_ns(_l618_spot), _l618_fill], **_l618_zero)"
+   ]
+  },
+  {
+   "tag": "zero_surface_s0_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l618_rig = _l618_make([_l618_ns(_l618_spot), _l618_fill], **_l618_zero)"
+   ]
+  },
+  {
+   "tag": "zero_surface_s1_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], **_l618_zero)"
+   ]
+  },
+  {
+   "tag": "zero_surface_s1_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], **_l618_zero)"
+   ]
+  },
+  {
+   "tag": "zero_sticks_s0_rt0",
+   "from": "sticks_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l618_rig = _l618_make([_l618_ns(_l618_spot), _l618_fill], **_l618_zero)"
+   ]
+  },
+  {
+   "tag": "zero_sticks_s0_rt1",
+   "from": "sticks_rt1",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l618_rig = _l618_make([_l618_ns(_l618_spot), _l618_fill], **_l618_zero)"
+   ]
+  },
+  {
+   "tag": "zero_sticks_s1_rt0",
+   "from": "sticks_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], **_l618_zero)"
+   ]
+  },
+  {
+   "tag": "zero_sticks_s1_rt1",
+   "from": "sticks_rt1",
+   "lines": [
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], **_l618_zero)"
+   ]
+  },
+  {
+   "tag": "zero_spheres_s0_rt0",
+   "from": "spheres_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l618_rig = _l618_make([_l618_ns(_l618_spot), _l618_fill], **_l618_zero)"
+   ]
+  },
+  {
+   "tag": "zero_spheres_s0_rt1",
+   "from": "spheres_rt1",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l618_rig = _l618_make([_l618_ns(_l618_spot), _l618_fill], **_l618_zero)"
+   ]
+  },
+  {
+   "tag": "zero_spheres_s1_rt0",
+   "from": "spheres_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], **_l618_zero)"
+   ]
+  },
+  {
+   "tag": "zero_spheres_s1_rt1",
+   "from": "spheres_rt1",
+   "lines": [
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], **_l618_zero)"
+   ]
+  },
+  {
+   "tag": "zero_tube_s0_rt0",
+   "rt": 0,
+   "lines": [
+    "cmd.load_cgo([6.0, 0.8, 0.8, 0.8, 66.0] + [p[i] + _l618_c[i] for p in [(-14.0, -8.0, 0.0), (-5.0, 14.0, 4.0), (5.0, -14.0, -4.0), (14.0, 8.0, 0.0)] for i in range(3)], 'tube', zoom=0)",
+    "cmd.set('cartoon_tube_radius', 1.5)",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l618_rig = _l618_make([_l618_ns(_l618_spot), _l618_fill], **_l618_zero)"
+   ]
+  },
+  {
+   "tag": "zero_tube_s0_rt1",
+   "rt": 1,
+   "lines": [
+    "cmd.load_cgo([6.0, 0.8, 0.8, 0.8, 66.0] + [p[i] + _l618_c[i] for p in [(-14.0, -8.0, 0.0), (-5.0, 14.0, 4.0), (5.0, -14.0, -4.0), (14.0, 8.0, 0.0)] for i in range(3)], 'tube', zoom=0)",
+    "cmd.set('cartoon_tube_radius', 1.5)",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l618_rig = _l618_make([_l618_ns(_l618_spot), _l618_fill], **_l618_zero)"
+   ]
+  },
+  {
+   "tag": "zero_tube_s1_rt0",
+   "rt": 0,
+   "lines": [
+    "cmd.load_cgo([6.0, 0.8, 0.8, 0.8, 66.0] + [p[i] + _l618_c[i] for p in [(-14.0, -8.0, 0.0), (-5.0, 14.0, 4.0), (5.0, -14.0, -4.0), (14.0, 8.0, 0.0)] for i in range(3)], 'tube', zoom=0)",
+    "cmd.set('cartoon_tube_radius', 1.5)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], **_l618_zero)"
+   ]
+  },
+  {
+   "tag": "zero_tube_s1_rt1",
+   "rt": 1,
+   "lines": [
+    "cmd.load_cgo([6.0, 0.8, 0.8, 0.8, 66.0] + [p[i] + _l618_c[i] for p in [(-14.0, -8.0, 0.0), (-5.0, 14.0, 4.0), (5.0, -14.0, -4.0), (14.0, 8.0, 0.0)] for i in range(3)], 'tube', zoom=0)",
+    "cmd.set('cartoon_tube_radius', 1.5)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], **_l618_zero)"
+   ]
+  },
+  {
+   "tag": "zero_ortho_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.set('orthoscopic', 1)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], **_l618_zero)"
+   ]
+  },
+  {
+   "tag": "zero_oit_rt0",
+   "from": "transparent_rt0",
+   "lines": [
+    "cmd.create('g', 'm and resi 100-140', zoom=0)",
+    "cmd.hide('everything', 'g')",
+    "cmd.show('surface', 'g')",
+    "cmd.set('surface_material', 'glass', 'g')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], **_l618_zero)"
+   ],
+   "comment": "A 50% transparent surface over the cartoon plus a glass surface (object g)."
+  },
+  {
+   "tag": "zero_oit_rt1",
+   "from": "transparent_rt1",
+   "lines": [
+    "cmd.create('g', 'm and resi 100-140', zoom=0)",
+    "cmd.hide('everything', 'g')",
+    "cmd.show('surface', 'g')",
+    "cmd.set('surface_material', 'glass', 'g')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], **_l618_zero)"
+   ],
+   "comment": "A 50% transparent surface over the cartoon plus a glass surface (object g)."
+  },
+  {
+   "tag": "zero_grid_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.create('m2', 'm and resi 1-80', zoom=0)",
+    "cmd.set('grid_mode', 1)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], **_l618_zero)"
+   ]
+  },
+  {
+   "tag": "rigoff_air_surface_rt0",
+   "from": "surface_rt0",
+   "rig": "off",
+   "lines": [
+    "cmd.atmosphere(haze=0.3, dust=0.5, dust_size=0.4, seed=7, dust_speed=1.0)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l618_rig = None"
+   ],
+   "comment": "The air set with atmosphere, then the harness's --rig off path (lights three_point keeps the air, lights off): a rig that is off with lights and air."
+  },
+  {
+   "tag": "rigoff_air_surface_rt1",
+   "from": "surface_rt1",
+   "rig": "off",
+   "lines": [
+    "cmd.atmosphere(haze=0.3, dust=0.5, dust_size=0.4, seed=7, dust_speed=1.0)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l618_rig = None"
+   ],
+   "comment": "The air set with atmosphere, then the harness's --rig off path (lights three_point keeps the air, lights off): a rig that is off with lights and air."
+  },
+  {
+   "tag": "rigoff_air_cartoon_rt0",
+   "from": "cartoon_rt0",
+   "rig": "off",
+   "lines": [
+    "cmd.atmosphere(haze=0.3, dust=0.5, dust_size=0.4, seed=7, dust_speed=1.0)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l618_rig = None"
+   ],
+   "comment": "The air set with atmosphere, then the harness's --rig off path (lights three_point keeps the air, lights off): a rig that is off with lights and air."
+  },
+  {
+   "tag": "rigoff_air_cartoon_rt1",
+   "from": "cartoon_rt1",
+   "rig": "off",
+   "lines": [
+    "cmd.atmosphere(haze=0.3, dust=0.5, dust_size=0.4, seed=7, dust_speed=1.0)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l618_rig = None"
+   ],
+   "comment": "The air set with atmosphere, then the harness's --rig off path (lights three_point keeps the air, lights off): a rig that is off with lights and air."
+  },
+  {
+   "tag": "atmo_norig_rt0",
+   "from": "surface_rt0",
+   "rig": "none",
+   "lines": [
+    "cmd.atmosphere(haze=0.3, dust=0.5, dust_size=0.4, seed=7, dust_speed=1.0)",
+    "_l618_r = cmd.get_lights()",
+    "if _l618_r is None or _l618_r['enabled'] or _l618_r['lights'] or abs(_l618_r['air']['haze'] - 0.3) > 1e-6 or abs(_l618_r['air']['dust'] - 0.5) > 1e-6: raise RuntimeError('l618 atmo_norig: expected an off rig with no lights and the air, got %r' % (_l618_r,))",
+    "cmd._l618_get = cmd.get_lights",
+    "cmd.get_lights = lambda _c=cmd: (lambda r: None if r is not None and not r['enabled'] and not r['lights'] else r)(_c._l618_get())",
+    "cmd._l618_rig = None"
+   ],
+   "comment": "atmosphere with no rig makes an off rig with no lights and the air (checked, else the script raises). The harness's --rig none assertion wants no rig, so after the check cmd.get_lights reports that empty off rig as None (restored at the start of every run)."
+  },
+  {
+   "tag": "suppressed_grid_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.create('m2', 'm and resi 1-80', zoom=0)",
+    "cmd.set('grid_mode', 1)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], haze=0.3, dust=0.5, dust_size=0.4, seed=7)"
+   ]
+  },
+  {
+   "tag": "suppressed_ovl_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 1)",
+    "cmd.disable('m')",
+    "_l618_gizmo()",
+    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], haze=0.3, dust=0.5, dust_size=0.4, seed=7)"
+   ],
+   "comment": "m disabled; only a _move_gizmo CGO sphere at the rig centre (an overlay)."
+  }
+ ]
+}
