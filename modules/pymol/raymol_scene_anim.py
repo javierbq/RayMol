@@ -574,7 +574,14 @@ def session_restore(session, *, _self=cmd):
 
     Values are validated (known captured setting + real number) and the command
     strings are regenerated here — stored text is never replayed, so a hostile
-    .pse cannot smuggle executable code through our session key."""
+    .pse cannot smuggle executable code through our session key.
+
+    A partial restore leaves the live movie alone (#617): the core skips the
+    session's movie and scenes then, so re-authoring its track would write a
+    foreign animation into the movie that stays."""
+    from pymol import raymol_scenes as _rs
+    if _rs.restoring_partial(_self):
+        return 1
     _track.clear()
     _scene_marks[:] = []
     d = session.get('raymol_movie_anim')

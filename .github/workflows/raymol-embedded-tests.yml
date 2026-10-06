@@ -88,6 +88,7 @@ jobs:
               testing/tests/raymol/lighting_pick.py \
               testing/tests/raymol/lighting_ray_notice.py \
               testing/tests/raymol/lighting_rig.py \
+              testing/tests/raymol/lighting_scenes.py \
               testing/tests/raymol/lighting_session.py \
               testing/tests/raymol/lighting_shading.py \
               testing/tests/raymol/line_stick_helper.py \
