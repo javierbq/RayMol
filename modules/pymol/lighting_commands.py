@@ -2059,8 +2059,10 @@ FIELDS
 
     haze        0 to 1, default 0: amount of haze in the air
     dust        0 to 1, default 0: amount of floating dust
-    dust_size   0.05 to 2, default 0.35: size of the dust motes
-    dust_speed  0 to 10, default 1: how fast the dust drifts
+    dust_size   0.05 to 2, default 0.35: size of the dust motes, relative
+                to the size of the scene (the rig's frame)
+    dust_speed  0 to 10, default 1: how fast the dust drifts; 1 is real
+                time, 0 holds it still
     scatter     -0.9 to 0.9, default 0.55: forward scattering (g); above 0
                 the air glows more where a beam points towards the camera
     seed        whole number, 0 to 1000000, default 0: the dust pattern
@@ -2081,6 +2083,24 @@ NOTES
     Only the Metal renderer draws the air; the CPU ray tracer never does.
     The command never writes a setting. Every error names the field or
     value and changes nothing.
+
+    The air needs something shown: with nothing enabled (or only overlays
+    such as the Move gizmo) there is no air. It spans the rig's frame, so
+    showing, hiding or zooming never moves it ("lights recenter" does).
+    Light shafts (the shadows of the molecule in the haze) need a light
+    with shadow=1 and metal_shadows on. Haze alone is still: only dust
+    moves, so with dust at 0 nothing redraws. The air is not drawn in
+    grid_mode.
+
+    Dust follows movie time in exports (frame N at (N - 1) / movie_fps
+    seconds), so a movie export is repeatable; an offscreen still with no
+    movie uses time 0.
+
+    Settings: metal_light_air_resolution (0 the platform default, full on
+    the Mac and half on iOS; 1 full; 2 half), metal_light_air_time (below 0
+    the dust follows its clock; 0 or more pins it, in seconds, for
+    repeatable renders) and metal_light_air_shadow_filter (0 the default,
+    1 one shadow tap per haze step, 2 the 3x3 lookup).
 
 PYMOL API
 

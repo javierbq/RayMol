@@ -17,6 +17,7 @@
 #include <glm/gtc/type_ptr.hpp>
 
 #include "GpuFrameTimes.h"
+#include "LightAirBlock.h"
 #include "LightShadows.h"
 #include "SceneLights.h"
 
@@ -997,6 +998,29 @@ PyObject* GpuFrameReportAsPyDict(const pymol::GpuFrameReport& r)
       setItem(d.get(), "mode", PyLong_FromLong(r.mode)) &&
       setItem(d.get(), "shadow_maps", PyLong_FromLong(r.shadowMaps)) &&
       setItem(d.get(), "shadow_size", PyLong_FromLong(r.shadowSize));
+  return ok ? d.release() : nullptr;
+}
+
+PyObject* LightAirBlockAsPyDict(const pymol::LightAirBlock& b)
+{
+  static_assert(sizeof(pymol::LightAirBlock) == 20 * sizeof(float),
+      "20 floats, as LightAirBlock.h documents");
+  float f[20];
+  std::memcpy(f, &b, sizeof f); // the block as the GPU reads it
+  unique_PyObject_ptr d(PyDict_New());
+  if (!d)
+    return nullptr;
+  auto num = [&](const char* key, int i) {
+    return setItem(d.get(), key, PyFloat_FromDouble(f[i]));
+  };
+  const bool ok = setItem(d.get(), "block", pyFloats(f, 20)) &&
+                  num("haze_density", 0) && num("dust_occupancy", 1) &&
+                  num("scatter", 2) && num("seed_offset", 3) &&
+                  num("near", 4) && num("far", 5) && num("focus", 6) &&
+                  num("cell", 7) && num("time", 8) && num("mote_radius", 9) &&
+                  num("defocus", 10) &&
+                  setItem(d.get(), "shadow_filter", PyLong_FromLong(long(f[11]))) &&
+                  num("scale", 12);
   return ok ? d.release() : nullptr;
 }
 

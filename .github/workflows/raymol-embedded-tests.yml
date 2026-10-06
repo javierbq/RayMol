@@ -78,6 +78,7 @@ jobs:
               testing/tests/raymol/design_saverestore.py \
               testing/tests/raymol/inspector_command_names.py \
               testing/tests/raymol/inspector_materials.py \
+              testing/tests/raymol/lighting_air.py \
               testing/tests/raymol/lighting_bridge.py \
               testing/tests/raymol/lighting_check.py \
               testing/tests/raymol/lighting_commands.py \

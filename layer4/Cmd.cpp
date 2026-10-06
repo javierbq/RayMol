@@ -5689,6 +5689,126 @@ static PyObject* CmdGetGpuFrameStats(PyObject* self, PyObject* args)
 
 /* ---- end per-light shadows (#616) -------------------------------------- */
 
+/* ---- the air (#618) ------------------------------------------------------
+ * The air block a frame packs (SceneLightsAir, layer1/SceneLights.h) and the
+ * pure air maths (layer1/LightAir.h), exposed so CI can test the C++ from
+ * Python. Reads only.
+ */
+
+/// One frame's air block (LightAirBlockAsPyDict), or None when the frame
+/// draws no air. `matrix` is a column-major world->eye 4x4 or None for the
+/// live camera (as get_light_frame); `offscreen` None reads the renderer's
+/// flag, else a bool; `wall` None reads the live clock, else seconds; `grid`
+/// None for the scene's grid, or (n_col, n_row, first_slot) for an active
+/// grid. The scene members are brought up to date first, as a frame does.
+static PyObject* CmdGetLightAirFrame(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  PyObject* matrix = Py_None;
+  PyObject* offscreen = Py_None;
+  PyObject* wall = Py_None;
+  PyObject* grid = Py_None;
+  API_SETUP_ARGS(G, self, args, "O|OOOO", &self, &matrix, &offscreen, &wall,
+      &grid);
+  std::optional<glm::dmat4> m;
+  if (matrix != Py_None) {
+    auto parsed = LightMatrixFromPy(matrix);
+    if (!parsed)
+      return APIFailure(G, parsed.error());
+    m = *parsed;
+  }
+  SceneLightAirOptions options;
+  if (offscreen != Py_None) {
+    const int truth = PyObject_IsTrue(offscreen);
+    if (truth < 0)
+      return nullptr;
+    options.offscreen = truth != 0;
+  }
+  if (wall != Py_None) {
+    const double seconds = PyFloat_AsDouble(wall);
+    if (seconds == -1.0 && PyErr_Occurred())
+      return nullptr;
+    options.wallSeconds = seconds;
+  }
+  std::optional<pymol::LightShadowGridOverride> g;
+  if (grid != Py_None) {
+    pymol::LightShadowGridOverride over;
+    over.active = true;
+    if (!PyArg_ParseTuple(grid, "iii", &over.nCol, &over.nRow, &over.firstSlot) ||
+        over.nCol < 1 || over.nRow < 1) {
+      PyErr_Clear();
+      return APIFailure(G, pymol::make_error(
+          "grid must be None or (n_col, n_row, first_slot) with n_col, n_row >= 1"));
+    }
+    g = over;
+    options.grid = &*g;
+  }
+  APIEnterBlocked(G);
+  ExecutiveUpdateSceneMembers(G);
+  const auto frame = SceneLightsFrame(
+      G, m ? *m : SceneGetWorldToEye(G), g ? &*g : nullptr);
+  const auto air = SceneLightsAir(G, frame, &options);
+  PyObject* result =
+      air ? LightAirBlockAsPyDict(*air) : APIAutoNone(Py_None);
+  APIExitBlocked(G);
+  return result;
+}
+
+/// LightAirClock(pinned, offscreen, playing, frames, frame, fps, wall): the
+/// dust clock in seconds, before dust_speed.
+static PyObject* CmdLightAirClock(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  pymol::LightAirClockInputs in;
+  int offscreen = 0, playing = 0;
+  API_SETUP_ARGS(G, self, args, "Odppiidd", &self, &in.pinned, &offscreen,
+      &playing, &in.frames, &in.frame, &in.fps, &in.wallSeconds);
+  in.offscreen = offscreen != 0;
+  in.playing = playing != 0;
+  return PyFloat_FromDouble(pymol::LightAirClock(in));
+}
+
+/// LightAirTime(clock, speed): the dust time in seconds.
+static PyObject* CmdLightAirTime(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  double clock = 0.0, speed = 0.0;
+  API_SETUP_ARGS(G, self, args, "Odd", &self, &clock, &speed);
+  return PyFloat_FromDouble(pymol::LightAirTime(clock, speed));
+}
+
+/// LightAirResolution(setting, mobile): 1 full or 2 half.
+static PyObject* CmdLightAirResolution(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  int setting = 0, mobile = 0;
+  API_SETUP_ARGS(G, self, args, "Oip", &self, &setting, &mobile);
+  return PyLong_FromLong(pymol::LightAirResolution(setting, mobile != 0));
+}
+
+/// LightAirShadowFilter(setting, mobile): 1 one tap or 2 the 3x3 lookup.
+static PyObject* CmdLightAirShadowFilter(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  int setting = 0, mobile = 0;
+  API_SETUP_ARGS(G, self, args, "Oip", &self, &setting, &mobile);
+  return PyLong_FromLong(pymol::LightAirShadowFilter(setting, mobile != 0));
+}
+
+/// SceneLightsAirAnimating(): the dust moves on its own (what the app's
+/// redraw policy asks through the bridge).
+static PyObject* CmdLightAirAnimating(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  API_SETUP_ARGS(G, self, args, "O", &self);
+  APIEnterBlocked(G);
+  const bool animating = SceneLightsAirAnimating(G);
+  APIExitBlocked(G);
+  return PyBool_FromLong(animating);
+}
+
+/* ---- end the air (#618) ------------------------------------------------- */
+
 static PyObject *CmdGetMinMax(PyObject * self, PyObject * args)
 {
   PyMOLGlobals *G = nullptr;
@@ -7693,6 +7813,13 @@ static PyMethodDef Cmd_methods[] = {
   {"gpu_time_summary", CmdGpuTimeSummary, METH_VARARGS},
   {"get_gpu_frame_stats", CmdGetGpuFrameStats, METH_VARARGS},
   {"gpu_time_replay", CmdGpuTimeReplay, METH_VARARGS},
+  /* the air (#618) */
+  {"get_light_air_frame", CmdGetLightAirFrame, METH_VARARGS},
+  {"light_air_clock", CmdLightAirClock, METH_VARARGS},
+  {"light_air_time", CmdLightAirTime, METH_VARARGS},
+  {"light_air_resolution", CmdLightAirResolution, METH_VARARGS},
+  {"light_air_shadow_filter", CmdLightAirShadowFilter, METH_VARARGS},
+  {"light_air_animating", CmdLightAirAnimating, METH_VARARGS},
   /* end light shading */
   {"get_mtl_obj", CmdGetMtlObj, METH_VARARGS},
   {"get_model", CmdGetModel, METH_VARARGS},

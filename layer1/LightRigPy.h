@@ -23,6 +23,7 @@ struct LightShadowView;  // LightShadows.h
 struct LightShadowTile;  // LightShadows.h
 struct GpuFrameSummary;  // GpuFrameTimes.h
 struct GpuFrameReport;   // GpuFrameTimes.h
+struct LightAirBlock;    // LightAirBlock.h
 } // namespace pymol
 
 /**
@@ -144,6 +145,18 @@ PyObject* LightRigEyeAsPyDict(
  */
 PyObject* LightFrameAsPyDict(
     const pymol::LightRig* rig, const SceneLightFrame& frame);
+
+/**
+ * One frame's air block (#618, SceneLightsAir) for
+ * _cmd.get_light_air_frame():
+ *   {'block': [20 floats], 'haze_density', 'dust_occupancy', 'scatter',
+ *    'seed_offset', 'near', 'far', 'focus', 'cell', 'time', 'mote_radius',
+ *    'defocus', 'shadow_filter': int, 'scale'}
+ * 'block' is the LightAirBlock as the GPU reads it, float by float; the
+ * named fields are decoded from it at the offsets LightAirBlock.h documents,
+ * so the tests pin the layout as well as the values. New reference.
+ */
+PyObject* LightAirBlockAsPyDict(const pymol::LightAirBlock& b);
 
 /// LightShadowFrustum()'s result for _cmd.light_shadow_frustum():
 /// {'view', 'proj', 'view_proj': [16 floats, column-major], 'tan_half_fov',
