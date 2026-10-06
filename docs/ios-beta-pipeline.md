@@ -4,8 +4,12 @@ Every change to `master` that touches non-documentation files produces a
 TestFlight build for internal testers.
 Design rationale: `docs/superpowers/specs/2026-07-26-ios-nightly-beta-design.md`.
 
-macOS is unaffected — it keeps the Developer-ID DMG + Sparkle + Homebrew-cask
-path (`swiftui/make_dmg.sh`, `swiftui/publish_release.sh`).
+A sibling workflow, **macOS Beta (master)**, does the same for the Mac: every
+such change also produces a Mac App Store-variant TestFlight build. See
+[macOS beta](#macos-beta-macos-beta-master) below. Public macOS releases are
+unaffected — they keep the Developer-ID DMG + Sparkle + Homebrew-cask path
+(`swiftui/make_dmg.sh`, `swiftui/publish_release.sh`) and the manual Mac App
+Store path (`swiftui/archive_appstore.sh`).
 
 ## How it fits together
 
@@ -20,6 +24,80 @@ path (`swiftui/make_dmg.sh`, `swiftui/publish_release.sh`).
    `INTERNAL_ONLY` — permanently internal-only, never App Store eligible — and
    whether the post-action truly auto-distributes is unverified. See
    *Build distribution audience* below before relying on either.
+
+## macOS beta (`macOS Beta (master)`)
+
+Before this workflow existed, Mac testers only ever got a TestFlight build when
+someone cut a Mac App Store release by hand (`cut-mas-release`), so TestFlight
+on the Mac showed exactly one build per release while iOS got one per master
+push.
+
+**What runs.** The same `swiftui/ci_scripts/ci_post_clone.sh` — Apple allows one
+`ci_scripts` directory per repository — which asks `scripts/ci_platform.sh`
+whether the action is iOS or macOS (`CI_PRODUCT_PLATFORM`, cross-checked with
+`CI_XCODE_SCHEME`). For macOS it:
+
+1. writes the same two plugin-trust defaults as iOS (Design mode links
+   mlx-swift into the macOS slice too);
+2. `brew install`s the iOS set plus **`libomp`** — the app links
+   `opt/libomp/lib/libomp.a` statically — and patches the Homebrew prefix in
+   `PyMOLBridge.xcconfig` exactly as for iOS;
+3. stages `deps_macos` with `scripts/setup_macos_deps.sh`: python-build-standalone
+   3.13 plus pinned numpy and Biopython, imported through the embedded
+   interpreter to prove the tree works. There is no prebuilt artifact; it all
+   downloads from upstream in about a minute;
+4. stamps the version and build number exactly as for iOS;
+5. rewrites `project.yml` as the **Mac App Store variant** with
+   `scripts/apply_mas_restrictions.sh` — Sparkle package stripped,
+   `RAYMOL_MAS_RESTRICTED` added to the macOS compilation conditions. TestFlight
+   for Mac only accepts sandboxed App Store builds, and Xcode Cloud's own
+   `xcodebuild archive` takes no extra flags, so the flag that
+   `archive_appstore.sh` passes on its command line has to live in the
+   generated project instead. Both paths now call the same script;
+6. `xcodegen generate`, then `CLEAN=1 swiftui/build_macos.sh`;
+7. `scripts/assert_macos_build_inputs.sh`: arm64 core, embedded Python +
+   numpy + Bio, Homebrew libraries, and a generated project with no Sparkle
+   package and with `RAYMOL_MAS_RESTRICTED`.
+
+**Signing.** Xcode Cloud archives ad hoc (`CODE_SIGN_IDENTITY=-`) and re-signs
+for distribution at export. On macOS an ad-hoc archive refuses entitlements
+that need a provisioning profile ("has entitlements that require signing with a
+development certificate"). The shared `RayMol.entitlements` carried one,
+`keychain-access-groups`, which nothing in the app uses, so the macOS slice now
+signs with `RayMolMac.entitlements`: sandbox, network client and user-selected
+files only. Export re-signs the app and every embedded Python Mach-O as Apple
+Distribution. A local rehearsal reproduced all of this — the same hook, Xcode
+Cloud's exact archive flags, an App Store export, then
+`altool --validate-app` → `VERIFY SUCCEEDED`.
+
+**Package resolution.** Dropping Sparkle changes the package graph from the
+one the committed `Package.resolved` describes. Xcode Cloud resolves strictly.
+`xcodebuild -resolvePackageDependencies -disableAutomaticPackageResolution
+-onlyUsePackageVersionsFromResolvedFile` was verified against exactly this
+edit: the unused Sparkle pin is ignored, and every other package keeps its pin.
+
+**Build numbers — the one rule iOS does not have.** A Mac app's build number
+must increase across *all* versions, not just within one. Apple's "Setting the
+next build number for Xcode Cloud builds" says so outright. Xcode Cloud also
+stamps its own `CI_BUILD_NUMBER` into every build it distributes: the export
+options it logs carry `"buildNumber"`. Once a macOS beta ships as, say,
+`1.12.1 (190)`, the next Mac App Store **release** must be numbered above 190,
+not `CURRENT_PROJECT_VERSION + 1`. The `cut-mas-release` and `cut-macos-release`
+skills therefore take the release build number from the highest macOS build on
+App Store Connect. The DMG shares `CURRENT_PROJECT_VERSION`; Sparkle only
+needs it to increase, so the jump is harmless there.
+
+**Creating the workflow** (only after this lands on `master`, because the
+workflow builds `master`'s `ci_post_clone.sh`):
+
+```bash
+python3 scripts/asc_xcode_cloud_workflow.py --platform macos            # dry run
+python3 scripts/asc_xcode_cloud_workflow.py --platform macos --write
+```
+
+Then do the same three UI steps as for iOS: files/folders rule, the TestFlight
+Internal Testing post-action to group `Beta`, and failure notifications. Lock it
+last. The script refuses to create a second workflow with the same name.
 
 ## One-time setup (human only — cannot be scripted)
 
@@ -316,16 +394,22 @@ ever updated, exclude assets matching `deps_ios-*.tar.gz` explicitly.
 | Xcode Cloud build start returns `409 branch ... is not associated with the workflow` | The branch being built is not listed in the workflow's start condition patterns. Add it, or switch to a build run on the branch already in the condition. |
 | Default workflow fires on every push and fails | The `Default` wizard-created workflow is still enabled. Disable or delete it in App Store Connect. |
 | A build cannot be promoted to external testing or submitted to the App Store | It was archived `INTERNAL_ONLY` — permanent for that build. PATCH the workflow to `APP_STORE_ELIGIBLE` and produce a NEW build; this one stays ineligible. For an actual App Store submission use `swiftui/archive_appstore.sh` instead. |
+| macOS: `ERROR: ... libomp.a missing` | `brew install` did not include `libomp`, or its keg layout moved. The app links `$(PYMOL_EXTERNAL_PREFIX)/opt/libomp/lib/libomp.a` by path. |
+| macOS: `numpy X != Y` / `Bio X != Y` from `setup_macos_deps.sh` | A pin and the downloaded wheel disagree. Bump `NUMPY_VERSION` / `BIO_VERSION` deliberately in the script. |
+| macOS: `NOT MAS: ... Sparkle` from `assert_macos_build_inputs.sh` | `apply_mas_restrictions.sh` did not run before `xcodegen`, or a Sparkle entry was added outside the `RAYMOL_SPARKLE_BEGIN/END` markers. |
+| macOS: upload rejected with error 90296 (App Sandbox) | Same cause as above: a Sparkle helper reached the archive. |
+| macOS: a Mac App Store release upload says its build number must be higher | A macOS beta already used a higher number. Number the release above the highest macOS build on App Store Connect (see *Build numbers* in the macOS section). |
+| `ERROR: unsupported CI_PRODUCT_PLATFORM` / `disagrees with CI_XCODE_SCHEME` | `scripts/ci_platform.sh` only knows the two RayMol schemes. A new workflow needs an entry there first. |
 | A build appears in TestFlight but testers were not notified | The `INTERNAL_ONLY` audience does not attach a build to a group; only the UI post-action does, and its auto-distribution is unverified. Add the build to group `Beta` manually in App Store Connect. |
 
 ## Local checks
 
-Run all five test suites before pushing:
+Run every suite before pushing (CI globs the same directory, so a new suite
+needs no workflow edit):
 
 ```bash
-bash scripts/tests/run_ios_deps_fingerprint_test.sh
-bash scripts/tests/run_nightly_version_test.sh
-bash scripts/tests/run_prune_ios_deps_test.sh
-bash scripts/tests/run_apply_ci_versions_test.sh
-bash scripts/tests/run_assert_ios_build_inputs_test.sh
+for t in scripts/tests/run_*_test.sh; do bash "$t" || echo "FAILED: $t"; done
 ```
+
+The macOS-specific suites are `run_ci_platform_test.sh`,
+`run_apply_mas_restrictions_test.sh` and `run_assert_macos_build_inputs_test.sh`.

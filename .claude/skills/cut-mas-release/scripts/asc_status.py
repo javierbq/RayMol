@@ -98,6 +98,21 @@ def main():
         print(f"  {plat:10} build {a.get('version',''):5} {a.get('processingState',''):12} "
               f"expired={a.get('expired')}  ({(a.get('uploadedDate') or '')[:16]})")
 
+    # A Mac app's build number must exceed EVERY earlier macOS build, across all
+    # versions — and the "macOS Beta (master)" Xcode Cloud workflow uploads
+    # betas numbered from the shared Xcode Cloud counter (e.g. 190), far above
+    # the release line. The next Mac App Store / DMG release must beat this.
+    m = _get(
+        f"{base}/builds?filter[app]={APP_ID}&filter[preReleaseVersion.platform]=MAC_OS"
+        "&limit=200&sort=-uploadedDate&fields[builds]=version",
+        tok,
+    )
+    nums = [int(d["attributes"]["version"]) for d in m["data"]
+            if str(d["attributes"].get("version", "")).isdigit()]
+    if nums:
+        print(f"=== highest macOS build on ASC: {max(nums)} "
+              f"-> next Mac release build must be >= {max(nums) + 1} ===")
+
 
 if __name__ == "__main__":
     main()

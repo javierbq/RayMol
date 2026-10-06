@@ -25,14 +25,12 @@ if [ "$DEST" = "macOS" ]; then
   # before generating, and compile the Sparkle + MCP code paths out of the build
   # via RAYMOL_MAS_RESTRICTED (gated in Swift by #if os(macOS) && !RAYMOL_MAS_RESTRICTED).
   # project.yml keeps Sparkle for the Developer-ID/DMG build (build.sh / make_dmg.sh);
-  # only this App Store path removes it.
+  # only this App Store path removes it. scripts/apply_mas_restrictions.sh is
+  # shared with the Xcode Cloud macOS beta (ci_post_clone.sh) so both App Store
+  # paths make the identical edit; it aborts if the markers are missing or moved.
   cp project.yml project.yml.sparkle-bak
   trap 'mv -f project.yml.sparkle-bak project.yml 2>/dev/null || true' EXIT
-  /usr/bin/sed -i '' '/# RAYMOL_SPARKLE_BEGIN/,/# RAYMOL_SPARKLE_END/d' project.yml
-  if grep -q "package: Sparkle" project.yml; then
-    echo "ERROR: Sparkle strip failed — RAYMOL_SPARKLE_BEGIN/END markers missing or moved in project.yml." >&2
-    exit 1
-  fi
+  bash ../scripts/apply_mas_restrictions.sh project.yml
   xcodegen generate
   mv -f project.yml.sparkle-bak project.yml
   trap - EXIT

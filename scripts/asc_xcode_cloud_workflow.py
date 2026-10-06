@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create or update the production Xcode Cloud workflow for iOS beta builds.
+"""Create or update the production Xcode Cloud beta workflows (iOS and macOS).
 
 WHY THIS SCRIPT EXISTS
 ======================
@@ -10,8 +10,13 @@ in .github/workflows rather than in a web UI.
 
 WHAT IT CREATES
 ===============
-Workflow "iOS Beta (master)" on the RayMol ciProduct:
-  * One ARCHIVE action, scheme PyMOLViewer_iOS, platform IOS,
+--platform ios (default): workflow "iOS Beta (master)"
+--platform macos:         workflow "macOS Beta (master)"
+Both are identical apart from the scheme/platform below, and both run the same
+swiftui/ci_scripts/ci_post_clone.sh, which dispatches on the action's platform
+(scripts/ci_platform.sh). On the RayMol ciProduct:
+  * One ARCHIVE action — scheme PyMOLViewer_iOS / platform IOS, or scheme
+    PyMOLViewer_macOS / platform MACOS — with
     buildDistributionAudience INTERNAL_ONLY (permanent — see comment in payload)
   * Branch start condition on master, autoCancel enabled
   * filesAndFoldersRule: null at creation (undocumented matcher shape — add in UI,
@@ -102,8 +107,22 @@ except ImportError:
 
 BASE = "https://api.appstoreconnect.apple.com/v1"
 
-WORKFLOW_NAME = "iOS Beta (master)"
-SCHEME = "PyMOLViewer_iOS"
+# Per-platform workflow identity. "label" is the human name of the platform in
+# the workflow and action names; "ci_platform" is the ciWorkflows action enum.
+PLATFORMS = {
+    "ios": {
+        "name": "iOS Beta (master)",
+        "scheme": "PyMOLViewer_iOS",
+        "ci_platform": "IOS",
+        "label": "iOS",
+    },
+    "macos": {
+        "name": "macOS Beta (master)",
+        "scheme": "PyMOLViewer_macOS",
+        "ci_platform": "MACOS",
+        "label": "macOS",
+    },
+}
 CONTAINER_FILE_PATH = "swiftui/PyMOLViewer.xcodeproj"
 PRODUCTION_BRANCH = "master"
 
@@ -193,8 +212,10 @@ def _pick(items, label, chooser=None):
 # ---------------------------------------------------------------------------
 
 
-def _build_payload(pid: str, repo_id: str, xcode_id: str, macos_id: str, locked: bool = False) -> dict:
-    """Return the ciWorkflows POST/PATCH body for the production workflow.
+def _build_payload(plat: dict, pid: str, repo_id: str, xcode_id: str, macos_id: str, locked: bool = False) -> dict:
+    """Return the ciWorkflows POST/PATCH body for one platform's beta workflow.
+
+    `plat` is one PLATFORMS entry (name, scheme, ci_platform, label).
 
     FILES-AND-FOLDERS RULE NOTE
     ---------------------------
@@ -217,11 +238,11 @@ def _build_payload(pid: str, repo_id: str, xcode_id: str, macos_id: str, locked:
         "data": {
             "type": "ciWorkflows",
             "attributes": {
-                "name": WORKFLOW_NAME,
+                "name": plat["name"],
                 "description": (
-                    "Nightly iOS beta pipeline: every non-docs push to master "
-                    "archives PyMOLViewer_iOS and routes it for internal "
-                    "TestFlight testing. Managed by "
+                    f"Nightly {plat['label']} beta pipeline: every non-docs push "
+                    f"to master archives {plat['scheme']} and routes it for "
+                    "internal TestFlight testing. Managed by "
                     "scripts/asc_xcode_cloud_workflow.py."
                 ),
                 "isEnabled": True,
@@ -270,7 +291,9 @@ def _build_payload(pid: str, repo_id: str, xcode_id: str, macos_id: str, locked:
                 },
                 "actions": [
                     {
-                        "name": "Archive iOS",
+                        # Apple's own naming ("Archive - iOS" is what the live
+                        # iOS workflow reads back as).
+                        "name": f"Archive - {plat['label']}",
                         "actionType": "ARCHIVE",
                         "destination": None,
                         # INTERNAL_ONLY: the pipeline's explicit policy decision.
@@ -280,15 +303,15 @@ def _build_payload(pid: str, repo_id: str, xcode_id: str, macos_id: str, locked:
                         # PERMANENT CONSEQUENCE: a build archived as INTERNAL_ONLY
                         # can NEVER be promoted to external testing or submitted
                         # to the App Store — it is permanently restricted to
-                        # internal tester groups. This is intentional: real iOS
-                        # App Store submissions use swiftui/archive_appstore.sh,
+                        # internal tester groups. This is intentional: real
+                        # App Store submissions (iOS and Mac) use swiftui/archive_appstore.sh,
                         # not this pipeline. If APP_STORE_ELIGIBLE is ever needed,
                         # PATCH the workflow and produce a NEW build; existing
                         # INTERNAL_ONLY builds stay ineligible forever.
                         "buildDistributionAudience": "INTERNAL_ONLY",
                         "testConfiguration": None,
-                        "scheme": SCHEME,
-                        "platform": "IOS",
+                        "scheme": plat["scheme"],
+                        "platform": plat["ci_platform"],
                         "isRequiredToPass": True,
                     }
                 ],
@@ -310,7 +333,16 @@ def _build_payload(pid: str, repo_id: str, xcode_id: str, macos_id: str, locked:
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Create or update the production iOS beta Xcode Cloud workflow."
+        description="Create or update a production beta Xcode Cloud workflow (iOS or macOS)."
+    )
+    ap.add_argument(
+        "--platform",
+        choices=sorted(PLATFORMS),
+        default="ios",
+        help=(
+            "Which beta workflow to create/update: ios -> 'iOS Beta (master)' "
+            "(default, the original), macos -> 'macOS Beta (master)'."
+        ),
     )
     ap.add_argument(
         "--dry-run",
@@ -342,6 +374,7 @@ def main():
         ),
     )
     args = ap.parse_args()
+    plat = PLATFORMS[args.platform]
 
     if args.lock and not args.update_id:
         sys.exit("ERROR: --lock requires --update-id <WORKFLOW_ID>")
@@ -435,7 +468,21 @@ def main():
 
     # Create unlocked so the UI is editable for the mandatory post-action and
     # notification steps. Lock separately with --lock after those are done.
-    payload = _build_payload(pid, repo["id"], xcode["id"], mac["id"], locked=False)
+    # Refuse to POST a second workflow under a name that already exists — Apple
+    # allows duplicates, and two "macOS Beta (master)" workflows would both
+    # archive and upload every master push.
+    existing = [
+        w for w in _call("GET", f"ciProducts/{pid}/workflows?limit=50").get("data", [])
+        if w.get("attributes", {}).get("name") == plat["name"]
+    ]
+    if existing and not args.update_id:
+        sys.exit(
+            f"ERROR: workflow {plat['name']!r} already exists "
+            f"(id {existing[0]['id']}). Pass --update-id {existing[0]['id']} "
+            "to PATCH it instead of creating a duplicate."
+        )
+
+    payload = _build_payload(plat, pid, repo["id"], xcode["id"], mac["id"], locked=False)
 
     print()
     print("== payload ==")
@@ -459,7 +506,7 @@ def main():
     print("     Workflow notification settings are not exposed by the ASC REST API.")
     print()
     print("  Ordered steps after --write:")
-    print("    1. UI: App Store Connect → Xcode Cloud → iOS Beta (master) → Edit")
+    print(f"    1. UI: App Store Connect → Xcode Cloud → {plat['name']} → Edit")
     print("           Add the files/folders rule: exclude 'docs/**' and '*.md'")
     print("           Add TestFlight Internal Testing post-action (group 'Beta')")
     print("           Add failure notification (email and/or Slack)")
@@ -503,7 +550,7 @@ def main():
     print("NEXT STEPS — complete in order:")
     print()
     print("  1. (UI) Open the workflow in App Store Connect → Xcode Cloud →")
-    print("         iOS Beta (master) → Edit, and add all THREE settings:")
+    print(f"         {plat['name']} → Edit, and add all THREE settings:")
     print("         a. Files/folders rule: exclude 'docs/**' and '*.md'")
     print("         b. Post-action: TestFlight Internal Testing → group 'Beta'")
     print("         c. Notification: email on failure (and optionally Slack webhook)")
@@ -515,7 +562,7 @@ def main():
     print("  2. (script) Lock the workflow once step 1 is done — Apple requires")
     print("     isLockedForEditing=true for review-eligible builds. A locked workflow")
     print("     is read-only in the UI, so this step MUST come after step 1:")
-    print(f"       python3 scripts/asc_xcode_cloud_workflow.py \\")
+    print(f"       python3 scripts/asc_xcode_cloud_workflow.py --platform {args.platform} \\")
     print(f"         --lock --update-id {wid} --write")
     print()
     print("  3. (UI) Delete the 'SPIKE - validation' throwaway workflow")
