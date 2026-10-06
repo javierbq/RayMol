@@ -38,8 +38,10 @@ This file pins what the gizmo relies on in the core:
   only buttons, writing only through the chip and the VoiceOver Select; no
   gizmo file makes scene geometry; ContentView places the overlay on the
   viewport under the bar and the side column on both platforms and logs
-  gizmo= beside inspector= and plan= (comments stripped; skipped outside a
-  checkout).
+  gizmo= beside inspector= and plan=; MetalViewport consults the gizmo in
+  every input handler before its camera path, in Lights mode or for a press
+  the gizmo owns, with no Python or console call, and picks only through the
+  engine's picker (comments stripped; skipped outside a checkout).
 
 CI builds the GLUT flavour without a GPU, so this exercises _cmd and Python
 only.
@@ -519,6 +521,7 @@ GEOMETRY = os.path.join(SHARED, 'LightGizmoGeometry.swift')
 MODEL = os.path.join(SHARED, 'LightGizmoModel.swift')
 OVERLAY = os.path.join(SHARED, 'LightGizmoOverlay.swift')
 CONTENT_VIEW = os.path.join(SHARED, 'ContentView.swift')
+VIEWPORT = os.path.join(SHARED, 'MetalViewport.swift')
 GIZMO_FILES = (GEOMETRY, MODEL, OVERLAY)
 METAL_PICK = os.path.join('modules', 'pymol', 'metal_pick.py')
 SCENE_RENDER = os.path.join('layer1', 'SceneRender.cpp')
@@ -561,6 +564,28 @@ OVERLAY_MEMBERS = {'eye', 'facing', 'canEdit', 'select'}
 SCENE_GEOMETRY = ('load_cgo', 'cgo.', 'pseudoatom', 'cmd.')
 # The overlay's site on the viewport (both platforms).
 GIZMO_SITE = '.overlay { if engine.interactionMode == .lights { lightGizmoOverlay } }'
+
+# Each MetalViewport input handler, the gizmo routine it consults, and what
+# starts its camera (or atom pick) path: the routine must come first.
+ROUTING = (
+    ('func handleMouseDown(', 'lightGizmoPress(', ('moveHandle = nil',)),
+    ('func handleMouseDragged(', 'lightGizmoDrag(', ('engine?.button(', 'engine?.drag(')),
+    ('func handleMouseUp(', 'lightGizmoRelease(', ('engine?.button(', 'engine?.pick(',
+                                                   'engine?.measurePick(')),
+    ('func handleMouseMoved(', 'lightGizmoHover(', ('hoverPreview(',)),
+    ('func handleMouseExited(', 'lightGizmoHover(', ()),
+    ('func handleScrollWheel(', 'lightGizmoScroll(', ('engine?.button(', 'engine?.drag(')),
+    ('func handleMagnification(', 'lightGizmoMagnification(', ('zoomBy(',)),
+    ('func handleTap(', 'lightGizmoTap(', ('moveSetActiveAt(', 'engine.pick(',
+                                           'engine.measurePick(')),
+    ('func handleHover(', 'lightGizmoHover(', ('hoverPreview(',)),
+    ('func handlePan(', 'lightGizmoPan(', ('handleMovePan(', 'engine?.button(')),
+)
+# Nothing the gizmo's routing does may reach Python, the console, the
+# camera or the core's pick directly.
+ROUTING_FORBIDDEN = ('runPython', 'runCommand', 'PyMOLBridge_', 'pickSurface(',
+                     'prepareSurfacePick(', '.button(', '.drag(x:', 'zoomBy(',
+                     'hoverPreview(', 'engine.pick(', 'engine?.pick(')
 
 # Seams, unguarded write paths, mirror and eye drivers, and the engine's own
 # pick entry points: none may appear in the model.
@@ -845,3 +870,64 @@ class TestGizmoSource(testing.PyMOLTestCase):
         self.assertIsNotNone(mode, 'setInteractionMode not found')
         self.assertGreater(mode.find('lightGizmoUI.reset()'), mode.find('lightsController.end()'))
         self.assertEqual(len(re.findall(r'lightGizmoUI\.reset\(\)', engine)), 1)
+
+    def testEveryViewportHandlerConsultsTheGizmoFirst(self):
+        """Each MetalViewport input handler (macOS mouse, scroll and pinch;
+        iOS tap, hover and pan) calls its light gizmo routine before its
+        camera or atom-pick path, so a press, scroll or pinch on a gizmo
+        target never reaches the camera."""
+        viewport = self.read(VIEWPORT)
+        for signature, routine, camera in ROUTING:
+            with self.subTest(signature):
+                handler = body(viewport, signature)
+                self.assertIsNotNone(handler, '%s not found' % signature)
+                at = handler.find(routine)
+                self.assertGreaterEqual(at, 0, '%s does not call %s' % (signature, routine))
+                for marker in camera:
+                    found = handler.find(marker)
+                    self.assertGreaterEqual(found, 0, '%s lost %s' % (signature, marker))
+                    self.assertLess(at, found, '%s reaches %s before the gizmo' % (signature, marker))
+
+    def testTheRoutingRunsNoPythonAndNoCameraEvent(self):
+        """The gizmo's routines in MetalViewport run only in Lights mode or
+        for what the gizmo already owns, reach the light through
+        LightGizmoInteraction (the engine's picker: updateReps: false), and
+        name no Python, console, camera event or core pick. draw(in:) is not
+        part of it."""
+        viewport = self.read(VIEWPORT)
+        routines = sorted(set(re.findall(r'private func (lightGizmo\w+|showLightGizmo\w+)\(', viewport)))
+        self.assertGreaterEqual(len(routines), 10, routines)
+        for name in routines:
+            block = body(viewport, 'private func %s(' % name)
+            self.assertIsNotNone(block, name)
+            for word in ROUTING_FORBIDDEN:
+                with self.subTest(name, word=word):
+                    self.assertNotIn(word, block)
+        interaction = body(viewport, 'private func lightGizmoInteraction(')
+        self.assertIn('LightGizmoInteraction(controller: engine.lightsController, '
+                      'picker: engine.lightGizmoPicker)', interaction)
+        # Entry points are gated on the mode or on what the gizmo owns.
+        for name, gate in (('lightGizmoLayout', 'engine.interactionMode == .lights'),
+                           ('lightGizmoHover', 'engine.interactionMode == .lights'),
+                           ('lightGizmoPress', 'engine.interactionMode == .lights'),
+                           ('lightGizmoTap', 'engine.interactionMode == .lights'),
+                           ('lightGizmoDrag', 'pointer.ownsPress || pointer.candidate != nil'),
+                           ('lightGizmoRelease', 'pointer.ownsPress || pointer.candidate != nil')):
+            with self.subTest(name, gate=gate):
+                self.assertIn(gate, body(viewport, 'private func %s(' % name))
+        draw = body(viewport, 'func draw(in view: MTKView)')
+        self.assertIsNotNone(draw, 'draw(in:) not found')
+        self.assertNotIn('lightGizmo', draw)
+        self.assertNotIn('LightGizmo', draw)
+
+    def testLeavingTheModeEndsTheGizmoSession(self):
+        """The engine owns the pointer; leaving Lights mode ends its session
+        (after end()) but keeps the press, so the rest of a drag after Esc is
+        swallowed instead of reaching the camera."""
+        engine = self.read(ENGINE)
+        self.assertRegex(engine, r'var lightGizmoPointer = LightGizmoPointer\(\)')
+        mode = body(engine, 'func setInteractionMode(_ mode: InteractionMode)')
+        self.assertIsNotNone(mode, 'setInteractionMode not found')
+        ended = mode.find('lightGizmoPointer.endSession()')
+        self.assertGreater(ended, mode.find('lightsController.end()'))
+        self.assertNotIn('lightGizmoPointer.cancel()', mode)
