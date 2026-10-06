@@ -321,6 +321,9 @@ EDITING = os.path.join(SHARED, 'LightsEditing.swift')
 VIEWPORT = os.path.join(SHARED, 'MetalViewport.swift')
 ENGINE = os.path.join(SHARED, 'PyMOLEngine.swift')
 APP = os.path.join('swiftui', 'PyMOLViewer')
+CONTENT_VIEW = os.path.join(SHARED, 'ContentView.swift')
+SIDE_COLUMN = os.path.join(SHARED, 'LightsSideColumn.swift')
+INSPECTOR = os.path.join(SHARED, 'LightsInspector.swift')
 
 # `case .x: return a...b` (a range line of LightParameter.range).
 RANGE_CASE = re.compile(
@@ -463,3 +466,40 @@ class TestInspectorSource(testing.PyMOLTestCase):
             engine,
             r'eyeSpace:\s*\{\s*\[weak self\]\s*in\s*self\?\.lightsEyeSpace\(\)\s*\}',
             'LightsSeams.eyeSpace must be wired to lightsEyeSpace()')
+
+    def testInspectorPlacedOnBothPlatforms(self):
+        """The Lights side column (and so the inspector) is placed on both
+        platforms: on macOS macLightsOverlay shows the bar and the column and
+        is the Lights branch of the viewport's top overlay chain; on iOS
+        viewportView shows the column in Lights mode only (one site for the
+        four layouts); the column holds the inspector."""
+        content = self.read(CONTENT_VIEW)
+        mac = body(content, 'private var macLightsOverlay')
+        self.assertIsNotNone(mac, 'macLightsOverlay not found')
+        self.assertIn('lightsBar', mac)
+        self.assertIn('lightsSideColumn', mac)
+        chain = body(content, 'private var macViewport: some View')
+        self.assertIsNotNone(chain, 'macViewport not found')
+        self.assertRegex(chain, r'interactionMode\s*==\s*\.lights\s*\{\s*macLightsOverlay\s*\}')
+        ios = body(content, 'private var viewportView')
+        self.assertIsNotNone(ios, 'viewportView not found')
+        self.assertRegex(
+            ios,
+            r'if\s+engine\.interactionMode\s*==\s*\.lights[^{]*\{\s*lightsSideColumn\b',
+            'viewportView must show lightsSideColumn in Lights mode only')
+        column_site = body(content, 'private var lightsSideColumn')
+        self.assertIsNotNone(column_site, 'lightsSideColumn not found')
+        self.assertIn('LightsSideColumn(', column_site)
+        column = self.read(SIDE_COLUMN)
+        self.assertIn('LightsInspector(', column)
+
+    def testInspectorDrawsOnlyWithItsState(self):
+        """The card draws only when LightsInspectorState(controller) exists
+        (Lights mode active with a selected light): ContentView does not
+        observe the nested controller, so the check lives in the view."""
+        inspector = self.read(INSPECTOR)
+        card = body(inspector, 'struct LightsInspector: View')
+        self.assertIsNotNone(card, 'LightsInspector not found')
+        view_body = body(card, 'var body: some View')
+        self.assertIsNotNone(view_body, 'LightsInspector.body not found')
+        self.assertRegex(view_body, r'if\s+let\s+state\s*=\s*LightsInspectorState\(controller\)')

@@ -347,13 +347,15 @@ ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir,
                                      os.pardir, os.pardir))
 SHARED = os.path.join('swiftui', 'PyMOLViewer', 'Shared')
 
-# The Lights model, the bar and the shared edit path (#620): every button
-# press goes through LightsSeams.perform and every drag tick through the
-# bridge setter seams the engine wires, so these files name no Python or
-# console entry point, no helper and no bridge function.
+# The Lights model, the bar, the shared edit path, the inspector and the side
+# column (#620): every button press goes through LightsSeams.perform and every
+# drag tick through the bridge setter seams the engine wires, so these files
+# name no Python or console entry point, no helper and no bridge function.
 NO_PYTHON_SOURCES = [os.path.join(SHARED, 'LightsController.swift'),
                      os.path.join(SHARED, 'LightsBar.swift'),
-                     os.path.join(SHARED, 'LightsEditing.swift')]
+                     os.path.join(SHARED, 'LightsEditing.swift'),
+                     os.path.join(SHARED, 'LightsInspector.swift'),
+                     os.path.join(SHARED, 'LightsSideColumn.swift')]
 NO_PYTHON = re.compile(
     r'\brunPython\w*|\bRunPython\w*|\brunCommand\w*|\bRunCommand\w*'
     r'|appkit_lights|\bPyMOLBridge_\w+\s*\(')
@@ -451,8 +453,9 @@ class TestSwiftSource(testing.PyMOLTestCase):
         """The Lights bar is placed wherever the Move bar is: each iOS top
         stack opens for Lights (all three `anyTop`), the macOS rail docks for
         it (`macAnyTopPane`), and every mode-bar chain that shows moveOverlay
-        (the macOS overlay and the four iOS stacks) shows lightsBar too. A
-        layout that forgets one would show no bar, and so no Done, there."""
+        (the macOS overlay and the four iOS stacks) shows lightsBar too (on
+        macOS through macLightsOverlay, the bar plus the side column, #620).
+        A layout that forgets one would show no bar, and so no Done, there."""
         text = strip_comments(self.read(CONTENT_VIEW))
         any_tops = ANY_TOP.findall(text)
         self.assertEqual(len(any_tops), 3, 'expected the three iOS anyTop')
@@ -464,8 +467,14 @@ class TestSwiftSource(testing.PyMOLTestCase):
         self.assertIn('.lights', body)
         moves = len(re.findall(r'\{\s*moveOverlay\s*\}', text))
         bars = len(re.findall(r'\{\s*lightsBar\s*\}', text))
+        mac = len(re.findall(r'\{\s*macLightsOverlay\s*\}', text))
         self.assertEqual(moves, 5, 'expected the macOS overlay and four iOS chains')
-        self.assertEqual(bars, moves, 'a mode-bar chain shows moveOverlay but not lightsBar')
+        self.assertEqual(mac, 1, 'the macOS overlay chain shows macLightsOverlay')
+        self.assertEqual(bars + mac, moves,
+                         'a mode-bar chain shows moveOverlay but not lightsBar')
+        body = function_body(text, 'private var macLightsOverlay')
+        self.assertIsNotNone(body, 'macLightsOverlay not found')
+        self.assertIn('lightsBar', body)
 
     def testTheCheckCatchesEachEntryPoint(self):
         """The pattern matches every name it is meant to forbid (and not a

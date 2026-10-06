@@ -156,6 +156,9 @@ struct ContentView: View {
     // "What's New" splash: auto-shows once after a version bump; also opened on
     // demand via the app menu / Settings (see WhatsNewModel / WhatsNewModal).
     @StateObject private var whatsNew = WhatsNewModel()
+    // Debug hook only (PYMOL_AUTOLIGHTS_EDIT `expand`): the Lights inspector
+    // starts expanded on compact width. Always false in normal runs.
+    @State private var lightsInspectorExpandOverride = false
     @State private var showThemeStudio = false   // inline Theme studio (replaces a panel region)
 
     @AppStorage("mouseLegendCollapsed") private var mouseLegendCollapsed = false
@@ -1049,6 +1052,19 @@ struct ContentView: View {
         }
     }
 
+    // Lights mode on macOS (#619, #620): the bar across the top of the viewport
+    // and, under it at the trailing edge, the Lights side column (the selected
+    // light's inspector; #621's orbit view joins it there). The bar is
+    // full-width, so the column needs no height measurement; the stack's
+    // transparent space passes clicks through to the viewport, and nothing
+    // reshapes the drawable on entering the mode.
+    private var macLightsOverlay: some View {
+        VStack(alignment: .trailing, spacing: 8) {
+            lightsBar
+            lightsSideColumn.padding(.trailing, 10).padding(.bottom, 10)
+        }
+    }
+
     // The macOS viewport: the Metal view plus its floating overlays and the
     // right-click context menu. Extracted from macOSLayout's body so the
     // type-checker can resolve each in isolation (the inline chain tripped the
@@ -1061,7 +1077,7 @@ struct ContentView: View {
             .overlay(alignment: .top) {
                 if engine.measureMode != nil { measureOverlay }
                 else if engine.interactionMode == .move { moveOverlay }
-                else if engine.interactionMode == .lights { lightsBar }
+                else if engine.interactionMode == .lights { macLightsOverlay }
             }
             #if RAYMOL_MPNN
             // Design mode overlay: a separate overlay so the #if guard does not
@@ -2886,6 +2902,15 @@ struct ContentView: View {
             .overlay(alignment: .topTrailing) {
                 hoverReadoutOverlay.padding(.top, 44)
             }
+            // Lights mode (#620): the Lights side column (the selected light's
+            // inspector) in the top-trailing corner. One site covers the four iOS
+            // layouts; the bar docks in the top stack above the viewport, and the
+            // hover readout above never fills in Lights mode.
+            .overlay(alignment: .topTrailing) {
+                if engine.interactionMode == .lights && !iosFullScreen {
+                    lightsSideColumn.padding(8)
+                }
+            }
             // Test-only hook (PYMOL_UITEST=1): surface the live selection size
             // so XCUITest can assert tap-to-select / clear behavior. Invisible
             // and non-interactive; absent in normal runs.
@@ -4018,10 +4043,36 @@ struct ContentView: View {
     // flat. Done = leave the mode keeping the edits (Esc does the same).
     private var lightsBar: some View {
         LightsBar(controller: engine.lightsController,
-                  style: LightsBarStyle(accent: themeManager.active.accent.color,
-                                        text: themeManager.active.panelText.color,
-                                        background: themeManager.active.panelBackground.color),
+                  style: lightsStyle,
                   onDone: { engine.setInteractionMode(.viewing) })
+    }
+
+    // The Lights tools' colours (the bar, the side column), from the theme.
+    private var lightsStyle: LightsBarStyle {
+        LightsBarStyle(accent: themeManager.active.accent.color,
+                       text: themeManager.active.panelText.color,
+                       background: themeManager.active.panelBackground.color)
+    }
+
+    // The Lights side column (#620): the selected light's inspector, and later
+    // #621's orbit view above it. Placed by macLightsOverlay (macOS) and the
+    // viewportView top-trailing overlay (iOS), each naming only this property.
+    private var lightsSideColumn: some View {
+        LightsSideColumn(controller: engine.lightsController,
+                         style: lightsStyle,
+                         inspectorStartsCollapsed: lightsInspectorStartsCollapsed)
+    }
+
+    // The inspector starts collapsed to its header on compact width (iPhone),
+    // where it would cover most of the scene being lit; expanded on iPad and
+    // macOS. Seeded each time the mode opens, never persisted (#623 replaces
+    // the iPhone card with a sheet).
+    private var lightsInspectorStartsCollapsed: Bool {
+        #if os(iOS)
+        return hSize == .compact && !lightsInspectorExpandOverride
+        #else
+        return false
+        #endif
     }
 
     /// Test affordance: PYMOL_AUTOLIGHTS=<1|light name> enters Lights mode after
@@ -4029,16 +4080,40 @@ struct ContentView: View {
     /// during engine init, before it) and, unless the value is 1, selects that
     /// light, so the bar can be screenshotted without a tap. The NSLog line lets
     /// a simulator console prove the state.
+    ///
+    /// Debug builds also read PYMOL_AUTOLIGHTS_EDIT='<token>;...' (see
+    /// LightsAutoEdit): `expand` opens the inspector expanded on compact width,
+    /// and 0.5 s after entry the edits run through the inspector's controller
+    /// calls, logged as `PYMOL_AUTOLIGHTS_EDIT: orbit=120 -> ok; ...` with the
+    /// inspector's state after them.
     private func autoEnterLightsModeFromEnv() {
-        guard let value = ProcessInfo.processInfo.environment["PYMOL_AUTOLIGHTS"] else { return }
+        let env = ProcessInfo.processInfo.environment
+        guard let value = env["PYMOL_AUTOLIGHTS"] else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) {
+            #if DEBUG
+            let edits = LightsAutoEdit.parse(env["PYMOL_AUTOLIGHTS_EDIT"] ?? "")
+            if edits.expands { lightsInspectorExpandOverride = true }
+            #endif
             engine.setInteractionMode(.lights)
             MainActor.assumeIsolated {
                 let lights = engine.lightsController
                 if !value.isEmpty && value != "1" { lights.select(name: value) }
                 let names = (lights.rig?.lights ?? []).map(\.name).joined(separator: ",")
-                NSLog("PYMOL_AUTOLIGHTS: active=\(lights.isActive) lights=\(names) selected=\(lights.selection.name ?? "none")")
+                let inspector = LightsInspectorState(lights)?.summary ?? "none"
+                NSLog("PYMOL_AUTOLIGHTS: active=\(lights.isActive) lights=\(names) selected=\(lights.selection.name ?? "none") inspector=\(inspector)")
             }
+            #if DEBUG
+            guard !edits.tokens.isEmpty || !edits.rejected.isEmpty else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                MainActor.assumeIsolated {
+                    let lights = engine.lightsController
+                    var entries = LightsAutoEdit.apply(edits.tokens, to: lights)
+                    entries += edits.rejected.map { "\($0) -> rejected" }
+                    let inspector = LightsInspectorState(lights)?.summary ?? "none"
+                    NSLog("PYMOL_AUTOLIGHTS_EDIT: \(entries.joined(separator: "; ")) inspector=\(inspector)")
+                }
+            }
+            #endif
         }
     }
 
