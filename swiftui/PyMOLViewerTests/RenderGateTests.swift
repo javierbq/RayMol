@@ -199,8 +199,10 @@ final class AirRedrawGateTests: XCTestCase {
     // MARK: - When a tick is due
 
     func testDueAtNinetyFivePercentOfTheInterval() {
+        // lastFrame 0, so `now - lastFrame` is exactly `now` and the boundary
+        // compares equal values (no rounding from a subtraction).
         let interval = 1.0 / 30.0
-        let last = 100.0
+        let last = 0.0
         XCTAssertFalse(AirRedrawGate.due(interval: interval, now: last, lastFrame: last),
                        "no second air frame in the same instant")
         XCTAssertFalse(AirRedrawGate.due(interval: interval, now: last + 0.94 * interval,
