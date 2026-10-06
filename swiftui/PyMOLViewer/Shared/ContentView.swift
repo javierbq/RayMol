@@ -1074,6 +1074,9 @@ struct ContentView: View {
         MetalViewport()
             .frame(minWidth: 400, minHeight: 360)
             .layoutPriority(1)
+            // The light gizmo (#622): first, so the bar and the side column
+            // in the next overlay draw above it.
+            .overlay { if engine.interactionMode == .lights { lightGizmoOverlay } }
             .overlay(alignment: .top) {
                 if engine.measureMode != nil { measureOverlay }
                 else if engine.interactionMode == .move { moveOverlay }
@@ -2815,6 +2818,10 @@ struct ContentView: View {
             } message: {
                 Text("There’s no animation yet. Open the Movie tab, pick a motion (e.g. Camera → Roll) and tap Build & Play — then Export Movie will render it.")
             }
+            // The light gizmo (#622): early, so every overlay below (the side
+            // column, the buttons, the readouts) draws above it. One site for
+            // the four layouts, full screen included.
+            .overlay { if engine.interactionMode == .lights { lightGizmoOverlay } }
             .overlay { if engine.objects.isEmpty && !showThemeStudio && !hasRestoreSnapshot { emptyStateView } }
             // Debug bullseye (PYMOL_BULLSEYE=1): draws the gizmo hit-test targets +
             // a cursor bullseye so click↔selection mismatches are visible on screen.
@@ -4069,6 +4076,20 @@ struct ContentView: View {
                          onEnableSceneShadows: { engine.enableSceneShadows() })
     }
 
+    // The in-scene light gizmo (#622): a Canvas over the viewport (never scene
+    // geometry), with the selected light's Shadow chip. Placed on MetalViewport
+    // by macViewport and viewportView, each naming only this property. The
+    // chip's Shadows hint reads the scene poll's Shadows switch and its Turn On
+    // sets it, as the inspector's do; grid_mode (the poll's) hides the gizmo.
+    private var lightGizmoOverlay: some View {
+        LightGizmoOverlay(controller: engine.lightsController,
+                          ui: engine.lightGizmoUI,
+                          style: lightsStyle,
+                          gridMode: engine.lightGizmoGridMode,
+                          sceneShadowsOn: engine.sceneShadowsOn,
+                          onEnableSceneShadows: { engine.enableSceneShadows() })
+    }
+
     // The inspector starts collapsed to its header on compact width (iPhone),
     // where it would cover most of the scene being lit; expanded on iPad and
     // macOS. Seeded each time the mode opens, never persisted (#623 replaces
@@ -4113,15 +4134,19 @@ struct ContentView: View {
     /// during engine init, before it) and, unless the value is 1, selects that
     /// light, so the bar can be screenshotted without a tap. The NSLog line lets
     /// a simulator console prove the state: `inspector=` is the inspector's
-    /// summary and `plan=` the orbit view's (LightsOrbitState.summary).
+    /// summary, `plan=` the orbit view's (LightsOrbitState.summary) and
+    /// `gizmo=` the gizmo's (LightGizmoState.summary), so one run shows the
+    /// three tools agree.
     ///
     /// Debug builds also read PYMOL_AUTOLIGHTS_EDIT='<token>;...' (see
     /// LightsAutoEdit): `expand` opens the inspector and the orbit view
     /// expanded on iPhone, and 0.5 s after entry the edits run through the
     /// inspector's controller calls and the orbit view's gestures (`tap:`,
-    /// `plan:`, `square:`, `arc:`, `pinch:`), logged as
-    /// `PYMOL_AUTOLIGHTS_EDIT: orbit=120 -> ok; ...` with the inspector's and
-    /// the orbit view's state after them.
+    /// `plan:`, `square:`, `arc:`, `pinch:`) and the gizmo's (`knob:`, `flip:`,
+    /// `outer:`, `inner:`, `aimat:`, `wheel:`, `kpinch:`, `hl:`, `gshadow:`,
+    /// with the overlay's size and the engine's picker), logged as
+    /// `PYMOL_AUTOLIGHTS_EDIT: orbit=120 -> ok; ...` with the inspector's, the
+    /// orbit view's and the gizmo's state after them.
     private func autoEnterLightsModeFromEnv() {
         let env = ProcessInfo.processInfo.environment
         guard let value = env["PYMOL_AUTOLIGHTS"] else { return }
@@ -4138,19 +4163,27 @@ struct ContentView: View {
                 let inspector = LightsInspectorState(lights, sceneShadowsOn: engine.sceneShadowsOn)?
                     .summary ?? "none"
                 let plan = LightsOrbitState(lights)?.summary ?? "none"
-                NSLog("PYMOL_AUTOLIGHTS: active=\(lights.isActive) lights=\(names) selected=\(lights.selection.name ?? "none") inspector=\(inspector) plan=\(plan)")
+                let gizmo = LightGizmoState(lights, sceneShadowsOn: engine.sceneShadowsOn)?.summary ?? "none"
+                NSLog("PYMOL_AUTOLIGHTS: active=\(lights.isActive) lights=\(names) selected=\(lights.selection.name ?? "none") inspector=\(inspector) plan=\(plan) gizmo=\(gizmo)")
             }
             #if DEBUG
             guard !edits.tokens.isEmpty || !edits.rejected.isEmpty else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                 MainActor.assumeIsolated {
                     let lights = engine.lightsController
-                    var entries = LightsAutoEdit.apply(edits.tokens, to: lights)
+                    // Gizmo gestures run with the overlay's own size (noview
+                    // before it appears) and the engine's picker.
+                    let context = GizmoAutoContext(viewSize: engine.lightGizmoUI.viewSize,
+                                                   picker: engine.lightGizmoPicker,
+                                                   gridMode: engine.lightGizmoGridMode,
+                                                   sceneShadowsOn: engine.sceneShadowsOn)
+                    var entries = LightsAutoEdit.apply(edits.tokens, to: lights, gizmo: context)
                     entries += edits.rejected.map { "\($0) -> rejected" }
                     let inspector = LightsInspectorState(lights, sceneShadowsOn: engine.sceneShadowsOn)?
                         .summary ?? "none"
                     let plan = LightsOrbitState(lights)?.summary ?? "none"
-                    NSLog("PYMOL_AUTOLIGHTS_EDIT: \(entries.joined(separator: "; ")) inspector=\(inspector) plan=\(plan)")
+                    let gizmo = LightGizmoState(lights, sceneShadowsOn: engine.sceneShadowsOn)?.summary ?? "none"
+                    NSLog("PYMOL_AUTOLIGHTS_EDIT: \(entries.joined(separator: "; ")) inspector=\(inspector) plan=\(plan) gizmo=\(gizmo)")
                 }
             }
             #endif

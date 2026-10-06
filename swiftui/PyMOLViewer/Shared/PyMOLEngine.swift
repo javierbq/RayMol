@@ -3231,6 +3231,15 @@ final class PyMOLEngine: ObservableObject {
         }
     }
 
+    /// What the viewport's input routing tells the light gizmo's drawing
+    /// (hover, the dragged target, the readout) and the overlay's own size
+    /// (#622). Observed only by LightGizmoOverlay; reset when Lights mode
+    /// ends (setInteractionMode). Built on first use on the main thread (the
+    /// lightsController pattern).
+    lazy var lightGizmoUI: LightGizmoUIState = {
+        MainActor.assumeIsolated { LightGizmoUIState() }
+    }()
+
     /// The scene's Shadows switch (metal_shadows) as the scene poll last read
     /// it (~500 ms, in every mode); nil before the first poll. Studio shadows
     /// render only while it is on (#616), so the light inspector hints when a
@@ -3510,10 +3519,12 @@ final class PyMOLEngine: ObservableObject {
             }
         } else if previous == .lights {
             // Done, Esc or another mode: the edits stay, the snapshot goes; no
-            // more per-frame eye reads, and the aim dot's pick grids go back.
+            // more per-frame eye reads, no gizmo hover or drag state, and the
+            // aim dot's pick grids go back.
             MainActor.assumeIsolated {
                 lightsController.end()
                 lightsController.eyeDemand = .pinnedOnly
+                lightGizmoUI.reset()
             }
             releaseSurfacePick()
         }
