@@ -1508,7 +1508,18 @@ struct GizmoAutoContext {
 /// - `wheel:<light>:<steps>`: wheel notches on the knob (+ farther);
 /// - `kpinch:<light>:<factor>`: a pinch on the knob from 1 to that factor;
 /// - `hl:<x>:<y>`: an option-click at scene NDC (x, y);
-/// - `gshadow:<0|1>`: the Shadow chip, pressed when the light differs.
+/// - `gshadow:<0|1>`: the Shadow chip, pressed when the light differs;
+/// - `tpinch:<light>:<factor>[:<span>]` (#623): a two-finger touch sequence
+///   on the knob through LightTwoFingerSequence (the pan begins on the knob
+///   with the fingers `span` pt apart, 60 by default; the pinch and the
+///   twist join 30 pt away), then pinch ticks to the factor on the light the
+///   sequence named; logs the owner, the radius, the beam and what the pan
+///   and the twist did;
+/// - `lpress:<x>:<y>` or `lpress:<light>` (#623): a touch long-press at scene
+///   NDC (x, y), or on that light's knob, through LightTouchRouter (declined
+///   on a point target), then the highlight;
+/// - `gprobe:<light>:<dx>:<dy>` (#623): the hit test at the knob's centre
+///   plus (dx, dy) points; logs the target or `camera`.
 enum GizmoAutoGesture: Equatable {
     case knob(String, Double, Double)
     case flip(String)
@@ -1519,8 +1530,18 @@ enum GizmoAutoGesture: Equatable {
     case pinch(String, Double)
     case highlight(Double, Double)
     case shadow(Bool)
+    case touchPinch(String, Double, Double?)
+    case longPress(Double, Double)
+    case longPressKnob(String)
+    case probe(String, Double, Double)
 
-    static let keys: Set<String> = ["knob", "flip", "outer", "inner", "aimat", "wheel", "kpinch", "hl", "gshadow"]
+    static let keys: Set<String> = ["knob", "flip", "outer", "inner", "aimat", "wheel", "kpinch", "hl", "gshadow",
+                                    "tpinch", "lpress", "gprobe"]
+
+    /// The fingers' span of a `tpinch` without one (a pinch on a knob).
+    static let autoPinchSpan: Double = 60
+    /// How far the pinch and twist of a `tpinch` begin from the knob.
+    static let autoPinchDrift: CGFloat = 30
 
     /// `token`'s key is a gizmo gesture's (whether or not the rest parses).
     static func claims(_ token: String) -> Bool {
@@ -1567,6 +1588,23 @@ enum GizmoAutoGesture: Equatable {
         case "gshadow":
             guard parts.count == 2, let v = number(1), v == 0 || v == 1 else { return nil }
             return .shadow(v == 1)
+        case "tpinch":
+            guard parts.count == 3 || parts.count == 4, let n = name(1), let f = number(2), f > 0 else { return nil }
+            if parts.count == 4 {
+                guard let span = number(3), span > 0 else { return nil }
+                return .touchPinch(n, f, span)
+            }
+            return .touchPinch(n, f, nil)
+        case "lpress":
+            if parts.count == 3 {
+                guard let x = number(1), let y = number(2) else { return nil }
+                return .longPress(x, y)
+            }
+            guard parts.count == 2, let n = name(1) else { return nil }
+            return .longPressKnob(n)
+        case "gprobe":
+            guard parts.count == 4, let n = name(1), let dx = number(2), let dy = number(3) else { return nil }
+            return .probe(n, dx, dy)
         default:
             return nil
         }
@@ -1584,6 +1622,11 @@ enum GizmoAutoGesture: Equatable {
         case .pinch(let n, let f): return "kpinch:\(n):\(Self.fmt(f))"
         case .highlight(let x, let y): return "hl:\(Self.fmt(x)):\(Self.fmt(y))"
         case .shadow(let on): return "gshadow:\(on ? 1 : 0)"
+        case .touchPinch(let n, let f, let span):
+            return "tpinch:\(n):\(Self.fmt(f))" + (span.map { ":" + Self.fmt($0) } ?? "")
+        case .longPress(let x, let y): return "lpress:\(Self.fmt(x)):\(Self.fmt(y))"
+        case .longPressKnob(let n): return "lpress:\(n)"
+        case .probe(let n, let dx, let dy): return "gprobe:\(n):\(Self.fmt(dx)):\(Self.fmt(dy))"
         }
     }
 
@@ -1705,14 +1748,60 @@ enum GizmoAutoGesture: Equatable {
             return "\(t) -> \(result()) radius=\(value(.radius, 2))"
         case .highlight(let x, let y):
             let r = interaction.placeHighlight(at: layout.projection.point(sceneNDC: SIMD2(x, y)), layout: layout)
-            let text: String
-            switch r {
-            case .noSelection: text = "no_selection"
-            case .miss: text = "miss"
-            case .refused: text = "refused"
-            case .placed(let rim): text = "placed rim=" + (rim.map { String(format: "%.0f", $0) } ?? "none")
+            return "\(t) -> \(Self.text(r)) \(aimText())"
+        case .touchPinch(let name, let factor, let span):
+            guard let knob = layout.knob(named: name) else { return "\(t) -> miss" }
+            let fingers = CGFloat(span ?? Self.autoPinchSpan)
+            let knobAt: (CGPoint) -> String? = { LightGizmoHitTest.knob(at: $0, layout: layout) }
+            var sequence = LightTwoFingerSequence()
+            // The pan begins first, on the knob, and decides; the pinch and
+            // the twist join after the centroid moved off the knob.
+            let moved = CGPoint(x: knob.centre.x + Self.autoPinchDrift, y: knob.centre.y)
+            _ = sequence.began(.pan, centroid: knob.centre, span: fingers, knob: knobAt)
+            let owner = sequence.began(.pinch, centroid: moved, span: fingers, knob: knobAt)
+            _ = sequence.began(.rotation, centroid: moved, span: fingers, knob: knobAt)
+            if case .gizmo(let named) = owner, var s = interaction.beginPinch(named: named) {
+                for k in 1...ticks {
+                    let m = 1 + (factor - 1) * Double(k) / Double(ticks)
+                    if let r = interaction.pinch(&s, magnification: m) { last = r }
+                    if s.isEnded { break }
+                }
             }
-            return "\(t) -> \(text) \(aimText())"
+            let ownerText: String
+            switch owner {
+            case .gizmo(let named): ownerText = "gizmo(\(named))"
+            case .camera: ownerText = "camera"
+            }
+            let pan = sequence.owner(of: .pan)?.isGizmo == true ? "ignored" : "camera"
+            let twist = sequence.owner(of: .rotation)?.isGizmo == true ? "ignored" : "camera"
+            for kind in LightTwoFingerKind.allCases { sequence.ended(kind) }
+            return "\(t) -> \(result()) owner=\(ownerText) radius=\(value(.radius, 2)) beam=\(value(.beam, 1))"
+                + " pan=\(pan) twist=\(twist) reset=\(sequence.isActive ? 0 : 1)"
+        case .longPress, .longPressKnob:
+            let point: CGPoint
+            if case .longPress(let x, let y) = gesture {
+                point = layout.projection.point(sceneNDC: SIMD2(x, y))
+            } else if case .longPressKnob(let name) = gesture, let knob = layout.knob(named: name) {
+                point = knob.centre
+            } else {
+                return "\(t) -> miss"
+            }
+            guard LightTouchRouter.shouldBeginLongPress(at: point, layout: layout) else {
+                return "\(t) -> route=declined"
+            }
+            switch LightTouchRouter.longPress(at: point, layout: layout,
+                                              hasSelection: controller.selectedLight != nil) {
+            case .contextMenu: return "\(t) -> route=context_menu"
+            case .ignore: return "\(t) -> route=ignore"
+            case .highlight:
+                let r = interaction.placeHighlight(at: point, layout: layout)
+                return "\(t) -> route=highlight -> \(Self.text(r)) \(aimText())"
+            }
+        case .probe(let name, let dx, let dy):
+            guard let knob = layout.knob(named: name) else { return "\(t) -> miss" }
+            let p = CGPoint(x: knob.centre.x + CGFloat(dx), y: knob.centre.y + CGFloat(dy))
+            let hit = LightGizmoHitTest.target(at: p, layout: layout).map(Self.text) ?? "camera"
+            return "\(t) -> \(hit) touch=\(Self.fmt(Double(layout.metrics.minimumTarget)))"
         case .shadow(let on):
             guard let light = controller.selectedLight else { return "\(t) -> no_light" }
             if light.shadow != on { last = interaction.toggleShadow() }
@@ -1752,6 +1841,29 @@ enum GizmoAutoGesture: Equatable {
 
     private static func fmt(_ x: Double) -> String {
         x == x.rounded() && abs(x) < 1e9 ? String(format: "%.0f", x) : String(x)
+    }
+
+    /// A highlight's outcome as logged.
+    private static func text(_ r: LightGizmoHighlightResult) -> String {
+        switch r {
+        case .noSelection: return "no_selection"
+        case .miss: return "miss"
+        case .refused: return "refused"
+        case .placed(let rim): return "placed rim=" + (rim.map { String(format: "%.0f", $0) } ?? "none")
+        }
+    }
+
+    /// A hit target as logged.
+    private static func text(_ target: LightGizmoTarget) -> String {
+        switch target {
+        case .knob(let name): return "knob:" + name
+        case .aimDot: return "aim"
+        case .outerHandle: return "outer_handle"
+        case .innerHandle: return "inner_handle"
+        case .outerRing: return "outer_ring"
+        case .innerRing: return "inner_ring"
+        case .rings: return "rings"
+        }
     }
 }
 #endif
