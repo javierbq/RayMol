@@ -3144,7 +3144,10 @@ final class PyMOLEngine: ObservableObject {
                 // A movie export reads the rig off the main thread; bridge light
                 // calls are main-thread only, so the controller keeps off it.
                 isBusy: { [weak self] in self?.exportRenderActive ?? false },
-                now: { ProcessInfo.processInfo.systemUptime }))
+                now: { ProcessInfo.processInfo.systemUptime },
+                // C++ only (PyMOLBridge_LightsEyeSpace): read per rendered frame
+                // only while a light is pinned or a tool asks for every frame.
+                eyeSpace: { [weak self] in self?.lightsEyeSpace() }))
             // Console, MCP and scene-recall edits reach the bar within one object
             // poll (~500 ms). refresh() publishes only when the rig's JSON changed.
             self.panelPolled
@@ -3158,6 +3161,19 @@ final class PyMOLEngine: ObservableObject {
     }()
 
     private var lightsCancellables = Set<AnyCancellable>()
+
+    /// The per-frame hook of the light tools (#620): MetalViewport.draw(in:)
+    /// calls it once per rendered frame while in Lights mode, so a pinned
+    /// light's orbit, pitch and radius follow the camera frame by frame (and,
+    /// later, #622's gizmo gets the rig in eye space). Outside Lights mode it
+    /// returns at once. Bridge reads only (no Python); with no pinned light
+    /// and no tool asking for every frame it makes no bridge call at all.
+    func lightsFrameRendered() {
+        guard interactionMode == .lights else { return }
+        // draw(in:) runs on the main thread on both platforms (macOS: the
+        // view's display link; iOS: MTKView's own loop).
+        MainActor.assumeIsolated { lightsController.frameRendered() }
+    }
 
     /// The preset menu, read once per process (empty until a read succeeds).
     private var cachedLightPresets: [LightPreset] = []

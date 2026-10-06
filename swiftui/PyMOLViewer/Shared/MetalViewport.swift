@@ -652,6 +652,12 @@ extension MetalViewport {
             // let the engine clear the "Calculating…" overlay once the build
             // frame(s) have completed.
             engine.heavyRenderTick(presented: presented)
+            // Lights mode only (#620): refresh the light tools' per-frame eye
+            // data (a pinned light's placement follows the camera). Outside
+            // the mode this is one enum compare per rendered frame.
+            if engine.interactionMode == .lights {
+                engine.lightsFrameRendered()
+            }
         }
 
         // MARK: - Coordinate conversion

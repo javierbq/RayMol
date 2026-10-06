@@ -17,7 +17,9 @@ CI builds the GLUT flavour without a GPU, so this exercises _cmd and Python
 only. A small peptide (cmd.fab) gives the rig a real frame.
 
 The inspector's Swift sources are checked too (comments stripped; skipped
-outside a checkout): LightParameter's ranges are the core's field table.
+outside a checkout): LightParameter's ranges are the core's field table, and
+the per-frame hook (MetalViewport.draw(in:) -> lightsFrameRendered) runs only
+in Lights mode and only reads through the bridge.
 
 Runs on a RayMol build:
     pymol -ckqy testing/testing.py --run testing/tests/raymol/lighting_inspector.py
@@ -316,6 +318,9 @@ ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir,
                                      os.pardir, os.pardir))
 SHARED = os.path.join('swiftui', 'PyMOLViewer', 'Shared')
 EDITING = os.path.join(SHARED, 'LightsEditing.swift')
+VIEWPORT = os.path.join(SHARED, 'MetalViewport.swift')
+ENGINE = os.path.join(SHARED, 'PyMOLEngine.swift')
+APP = os.path.join('swiftui', 'PyMOLViewer')
 
 # `case .x: return a...b` (a range line of LightParameter.range).
 RANGE_CASE = re.compile(
@@ -405,3 +410,56 @@ class TestInspectorSource(testing.PyMOLTestCase):
                                ('case .warmth: return 1500...15000',
                                 ('warmth', '1500', '15000'))):
             self.assertEqual(RANGE_CASE.search(line).groups(), expected, line)
+
+    def testFrameHookIsLightsOnly(self):
+        """draw(in:) calls lightsFrameRendered() exactly once, inside an
+        `if engine.interactionMode == .lights` block on the render path
+        (after the frame's heavyRenderTick); the engine's lightsFrameRendered
+        returns first thing outside Lights mode and runs no Python or command;
+        nothing else in the app calls it."""
+        viewport = self.read(VIEWPORT)
+        draw = body(viewport, 'func draw(in view: MTKView)')
+        self.assertIsNotNone(draw, 'MetalViewport.draw(in:) not found')
+        self.assertEqual(draw.count('lightsFrameRendered('), 1,
+                         'draw(in:) must call the hook exactly once')
+        gate = body(draw, 'if engine.interactionMode == .lights')
+        self.assertIsNotNone(gate, 'draw(in:) has no Lights-mode block')
+        self.assertIn('engine.lightsFrameRendered()', gate,
+                      'the hook must be inside the Lights-mode block')
+        rendered = draw.find('engine.heavyRenderTick(presented: presented)')
+        self.assertGreaterEqual(rendered, 0, 'the render path\'s heavyRenderTick moved')
+        self.assertGreater(draw.find('lightsFrameRendered('), rendered,
+                           'the hook belongs on the render path, after the frame')
+
+        engine = self.read(ENGINE)
+        hook = body(engine, 'func lightsFrameRendered()')
+        self.assertIsNotNone(hook, 'PyMOLEngine.lightsFrameRendered not found')
+        self.assertRegex(hook, r'^\{\s*guard\s+interactionMode\s*==\s*\.lights\s+else\s*'
+                               r'\{\s*return\s*\}',
+                         'lightsFrameRendered must return first thing outside Lights mode')
+        self.assertIn('lightsController.frameRendered()', hook)
+        for name in ('runPython', 'runCommand', 'PyMOLBridge_RunPython'):
+            self.assertNotIn(name, hook, 'the frame hook must run no Python or command')
+
+        callers = []
+        for folder, _dirs, files in os.walk(os.path.join(ROOT, APP)):
+            for filename in files:
+                if not filename.endswith('.swift'):
+                    continue
+                rel = os.path.relpath(os.path.join(folder, filename), ROOT)
+                text = self.read(rel)
+                calls = len(re.findall(r'\blightsFrameRendered\(\)', text))
+                calls -= len(re.findall(r'func\s+lightsFrameRendered\(\)', text))
+                if calls:
+                    callers.append((os.path.basename(rel), calls))
+        self.assertEqual(callers, [('MetalViewport.swift', 1)],
+                         'only draw(in:) may call the frame hook')
+
+    def testEyeSpaceSeamIsTheBridgeRead(self):
+        """The engine wires the controller's eyeSpace seam to the C++ read
+        lightsEyeSpace() (no Python)."""
+        engine = self.read(ENGINE)
+        self.assertRegex(
+            engine,
+            r'eyeSpace:\s*\{\s*\[weak self\]\s*in\s*self\?\.lightsEyeSpace\(\)\s*\}',
+            'LightsSeams.eyeSpace must be wired to lightsEyeSpace()')
