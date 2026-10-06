@@ -139,7 +139,10 @@ final class LightPaletteTests: XCTestCase {
 /// clamps, the orbit wrap, anchor 0/1, re-pinning a pinned light's placement
 /// and the 3-shadow cap. Eye space is served from the stored values for
 /// camera lights and from `eyePlacements` for pinned ones (a test moves a
-/// pinned light's eye placement to stand for a camera turn).
+/// pinned light's eye placement to stand for a camera turn). Setting
+/// `eyeOffset` opts into a faithful eye space (#622): positions, targets,
+/// directions, aim distances and the cone as LightRigResolve computes them,
+/// under a camera that only translates the world by that offset.
 final class FakeRigStore {
     struct Light: Equatable {
         var name: String
@@ -153,6 +156,8 @@ final class FakeRigStore {
         var warmth = 6500.0
         var intensity = 1.0
         var shadow = false
+        /// The world point the light aims at (`aim_point`); nil: the centre.
+        var aimPoint: SIMD3<Double>?
 
         var placement: LightPlacement {
             get { LightPlacement(orbit: orbit, pitch: pitch, radius: radius) }
@@ -186,6 +191,12 @@ final class FakeRigStore {
     /// When set, `eyeSpace` serves this instead (`.some(nil)`: no rig), for a
     /// stale or mismatched read.
     var eyeOverride: LightEyeSpace?? = .none
+    /// Opt-in faithful eye space: world to eye is `+ eyeOffset` (nil: the
+    /// placeholder positions every test before #622 uses).
+    var eyeOffset: SIMD3<Double>?
+    /// What the projection seam serves (the gizmo's camera).
+    var projection: LightCameraProjection?
+    private(set) var projectionReads = 0
     /// Run after every number write (before it returns): a test can change
     /// things in the middle of a multi-field write.
     var afterNumberWrite: (() -> Void)?
@@ -238,8 +249,10 @@ final class FakeRigStore {
         let lightsJSON = lights.map { light in
             "{\"name\":\"\(light.name)\",\"anchor\":\"\(light.pinned ? "pinned" : "camera")\","
             + "\"orbit\":\(Self.num(light.orbit)),\"pitch\":\(Self.num(light.pitch)),"
-            + "\"radius\":\(Self.num(light.radius)),\"position\":[0.0,0.0,0.0],\"aim\":\"centre\","
-            + "\"aim_point\":[0.0,0.0,0.0],\"aim_selection\":\"\",\"beam\":\(Self.num(light.beam)),"
+            + "\"radius\":\(Self.num(light.radius)),\"position\":[0.0,0.0,0.0],"
+            + "\"aim\":\"\(light.aimPoint == nil ? "centre" : "point")\","
+            + "\"aim_point\":\(Self.vec(light.aimPoint ?? .zero)),\"aim_selection\":\"\","
+            + "\"beam\":\(Self.num(light.beam)),"
             + "\"softness\":\(Self.num(light.softness)),\"color\":\(Self.vec(light.color)),"
             + "\"warmth\":\(Self.num(light.warmth)),\"intensity\":\(Self.num(light.intensity)),"
             + "\"highlight\":0.5,\"falloff\":2.0,\"shadow\":\(light.shadow),\"outline\":false}"
@@ -255,6 +268,7 @@ final class FakeRigStore {
     /// the fields the controller reads are meaningful).
     var eyeSpace: LightEyeSpace? {
         guard ready, exists else { return nil }
+        if let eyeOffset { return faithfulEyeSpace(eyeOffset) }
         return LightEyeSpace(
             enabled: enabled, hasFrame: !lights.isEmpty,
             centre: SIMD3(Float(centreX), 0, 0), size: 10,
@@ -273,6 +287,47 @@ final class FakeRigStore {
             })
     }
 
+    /// The rig size the JSON gives (Å).
+    static let size = 10.0
+
+    /// The unit offset of (orbit, pitch) from the centre in eye space
+    /// (spec §4.3): (sin o cos p, sin p, cos o cos p).
+    static func unitOffset(_ place: LightPlacement) -> SIMD3<Double> {
+        let o = place.orbit * .pi / 180, p = place.pitch * .pi / 180
+        return SIMD3(sin(o) * cos(p), sin(p), cos(o) * cos(p))
+    }
+
+    /// LightRigResolve under a camera that translates the world by `offset`.
+    private func faithfulEyeSpace(_ offset: SIMD3<Double>) -> LightEyeSpace {
+        let centre = SIMD3(centreX, 0, 0) + offset
+        func float3(_ v: SIMD3<Double>) -> SIMD3<Float> { SIMD3(Float(v.x), Float(v.y), Float(v.z)) }
+        return LightEyeSpace(
+            enabled: enabled, hasFrame: !lights.isEmpty,
+            centre: float3(centre), size: Float(Self.size),
+            lights: lights.indices.map { index in
+                let light = lights[index]
+                let place = currentPlacement(index)
+                let position = centre + place.radius * Self.size * Self.unitOffset(place)
+                let target = light.aimPoint.map { $0 + offset } ?? centre
+                let axis = target - position
+                let distance = (axis * axis).sum().squareRoot()
+                let direction = distance > 0 ? axis / distance : SIMD3(0, 0, -1)
+                let half = light.beam * 0.5 * .pi / 180
+                let cosOuter = cos(half)
+                let band = min(1e-4, 0.5 * (1 - cosOuter))
+                let cosInner = min(1, max(cos(half * (1 - light.softness)), cosOuter + band))
+                return LightEyeSpace.Light(
+                    position: float3(position), target: float3(target),
+                    direction: float3(direction), aimDistance: Float(distance),
+                    cosOuter: Float(cosOuter), cosInner: Float(cosInner),
+                    orbit: Float(place.orbit), pitch: Float(place.pitch),
+                    radius: Float(place.radius),
+                    anchor: light.pinned ? .pinned : .camera,
+                    aim: light.aimPoint == nil ? .centre : .point,
+                    shadow: light.shadow, outline: false)
+            })
+    }
+
     /// The core's next default name (LightRigNextName).
     private func nextName() -> String {
         let taken = Set(names.map { $0.lowercased() })
@@ -286,7 +341,8 @@ final class FakeRigStore {
         Light(name: snapshot.name, orbit: snapshot.orbit, color: snapshot.color,
               pinned: snapshot.anchor == .pinned, pitch: snapshot.pitch,
               radius: snapshot.radius, beam: snapshot.beam, softness: snapshot.softness,
-              warmth: snapshot.warmth, intensity: snapshot.intensity, shadow: snapshot.shadow)
+              warmth: snapshot.warmth, intensity: snapshot.intensity, shadow: snapshot.shadow,
+              aimPoint: snapshot.aim == .point ? snapshot.aimPoint : nil)
     }
 
     func perform(_ action: LightsAction) {
@@ -334,6 +390,19 @@ final class FakeRigStore {
             guard !restored.shadow || shadowed < Self.maxShadowed else { return }
             eyePlacements[key] = nil
             lights[index] = restored
+        case .highlight(let name, _, _, _, let pin):
+            // The click= helper: aimed at the picked point, and a camera
+            // light unless pin=1. (The point itself comes from a real pick.)
+            let key = name.lowercased()
+            guard let index = lights.firstIndex(where: { $0.name.lowercased() == key }) else { return }
+            lights[index].aimPoint = SIMD3(0, 0, 1)
+            if !pin, lights[index].pinned {
+                var place = currentPlacement(index)
+                place.radius = place.radius.clamped(to: Self.ranges["radius"]!)
+                lights[index].placement = place
+                lights[index].pinned = false
+                eyePlacements[key] = nil
+            }
         }
     }
 
@@ -405,10 +474,17 @@ final class FakeRigStore {
                 self.vectorWrites.append((index, field, value))
                 guard self.ready, self.exists else { return .noRig }
                 guard self.lights.indices.contains(index) else { return .badIndex }
-                guard field == "color" else { return .unknownField }
                 guard value.x.isFinite, value.y.isFinite, value.z.isFinite else { return .badValue }
-                self.lights[index].color = SIMD3(value.x.clamped(to: 0...1), value.y.clamped(to: 0...1),
-                                                 value.z.clamped(to: 0...1))
+                switch field {
+                case "color":
+                    self.lights[index].color = SIMD3(value.x.clamped(to: 0...1), value.y.clamped(to: 0...1),
+                                                     value.z.clamped(to: 0...1))
+                case "aim_point":
+                    // LightRigSet: aim at the point, the selection text cleared.
+                    self.lights[index].aimPoint = value
+                default:
+                    return .unknownField
+                }
                 return .ok
             },
             perform: { self.perform($0) },
@@ -423,6 +499,10 @@ final class FakeRigStore {
                 self.eyeReads += 1
                 if case .some(let served) = self.eyeOverride { return served }
                 return self.eyeSpace
+            },
+            projection: {
+                self.projectionReads += 1
+                return self.projection
             })
     }
 }
@@ -894,5 +974,193 @@ final class LightsControllerTests: XCTestCase {
         XCTAssertEqual(display("softbox"), "Softbox")
         XCTAssertEqual(display("underlight"), "Underlight")
         XCTAssertEqual(display(""), "")
+    }
+
+    // MARK: the gizmo's projection (#622)
+
+    private let camera = LightCameraProjection(orthoscopic: false, fovDegrees: 20,
+                                               cameraDistance: 50, letterboxAspect: 0)
+
+    func testProjectionPublishesWithTheEyeSpaceOnlyEveryFrame() {
+        store.projection = camera
+        begin(with: ["key", "fill", "rim"])
+        XCTAssertNil(controller.eye.projection, "not under .pinnedOnly")
+        controller.frameRendered()
+        XCTAssertNil(controller.eye.projection)
+        XCTAssertEqual(store.projectionReads, 0, "no camera read under .pinnedOnly")
+
+        controller.eyeDemand = .everyFrame
+        controller.frameRendered()
+        XCTAssertEqual(controller.eye.projection, camera)
+        XCTAssertNotNil(controller.eye.eyeSpace, "published together")
+        XCTAssertEqual(store.projectionReads, 1)
+
+        // The camera changes: the next frame publishes it; an edit re-reads
+        // it in the same turn too.
+        var zoomed = camera
+        zoomed.cameraDistance = 80
+        store.projection = zoomed
+        controller.frameRendered()
+        XCTAssertEqual(controller.eye.projection, zoomed)
+        var ortho = zoomed
+        ortho.orthoscopic = true
+        store.projection = ortho
+        XCTAssertEqual(controller.set(.beam, 30), .ok)
+        XCTAssertEqual(controller.eye.projection, ortho)
+
+        // A still camera publishes nothing.
+        var changes = 0
+        let sink = controller.eye.objectWillChange.sink { changes += 1 }
+        defer { sink.cancel() }
+        controller.frameRendered()
+        XCTAssertEqual(changes, 0)
+
+        // Back to .pinnedOnly: cleared with the eye space.
+        controller.eyeDemand = .pinnedOnly
+        XCTAssertNil(controller.eye.projection)
+        XCTAssertNil(controller.eye.eyeSpace)
+        let reads = store.projectionReads
+        controller.frameRendered()
+        XCTAssertEqual(store.projectionReads, reads)
+    }
+
+    func testDemandSetBeforeBeginPublishesAtOnce() {
+        // What the engine does on entering Lights mode: the first refresh,
+        // with no frame rendered, already has the eye space and projection.
+        store.setRig(["key", "fill"])
+        store.projection = camera
+        controller.eyeDemand = .everyFrame
+        controller.begin()
+        XCTAssertEqual(controller.eye.projection, camera)
+        XCTAssertEqual(controller.eye.eyeSpace?.lights.count, 2)
+        XCTAssertEqual(store.eyeReads, 1)
+
+        // end() clears both and keeps the demand (the engine resets it).
+        controller.end()
+        XCTAssertNil(controller.eye.projection)
+        XCTAssertNil(controller.eye.eyeSpace)
+        XCTAssertEqual(controller.eyeDemand, .everyFrame)
+    }
+
+    func testNoProjectionWithoutAnEyeRead() {
+        // No rig: nothing to project, so no camera either.
+        store.projection = camera
+        controller.eyeDemand = .everyFrame
+        begin(with: nil)
+        controller.frameRendered()
+        XCTAssertNil(controller.eye.eyeSpace)
+        XCTAssertNil(controller.eye.projection)
+        // A read that disagrees with the mirror is not published, and neither
+        // is the camera.
+        store.setRig(["key"])
+        controller.refresh()
+        XCTAssertNotNil(controller.eye.projection)
+        controller.eyeDemand = .pinnedOnly
+        controller.eyeDemand = .everyFrame
+        store.eyeOverride = .some(nil)
+        store.clock += 1
+        controller.frameRendered()
+        XCTAssertNil(controller.eye.projection)
+        XCTAssertNil(controller.eye.eyeSpace)
+    }
+
+    // MARK: front and behind (#622)
+
+    func testBehindFollowsPlacements() {
+        store.setRig(["key", "fill", "rim"])
+        store.lights[2].orbit = 150        // a camera light behind the molecule
+        controller.begin()
+        XCTAssertEqual(controller.facing.behind, ["rim"])
+        XCTAssertTrue(controller.isBehind("RIM"), "names ignore case")
+        XCTAssertFalse(controller.isBehind("key"))
+
+        // A gizmo-style write crosses fill to the back in the same turn.
+        controller.select(name: "fill")
+        XCTAssertEqual(controller.setPlacement(orbit: 120, pitch: 10), .ok)
+        XCTAssertEqual(controller.facing.behind, ["fill", "rim"])
+
+        // A pinned light flips as the camera turns (its eye placement moves
+        // across orbit 90 frame by frame).
+        controller.select(name: "key")
+        XCTAssertEqual(controller.setPinned(true), .ok)
+        store.eyePlacements["key"] = LightPlacement(orbit: 80, pitch: 0, radius: 4)
+        controller.frameRendered()
+        XCTAssertFalse(controller.isBehind("key"))
+        store.eyePlacements["key"] = LightPlacement(orbit: 100, pitch: 0, radius: 4)
+        controller.frameRendered()
+        XCTAssertTrue(controller.isBehind("key"))
+        XCTAssertEqual(controller.facing.behind, ["key", "fill", "rim"])
+
+        // Camera lights never flip with the camera; leaving clears it.
+        controller.end()
+        XCTAssertEqual(controller.facing.behind, [])
+        XCTAssertFalse(controller.isBehind("rim"))
+    }
+
+    func testFacingPublishesOnlyOnACrossing() {
+        store.setRig(["key", "fill"])
+        store.lights[0].pinned = true
+        store.eyePlacements["key"] = LightPlacement(orbit: 90, pitch: 0, radius: 4)
+        controller.begin()
+        XCTAssertEqual(controller.facing.behind, [])
+        var changes = 0
+        let sink = controller.facing.objectWillChange.sink { changes += 1 }
+        defer { sink.cancel() }
+        // 100 frames of Float noise on the outline: no publish.
+        for frame in 0..<100 {
+            let noise = Double(Float(Double(frame % 7 - 3) * 1e-5))
+            store.eyePlacements["key"] = LightPlacement(orbit: 90 + noise, pitch: noise, radius: 4)
+            controller.frameRendered()
+        }
+        XCTAssertEqual(changes, 0)
+        // A crossing publishes once; staying behind publishes nothing more.
+        store.eyePlacements["key"] = LightPlacement(orbit: 95, pitch: 0, radius: 4)
+        controller.frameRendered()
+        XCTAssertEqual(changes, 1)
+        store.eyePlacements["key"] = LightPlacement(orbit: 120, pitch: 5, radius: 4)
+        controller.frameRendered()
+        XCTAssertEqual(changes, 1)
+        XCTAssertEqual(controller.facing.behind, ["key"])
+    }
+
+    // MARK: highlight placement (#622)
+
+    func testPlaceHighlightPerformsOneAction() {
+        begin(with: ["key", "fill", "rim"])
+        controller.select(name: "fill")
+        XCTAssertTrue(controller.placeHighlight(sceneNDC: SIMD2(0.125, -0.0625), rim: nil))
+        XCTAssertEqual(store.performed, [.highlight(name: "fill", x: 0.125, y: -0.0625, rim: nil, pin: false)])
+        XCTAssertTrue(store.numberWrites.isEmpty)
+        XCTAssertEqual(controller.selectedLight?.aim, .point, "re-read in the same turn")
+
+        // The rim rule, and a pinned light keeps its pin.
+        controller.select(name: "rim")
+        XCTAssertEqual(controller.setPinned(true), .ok)
+        XCTAssertTrue(controller.placeHighlight(sceneNDC: SIMD2(-0.5, 0.25), rim: 145))
+        XCTAssertEqual(store.performed.last,
+                       .highlight(name: "rim", x: -0.5, y: 0.25, rim: 145, pin: true))
+        XCTAssertEqual(controller.selectedLight?.anchor, .pinned)
+        XCTAssertEqual(store.performed.count, 2)
+    }
+
+    func testPlaceHighlightRunsNothingWhenItCannot() {
+        begin(with: ["key"])
+        // Out of the helper's range, or not finite: nothing run.
+        for point: SIMD2<Double> in [SIMD2(1.5, 0), SIMD2(0, -1.0001), SIMD2(.nan, 0), SIMD2(0, .infinity)] {
+            XCTAssertFalse(controller.placeHighlight(sceneNDC: point, rim: nil), "\(point)")
+        }
+        XCTAssertFalse(controller.placeHighlight(sceneNDC: SIMD2(0, 0), rim: 180))
+        // Busy, outside the mode, or no light selected.
+        store.busy = true
+        XCTAssertFalse(controller.placeHighlight(sceneNDC: SIMD2(0, 0), rim: nil))
+        store.busy = false
+        controller.end()
+        XCTAssertFalse(controller.placeHighlight(sceneNDC: SIMD2(0, 0), rim: nil))
+        controller.begin()
+        store.setRig([])
+        controller.refresh()
+        XCTAssertNil(controller.selection.name)
+        XCTAssertFalse(controller.placeHighlight(sceneNDC: SIMD2(0, 0), rim: nil))
+        XCTAssertTrue(store.performed.isEmpty)
     }
 }

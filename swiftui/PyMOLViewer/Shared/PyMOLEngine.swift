@@ -3147,7 +3147,11 @@ final class PyMOLEngine: ObservableObject {
                 now: { ProcessInfo.processInfo.systemUptime },
                 // C++ only (PyMOLBridge_LightsEyeSpace): read per rendered frame
                 // only while a light is pinned or a tool asks for every frame.
-                eyeSpace: { [weak self] in self?.lightsEyeSpace() }))
+                eyeSpace: { [weak self] in self?.lightsEyeSpace() },
+                // C++ only (PyMOLBridge_GetView, GetLetterboxAspect) plus the
+                // polled field_of_view: read with the eye space under
+                // .everyFrame, for #622's gizmo.
+                projection: { [weak self] in self?.lightCameraProjection() }))
             // Console, MCP and scene-recall edits reach the bar within one object
             // poll (~500 ms). refresh() publishes only when the rig's JSON changed.
             self.panelPolled
@@ -3173,6 +3177,19 @@ final class PyMOLEngine: ObservableObject {
         // draw(in:) runs on the main thread on both platforms (macOS: the
         // view's display link; iOS: MTKView's own loop).
         MainActor.assumeIsolated { lightsController.frameRendered() }
+    }
+
+    /// The live camera as the light gizmo projects it (#622): the 25-float view
+    /// (PyMOLBridge_GetView), the live frame's letterbox aspect and, when the
+    /// view carries no usable field of view, the polled `field_of_view`
+    /// setting (metal_pick.camera's fallback). C++ reads and a dictionary
+    /// lookup, no Python: safe per rendered frame. Main thread only; nil
+    /// before the core is up.
+    func lightCameraProjection() -> LightCameraProjection? {
+        guard isReady, let instance, let view = captureView() else { return nil }
+        return LightCameraProjection(
+            view: view, letterboxAspect: Self.letterboxAspect(handle: instance),
+            fieldOfView: sceneState.values["field_of_view"].map { Float($0) })
     }
 
     /// The scene's Shadows switch (metal_shadows) as the scene poll last read
@@ -3443,10 +3460,23 @@ final class PyMOLEngine: ObservableObject {
             // bar's Done on macOS).
             clearHoverPreview()
             // Entering twice keeps the first entry snapshot (Revert's target).
-            if previous != .lights { MainActor.assumeIsolated { lightsController.begin() } }
+            // The gizmo (#622) shows whenever the mode is on, so the eye demand
+            // follows the mode: .everyFrame BEFORE begin(), whose refresh then
+            // publishes the eye space and the projection at once.
+            if previous != .lights {
+                MainActor.assumeIsolated {
+                    lightsController.eyeDemand = .everyFrame
+                    lightsController.begin()
+                }
+            }
         } else if previous == .lights {
-            // Done, Esc or another mode: the edits stay, the snapshot goes.
-            MainActor.assumeIsolated { lightsController.end() }
+            // Done, Esc or another mode: the edits stay, the snapshot goes; no
+            // more per-frame eye reads, and the aim dot's pick grids go back.
+            MainActor.assumeIsolated {
+                lightsController.end()
+                lightsController.eyeDemand = .pinnedOnly
+            }
+            releaseSurfacePick()
         }
         if mode == .move {
             refreshGizmo()
@@ -4670,7 +4700,8 @@ extension LightsAction {
     /// The command or Python for this action; nil when a name is not a light or
     /// preset name, so nothing is run (no quoting is ever needed). The command
     /// strings are pinned by LightsActionInvocationTests and, run through the
-    /// core, by testing/tests/raymol/lighting_mode.py TestBarCommands: change
+    /// core, by testing/tests/raymol/lighting_mode.py TestBarCommands (the
+    /// highlight strings by lighting_gizmo.py TestHighlightCommand): change
     /// them together.
     var invocation: Invocation? {
         switch self {
@@ -4695,7 +4726,37 @@ extension LightsAction {
             let encoded = Data(json.utf8).base64EncodedString()
             return .python(
                 "from pymol import appkit_lights as _al\n_al.restore_light('\(encoded)', '\(name)')")
+        case .highlight(let name, let x, let y, let rim, let pin):
+            // #622's ⌥-click: #612's click= helper, run once (a click, never
+            // a drag tick). pin=1 keeps a pinned light pinned: without it the
+            // helper leaves a camera light.
+            guard Self.isValidName(name), let xs = Self.clickCoordinate(x),
+                  let ys = Self.clickCoordinate(y) else { return nil }
+            var command = "lights \(name), click=\(xs)/\(ys)"
+            if let rim {
+                guard let degrees = Self.rimDegrees(rim) else { return nil }
+                command += ", rim=\(degrees)"
+            }
+            if pin { command += ", pin=1" }
+            return .command(command)
         }
+    }
+
+    /// A click= coordinate: x or y in scene NDC as "%.4f", -0.0000 written as
+    /// 0.0000; nil unless finite and in -1...1 (the helper's range).
+    static func clickCoordinate(_ value: Double) -> String? {
+        guard value.isFinite, (-1.0...1.0).contains(value) else { return nil }
+        let text = String(format: "%.4f", value)
+        return text == "-0.0000" ? "0.0000" : text
+    }
+
+    /// A rim= angle in whole degrees; nil unless it rounds to 1...179 (the
+    /// helper takes 0 to under 180, and 0 would be the mirror rule).
+    static func rimDegrees(_ value: Double) -> Int? {
+        guard value.isFinite else { return nil }
+        let degrees = value.rounded()
+        guard degrees >= 1, degrees <= 179 else { return nil }
+        return Int(degrees)
     }
 
     /// The core's light-name rule (LightNameValid; lighting_commands.NAME_RE):

@@ -167,6 +167,11 @@ enum LightsAction: Equatable {
     /// whose JSON this is, at the index it has now; every other light and the
     /// rig's own fields stay as they are (Revert this light, #620).
     case restoreLight(name: String, json: String)
+    /// Place light `name` so its highlight lands on the surface under scene
+    /// NDC (`x`, `y`) (#612's `click=` helper, #622's ⌥-click): the mirror
+    /// rule, or `rim` degrees towards the outline when given; `pin` keeps a
+    /// pinned light pinned (the helper otherwise leaves a camera light).
+    case highlight(name: String, x: Double, y: Double, rim: Double?, pin: Bool)
 }
 
 /// What the controller needs from the engine. The engine wires the real ones;
@@ -193,6 +198,11 @@ struct LightsSeams {
     /// no rig (a bridge read: C++, no Python). Read only while a light is
     /// pinned or a tool asks for every frame (`LightsEyeDemand`).
     var eyeSpace: () -> LightEyeSpace? = { nil }
+    /// The live camera the gizmo projects eye space with (#622: the view,
+    /// the letterbox and the field of view; C++ reads, no Python), or nil
+    /// before the engine is up. Read only with the eye space under
+    /// `.everyFrame`.
+    var projection: () -> LightCameraProjection? = { nil }
 }
 
 // MARK: - Eye state
@@ -202,8 +212,9 @@ enum LightsEyeDemand: Equatable {
     /// Only the placements of pinned lights (they move with the camera):
     /// no bridge read at all while no light is pinned.
     case pinnedOnly
-    /// The whole rig in eye space every rendered frame (#622's gizmo, while
-    /// it shows), published in `LightsEyeState.eyeSpace`.
+    /// The whole rig in eye space and the camera's projection every
+    /// rendered frame (#622's gizmo: the engine sets it while Lights mode is
+    /// on), published in `LightsEyeState.eyeSpace` and `.projection`.
     case everyFrame
 }
 
@@ -221,6 +232,10 @@ final class LightsEyeState: ObservableObject {
     /// `.everyFrame` (nil otherwise), so float noise from lights nobody shows
     /// never re-renders the inspector.
     @Published fileprivate(set) var eyeSpace: LightEyeSpace?
+    /// The camera `eyeSpace` was read under, published with it (the same
+    /// call, only under `.everyFrame` and only with a usable eye read), so
+    /// the two always describe one camera; nil otherwise.
+    @Published fileprivate(set) var projection: LightCameraProjection?
 
     /// Publish `new` when its count differs or some value moved by more than
     /// `tolerance` (0: any change).
@@ -235,9 +250,33 @@ final class LightsEyeState: ObservableObject {
         if new != eyeSpace { eyeSpace = new }
     }
 
+    fileprivate func publish(projection new: LightCameraProjection?) {
+        if new != projection { projection = new }
+    }
+
     fileprivate func clear() {
         if !placements.isEmpty { placements = [] }
         if eyeSpace != nil { eyeSpace = nil }
+        if projection != nil { projection = nil }
+    }
+}
+
+/// Which lights are behind the molecule (`LightDepth`: behind the rig centre
+/// in eye depth), the one answer the bar's chips and the gizmo's knobs show.
+/// Its own object, published only when a light crosses, so the per-frame eye
+/// read of a pinned light re-renders the chips only on a crossing, never the
+/// bar or the inspector.
+@MainActor
+final class LightsFacingState: ObservableObject {
+    /// Lowercased names of the lights behind the molecule. Empty while
+    /// Lights mode is off.
+    @Published fileprivate(set) var behind: Set<String> = []
+
+    /// The light called `name` (ignoring case) is behind the molecule.
+    func isBehind(_ name: String) -> Bool { behind.contains(name.lowercased()) }
+
+    fileprivate func publish(_ new: Set<String>) {
+        if new != behind { behind = new }
     }
 }
 
@@ -287,12 +326,18 @@ final class LightsController: ObservableObject {
     /// The per-frame eye data (see LightsEyeState). Not @Published: a change
     /// in it must not re-render the controller's observers.
     let eye = LightsEyeState()
-    /// What the tools need from eye space per rendered frame. #622 sets
-    /// `.everyFrame` while its gizmo shows; back to `.pinnedOnly` clears
-    /// `eye.eyeSpace`.
+    /// Which lights are behind the molecule (see LightsFacingState). Not
+    /// @Published, for the same reason as `eye`.
+    let facing = LightsFacingState()
+    /// What the tools need from eye space per rendered frame. The engine
+    /// sets `.everyFrame` while Lights mode is on (#622's gizmo shows then);
+    /// back to `.pinnedOnly` clears `eye.eyeSpace` and `eye.projection`.
     var eyeDemand: LightsEyeDemand = .pinnedOnly {
         didSet {
-            if eyeDemand == .pinnedOnly { eye.publish(eyeSpace: nil) }
+            if eyeDemand == .pinnedOnly {
+                eye.publish(eyeSpace: nil)
+                eye.publish(projection: nil)
+            }
         }
     }
 
@@ -371,6 +416,10 @@ final class LightsController: ObservableObject {
         identitySlots[name.lowercased()] ?? LightPalette.defaultSlot(for: name) ?? 0
     }
 
+    /// The light called `name` (ignoring case) is behind the molecule now
+    /// (`facing`; false while the mode is off).
+    func isBehind(_ name: String) -> Bool { facing.isBehind(name) }
+
     // MARK: mode
 
     /// Lights mode was entered. Takes the entry snapshot (now, or on the first
@@ -396,6 +445,7 @@ final class LightsController: ObservableObject {
         entryRig = nil
         noteShadowRefused(false)
         eye.clear()
+        facing.publish([])
         eyeNeedsRebuild = true
     }
 
@@ -444,9 +494,10 @@ final class LightsController: ObservableObject {
     // MARK: eye data (per rendered frame)
 
     /// Called once per rendered frame in Lights mode. Refreshes
-    /// `eye.placements` (and `eye.eyeSpace` in `.everyFrame` demand) from one
-    /// eye-space read, made only while a light is pinned or the demand is
-    /// `.everyFrame`; otherwise it does nothing (no bridge call).
+    /// `eye.placements` and `facing` (and, in `.everyFrame` demand,
+    /// `eye.eyeSpace` and `eye.projection`) from one eye-space read, made
+    /// only while a light is pinned or the demand is `.everyFrame`; otherwise
+    /// it does nothing (no bridge call).
     ///
     /// The eye read carries no names, only rig order, so it is checked against
     /// the mirror first: a different light count, a different anchor, or a
@@ -460,6 +511,7 @@ final class LightsController: ObservableObject {
         let lights = rig?.lights ?? []
         guard eyeDemand == .everyFrame || lights.contains(where: { $0.anchor == .pinned }) else {
             eye.publish(eyeSpace: nil)
+            eye.publish(projection: nil)
             return
         }
         let read = seams.eyeSpace()
@@ -468,8 +520,13 @@ final class LightsController: ObservableObject {
             refresh()
             return
         }
-        eye.publish(Self.placements(of: lights, eye: read), tolerance: Self.placementTolerance)
-        eye.publish(eyeSpace: eyeDemand == .everyFrame ? read : nil)
+        let placements = Self.placements(of: lights, eye: read)
+        eye.publish(placements, tolerance: Self.placementTolerance)
+        publishFacing(lights, placements)
+        // The projection goes with an eye-space read (none for no rig).
+        let everyFrame = eyeDemand == .everyFrame && read != nil
+        eye.publish(eyeSpace: everyFrame ? read : nil)
+        eye.publish(projection: everyFrame ? seams.projection() : nil)
     }
 
 
@@ -505,6 +562,25 @@ final class LightsController: ObservableObject {
     }
 
     // MARK: actions (button presses)
+
+    /// Place the selected light's highlight on the surface under scene NDC
+    /// `sceneNDC` (#622's ⌥-click; #623's long-press): one `lights <name>,
+    /// click=x/y` command (`rim=` when given, `pin=1` for a pinned light so
+    /// it stays pinned). A click, never a drag tick. False, and nothing run,
+    /// unless the selected light can be edited and the action is one the
+    /// engine would run (a valid name, x and y in -1...1, a rim it accepts).
+    @discardableResult
+    func placeHighlight(sceneNDC: SIMD2<Double>, rim: Double?) -> Bool {
+        guard canEdit else { return false }
+        refreshIfStale()
+        guard let light = selectedLight else { return false }
+        let action = LightsAction.highlight(name: light.name, x: sceneNDC.x, y: sceneNDC.y,
+                                            rim: rim, pin: light.anchor == .pinned)
+        guard action.invocation != nil else { return false }
+        seams.perform(action)
+        refresh()
+        return true
+    }
 
     /// Add a light and select it.
     func add() {
@@ -641,8 +717,22 @@ final class LightsController: ObservableObject {
         let needsRead = eyeDemand == .everyFrame || lights.contains { $0.anchor == .pinned }
         let read = needsRead ? seams.eyeSpace() : nil
         let usable = needsRead && Self.eye(read, isConsistentWith: rig)
-        eye.publish(Self.placements(of: lights, eye: usable ? read : nil), tolerance: 0)
-        eye.publish(eyeSpace: eyeDemand == .everyFrame && usable ? read : nil)
+        let placements = Self.placements(of: lights, eye: usable ? read : nil)
+        eye.publish(placements, tolerance: 0)
+        publishFacing(lights, placements)
+        let everyFrame = eyeDemand == .everyFrame && usable && read != nil
+        eye.publish(eyeSpace: everyFrame ? read : nil)
+        eye.publish(projection: everyFrame ? seams.projection() : nil)
+    }
+
+    /// Publish which of `lights` are behind the molecule at `placements`
+    /// (same order): only when the set changes.
+    private func publishFacing(_ lights: [LightRigSnapshot.Light], _ placements: [LightPlacement]) {
+        var behind = Set<String>()
+        for (light, placement) in zip(lights, placements) where LightDepth.isBehind(placement) {
+            behind.insert(light.name.lowercased())
+        }
+        facing.publish(behind)
     }
 
     /// Each light's current placement: a pinned light's from `eye` when

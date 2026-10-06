@@ -144,6 +144,46 @@ final class InteractionModeExitTests: XCTestCase {
         XCTAssertFalse(engine.lightsController.isActive)
     }
 
+    /// #622: the gizmo shows whenever Lights mode is on, so the eye demand
+    /// follows the mode. Entering sets `.everyFrame` BEFORE `begin()` (its
+    /// refresh already publishes the eye space and the projection, with no
+    /// frame rendered); leaving, by Done/Esc or another mode, sets
+    /// `.pinnedOnly` (both cleared) and releases the aim dot's pick grids.
+    func testLightsDemandFollowsTheMode() throws {
+        try LightsLive.requireEngine()
+        defer { LightsLive.tearDown() }
+        LightsLive.addPeptide()
+        engine.runPython("from pymol import cmd as _lmt_cmd\n_lmt_cmd.show_as('sticks', 'lmt_pep')\n")
+        LightsLive.setRig(LightsLive.threeLights(enabled: true))
+        let controller = engine.lightsController
+        XCTAssertEqual(controller.eyeDemand, .pinnedOnly)
+
+        for leave in ["Esc", "Move"] {
+            engine.setInteractionMode(.lights)
+            XCTAssertEqual(controller.eyeDemand, .everyFrame, leave)
+            XCTAssertEqual(controller.eye.eyeSpace?.lights.count, 3, "published by begin(): \(leave)")
+            let projection = try XCTUnwrap(controller.eye.projection, "published by begin(): \(leave)")
+            XCTAssertEqual(projection, engine.lightCameraProjection(), leave)
+            XCTAssertFalse(projection.orthoscopic, leave)
+            // Entering again changes nothing.
+            engine.setInteractionMode(.lights)
+            XCTAssertEqual(controller.eyeDemand, .everyFrame, leave)
+
+            // The aim dot's grids, as a press would build them.
+            XCTAssertGreaterThanOrEqual(engine.prepareSurfacePick(), 1, leave)
+            if leave == "Esc" {
+                XCTAssertTrue(engine.exitActiveInteractionMode())
+            } else {
+                engine.setInteractionMode(.move)
+            }
+            XCTAssertEqual(controller.eyeDemand, .pinnedOnly, leave)
+            XCTAssertNil(controller.eye.eyeSpace, leave)
+            XCTAssertNil(controller.eye.projection, leave)
+            XCTAssertEqual(engine.releaseSurfacePick(), 0, "leaving Lights must release the grids: \(leave)")
+            engine.setInteractionMode(.viewing)
+        }
+    }
+
     /// Every other exclusive mode, with how to enter it and whether it is on.
     private var otherModes: [(name: String, enter: () -> Void, isOn: () -> Bool)] {
         var modes: [(name: String, enter: () -> Void, isOn: () -> Bool)] = [

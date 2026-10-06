@@ -56,6 +56,38 @@ final class LightsBarModelTests: XCTestCase {
         XCTAssertEqual(state.chips.map(\.slot), [1, 2], "fill stays orange, rim stays green")
     }
 
+    func testChipIsHollowWhenBehind() {
+        // #622: the chip's dot is hollow while its light is behind the
+        // molecule (LightDepth, the gizmo's rule); VoiceOver says so.
+        store.setRig(["key", "fill", "rim"])
+        store.lights[2].orbit = 150
+        store.lights[1].orbit = 92
+        var state = begin(with: nil)
+        XCTAssertEqual(state.chips.map(\.isBehind), [false, true, true])
+        XCTAssertEqual(state.chips.map(\.accessibilityValue),
+                       ["in front of the molecule", "behind the molecule", "behind the molecule"])
+        XCTAssertEqual(state.chips.map(\.accessibilityLabel), ["key light", "fill light", "rim light"],
+                       "the label stays the name")
+        XCTAssertEqual(LightsBarState.chipAccessibilityValue(behind: true), "behind the molecule")
+        XCTAssertEqual(LightsBarState.chipAccessibilityValue(behind: false), "in front of the molecule")
+
+        // A pinned light's crossing reaches the chips through `facing` only:
+        // the controller (and so the bar) is not re-rendered.
+        XCTAssertEqual(controller.setPinned(true), .ok)   // key, selected
+        var barChanges = 0
+        var chipChanges = 0
+        let bar = controller.objectWillChange.sink { barChanges += 1 }
+        let chips = controller.facing.objectWillChange.sink { chipChanges += 1 }
+        defer { bar.cancel(); chips.cancel() }
+        store.eyePlacements["key"] = LightPlacement(orbit: 135, pitch: 0, radius: 4)
+        controller.frameRendered()
+        XCTAssertEqual(barChanges, 0)
+        XCTAssertEqual(chipChanges, 1)
+        XCTAssertTrue(controller.facing.isBehind("key"))
+        state = LightsBarState(controller)
+        XCTAssertEqual(state.chips.map(\.isBehind), [true, true, true])
+    }
+
     func testNoRigShowsOnlyTheStatus() {
         let state = begin(with: nil)
         XCTAssertTrue(state.chips.isEmpty)
