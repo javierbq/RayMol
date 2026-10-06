@@ -146,9 +146,8 @@ class TestChecks(testing.PyMOLTestCase):
             self.assertNotIn('def %s(' % name, src)
 
     def testThresholdsPinned(self):
-        # Provisional (plans/618.md 10.3) until the first L2 round with the
-        # air pass tunes them once; then they are frozen and this list moves
-        # with them, beside the measured values.
+        # FROZEN after L2 rounds 1 and 2 (check_air.py's thresholds block
+        # gives the measured values); change only with new L2 evidence.
         pinned = {
             'ADD_MIN': 1, 'VISIBLE_PX': 2000, 'VISIBLE_MEAN': 2.0, 'BG_MARGIN': 3,
             'KNEE': 204, 'RT_BG_MAX': 1, 'RT_PRESENT_PX': 2000, 'RT_GEO_TOL': 4,
@@ -158,7 +157,8 @@ class TestChecks(testing.PyMOLTestCase):
             'IN_BEAMS_PX': 50, 'IN_BEAMS_SHARE': 0.98, 'IN_BEAMS_DILATE': 3,
             'FOOT_MIN': 2, 'MOTE_MIN': 10, 'HUE_MIN': 8, 'COLOUR_SHARE': 0.90,
             'COLOUR_PX': 20, 'UNCHANGED_DILATE': 3, 'WHITE_PX': 1000, 'HALF_TOL': 8,
-            'HALF_SHARE': 0.97, 'HALF_MEAN': 2.0, 'FILTER_TOL': 6, 'FILTER_SHARE': 0.97,
+            'HALF_SHARE': 0.97, 'HALF_MEAN': 2.0, 'HALF_EDGE_BAND': 2, 'HALF_EDGE_PX': 200,
+            'HALF_EDGE_SHARE': 0.97, 'FILTER_TOL': 6, 'FILTER_SHARE': 0.97,
             'SATURATED_MAX': 0.02,
         }
         for name, value in pinned.items():
@@ -321,6 +321,25 @@ class TestChecks(testing.PyMOLTestCase):
         self.assertFalse(c.check_half(none, full, far).ok)
         self.assertFalse(c.check_filter(none, full, far).ok)
         self.assertFalse(c.check_half(none, none, none).ok)   # no air
+        # a halo: the air bleeds across one side of the molecule. Too few
+        # pixels for the frame-wide share, caught at the silhouettes.
+        halo = close.copy()                                   # 300 px differ by 3
+        halo[GEO[0], 52:56] += 20                             # 84 px across the edge
+        frame = c._delta_agreement('half', '', none, halo, full, c.HALF_TOL, c.HALF_SHARE,
+                                   c.HALF_MEAN)
+        self.assertTrue(frame.ok)
+        self.assertFalse(c.check_half(none, full, halo).ok)
+        # no silhouettes at all (nothing drawn but air): not a pass
+        empty = img()
+        self.assertFalse(c.check_half(empty, plus(empty, BEAM, (10, 8, 5)),
+                                      plus(empty, BEAM, (11, 8, 5))).ok)
+
+    def testSilhouettes(self):
+        edge = self.c.silhouettes(scene_none())
+        # a 2 px band each side of the 21 x 21 molecule's outline
+        self.assertEqual(int(edge.sum()), (25 * 25 - 21 * 21) + (21 * 21 - 17 * 17))
+        self.assertTrue(edge[26, 54] and edge[24, 60] and edge[27, 60])
+        self.assertFalse(edge[36, 64] or edge[23, 60] or edge[28, 60])
 
     def testNoClip(self):
         ok = img(100)

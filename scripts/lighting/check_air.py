@@ -69,7 +69,8 @@ exercises each on synthetic images, a pass and a fail):
   geometry   ovl_air == ovl_noair (no air without geometry).
   off        airoff == spot_none at rt0 and rt1; grid_air == grid_noair.
   half       half resolution differs from full, and their air agrees within
-             HALF_TOL on HALF_SHARE of the air's pixels, mean <= HALF_MEAN.
+             HALF_TOL on HALF_SHARE of the air's pixels, mean <= HALF_MEAN,
+             and on HALF_EDGE_SHARE of the silhouettes (no halo).
   filter     the 3x3 haze lookup differs from the one tap, and their air
              agrees within FILTER_TOL on FILTER_SHARE of its pixels.
   no_clip    backlit_g09 (scatter 0.9): at most SATURATED_MAX of the pixels
@@ -110,10 +111,11 @@ Result = cs.Result
 Usage = cs.Usage
 
 # --- thresholds ------------------------------------------------------------------
-# PROVISIONAL: the plan's values (plans/618.md 10.3), to be tuned ONCE on the
-# first full L2 round with the air pass (as check_shadows.py's were) and then
-# frozen; testing/tests/raymol/lighting_air_check.py pins the values in force.
-# The reach boxes are chosen from the fixed layout on that round.
+# FROZEN. The plan's values (plans/618.md 10.3), tuned once on round 1 (the
+# full-resolution pass: rt_match's knee mask, the reach boxes and share) and
+# round 2 (half resolution: the silhouette criterion), then frozen with every
+# check passing on round 2 (43 of 43). testing/tests/raymol/lighting_air_check.py
+# pins them; change them only with new L2 evidence.
 
 ADD_MIN = 1               # a pixel is in an air footprint when a channel rises by
                           #   at least this (levels)
@@ -153,6 +155,11 @@ WHITE_PX = 1000           # unchanged: white pixels needed where white is requir
 HALF_TOL = 8              # half: |delta half - delta full| <= this
 HALF_SHARE = 0.97         # ... on this share of the air's pixels
 HALF_MEAN = 2.0           # ... mean at most this
+HALF_EDGE_BAND = 2        # ... and at the silhouettes (pixels within this many px of
+HALF_EDGE_PX = 200        #   both geometry and background, at least this many of
+HALF_EDGE_SHARE = 0.97    #   them) within HALF_TOL on this share: no halo. Round 2:
+                          #   99.83% (rt0 and rt1); a plain bilinear upsample of the
+                          #   same air, simulated from the full images, 81.7%.
 FILTER_TOL = 6            # filter: |delta 3x3 - delta 1 tap| <= this
 FILTER_SHARE = 0.97       # ... on this share of the air's pixels
 SATURATED_MAX = 0.02      # no_clip: at most this fraction of pixels has a channel at 255
@@ -428,12 +435,34 @@ def _delta_agreement(check, subject, none, a, b, tol, share_min, mean_max=None):
                       '' if mean_max is None else ' (<= %.1f)' % mean_max))
 
 
+def silhouettes(none, band=HALF_EDGE_BAND):
+    """Pixels within `band` px of both geometry and background (the no-air
+    twin's): where a plain upsample would bleed the air across an edge."""
+    geo = geometry(none)
+    return dilate(geo, band) & dilate(~geo, band)
+
+
 def check_half(none, full, half, subject=''):
-    """Half resolution differs from full but its air agrees."""
+    """Half resolution differs from full but its air agrees, over the frame
+    and at the silhouettes (no halo)."""
     bad = _same_size('half', subject, none, full, half)
     if bad:
         return bad
-    return _delta_agreement('half', subject, none, half, full, HALF_TOL, HALF_SHARE, HALF_MEAN)
+    np = _np()
+    frame = _delta_agreement('half', subject, none, half, full, HALF_TOL, HALF_SHARE,
+                             HALF_MEAN)
+    edge = silhouettes(none)
+    ne = int(edge.sum())
+    if ne:
+        d = np.abs(added(half, none) - added(full, none)).max(axis=2)[edge]
+        share = float((d <= HALF_TOL).mean())
+    else:
+        share = 0.0
+    ok = frame.ok and ne >= HALF_EDGE_PX and share >= HALF_EDGE_SHARE
+    return Result('half', subject, ok,
+                  '%s; silhouettes %d px (>= %d), |delta| <= %d on %s (>= %s)' % (
+                      frame.detail, ne, HALF_EDGE_PX, HALF_TOL, _pct(share),
+                      _pct(HALF_EDGE_SHARE)))
 
 
 def check_filter(none, one, nine, subject=''):
