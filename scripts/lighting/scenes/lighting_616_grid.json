@@ -1,0 +1,152 @@
+{
+ "comment": "#616 L2 grid mode, checked with scripts/lighting/check_shadows.py grid: a light (amber, orbit 0, pitch 70, shadowed; explicit centre and size from m) and a two-sided slab CGO halfway between it and m, outside the view. With grid_mode 1 the slab is its own cell, and each cell is shadowed only by its own objects, so m's cell is byte-equal whether the slab's cgo rep is shown or hidden (the hidden slab keeps its extent, so the frustum and the grid layout are the same). The control, grid_mode 0, shows the slab shadow on m. rt0 is required, rt1 informational. Same cmd.set_lights shim as lighting_616.json. The positive control, grid_unshadowed (the same light without `shadow`, so no map at all: grid frames have no whole-pixel shadow either), is LIGHTER than grid_slabhid in m's cell: the cell's own tile shadows m (the cartoon on itself).",
+ "base": null,
+ "rig": "on",
+ "size": [
+  1280,
+  720
+ ],
+ "extra": [
+  "import math as _l616_math",
+  "_l616_mn, _l616_mx = cmd.get_extent('m')",
+  "_l616_c = [(a + b) / 2.0 for a, b in zip(_l616_mn, _l616_mx)]",
+  "_l616_s = _l616_math.sqrt(sum((b - a) ** 2 for a, b in zip(_l616_mn, _l616_mx))) / 2.0",
+  "_l616_v = cmd.get_view()",
+  "_l616_rot = lambda e: [sum(_l616_v[3 * k + r] * e[r] for r in range(3)) for k in range(3)]",
+  "_l616_w = lambda e: [_l616_c[k] + _l616_rot(e)[k] for k in range(3)]",
+  "_l616_dir = lambda o, p: [_l616_math.sin(_l616_math.radians(o)) * _l616_math.cos(_l616_math.radians(p)), _l616_math.sin(_l616_math.radians(p)), _l616_math.cos(_l616_math.radians(o)) * _l616_math.cos(_l616_math.radians(p))]",
+  "_l616_at = lambda light, t: _l616_w([t * light['radius'] * _l616_s * d for d in _l616_dir(light['orbit'], light['pitch'])])",
+  "_l616_a = {'name': 'amber', 'orbit': -55.0, 'pitch': 25.0, 'radius': 3.0, 'beam': 60.0, 'softness': 0.3, 'color': [1.0, 0.55, 0.15], 'intensity': 1.0, 'highlight': 0.0}",
+  "_l616_b = {'name': 'cyan', 'orbit': 55.0, 'pitch': 10.0, 'radius': 3.0, 'beam': 60.0, 'softness': 0.3, 'color': [0.15, 0.75, 1.0], 'intensity': 1.0, 'highlight': 0.0}",
+  "_l616_m3 = {'name': 'magenta', 'orbit': 160.0, 'pitch': 45.0, 'radius': 3.0, 'beam': 60.0, 'softness': 0.3, 'color': [1.0, 0.2, 0.8], 'intensity': 1.0, 'highlight': 0.0}",
+  "_l616_frame = lambda rig: dict(rig, centre=list(_l616_c), size=_l616_s)",
+  "_l616_make = lambda lights, **kw: _l616_frame(dict({'version': 1, 'enabled': True, 'ambient': 0.05, 'classic': 0.0, 'lights': lights}, **kw))",
+  "_l616_opt = lambda name, value: cmd.set(name, value) if name in cmd.setting.get_name_list() else None",
+  "if not hasattr(cmd, '_l616_set'): cmd._l616_set = cmd.set_lights",
+  "cmd.set_lights = lambda rig, _c=cmd: _c._l616_set(rig if getattr(_c, '_l616_rig', None) is None else (_c._l616_rig(rig) if callable(_c._l616_rig) else _c._l616_rig))",
+  "_l616_ovl = dict(_l616_a, orbit=0.0, pitch=70.0, shadow=True)",
+  "_l616_sd = _l616_dir(_l616_ovl['orbit'], _l616_ovl['pitch'])",
+  "_l616_su = [1.0, 0.0, 0.0]",
+  "_l616_sw = [0.0, _l616_sd[2], -_l616_sd[1]]",
+  "_l616_sp = lambda i, j: _l616_w([0.5 * _l616_ovl['radius'] * _l616_s * _l616_sd[k] + 0.3 * _l616_s * (i * _l616_su[k] + j * _l616_sw[k]) for k in range(3)])",
+  "_l616_slab = lambda: cmd.load_cgo([6.0, 0.8, 0.8, 0.8, 2.0, 5.0, 5.0] + _l616_rot(_l616_sd) + [v for q in ((-1, -1), (1, -1), (-1, 1), (1, 1)) for v in [4.0] + _l616_sp(*q)] + [3.0, 2.0, 5.0, 5.0] + _l616_rot(_l616_sd) + [v for q in ((-1, -1), (-1, 1), (1, -1), (1, 1)) for v in [4.0] + _l616_sp(*q)] + [3.0], 'slab', zoom=0)"
+ ],
+ "scenes": [
+  {
+   "tag": "grid_slab_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_slab()",
+    "cmd.set('grid_mode', 1)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_ovl])"
+   ]
+  },
+  {
+   "tag": "grid_slabhid_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_slab()",
+    "cmd.hide('cgo', 'slab')",
+    "cmd.set('grid_mode', 1)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_ovl])"
+   ]
+  },
+  {
+   "tag": "grid_unshadowed_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_slab()",
+    "cmd.hide('cgo', 'slab')",
+    "cmd.set('grid_mode', 1)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_ovl, shadow=False)])"
+   ]
+  },
+  {
+   "tag": "nogrid_slab_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_slab()",
+    "cmd.set('grid_mode', 0)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_ovl])"
+   ]
+  },
+  {
+   "tag": "nogrid_slabhid_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_slab()",
+    "cmd.hide('cgo', 'slab')",
+    "cmd.set('grid_mode', 0)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_ovl])"
+   ]
+  },
+  {
+   "tag": "grid_slab_rt1",
+   "from": "cartoon_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_slab()",
+    "cmd.set('grid_mode', 1)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_ovl])"
+   ]
+  },
+  {
+   "tag": "grid_slabhid_rt1",
+   "from": "cartoon_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_slab()",
+    "cmd.hide('cgo', 'slab')",
+    "cmd.set('grid_mode', 1)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_ovl])"
+   ]
+  },
+  {
+   "tag": "grid_unshadowed_rt1",
+   "from": "cartoon_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_slab()",
+    "cmd.hide('cgo', 'slab')",
+    "cmd.set('grid_mode', 1)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_ovl, shadow=False)])"
+   ]
+  },
+  {
+   "tag": "nogrid_slab_rt1",
+   "from": "cartoon_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_slab()",
+    "cmd.set('grid_mode', 0)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_ovl])"
+   ]
+  },
+  {
+   "tag": "nogrid_slabhid_rt1",
+   "from": "cartoon_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_slab()",
+    "cmd.hide('cgo', 'slab')",
+    "cmd.set('grid_mode', 0)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_ovl])"
+   ]
+  }
+ ]
+}

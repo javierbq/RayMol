@@ -35,6 +35,12 @@ the 'light_rig' session key holds, so per-scene rigs are saved in the same
 lenient, forward-compatible format. ``_lights_blend`` is the frame command
 scene movies carry on the interior frames of each transition
 (raymol_scene_anim.py): it blends the two scenes' stored rigs.
+
+Per-light shadow maps (#616): ``_light_frame`` also returns the frame's
+studio shadow plan, and ``_light_shadow_frustum``, ``_light_shadow_map_size``,
+``_light_shadow_tile``, ``_light_shadow_casters``, ``_gpu_time_summary``,
+``_gpu_time_replay`` and ``_gpu_frame_stats`` reach the same C++ as the
+renderer.
 '''
 
 import sys
@@ -189,30 +195,125 @@ def _lights_ray_notice(*, _self=cmd):
         return _self._cmd.get_lights_ray_notice(_self._COb)
 
 
-def _light_frame(matrix=None, *, _self=cmd):
-    '''One frame's lighting as the Metal renderer reads it (#613): the
-    classic light terms after decision 15 and the rig packed for the GPU.
-    `matrix` is a world->eye 4x4 as 16 numbers in column-major order; None
-    uses the live camera. Reads only: nothing is written.
+def _light_frame(matrix=None, grid=None, *, _self=cmd):
+    '''One frame's lighting as the Metal renderer reads it (#613, #616):
+    the classic light terms after decision 15, the rig packed for the GPU
+    and its studio shadow maps. `matrix` is a world->eye 4x4 as 16 numbers
+    in column-major order; None uses the live camera. `grid` is None for the
+    scene's grid layout, or (n_col, n_row, first_slot) for a grid in its
+    place. Reads only: nothing is written.
 
     {'ambient', 'direct', 'reflect', 'specular', 'shininess',
-     'rig_on': bool,
-     'rig': None or {'count', 'head': [4], 'block': [100],
+     'rig_on': bool, 'studio_shadows': bool, 'shadow_map_size': int,
+     'rig': None or {'count', 'head': [4], 'block': [168],
+                     'shadow_grid': [4], 'shadow_tile': [4],
                      'lights': [{'name', 'position', 'shadow_slot',
                                  'direction', 'cos_outer', 'radiance',
                                  'cos_inner', 'highlight', 'falloff',
-                                 'falloff_ref', 'outline'}, ...]}}
+                                 'falloff_ref', 'outline'}, ...]},
+     'shadows': None or {'count', 'size', 'tiles', 'first_slot',
+                         'slots': [{'slot', 'light', 'name', 'view',
+                                    'proj', 'view_proj', 'tan_half_fov',
+                                    'map_size', 'normal_offset',
+                                    'depth_bias', 'near', 'far',
+                                    'beam_fit'}, ...]}}
 
-    With no rig, or a rig that is off, 'rig' is None and the terms are the
-    settings (specular and shininess after PyMOL's light-count adjustment).
-    'block' is the 400-byte block the GPU reads, as 100 floats, and
-    'lights' is decoded from it (layer1/LightRigBlock.h has the offsets).
-    'radiance' is color * warmth * intensity; 'shadow_slot' is -1 until
-    per-light shadows (#616).'''
+    With no rig, or a rig that is off, 'rig' and 'shadows' are None and the
+    terms are the settings (specular and shininess after PyMOL's light-count
+    adjustment). 'block' is the 672-byte block the GPU reads, as 168 floats
+    (layer1/LightRigBlock.h has the offsets): floats 0-99 are the head and
+    six lights (#613), 100-159 three shadow maps of 20 floats (a column-major
+    eye -> light clip matrix, then tan(half fov), map size, normal offset and
+    depth bias), 160-163 the shadow grid (tiles per side, first grid slot,
+    columns, rows) and 164-167 the per-draw tile (0 here). 'lights' and
+    'shadow_grid' are decoded from it. 'radiance' is color * warmth *
+    intensity.
+
+    Studio shadows are on ('studio_shadows') when the rig is on,
+    metal_shadows is on and a light has `shadow`; the whole-pixel shadow is
+    then off. 'shadows' is the plan: the first three shadowed lights with
+    casters in front of them get map slots 0, 1, 2 ('shadow_slot', -1
+    otherwise, and head[3] the count), with frusta fitted to the casters
+    without overlays (_light_shadow_casters).'''
     if matrix is not None:
         matrix = [float(v) for v in matrix]
+    if grid is not None:
+        grid = tuple(int(v) for v in grid)
     with _self.lockcm:
-        return _self._cmd.get_light_frame(_self._COb, matrix)
+        return _self._cmd.get_light_frame(_self._COb, matrix, grid)
+
+
+def _light_shadow_frustum(pos, axis, cos_outer, centre, radius, *, _self=cmd):
+    '''The studio shadow map frustum of a light at `pos` with unit beam
+    `axis` and cone cos(outer) `cos_outer`, for casters inside the sphere
+    (`centre`, `radius`), all in eye space (Å), as the renderer computes it
+    (#616): {'view', 'proj', 'view_proj' (16 floats each, column-major),
+    'tan_half_fov', 'near', 'far', 'beam_fit'}, or None when the casters are
+    behind the light.'''
+    with _self.lockcm:
+        return _self._cmd.light_shadow_frustum(
+            _self._COb, tuple(float(v) for v in pos),
+            tuple(float(v) for v in axis), float(cos_outer),
+            tuple(float(v) for v in centre), float(radius))
+
+
+def _light_shadow_map_size(setting, mobile=False, *, _self=cmd):
+    '''The texels per side of each studio shadow map for a
+    metal_light_shadow_size of `setting` (#616): 0 or negative gives the
+    platform default (2048, or 1024 when `mobile`); otherwise clamped to
+    256..4096 (256..2048 mobile) and rounded down to a power of two.'''
+    with _self.lockcm:
+        return _self._cmd.light_shadow_map_size(
+            _self._COb, int(setting), bool(mobile))
+
+
+def _light_shadow_tile(cell, tiles, size, *, _self=cmd):
+    '''Grid cell `cell`'s tile in a `tiles` x `tiles` atlas of a
+    `size`-texel map (#616): {'x', 'y', 'size', 'uv': [u0, v0, du, dv]}; size
+    0 for a cell outside the atlas.'''
+    with _self.lockcm:
+        return _self._cmd.light_shadow_tile(
+            _self._COb, int(cell), int(tiles), int(size))
+
+
+def _light_shadow_casters(*, _self=cmd):
+    '''What the studio shadow maps are drawn from (#616): {'casters':
+    [object names], 'excluded': [overlays: gadgets, gizmos and the Move
+    gizmo], 'extent': [[min], [max]] or None (the box the frusta are fitted
+    to, overlays left out), 'overlay_name': the Move gizmo's object name}.'''
+    with _self.lockcm:
+        return _self._cmd.get_light_shadow_casters(_self._COb)
+
+
+def _gpu_time_summary(samples, *, _self=cmd):
+    '''GPU frame-time statistics as the renderer computes them (#616):
+    {'count', 'mean', 'median', 'p95' (nearest rank), 'max'} over the finite,
+    non-negative `samples` (ms).'''
+    with _self.lockcm:
+        return _self._cmd.gpu_time_summary(
+            _self._COb, [float(v) for v in samples])
+
+
+def _gpu_time_replay(frames, mode, *, _self=cmd):
+    '''The GPU-time readout's store fed `frames` as the renderer feeds it
+    (#616): each frame is (ms, shadow_maps, shadow_size, offscreen,
+    now_seconds), `mode` is a metal_gpu_timing value. Returns {'lines': the
+    'RendererMetal: gpu_ms ...' lines the renderer would log, in order,
+    'stats': what _gpu_frame_stats would then return, or None}.'''
+    frames = [(float(ms), int(maps), int(size), bool(offscreen), float(now))
+              for ms, maps, size, offscreen, now in frames]
+    with _self.lockcm:
+        return _self._cmd.gpu_time_replay(_self._COb, frames, int(mode))
+
+
+def _gpu_frame_stats(*, _self=cmd):
+    '''The renderer's recent GPU frame times while metal_gpu_timing is on
+    (#616): the _gpu_time_summary keys plus 'last_ms', 'mode', 'shadow_maps'
+    and 'shadow_size' (the latest frame's studio maps); None with no Metal
+    renderer (as in CI), at metal_gpu_timing 0, or before the first timed
+    frame. Turning the setting on or changing its mode starts afresh.'''
+    with _self.lockcm:
+        return _self._cmd.get_gpu_frame_stats(_self._COb)
 
 
 def _light_warmth(kelvin, *, _self=cmd):

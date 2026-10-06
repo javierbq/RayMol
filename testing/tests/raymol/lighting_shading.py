@@ -2,7 +2,8 @@
 
 The Metal renderer reads the lighting once per frame through SceneLightsFrame
 (layer1/SceneLights.cpp): PyMOL's classic light terms after decision 15
-(LightRigClassic) and the rig packed into the 400-byte block the GPU reads
+(LightRigClassic) and the rig packed into the block the GPU reads (#613's
+400 bytes, then #616's shadow maps: 672 bytes in all)
 (LightRigFrameBlock / LightRigPack, layer1/LightShading.cpp), each light's
 colour tinted by its warmth (LightWarmthRGB). These tests reach that C++
 through _cmd.get_light_frame and _cmd.light_warmth_rgb
@@ -63,7 +64,12 @@ TOL = 2e-4
 
 LIGHT_FLOATS = 16          # one light: 4 float4
 HEAD_FLOATS = 4
-BLOCK_FLOATS = HEAD_FLOATS + 6 * LIGHT_FLOATS
+# #613's block: the head and six lights, 400 bytes. #616 appends three shadow
+# maps of 20 floats, the shadow grid and the per-draw tile (one float4 each).
+PREFIX_FLOATS = HEAD_FLOATS + 6 * LIGHT_FLOATS
+SHADOW_FLOATS = 20
+BLOCK_FLOATS = PREFIX_FLOATS + 3 * SHADOW_FLOATS + 4 + 4
+assert PREFIX_FLOATS == 100 and BLOCK_FLOATS == 168
 
 
 def f32(x):
@@ -367,7 +373,12 @@ class TestFrameGate(LightingCase):
             self.assertTermsAreSettings(frame, label)
             self.assertEqual(sorted(frame), sorted(
                 ['ambient', 'direct', 'reflect', 'specular', 'shininess',
-                 'rig_on', 'rig']), label)
+                 'rig_on', 'rig', 'studio_shadows', 'shadow_map_size',
+                 'shadows']), label)
+            # #616: no rig, no studio shadows and nothing planned
+            self.assertIs(frame['studio_shadows'], False, label)
+            self.assertEqual(frame['shadow_map_size'], 0, label)
+            self.assertIsNone(frame['shadows'], label)
 
     def testNoRig(self):
         self.assertIsNone(cmd.get_lights())
@@ -418,6 +429,9 @@ class TestFrameGate(LightingCase):
 class TestFrameValues(LightingCase):
 
     def testExplicitMatrix(self):
+        # metal_shadows off: the key's shadow: True plans no map (#616), so the
+        # block is #613's (the shadowed case is checked at the end)
+        cmd.set('metal_shadows', 0)
         self.rig()
         m = column_major(MATRIX)
         frame = lighting._light_frame(m)
@@ -455,7 +469,8 @@ class TestFrameValues(LightingCase):
             self.assertEqual(got['highlight'], f32(light['highlight']), label)
             self.assertEqual(got['falloff'], f32(light['falloff']), label)
             self.assertIs(got['outline'], light['outline'], label)
-            # no shadow slot until #616, even for the key's shadow: True
+            # no shadow slot at metal_shadows 0, even for the key's
+            # shadow: True
             self.assertEqual(got['shadow_slot'], -1, label)
 
         key, pin, aimed = packed['lights']
@@ -475,6 +490,26 @@ class TestFrameValues(LightingCase):
         self.assertGreater(pin['radiance'][2], pin['radiance'][0])
         # a white light at 6500 K: its intensity, exactly
         self.assertEqual(aimed['radiance'], [f32(0.7)] * 3)
+        self.assertIs(frame['studio_shadows'], False)
+        self.assertIsNone(frame['shadows'])
+        self.assertEqual(packed['block'][PREFIX_FLOATS:],
+                         [0.0] * (BLOCK_FLOATS - PREFIX_FLOATS))
+
+        # metal_shadows on (#616): the key, the only shadowed light, gets
+        # map slot 0 and head[3] counts one map; nothing else of #613's 400
+        # bytes changes
+        cmd.set('metal_shadows', 1)
+        shadowed = lighting._light_frame(m)
+        self.assertIs(shadowed['studio_shadows'], True)
+        lit = shadowed['rig']
+        self.assertEqual(lit['head'], [3.0, frame['shininess'], 0.0, 1.0])
+        self.assertEqual([l['shadow_slot'] for l in lit['lights']], [0, -1, -1])
+        want = list(packed['block'][:PREFIX_FLOATS])
+        want[3] = 1.0                    # head.w: one map
+        want[HEAD_FLOATS + 3] = 0.0      # the key's pos.w: slot 0
+        self.assertEqual(lit['block'][:PREFIX_FLOATS], want)
+        self.assertEqual(shadowed['shadows']['count'], 1)
+        self.assertEqual(shadowed['shadows']['slots'][0]['name'], 'key')
 
     def testLiveCamera(self):
         cmd.turn('y', 50)
@@ -506,10 +541,18 @@ class TestFrameValues(LightingCase):
             self.assertNotEqual(light_slice(packed['block'], i), [0.0] * 16)
 
     def testUnusedSlotsAreZero(self):
+        # metal_shadows off: no map is planned, so the shadow tail (#616) is
+        # zero as well
+        cmd.set('metal_shadows', 0)
         self.rig(lights=LIGHTS[:2])
         block = lighting._light_frame(column_major(MATRIX))['rig']['block']
         self.assertEqual(len(block), BLOCK_FLOATS)
         self.assertEqual(block[HEAD_FLOATS + 2 * LIGHT_FLOATS:],
+                         [0.0] * (BLOCK_FLOATS - HEAD_FLOATS - 2 * LIGHT_FLOATS))
+        # with a map planned, the unused light slots stay zero
+        cmd.set('metal_shadows', 1)
+        block = lighting._light_frame(column_major(MATRIX))['rig']['block']
+        self.assertEqual(block[HEAD_FLOATS + 2 * LIGHT_FLOATS:PREFIX_FLOATS],
                          [0.0] * (4 * LIGHT_FLOATS))
 
     def testLightAimedAtItself(self):
@@ -555,11 +598,12 @@ class TestFrameValues(LightingCase):
 
 
 class TestBlockLayout(LightingCase):
-    """The block the GPU reads: 100 floats at the offsets LightRigBlock.h
+    """The block the GPU reads: 168 floats at the offsets LightRigBlock.h
     documents (and MSL LightRigU mirrors). Checked against independent
     values, not only against the decoded dict."""
 
     def testOffsets(self):
+        cmd.set('metal_shadows', 0)    # no map planned (#616)
         self.rig()
         m = column_major(MATRIX)
         frame = lighting._light_frame(m)
@@ -585,6 +629,34 @@ class TestBlockLayout(LightingCase):
             self.assertEqual(s[13], f32(light['falloff']), label)
             self.assertEqual(s[14], want['aim_distance'], label)
             self.assertEqual(s[15], 1.0 if light['outline'] else 0.0, label)
+        self.assertEqual(block[PREFIX_FLOATS:], [0.0] * (BLOCK_FLOATS - PREFIX_FLOATS))
+
+    def testShadowOffsets(self):
+        """#616's tail at the documented offsets: map s at 100 + 20 s (16
+        floats of matrix, then tan(half fov), map size, normal offset, depth
+        bias), the grid at 160 and the per-draw tile (0 here) at 164; the
+        slot in pos.w and the count in head.w."""
+        cmd.set('metal_shadows', 1)
+        self.rig()
+        m = column_major(MATRIX)
+        frame = lighting._light_frame(m)
+        block = frame['rig']['block']
+        self.assertEqual(len(block), BLOCK_FLOATS)
+        self.assertEqual(block[3], 1.0)
+        self.assertEqual(light_slice(block, 0)[3], 0.0)
+        slot = frame['shadows']['slots'][0]
+        s = block[PREFIX_FLOATS:PREFIX_FLOATS + SHADOW_FLOATS]
+        self.assertEqual(s[0:16], slot['view_proj'])
+        self.assertEqual(s[16:20], [slot['tan_half_fov'], slot['map_size'],
+                                    slot['normal_offset'], slot['depth_bias']])
+        self.assertEqual(s[17], float(frame['shadow_map_size']))
+        # unused maps are zero; no grid: one tile, first slot 0, 1 x 1
+        self.assertEqual(block[PREFIX_FLOATS + SHADOW_FLOATS:160],
+                         [0.0] * (2 * SHADOW_FLOATS))
+        self.assertEqual(block[160:164], [1.0, 0.0, 1.0, 1.0])
+        self.assertEqual(frame['rig']['shadow_grid'], block[160:164])
+        self.assertEqual(block[164:168], [0.0] * 4)
+        self.assertEqual(frame['rig']['shadow_tile'], block[164:168])
 
     def testDecodedFromTheBlock(self):
         self.rig()
@@ -601,7 +673,9 @@ class TestBlockLayout(LightingCase):
 
     def testBlockSourceMatchesTheDocumentedLayout(self):
         """LightRigBlock.h: a float4 head and six lights of four float4,
-        400 bytes, asserted at compile time."""
+        400 bytes (#613), then three shadow maps of a 4x4 and a float4, the
+        shadow grid and the per-draw tile (#616): 672 bytes, asserted at
+        compile time."""
         path = checkout_source(self, os.path.join('layer1', 'LightRigBlock.h'))
         with open(path, encoding='utf-8') as handle:
             text = strip_comments(handle.read())
@@ -610,12 +684,28 @@ class TestBlockLayout(LightingCase):
         self.assertEqual(re.findall(r'float\s+(\w+)\[4\];', light.group(1)),
                          ['pos', 'axis', 'radiance', 'misc'])
         self.assertEqual(re.findall(r'float\s+(\w+)\[4\];', block.group(1)),
-                         ['head'])
+                         ['head', 'shadowGrid', 'shadowTile'])
         self.assertRegex(block.group(1),
                          r'LightRigBlockLight\s+light\[kLightRigBlockSlots\];')
+        # #613's fields first, in order; #616's appended after them
+        members = re.findall(r'(\w+)\s+(\w+)\[(\w+)\];', block.group(1))
+        self.assertEqual(members, [
+            ('float', 'head', '4'),
+            ('LightRigBlockLight', 'light', 'kLightRigBlockSlots'),
+            ('LightRigBlockShadow', 'shadow', 'kLightRigBlockShadowSlots'),
+            ('float', 'shadowGrid', '4'), ('float', 'shadowTile', '4')])
+        shadow = re.search(r'struct LightRigBlockShadow\s*\{(.*?)\};', text,
+                           re.S)
+        self.assertEqual(re.findall(r'float\s+(\w+)\[(\d+)\];', shadow.group(1)),
+                         [('viewProj', '16'), ('info', '4')])
         self.assertRegex(text, r'kLightRigBlockSlots\s*=\s*6;')
-        self.assertRegex(text, r'sizeof\(LightRigBlock\)\s*==\s*400')
+        self.assertRegex(text, r'kLightRigBlockShadowSlots\s*=\s*3;')
+        self.assertRegex(text, r'sizeof\(LightRigBlock\)\s*==\s*672')
         self.assertRegex(text, r'sizeof\(LightRigBlockLight\)\s*==\s*64')
+        self.assertRegex(text, r'sizeof\(LightRigBlockShadow\)\s*==\s*80')
+        self.assertRegex(text, r'offsetof\(LightRigBlock,\s*shadow\)\s*==\s*400')
+        self.assertRegex(text, r'offsetof\(LightRigBlock,\s*shadowGrid\)\s*==\s*640')
+        self.assertRegex(text, r'offsetof\(LightRigBlock,\s*shadowTile\)\s*==\s*656')
 
 
 class TestDecision15(LightingCase):

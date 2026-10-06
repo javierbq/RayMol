@@ -91,6 +91,9 @@ jobs:
               testing/tests/raymol/lighting_scenes.py \
               testing/tests/raymol/lighting_session.py \
               testing/tests/raymol/lighting_shading.py \
+              testing/tests/raymol/lighting_shadow_check.py \
+              testing/tests/raymol/lighting_shadow_msl.py \
+              testing/tests/raymol/lighting_shadows.py \
               testing/tests/raymol/line_stick_helper.py \
               testing/tests/raymol/material_custom.py \
               testing/tests/raymol/material_docs.py \

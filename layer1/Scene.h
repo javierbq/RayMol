@@ -95,6 +95,13 @@ void SceneInvalidateExtentCache(PyMOLGlobals * G);
  */
 bool SceneGetShadowExtent(PyMOLGlobals * G, float *mn, float *mx);
 
+/**
+ * SceneGetShadowExtent() without overlays (SceneObjectIsOverlay: gadgets,
+ * gizmos, the Move gizmo's CGO): the box the studio shadow maps are fitted
+ * to (#616). Cached in its own fields; see SceneInvalidateExtentCache().
+ */
+bool SceneGetLightShadowExtent(PyMOLGlobals * G, float *mn, float *mx);
+
 int SceneCountFrames(PyMOLGlobals * G);
 int SceneGetNFrame(PyMOLGlobals * G, int *has_movie=nullptr);
 void SceneSetMatrix(PyMOLGlobals * G, float *);

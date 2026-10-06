@@ -1,0 +1,916 @@
+{
+ "comment": "#616 L2: per-light shadow maps, checked with scripts/lighting/check_shadows.py l2 (see its docstring for every tag set). Two coloured lights, amber A (orbit -55, pitch 25) and cyan B (orbit +55, pitch 10), radius 3, beam 60, softness 0.3, highlight 0, ambient 0.05, classic 0, on grey80 subjects in front of a grey80 backdrop quad (perpendicular to the fixed view, 0.15 sizes behind the farthest atom so it stays inside the slab; depth_cue 0 so the fog does not hide its shadows). Every rig passes an explicit centre and size (the extent of m), so neither the backdrop nor a caster CGO moves the lights. The overlay scenes put a CGO sphere halfway between A (orbit 0, pitch 70) and the centre, outside the view, named _move_gizmo (ovl_gizmo*: an overlay, never casts, #433) or caster (ctl_caster*: the POSITIVE CONTROL, an ordinary CGO that MUST cast; it is no overlay); *hid hides its cgo rep, which keeps its extent. The *_dark* scenes set both lights to intensity 0 (ambient 0.05 only), so they are nearly black by design. cartoon_ab_s* set metal_light_shadow_size only where the setting exists. The frozen harness (render.py) installs its own 3-light rig for \"rig\": \"on\" by calling cmd.set_lights after each scene's lines; the extra lines wrap cmd.set_lights once per process (hasattr guard: the app runs the script twice): while cmd._l616_rig is a dict, that rig is installed instead; a function is applied to the harness rig. Every scene sets cmd._l616_rig.",
+ "base": null,
+ "rig": "on",
+ "size": [
+  1280,
+  720
+ ],
+ "extra": [
+  "import math as _l616_math",
+  "_l616_mn, _l616_mx = cmd.get_extent('m')",
+  "_l616_c = [(a + b) / 2.0 for a, b in zip(_l616_mn, _l616_mx)]",
+  "_l616_s = _l616_math.sqrt(sum((b - a) ** 2 for a, b in zip(_l616_mn, _l616_mx))) / 2.0",
+  "_l616_v = cmd.get_view()",
+  "_l616_rot = lambda e: [sum(_l616_v[3 * k + r] * e[r] for r in range(3)) for k in range(3)]",
+  "_l616_w = lambda e: [_l616_c[k] + _l616_rot(e)[k] for k in range(3)]",
+  "_l616_dir = lambda o, p: [_l616_math.sin(_l616_math.radians(o)) * _l616_math.cos(_l616_math.radians(p)), _l616_math.sin(_l616_math.radians(p)), _l616_math.cos(_l616_math.radians(o)) * _l616_math.cos(_l616_math.radians(p))]",
+  "_l616_at = lambda light, t: _l616_w([t * light['radius'] * _l616_s * d for d in _l616_dir(light['orbit'], light['pitch'])])",
+  "_l616_a = {'name': 'amber', 'orbit': -55.0, 'pitch': 25.0, 'radius': 3.0, 'beam': 60.0, 'softness': 0.3, 'color': [1.0, 0.55, 0.15], 'intensity': 1.0, 'highlight': 0.0}",
+  "_l616_b = {'name': 'cyan', 'orbit': 55.0, 'pitch': 10.0, 'radius': 3.0, 'beam': 60.0, 'softness': 0.3, 'color': [0.15, 0.75, 1.0], 'intensity': 1.0, 'highlight': 0.0}",
+  "_l616_m3 = {'name': 'magenta', 'orbit': 160.0, 'pitch': 45.0, 'radius': 3.0, 'beam': 60.0, 'softness': 0.3, 'color': [1.0, 0.2, 0.8], 'intensity': 1.0, 'highlight': 0.0}",
+  "_l616_frame = lambda rig: dict(rig, centre=list(_l616_c), size=_l616_s)",
+  "_l616_make = lambda lights, **kw: _l616_frame(dict({'version': 1, 'enabled': True, 'ambient': 0.05, 'classic': 0.0, 'lights': lights}, **kw))",
+  "_l616_opt = lambda name, value: cmd.set(name, value) if name in cmd.setting.get_name_list() else None",
+  "if not hasattr(cmd, '_l616_set'): cmd._l616_set = cmd.set_lights",
+  "cmd.set_lights = lambda rig, _c=cmd: _c._l616_set(rig if getattr(_c, '_l616_rig', None) is None else (_c._l616_rig(rig) if callable(_c._l616_rig) else _c._l616_rig))",
+  "cmd.set('depth_cue', 0)",
+  "_l616_xyz = []",
+  "cmd.iterate_state(1, 'm', '_l616_xyz.append((x, y, z))', space={'_l616_xyz': _l616_xyz})",
+  "_l616_dz = min(sum(_l616_v[2 + 3 * j] * (p[j] - _l616_c[j]) for j in range(3)) for p in _l616_xyz) - 0.15 * _l616_s",
+  "_l616_backdrop = lambda: cmd.load_cgo([2.0, 5.0, 6.0, 0.8, 0.8, 0.8, 5.0] + _l616_rot([0.0, 0.0, 1.0]) + [v for sx, sy in ((-1, -1), (1, -1), (-1, 1), (1, 1)) for v in [4.0] + _l616_w([sx * 2.5 * _l616_s, sy * 2.5 * _l616_s, _l616_dz])] + [3.0], 'backdrop', zoom=0)",
+  "_l616_ovl = dict(_l616_a, orbit=0.0, pitch=70.0, shadow=True)",
+  "_l616_sphere = lambda name: cmd.load_cgo([6.0, 0.8, 0.8, 0.8, 7.0] + _l616_at(_l616_ovl, 0.5) + [0.2 * _l616_s], name, zoom=0)"
+ ],
+ "scenes": [
+  {
+   "tag": "cartoon_dark_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), dict(_l616_b, intensity=0.0)])"
+   ],
+   "comment": "Dark reference: both lights at intensity 0 (ambient 0.05 only), so the image is nearly black by design (a reference for the checks)."
+  },
+  {
+   "tag": "cartoon_aonly_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, dict(_l616_b, intensity=0.0)])"
+   ]
+  },
+  {
+   "tag": "cartoon_bonly_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), _l616_b])"
+   ]
+  },
+  {
+   "tag": "cartoon_none_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "cartoon_a_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, shadow=True), _l616_b])"
+   ]
+  },
+  {
+   "tag": "cartoon_b_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, dict(_l616_b, shadow=True)])"
+   ]
+  },
+  {
+   "tag": "cartoon_ab_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, shadow=True), dict(_l616_b, shadow=True)])"
+   ]
+  },
+  {
+   "tag": "cartoon_dark_rt1",
+   "from": "cartoon_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), dict(_l616_b, intensity=0.0)])"
+   ],
+   "comment": "Dark reference: both lights at intensity 0 (ambient 0.05 only), so the image is nearly black by design (a reference for the checks)."
+  },
+  {
+   "tag": "cartoon_aonly_rt1",
+   "from": "cartoon_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, dict(_l616_b, intensity=0.0)])"
+   ]
+  },
+  {
+   "tag": "cartoon_bonly_rt1",
+   "from": "cartoon_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), _l616_b])"
+   ]
+  },
+  {
+   "tag": "cartoon_none_rt1",
+   "from": "cartoon_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "cartoon_a_rt1",
+   "from": "cartoon_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, shadow=True), _l616_b])"
+   ]
+  },
+  {
+   "tag": "cartoon_b_rt1",
+   "from": "cartoon_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, dict(_l616_b, shadow=True)])"
+   ]
+  },
+  {
+   "tag": "cartoon_ab_rt1",
+   "from": "cartoon_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, shadow=True), dict(_l616_b, shadow=True)])"
+   ]
+  },
+  {
+   "tag": "surface_dark_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), dict(_l616_b, intensity=0.0)])"
+   ],
+   "comment": "Dark reference: both lights at intensity 0 (ambient 0.05 only), so the image is nearly black by design (a reference for the checks)."
+  },
+  {
+   "tag": "surface_aonly_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, dict(_l616_b, intensity=0.0)])"
+   ]
+  },
+  {
+   "tag": "surface_bonly_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), _l616_b])"
+   ]
+  },
+  {
+   "tag": "surface_none_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "surface_a_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, shadow=True), _l616_b])"
+   ]
+  },
+  {
+   "tag": "surface_b_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, dict(_l616_b, shadow=True)])"
+   ]
+  },
+  {
+   "tag": "surface_ab_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, shadow=True), dict(_l616_b, shadow=True)])"
+   ]
+  },
+  {
+   "tag": "surface_dark_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), dict(_l616_b, intensity=0.0)])"
+   ],
+   "comment": "Dark reference: both lights at intensity 0 (ambient 0.05 only), so the image is nearly black by design (a reference for the checks)."
+  },
+  {
+   "tag": "surface_aonly_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, dict(_l616_b, intensity=0.0)])"
+   ]
+  },
+  {
+   "tag": "surface_bonly_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), _l616_b])"
+   ]
+  },
+  {
+   "tag": "surface_none_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "surface_a_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, shadow=True), _l616_b])"
+   ]
+  },
+  {
+   "tag": "surface_b_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, dict(_l616_b, shadow=True)])"
+   ]
+  },
+  {
+   "tag": "surface_ab_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, shadow=True), dict(_l616_b, shadow=True)])"
+   ]
+  },
+  {
+   "tag": "sticks_dark_rt0",
+   "from": "sticks_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), dict(_l616_b, intensity=0.0)])"
+   ],
+   "comment": "Dark reference: both lights at intensity 0 (ambient 0.05 only), so the image is nearly black by design (a reference for the checks)."
+  },
+  {
+   "tag": "sticks_aonly_rt0",
+   "from": "sticks_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, dict(_l616_b, intensity=0.0)])"
+   ]
+  },
+  {
+   "tag": "sticks_bonly_rt0",
+   "from": "sticks_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), _l616_b])"
+   ]
+  },
+  {
+   "tag": "sticks_none_rt0",
+   "from": "sticks_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "sticks_a_rt0",
+   "from": "sticks_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, shadow=True), _l616_b])"
+   ]
+  },
+  {
+   "tag": "sticks_b_rt0",
+   "from": "sticks_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, dict(_l616_b, shadow=True)])"
+   ]
+  },
+  {
+   "tag": "sticks_ab_rt0",
+   "from": "sticks_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, shadow=True), dict(_l616_b, shadow=True)])"
+   ]
+  },
+  {
+   "tag": "sticks_dark_rt1",
+   "from": "sticks_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), dict(_l616_b, intensity=0.0)])"
+   ],
+   "comment": "Dark reference: both lights at intensity 0 (ambient 0.05 only), so the image is nearly black by design (a reference for the checks)."
+  },
+  {
+   "tag": "sticks_aonly_rt1",
+   "from": "sticks_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, dict(_l616_b, intensity=0.0)])"
+   ]
+  },
+  {
+   "tag": "sticks_bonly_rt1",
+   "from": "sticks_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), _l616_b])"
+   ]
+  },
+  {
+   "tag": "sticks_none_rt1",
+   "from": "sticks_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "sticks_a_rt1",
+   "from": "sticks_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, shadow=True), _l616_b])"
+   ]
+  },
+  {
+   "tag": "sticks_b_rt1",
+   "from": "sticks_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, dict(_l616_b, shadow=True)])"
+   ]
+  },
+  {
+   "tag": "sticks_ab_rt1",
+   "from": "sticks_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, shadow=True), dict(_l616_b, shadow=True)])"
+   ]
+  },
+  {
+   "tag": "spheres_dark_rt0",
+   "from": "spheres_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), dict(_l616_b, intensity=0.0)])"
+   ],
+   "comment": "Dark reference: both lights at intensity 0 (ambient 0.05 only), so the image is nearly black by design (a reference for the checks)."
+  },
+  {
+   "tag": "spheres_aonly_rt0",
+   "from": "spheres_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, dict(_l616_b, intensity=0.0)])"
+   ]
+  },
+  {
+   "tag": "spheres_bonly_rt0",
+   "from": "spheres_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), _l616_b])"
+   ]
+  },
+  {
+   "tag": "spheres_none_rt0",
+   "from": "spheres_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "spheres_a_rt0",
+   "from": "spheres_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, shadow=True), _l616_b])"
+   ]
+  },
+  {
+   "tag": "spheres_b_rt0",
+   "from": "spheres_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, dict(_l616_b, shadow=True)])"
+   ]
+  },
+  {
+   "tag": "spheres_ab_rt0",
+   "from": "spheres_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, shadow=True), dict(_l616_b, shadow=True)])"
+   ]
+  },
+  {
+   "tag": "spheres_dark_rt1",
+   "from": "spheres_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), dict(_l616_b, intensity=0.0)])"
+   ],
+   "comment": "Dark reference: both lights at intensity 0 (ambient 0.05 only), so the image is nearly black by design (a reference for the checks)."
+  },
+  {
+   "tag": "spheres_aonly_rt1",
+   "from": "spheres_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, dict(_l616_b, intensity=0.0)])"
+   ]
+  },
+  {
+   "tag": "spheres_bonly_rt1",
+   "from": "spheres_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), _l616_b])"
+   ]
+  },
+  {
+   "tag": "spheres_none_rt1",
+   "from": "spheres_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "spheres_a_rt1",
+   "from": "spheres_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, shadow=True), _l616_b])"
+   ]
+  },
+  {
+   "tag": "spheres_b_rt1",
+   "from": "spheres_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, dict(_l616_b, shadow=True)])"
+   ]
+  },
+  {
+   "tag": "spheres_ab_rt1",
+   "from": "spheres_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, shadow=True), dict(_l616_b, shadow=True)])"
+   ]
+  },
+  {
+   "tag": "shadows_dark_ns_ms0_rt0",
+   "from": "shadows_rt0",
+   "lines": [
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), dict(_l616_b, intensity=0.0)])"
+   ],
+   "comment": "Dark reference: both lights at intensity 0 (ambient 0.05 only), so the image is nearly black by design (a reference for the checks)."
+  },
+  {
+   "tag": "shadows_dark_sh_ms1_rt0",
+   "from": "shadows_rt0",
+   "lines": [
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0, shadow=True), dict(_l616_b, intensity=0.0, shadow=True)])"
+   ],
+   "comment": "Dark reference: both lights at intensity 0 (ambient 0.05 only), so the image is nearly black by design (a reference for the checks)."
+  },
+  {
+   "tag": "shadows_dark_ns_ms1_rt0",
+   "from": "shadows_rt0",
+   "lines": [
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), dict(_l616_b, intensity=0.0)])"
+   ],
+   "comment": "Dark reference: both lights at intensity 0 (ambient 0.05 only), so the image is nearly black by design (a reference for the checks)."
+  },
+  {
+   "tag": "shadows_dark_ns_ms0_rt1",
+   "from": "shadows_rt1",
+   "lines": [
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), dict(_l616_b, intensity=0.0)])"
+   ],
+   "comment": "Dark reference: both lights at intensity 0 (ambient 0.05 only), so the image is nearly black by design (a reference for the checks)."
+  },
+  {
+   "tag": "shadows_dark_sh_ms1_rt1",
+   "from": "shadows_rt1",
+   "lines": [
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0, shadow=True), dict(_l616_b, intensity=0.0, shadow=True)])"
+   ],
+   "comment": "Dark reference: both lights at intensity 0 (ambient 0.05 only), so the image is nearly black by design (a reference for the checks)."
+  },
+  {
+   "tag": "shadows_dark_ns_ms1_rt1",
+   "from": "shadows_rt1",
+   "lines": [
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), dict(_l616_b, intensity=0.0)])"
+   ],
+   "comment": "Dark reference: both lights at intensity 0 (ambient 0.05 only), so the image is nearly black by design (a reference for the checks)."
+  },
+  {
+   "tag": "transparent_none_rt0",
+   "from": "transparent_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "transparent_a_rt0",
+   "from": "transparent_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, shadow=True), _l616_b])"
+   ]
+  },
+  {
+   "tag": "glass_none_rt0",
+   "from": "glass_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "glass_a_rt0",
+   "from": "glass_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, shadow=True), _l616_b])"
+   ]
+  },
+  {
+   "tag": "sticks_front_a_rt0",
+   "from": "sticks_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, orbit=-25.0, shadow=True)])"
+   ]
+  },
+  {
+   "tag": "sticks_front_none_rt0",
+   "from": "sticks_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, orbit=-25.0)])"
+   ]
+  },
+  {
+   "tag": "sticks_side_a_rt0",
+   "from": "sticks_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, orbit=-85.0, shadow=True)])"
+   ]
+  },
+  {
+   "tag": "sticks_side_none_rt0",
+   "from": "sticks_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, orbit=-85.0)])"
+   ]
+  },
+  {
+   "tag": "spheres_front_a_rt0",
+   "from": "spheres_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, orbit=-25.0, shadow=True)])"
+   ]
+  },
+  {
+   "tag": "spheres_front_none_rt0",
+   "from": "spheres_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, orbit=-25.0)])"
+   ]
+  },
+  {
+   "tag": "spheres_side_a_rt0",
+   "from": "spheres_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, orbit=-85.0, shadow=True)])"
+   ]
+  },
+  {
+   "tag": "spheres_side_none_rt0",
+   "from": "spheres_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, orbit=-85.0)])"
+   ]
+  },
+  {
+   "tag": "spheres_front_a_ortho_rt0",
+   "from": "spheres_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('orthoscopic', 1)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, orbit=-25.0, shadow=True)])"
+   ]
+  },
+  {
+   "tag": "spheres_front_none_ortho_rt0",
+   "from": "spheres_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('orthoscopic', 1)",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, orbit=-25.0)])"
+   ]
+  },
+  {
+   "tag": "spheres_side_a_ortho_rt0",
+   "from": "spheres_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('orthoscopic', 1)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, orbit=-85.0, shadow=True)])"
+   ]
+  },
+  {
+   "tag": "spheres_side_none_ortho_rt0",
+   "from": "spheres_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('orthoscopic', 1)",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, orbit=-85.0)])"
+   ]
+  },
+  {
+   "tag": "ovl_gizmo_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "_l616_sphere('_move_gizmo')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_ovl])"
+   ],
+   "comment": "Overlay check (#433): the grey CGO sphere named _move_gizmo (an overlay) sits outside the view between light A and the molecule; it must cast NO shadow, so this image is byte-equal to ovl_gizmohid_rt0."
+  },
+  {
+   "tag": "ovl_gizmohid_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "_l616_sphere('_move_gizmo')",
+    "cmd.hide('cgo', '_move_gizmo')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_ovl])"
+   ],
+   "comment": "Overlay check (#433): as ovl_gizmo_rt0 with the _move_gizmo cgo rep hidden (same extent); the reference ovl_gizmo_rt0 must equal byte for byte."
+  },
+  {
+   "tag": "ctl_caster_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "_l616_sphere('caster')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_ovl])"
+   ],
+   "comment": "POSITIVE CONTROL of the overlay check, NOT an overlay: 'caster' is an ordinary grey CGO sphere outside the view between light A (the only light, shadowed) and the molecule. It MUST cast: a large dark disc on the backdrop and the molecule black under it, against ctl_casterhid_rt0. Without that shadow the overlay check proves nothing."
+  },
+  {
+   "tag": "ctl_casterhid_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "_l616_sphere('caster')",
+    "cmd.hide('cgo', 'caster')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_ovl])"
+   ],
+   "comment": "Reference for the positive control ctl_caster_rt0: the same 'caster' CGO with its cgo rep hidden (same extent), so no disc shadow."
+  },
+  {
+   "tag": "rig3_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, shadow=True), dict(_l616_b, shadow=True), dict(_l616_m3, shadow=True)])"
+   ]
+  },
+  {
+   "tag": "rig3_rt1",
+   "from": "cartoon_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, shadow=True), dict(_l616_b, shadow=True), dict(_l616_m3, shadow=True)])"
+   ]
+  },
+  {
+   "tag": "cartoon_ab_s512_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "_l616_opt('metal_light_shadow_size', 512)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, shadow=True), dict(_l616_b, shadow=True)])"
+   ]
+  },
+  {
+   "tag": "cartoon_ab_s1024_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "_l616_opt('metal_light_shadow_size', 1024)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, shadow=True), dict(_l616_b, shadow=True)])"
+   ]
+  },
+  {
+   "tag": "cartoon_ab_s4096_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "_l616_backdrop()",
+    "cmd.set('metal_shadows', 1)",
+    "_l616_opt('metal_light_shadow_size', 4096)",
+    "cmd._l616_rig = _l616_make([dict(_l616_a, shadow=True), dict(_l616_b, shadow=True)])"
+   ]
+  }
+ ]
+}

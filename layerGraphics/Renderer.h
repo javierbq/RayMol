@@ -7,6 +7,8 @@
 
 namespace pymol {
 
+struct GpuFrameReport; // layer0/GpuFrameTimes.h (#616)
+
 enum class PrimitiveType {
   Points,
   Lines,
@@ -446,6 +448,31 @@ public:
   // The block is only valid during the call: an implementation copies what it
   // keeps. Default: no-op (the GL renderer ignores the rig).
   virtual void setLightRig(const LightRigBlock* /*rig*/) {}
+
+  // Per-light shadow maps (#616). SceneRenderMetal calls setLightShadowFrame()
+  // once per frame, after setLightRig(): `studioShadows` (a light of the rig
+  // is shadowed while metal_shadows is on; the whole-pixel shadow is then off)
+  // and each map's texels per side. For each map slot, beginLightShadowMap()
+  // opens a depth pass on that slot's map (`view` = the light's eye-space view,
+  // column-major); false when it cannot, and the light is then unshadowed.
+  // setLightShadowViewport() picks a grid cell's tile in map pixels, and
+  // endLightShadowMaps() reopens the scene pass. Defaults: no-op (the GL
+  // renderer has no studio shadows).
+  virtual void setLightShadowFrame(bool /*studioShadows*/, int /*mapSize*/) {}
+  virtual bool beginLightShadowMap(int /*slot*/, const float* /*view*/)
+  {
+    return false;
+  }
+  virtual void setLightShadowViewport(int /*x*/, int /*y*/, int /*w*/, int /*h*/)
+  {
+  }
+  virtual void endLightShadowMaps() {}
+
+  // GPU frame times (#616, metal_gpu_timing: 0 off, 1 a summary per window,
+  // 2 every frame) and their readout (_cmd.get_gpu_frame_stats). Defaults:
+  // no-op, and no stats.
+  virtual void setGpuTiming(int /*mode*/) {}
+  virtual bool getGpuFrameStats(GpuFrameReport* /*out*/) const { return false; }
 
   // PyMOL key-light direction (cSetting_light). The direction toward the light
   // used for shading and shadow casting is -normalize(light). Default: no-op

@@ -1,0 +1,542 @@
+{
+ "comment": "#616 regression vs master (plans/616.md 10.2; gate.sh baseline-scenes, then render.py --compare, max 0): a rig whose lights are not shadowed must render exactly as master. <rep>_ns_ms<0|1>_rt<n>: the amber and cyan lights of lighting_616.json, unshadowed, on the 8 L1 representations plus a bezier tube, transparent sticks and spheres, orthographic and grid_mode, at metal_shadows 0 and 1 (where the whole-pixel shadow must survive) and metal_raytrace 0 and 1. rig3key_* / rig3all_*: the harness 3-light rig with the key, then all three lights, shadowed at metal_shadows 0 (studio shadows need metal_shadows). Every rig passes an explicit centre and size (the extent of m). Same cmd.set_lights shim as lighting_616.json.",
+ "base": null,
+ "rig": "on",
+ "size": [
+  1280,
+  720
+ ],
+ "extra": [
+  "import math as _l616_math",
+  "_l616_mn, _l616_mx = cmd.get_extent('m')",
+  "_l616_c = [(a + b) / 2.0 for a, b in zip(_l616_mn, _l616_mx)]",
+  "_l616_s = _l616_math.sqrt(sum((b - a) ** 2 for a, b in zip(_l616_mn, _l616_mx))) / 2.0",
+  "_l616_v = cmd.get_view()",
+  "_l616_rot = lambda e: [sum(_l616_v[3 * k + r] * e[r] for r in range(3)) for k in range(3)]",
+  "_l616_w = lambda e: [_l616_c[k] + _l616_rot(e)[k] for k in range(3)]",
+  "_l616_dir = lambda o, p: [_l616_math.sin(_l616_math.radians(o)) * _l616_math.cos(_l616_math.radians(p)), _l616_math.sin(_l616_math.radians(p)), _l616_math.cos(_l616_math.radians(o)) * _l616_math.cos(_l616_math.radians(p))]",
+  "_l616_at = lambda light, t: _l616_w([t * light['radius'] * _l616_s * d for d in _l616_dir(light['orbit'], light['pitch'])])",
+  "_l616_a = {'name': 'amber', 'orbit': -55.0, 'pitch': 25.0, 'radius': 3.0, 'beam': 60.0, 'softness': 0.3, 'color': [1.0, 0.55, 0.15], 'intensity': 1.0, 'highlight': 0.0}",
+  "_l616_b = {'name': 'cyan', 'orbit': 55.0, 'pitch': 10.0, 'radius': 3.0, 'beam': 60.0, 'softness': 0.3, 'color': [0.15, 0.75, 1.0], 'intensity': 1.0, 'highlight': 0.0}",
+  "_l616_m3 = {'name': 'magenta', 'orbit': 160.0, 'pitch': 45.0, 'radius': 3.0, 'beam': 60.0, 'softness': 0.3, 'color': [1.0, 0.2, 0.8], 'intensity': 1.0, 'highlight': 0.0}",
+  "_l616_frame = lambda rig: dict(rig, centre=list(_l616_c), size=_l616_s)",
+  "_l616_make = lambda lights, **kw: _l616_frame(dict({'version': 1, 'enabled': True, 'ambient': 0.05, 'classic': 0.0, 'lights': lights}, **kw))",
+  "_l616_opt = lambda name, value: cmd.set(name, value) if name in cmd.setting.get_name_list() else None",
+  "if not hasattr(cmd, '_l616_set'): cmd._l616_set = cmd.set_lights",
+  "cmd.set_lights = lambda rig, _c=cmd: _c._l616_set(rig if getattr(_c, '_l616_rig', None) is None else (_c._l616_rig(rig) if callable(_c._l616_rig) else _c._l616_rig))"
+ ],
+ "scenes": [
+  {
+   "tag": "cartoon_ns_ms0_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "surface_ns_ms0_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "sticks_ns_ms0_rt0",
+   "from": "sticks_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "spheres_ns_ms0_rt0",
+   "from": "spheres_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "mesh_ns_ms0_rt0",
+   "from": "mesh_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "transparent_ns_ms0_rt0",
+   "from": "transparent_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "glass_ns_ms0_rt0",
+   "from": "glass_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "shadows_ns_ms0_rt0",
+   "from": "shadows_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "sticks_trans_ns_ms0_rt0",
+   "from": "sticks_rt0",
+   "lines": [
+    "cmd.set('stick_transparency', 0.5)",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "spheres_trans_ns_ms0_rt0",
+   "from": "spheres_rt0",
+   "lines": [
+    "cmd.set('sphere_transparency', 0.5)",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "cartoon_ortho_ns_ms0_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.set('orthoscopic', 1)",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "grid_ns_ms0_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.create('m2', 'm and resi 1-80', zoom=0)",
+    "cmd.show('cartoon', 'm2')",
+    "cmd.set('grid_mode', 1)",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "tube_ns_ms0_rt0",
+   "rt": 0,
+   "lines": [
+    "cmd.load_cgo([6.0, 0.8, 0.8, 0.8, 66.0] + [p[i] + _l616_c[i] for p in [(-14.0, -8.0, 0.0), (-5.0, 14.0, 4.0), (5.0, -14.0, -4.0), (14.0, 8.0, 0.0)] for i in range(3)], 'tube', zoom=0)",
+    "cmd.set('cartoon_tube_radius', 1.5)",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "cartoon_ns_ms0_rt1",
+   "from": "cartoon_rt1",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "surface_ns_ms0_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "sticks_ns_ms0_rt1",
+   "from": "sticks_rt1",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "spheres_ns_ms0_rt1",
+   "from": "spheres_rt1",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "mesh_ns_ms0_rt1",
+   "from": "mesh_rt1",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "transparent_ns_ms0_rt1",
+   "from": "transparent_rt1",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "glass_ns_ms0_rt1",
+   "from": "glass_rt1",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "shadows_ns_ms0_rt1",
+   "from": "shadows_rt1",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "sticks_trans_ns_ms0_rt1",
+   "from": "sticks_rt1",
+   "lines": [
+    "cmd.set('stick_transparency', 0.5)",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "spheres_trans_ns_ms0_rt1",
+   "from": "spheres_rt1",
+   "lines": [
+    "cmd.set('sphere_transparency', 0.5)",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "cartoon_ortho_ns_ms0_rt1",
+   "from": "cartoon_rt1",
+   "lines": [
+    "cmd.set('orthoscopic', 1)",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "grid_ns_ms0_rt1",
+   "from": "cartoon_rt1",
+   "lines": [
+    "cmd.create('m2', 'm and resi 1-80', zoom=0)",
+    "cmd.show('cartoon', 'm2')",
+    "cmd.set('grid_mode', 1)",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "tube_ns_ms0_rt1",
+   "rt": 1,
+   "lines": [
+    "cmd.load_cgo([6.0, 0.8, 0.8, 0.8, 66.0] + [p[i] + _l616_c[i] for p in [(-14.0, -8.0, 0.0), (-5.0, 14.0, 4.0), (5.0, -14.0, -4.0), (14.0, 8.0, 0.0)] for i in range(3)], 'tube', zoom=0)",
+    "cmd.set('cartoon_tube_radius', 1.5)",
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "cartoon_ns_ms1_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "surface_ns_ms1_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "sticks_ns_ms1_rt0",
+   "from": "sticks_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "spheres_ns_ms1_rt0",
+   "from": "spheres_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "mesh_ns_ms1_rt0",
+   "from": "mesh_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "transparent_ns_ms1_rt0",
+   "from": "transparent_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "glass_ns_ms1_rt0",
+   "from": "glass_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "shadows_ns_ms1_rt0",
+   "from": "shadows_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "sticks_trans_ns_ms1_rt0",
+   "from": "sticks_rt0",
+   "lines": [
+    "cmd.set('stick_transparency', 0.5)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "spheres_trans_ns_ms1_rt0",
+   "from": "spheres_rt0",
+   "lines": [
+    "cmd.set('sphere_transparency', 0.5)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "cartoon_ortho_ns_ms1_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.set('orthoscopic', 1)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "grid_ns_ms1_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.create('m2', 'm and resi 1-80', zoom=0)",
+    "cmd.show('cartoon', 'm2')",
+    "cmd.set('grid_mode', 1)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "tube_ns_ms1_rt0",
+   "rt": 0,
+   "lines": [
+    "cmd.load_cgo([6.0, 0.8, 0.8, 0.8, 66.0] + [p[i] + _l616_c[i] for p in [(-14.0, -8.0, 0.0), (-5.0, 14.0, 4.0), (5.0, -14.0, -4.0), (14.0, 8.0, 0.0)] for i in range(3)], 'tube', zoom=0)",
+    "cmd.set('cartoon_tube_radius', 1.5)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "cartoon_ns_ms1_rt1",
+   "from": "cartoon_rt1",
+   "lines": [
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "surface_ns_ms1_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "sticks_ns_ms1_rt1",
+   "from": "sticks_rt1",
+   "lines": [
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "spheres_ns_ms1_rt1",
+   "from": "spheres_rt1",
+   "lines": [
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "mesh_ns_ms1_rt1",
+   "from": "mesh_rt1",
+   "lines": [
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "transparent_ns_ms1_rt1",
+   "from": "transparent_rt1",
+   "lines": [
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "glass_ns_ms1_rt1",
+   "from": "glass_rt1",
+   "lines": [
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "shadows_ns_ms1_rt1",
+   "from": "shadows_rt1",
+   "lines": [
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "sticks_trans_ns_ms1_rt1",
+   "from": "sticks_rt1",
+   "lines": [
+    "cmd.set('stick_transparency', 0.5)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "spheres_trans_ns_ms1_rt1",
+   "from": "spheres_rt1",
+   "lines": [
+    "cmd.set('sphere_transparency', 0.5)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "cartoon_ortho_ns_ms1_rt1",
+   "from": "cartoon_rt1",
+   "lines": [
+    "cmd.set('orthoscopic', 1)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "grid_ns_ms1_rt1",
+   "from": "cartoon_rt1",
+   "lines": [
+    "cmd.create('m2', 'm and resi 1-80', zoom=0)",
+    "cmd.show('cartoon', 'm2')",
+    "cmd.set('grid_mode', 1)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "tube_ns_ms1_rt1",
+   "rt": 1,
+   "lines": [
+    "cmd.load_cgo([6.0, 0.8, 0.8, 0.8, 66.0] + [p[i] + _l616_c[i] for p in [(-14.0, -8.0, 0.0), (-5.0, 14.0, 4.0), (5.0, -14.0, -4.0), (14.0, 8.0, 0.0)] for i in range(3)], 'tube', zoom=0)",
+    "cmd.set('cartoon_tube_radius', 1.5)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l616_rig = _l616_make([_l616_a, _l616_b])"
+   ]
+  },
+  {
+   "tag": "rig3key_shadows_rt0",
+   "from": "shadows_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = lambda r: _l616_frame(dict(r, lights=[dict(l, shadow=i == 0) for i, l in enumerate(r['lights'])]))"
+   ]
+  },
+  {
+   "tag": "rig3key_shadows_rt1",
+   "from": "shadows_rt1",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = lambda r: _l616_frame(dict(r, lights=[dict(l, shadow=i == 0) for i, l in enumerate(r['lights'])]))"
+   ]
+  },
+  {
+   "tag": "rig3key_surface_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = lambda r: _l616_frame(dict(r, lights=[dict(l, shadow=i == 0) for i, l in enumerate(r['lights'])]))"
+   ]
+  },
+  {
+   "tag": "rig3key_surface_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = lambda r: _l616_frame(dict(r, lights=[dict(l, shadow=i == 0) for i, l in enumerate(r['lights'])]))"
+   ]
+  },
+  {
+   "tag": "rig3all_shadows_rt0",
+   "from": "shadows_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = lambda r: _l616_frame(dict(r, lights=[dict(l, shadow=True) for i, l in enumerate(r['lights'])]))"
+   ]
+  },
+  {
+   "tag": "rig3all_shadows_rt1",
+   "from": "shadows_rt1",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = lambda r: _l616_frame(dict(r, lights=[dict(l, shadow=True) for i, l in enumerate(r['lights'])]))"
+   ]
+  },
+  {
+   "tag": "rig3all_surface_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = lambda r: _l616_frame(dict(r, lights=[dict(l, shadow=True) for i, l in enumerate(r['lights'])]))"
+   ]
+  },
+  {
+   "tag": "rig3all_surface_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "cmd.set('metal_shadows', 0)",
+    "cmd._l616_rig = lambda r: _l616_frame(dict(r, lights=[dict(l, shadow=True) for i, l in enumerate(r['lights'])]))"
+   ]
+  }
+ ]
+}

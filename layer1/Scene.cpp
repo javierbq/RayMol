@@ -2285,6 +2285,7 @@ void SceneInvalidateExtentCache(PyMOLGlobals * G)
   CScene *I = G->Scene;
   if(I) {
     I->ShadowExtentValid = false;
+    I->LightShadowExtentValid = false;
     I->DofExtentValid = false;
   }
 }

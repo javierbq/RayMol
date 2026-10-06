@@ -6,7 +6,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <utility>
+
+#include <glm/geometric.hpp>
 
 #include "Executive.h"
 #include "Feedback.h"
@@ -216,7 +219,30 @@ bool SceneLightsRayNotice(PyMOLGlobals* G, int mode)
 #endif
 }
 
-SceneLightFrame SceneLightsFrame(PyMOLGlobals* G, const glm::dmat4& worldToEye)
+namespace
+{
+#ifdef _PYMOL_IOS
+constexpr bool kSceneLightsMobile = true;
+#else
+constexpr bool kSceneLightsMobile = false;
+#endif
+
+/// A light packed in `block` (the first head.x of `rig`) has `shadow` set.
+bool SceneLightsAnyShadowed(
+    const pymol::LightRig& rig, const pymol::LightRigBlock& block)
+{
+  const std::size_t n = std::min(
+      rig.lights.size(), static_cast<std::size_t>(std::max(int(block.head[0]), 0)));
+  for (std::size_t i = 0; i < n; ++i) {
+    if (rig.lights[i].shadow)
+      return true;
+  }
+  return false;
+}
+} // namespace
+
+SceneLightFrame SceneLightsFrame(PyMOLGlobals* G, const glm::dmat4& worldToEye,
+    const pymol::LightShadowGridOverride* grid)
 {
   // The settings SceneRenderMetal has always read (issue #72 explains the
   // specular adjustment).
@@ -237,5 +263,80 @@ SceneLightFrame SceneLightsFrame(PyMOLGlobals* G, const glm::dmat4& worldToEye)
   frame.classic = pymol::LightRigClassic(rig, settings);
   frame.shininess = specPower;
   frame.rig = pymol::LightRigFrameBlock(rig, worldToEye, specPower);
+
+  // Studio shadows (#616). Nothing below runs, and nothing more is read,
+  // unless the rig is on (frame.rig), metal_shadows is on and a light has
+  // `shadow`: the block then stays #613's, bit for bit.
+  if (frame.rig && SceneLightsAnyShadowed(*rig, *frame.rig) &&
+      SettingGetGlobal_b(G, cSetting_metal_shadows)) {
+    frame.studioShadows = true;
+    frame.shadowMapSize = pymol::LightShadowMapSize(
+        SettingGetGlobal_i(G, cSetting_metal_light_shadow_size),
+        kSceneLightsMobile);
+    float mn[3], mx[3];
+    if (SceneGetLightShadowExtent(G, mn, mx)) {
+      pymol::LightShadowInputs in;
+      const glm::dvec3 lo(mn[0], mn[1], mn[2]);
+      const glm::dvec3 hi(mx[0], mx[1], mx[2]);
+      in.casterCentreEye =
+          glm::vec3(worldToEye * glm::dvec4((lo + hi) * 0.5, 1.0));
+      // The sphere around the box, through the matrix's largest scale (1
+      // for a camera), with margins: molecule extents are atom centres.
+      const double scale = std::max({glm::length(glm::dvec3(worldToEye[0])),
+          glm::length(glm::dvec3(worldToEye[1])),
+          glm::length(glm::dvec3(worldToEye[2]))});
+      in.casterRadius = float(
+          (0.5 * glm::length(hi - lo) * pymol::kLightShadowCasterMargin +
+              pymol::kLightShadowCasterPad) *
+          scale);
+      in.biasScale = SettingGetGlobal_f(G, cSetting_metal_shadow_bias);
+      in.mapSize = frame.shadowMapSize;
+      pymol::LightShadowGridOverride g;
+      if (grid) {
+        g = *grid;
+      } else {
+        const GridInfo& sg = G->Scene->grid;
+        g.active = sg.active;
+        g.nCol = sg.n_col;
+        g.nRow = sg.n_row;
+        g.firstSlot = sg.first_slot;
+      }
+      if (g.active) {
+        in.nCol = std::max(g.nCol, 1);
+        in.nRow = std::max(g.nRow, 1);
+        in.tiles = std::max(in.nCol, in.nRow);
+        in.firstSlot = g.firstSlot;
+      }
+      frame.shadows = pymol::LightShadowPlan(*frame.rig, *rig, in);
+    }
+  }
   return frame;
+}
+
+/* ---- Studio shadow casters (#616) ---------------------------------------- */
+
+bool SceneObjectIsOverlay(const pymol::CObject* obj)
+{
+  if (!obj)
+    return false;
+  return obj->type == cObjectGadget || obj->type == cObjectGizmo ||
+         std::strcmp(obj->Name, kSceneMoveGizmoName) == 0;
+}
+
+std::vector<pymol::CObject*> SceneLightShadowOverlays(PyMOLGlobals* G)
+{
+  std::vector<pymol::CObject*> out;
+  for (auto* obj : G->Scene->Obj) {
+    if (SceneObjectIsOverlay(obj))
+      out.push_back(obj);
+  }
+  return out;
+}
+
+void SceneLightShadowCasterNames(PyMOLGlobals* G,
+    std::vector<std::string>& casters, std::vector<std::string>& excluded)
+{
+  for (auto* obj : G->Scene->Obj) {
+    (SceneObjectIsOverlay(obj) ? excluded : casters).emplace_back(obj->Name);
+  }
 }

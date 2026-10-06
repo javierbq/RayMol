@@ -1999,10 +1999,12 @@ static void SceneRenderPostProcessStack(PyMOLGlobals* G, const GLFramebufferConf
  *
  * @param[out] mn,mx model-space min/max corners
  * @param skip_solvent exclude atoms flagged as solvent
+ * @param skip_overlays exclude overlays (SceneObjectIsOverlay: gadgets,
+ *        gizmos, the Move gizmo's CGO), which never cast studio shadows (#616)
  * @return false if nothing contributed (mn/mx untouched)
  */
-static bool SceneComputeShadowExtent(
-    PyMOLGlobals* G, float* mn, float* mx, bool skip_solvent)
+static bool SceneComputeShadowExtent(PyMOLGlobals* G, float* mn, float* mx,
+    bool skip_solvent, bool skip_overlays = false)
 {
   CScene* I = G->Scene;
   bool have_extent = false;
@@ -2019,6 +2021,8 @@ static bool SceneComputeShadowExtent(
   };
 
   for (auto* obj : I->Obj) {
+    if (skip_overlays && SceneObjectIsOverlay(obj))
+      continue;
     if (obj->type != cObjectMolecule) {
       // Maps, meshes, surfaces, CGOs: they already carry a cached extent.
       if (obj->ExtentFlag) {
@@ -2088,6 +2092,31 @@ bool SceneGetShadowExtent(PyMOLGlobals* G, float* mn, float* mx)
   return I->ShadowExtentFlag;
 }
 
+/**
+ * The studio shadow casters' box (#616): SceneGetShadowExtent()'s, without
+ * overlays (#433), cached the same way in its own fields and dropped by
+ * SceneInvalidateExtentCache(). The studio frusta are fitted to it, so the
+ * Move gizmo never widens them.
+ */
+bool SceneGetLightShadowExtent(PyMOLGlobals* G, float* mn, float* mx)
+{
+  CScene* I = G->Scene;
+  if (!I->LightShadowExtentValid) {
+    I->LightShadowExtentFlag = SceneComputeShadowExtent(
+        G, I->LightShadowExtentMin, I->LightShadowExtentMax, true, true);
+    if (!I->LightShadowExtentFlag) {
+      I->LightShadowExtentFlag = SceneComputeShadowExtent(
+          G, I->LightShadowExtentMin, I->LightShadowExtentMax, false, true);
+    }
+    I->LightShadowExtentValid = true;
+  }
+  if (I->LightShadowExtentFlag) {
+    copy3f(I->LightShadowExtentMin, mn);
+    copy3f(I->LightShadowExtentMax, mx);
+  }
+  return I->LightShadowExtentFlag;
+}
+
 // Build the directional key light's view*projection in EYE space, so the post
 // pass can reuse its existing eye-space position reconstruction (no camera
 // inverse needed). The light dir matches the shading key light (eye-space
@@ -2130,6 +2159,71 @@ static glm::mat4 SceneBuildLightViewProjEye(PyMOLGlobals* G, float* outRadius = 
     *outRadius = radius; // world half-extent of the ortho box; the renderer
                          // turns this into a scale-aware shadow bias (Angstroms)
   return lightProj * lightView;
+}
+
+/*
+ * The studio shadow pre-pass (#616): one perspective depth map per shadowed
+ * light of the rig, each in its own slice of the renderer's map array
+ * (`shadows` is this frame's plan, SceneLightsFrame). For each slot the
+ * renderer opens the slice (beginLightShadowMap), then the light's projection
+ * and the camera modelview are loaded -- the renderer premultiplies the
+ * light's view onto every modelview while the slice is open, so impostors
+ * face the light -- and the opaque geometry is drawn, depth only, without the
+ * overlays (#433: gadgets, gizmos and the Move gizmo never cast). One reopen
+ * of the scene pass ends the maps (endLightShadowMaps), and the camera
+ * matrices are restored.
+ *
+ * grid_mode (decision D7 of #616): each map is a tile atlas, still one pass
+ * per light. Every cell draws its own objects into its own tile (the encoder
+ * viewport and scissor, in map pixels, through setLightShadowViewport) with
+ * I->grid.slot set to the cell, so SceneRenderAll picks that cell's objects
+ * and states as the grid loops do. A cell is therefore shadowed only by its
+ * own objects: the draws of cell c read tile c (bindLightRig, from the cell
+ * setGridSlot stored). Neither SceneSetMetalGridCell nor setGridSlot is
+ * called here: the camera viewport and the ray tracer's cell table are the
+ * scene passes' own. Each cell gets floor(size / tiles)² texels.
+ */
+static void SceneRenderLightShadowMaps(PyMOLGlobals* G,
+    SceneUnitContext* context, float* normal,
+    const pymol::LightShadowFrame& shadows)
+{
+  CScene* I = G->Scene;
+  const std::vector<pymol::CObject*> overlays = SceneLightShadowOverlays(G);
+  const float* mv = SceneGetModelViewMatrixPtr(G);
+  for (int slot = 0; slot < shadows.count; ++slot) {
+    if (!G->Renderer->beginLightShadowMap(
+            slot, glm::value_ptr(shadows.view[slot].view)))
+      break;
+    G->Renderer->matrixMode(0x1701); // PROJECTION = the light's perspective
+    G->Renderer->loadMatrixf(glm::value_ptr(shadows.view[slot].proj));
+    G->Renderer->matrixMode(0x1700); // MODELVIEW = camera (x the light's view)
+    G->Renderer->loadMatrixf(mv);
+    if (I->grid.active) {
+      for (int cell = I->grid.first_slot; cell <= I->grid.last_slot; ++cell) {
+        const pymol::LightShadowTile tile = pymol::LightShadowTileRect(
+            cell - I->grid.first_slot, shadows.tiles, shadows.size);
+        if (tile.size <= 0)
+          continue;
+        G->Renderer->setLightShadowViewport(
+            tile.x, tile.y, tile.size, tile.size);
+        I->grid.slot = cell;
+        SceneRenderAll(G, context, normal, nullptr, RenderPass::Opaque, false,
+            0.0f, &I->grid, 0, SceneRenderWhich::All,
+            SceneRenderOrder::GadgetsLast, nullptr, &overlays);
+      }
+      I->grid.slot = 0;
+    } else {
+      SceneRenderAll(G, context, normal, nullptr, RenderPass::Opaque, false,
+          0.0f, &I->grid, 0, SceneRenderWhich::All,
+          SceneRenderOrder::GadgetsLast, nullptr, &overlays);
+    }
+  }
+  G->Renderer->endLightShadowMaps();
+  // Restore the camera matrices for the normal scene pass.
+  G->Renderer->matrixMode(0x1701);
+  G->Renderer->loadMatrixf(SceneGetProjectionMatrixPtr(G));
+  G->Renderer->matrixMode(0x1700);
+  G->Renderer->loadMatrixf(mv);
 }
 
 /*========================================================================
@@ -2263,6 +2357,9 @@ void SceneRenderMetal(PyMOLGlobals* G)
   SceneProjectionMatrix(
       G, I->m_view.m_clipSafe().m_front, I->m_view.m_clipSafe().m_back, aspRat);
   ScenePrepareMatrix(G, 0);
+
+  // This frame's lighting, read once in the block below (SceneLightsFrame).
+  SceneLightFrame lights;
 
   // Load matrices into the Metal renderer
   {
@@ -2427,12 +2524,20 @@ void SceneRenderMetal(PyMOLGlobals* G)
     // applies to the classic terms here, the single place they enter the
     // Metal renderer. No rig, or a rig that is off: the settings bit for bit,
     // no resolve and no block.
-    const SceneLightFrame lights =
-        SceneLightsFrame(G, glm::dmat4(glm::make_mat4(mv)));
+    // The frame is kept past this block: the shadow pre-pass below reads it
+    // (#616).
+    lights = SceneLightsFrame(G, glm::dmat4(glm::make_mat4(mv)));
     G->Renderer->setLightingParams(lights.classic.ambient,
         lights.classic.direct, lights.classic.reflect, lights.classic.specular,
         lights.shininess, SettingGetGlobal_f(G, cSetting_metal_sss_wrap));
     G->Renderer->setLightRig(lights.rig ? &*lights.rig : nullptr);
+    // Studio shadows (#616): whether they are on (the whole-pixel shadow is
+    // then off) and each map's size. Two scalars; false and 0 with no rig.
+    G->Renderer->setLightShadowFrame(lights.studioShadows, lights.shadowMapSize);
+    // GPU frame times (#616, metal_gpu_timing; with or without a rig, so
+    // #623 can time the frame without one too). At 0, the default, the
+    // renderer adds nothing to the frame.
+    G->Renderer->setGpuTiming(SettingGetGlobal_i(G, cSetting_metal_gpu_timing));
     // Key-light direction: feed cSetting_light so shading AND shadows follow it
     // (and become user-adjustable via `set light`). The renderer stores
     // -normalize(light) as the direction toward the light; PyMOL's default light
@@ -2483,7 +2588,14 @@ void SceneRenderMetal(PyMOLGlobals* G)
   // can't be made per-cell, and a shared map would leak shadows between cells
   // (an object visible only in cell B darkening an object in cell A). Grid mode
   // therefore renders unshadowed (geometry-only parity for now).
-  if (!I->grid.active && SettingGetGlobal_b(G, cSetting_metal_shadows)) {
+  //
+  // Studio shadows (#616) replace it: while the rig has a shadowed light (and
+  // metal_shadows is on), each such light renders its own map instead
+  // (SceneRenderLightShadowMaps), and this whole-pixel pass does not run.
+  if (lights.shadows) {
+    SceneRenderLightShadowMaps(G, &context, normal, *lights.shadows);
+  } else if (!lights.studioShadows && !I->grid.active &&
+             SettingGetGlobal_b(G, cSetting_metal_shadows)) {
     float shadowRadius = 1.0f;
     glm::mat4 lightVP_eye = SceneBuildLightViewProjEye(G, &shadowRadius);
     const float* mvp = SceneGetModelViewMatrixPtr(G);

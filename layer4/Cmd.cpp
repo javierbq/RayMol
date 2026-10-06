@@ -85,7 +85,10 @@ Z* -------------------------------------------------------------------
 #include "MetalPick.h"
 #include "SurfacePick.h"
 
+#include "GpuFrameTimes.h"
 #include "LightRigPy.h"
+#include "LightShadows.h"
+#include "Renderer.h"
 #include "SceneLights.h"
 
 #define tmpSele "_tmp"
@@ -5493,11 +5496,17 @@ static PyObject* CmdGetLightsRayNotice(PyObject* self, PyObject* args)
 /// decision 15 and the packed rig block (LightFrameAsPyDict). `matrix` is a
 /// column-major world->eye 4x4 (16 numbers), or None for the live camera.
 /// Reads only.
+///
+/// #616: `grid` (optional) is None for the scene's grid, or (n_col, n_row,
+/// first_slot) for an active grid in its place. The scene members are
+/// brought up to date first (ExecutiveUpdateSceneMembers), as a frame does,
+/// so the caster extent sees what a render would.
 static PyObject* CmdGetLightFrame(PyObject* self, PyObject* args)
 {
   PyMOLGlobals* G = nullptr;
   PyObject* matrix = nullptr;
-  API_SETUP_ARGS(G, self, args, "OO", &self, &matrix);
+  PyObject* grid = Py_None;
+  API_SETUP_ARGS(G, self, args, "OO|O", &self, &matrix, &grid);
   std::optional<glm::dmat4> m;
   if (matrix != Py_None) {
     auto parsed = LightMatrixFromPy(matrix);
@@ -5505,8 +5514,22 @@ static PyObject* CmdGetLightFrame(PyObject* self, PyObject* args)
       return APIFailure(G, parsed.error());
     m = *parsed;
   }
+  std::optional<pymol::LightShadowGridOverride> g;
+  if (grid != Py_None) {
+    pymol::LightShadowGridOverride over;
+    over.active = true;
+    if (!PyArg_ParseTuple(grid, "iii", &over.nCol, &over.nRow, &over.firstSlot) ||
+        over.nCol < 1 || over.nRow < 1) {
+      PyErr_Clear();
+      return APIFailure(G, pymol::make_error(
+          "grid must be None or (n_col, n_row, first_slot) with n_col, n_row >= 1"));
+    }
+    g = over;
+  }
   APIEnterBlocked(G);
-  const auto frame = SceneLightsFrame(G, m ? *m : SceneGetWorldToEye(G));
+  ExecutiveUpdateSceneMembers(G);
+  const auto frame = SceneLightsFrame(
+      G, m ? *m : SceneGetWorldToEye(G), g ? &*g : nullptr);
   PyObject* result = LightFrameAsPyDict(SceneGetLightRig(G), frame);
   APIExitBlocked(G);
   return result;
@@ -5523,6 +5546,148 @@ static PyObject* CmdLightWarmthRGB(PyObject* self, PyObject* args)
 }
 
 /* ---- end light shading (#613) ------------------------------------------ */
+
+/* ---- per-light shadows (#616) --------------------------------------------
+ * The studio shadow plan's pure maths (layer1/LightShadows.h), the casters,
+ * and the GPU frame times (layer0/GpuFrameTimes.h), exposed so CI can test
+ * the C++ from Python. Reads only.
+ */
+
+/// LightShadowFrustum(pos, axis, cos_outer, centre, radius), all eye space:
+/// a dict (LightShadowViewAsPyDict) or None.
+static PyObject* CmdLightShadowFrustum(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  glm::vec3 pos, axis, centre;
+  float cosOuter = 0.0f, radius = 0.0f;
+  API_SETUP_ARGS(G, self, args, "O(fff)(fff)f(fff)f", &self, &pos.x, &pos.y,
+      &pos.z, &axis.x, &axis.y, &axis.z, &cosOuter, &centre.x, &centre.y,
+      &centre.z, &radius);
+  const auto view =
+      pymol::LightShadowFrustum(pos, axis, cosOuter, centre, radius);
+  if (!view)
+    return APIAutoNone(Py_None);
+  return LightShadowViewAsPyDict(*view);
+}
+
+/// LightShadowMapSize(setting, mobile): texels per side.
+static PyObject* CmdLightShadowMapSize(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  int setting = 0, mobile = 0;
+  API_SETUP_ARGS(G, self, args, "Oip", &self, &setting, &mobile);
+  return PyLong_FromLong(pymol::LightShadowMapSize(setting, mobile != 0));
+}
+
+/// LightShadowTileRect(cell, tiles, size): {'x', 'y', 'size', 'uv'}.
+static PyObject* CmdLightShadowTile(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  int cell = 0, tiles = 1, size = 0;
+  API_SETUP_ARGS(G, self, args, "Oiii", &self, &cell, &tiles, &size);
+  return LightShadowTileAsPyDict(pymol::LightShadowTileRect(cell, tiles, size));
+}
+
+/// What the studio shadow pre-pass draws and fits its frusta to:
+/// {'casters': [names], 'excluded': [overlay names], 'extent': [[min],
+/// [max]] | None (SceneGetLightShadowExtent), 'overlay_name': '_move_gizmo'}.
+static PyObject* CmdGetLightShadowCasters(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  API_SETUP_ARGS(G, self, args, "O", &self);
+  APIEnterBlocked(G);
+  ExecutiveUpdateSceneMembers(G);
+  std::vector<std::string> casters, excluded;
+  SceneLightShadowCasterNames(G, casters, excluded);
+  float mn[3], mx[3];
+  const bool extent = SceneGetLightShadowExtent(G, mn, mx);
+  APIExitBlocked(G);
+  PyObject* ext = extent ? Py_BuildValue("[[fff],[fff]]", mn[0], mn[1], mn[2],
+                               mx[0], mx[1], mx[2])
+                         : APIAutoNone(Py_None);
+  PyObject* result = Py_BuildValue("{s:N,s:N,s:N,s:s}", "casters",
+      PConvToPyObject(casters), "excluded", PConvToPyObject(excluded),
+      "extent", ext, "overlay_name", kSceneMoveGizmoName);
+  return result;
+}
+
+/// GpuFrameSummarize(samples): {'count', 'mean', 'median', 'p95', 'max'}.
+static PyObject* CmdGpuTimeSummary(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  PyObject* samples = nullptr;
+  API_SETUP_ARGS(G, self, args, "OO", &self, &samples);
+  unique_PyObject_ptr seq(
+      PySequence_Fast(samples, "samples must be a sequence of numbers"));
+  if (!seq)
+    return nullptr;
+  const Py_ssize_t n = PySequence_Fast_GET_SIZE(seq.get());
+  std::vector<double> values;
+  values.reserve(size_t(n));
+  for (Py_ssize_t i = 0; i < n; ++i) {
+    const double v =
+        PyFloat_AsDouble(PySequence_Fast_GET_ITEM(seq.get(), i));
+    if (v == -1.0 && PyErr_Occurred())
+      return nullptr;
+    values.push_back(v);
+  }
+  return GpuFrameSummaryAsPyDict(pymol::GpuFrameSummarize(std::move(values)));
+}
+
+/// GpuFrameTimes::record() over given frames, as the renderer feeds it:
+/// `frames` is a sequence of (ms, shadow_maps, shadow_size, offscreen,
+/// now_seconds) and `mode` the metal_gpu_timing value. Returns {'lines':
+/// [each non-empty line record() returned, in order], 'stats': the report
+/// (GpuFrameReportAsPyDict) or None}.
+static PyObject* CmdGpuTimeReplay(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  PyObject* frames = nullptr;
+  int mode = 0;
+  API_SETUP_ARGS(G, self, args, "OOi", &self, &frames, &mode);
+  unique_PyObject_ptr seq(PySequence_Fast(frames,
+      "frames must be a sequence of (ms, maps, size, offscreen, now)"));
+  if (!seq)
+    return nullptr;
+  pymol::GpuFrameTimes times;
+  std::vector<std::string> lines;
+  const Py_ssize_t n = PySequence_Fast_GET_SIZE(seq.get());
+  for (Py_ssize_t i = 0; i < n; ++i) {
+    double ms = 0.0, now = 0.0;
+    int maps = 0, size = 0, offscreen = 0;
+    if (!PyArg_ParseTuple(PySequence_Fast_GET_ITEM(seq.get(), i), "diipd",
+            &ms, &maps, &size, &offscreen, &now))
+      return nullptr;
+    std::string line = times.record(ms, maps, size, mode, offscreen != 0, now);
+    if (!line.empty())
+      lines.push_back(std::move(line));
+  }
+  pymol::GpuFrameReport report;
+  PyObject* stats = times.report(report, mode)
+                        ? GpuFrameReportAsPyDict(report)
+                        : APIAutoNone(Py_None);
+  if (!stats)
+    return nullptr;
+  return Py_BuildValue("{s:N,s:N}", "lines", PConvToPyObject(lines), "stats",
+      stats);
+}
+
+/// The renderer's GPU frame times (metal_gpu_timing > 0): a dict
+/// (GpuFrameReportAsPyDict), or None with no Metal renderer or no frames.
+static PyObject* CmdGetGpuFrameStats(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  API_SETUP_ARGS(G, self, args, "O", &self);
+  APIEnterBlocked(G);
+  pymol::GpuFrameReport report;
+  const bool have = G->Renderer && G->Renderer->getGpuFrameStats(&report);
+  APIExitBlocked(G);
+  if (!have)
+    return APIAutoNone(Py_None);
+  return GpuFrameReportAsPyDict(report);
+}
+
+/* ---- end per-light shadows (#616) -------------------------------------- */
 
 static PyObject *CmdGetMinMax(PyObject * self, PyObject * args)
 {
@@ -7521,6 +7686,13 @@ static PyMethodDef Cmd_methods[] = {
   /* light shading (#613) */
   {"get_light_frame", CmdGetLightFrame, METH_VARARGS},
   {"light_warmth_rgb", CmdLightWarmthRGB, METH_VARARGS},
+  {"light_shadow_frustum", CmdLightShadowFrustum, METH_VARARGS},
+  {"light_shadow_map_size", CmdLightShadowMapSize, METH_VARARGS},
+  {"light_shadow_tile", CmdLightShadowTile, METH_VARARGS},
+  {"get_light_shadow_casters", CmdGetLightShadowCasters, METH_VARARGS},
+  {"gpu_time_summary", CmdGpuTimeSummary, METH_VARARGS},
+  {"get_gpu_frame_stats", CmdGetGpuFrameStats, METH_VARARGS},
+  {"gpu_time_replay", CmdGpuTimeReplay, METH_VARARGS},
   /* end light shading */
   {"get_mtl_obj", CmdGetMtlObj, METH_VARARGS},
   {"get_model", CmdGetModel, METH_VARARGS},

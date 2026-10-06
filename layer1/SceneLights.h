@@ -19,15 +19,21 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <glm/mat4x4.hpp>
 
 #include "LightRig.h"
 #include "LightRigBlock.h"
 #include "LightShading.h"
+#include "LightShadows.h"
 #include "Result.h"
 
 struct PyMOLGlobals;
+namespace pymol
+{
+struct CObject;
+}
 
 /// The rig, or nullptr when there is none.
 const pymol::LightRig* SceneGetLightRig(PyMOLGlobals* G);
@@ -119,7 +125,8 @@ bool SceneLightsRayNotice(PyMOLGlobals* G, int mode);
 
 /**
  * What one frame needs from the lighting (#613): PyMOL's classic light terms,
- * after decision 15, and the rig packed for the GPU.
+ * after decision 15, and the rig packed for the GPU; and (#616) its studio
+ * shadow maps.
  */
 struct SceneLightFrame {
   /// What setLightingParams() receives: the ambient, direct and reflect
@@ -129,8 +136,20 @@ struct SceneLightFrame {
   /// The adjusted shininess (spec_power); never scaled by the rig.
   float shininess = 0.0f;
   /// The rig resolved with the frame's world->eye matrix and packed
-  /// (LightRigFrameBlock); nullopt when there is no rig or it is off.
+  /// (LightRigFrameBlock); nullopt when there is no rig or it is off. While
+  /// `shadows` is set its shadow slots, head.w, maps and grid are filled in
+  /// (LightShadowPlan).
   std::optional<pymol::LightRigBlock> rig;
+  /// Studio shadows are on (#616): the rig is on, metal_shadows is on and a
+  /// light has `shadow`. Whatever the casters, the grid or the GPU, the
+  /// whole-pixel (classic) shadow is then off.
+  bool studioShadows = false;
+  /// Each map's texels per side (LightShadowMapSize) while studioShadows,
+  /// else 0.
+  int shadowMapSize = 0;
+  /// This frame's maps: set when studioShadows and there are casters
+  /// (SceneGetLightShadowExtent) in front of at least one shadowed light.
+  std::optional<pymol::LightShadowFrame> shadows;
 };
 
 /**
@@ -140,5 +159,32 @@ struct SceneLightFrame {
  * (SceneGetWorldToEye) when it is given no matrix. Writes nothing. With no
  * rig, or a rig that is off, `classic` is the settings bit for bit and
  * nothing is resolved.
+ *
+ * Studio shadows (#616) are planned only when the rig is on, metal_shadows is
+ * on and a light has `shadow`: only then are metal_light_shadow_size,
+ * metal_shadow_bias, the overlay-free caster extent and the grid read. The
+ * grid is the scene's (G->Scene->grid, laid out by SceneRenderMetal before
+ * this call) unless `grid` overrides it (_cmd.get_light_frame, tests).
  */
-SceneLightFrame SceneLightsFrame(PyMOLGlobals* G, const glm::dmat4& worldToEye);
+SceneLightFrame SceneLightsFrame(PyMOLGlobals* G, const glm::dmat4& worldToEye,
+    const pymol::LightShadowGridOverride* grid = nullptr);
+
+/* ---- Studio shadow casters (#616) ----------------------------------------
+ * Overlays never cast studio shadows (#433): the studio pre-pass excludes
+ * them and the frusta are fitted to an extent without them.
+ */
+
+/// The Move gizmo's CGO (modules/pymol/metal_move.py, _GIZMO_OBJ).
+inline constexpr const char* kSceneMoveGizmoName = "_move_gizmo";
+
+/// True for an overlay: a gadget, a gizmo, or the Move gizmo's CGO.
+bool SceneObjectIsOverlay(const pymol::CObject* obj);
+
+/// The scene's overlays (scene members that SceneObjectIsOverlay), for the
+/// studio pre-pass's `exclude` list. Call after ExecutiveUpdateSceneMembers.
+std::vector<pymol::CObject*> SceneLightShadowOverlays(PyMOLGlobals* G);
+
+/// The scene members' names, split into casters and excluded overlays
+/// (_cmd.get_light_shadow_casters). Call after ExecutiveUpdateSceneMembers.
+void SceneLightShadowCasterNames(PyMOLGlobals* G,
+    std::vector<std::string>& casters, std::vector<std::string>& excluded);
