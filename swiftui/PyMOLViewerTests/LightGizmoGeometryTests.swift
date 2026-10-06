@@ -170,7 +170,7 @@ final class LightGizmoProjectionTests: XCTestCase {
         XCTAssertEqual(Double(p.sceneRect.width), 300)
         XCTAssertEqual(Double(p.sceneRect.height), 225, accuracy: 1e-9)
         XCTAssertEqual(Double(p.sceneRect.minY), (800 - 225) / 2, accuracy: 1e-9)
-        assertPoint(p.point(sceneNDC: SIMD2(1, 1)), CGPoint(x: 300, y: (800 - 225) / 2))
+        assertPoint(p.point(sceneNDC: SIMD2(1, 1)), CGPoint(x: 300, y: 287.5))
         XCTAssertNil(p.sceneNDC(point: CGPoint(x: 150, y: 20)), "in the top bar")
         XCTAssertNotNil(p.sceneNDC(point: CGPoint(x: 150, y: 400)))
     }
