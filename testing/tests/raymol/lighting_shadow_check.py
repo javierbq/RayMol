@@ -17,8 +17,9 @@ has no GPU, so this pins what it can:
   outside the view, halfway between their light and the rig centre; the
   backdrop lies behind every atom and inside the slab;
 * time_shadows.py: the configuration matrix, the generated scripts (the
-  export queued once per process) and AUTOCMD text, the stamped-line
-  parsing, the s/frame arithmetic and the markdown table.
+  export queued once per process, on AUTOCMD's second run) and the launch
+  environment, the stamped-line parsing, the s/frame arithmetic (two lines
+  per ray-traced frame) and the markdown table.
 
 Source-reading, so skipped (not passed) outside a repo checkout, decided by
 one file every checkout has; in a checkout the ticket's own files are
@@ -655,7 +656,7 @@ class TestTimeShadows(testing.PyMOLTestCase):
         self.addCleanup(shutil.rmtree, self.tmp, True)
 
     def tearDown(self):
-        vars(cmd).pop('_ts_started', None)
+        vars(cmd).pop('_ts_runs', None)
         cmd.set_lights(None)
         super(TestTimeShadows, self).tearDown()
 
@@ -678,11 +679,16 @@ class TestTimeShadows(testing.PyMOLTestCase):
         text = self.t.autocmd(script)
         for word in (';', 'orient', 'reset', 'load ', 'fetch ', 'show '):
             self.assertNotIn(word, text)
-        env = self.t.launch_env(script, os.path.join(self.tmp, 't.timing'))
+        probe = os.path.join(self.tmp, 'work', '7k00_s3_r1.probe.png')
+        env = self.t.launch_env(script, os.path.join(self.tmp, 't.timing'), probe)
         self.assertIn('PYMOL_AUTOCMD=run %s' % script, env)
         self.assertIn('RAYMOL_GPU_TIMING=%s' % os.path.join(self.tmp, 't.timing'), env)
+        # the probe makes the app run AUTOCMD a second time, once the renderer
+        # exists; tiny and not ray-traced, so its timing line is ignored
+        self.assertIn('PYMOL_AUTOEXPORT=%s,64,64,0' % probe, env)
+        self.assertIsNone(self.t.parse_gpu_ms('offscreen 64x64 gpu_ms=1.00'))
         with self.assertRaises(self.t.Refusal):
-            self.t.launch_env(os.path.join(self.tmp, 'orient', 'x.py'), 't')
+            self.t.launch_env(os.path.join(self.tmp, 'orient', 'x.py'), 't', probe)
         with self.assertRaises(self.t.Refusal):
             self.t.check_autocmd('run a.py; run b.py')
 
@@ -710,8 +716,11 @@ class TestTimeShadows(testing.PyMOLTestCase):
         original = cmd.movie_export
         cmd.movie_export = lambda *a, **k: calls.append((a, k))
         try:
-            cmd.run(script)
-            cmd.run(script)              # the app may run AUTOCMD twice
+            cmd.run(script)              # at launch: before the renderer exists
+            self.assertEqual(calls, [])
+            self.assertFalse(os.path.exists(start))
+            cmd.run(script)              # PYMOL_AUTOEXPORT's run: queue the export
+            cmd.run(script)              # any later run does nothing
         finally:
             cmd.movie_export = original
         self.assertEqual(len(calls), 1)
@@ -749,18 +758,41 @@ class TestTimeShadows(testing.PyMOLTestCase):
         self.assertIsNone(self.t.parse_gpu_ms('offscreen 1920x1080 gpu_ms=abc'))
 
     def testArithmetic(self):
+        # one line per frame
         frames = [(10.0 + 2.0 * i, 100.0 + i) for i in range(48)]     # 2 s per frame
         frames[0] = (5.0, 900.0)                                       # frame 1: compiles
-        run = self.t.summarise_run(frames, 48, start=0.0, mp4_end=96.0)
+        run = self.t.summarise_run(frames, 48, start=0.0, mp4_end=96.0, per=1)
         self.assertAlmostEqual(run['s_per_frame'], (104.0 - 5.0) / 47.0)
         self.assertAlmostEqual(run['gpu_ms_median'], 124.0)           # lines 2..48: 101..147
         self.assertAlmostEqual(run['s_per_frame_mp4'], 2.0)
         self.assertTrue(run['complete'])
-        short = self.t.summarise_run(frames[:10], 48)
+        short = self.t.summarise_run(frames[:10], 48, per=1)
         self.assertIsNone(short['s_per_frame'])
         self.assertFalse(short['complete'])
         # an extra stray line never stretches the measure: line 48 is used
-        extra = self.t.summarise_run(frames + [(500.0, 1.0)], 48)
+        extra = self.t.summarise_run(frames + [(500.0, 1.0)], 48, per=1)
+        self.assertAlmostEqual(extra['s_per_frame'], run['s_per_frame'])
+        self.assertFalse(extra['complete'])
+
+    def testArithmeticTwoLinesPerFrame(self):
+        # ray=1: a throwaway RT render, then the real one (PyMOLBridge_RenderHiResPNG)
+        self.assertEqual(self.t.LINES_PER_FRAME, 2)
+        lines = []
+        for i in range(48):                                  # frame i+1 ends at 10 + 2i
+            lines += [(9.0 + 2.0 * i, 40.0), (10.0 + 2.0 * i, 60.0 + i)]
+        lines[1] = (5.0, 900.0)                              # frame 1: compiles
+        run = self.t.summarise_run(lines, 48, start=0.0, mp4_end=96.0)
+        self.assertEqual(run['lines'], 96)
+        self.assertTrue(run['complete'])
+        self.assertAlmostEqual(run['s_per_frame'], (104.0 - 5.0) / 47.0)
+        # a frame costs both renders: frames 2..48 are 40 + 61..107
+        self.assertAlmostEqual(run['gpu_ms_median'], 40.0 + 84.0)
+        self.assertEqual(self.t.frame_times(lines[:5], 48), [(5.0, 940.0), (12.0, 101.0)])
+        # 48 lines are only 24 frames, never a complete run
+        half = self.t.summarise_run(lines[:48], 48)
+        self.assertIsNone(half['s_per_frame'])
+        self.assertFalse(half['complete'])
+        extra = self.t.summarise_run(lines + [(500.0, 1.0)], 48)
         self.assertAlmostEqual(extra['s_per_frame'], run['s_per_frame'])
         self.assertFalse(extra['complete'])
 

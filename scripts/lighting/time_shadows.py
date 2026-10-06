@@ -2,7 +2,8 @@
 """L6 timing harness for per-light shadow maps (#616, lighting epic #610).
 
     time_shadows.py --app APP --out DIR [--pdb-dir DIR] [--runs 3] [--frames 48]
-                    [--only tag,tag] [--no-warmup] [--timeout S] [--dry-run]
+                    [--only tag,tag] [--no-warmup] [--timeout S]
+                    [--start-timeout S] [--dry-run]
 
 THE ORCHESTRATOR RUNS THIS (both build slots held, nothing else running). CI
 never asserts timings; testing/tests/raymol/lighting_shadow_check.py tests
@@ -23,22 +24,37 @@ shadowed (s0, s1, s3) at the default map size, plus the ribosome's s3 at
 metal_light_shadow_size 1024 and 4096. Structures are downloaded once into
 --pdb-dir; their atom counts are printed.
 
-One run is one `open -n` of the app with PYMOL_AUTOCMD=run <script> and
-RAYMOL_GPU_TIMING=<file>. The script loads the structure (cartoon plus
-organic sticks), bakes render.py's settings plus metal_raytrace 1 and
-metal_shadows 1, installs the rig with an explicit centre and size, makes a
-48-frame roll (mset 1 x48, util.mroll), writes a start stamp and queues the
-export ONCE per process (the app may run PYMOL_AUTOCMD twice). The renderer
-writes one `offscreen 1920x1080 gpu_ms=..` line per offscreen frame, with no
-time on it, so this harness tails the file every 50 ms and STAMPS each new
-line on arrival. It waits for the frames' lines and a stable mp4, then ends
-the app by PID (its exact binary path; never pkill -f).
+One run is one `open -n` of the app with PYMOL_AUTOCMD=run <script>,
+PYMOL_AUTOEXPORT=<probe png>,64,64,0 and RAYMOL_GPU_TIMING=<file>. The script
+loads the structure (cartoon plus organic sticks), bakes render.py's settings
+plus metal_raytrace 1 and metal_shadows 1, installs the rig with an explicit
+centre and size, makes a 48-frame roll (mset 1 x48, util.mroll), writes a
+start stamp and queues the export, on the SECOND run of PYMOL_AUTOCMD only.
 
-Per run:
-    s_per_frame    (stamp of the last line - stamp of line 1) / (frames - 1):
+Why the second run: the app runs PYMOL_AUTOCMD at launch, and AUTOEXPORT
+runs it again about 4 s later, right before its own (tiny, discarded) probe
+render. An export queued at launch races the first live frame, which is what
+builds the Metal renderer (MetalViewport.draw -> setupMetalRenderer), and the
+live frame skips while an export holds the core: when the export wins (a
+cold launch), every frame renders nothing, the export fails into the in-app
+log and the app sits idle. The probe also gets the scene set after the theme
+paths have settled (PYMOL_AUTOTHEME fires at about 2.5 s).
+
+The renderer writes one `offscreen 1920x1080 gpu_ms=..` line per offscreen
+render, with no time on it, and a ray-traced export frame is TWO renders
+(PyMOLBridge_RenderHiResPNG renders a throwaway frame first, so the real
+frame's acceleration structure is current): LINES_PER_FRAME lines per frame.
+The probe's line is 64x64 and ignored. This harness tails the file every
+50 ms and STAMPS each new line on arrival. It waits for the frames' lines and
+a stable mp4, then ends the app by PID (its exact binary path; never pkill
+-f). A run with no export line within --start-timeout seconds fails early.
+
+Per run (frame k ends with its last line and costs the sum of its lines):
+    s_per_frame    (end of the last frame - end of frame 1) / (frames - 1):
                    frame 1 (pipeline compiles) is left out
     s_per_frame_mp4  (mp4 final mtime - the script's start stamp) / frames
-    gpu_ms_median  the median gpu_ms of lines 2..frames
+                   (includes the probe render and frame 1)
+    gpu_ms_median  the median gpu_ms of frames 2..frames
 Per configuration: the median over runs, and the delta of s_per_frame
 against the same structure's s0. Writes DIR/results.json and DIR/table.md.
 
@@ -88,6 +104,13 @@ LIGHTS = [
 ]
 SHADOWED = {'s0': 0, 's1': 1, 's3': 3}
 TIMING_PREFIX = 'offscreen %dx%d gpu_ms=' % SIZE
+# Offscreen renders per exported frame with ray=1: PyMOLBridge_RenderHiResPNG
+# renders a throwaway RT frame (its acceleration structure is built from the
+# previous frame's geometry), then the real one. Each writes a timing line.
+LINES_PER_FRAME = 2
+# PYMOL_AUTOEXPORT's probe render: tiny, not ray-traced, its line ignored.
+PROBE = (64, 64, 0)
+START_TIMEOUT = 300
 
 
 class Refusal(Exception):
@@ -140,8 +163,9 @@ def rig_dict(shadowed):
 # --- scripts and AUTOCMD ----------------------------------------------------------
 
 def script_text(render, config, structure_path, mp4, start_file, frames=FRAMES):
-    """One timing script: idempotent (a second run in the same process does
-    nothing), so the export is queued once per process."""
+    """One timing script. It acts on its second run in a process only (the
+    one PYMOL_AUTOEXPORT makes, after the renderer exists), so the export is
+    queued once per process and never at launch."""
     settings = render.baked_settings(1, 1)   # metal_raytrace 1, metal_shadows 1
     lines = [
         '# generated by scripts/lighting/time_shadows.py -- do not edit',
@@ -187,9 +211,10 @@ def script_text(render, config, structure_path, mp4, start_file, frames=FRAMES):
         "'atoms': cmd.count_atoms('m'), 'frames': cmd.count_frames()}, fh)" % config.tag,
         '    cmd.movie_export(%r, %d, %d, quality=%r, ray=1)' % (mp4, SIZE[0], SIZE[1], 'standard'),
         '',
-        '# PYMOL_AUTOCMD may run this twice: queue the export once per process',
-        "if not getattr(cmd, '_ts_started', False):",
-        '    cmd._ts_started = True',
+        '# Run 1 is at launch, before the first live frame has built the Metal',
+        '# renderer; run 2 is PYMOL_AUTOEXPORT\'s, about 4 s later. Act on run 2 only.',
+        "cmd._ts_runs = getattr(cmd, '_ts_runs', 0) + 1",
+        'if cmd._ts_runs == 2:',
         '    _ts_main()',
     ]
     return '\n'.join(lines) + '\n'
@@ -211,12 +236,16 @@ def check_autocmd(text):
     return text
 
 
-def launch_env(script, timing_file):
+def launch_env(script, timing_file, probe):
+    """The environment of one run (`open --env` passes only these). The
+    AUTOEXPORT probe exists to run AUTOCMD a second time, once the renderer
+    exists; its PNG is discarded."""
     return [
         'PYMOL_SKIP_WHATS_NEW=1',
         'PYMOL_SKIP_FIRSTBOOT_THEME=1',
         'PYMOL_AUTOTHEME=Classic',
         'PYMOL_AUTOCMD=%s' % check_autocmd(autocmd(script)),
+        'PYMOL_AUTOEXPORT=%s,%d,%d,%d' % ((probe,) + PROBE),
         'RAYMOL_GPU_TIMING=%s' % timing_file,
     ]
 
@@ -274,14 +303,26 @@ class Tailer(object):
         return out
 
 
-def summarise_run(frames_seen, frames, start=None, mp4_end=None):
+def frame_times(lines_seen, frames, per=LINES_PER_FRAME):
+    """[(end stamp, gpu_ms)] of each complete exported frame, at most
+    `frames`: frame k is lines (k-1)*per+1..k*per, ends with its last line's
+    stamp and costs the sum of their gpu_ms."""
+    out = []
+    for k in range(min(len(lines_seen) // per, frames)):
+        group = lines_seen[k * per:(k + 1) * per]
+        out.append((group[-1][0], sum(ms for _, ms in group)))
+    return out
+
+
+def summarise_run(lines_seen, frames, start=None, mp4_end=None, per=LINES_PER_FRAME):
     """The numbers of one run from its stamped offscreen lines."""
-    n = len(frames_seen)
+    n = len(lines_seen)
+    done = frame_times(lines_seen, frames, per)
     out = {'lines': n, 'frames': frames}
-    if n >= frames >= 2:
-        # line `frames` (48), not the last: a stray extra line never stretches it
-        out['s_per_frame'] = (frames_seen[frames - 1][0] - frames_seen[0][0]) / float(frames - 1)
-        out['gpu_ms_median'] = statistics.median(ms for _, ms in frames_seen[1:frames])
+    if len(done) >= frames >= 2:
+        # frame `frames` (48), not the last line: a stray extra line never stretches it
+        out['s_per_frame'] = (done[frames - 1][0] - done[0][0]) / float(frames - 1)
+        out['gpu_ms_median'] = statistics.median(ms for _, ms in done[1:frames])
     else:
         out['s_per_frame'] = None
         out['gpu_ms_median'] = None
@@ -289,7 +330,7 @@ def summarise_run(frames_seen, frames, start=None, mp4_end=None):
         out['s_per_frame_mp4'] = (mp4_end - start) / float(frames)
     else:
         out['s_per_frame_mp4'] = None
-    out['complete'] = n == frames
+    out['complete'] = n == frames * per
     return out
 
 
@@ -384,26 +425,36 @@ def structure_path(tag, pdb_dir, download=True):
 
 # --- running ------------------------------------------------------------------------
 
-def run_once(render, app, binaries, script, timing, mp4, start_file, frames, timeout):
+def run_once(render, app, binaries, script, timing, mp4, start_file, frames, timeout,
+             probe, start_timeout=START_TIMEOUT):
     """One export; returns (run summary, error or None)."""
-    for p in (timing, mp4, start_file):
+    for p in (timing, mp4, start_file, probe):
         if os.path.exists(p):
             os.remove(p)
     render.kill_app(binaries)
     env = []
-    for item in launch_env(script, timing):
+    for item in launch_env(script, timing, probe):
         env += ['--env', item]
     tail = Tailer(timing)
     err = None
+    need = frames * LINES_PER_FRAME
     try:
         res = subprocess.run(['open', '-n'] + env + [app])
         if res.returncode != 0:
             return summarise_run([], frames), 'open exited %d' % res.returncode
-        deadline = time.time() + timeout
+        launched = time.time()
+        deadline = launched + timeout
         last_size, stable_since = -1, None
         while time.time() < deadline:
             tail.poll()
-            if len(tail.frames()) >= frames and os.path.isfile(mp4):
+            if not tail.frames() and time.time() - launched > start_timeout:
+                err = ('no export line %ds after launch: the export never started '
+                       '(start stamp %s, probe png %s)' % (
+                           start_timeout,
+                           'present' if os.path.isfile(start_file) else 'missing',
+                           'present' if os.path.isfile(probe) else 'missing'))
+                break
+            if len(tail.frames()) >= need and os.path.isfile(mp4):
                 size = os.path.getsize(mp4)
                 if size > 0 and size == last_size:
                     if stable_since is None:
@@ -429,7 +480,8 @@ def run_once(render, app, binaries, script, timing, mp4, start_file, frames, tim
     out = summarise_run(tail.frames(), frames, start and start.get('start'), mp4_end)
     out['atoms'] = start and start.get('atoms')
     if not err and not out['complete']:
-        err = '%d offscreen lines, expected %d' % (out['lines'], frames)
+        err = '%d offscreen lines, expected %d (%d frames x %d)' % (
+            out['lines'], need, frames, LINES_PER_FRAME)
     return out, err
 
 
@@ -444,6 +496,8 @@ def main(argv=None):
     ap.add_argument('--no-warmup', action='store_true',
                     help='skip the throwaway 2-frame run before the timed ones')
     ap.add_argument('--timeout', type=int, default=3600, help='seconds per run')
+    ap.add_argument('--start-timeout', type=int, default=START_TIMEOUT,
+                    help='fail a run with no export line this many seconds after launch')
     ap.add_argument('--dry-run', action='store_true',
                     help='write the scripts and print the plan; launch nothing')
     args = ap.parse_args(argv)
@@ -453,8 +507,8 @@ def main(argv=None):
         pdb_dir = os.path.abspath(args.pdb_dir or os.path.join(out, 'pdb'))
         render.check_path('--out', out)
         render.check_path('--pdb-dir', pdb_dir)
-        if args.runs < 1 or args.frames < 2:
-            raise Refusal('--runs must be >= 1 and --frames >= 2')
+        if args.runs < 1 or args.frames < 2 or args.start_timeout < 1:
+            raise Refusal('--runs must be >= 1, --frames >= 2 and --start-timeout >= 1')
         todo = configs()
         if args.only:
             wanted = [t for t in args.only.split(',') if t]
@@ -491,18 +545,19 @@ def main(argv=None):
                 script = stem + '.py'
                 files = {'script': script, 'timing': stem + '.timing',
                          'mp4': os.path.join(out, '%s_r%d.mp4' % (config.tag, run)),
-                         'start': stem + '.start.json'}
-                for label in ('script', 'timing', 'mp4', 'start'):
+                         'start': stem + '.start.json', 'probe': stem + '.probe.png'}
+                for label in ('script', 'timing', 'mp4', 'start', 'probe'):
                     render.check_path(label, files[label])
                 with open(script, 'w') as fh:
                     fh.write(script_text(render, config, paths[config.structure][1],
                                          files['mp4'], files['start'], args.frames))
                 plan.append((config, run, files))
         for config, run, files in plan:
-            print('%-16s run %d  AUTOCMD=%s' % (config.tag, run, autocmd(files['script'])))
+            print('%-16s run %d  AUTOCMD=%s' % (config.tag, run, autocmd(files['script'])),
+                  flush=True)
         if args.dry_run:
             print('dry run: %d runs of %d configs, scripts in %s' % (
-                len(plan), len(todo), work))
+                len(plan), len(todo), work), flush=True)
             return 0
 
         if not args.no_warmup:
@@ -512,14 +567,16 @@ def main(argv=None):
                 fh.write(script_text(render, warm, paths['1rx1'][1], stem + '.mp4',
                                      stem + '.start.json', 2))
             _, err = run_once(render, app, binaries, stem + '.py', stem + '.timing',
-                              stem + '.mp4', stem + '.start.json', 2, args.timeout)
+                              stem + '.mp4', stem + '.start.json', 2, args.timeout,
+                              stem + '.probe.png', args.start_timeout)
             print('[warm] %s (numbers discarded)' % (err or 'ok'), flush=True)
 
         started = datetime.datetime.now().isoformat(timespec='seconds')
         results, failed = {}, []
         for n, (config, run, files) in enumerate(plan, 1):
             summary, err = run_once(render, app, binaries, files['script'], files['timing'],
-                                    files['mp4'], files['start'], args.frames, args.timeout)
+                                    files['mp4'], files['start'], args.frames, args.timeout,
+                                    files['probe'], args.start_timeout)
             summary['error'] = err
             entry = results.setdefault(config.tag, {'config': config, 'runs': []})
             entry['runs'].append(summary)
@@ -540,15 +597,16 @@ def main(argv=None):
             json.dump({'app': app, 'app_sha': sha, 'started': started,
                        'ended': datetime.datetime.now().isoformat(timespec='seconds'),
                        'frames': args.frames, 'size': list(SIZE),
+                       'lines_per_frame': LINES_PER_FRAME,
                        'structures': {t: p for t, p in paths.items()},
                        'summary': summary, 'failed': failed,
                        'runs': {t: e['runs'] for t, e in results.items()}}, fh, indent=2)
         text = table(summary, [c.tag for c in todo if c.tag in summary])
         with open(os.path.join(out, 'table.md'), 'w') as fh:
             fh.write(text)
-        print(text)
+        print(text, flush=True)
         if failed:
-            print('%d runs failed: %s' % (len(failed), ', '.join(failed)))
+            print('%d runs failed: %s' % (len(failed), ', '.join(failed)), flush=True)
             return 1
         return 0
     except Refusal as e:
