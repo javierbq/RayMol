@@ -3240,6 +3240,14 @@ final class PyMOLEngine: ObservableObject {
         MainActor.assumeIsolated { LightGizmoUIState() }
     }()
 
+    /// Who owns the viewport's current press in Lights mode (#622): the
+    /// gizmo (a press on one of its targets, until the release), an
+    /// option-click candidate, or the camera. MetalViewport drives it; it
+    /// lives here so leaving the mode can end its session while the press
+    /// itself stays owned (the rest of a drag after Esc is swallowed, never
+    /// a camera drag). Not published: nothing observes it.
+    var lightGizmoPointer = LightGizmoPointer()
+
     /// The scene's Shadows switch (metal_shadows) as the scene poll last read
     /// it (~500 ms, in every mode); nil before the first poll. Studio shadows
     /// render only while it is on (#616), so the light inspector hints when a
@@ -3520,12 +3528,15 @@ final class PyMOLEngine: ObservableObject {
         } else if previous == .lights {
             // Done, Esc or another mode: the edits stay, the snapshot goes; no
             // more per-frame eye reads, no gizmo hover or drag state, and the
-            // aim dot's pick grids go back.
+            // aim dot's pick grids go back. A gizmo drag under way writes no
+            // more, but its press stays the gizmo's to its release, so the
+            // rest of it never reaches the camera.
             MainActor.assumeIsolated {
                 lightsController.end()
                 lightsController.eyeDemand = .pinnedOnly
                 lightGizmoUI.reset()
             }
+            lightGizmoPointer.endSession()
             releaseSurfacePick()
         }
         if mode == .move {
@@ -3770,6 +3781,12 @@ final class PyMOLEngine: ObservableObject {
 
     // Tap-to-select via metal_pick (NDC in [-1,1], aspect = width/height).
     func pick(ndcX: Float, ndcY: Float, aspect: Float) {
+#if DEBUG
+        if let viewportInputTap {
+            viewportInputTap(.pick(ndcX: ndcX, ndcY: ndcY))
+            return
+        }
+#endif
         guard let inst = instance else { return }
         PyMOLBridge_Pick(inst, ndcX, ndcY, aspect)
     }
@@ -4147,12 +4164,41 @@ final class PyMOLEngine: ObservableObject {
         PyMOLBridge_Reshape(inst, Int32(width), Int32(height))
     }
 
+#if DEBUG
+    /// What the viewport hands the core for a pointer: a PyMOL button or
+    /// drag event (the camera path), or a click's atom pick.
+    enum ViewportInputEvent: Equatable {
+        case button(button: Int32, state: Int32, x: Int32, y: Int32, modifiers: Int32)
+        case drag(x: Int32, y: Int32, modifiers: Int32)
+        case pick(ndcX: Float, ndcY: Float)
+    }
+
+    /// Test seam (#622's routing tests): while set, `button`, `drag` and
+    /// `pick` report here INSTEAD of reaching the core, so a test can drive
+    /// MetalViewport's handlers and see what reached the camera path without
+    /// moving the shared engine's camera (the core runs queued mouse input
+    /// in the next rendered frame). Compiled out of Release.
+    var viewportInputTap: ((ViewportInputEvent) -> Void)? = nil
+#endif
+
     func button(_ btn: Int32, state: Int32, x: Int32, y: Int32, modifiers: Int32) {
+#if DEBUG
+        if let viewportInputTap {
+            viewportInputTap(.button(button: btn, state: state, x: x, y: y, modifiers: modifiers))
+            return
+        }
+#endif
         guard let inst = instance else { return }
         PyMOLBridge_Button(inst, btn, state, x, y, modifiers)
     }
 
     func drag(x: Int32, y: Int32, modifiers: Int32) {
+#if DEBUG
+        if let viewportInputTap {
+            viewportInputTap(.drag(x: x, y: y, modifiers: modifiers))
+            return
+        }
+#endif
         guard let inst = instance else { return }
         PyMOLBridge_Drag(inst, x, y, modifiers)
     }
