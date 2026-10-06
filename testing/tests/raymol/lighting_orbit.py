@@ -419,6 +419,30 @@ class TestOrbitSource(testing.PyMOLTestCase):
         self.assertIsNotNone(site, 'lightsSideColumn not found')
         self.assertIn('orbitStartsCollapsed: lightsOrbitStartsCollapsed', site)
 
+    def testTheIPadColumnClearsTheHelpButton(self):
+        """On iPad the column (orbit card above the inspector) reaches the
+        viewport's bottom, so the iOS overlay stops it above the
+        bottom-trailing Gesture help button (a 26 pt glyph with 12 pt
+        padding); on iPhone and macOS the inset is 0."""
+        content = self.read(CONTENT_VIEW)
+        inset = body(content, 'private var lightsSideColumnBottomInset')
+        self.assertIsNotNone(inset, 'lightsSideColumnBottomInset not found')
+        ios, _, mac = inset.partition('#else')
+        self.assertIn('hSize == .compact || vSize == .compact', ios)
+        self.assertIn('? 0 : LightsSideColumn.helpButtonClearance', ios)
+        self.assertIn('return 0', mac)
+        self.assertRegex(content, r'lightsSideColumn\.padding\(8\)\s*'
+                                  r'\.padding\(\.bottom,\s*lightsSideColumnBottomInset\)')
+        column = self.read(SIDE_COLUMN)
+        clearance = re.search(r'static let helpButtonClearance:\s*CGFloat\s*=\s*([0-9.]+)', column)
+        self.assertIsNotNone(clearance, 'helpButtonClearance not found')
+        help_button = re.search(r'questionmark\.circle\.fill"\)\s*'
+                                r'\.font\(\.system\(size:\s*([0-9.]+)\)\)\s*'
+                                r'\.foregroundStyle\([^\n]*\)\s*\.padding\(([0-9.]+)\)', content)
+        self.assertIsNotNone(help_button, 'the Gesture help button was not found')
+        glyph, padding = float(help_button.group(1)), float(help_button.group(2))
+        self.assertGreaterEqual(8 + float(clearance.group(1)), glyph + 2 * padding)
+
     def testBothLogLinesCarryThePlan(self):
         """Both PYMOL_AUTOLIGHTS log lines carry plan=<LightsOrbitState
         summary> beside inspector=, and LightsAutoEdit hands the gesture

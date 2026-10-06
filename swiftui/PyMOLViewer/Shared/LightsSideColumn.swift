@@ -30,6 +30,13 @@ struct LightsSideColumn: View {
 
     static let width: CGFloat = LightsInspector.width
 
+    /// The room the column leaves under it on iPad, beyond its 8 pt inset, for
+    /// the viewport's bottom-trailing Gesture help button (a 26 pt glyph with
+    /// 12 pt padding, about 50 pt tall). With the orbit card above the
+    /// inspector the column reaches the viewport's bottom on iPad, and the
+    /// column overlay is drawn over that button. ContentView applies it.
+    static let helpButtonClearance: CGFloat = 44
+
     var body: some View {
         VStack(alignment: .trailing, spacing: 8) {
             LightsOrbitView(controller: controller, style: style,

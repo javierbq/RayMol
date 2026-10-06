@@ -2909,6 +2909,7 @@ struct ContentView: View {
             .overlay(alignment: .topTrailing) {
                 if engine.interactionMode == .lights && !iosFullScreen {
                     lightsSideColumn.padding(8)
+                        .padding(.bottom, lightsSideColumnBottomInset)
                 }
             }
             // Test-only hook (PYMOL_UITEST=1): surface the live selection size
@@ -4091,6 +4092,19 @@ struct ContentView: View {
         return (hSize == .compact || vSize == .compact) && !lightsInspectorExpandOverride
         #else
         return false
+        #endif
+    }
+
+    // The iOS column's extra bottom inset. On iPad (regular width and height)
+    // the expanded orbit card and inspector reach the viewport's bottom, so
+    // the column stops above the bottom-trailing Gesture help button. On
+    // iPhone the cards start collapsed and the viewport has no room to give
+    // up (#623's sheet replaces them there); macOS places the column itself.
+    private var lightsSideColumnBottomInset: CGFloat {
+        #if os(iOS)
+        return (hSize == .compact || vSize == .compact) ? 0 : LightsSideColumn.helpButtonClearance
+        #else
+        return 0
         #endif
     }
 
