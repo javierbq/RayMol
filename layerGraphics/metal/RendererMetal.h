@@ -513,6 +513,23 @@ private:
   void ensureUpscaler(NSUInteger inW, NSUInteger inH, NSUInteger outW, NSUInteger outH);
   void runPostChain();
 
+  // The air (#618, haze and dust): its own pass in runPostChain, after Pass 1
+  // (raster or traced) and before the OIT resolve, only while _lightAirOn and
+  // the rig is on. Its library (kEyeReconSrc + kMaterialSrc + kAirSrc) is
+  // compiled on the first frame that draws air, one attempt per renderer
+  // (_airPipelinesTried; a failure is logged once and the air is skipped).
+  // Only the pipeline state is kept. _airNoMaps: a 1x1, 3-slice depth array
+  // bound in place of the studio maps on a frame without them (never
+  // sampled: the rig copy's head.w is 0 then), so one pipeline serves both.
+  id<MTLRenderPipelineState> _airFullPipeline = nil;
+  bool _airPipelinesTried = false;
+  id<MTLTexture> _airNoMaps = nil;
+  bool ensureAirPipelines();
+  id<MTLTexture> ensureAirNoMaps();
+  // Encodes the air over sceneSrc into the other ping-pong target, on
+  // _cmdBuffer, and returns that target (sceneSrc when it cannot draw).
+  id<MTLTexture> encodeAirPass(id<MTLTexture> sceneSrc);
+
   // Real-time ray tracing: build the shared unit-icosphere primitive
   // acceleration structure (once) + (re)build the per-atom instance
   // acceleration structure when the accumulated sphere set changes.

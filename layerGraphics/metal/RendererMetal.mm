@@ -56,6 +56,19 @@ constexpr NSUInteger kLightShadowSamplerIndex = 7;
 constexpr NSUInteger kRTLightRigConstantIndex = 1;
 constexpr NSUInteger kRTLightRigBufferIndex = 13;
 
+// The air pass (#618; kAirSrc): its own library and its own index space. The
+// air block (pymol::LightAirBlock, MSL LightAirU) and a copy of the rig block
+// (LightRigU); the scene colour and depth and the studio maps (or _airNoMaps);
+// the post sampler and the maps' compare sampler. None of these is the rig's
+// or the maps' index in the lit libraries.
+constexpr NSUInteger kAirParamsBufferIndex = 0;
+constexpr NSUInteger kAirRigBufferIndex = 1;
+constexpr NSUInteger kAirColorTextureIndex = 0;
+constexpr NSUInteger kAirDepthTextureIndex = 1;
+constexpr NSUInteger kAirMapsTextureIndex = 2;
+constexpr NSUInteger kAirPostSamplerIndex = 0;
+constexpr NSUInteger kAirMapsSamplerIndex = 1;
+
 struct MaterialU {
   simd_float4x4 invModelview;
   int family;
@@ -549,6 +562,7 @@ RendererMetal::~RendererMetal()
   [_aoMaskDepthState release];
   [_vboLinePipeline release];         [_bezierTubePipeline release];
   [_bezierTubeRigPipeline release];   // the tube's light-rig pipeline (#613)
+  [_airFullPipeline release];         [_airNoMaps release];  // the air (#618)
   [_blitPipeline release];            [_ssaoPipeline release];
   [_fxaaPipeline release];            [_outlinePipeline release];
   [_tonemapPipeline release];         [_dofPipeline release];
@@ -2066,6 +2080,305 @@ fragment float4 post_ao_accum(PostVOut in [[stage_in]],
   // .b is the per-frame "shadowing hit is a nearby sphere" flag for the
   // composite's facing gate; it is a classification, not a signal to average.
   return float4(outv.x, outv.y, cur.b, 1.0);
+}
+)";
+
+// --- The air (#618, lighting epic #610): haze and dust ------------------------
+// Light scattered by the air and by dust motes, both lit only by the rig's
+// beams and shadowed by every shadowed light. Its own library, compiled as
+// kEyeReconSrc + kMaterialSrc + kAirSrc (RendererMetal::ensureAirPipelines) on
+// the first frame that draws air, so it calls the shared helpers (post_eye_pos,
+// post_linear_depth, LightRigU, light_shadow_lookup, light_finish, mat_hash,
+// mat_noise) and carries no copy of them. It declares no function constant
+// and every function in it is a post_air_ one.
+static NSString* const kAirSrc = @R"(
+// The air block. Mirrors pymol::LightAirBlock (layer1/LightAirBlock.h):
+// change them together.
+struct LightAirU {
+  float4 medium;  // x haze density per A, y dust occupancy, z scatter g,
+                  // w seed offset
+  float4 range;   // x near, y far (eye depth, A), z focus depth (the rig
+                  // centre), w dust cell (A)
+  float4 motion;  // x dust time (s), y mote radius (A), z defocus gain
+                  // (per A), w haze shadow filter (1 one tap, 2 the lookup)
+  float4 view;    // x resolution scale (1 | 0.5), y orthographic 0|1
+  float4 proj;    // the projection terms A, B, X, Y
+};
+
+// The model's constants, named as in layer1/LightAir.h (a source test pins
+// them equal).
+constant int kAirHazeSteps = 48;
+constant int kAirDustLayers = 32;
+constant float kAirHazePhaseCap = 5.0;
+constant float kAirDustPhaseCap = 8.0;
+constant float kAirFalloffCap = 4.0;
+constant float kAirMaxScatter = 0.9;
+
+struct AirVOut { float4 position [[position]]; float2 uv; };
+
+// post_vertex (kPostSrc) verbatim: kPostSrc is not in this library.
+vertex AirVOut post_air_vertex(uint vid [[vertex_id]]) {
+  // Oversized triangle covering the screen: ids 0,1,2 -> (0,0),(2,0),(0,2).
+  float2 p = float2((vid << 1) & 2, vid & 2);
+  AirVOut o;
+  o.position = float4(p * 2.0 - 1.0, 0.0, 1.0);
+  o.uv = float2(p.x, 1.0 - p.y); // texture v=0 is top of screen
+  return o;
+}
+
+// How far along a light ray (from the light at L, unit direction dir) the
+// shadow lookup may go: the ray's crossing of the map's far plane, a hair
+// inside, or the sample's own distance dl when that is nearer. In clip space
+// the ray is a + t b; it leaves the far plane where z = w. Nothing beyond the
+// far plane casts (the frustum covers every caster) and the ray keeps its
+// map position, so the visibility there is the visibility at the sample.
+// Without it, air past the casters reads lit (the lookup returns 1 outside
+// the map) and every shaft stops at the casters' sphere.
+static float post_air_far_pull(float4x4 viewProj, float3 L, float3 dir,
+                               float dl) {
+  const float4 a = viewProj * float4(L, 1.0);
+  const float4 b = viewProj * float4(dir, 0.0);
+  const float den = b.z - b.w;
+  if (!(den > 1e-8)) return dl;
+  const float tf = (a.w - a.z) / den;
+  if (!(tf > 0.0)) return dl;
+  return min(dl, tf * (1.0 - 1e-4));
+}
+
+// light_shadow_lookup (kMaterialSrc) with ONE hardware 2x2 compare at the
+// centre instead of its 3x3: the haze's default (metal_light_air_shadow_filter
+// 1). The haze's 48 jittered steps already average the result. Every
+// statement up to the compare is the lookup's (a source test strips the
+// difference and compares them, so they cannot drift).
+static float post_air_shadow_tap(constant LightRigU& rig,
+    depth2d_array<float> maps, sampler smp, int slot, float3 p, float3 n,
+    float3 ld, float d) {
+  const float4 tile = rig.shadowTile;
+  if (!(tile.z > 0.0 && tile.w > 0.0)) return 1.0;
+  const float4 info = rig.S[slot].info;
+  const float size = max(info.y, 1.0);
+  const float tilePx = max(info.y * tile.z, 1.0);
+  // One texel of this tile, in eye units, at the point's distance.
+  const float texel = 2.0 * d * info.x / tilePx;
+  const float3 q = p + n * (info.z * texel / max(dot(n, ld), 0.25)) + ld * texel;
+  const float4 lc = rig.S[slot].viewProj * float4(q, 1.0);
+  if (!(lc.w > 1e-6)) return 1.0;
+  const float3 ndc = lc.xyz / lc.w;
+  if (!(abs(ndc.x) <= 1.0 && abs(ndc.y) <= 1.0 && abs(ndc.z) <= 1.0)) return 1.0;
+  const float2 uv = tile.xy + float2(0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y) * tile.zw;
+  const float fd = 0.5 + 0.5 * ndc.z - info.w;
+  const float2 halfTexel = float2(0.5 / size);
+  const float2 lo = tile.xy + halfTexel;
+  const float2 hi = max(tile.xy + tile.zw - halfTexel, lo);
+  return maps.sample_compare(smp, clamp(uv, lo, hi), uint(slot), fd);
+}
+
+// How much of light i reaches the air at distance dl from it along dir (the
+// way the light travels). Every light with a map this frame is shadowed by
+// its own map (its slot is pos.w; head.w is how many maps there are), with no
+// single shadow light. The lookup point is pulled back onto the map's far
+// plane first (post_air_far_pull); with no surface there, the normal is the
+// direction to the light. Motes take #616's 3x3 lookup verbatim (they are
+// sparse), and so does the haze at filter 2; the haze otherwise takes one tap.
+static float post_air_visibility(constant LightRigU& rig,
+    depth2d_array<float> maps, sampler smp, int i, float3 L, float3 dir,
+    float dl, bool mote, float filter) {
+  const int slot = int(rig.L[i].pos.w);
+  if (slot < 0 || slot >= 3 || slot >= int(rig.head.w)) return 1.0;
+  const float t = post_air_far_pull(rig.S[slot].viewProj, L, dir, dl);
+  const float3 q = L + dir * t;
+  const float3 ld = -dir;
+  if (mote || filter > 1.5)
+    return light_shadow_lookup(rig, maps, smp, slot, q, ld, ld, t);
+  return post_air_shadow_tap(rig, maps, smp, slot, q, ld, ld, t);
+}
+
+// The beams' light at the eye-space point pEye, scattered toward the camera
+// (toCam): every light's cone (light_terms_view's smoothstep band, verbatim),
+// its falloff capped at kAirFalloffCap, a Henyey-Greenstein phase with
+// asymmetry g capped at phMax (looking straight into a light it peaks at
+// (1+g)/(1-g)^2, which whites out the frame: an artistic limit), and its
+// shadow. No surface, so no Lambert term. Nothing here can make a NaN: the
+// distance is at least 1e-3, the band never zero and the pow bases at least
+// 1e-4.
+static float3 post_air_light(float3 pEye, float3 toCam, float g, float phMax,
+    bool mote, constant LightAirU& air, constant LightRigU& rig,
+    depth2d_array<float> maps, sampler smp) {
+  float3 sum = float3(0.0);
+  const int n = int(rig.head.x);
+  for (int i = 0; i < 6; ++i) {
+    if (i >= n) break;
+    const float3 Lv = rig.L[i].pos.xyz - pEye;
+    const float d = max(length(Lv), 1e-3);
+    const float3 Ld = Lv / d;
+    const float band = max(rig.L[i].radiance.w - rig.L[i].axis.w, 1e-7);
+    const float s = saturate((dot(-Ld, rig.L[i].axis.xyz) - rig.L[i].axis.w) / band);
+    const float spot = s * s * (3.0 - 2.0 * s);
+    if (spot <= 0.0) continue;
+    const float fall = rig.L[i].misc.y > 0.0
+        ? min(pow(max(rig.L[i].misc.z / d, 1e-4), rig.L[i].misc.y), kAirFalloffCap)
+        : 1.0;
+    const float c = dot(-Ld, toCam);
+    const float ph = min((1.0 - g * g) /
+                         pow(max(1.0 + g * g - 2.0 * g * c, 1e-4), 1.5), phMax);
+    const float vis = post_air_visibility(rig, maps, smp, i, rig.L[i].pos.xyz,
+                                          -Ld, d, mote, air.motion.w);
+    sum += rig.L[i].radiance.rgb * (spot * fall * ph * vis);
+  }
+  return sum;
+}
+
+// The view ray through uv in eye space: from the eye for a perspective
+// projection, parallel to -z from the near plane's point for an orthographic
+// one.
+static void post_air_ray(float2 uv, constant LightAirU& air, thread float3& ro,
+                         thread float3& rd) {
+  if (air.view.y > 0.5) {
+    const float3 p = post_eye_pos(uv, 0.5, air.proj.x, air.proj.y, air.proj.z,
+                                  air.proj.w, 1.0);
+    ro = float3(p.xy, 0.0);
+    rd = float3(0.0, 0.0, -1.0);
+  } else {
+    const float3 p = post_eye_pos(uv, 0.5, air.proj.x, air.proj.y, air.proj.z,
+                                  air.proj.w, 0.0);
+    const float pl = length(p);
+    ro = float3(0.0);
+    rd = pl > 1e-3 ? p / pl : float3(0.0, 0.0, -1.0);
+  }
+}
+
+// The haze between eye depths zLo and zHi: kAirHazeSteps jittered steps (the
+// jitter is fixed per pixel), each the beams' light times a patchy density,
+// times the density per A and the step's length. The density has no time
+// term, so haze alone never moves (and never asks for a redraw).
+static float3 post_air_haze(float3 ro, float3 rd, float zLo, float zHi,
+    float2 frag, constant LightAirU& air, constant LightRigU& rig,
+    depth2d_array<float> maps, sampler smp) {
+  const float tPerZ = 1.0 / max(-rd.z, 1e-4);
+  const float dz = (zHi - zLo) / float(kAirHazeSteps);
+  const float jitter = mat_hash(float3(frag, air.medium.w));
+  const float g = clamp(air.medium.z, -kAirMaxScatter, kAirMaxScatter);
+  const float scale = 1.0 / max(air.range.w * 3.0, 1e-3);
+  float3 acc = float3(0.0);
+  for (int k = 0; k < kAirHazeSteps; ++k) {
+    const float z = zLo + (float(k) + jitter) * dz;
+    const float3 x = ro + rd * (z * tPerZ);
+    const float dens = 0.55 + 0.9 * mat_noise(x * scale);
+    acc += dens * post_air_light(x, -rd, g, kAirHazePhaseCap, false, air, rig,
+                                 maps, smp);
+  }
+  return acc * (air.medium.x * dz * tPerZ);
+}
+
+// Dust motes on kAirDustLayers depth layers across the air's range, cut off
+// before zLo and at the first surface (zHi). Each layer is a grid of cells
+// one dust cell wide; a cell holds a mote when its hash is at most the
+// occupancy (kLightAirOccupancy x dust). Each layer drifts its own way, each
+// mote wobbles about its own centre (inside 0.2..0.8 of its cell) and
+// twinkles; all of it follows the dust time (motion.x), so a pinned or movie
+// clock gives the same motes. Off the focus depth a mote grows and fades (a
+// cheap defocus), capped at 0.2 cell so the cell edge never slices it. Lit as
+// the haze is, with a sharper forward lobe.
+static float3 post_air_dust(float3 ro, float3 rd, float zLo, float zHi,
+    constant LightAirU& air, constant LightRigU& rig,
+    depth2d_array<float> maps, sampler smp) {
+  const float tPerZ = 1.0 / max(-rd.z, 1e-4);
+  const float cell = max(air.range.w, 1e-3);
+  const float span = (air.range.y - air.range.x) / float(kAirDustLayers);
+  const float g = min(clamp(air.medium.z, -kAirMaxScatter, kAirMaxScatter) + 0.25,
+                      0.92);
+  const float T = air.motion.x;
+  float3 add = float3(0.0);
+  for (int k = 0; k < kAirDustLayers; ++k) {
+    const float z = air.range.x + (float(k) + 0.5) * span;
+    if (z >= zHi) break;
+    if (z < zLo) continue;
+    const float3 x = ro + rd * (z * tPerZ);
+    const float kk = float(k) * 13.37 + air.medium.w;
+    // Each layer drifts its own way, mostly sideways and settling slowly, so
+    // the layers slide past one another (cells per second).
+    const float ang = 6.2831853 * mat_hash(float3(kk, 3.1, 7.7));
+    const float spd = 0.12 + 0.18 * mat_hash(float3(kk, 9.2, 1.3));
+    const float2 drift = float2(cos(ang), 0.6 * sin(ang) - 0.35) * spd;
+    const float2 q = x.xy / cell + float2(kk * 0.731, kk * 0.293) - drift * T;
+    const float2 ci = floor(q);
+    const float2 f = q - ci;
+    if (mat_hash(float3(ci, kk)) > air.medium.y) continue;   // occupancy
+    // Every mote wanders on its own slow orbit: a centre 0.3..0.7 plus a 0.1
+    // wobble stays inside 0.2..0.8 of the cell.
+    const float ph = 6.2831853 * mat_hash(float3(ci, kk + 41.3));
+    const float fr = 0.4 + 0.9 * mat_hash(float3(ci, kk + 57.9));
+    float2 c = 0.3 + 0.4 * float2(mat_hash(float3(ci, kk + 17.1)),
+                                  mat_hash(float3(ci, kk + 31.7)));
+    c += 0.1 * float2(sin(T * fr + ph), cos(T * fr * 1.37 + ph * 1.7));
+    // twinkle: flakes turn and catch the light
+    const float tb = 0.5 + 0.5 * sin(T * (1.3 + 2.1 * fr) + 3.0 * ph);
+    const float tw = 0.55 + 0.45 * tb * tb;
+    float size = air.motion.y * (0.35 + 1.3 * mat_hash(float3(ci, kk + 5.3)));
+    const float blur = abs(z - air.range.z) * air.motion.z * size;
+    const float r = max(min(size + blur, 0.2 * cell), 1e-3);
+    size = min(size, r);
+    const float dist = length(f - c) * cell;
+    const float a = 1.0 - smoothstep(0.35 * r, r, dist);
+    if (a <= 0.0) continue;
+    const float3 xp = x + float3((c - f) * cell, 0.0);
+    const float3 lit = post_air_light(xp, -rd, g, kAirDustPhaseCap, true, air,
+                                      rig, maps, smp);
+    add += lit * (a * (size * size) / (r * r) * 0.9 * tw);
+  }
+  return add;
+}
+
+// The air's light at one pixel (uv, frag in pixels, window depth d): rgb the
+// light the haze and the dust add, before any knee, and a the eye depth where
+// the march stopped. The air spans the rig frame's range, clamped to the
+// camera's near and far and stopped at the first surface; an empty or
+// non-finite span adds nothing, and so does a non-finite result.
+static float4 post_air_term(float2 uv, float2 frag, float d,
+    constant LightAirU& air, constant LightRigU& rig,
+    depth2d_array<float> maps, sampler smp) {
+  const float A = air.proj.x, B = air.proj.y, ortho = air.view.y;
+  const float camNear = post_linear_depth(0.0, A, B, ortho);
+  const float camFar = post_linear_depth(1.0, A, B, ortho);
+  const float zSurf = d < 0.99999 ? post_linear_depth(d, A, B, ortho) : camFar;
+  const float zLo = max(air.range.x, camNear);
+  const float zHi = min(min(air.range.y, camFar), zSurf);
+  if (!(zHi > zLo) || !isfinite(zHi - zLo)) return float4(0.0, 0.0, 0.0, zSurf);
+  float3 ro, rd;
+  post_air_ray(uv, air, ro, rd);
+  float3 add = float3(0.0);
+  if (air.medium.x > 0.0)
+    add += post_air_haze(ro, rd, zLo, zHi, frag, air, rig, maps, smp);
+  if (air.medium.y > 0.0)
+    add += post_air_dust(ro, rd, zLo, zHi, air, rig, maps, smp);
+  if (!all(isfinite(add))) add = float3(0.0);
+  return float4(max(add, float3(0.0)), zHi);
+}
+
+// The composite: the air only ADDS light. The colour through the rig's knee
+// with the air, minus the colour through it without, never negative, added to
+// the colour as it was. With no air (a = 0) that is c exactly, so a pixel the
+// air does not reach round-trips the 8-bit target unchanged, white included;
+// a bright pixel takes little extra and nothing is dimmed. light_finish is
+// the rig's only knee, so #624's HDR replaces this with it.
+static float3 post_air_finish(float3 c, float3 a) {
+  return c + max(light_finish(c + a) - light_finish(c), float3(0.0));
+}
+
+// The air at full resolution: colour and depth read at this pixel (never
+// filtered), the term, the composite. Alpha is kept.
+fragment float4 post_air_full(AirVOut in [[stage_in]],
+    texture2d<float> colorTex [[texture(0)]],
+    depth2d<float> depthTex [[texture(1)]],
+    depth2d_array<float> maps [[texture(2)]],
+    sampler smp [[sampler(1)]],
+    constant LightAirU& air [[buffer(0)]],
+    constant LightRigU& rig [[buffer(1)]]) {
+  const uint2 px = uint2(in.position.xy);
+  const float4 c = colorTex.read(px);
+  const float d = depthTex.read(px);
+  const float4 t = post_air_term(in.uv, in.position.xy, d, air, rig, maps, smp);
+  return float4(post_air_finish(c.rgb, t.rgb), c.a);
 }
 )";
 
@@ -4711,6 +5024,14 @@ void RendererMetal::runPostChain()
     [e1 endEncoding];
     sceneSrc = _postColor;
   }
+
+  // The air (#618): haze and dust over whichever pass 1 ran, raster or traced
+  // (both read the same raster depth, rig and maps, so they get the same air),
+  // and before the OIT resolve, so glass and transparent surfaces composite
+  // over it. Only while the frame has air and the rig is on.
+  if (_lightAirOn && _lightRigOn && _postColor && _sceneDepth &&
+      ensureAirPipelines())
+    sceneSrc = encodeAirPass(sceneSrc);
 
   // Pass 2: OIT resolve — composite accumulated transparency over the opaque
   // (post-processed) color. Ping-pongs to whichever target isn't the source.
@@ -11697,6 +12018,151 @@ void RendererMetal::buildBezierTubeRigPipeline()
     NSLog(@"RendererMetal: bezier tube rig pipeline failed: %@", err);
   // MRC: the pipeline state keeps what it needs; vd is autoreleased.
   [psd release]; [vfn release]; [ffn release]; [lib release];
+}
+
+// One of the air library's functions (#618), with bezierTubeRigFunction's
+// logic: they read no function constant, so plain newFunctionWithName: is
+// enough. The library still DECLARES kMaterialSrc's constants; should Metal
+// ever list one against a function that does not read it, the function
+// specialised with kMatFamily = default, kLightRig = false and kLightShadow =
+// false is the same code, so take that.
+// +1, caller owns; nil (logged) on failure.
+static id<MTLFunction> airFunction(id<MTLLibrary> lib, NSString* name)
+{
+  id<MTLFunction> fn = [lib newFunctionWithName:name];
+  if (fn && fn.functionConstantsDictionary.count == 0)
+    return fn;
+  [fn release];
+  MTLFunctionConstantValues* cv = [[MTLFunctionConstantValues alloc] init];
+  int fam = cMaterialFamily_default;
+  [cv setConstantValue:&fam type:MTLDataTypeInt atIndex:0];
+  bool rig = false;
+  [cv setConstantValue:&rig type:MTLDataTypeBool atIndex:kLightRigConstantIndex];
+  bool shadow = false;
+  [cv setConstantValue:&shadow type:MTLDataTypeBool atIndex:kLightShadowConstantIndex];
+  NSError* err = nil;
+  fn = [lib newFunctionWithName:name constantValues:cv error:&err];
+  [cv release];   // MRC: alloc/init is +1
+  if (!fn)
+    NSLog(@"RendererMetal: air function %@ failed: %@", name, err);
+  return fn;
+}
+
+// The air's pipelines (#618), built the first time a frame draws air, so a
+// session without air compiles nothing new. One attempt per renderer
+// (_airPipelinesTried): a failure is logged once and the air is skipped from
+// then on; the rest of the frame is unchanged. Single-sample post pipelines
+// (no depth attachment), so a sample-count change does not touch them. Only
+// the pipeline state is kept: the library, functions and descriptor are
+// released here.
+bool RendererMetal::ensureAirPipelines()
+{
+  if (_airFullPipeline)
+    return true;
+  if (_airPipelinesTried)
+    return false;
+  _airPipelinesTried = true;
+  NSError* err = nil;
+  id<MTLLibrary> lib = [_device newLibraryWithSource:[[kEyeReconSrc stringByAppendingString:kMaterialSrc]
+                                                   stringByAppendingString:kAirSrc]
+                                             options:nil error:&err];
+  if (!lib) {
+    NSLog(@"RendererMetal: air compile failed: %@", err);
+    return false;
+  }
+  id<MTLFunction> vfn = airFunction(lib, @"post_air_vertex");
+  id<MTLFunction> ffn = airFunction(lib, @"post_air_full");
+  if (!vfn || !ffn) {
+    NSLog(@"RendererMetal: air functions missing");
+    [vfn release]; [ffn release]; [lib release];
+    return false;
+  }
+  MTLRenderPipelineDescriptor* pd = [[MTLRenderPipelineDescriptor alloc] init];
+  pd.vertexFunction = vfn;
+  pd.fragmentFunction = ffn;
+  pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
+  pd.rasterSampleCount = 1;
+  _airFullPipeline = [_device newRenderPipelineStateWithDescriptor:pd error:&err];
+  if (!_airFullPipeline)
+    NSLog(@"RendererMetal: air pipeline failed: %@", err);
+  // MRC: the pipeline state keeps what it needs.
+  [pd release]; [vfn release]; [ffn release]; [lib release];
+  // The maps' stand-in, in the same single attempt.
+  if (_airFullPipeline && !ensureAirNoMaps()) {
+    [_airFullPipeline release];
+    _airFullPipeline = nil;
+  }
+  return _airFullPipeline != nil;
+}
+
+// The stand-in for the studio maps on a frame without them (#618): 1x1, one
+// slice per map slot, never sampled (the air's rig copy has head.w 0 then),
+// but a texture must be bound where the fragment declares one. Made with the
+// pipelines (ensureAirPipelines, one attempt) and kept.
+id<MTLTexture> RendererMetal::ensureAirNoMaps()
+{
+  if (_airNoMaps)
+    return _airNoMaps;
+  MTLTextureDescriptor* d = [[MTLTextureDescriptor alloc] init];
+  d.textureType = MTLTextureType2DArray;
+  d.pixelFormat = MTLPixelFormatDepth32Float;
+  d.width = 1;
+  d.height = 1;
+  d.arrayLength = kLightRigBlockShadowSlots;
+  d.usage = MTLTextureUsageShaderRead;
+  d.storageMode = MTLStorageModePrivate;
+  _airNoMaps = [_device newTextureWithDescriptor:d];
+  [d release];   // MRC: alloc/init is +1
+  if (!_airNoMaps)
+    NSLog(@"RendererMetal: air stand-in maps failed");
+  return _airNoMaps;
+}
+
+// The air pass (#618) over sceneSrc, at full resolution, into the other
+// ping-pong target. It binds value copies of the frame's blocks in its own
+// index space and never touches the lit draws' bindings (bindLightRig):
+// - the air block, with this frame's projection (ortho, A, B, X, Y);
+// - the rig block, with the whole slice as the shadow tile (a grid frame
+//   draws no air) and head.w (the maps this frame) 0 unless the maps were
+//   rendered (lightShadowsReady), so planned but unrendered maps are never
+//   read; _airNoMaps is bound in their place then.
+// Encoded on _cmdBuffer, so metal_gpu_timing's frame time includes it.
+id<MTLTexture> RendererMetal::encodeAirPass(id<MTLTexture> sceneSrc)
+{
+  LightAirBlock air = _lightAirBlock;
+  air.view[1] = _projOrtho;
+  air.proj[0] = _projA;
+  air.proj[1] = _projB;
+  air.proj[2] = _projX;
+  air.proj[3] = _projY;
+  LightRigBlock rig = _lightRigBlock;
+  rig.shadowTile[0] = 0.0f;
+  rig.shadowTile[1] = 0.0f;
+  rig.shadowTile[2] = 1.0f;
+  rig.shadowTile[3] = 1.0f;
+  const bool maps = lightShadowsReady();
+  if (!maps)
+    rig.head[3] = 0.0f;
+  id<MTLTexture> mapsTex = maps ? _lightShadowArray : _airNoMaps;
+  if (!mapsTex || !_postSampler || !_shadowSampler)
+    return sceneSrc;
+  id<MTLTexture> dst = (sceneSrc == _sceneColor) ? _postColor : _sceneColor;
+  MTLRenderPassDescriptor* pd = [MTLRenderPassDescriptor renderPassDescriptor];
+  pd.colorAttachments[0].texture = dst;
+  pd.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+  pd.colorAttachments[0].storeAction = MTLStoreActionStore;
+  id<MTLRenderCommandEncoder> ea = [_cmdBuffer renderCommandEncoderWithDescriptor:pd];
+  [ea setRenderPipelineState:_airFullPipeline];
+  [ea setFragmentTexture:sceneSrc atIndex:kAirColorTextureIndex];
+  [ea setFragmentTexture:_sceneDepth atIndex:kAirDepthTextureIndex];
+  [ea setFragmentTexture:mapsTex atIndex:kAirMapsTextureIndex];
+  [ea setFragmentSamplerState:_postSampler atIndex:kAirPostSamplerIndex];
+  [ea setFragmentSamplerState:_shadowSampler atIndex:kAirMapsSamplerIndex];
+  [ea setFragmentBytes:&air length:sizeof(air) atIndex:kAirParamsBufferIndex];
+  [ea setFragmentBytes:&rig length:sizeof(rig) atIndex:kAirRigBufferIndex];
+  [ea drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+  [ea endEncoding];
+  return dst;
 }
 
 // half-float bit pattern for a tessellation factor
