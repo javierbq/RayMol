@@ -37,7 +37,14 @@ the regression renders against master, L2 and L3 prove on a Mac:
   the destructor releases what the air made;
 * TestSceneRender: SceneRenderMetal hands the air to the renderer once,
   after the rig and the GPU timing, before anything draws (lighting_air.py
-  pins the two statements' text).
+  pins the two statements' text);
+* TestHalf: half resolution (metal_light_air_resolution 2, the iOS default)
+  marches into an RGBA16Float _airTerm, ceil(w/2) x ceil(h/2), private, made
+  lazily and re-made on a size change, with a checkerboard of each 2x2
+  block's nearest and farthest depth; the upsample is a 4-tap joint-bilateral
+  filter on the eye depth where each march stopped (post_air_stop, the
+  term's own range statements), falling back to the texel nearest in depth;
+  without the half pipelines or the term the frame draws at full.
 
 Pure source parsing (skipped, not passed, outside a repo checkout; in a
 checkout a missing source file fails).
@@ -129,11 +136,13 @@ CONSTANTS = (('kAirHazeSteps', 'kLightAirHazeSteps'),
              ('kAirHazePhaseCap', 'kLightAirHazePhaseCap'),
              ('kAirDustPhaseCap', 'kLightAirDustPhaseCap'),
              ('kAirFalloffCap', 'kLightAirFalloffCap'),
-             ('kAirMaxScatter', 'kLightAirMaxScatter'))
+             ('kAirMaxScatter', 'kLightAirMaxScatter'),
+             ('kAirDepthSigma', 'kLightAirDepthSigma'))
 
 AIR_INDICES = (('kAirParamsBufferIndex', 0), ('kAirRigBufferIndex', 1),
                ('kAirColorTextureIndex', 0), ('kAirDepthTextureIndex', 1),
-               ('kAirMapsTextureIndex', 2), ('kAirPostSamplerIndex', 0),
+               ('kAirMapsTextureIndex', 2), ('kAirTermTextureIndex', 3),
+               ('kAirPostSamplerIndex', 0),
                ('kAirMapsSamplerIndex', 1))
 
 
@@ -231,20 +240,25 @@ class TestLibrary(AirMSLCase):
                                  r'\s*_airPipelinesTried = true;')
         self.assertLess(ensure.index('_airPipelinesTried = true;'),
                         ensure.index('newLibraryWithSource:'))
-        logs = re.findall(r'NSLog\(@"([^"]*)"', ensure)
+        pipeline = cpp_function(self.mm, 'newAirPipeline')
+        logs = re.findall(r'NSLog\(@"([^"]*)"', ensure + pipeline
+                          + self.body('RendererMetal::ensureAirTerm'))
         self.assertTrue(logs)
         for text in logs:
             # what the L4 console check greps for
             self.assertRegex(text, r'^RendererMetal: air .*(fail|missing)', text)
-        # only the pipeline state is kept
-        for released in ('[lib release];', '[vfn release];', '[ffn release];',
-                         '[pd release];'):
+        # only the pipeline states are kept
+        for released in ('[lib release];', '[vfn release];'):
             self.assertIn(released, ensure)
-        self.assertEqual(ensure.count('newRenderPipelineStateWithDescriptor:'), 1)
-        self.assertIn('pd.rasterSampleCount = 1;', ensure)
-        self.assertIn('pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;',
-                      ensure)
-        self.assertNotIn('depthAttachmentPixelFormat', ensure)
+        for released in ('[ffn release];', '[pd release];'):
+            self.assertIn(released, pipeline)
+        self.assertNotIn('newRenderPipelineStateWithDescriptor:', ensure)
+        self.assertEqual(pipeline.count('newRenderPipelineStateWithDescriptor:'), 1)
+        self.assertEqual(self.code.count('newAirPipeline('), 4)   # the definition, 3 calls
+        self.assertIn('pd.rasterSampleCount = 1;', pipeline)
+        self.assertIn('pd.colorAttachments[0].pixelFormat = format;', pipeline)
+        self.assertIn('pd.vertexFunction = vfn;', pipeline)
+        self.assertNotIn('depthAttachmentPixelFormat', pipeline)
         # the maps' stand-in in the same attempt
         self.assertIn('ensureAirNoMaps()', ensure)
         self.assertEqual(len(re.findall(r'(?<!::)\bensureAirNoMaps\(\)', self.code)), 1)
@@ -254,7 +268,16 @@ class TestLibrary(AirMSLCase):
         ensure = self.body('RendererMetal::ensureAirPipelines')
         self.assertNotIn('newFunctionWithName', ensure)
         self.assertEqual(re.findall(r'airFunction\(lib, @"(\w+)"\)', ensure),
-                         ['post_air_vertex', 'post_air_full'])
+                         ['post_air_vertex'])
+        # the fragments, each in its own pipeline and colour format
+        self.assertEqual(
+            re.findall(r'newAirPipeline\(_device, lib, vfn, @"(\w+)",\s*(\w+)\)', ensure),
+            [('post_air_full', 'MTLPixelFormatBGRA8Unorm'),
+             ('post_air_march', 'MTLPixelFormatRGBA16Float'),
+             ('post_air_upsample', 'MTLPixelFormatBGRA8Unorm')])
+        pipeline = cpp_function(self.mm, 'newAirPipeline')
+        self.assertIn('id<MTLFunction> ffn = airFunction(lib, name);', pipeline)
+        self.assertNotIn('newFunctionWithName', pipeline)
         # bezierTubeRigFunction's logic, its log text aside
         air = cpp_function(self.mm, 'airFunction')
         tube = cpp_function(self.mm, 'bezierTubeRigFunction')
@@ -276,7 +299,8 @@ class TestLibrary(AirMSLCase):
         for name in ('post_air_vertex', 'post_air_far_pull', 'post_air_shadow_tap',
                      'post_air_visibility', 'post_air_light', 'post_air_ray',
                      'post_air_haze', 'post_air_dust', 'post_air_term',
-                     'post_air_finish', 'post_air_full'):
+                     'post_air_finish', 'post_air_full', 'post_air_stop',
+                     'post_air_march', 'post_air_upsample'):
             self.assertIn(name, self.functions)
         self.assertEqual(sorted(re.findall(r'\bstruct\s+(\w+)', self.air_code)),
                          ['AirVOut', 'LightAirU'])
@@ -546,7 +570,8 @@ class TestPostChain(AirMSLCase):
         self.assertIn('id<MTLTexture> dst = (sceneSrc == _sceneColor) ? _postColor : '
                       '_sceneColor;', enc)
         self.assertIn('[ea setFragmentTexture:sceneSrc atIndex:kAirColorTextureIndex];', enc)
-        self.assertIn('[ea setRenderPipelineState:_airFullPipeline];', enc)
+        self.assertIn('[ea setRenderPipelineState:(half ? _airUpsamplePipeline : '
+                      '_airFullPipeline)];', enc)
         self.assertRegex(enc, r'return dst;\s*\}$')
 
     def testStandInMaps(self):
@@ -564,6 +589,8 @@ class TestPostChain(AirMSLCase):
         dtor = self.body('RendererMetal::~RendererMetal')
         self.assertIn('[_airFullPipeline release];', dtor)
         self.assertIn('[_airNoMaps release];', dtor)
+        for name in ('_airMarchPipeline', '_airUpsamplePipeline', '_airTerm'):
+            self.assertIn('[%s release];' % name, dtor)
         # nothing else releases or rebuilds them (single-sample: a sample-count
         # change leaves them alone), but the attempt that cannot make the
         # stand-in maps
@@ -588,3 +615,141 @@ class TestSceneRender(AirMSLCase):
         self.assertLess(body.index('setLightAir('), body.index('SceneRenderAll('))
         # and nowhere else in the scene
         self.assertEqual(scene.count('setLightAir('), 1)
+
+
+class TestHalf(AirMSLCase):
+
+    def testTermTexture(self):
+        term = self.body('RendererMetal::ensureAirTerm')
+        # ceil(w/2) x ceil(h/2), RGBA16Float, private, a render target read by
+        # the upsample
+        self.assertIn('const NSUInteger hw = (w + 1) / 2;', term)
+        self.assertIn('const NSUInteger hh = (h + 1) / 2;', term)
+        self.assertRegex(term, r'texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float\s*'
+                               r'width:hw height:hh mipmapped:NO\]')
+        self.assertIn('d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;',
+                      term)
+        self.assertIn('d.storageMode = MTLStorageModePrivate;', term)
+        # kept while the size holds, re-made (the old one released) when it
+        # changes; a size that failed is not retried every frame
+        self.assertRegex(term, r'^\{\s*const NSUInteger hw = \(w \+ 1\) / 2;\s*'
+                               r'const NSUInteger hh = \(h \+ 1\) / 2;\s*'
+                               r'if \(hw == _airTermW && hh == _airTermH\)\s*'
+                               r'return _airTerm != nil;\s*\[_airTerm release\];\s*'
+                               r'_airTerm = nil;\s*_airTermW = hw;\s*_airTermH = hh;')
+        self.assertEqual(term.count('newTextureWithDescriptor:'), 1)
+        self.assertRegex(self.header, r'id<MTLTexture> _airTerm = nil;')
+        self.assertRegex(self.header, r'bool ensureAirTerm\(NSUInteger w, NSUInteger h\);')
+        # lazy: only a half-resolution frame makes it
+        calls = re.findall(r'(?<!::)\bensureAirTerm\(', self.code)
+        self.assertEqual(len(calls), 1)
+        self.assertIn('ensureAirTerm(dst.width, dst.height)',
+                      self.body('RendererMetal::encodeAirPass'))
+        # released only when re-made and by the destructor
+        self.assertEqual(self.code.count('[_airTerm release]'), 2)
+
+    def testMarchThenUpsample(self):
+        enc = self.body('RendererMetal::encodeAirPass')
+        # half: the block asks for it (view.x 0.5) and everything exists; else
+        # full, and the shaders are told so
+        self.assertRegex(enc, r'const bool half = air\.view\[0\] < 0\.75f && '
+                              r'_airMarchPipeline && _airUpsamplePipeline &&\s*'
+                              r'ensureAirTerm\(dst\.width, dst\.height\);\s*'
+                              r'if \(!half\)\s*air\.view\[0\] = 1\.0f;')
+        march = enc.index('[em setRenderPipelineState:_airMarchPipeline];')
+        final = enc.index('[ea setRenderPipelineState:')
+        self.assertLess(march, final)
+        self.assertLess(enc.index('if (half) {'), march)
+        self.assertIn('md.colorAttachments[0].texture = _airTerm;', enc)
+        self.assertIn('[_cmdBuffer renderCommandEncoderWithDescriptor:md]', enc)
+        self.assertEqual(enc.count('[_cmdBuffer renderCommandEncoderWithDescriptor:'), 2)
+        self.assertRegex(enc, r'if \(half\)\s*\[ea setFragmentTexture:_airTerm '
+                              r'atIndex:kAirTermTextureIndex\];')
+        # both passes bind the same blocks, depth and maps
+        self.assertEqual(enc.count('bindAir(em);'), 1)
+        self.assertEqual(enc.count('bindAir(ea);'), 1)
+        self.assertEqual(enc.count('endEncoding'), 2)
+
+    def testHalfFallsBackToFull(self):
+        ensure = self.body('RendererMetal::ensureAirPipelines')
+        # the half pipelines are made only with the full one, and a failure
+        # of either drops both (half then draws at full); full alone is enough
+        self.assertRegex(ensure, r'if \(_airFullPipeline\) \{\s*_airMarchPipeline = ')
+        self.assertRegex(ensure, r'if \(!_airMarchPipeline \|\| !_airUpsamplePipeline\) \{'
+                                 r'[^}]*_airMarchPipeline = nil;\s*_airUpsamplePipeline = nil;')
+        self.assertRegex(ensure, r'return _airFullPipeline != nil;\s*\}$')
+        self.assertRegex(self.header, r'id<MTLRenderPipelineState> _airMarchPipeline = nil;')
+        self.assertRegex(self.header, r'id<MTLRenderPipelineState> _airUpsamplePipeline = nil;')
+
+    def testCheckerboardDepth(self):
+        sig, body = self.fn('post_air_march')
+        self.assertTrue(sig.lstrip().startswith('fragment float4 post_air_march('))
+        for arg in (r'depth2d<float>\s+depthTex\s*\[\[\s*texture\(1\)\s*\]\]',
+                    r'depth2d_array<float>\s+maps\s*\[\[\s*texture\(2\)\s*\]\]',
+                    r'sampler\s+smp\s*\[\[\s*sampler\(1\)\s*\]\]',
+                    r'constant\s+LightAirU\s*&\s*air\s*\[\[\s*buffer\(0\)\s*\]\]',
+                    r'constant\s+LightRigU\s*&\s*rig\s*\[\[\s*buffer\(1\)\s*\]\]'):
+            self.assertRegex(sig, arg)
+        # the 2x2 block, clamped; the nearest depth on one colour of the
+        # checkerboard, the farthest on the other; read, never filtered
+        self.assertIn('const bool nearest = ((tx.x + tx.y) & 1u) == 0u;', body)
+        self.assertIn('uint2 px = min(tx * 2u, lim);', body)
+        self.assertIn('for (uint k = 1u; k < 4u; ++k)', body)
+        self.assertIn('min(tx * 2u + uint2(k & 1u, k >> 1u), lim)', body)
+        self.assertIn('if (nearest ? dq < d : dq > d)', body)
+        self.assertEqual(body.count('depthTex.read('), 2)
+        self.assertNotIn('.sample(', body)
+        # the same term as full resolution, through the chosen pixel
+        self.assertIn('const float2 frag = float2(px) + 0.5;', body)
+        self.assertIn('return post_air_term(frag / float2(lim + 1u), frag, d, air, rig, '
+                      'maps, smp);', body)
+
+    def testJointBilateralUpsample(self):
+        sig, body = self.fn('post_air_upsample')
+        self.assertTrue(sig.lstrip().startswith('fragment float4 post_air_upsample('))
+        for arg in (r'texture2d<float>\s+colorTex\s*\[\[\s*texture\(0\)\s*\]\]',
+                    r'depth2d<float>\s+depthTex\s*\[\[\s*texture\(1\)\s*\]\]',
+                    r'texture2d<float>\s+termTex\s*\[\[\s*texture\(3\)\s*\]\]',
+                    r'constant\s+LightAirU\s*&\s*air\s*\[\[\s*buffer\(0\)\s*\]\]'):
+            self.assertRegex(sig, arg)
+        self.assertIn('colorTex.read(px)', body)
+        self.assertIn('const float z = post_air_stop(depthTex.read(px), air);', body)
+        self.assertNotIn('.sample(', body)
+        # the four nearest texels, each its bilinear weight times a Gaussian
+        # on the eye depth where it stopped
+        self.assertIn('const float2 h = in.position.xy * 0.5 - 0.5;', body)
+        self.assertIn('for (int k = 0; k < 4; ++k)', body)
+        self.assertIn('termTex.read(uint2(clamp(int2(b) + o, int2(0), lim)))', body)
+        self.assertIn('const float dz = abs(t.a - z);', body)
+        self.assertIn('(o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y)', body)
+        self.assertIn('max(kAirDepthSigma * (air.range.y - air.range.x), 1e-3)', body)
+        self.assertIn('const float w = wb * exp(-r * r);', body)
+        # the nearest-depth fallback, then the composite, alpha kept
+        self.assertIn('if (dz < best)', body)
+        self.assertIn('const float3 a = wsum > 1e-4 ? sum / wsum : nearest;', body)
+        self.assertIn('return float4(post_air_finish(c.rgb, a), c.a);', body)
+
+    def testStopIsTheTermsRange(self):
+        _, stop = self.fn('post_air_stop')
+        _, term = self.fn('post_air_term')
+        first, last = 'const float A =', 'const float zHi ='
+        self.assertEqual(squash(statements(stop, first, last)),
+                         squash(statements(term, first, last)))
+        # an empty range stops at the surface, as the term's .a does
+        self.assertIn('if (!(zHi > zLo) || !isfinite(zHi - zLo)) return zSurf;', stop)
+        self.assertRegex(stop, r'return zHi;\s*\}$')
+        self.assertIn('return float4(0.0, 0.0, 0.0, zSurf);', term)
+        self.assertIn('return float4(max(add, float3(0.0)), zHi);', term)
+
+    def testIOSDefaultIsHalf(self):
+        # metal_light_air_resolution 0 is the platform default: half on iOS,
+        # full on the Mac (lighting_air.TestResolution checks the function)
+        lights = read(SCENE_LIGHTS)
+        self.assertRegex(lights, r'#ifdef _PYMOL_IOS\s*constexpr bool kSceneLightsMobile = true;'
+                                 r'\s*#else\s*constexpr bool kSceneLightsMobile = false;')
+        body = cpp_function(lights, 'SceneLightsAir')
+        self.assertRegex(body, r'pymol::LightAirResolution\(\s*SettingGetGlobal_i\(G, '
+                               r'cSetting_metal_light_air_resolution\),\s*kSceneLightsMobile\)')
+        pack = cpp_function(read(os.path.join(ROOT, 'layer1', 'LightAir.cpp')),
+                            'LightAirPack')
+        self.assertIn('b.view[0] = resolution == kLightAirHalf ? 0.5f : 1.0f;', pack)
