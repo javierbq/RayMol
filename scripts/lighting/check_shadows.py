@@ -19,9 +19,11 @@ lighting_616_grid.json (grid). Their tags name the inputs of every check:
   {transparent,glass}_{none,a}_rt0             the OIT paths.
   {sticks,spheres}_{front,side}_{a,none}_rt0 (and spheres_* _ortho_rt0)
       amber alone, 25 and 85 degrees off the view axis.
-  ovl_{gizmo,gizmohid,blob,blobhid}_rt0        a CGO sphere between A and the
-      molecule, outside the view, named _move_gizmo (an overlay: never casts)
-      or blob (casts); *hid has its cgo rep hidden (the same extent).
+  ovl_{gizmo,gizmohid}_rt0, ctl_{caster,casterhid}_rt0
+      a CGO sphere between A and the molecule, outside the view, named
+      _move_gizmo (ovl_*: an overlay, never casts) or caster (ctl_*: the
+      positive control, an ordinary CGO that must cast; no overlay); *hid has
+      its cgo rep hidden (the same extent).
   {grid,nogrid}_{slab,slabhid}_rt<n>           grid_mode 1 (each cell shadowed
       only by its own objects) and 0, a slab CGO between A and the molecule.
 
@@ -49,7 +51,7 @@ exercises each on synthetic images, one pass and one fail):
                give about none), perspective and orthographic.
   oit          A's shadow darkens the transparent and glass surfaces, in A's hue.
   overlay      ovl_gizmo == ovl_gizmohid byte for byte (#433); control:
-               ovl_blob darkens the molecule against ovl_blobhid.
+               ctl_caster darkens the molecule against ctl_casterhid.
   grid         the molecule's grid cell (16 px inside its edges) is byte-equal
                between grid_slab and grid_slabhid; control: nogrid_slab darkens
                the molecule against nogrid_slabhid.
@@ -129,7 +131,7 @@ OIT_HUE_RATIO = 3.0      # ... the light taken away is A's hue: sum dr >= this x
 DIFFERS_MIN = 200        # differs: at least this many pixels change (or darken).
                          #   A count, kept at the plan's value: it only shows that a
                          #   control can fail (measured 9345, grid_self_rt0 in m's cell;
-                         #   45314 grid control, 68281 overlay blob, 82204 dark pair rt1)
+                         #   45314 grid control, 68281 overlay caster, 82204 dark pair rt1)
 GRID_MARGIN = 16         # grid: the molecule's cell, this many pixels inside its edges
 GRID_LAYOUT = (2, 1, 0)  # grid: (columns, rows, the molecule's cell) of the
                          #   lighting_616_grid.json renders (m, then the slab)
@@ -477,13 +479,13 @@ def check_oit(none, a, subject='', colour=AMBER):
                   'darkened %s (>= %s), %s' % (_pct(frac), _pct(OIT_MIN), hue))
 
 
-def check_overlay(gizmo, gizmohid, blob, blobhid, subject=''):
+def check_overlay(gizmo, gizmohid, caster, casterhid, subject=''):
     """#433: a _move_gizmo CGO casts nothing (its shown and hidden renders are
     byte-equal); the control, an ordinary CGO in the same place, does."""
     same = check_same(gizmo, gizmohid, subject)
-    control = check_differs(blob, blobhid, subject, darken=True)
+    control = check_differs(caster, casterhid, subject, darken=True)
     return Result('overlay', subject, same.ok and control.ok,
-                  'gizmo: %s; control blob: %s' % (same.detail, control.detail))
+                  'gizmo: %s; control caster: %s' % (same.detail, control.detail))
 
 
 def grid_cell(shape, layout=GRID_LAYOUT, margin=GRID_MARGIN):
@@ -555,7 +557,7 @@ def l2_plan():
         plan.append(('oit', rep + '_rt0', check_oit,
                      ['%s_none_rt0' % rep, '%s_a_rt0' % rep], {}))
     plan.append(('overlay', 'ovl_rt0', check_overlay,
-                 ['ovl_gizmo_rt0', 'ovl_gizmohid_rt0', 'ovl_blob_rt0', 'ovl_blobhid_rt0'], {}))
+                 ['ovl_gizmo_rt0', 'ovl_gizmohid_rt0', 'ctl_caster_rt0', 'ctl_casterhid_rt0'], {}))
     return plan
 
 

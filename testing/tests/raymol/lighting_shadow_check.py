@@ -13,7 +13,7 @@ has no GPU, so this pins what it can:
   twice), leaves the camera alone and installs the rig its tag says, framed
   explicitly on m (so no backdrop or caster CGO moves the lights), through
   the cmd.set_lights shim, which is restored afterwards;
-* the scene geometry the checks rely on: the gizmo, blob and slab CGOs lie
+* the scene geometry the checks rely on: the gizmo, caster and slab CGOs lie
   outside the view, halfway between their light and the rig centre; the
   backdrop lies behind every atom and inside the slab;
 * time_shadows.py: the configuration matrix, the generated scripts (the
@@ -597,8 +597,8 @@ class TestSceneFiles(testing.PyMOLTestCase):
         extents = {}
         for which, tag, name in (('l2', 'ovl_gizmo_rt0', '_move_gizmo'),
                                  ('l2', 'ovl_gizmohid_rt0', '_move_gizmo'),
-                                 ('l2', 'ovl_blob_rt0', 'blob'),
-                                 ('l2', 'ovl_blobhid_rt0', 'blob'),
+                                 ('l2', 'ctl_caster_rt0', 'caster'),
+                                 ('l2', 'ctl_casterhid_rt0', 'caster'),
                                  ('grid', 'grid_slab_rt0', 'slab'),
                                  ('grid', 'nogrid_slabhid_rt0', 'slab')):
             self.run_job(self.job(which, tag))
@@ -619,7 +619,7 @@ class TestSceneFiles(testing.PyMOLTestCase):
         # hidden or shown, a caster's extent is the same (so are the frustum
         # and the grid layout)
         for shown, hidden in (('ovl_gizmo_rt0', 'ovl_gizmohid_rt0'),
-                              ('ovl_blob_rt0', 'ovl_blobhid_rt0'),
+                              ('ctl_caster_rt0', 'ctl_casterhid_rt0'),
                               ('grid_slab_rt0', 'nogrid_slabhid_rt0')):
             for a, b in zip(extents[shown], extents[hidden]):
                 for x, y in zip(a, b):

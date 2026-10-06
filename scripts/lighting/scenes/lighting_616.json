@@ -1,5 +1,5 @@
 {
- "comment": "#616 L2: per-light shadow maps, checked with scripts/lighting/check_shadows.py l2 (see its docstring for every tag set). Two coloured lights, amber A (orbit -55, pitch 25) and cyan B (orbit +55, pitch 10), radius 3, beam 60, softness 0.3, highlight 0, ambient 0.05, classic 0, on grey80 subjects in front of a grey80 backdrop quad (perpendicular to the fixed view, 0.15 sizes behind the farthest atom so it stays inside the slab; depth_cue 0 so the fog does not hide its shadows). Every rig passes an explicit centre and size (the extent of m), so neither the backdrop nor a caster CGO moves the lights. The overlay scenes put a CGO sphere halfway between A (orbit 0, pitch 70) and the centre, outside the view, named _move_gizmo (an overlay: never casts, #433) or blob (the control); *hid hides its cgo rep, which keeps its extent. cartoon_ab_s* set metal_light_shadow_size only where the setting exists. The frozen harness (render.py) installs its own 3-light rig for \"rig\": \"on\" by calling cmd.set_lights after each scene's lines; the extra lines wrap cmd.set_lights once per process (hasattr guard: the app runs the script twice): while cmd._l616_rig is a dict, that rig is installed instead; a function is applied to the harness rig. Every scene sets cmd._l616_rig.",
+ "comment": "#616 L2: per-light shadow maps, checked with scripts/lighting/check_shadows.py l2 (see its docstring for every tag set). Two coloured lights, amber A (orbit -55, pitch 25) and cyan B (orbit +55, pitch 10), radius 3, beam 60, softness 0.3, highlight 0, ambient 0.05, classic 0, on grey80 subjects in front of a grey80 backdrop quad (perpendicular to the fixed view, 0.15 sizes behind the farthest atom so it stays inside the slab; depth_cue 0 so the fog does not hide its shadows). Every rig passes an explicit centre and size (the extent of m), so neither the backdrop nor a caster CGO moves the lights. The overlay scenes put a CGO sphere halfway between A (orbit 0, pitch 70) and the centre, outside the view, named _move_gizmo (ovl_gizmo*: an overlay, never casts, #433) or caster (ctl_caster*: the POSITIVE CONTROL, an ordinary CGO that MUST cast; it is no overlay); *hid hides its cgo rep, which keeps its extent. The *_dark* scenes set both lights to intensity 0 (ambient 0.05 only), so they are nearly black by design. cartoon_ab_s* set metal_light_shadow_size only where the setting exists. The frozen harness (render.py) installs its own 3-light rig for \"rig\": \"on\" by calling cmd.set_lights after each scene's lines; the extra lines wrap cmd.set_lights once per process (hasattr guard: the app runs the script twice): while cmd._l616_rig is a dict, that rig is installed instead; a function is applied to the harness rig. Every scene sets cmd._l616_rig.",
  "base": null,
  "rig": "on",
  "size": [
@@ -30,7 +30,7 @@
   "_l616_dz = min(sum(_l616_v[2 + 3 * j] * (p[j] - _l616_c[j]) for j in range(3)) for p in _l616_xyz) - 0.15 * _l616_s",
   "_l616_backdrop = lambda: cmd.load_cgo([2.0, 5.0, 6.0, 0.8, 0.8, 0.8, 5.0] + _l616_rot([0.0, 0.0, 1.0]) + [v for sx, sy in ((-1, -1), (1, -1), (-1, 1), (1, 1)) for v in [4.0] + _l616_w([sx * 2.5 * _l616_s, sy * 2.5 * _l616_s, _l616_dz])] + [3.0], 'backdrop', zoom=0)",
   "_l616_ovl = dict(_l616_a, orbit=0.0, pitch=70.0, shadow=True)",
-  "_l616_blob = lambda name: cmd.load_cgo([6.0, 0.8, 0.8, 0.8, 7.0] + _l616_at(_l616_ovl, 0.5) + [0.2 * _l616_s], name, zoom=0)"
+  "_l616_sphere = lambda name: cmd.load_cgo([6.0, 0.8, 0.8, 0.8, 7.0] + _l616_at(_l616_ovl, 0.5) + [0.2 * _l616_s], name, zoom=0)"
  ],
  "scenes": [
   {
@@ -41,7 +41,8 @@
     "_l616_backdrop()",
     "cmd.set('metal_shadows', 0)",
     "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), dict(_l616_b, intensity=0.0)])"
-   ]
+   ],
+   "comment": "Dark reference: both lights at intensity 0 (ambient 0.05 only), so the image is nearly black by design (a reference for the checks)."
   },
   {
    "tag": "cartoon_aonly_rt0",
@@ -111,7 +112,8 @@
     "_l616_backdrop()",
     "cmd.set('metal_shadows', 0)",
     "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), dict(_l616_b, intensity=0.0)])"
-   ]
+   ],
+   "comment": "Dark reference: both lights at intensity 0 (ambient 0.05 only), so the image is nearly black by design (a reference for the checks)."
   },
   {
    "tag": "cartoon_aonly_rt1",
@@ -181,7 +183,8 @@
     "_l616_backdrop()",
     "cmd.set('metal_shadows', 0)",
     "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), dict(_l616_b, intensity=0.0)])"
-   ]
+   ],
+   "comment": "Dark reference: both lights at intensity 0 (ambient 0.05 only), so the image is nearly black by design (a reference for the checks)."
   },
   {
    "tag": "surface_aonly_rt0",
@@ -251,7 +254,8 @@
     "_l616_backdrop()",
     "cmd.set('metal_shadows', 0)",
     "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), dict(_l616_b, intensity=0.0)])"
-   ]
+   ],
+   "comment": "Dark reference: both lights at intensity 0 (ambient 0.05 only), so the image is nearly black by design (a reference for the checks)."
   },
   {
    "tag": "surface_aonly_rt1",
@@ -321,7 +325,8 @@
     "_l616_backdrop()",
     "cmd.set('metal_shadows', 0)",
     "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), dict(_l616_b, intensity=0.0)])"
-   ]
+   ],
+   "comment": "Dark reference: both lights at intensity 0 (ambient 0.05 only), so the image is nearly black by design (a reference for the checks)."
   },
   {
    "tag": "sticks_aonly_rt0",
@@ -391,7 +396,8 @@
     "_l616_backdrop()",
     "cmd.set('metal_shadows', 0)",
     "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), dict(_l616_b, intensity=0.0)])"
-   ]
+   ],
+   "comment": "Dark reference: both lights at intensity 0 (ambient 0.05 only), so the image is nearly black by design (a reference for the checks)."
   },
   {
    "tag": "sticks_aonly_rt1",
@@ -461,7 +467,8 @@
     "_l616_backdrop()",
     "cmd.set('metal_shadows', 0)",
     "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), dict(_l616_b, intensity=0.0)])"
-   ]
+   ],
+   "comment": "Dark reference: both lights at intensity 0 (ambient 0.05 only), so the image is nearly black by design (a reference for the checks)."
   },
   {
    "tag": "spheres_aonly_rt0",
@@ -531,7 +538,8 @@
     "_l616_backdrop()",
     "cmd.set('metal_shadows', 0)",
     "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), dict(_l616_b, intensity=0.0)])"
-   ]
+   ],
+   "comment": "Dark reference: both lights at intensity 0 (ambient 0.05 only), so the image is nearly black by design (a reference for the checks)."
   },
   {
    "tag": "spheres_aonly_rt1",
@@ -600,7 +608,8 @@
     "_l616_backdrop()",
     "cmd.set('metal_shadows', 0)",
     "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), dict(_l616_b, intensity=0.0)])"
-   ]
+   ],
+   "comment": "Dark reference: both lights at intensity 0 (ambient 0.05 only), so the image is nearly black by design (a reference for the checks)."
   },
   {
    "tag": "shadows_dark_sh_ms1_rt0",
@@ -609,7 +618,8 @@
     "_l616_backdrop()",
     "cmd.set('metal_shadows', 1)",
     "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0, shadow=True), dict(_l616_b, intensity=0.0, shadow=True)])"
-   ]
+   ],
+   "comment": "Dark reference: both lights at intensity 0 (ambient 0.05 only), so the image is nearly black by design (a reference for the checks)."
   },
   {
    "tag": "shadows_dark_ns_ms1_rt0",
@@ -618,7 +628,8 @@
     "_l616_backdrop()",
     "cmd.set('metal_shadows', 1)",
     "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), dict(_l616_b, intensity=0.0)])"
-   ]
+   ],
+   "comment": "Dark reference: both lights at intensity 0 (ambient 0.05 only), so the image is nearly black by design (a reference for the checks)."
   },
   {
    "tag": "shadows_dark_ns_ms0_rt1",
@@ -627,7 +638,8 @@
     "_l616_backdrop()",
     "cmd.set('metal_shadows', 0)",
     "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), dict(_l616_b, intensity=0.0)])"
-   ]
+   ],
+   "comment": "Dark reference: both lights at intensity 0 (ambient 0.05 only), so the image is nearly black by design (a reference for the checks)."
   },
   {
    "tag": "shadows_dark_sh_ms1_rt1",
@@ -636,7 +648,8 @@
     "_l616_backdrop()",
     "cmd.set('metal_shadows', 1)",
     "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0, shadow=True), dict(_l616_b, intensity=0.0, shadow=True)])"
-   ]
+   ],
+   "comment": "Dark reference: both lights at intensity 0 (ambient 0.05 only), so the image is nearly black by design (a reference for the checks)."
   },
   {
    "tag": "shadows_dark_ns_ms1_rt1",
@@ -645,7 +658,8 @@
     "_l616_backdrop()",
     "cmd.set('metal_shadows', 1)",
     "cmd._l616_rig = _l616_make([dict(_l616_a, intensity=0.0), dict(_l616_b, intensity=0.0)])"
-   ]
+   ],
+   "comment": "Dark reference: both lights at intensity 0 (ambient 0.05 only), so the image is nearly black by design (a reference for the checks)."
   },
   {
    "tag": "transparent_none_rt0",
@@ -801,10 +815,11 @@
    "lines": [
     "cmd.color('grey80', 'm')",
     "_l616_backdrop()",
-    "_l616_blob('_move_gizmo')",
+    "_l616_sphere('_move_gizmo')",
     "cmd.set('metal_shadows', 1)",
     "cmd._l616_rig = _l616_make([_l616_ovl])"
-   ]
+   ],
+   "comment": "Overlay check (#433): the grey CGO sphere named _move_gizmo (an overlay) sits outside the view between light A and the molecule; it must cast NO shadow, so this image is byte-equal to ovl_gizmohid_rt0."
   },
   {
    "tag": "ovl_gizmohid_rt0",
@@ -812,34 +827,37 @@
    "lines": [
     "cmd.color('grey80', 'm')",
     "_l616_backdrop()",
-    "_l616_blob('_move_gizmo')",
+    "_l616_sphere('_move_gizmo')",
     "cmd.hide('cgo', '_move_gizmo')",
     "cmd.set('metal_shadows', 1)",
     "cmd._l616_rig = _l616_make([_l616_ovl])"
-   ]
+   ],
+   "comment": "Overlay check (#433): as ovl_gizmo_rt0 with the _move_gizmo cgo rep hidden (same extent); the reference ovl_gizmo_rt0 must equal byte for byte."
   },
   {
-   "tag": "ovl_blob_rt0",
+   "tag": "ctl_caster_rt0",
    "from": "cartoon_rt0",
    "lines": [
     "cmd.color('grey80', 'm')",
     "_l616_backdrop()",
-    "_l616_blob('blob')",
+    "_l616_sphere('caster')",
     "cmd.set('metal_shadows', 1)",
     "cmd._l616_rig = _l616_make([_l616_ovl])"
-   ]
+   ],
+   "comment": "POSITIVE CONTROL of the overlay check, NOT an overlay: 'caster' is an ordinary grey CGO sphere outside the view between light A (the only light, shadowed) and the molecule. It MUST cast: a large dark disc on the backdrop and the molecule black under it, against ctl_casterhid_rt0. Without that shadow the overlay check proves nothing."
   },
   {
-   "tag": "ovl_blobhid_rt0",
+   "tag": "ctl_casterhid_rt0",
    "from": "cartoon_rt0",
    "lines": [
     "cmd.color('grey80', 'm')",
     "_l616_backdrop()",
-    "_l616_blob('blob')",
-    "cmd.hide('cgo', 'blob')",
+    "_l616_sphere('caster')",
+    "cmd.hide('cgo', 'caster')",
     "cmd.set('metal_shadows', 1)",
     "cmd._l616_rig = _l616_make([_l616_ovl])"
-   ]
+   ],
+   "comment": "Reference for the positive control ctl_caster_rt0: the same 'caster' CGO with its cgo rep hidden (same extent), so no disc shadow."
   },
   {
    "tag": "rig3_rt0",
