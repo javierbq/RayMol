@@ -18,6 +18,13 @@ anywhere else while the gizmo shows (the context menu only when it is
 hidden); an option-tap off every target does the same; Move mode's
 one-finger pan hit-tests where the finger came down (#702).
 
+The docked tools (Part 3, LightsSheet.swift): placement by size class, the
+sheet's heights keyed by the room (the scene keeps 180 pt), the grabber drag
+on a cancel-safe @GestureState, the compact rows writing through the
+controller's typed API, the pinned canvases outside the rows' ScrollView,
+the inspector's header and rows presentations and the fields' focus
+preference.
+
 The behaviour itself is unit-tested in Swift (LightsTouchTargetTests and
 LightsTouchRoutingTests, run by UnitTests_macOS with the iOS profile as a
 parameter); this file pins, on the sources, that the hit tests use the floor,
@@ -47,6 +54,7 @@ GIZMO_OVERLAY = os.path.join(SHARED, 'LightGizmoOverlay.swift')
 BAR = os.path.join(SHARED, 'LightsBar.swift')
 INSPECTOR = os.path.join(SHARED, 'LightsInspector.swift')
 VIEWPORT = os.path.join(SHARED, 'MetalViewport.swift')
+SHEET = os.path.join(SHARED, 'LightsSheet.swift')
 
 # Apple's minimum touch target, and the iOS and macOS slops
 # (LightsOrbitMetrics.defaultSlop).
@@ -398,3 +406,175 @@ class TestTouchSource(testing.PyMOLTestCase):
         pan = body(viewport, 'private func lightGizmoPan(')
         self.assertIsNotNone(pan, 'lightGizmoPan not found')
         self.assertIn('LightTouchGeometry.pressPoint(location: location,', pan)
+
+    # --- the docked tools (Part 3) -------------------------------------------
+
+    def testPlacementBySizeClass(self):
+        """Compact height docks the tools in the side panel (iPhone
+        landscape, the large phones too), then compact width gives the
+        bottom sheet, else the iPad float; never by device idiom."""
+        text = self.read(SHEET)
+        resolve = body(text, 'static func resolve(compactWidth: Bool, compactHeight: Bool)')
+        self.assertIsNotNone(resolve, 'LightsToolsPlacement.resolve not found')
+        side = resolve.find('if compactHeight { return .sidePanel }')
+        sheet = resolve.find('if compactWidth { return .bottomSheet }')
+        self.assertGreaterEqual(side, 0)
+        self.assertGreater(sheet, side, 'compact height decides first')
+        self.assertIn('return .floating', resolve)
+        self.assertNotIn('userInterfaceIdiom', text)
+
+    def testTheSheetMetricsAndHeightRule(self):
+        """The scene keeps 180 pt; the compact body is 164 pt; the pinned
+        plan is 120 to 194 pt beside a 58 to 98 pt arc; expanded is
+        max(compact, min(room - 180, content)) and compact is clamped to
+        room - 180."""
+        text = self.read(SHEET)
+        metrics = body(text, 'enum LightsSheetMetrics')
+        self.assertIsNotNone(metrics, 'LightsSheetMetrics not found')
+        for name, value in (('grabberStrip', 24), ('minimumHeader', 44), ('compactBody', 164),
+                            ('compactPlanSide', 164), ('minimumScene', 180), ('minimumRows', 150),
+                            ('snapDistance', 40), ('flingDistance', 120), ('keyboardRows', 96),
+                            ('colourButtonHeight', 44)):
+            with self.subTest(name):
+                self.assertEqual(self.number(metrics, r'static let %s: CGFloat = ([0-9.]+)' % name, name),
+                                 value)
+        self.assertIn('static let pinnedPlanSide: ClosedRange<CGFloat> = 120...194', metrics)
+        self.assertIn('static let arcWidth: ClosedRange<CGFloat> = 58...98', metrics)
+        layout = body(text, 'static func layout(room: CGFloat, header: CGFloat, bottomInset: CGFloat,')
+        self.assertIsNotNone(layout, 'LightsSheetModel.layout not found')
+        self.assertIn('let most = room - M.minimumScene', layout)
+        self.assertIn('let compact = max(least, min(content, most))', layout)
+        self.assertIn('let expanded = max(compact, min(most, expandedContent))', layout)
+
+    def testTheGrabberDragIsCancelSafe(self):
+        """The drag's translation is @GestureState (SwiftUI resets it on end
+        and on cancel), the drag only moves the drawn sheet over a slot of
+        the committed height, and a release snaps once, telling the owner
+        before and after (the drawable freeze covers only the snap)."""
+        text = self.read(SHEET)
+        self.assertRegex(text, r'@GestureState\([^)]*resetTransaction[^@]*private var dragTranslation: CGFloat = 0')
+        self.assertIn('.updating($dragTranslation)', text)
+        self.assertIn('LightsSheetModel.dragFrame(detent: detent, translation: dragTranslation, heights: heights)',
+                      text)
+        self.assertIn('.frame(height: frame.slot, alignment: .bottom)', text)
+        snap = body(text, 'private func setDetent(_ next: LightsSheetDetent)')
+        self.assertIsNotNone(snap, 'setDetent not found')
+        before = snap.find('onMoving(true)')
+        animate = snap.find('withAnimation(')
+        after = snap.find('onMoving(false)')
+        self.assertGreaterEqual(before, 0)
+        self.assertGreater(animate, before)
+        self.assertGreater(after, animate, 'the freeze ends in the completion')
+        self.assertIn('} completion: {', snap)
+        disappear = text[text.find('.onDisappear {'):]
+        self.assertIn('onMoving(false)', disappear[:400], 'the safety reset on disappear')
+
+    def testTheSheetWritesOnlyThroughTheTypedAPI(self):
+        """The compact sliders write setIfChanged and the swatches and
+        picker setColour (the bridge setters); the canvases write through
+        OrbitCanvases (LightsOrbitInteraction). No raw set, step, Python or
+        bridge call."""
+        text = self.read(SHEET)
+        rows = body(text, 'struct LightsCompactRows: View')
+        self.assertIsNotNone(rows, 'LightsCompactRows not found')
+        self.assertIn('controller.setIfChanged(', rows)
+        self.assertIn('@ObservedObject var eye: LightsEyeState', rows)
+        palette = body(text, 'struct LightsColourPalette: View')
+        self.assertIsNotNone(palette, 'LightsColourPalette not found')
+        self.assertEqual(palette.count('controller.setColour('), 2, 'the swatches and the picker')
+        writes = set(re.findall(r'controller\.(\w+)\(', text))
+        self.assertLessEqual(writes, {'setIfChanged', 'setColour'}, writes)
+        for name in ('controller.set(', 'controller.step(', 'beginGesture(', 'runPython', 'PyMOLBridge_'):
+            with self.subTest(name):
+                self.assertNotIn(name, text)
+
+    def testOnlyTheRowsScroll(self):
+        """Expanded: the plan and the arc are pinned above the ScrollView
+        that holds the inspector's rows, so the canvases' drags and pinch
+        never fight a scroll; the compact body scrolls only when its height
+        is clamped."""
+        text = self.read(SHEET)
+        expanded = body(text, 'private func expandedBody(')
+        self.assertIsNotNone(expanded, 'expandedBody not found')
+        canvases = expanded.find('OrbitCanvases(')
+        scroll = expanded.find('ScrollView(.vertical)')
+        self.assertGreaterEqual(canvases, 0)
+        self.assertGreater(scroll, canvases)
+        self.assertEqual(expanded.count('OrbitCanvases('), 1)
+        self.assertIn('presentation: .rows', expanded[scroll:])
+        self.assertIn('planSize: canvases.planSize, arcSize: canvases.arcSize', expanded)
+        compact = body(text, 'private var compactBody: some View')
+        self.assertIsNotNone(compact, 'compactBody not found')
+        self.assertIn('showsArc: false', compact)
+        self.assertIn('.scrollDisabled(!heights.compactScrolls)', compact)
+
+    def testTheSheetsTargets(self):
+        """More/Less is a 44 pt target; the Colour button is 44 pt tall; the
+        palette's swatches and picker are 44 pt targets; the grabber is an
+        adjustable VoiceOver element."""
+        text = self.read(SHEET)
+        more = body(text, 'private var moreButton: some View')
+        self.assertIsNotNone(more, 'moreButton not found')
+        self.assertIn('.lightsTouchTarget()', more)
+        colour = body(text, 'private var colourButton: some View')
+        self.assertIsNotNone(colour, 'colourButton not found')
+        self.assertIn('minHeight: M.colourButtonHeight', colour)
+        self.assertIn('.presentationCompactAdaptation(.popover)', colour)
+        palette = body(text, 'struct LightsColourPalette: View')
+        self.assertIn('.frame(width: LightsTouch.swatchTarget, height: LightsTouch.swatchTarget)', palette)
+        self.assertIn('.frame(minWidth: LightsTouch.swatchTarget, minHeight: LightsTouch.swatchTarget)', palette)
+        grabber = body(text, 'private var grabber: some View')
+        self.assertIsNotNone(grabber, 'grabber not found')
+        self.assertIn('.accessibilityAdjustableAction', grabber)
+        self.assertIn('.accessibilityIdentifier(LightsSheetState.grabberIdentifier)', grabber)
+
+    def testTheKeyboardReaderIsIOSOnly(self):
+        """The keyboard's frame notifications are read under #if os(iOS)
+        only; UIKit is imported only there."""
+        text = self.read(SHEET)
+        reader = body(text, 'struct LightsKeyboardTopReader: ViewModifier')
+        self.assertIsNotNone(reader, 'LightsKeyboardTopReader not found')
+        ios = reader.find('#if os(iOS)')
+        notification = reader.find('keyboardWillChangeFrameNotification')
+        self.assertGreaterEqual(ios, 0)
+        self.assertGreater(notification, ios)
+        self.assertRegex(text, r'#if os\(iOS\)\s*import UIKit\s*#endif')
+        outside = re.sub(r'#if os\(iOS\).*?#(?:else|endif)', '', text, flags=re.S)
+        self.assertNotIn('UIResponder', outside)
+        self.assertNotIn('UIApplication', outside)
+
+    def testTheSharedViewsTakeTheSheetsOptions(self):
+        """OrbitCanvases takes planSize, arcSize and showsArc (the card's
+        sizes by default) and lays out, draws and hit-tests at them; the
+        inspector has the card, header and rows presentations (the header
+        keeps the notice and the hint, the card keeps its chevron); the
+        Orbit and Pitch fields report their focus; the orbit DEBUG gestures
+        take the placement's sizes."""
+        view = self.read(ORBIT_VIEW)
+        canvases = body(view, 'struct OrbitCanvases: View')
+        self.assertIsNotNone(canvases, 'OrbitCanvases not found')
+        self.assertIn('planSize: CGSize = LightsOrbitMetrics.planSize', canvases)
+        self.assertIn('arcSize: CGSize = LightsOrbitMetrics.arcSize', canvases)
+        self.assertIn('showsArc: Bool = true', canvases)
+        self.assertIn('OrbitCanvas(size: planSize)', canvases)
+        self.assertIn('OrbitCanvas(size: arcSize)', canvases)
+        self.assertIn('PitchArcLayout(size: arcSize, slop: slop)', canvases)
+        self.assertIn('slop: slop, size: planSize)', canvases)
+        self.assertNotIn('OrbitCanvas(size: LightsOrbitMetrics.', canvases)
+        inspector = self.read(INSPECTOR)
+        self.assertRegex(inspector, r'enum LightsInspectorPresentation: Equatable \{\s*case card, header, rows')
+        header = body(inspector, 'private func headerBlock(')
+        self.assertIsNotNone(header, 'headerBlock not found')
+        self.assertIn('header(state, showsChevron: false)', header)
+        self.assertIn('noticeRow(notice)', header)
+        self.assertIn('shadowsHintRow(state)', header)
+        card = body(inspector, 'private func card(')
+        self.assertIn('header(state, showsChevron: true)', card)
+        field = body(inspector, 'struct LightAngleFieldRow: View')
+        self.assertIsNotNone(field, 'LightAngleFieldRow not found')
+        self.assertIn('.preference(key: LightsFieldFocusKey.self, value: focused)', field)
+        model = self.read(ORBIT_MODEL)
+        apply = body(model, 'static func apply(_ gesture: OrbitAutoGesture')
+        self.assertIsNotNone(apply, 'OrbitAutoGesture.apply not found')
+        self.assertIn('OrbitPlanLayout(size: planSize, extent: state.extent, slop: slop)', apply)
+        self.assertIn('PitchArcLayout(size: arcSize, slop: slop)', apply)
