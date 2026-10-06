@@ -279,6 +279,10 @@ final class LightsController: ObservableObject {
     /// lights already cast one. The inspector shows a notice while it is set;
     /// the next edit, a selection change or leaving the mode clears it.
     @Published private(set) var shadowRefused = false
+    /// Bumped once each time a direct-manipulation gesture begins on the
+    /// selected light (`beginGesture()`), never per tick. The inspector's
+    /// Orbit and Pitch fields observe it and drop typed text.
+    @Published private(set) var gestureGeneration = 0
 
     /// The per-frame eye data (see LightsEyeState). Not @Published: a change
     /// in it must not re-render the controller's observers.
@@ -484,6 +488,20 @@ final class LightsController: ObservableObject {
         guard let index = rig?.lights.firstIndex(where: { $0.name.lowercased() == key })
         else { return }
         select(index: index)
+    }
+
+    // MARK: gestures
+
+    /// A direct-manipulation gesture (#621's plan and pitch arc, #622's
+    /// gizmo) begins on the selected light. Returns the gesture's owner, the
+    /// selected light's lowercased name, which every tick then passes to
+    /// `set(_:_:owner:)`, and bumps `gestureGeneration` so the inspector
+    /// drops typed field text (a later Return cannot write it over the
+    /// gesture's edit). nil, and nothing bumped, unless `canEdit`.
+    func beginGesture() -> String? {
+        guard canEdit, let name = selection.name else { return nil }
+        gestureGeneration &+= 1
+        return name.lowercased()
     }
 
     // MARK: actions (button presses)

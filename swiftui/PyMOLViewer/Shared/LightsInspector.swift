@@ -311,7 +311,10 @@ struct LightsInspectorState: Equatable {
 /// - The typing belongs to the light that was selected when it began
 ///   (`owner`); a commit writes only while that light is still selected, so
 ///   text typed for one light is never written to another.
-/// - A selection change drops the typed text (`selectionChanged`).
+/// - A selection change drops the typed text (`selectionChanged`), and so
+///   does a gesture beginning on the light (`gestureBegan`: a drag on the
+///   orbit plan or the gizmo), so a later Return never writes the typed value
+///   over the gesture's edit.
 struct LightFieldEditor: Equatable {
     let parameter: LightParameter
     /// What the field shows.
@@ -369,6 +372,14 @@ struct LightFieldEditor: Equatable {
 
     /// The selection changed: typed text is dropped and editing ends.
     mutating func selectionChanged(to light: String?, value: Double?) {
+        endEditing()
+        show(value, light: light)
+    }
+
+    /// A direct-manipulation gesture began on `light`
+    /// (`LightsController.gestureGeneration` changed): typed text is dropped
+    /// and editing ends, as on a selection change.
+    mutating func gestureBegan(value: Double?, light: String?) {
         endEditing()
         show(value, light: light)
     }
@@ -505,23 +516,28 @@ struct LightSliderRow: View {
 /// An Orbit or Pitch row: label, dial, field and stepper. The field follows
 /// LightFieldEditor; Return or focus loss writes the typed value exactly; the
 /// stepper adds ±5°; Up and Down in the focused field add ±1° (best effort).
+/// A gesture beginning on the light (`gestureGeneration` changes) drops the
+/// typed text and the focus.
 struct LightAngleFieldRow: View {
     let controller: LightsController
     let parameter: LightParameter
     let row: LightsInspectorState.Row?
     let lightName: String?
     let style: LightsBarStyle
+    let gestureGeneration: Int
 
     @State private var editor: LightFieldEditor
     @FocusState private var focused: Bool
 
     init(controller: LightsController, parameter: LightParameter,
-         row: LightsInspectorState.Row?, lightName: String?, style: LightsBarStyle) {
+         row: LightsInspectorState.Row?, lightName: String?, style: LightsBarStyle,
+         gestureGeneration: Int) {
         self.controller = controller
         self.parameter = parameter
         self.row = row
         self.lightName = lightName
         self.style = style
+        self.gestureGeneration = gestureGeneration
         _editor = State(initialValue: LightFieldEditor(parameter: parameter))
     }
 
@@ -562,6 +578,12 @@ struct LightAngleFieldRow: View {
         .onChange(of: row?.value) { editor.show(row?.value, light: lightName) }
         .onChange(of: lightName) {
             editor.selectionChanged(to: lightName, value: row?.value)
+            focused = false
+        }
+        // Editing has ended before the focus goes, so the focus change below
+        // commits nothing.
+        .onChange(of: gestureGeneration) {
+            editor.gestureBegan(value: row?.value, light: lightName)
             focused = false
         }
         .onChange(of: focused) { _, now in
@@ -610,11 +632,13 @@ struct LightPlacementRows: View {
         VStack(alignment: .leading, spacing: 10) {
             LightAngleFieldRow(controller: controller, parameter: .orbit,
                                row: LightsInspectorState.row(.orbit, of: controller),
-                               lightName: name, style: style)
+                               lightName: name, style: style,
+                               gestureGeneration: controller.gestureGeneration)
                 .id("orbit.\(name ?? "")")
             LightAngleFieldRow(controller: controller, parameter: .pitch,
                                row: LightsInspectorState.row(.pitch, of: controller),
-                               lightName: name, style: style)
+                               lightName: name, style: style,
+                               gestureGeneration: controller.gestureGeneration)
                 .id("pitch.\(name ?? "")")
             if let radius = LightsInspectorState.row(.radius, of: controller) {
                 LightSliderRow(row: radius, style: style) { value in

@@ -187,6 +187,23 @@ final class LightFieldEditorTests: XCTestCase {
         XCTAssertEqual(e.commit(selected: "KEY"), 10)
     }
 
+    func testGestureDropsTypedText() {
+        // 30 typed for key, then the key's lamp dragged to 105 on the orbit
+        // plan: the field shows the drag's value and Return writes nothing.
+        var e = LightFieldEditor(parameter: .orbit)
+        e.show(-45, light: "key")
+        e.begin(light: "key")
+        e.type("30")
+        e.gestureBegan(value: 105, light: "key")
+        XCTAssertEqual(e.text, "105°")
+        XCTAssertFalse(e.isEditing)
+        XCTAssertNil(e.commit(selected: "key"), "the typed 30 never overwrites the drag")
+        XCTAssertEqual(e.text, "105°")
+        // Per-frame placements show again.
+        e.show(110, light: "key")
+        XCTAssertEqual(e.text, "110°")
+    }
+
     func testTypingWithoutBeginWritesNothing() {
         var e = LightFieldEditor(parameter: .orbit)
         e.show(-45, light: "key")
