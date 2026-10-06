@@ -88,6 +88,7 @@ jobs:
               testing/tests/raymol/lighting_gizmo.py \
               testing/tests/raymol/lighting_harness.py \
               testing/tests/raymol/lighting_inspector.py \
+              testing/tests/raymol/lighting_materials.py \
               testing/tests/raymol/lighting_mode.py \
               testing/tests/raymol/lighting_msl.py \
               testing/tests/raymol/lighting_orbit.py \
