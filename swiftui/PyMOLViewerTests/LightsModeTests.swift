@@ -34,12 +34,29 @@ final class LightsActionInvocationTests: XCTestCase {
         }
     }
 
+    func testRestoreLightIsOnePythonCallWithTheBase64OfTheJSONAndTheName() {
+        // Revert this light (#620): lighting_inspector.py TestRestoreLight runs
+        // the helper with the same arguments.
+        for json in [#"{"version":1,"enabled":true,"lights":[]}"#, "null", "{\"a\":\"é \\\" '\"}"] {
+            let encoded = Data(json.utf8).base64EncodedString()
+            for name in ["key", "Light4", "_x"] {
+                XCTAssertEqual(
+                    LightsAction.restoreLight(name: name, json: json).invocation,
+                    .python("from pymol import appkit_lights as _al\n"
+                            + "_al.restore_light('\(encoded)', '\(name)')"),
+                    "\(name) \(json)")
+            }
+        }
+    }
+
     func testBadNamesRunNothing() {
         let bad = ["", "a,b", "a b", "it's", "x\"y", "1key", "key;reinitialize", "é",
-                   String(repeating: "a", count: 33)]
+                   "key')\nimport os", String(repeating: "a", count: 33)]
         for name in bad {
             XCTAssertNil(LightsAction.remove(name).invocation, "remove \(name)")
             XCTAssertNil(LightsAction.preset(name).invocation, "preset \(name)")
+            XCTAssertNil(LightsAction.restoreLight(name: name, json: "null").invocation,
+                         "restoreLight \(name)")
         }
     }
 
@@ -53,11 +70,11 @@ final class LightsActionInvocationTests: XCTestCase {
 
 // MARK: - Live-engine support
 
-/// Shared by the live tests below: wait for the host app's engine, and put the
-/// rig, the mode, the view and the taps back afterwards (PyMOLEngine.shared is
-/// shared with every other test class).
+/// Shared by the live tests below and LightsInspectorLiveTests.swift: wait for
+/// the host app's engine, and put the rig, the mode, the view and the taps back
+/// afterwards (PyMOLEngine.shared is shared with every other test class).
 @MainActor
-private enum LightsLive {
+enum LightsLive {
     static var engine: PyMOLEngine { PyMOLEngine.shared }
 
     struct EngineNotReady: Error, CustomStringConvertible {
@@ -88,6 +105,7 @@ private enum LightsLive {
     static func tearDown() {
         engine.pythonTap = nil
         engine.commandTap = nil
+        engine.lightsController.eyeDemand = .pinnedOnly
         engine.setInteractionMode(.viewing)
         engine.runPython(
             "from pymol import cmd as _lmt_cmd, lighting as _lmt_l\n"
@@ -120,6 +138,14 @@ private enum LightsLive {
            {'name': 'rim', 'anchor': 'pinned', 'position': [5.0, 6.0, -30.0],
             'outline': True, 'beam': 30.0, 'softness': 0.1}]}
         """
+    }
+
+    /// Remove the rig (lighting.set_lights(None)).
+    static func clearRig(file: StaticString = #filePath, line: UInt = #line) {
+        engine.runPython(
+            "from pymol import cmd as _lmt_cmd, lighting as _lmt_l\n"
+            + "_lmt_l.set_lights(None, _self=_lmt_cmd)\n")
+        XCTAssertNil(engine.lightRigJSON(), "the rig was not cleared", file: file, line: line)
     }
 
     /// lighting.set_lights(`dict`) in the live interpreter; returns the JSON.

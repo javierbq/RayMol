@@ -3123,7 +3123,8 @@ final class PyMOLEngine: ObservableObject {
     /// identity colours, the entry snapshot and the bar's actions. Built on first
     /// use, like ``predictController``. Continuous edits go through the bridge
     /// setters only (no Python per drag tick, #610); button presses run a `lights`
-    /// console command, and Revert one Python call (pymol.appkit_lights.restore).
+    /// console command, and Revert or Revert this light one Python call
+    /// (pymol.appkit_lights.restore / restore_light).
     lazy var lightsController: LightsController = {
         // LightsController is @MainActor; lazy vars run in a nonisolated context.
         // assumeIsolated is safe: it is first reached from setInteractionMode or a
@@ -3143,7 +3144,10 @@ final class PyMOLEngine: ObservableObject {
                 // A movie export reads the rig off the main thread; bridge light
                 // calls are main-thread only, so the controller keeps off it.
                 isBusy: { [weak self] in self?.exportRenderActive ?? false },
-                now: { ProcessInfo.processInfo.systemUptime }))
+                now: { ProcessInfo.processInfo.systemUptime },
+                // C++ only (PyMOLBridge_LightsEyeSpace): read per rendered frame
+                // only while a light is pinned or a tool asks for every frame.
+                eyeSpace: { [weak self] in self?.lightsEyeSpace() }))
             // Console, MCP and scene-recall edits reach the bar within one object
             // poll (~500 ms). refresh() publishes only when the rig's JSON changed.
             self.panelPolled
@@ -3157,6 +3161,37 @@ final class PyMOLEngine: ObservableObject {
     }()
 
     private var lightsCancellables = Set<AnyCancellable>()
+
+    /// The per-frame hook of the light tools (#620): MetalViewport.draw(in:)
+    /// calls it once per rendered frame while in Lights mode, so a pinned
+    /// light's orbit, pitch and radius follow the camera frame by frame (and,
+    /// later, #622's gizmo gets the rig in eye space). Outside Lights mode it
+    /// returns at once. Bridge reads only (no Python); with no pinned light
+    /// and no tool asking for every frame it makes no bridge call at all.
+    func lightsFrameRendered() {
+        guard interactionMode == .lights else { return }
+        // draw(in:) runs on the main thread on both platforms (macOS: the
+        // view's display link; iOS: MTKView's own loop).
+        MainActor.assumeIsolated { lightsController.frameRendered() }
+    }
+
+    /// The scene's Shadows switch (metal_shadows) as the scene poll last read
+    /// it (~500 ms, in every mode); nil before the first poll. Studio shadows
+    /// render only while it is on (#616), so the light inspector hints when a
+    /// light casts a shadow and it is off.
+    var sceneShadowsOn: Bool? {
+        sceneState.values["metal_shadows"].map { $0 > 0.5 }
+    }
+
+    /// Turn the scene's Shadows switch on: the inspector hint's Turn On button
+    /// (a button press, never a drag tick). A console command, echoed like a
+    /// typed one, reflected in sceneState at once as the Tab shortcut does
+    /// (the next poll still has the last word).
+    func enableSceneShadows() {
+        guard isReady else { return }
+        runCommand("set metal_shadows, 1")
+        sceneState.values["metal_shadows"] = 1
+    }
 
     /// The preset menu, read once per process (empty until a read succeeds).
     private var cachedLightPresets: [LightPreset] = []
@@ -4614,8 +4649,8 @@ typealias MoleculeObject = ObjectEntry
 // MARK: - Lights bar actions (#619)
 
 extension LightsAction {
-    /// What the engine runs for a Lights bar button: a `lights` console command,
-    /// or (Revert) one Python call.
+    /// What the engine runs for a Lights button: a `lights` console command,
+    /// or (Revert, Revert this light) one Python call.
     enum Invocation: Equatable {
         case command(String)
         case python(String)
@@ -4642,6 +4677,13 @@ extension LightsAction {
             // base64, so the JSON is never quoted into Python source.
             let encoded = Data(json.utf8).base64EncodedString()
             return .python("from pymol import appkit_lights as _al\n_al.restore('\(encoded)')")
+        case .restoreLight(let name, let json):
+            // Revert this light (#620): the entry JSON as base64 and a name
+            // that passed the core's rule, so neither is ever quoted.
+            guard Self.isValidName(name) else { return nil }
+            let encoded = Data(json.utf8).base64EncodedString()
+            return .python(
+                "from pymol import appkit_lights as _al\n_al.restore_light('\(encoded)', '\(name)')")
         }
     }
 
