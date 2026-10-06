@@ -70,11 +70,11 @@ final class LightsActionInvocationTests: XCTestCase {
 
 // MARK: - Live-engine support
 
-/// Shared by the live tests below: wait for the host app's engine, and put the
-/// rig, the mode, the view and the taps back afterwards (PyMOLEngine.shared is
-/// shared with every other test class).
+/// Shared by the live tests below and LightsInspectorLiveTests.swift: wait for
+/// the host app's engine, and put the rig, the mode, the view and the taps back
+/// afterwards (PyMOLEngine.shared is shared with every other test class).
 @MainActor
-private enum LightsLive {
+enum LightsLive {
     static var engine: PyMOLEngine { PyMOLEngine.shared }
 
     struct EngineNotReady: Error, CustomStringConvertible {
@@ -105,6 +105,7 @@ private enum LightsLive {
     static func tearDown() {
         engine.pythonTap = nil
         engine.commandTap = nil
+        engine.lightsController.eyeDemand = .pinnedOnly
         engine.setInteractionMode(.viewing)
         engine.runPython(
             "from pymol import cmd as _lmt_cmd, lighting as _lmt_l\n"
@@ -137,6 +138,14 @@ private enum LightsLive {
            {'name': 'rim', 'anchor': 'pinned', 'position': [5.0, 6.0, -30.0],
             'outline': True, 'beam': 30.0, 'softness': 0.1}]}
         """
+    }
+
+    /// Remove the rig (lighting.set_lights(None)).
+    static func clearRig(file: StaticString = #filePath, line: UInt = #line) {
+        engine.runPython(
+            "from pymol import cmd as _lmt_cmd, lighting as _lmt_l\n"
+            + "_lmt_l.set_lights(None, _self=_lmt_cmd)\n")
+        XCTAssertNil(engine.lightRigJSON(), "the rig was not cleared", file: file, line: line)
     }
 
     /// lighting.set_lights(`dict`) in the live interpreter; returns the JSON.
