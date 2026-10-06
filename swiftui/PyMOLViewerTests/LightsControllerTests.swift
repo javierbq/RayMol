@@ -347,6 +347,10 @@ final class FakeRigStore {
         switch field {
         case "orbit", "pitch", "radius":
             var place = currentPlacement(index)
+            // A pinned light is re-pinned from where it is now, its derived
+            // radius clamped into range first (layer1/LightRig.cpp, as on
+            // unpin): a light past 8 sizes comes in to 8.
+            if light.pinned { place.radius = place.radius.clamped(to: Self.ranges["radius"]!) }
             switch field {
             case "orbit": place.orbit = LightAngles.wrap(value)
             case "pitch": place.pitch = value.clamped(to: Self.ranges["pitch"]!)

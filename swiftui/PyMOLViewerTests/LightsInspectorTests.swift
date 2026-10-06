@@ -187,6 +187,23 @@ final class LightFieldEditorTests: XCTestCase {
         XCTAssertEqual(e.commit(selected: "KEY"), 10)
     }
 
+    func testGestureDropsTypedText() {
+        // 30 typed for key, then the key's lamp dragged to 105 on the orbit
+        // plan: the field shows the drag's value and Return writes nothing.
+        var e = LightFieldEditor(parameter: .orbit)
+        e.show(-45, light: "key")
+        e.begin(light: "key")
+        e.type("30")
+        e.gestureBegan(value: 105, light: "key")
+        XCTAssertEqual(e.text, "105°")
+        XCTAssertFalse(e.isEditing)
+        XCTAssertNil(e.commit(selected: "key"), "the typed 30 never overwrites the drag")
+        XCTAssertEqual(e.text, "105°")
+        // Per-frame placements show again.
+        e.show(110, light: "key")
+        XCTAssertEqual(e.text, "110°")
+    }
+
     func testTypingWithoutBeginWritesNothing() {
         var e = LightFieldEditor(parameter: .orbit)
         e.show(-45, light: "key")
@@ -626,7 +643,8 @@ final class LightsMirroringTests: XCTestCase {
 
 // MARK: - Pictures
 
-/// The card drawn offscreen, as LightsBarSnapshotTests draws the bar: an
+/// The card drawn offscreen, as LightsBarSnapshotTests draws the bar (the
+/// inspector alone, or the bar above the side column in the with-bar shots): an
 /// NSHostingView in a borderless window far off any screen, then cacheDisplay
 /// into a bitmap (the app's own view drawn into memory, no screen capture).
 /// PNGs go to $RAYMOL_LIGHTSINSPECTOR_SNAPSHOT_DIR
@@ -708,10 +726,12 @@ final class LightsInspectorSnapshotTests: XCTestCase {
                  after: { _, store in store.busy = true }),
             Shot(name: "collapsed_light", height: 120, collapsed: true, setUp: Self.sketchKey),
             Shot(name: "short_viewport_scrolls_light", height: 260, setUp: Self.sketchKey),
-            Shot(name: "with_bar_fill_from_bar_light", width: 900, height: 600, withBar: true,
+            // The with-bar shots draw the whole side column (the orbit card
+            // above the inspector), as macLightsOverlay does.
+            Shot(name: "with_bar_fill_from_bar_light", width: 900, height: 900, withBar: true,
                  setUp: Self.sketchKey,
                  after: { controller, _ in controller.select(index: 1) }),   // a chip tap
-            Shot(name: "with_bar_rim_from_header_dark", dark: true, width: 900, height: 600, withBar: true,
+            Shot(name: "with_bar_rim_from_header_dark", dark: true, width: 900, height: 900, withBar: true,
                  setUp: Self.sketchKey,
                  after: { controller, _ in controller.select(index: 2) }),   // a header menu pick
             // Part 5: the key casts a shadow while the scene's Shadows switch is off.
@@ -762,10 +782,12 @@ final class LightsInspectorSnapshotTests: XCTestCase {
                 .frame(width: shot.width, height: shot.height, alignment: .top)
                 .background(viewport))
         } else {
+            // The inspector card alone, so these pictures keep #620's meaning
+            // (the orbit card has its own in LightsOrbitSnapshotTests).
             root = AnyView(
-                LightsSideColumn(controller: controller, style: style,
-                                 inspectorStartsCollapsed: shot.collapsed,
-                                 sceneShadowsOn: shot.sceneShadowsOn)
+                LightsInspector(controller: controller, style: style,
+                                initiallyCollapsed: shot.collapsed,
+                                sceneShadowsOn: shot.sceneShadowsOn)
                     .padding(12)
                     .frame(width: shot.width, height: shot.height, alignment: .top)
                     .background(viewport))

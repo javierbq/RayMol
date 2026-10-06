@@ -16,7 +16,11 @@
 //   current orbit, pitch and radius of every light from `eye.placements`, and
 //   the full eye-space rig from `eye.eyeSpace` after setting
 //   `eyeDemand = .everyFrame` (set it back to `.pinnedOnly` when done);
-// - do the angle maths (dial and lamp drags, pitch arcs) with `LightAngles`.
+// - do the angle maths (dial and lamp drags, pitch arcs) with `LightAngles`;
+// - a direct-manipulation gesture starts with `beginGesture()` (its owner),
+//   writes every tick with `set(_:_:owner:)` (refused once the owner is no
+//   longer selected), reads a step's base with `freshValue`, and snaps with
+//   `LightSnap` (orbit 15°, radius 0.5×, pitch 1°).
 //
 // Like LightsController.swift, this file names no Python, console or bridge
 // entry point: every write goes through the controller's seams, so a drag runs
@@ -191,6 +195,83 @@ enum LightAngles {
     }
 }
 
+// MARK: - Snapping
+
+/// The grids the orbit view snaps to (spec §9): orbit every 15° (decision 7),
+/// radius every 0.5×, pitch to the dial's 1°. Values are compared at
+/// `tolerance`, the eye-space drift a pinned light's Float placement carries,
+/// so 104.99999 counts as on 105. Non-finite input gives nil.
+enum LightSnap {
+    static let tolerance = LightsController.eyeDriftTolerance
+    static let orbitStep = 15.0
+    static let radiusStep = 0.5
+
+    /// The nearest multiple of 15°, wrapped into (-180, 180].
+    static func orbit(_ degrees: Double) -> Double? {
+        guard degrees.isFinite else { return nil }
+        return LightAngles.wrap((degrees / orbitStep).rounded() * orbitStep)
+    }
+
+    /// The nearest multiple of 0.5×, clamped into the core's 0.5...8.
+    static func radius(_ sizes: Double) -> Double? {
+        guard sizes.isFinite else { return nil }
+        return clampRadius((sizes / radiusStep).rounded() * radiusStep)
+    }
+
+    /// Rounded to the pitch quantum (1°), clamped into -90...90.
+    static func pitch(_ degrees: Double) -> Double? {
+        guard degrees.isFinite else { return nil }
+        let r = LightParameter.pitch.range
+        // `+ 0` turns -0 (a small negative rounded) into 0.
+        return min(max(LightParameter.pitch.rounded(degrees), r.lowerBound), r.upperBound) + 0
+    }
+
+    /// The radius a pinch makes of `start`: `radius(start × magnification)`.
+    /// nil unless the magnification is finite and positive.
+    static func pinch(start: Double, magnification: Double) -> Double? {
+        guard magnification.isFinite, magnification > 0 else { return nil }
+        return radius(start * magnification)
+    }
+
+    /// The next 15° grid value above (`up`) or below `degrees`, wrapped. A
+    /// value within `tolerance` of a grid value counts as on it.
+    static func nextOrbit(from degrees: Double, up: Bool) -> Double? {
+        guard let n = next(degrees, step: orbitStep, up: up) else { return nil }
+        return LightAngles.wrap(n)
+    }
+
+    /// The next 0.5× grid value above (`up`) or below `sizes`, clamped into
+    /// 0.5...8 (8 up stays 8).
+    static func nextRadius(from sizes: Double, up: Bool) -> Double? {
+        next(sizes, step: radiusStep, up: up).map(clampRadius)
+    }
+
+    /// `a` and `b` are the same value at `tolerance` (around the circle when
+    /// `wraps`, so 179.9995 and -180 are the same).
+    static func same(_ a: Double, _ b: Double, wraps: Bool) -> Bool {
+        let d = wraps ? LightAngles.wrap(a - b) : a - b
+        return abs(d) <= tolerance
+    }
+
+    private static func next(_ value: Double, step: Double, up: Bool) -> Double? {
+        guard value.isFinite else { return nil }
+        let k = value / step
+        let nearest = k.rounded()
+        let index: Double
+        if abs(k - nearest) * step <= tolerance {
+            index = nearest + (up ? 1 : -1)
+        } else {
+            index = up ? k.rounded(.up) : k.rounded(.down)
+        }
+        return index * step
+    }
+
+    private static func clampRadius(_ sizes: Double) -> Double {
+        let r = LightParameter.radius.range
+        return min(max(sizes, r.lowerBound), r.upperBound)
+    }
+}
+
 // MARK: - Colour
 
 /// Light colours: the swatches, sRGB conversion and the match tolerance.
@@ -296,18 +377,40 @@ extension LightsController {
         writeNumbers([(parameter.field, value)])
     }
 
+    /// Set `parameter` of the light a gesture began on: what a gesture tick
+    /// (#621's plan and arc, #622's gizmo) calls, with the owner
+    /// `beginGesture()` returned. Re-reads a stale mirror first, then writes
+    /// only while `owner` (ignoring case) is still the selected light: a
+    /// console or MCP remove since the last read slides another light into
+    /// the selected index, the re-read repairs the selection onto it, and the
+    /// name check refuses the write (`.badIndex`).
+    @discardableResult
+    func set(_ parameter: LightParameter, _ value: Double, owner: String) -> LightSetResult {
+        guard canEdit else { return .badIndex }
+        refreshIfStale()
+        guard selection.name?.lowercased() == owner.lowercased() else { return .badIndex }
+        return set(parameter, value)
+    }
+
+    /// The selected light's current value of `parameter`, read fresh: a
+    /// stale mirror is re-read first, and for a pinned light's placement the
+    /// eye space too. nil unless `canEdit`. What a step adds to.
+    func freshValue(_ parameter: LightParameter) -> Double? {
+        guard canEdit else { return nil }
+        refreshIfStale()
+        if parameter.isPlacement, selectedLight?.anchor == .pinned {
+            frameRendered()
+        }
+        return value(parameter)
+    }
+
     /// Add `delta` to the selected light's current value of `parameter` (a
     /// stepper press). Re-reads a stale mirror first, and for a pinned light's
     /// placement the eye space too, so the step adds to the exact current
     /// value. Orbit wraps in the core (178 + 5 is -177).
     @discardableResult
     func step(_ parameter: LightParameter, by delta: Double) -> LightSetResult {
-        guard canEdit else { return .badIndex }
-        refreshIfStale()
-        if parameter.isPlacement, selectedLight?.anchor == .pinned {
-            frameRendered()
-        }
-        guard let current = value(parameter) else { return .badIndex }
+        guard let current = freshValue(parameter) else { return .badIndex }
         return set(parameter, current + delta)
     }
 
