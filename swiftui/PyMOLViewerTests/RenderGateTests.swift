@@ -132,3 +132,136 @@ final class RenderGateTests: XCTestCase {
                        + "surplus ticks only cost a PyMOL_Idle each")
     }
 }
+
+/// Coverage for `AirRedrawGate` — when the light rig's moving dust (#618) may
+/// ask the render loop for a frame on its own.
+///
+/// The policy is the issue's: animated dust must not keep the GPU busy when the
+/// app is inactive or the device is saving power, and runs at a capped rate
+/// otherwise. `draw(in:)` only feeds this type the platform's state and passes
+/// a due tick to `RenderGate.decide` as a pending redisplay, so these tests pin
+/// the whole decision, including how a due tick fares at the in-flight cap.
+final class AirRedrawGateTests: XCTestCase {
+
+    private typealias Activity = AirRedrawGate.Activity
+
+    private let shown = Activity(active: true, visible: true, lowPower: false)
+
+    // MARK: - When the dust may tick at all
+
+    func testActiveVisibleTicksAtThirtyHertz() throws {
+        let interval = try XCTUnwrap(AirRedrawGate.interval(shown),
+                                     "an active, visible app with power to spare animates the dust")
+        XCTAssertEqual(interval, 1.0 / 30.0, accuracy: 1e-12)
+        XCTAssertEqual(AirRedrawGate.activeFPS, 30,
+                       "the active cap is 30 Hz (provisional until #623's device runs)")
+    }
+
+    func testInactiveAppHoldsTheDustStill() {
+        XCTAssertNil(AirRedrawGate.interval(Activity(active: false, visible: true, lowPower: false)),
+                     "another app frontmost (or the app switcher on iOS): no air ticks")
+    }
+
+    func testHiddenWindowHoldsTheDustStill() {
+        XCTAssertNil(AirRedrawGate.interval(Activity(active: true, visible: false, lowPower: false)),
+                     "a hidden, occluded or miniaturised window: no air ticks")
+    }
+
+    func testLowPowerHoldsTheDustStill() {
+        XCTAssertNil(AirRedrawGate.interval(Activity(active: true, visible: true, lowPower: true)),
+                     "Low Power Mode or a serious thermal state: the dust holds still, "
+                     + "not a slower rate (#618's args, Q4)")
+    }
+
+    func testEveryStateButShownIsStill() {
+        for active in [false, true] {
+            for visible in [false, true] {
+                for lowPower in [false, true] {
+                    let activity = Activity(active: active, visible: visible, lowPower: lowPower)
+                    XCTAssertEqual(AirRedrawGate.interval(activity) != nil, activity == shown,
+                                   "\(activity)")
+                }
+            }
+        }
+    }
+
+    func testLowPowerReadsLowPowerModeAndThermalState() {
+        XCTAssertFalse(AirRedrawGate.lowPower(lowPowerMode: false, thermalState: .nominal))
+        XCTAssertFalse(AirRedrawGate.lowPower(lowPowerMode: false, thermalState: .fair))
+        XCTAssertTrue(AirRedrawGate.lowPower(lowPowerMode: false, thermalState: .serious))
+        XCTAssertTrue(AirRedrawGate.lowPower(lowPowerMode: false, thermalState: .critical))
+        for state in [ProcessInfo.ThermalState.nominal, .fair, .serious, .critical] {
+            XCTAssertTrue(AirRedrawGate.lowPower(lowPowerMode: true, thermalState: state),
+                          "Low Power Mode alone holds the dust still (\(state.rawValue))")
+        }
+    }
+
+    // MARK: - When a tick is due
+
+    func testDueAtNinetyFivePercentOfTheInterval() {
+        let interval = 1.0 / 30.0
+        let last = 100.0
+        XCTAssertFalse(AirRedrawGate.due(interval: interval, now: last, lastFrame: last),
+                       "no second air frame in the same instant")
+        XCTAssertFalse(AirRedrawGate.due(interval: interval, now: last + 0.94 * interval,
+                                         lastFrame: last),
+                       "before 0.95 of the interval the tick is not due")
+        XCTAssertTrue(AirRedrawGate.due(interval: interval, now: last + 0.95 * interval,
+                                        lastFrame: last),
+                      "at 0.95 of the interval it is, so display-link jitter does not halve the rate")
+        XCTAssertTrue(AirRedrawGate.due(interval: interval, now: last + interval, lastFrame: last))
+        XCTAssertTrue(AirRedrawGate.due(interval: interval, now: last + 10, lastFrame: last))
+        XCTAssertEqual(AirRedrawGate.dueShare, 0.95)
+    }
+
+    func testDueAtTheFirstTickAfterStart() {
+        // lastFrame starts at 0 on the Coordinator, and CACurrentMediaTime is
+        // the host's uptime, so the first allowed tick is due.
+        XCTAssertTrue(AirRedrawGate.due(interval: 1.0 / 30.0, now: 5, lastFrame: 0))
+    }
+
+    func testDisplayRateTicksGiveAboutThirtyAirFrames() {
+        // A 120 Hz display link for one second: the air frames the gate lets
+        // through, stamping lastFrame on each, stay at the 30 Hz cap.
+        let interval = 1.0 / AirRedrawGate.activeFPS
+        var last = 0.0
+        var frames = 0
+        for tick in 1...120 {
+            let now = Double(tick) / 120
+            if AirRedrawGate.due(interval: interval, now: now, lastFrame: last) {
+                frames += 1
+                last = now
+            }
+        }
+        XCTAssertEqual(frames, 30)
+    }
+
+    // MARK: - A due tick through RenderGate
+
+    /// What draw(in:) hands RenderGate: `pending || airDue`.
+    private func decide(pending: Bool, airDue: Bool, framesInFlight: Int) -> RenderGate.Decision {
+        RenderGate.decide(forceRedraw: false, hasRenderedOnce: true,
+                          redisplayPending: pending || airDue, framesInFlight: framesInFlight)
+    }
+
+    func testADueAirTickRenders() {
+        XCTAssertEqual(
+            decide(pending: false, airDue: true, framesInFlight: 0),
+            .render,
+            "draw(in:) passes `pending || airDue`: a due air tick renders like a redisplay")
+    }
+
+    func testADueAirTickThrottlesAtTheCap() {
+        XCTAssertEqual(
+            decide(pending: false, airDue: true, framesInFlight: RenderGate.maxFramesInFlight),
+            .throttle,
+            "the dust never queues frames past the in-flight cap")
+    }
+
+    func testNoAirTickIsAStaticScene() {
+        XCTAssertEqual(
+            decide(pending: false, airDue: false, framesInFlight: 0),
+            .skip,
+            "with the dust still (or not due) a static scene costs only the idle poll")
+    }
+}

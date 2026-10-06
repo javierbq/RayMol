@@ -44,7 +44,14 @@ the regression renders against master, L2 and L3 prove on a Mac:
   block's nearest and farthest depth; the upsample is a 4-tap joint-bilateral
   filter on the eye depth where each march stopped (post_air_stop, the
   term's own range statements), falling back to the texel nearest in depth;
-  without the half pipelines or the term the frame draws at full.
+  without the half pipelines or the term the frame draws at full;
+* TestBridgeAndApp: the redraw policy. PyMOLBridge_AirAnimating is declared
+  and defined alike, calls only PyMOL_GetGlobals and SceneLightsAirAnimating
+  and names no Python (outside the PyMOLBridge_Light* set lighting_bridge.py
+  pins); only PyMOLEngine.lightAirAnimating calls it; draw(in:) asks it only
+  through airTickDue, after AirRedrawGate allows a due tick and only when
+  nothing else renders, and hands RenderGate `pending || airDue`; RenderGate
+  and the rest of draw(in:) are master's.
 
 Pure source parsing (skipped, not passed, outside a repo checkout; in a
 checkout a missing source file fails).
@@ -753,3 +760,182 @@ class TestHalf(AirMSLCase):
         pack = cpp_function(read(os.path.join(ROOT, 'layer1', 'LightAir.cpp')),
                             'LightAirPack')
         self.assertIn('b.view[0] = resolution == kLightAirHalf ? 0.5f : 1.0f;', pack)
+
+
+# ---- The redraw policy (Part 5) ----------------------------------------------
+
+BRIDGE_DIR = os.path.join(ROOT, 'swiftui', 'PyMOLViewer', 'Bridge')
+BRIDGE_H = os.path.join(BRIDGE_DIR, 'PyMOLBridge.h')
+BRIDGE_MM = os.path.join(BRIDGE_DIR, 'PyMOLBridge.mm')
+APP_DIR = os.path.join(ROOT, 'swiftui', 'PyMOLViewer')
+SHARED = os.path.join(APP_DIR, 'Shared')
+VIEWPORT = os.path.join(SHARED, 'MetalViewport.swift')
+ENGINE = os.path.join(SHARED, 'PyMOLEngine.swift')
+
+# Master 83dd31bbe, the same digest (comments stripped, whitespace removed,
+# sha256, 16 hex digits) of `enum RenderGate {...}` (signature included) and
+# of draw(in:)'s body; draw(in:) on this branch with the air's three edits
+# undone (AIR_DRAW_EDITS).
+MASTER_RENDER_GATE = '2d8f135d3658785a'
+MASTER_DRAW = '83fc4b2d4ba500a9'
+AIR_DRAW_EDITS = (
+    (re.compile(r'let airDue = !pending && !forceRedraw && hasRenderedOnce\s*'
+                r'&& airTickDue\(view: view, engine: engine\)'), ''),
+    (re.compile(r'redisplayPending: pending \|\| airDue'), 'redisplayPending: pending'),
+    (re.compile(r'lastFrameTime = CACurrentMediaTime\(\)'), ''),
+)
+AIR_BRIDGE_CALLS = {'INST', 'PyMOL_GetGlobals', 'SceneLightsAirAnimating'}
+
+
+def _load_lighting_bridge():
+    """lighting_bridge.py's parsers and its Python pattern, loaded by path
+    under a private name (its cases are not collected twice)."""
+    spec = importlib.util.spec_from_file_location(
+        '_lighting_air_bridge_parsers', os.path.join(HERE, 'lighting_bridge.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_bridge = _load_lighting_bridge()
+
+
+def swift_body(text, signature, keep_signature=False):
+    """The braces-matched block after `signature` in `text` (None when absent),
+    as lighting_inspector.body; with the signature when asked."""
+    start = text.find(signature)
+    if start < 0:
+        return None
+    open_at = text.find('{', start)
+    end = match_brace(text, open_at)
+    return text[start if keep_signature else open_at:end + 1]
+
+
+def c_function(source, name):
+    """(return type, [param types], body) of the C function `name` defined in
+    `source`, with lighting_bridge's parsers."""
+    source = _bridge.strip_comments(source)
+    match = re.search(r'^([A-Za-z_][\w \t\*]*?)\b%s\s*\(([^)]*)\)\s*\{' % name,
+                      source, re.M)
+    if not match:
+        raise AssertionError('no definition of %s' % name)
+    open_at = match.end() - 1
+    return (_bridge.normalize_type(match.group(1)), _bridge.param_types(match.group(2)),
+            source[open_at:match_brace(source, open_at) + 1])
+
+
+class TestBridgeAndApp(AirMSLCase):
+
+    def setUp(self):
+        super().setUp()
+        for path in (BRIDGE_H, BRIDGE_MM, VIEWPORT, ENGINE):
+            if not os.path.isfile(path):
+                self.fail('%s is missing from the checkout' % path)
+        self.viewport = _bridge.strip_comments(read(VIEWPORT))
+        self.engine = _bridge.strip_comments(read(ENGINE))
+
+    def testBridgeCallsOnlyTheScene(self):
+        header = _bridge.strip_comments(read(BRIDGE_H))
+        decls = re.findall(r'^([A-Za-z_][\w \t\*]*?)\bPyMOLBridge_AirAnimating\s*\(([^)]*)\)\s*;',
+                           header, re.M)
+        self.assertEqual(len(decls), 1, 'PyMOLBridge_AirAnimating is declared once')
+        ret, params, body = c_function(read(BRIDGE_MM), 'PyMOLBridge_AirAnimating')
+        self.assertEqual((_bridge.normalize_type(decls[0][0]), _bridge.param_types(decls[0][1])),
+                         (ret, params))
+        self.assertEqual((ret, params), ('int', ['PyMOLHandle']))
+        self.assertIsNone(_bridge.PYTHON.search(body),
+                          'the air query names %r' % (_bridge.PYTHON.search(body) or [''])[0])
+        self.assertEqual(_bridge.calls(body), AIR_BRIDGE_CALLS)
+        self.assertEqual(body.count('SceneLightsAirAnimating('), 1)
+        # Outside the PyMOLBridge_Light* set lighting_bridge.py pins.
+        self.assertNotRegex('PyMOLBridge_AirAnimating', r'^PyMOLBridge_Light')
+        # The scene function exists, in the file lighting_bridge's
+        # testRigCoreHasNoPython reads, and asks for no frame itself.
+        animating = cpp_function(read(SCENE_LIGHTS), 'SceneLightsAirAnimating')
+        self.assertNotRegex(animating, r'NeedRedisplay|SceneInvalidate|OrthoDirty|SceneChanged')
+
+    def testOnlyTheEngineCallsTheBridge(self):
+        callers = []
+        for folder, _dirs, files in os.walk(APP_DIR):
+            for filename in files:
+                if filename.endswith('.swift'):
+                    text = _bridge.strip_comments(read(os.path.join(folder, filename)))
+                    count = len(re.findall(r'\bPyMOLBridge_AirAnimating\s*\(', text))
+                    if count:
+                        callers.append((filename, count))
+        self.assertEqual(callers, [('PyMOLEngine.swift', 1)])
+        wrapper = swift_body(self.engine, 'var lightAirAnimating: Bool')
+        self.assertIsNotNone(wrapper, 'PyMOLEngine.lightAirAnimating not found')
+        self.assertRegex(wrapper, r'guard let inst = instance, !exportRenderActive else '
+                                  r'\{ return false \}')
+        self.assertIn('PyMOLBridge_AirAnimating(inst) != 0', wrapper)
+        self.assertNotRegex(wrapper, r'runPython|runCommand|RunPython|RunCommand')
+        # Beside metalRayTracing, the render loop's other per-tick read.
+        self.assertLess(self.engine.index('var metalRayTracing: Bool'),
+                        self.engine.index('var lightAirAnimating: Bool'))
+
+    def testGatePolicy(self):
+        gate = swift_body(self.viewport, 'enum AirRedrawGate')
+        self.assertIsNotNone(gate, 'enum AirRedrawGate not found')
+        self.assertRegex(gate, r'static let activeFPS: Double = 30\b')
+        self.assertRegex(gate, r'static let dueShare: Double = 0\.95\b')
+        self.assertRegex(gate, r'struct Activity: Equatable \{\s*var active: Bool\s*'
+                               r'var visible: Bool\s*var lowPower: Bool\s*\}')
+        interval = swift_body(gate, 'static func interval(')
+        self.assertRegex(interval, r'guard activity\.active, activity\.visible, '
+                                   r'!activity\.lowPower else \{ return nil \}')
+        self.assertIn('return 1 / activeFPS', interval)
+        due = swift_body(gate, 'static func due(')
+        self.assertIn('now - lastFrame >= dueShare * interval', due)
+        low = swift_body(gate, 'static func lowPower(')
+        self.assertIn('lowPowerMode || thermalState.rawValue >= '
+                      'ProcessInfo.ThermalState.serious.rawValue', low)
+
+    def testActivityReadsThePlatform(self):
+        activity = swift_body(self.viewport, 'private func airActivity(')
+        self.assertIsNotNone(activity, 'Coordinator.airActivity not found')
+        for token in ('info.isLowPowerModeEnabled', 'info.thermalState',
+                      'NSApp.isActive', '.occlusionState.contains(.visible)',
+                      '.isMiniaturized', '.isVisible',
+                      'activationState == .foregroundActive'):
+            self.assertIn(token, activity)
+        mac = activity.index('#if os(macOS)')
+        other = activity.index('#else')
+        self.assertLess(mac, activity.index('NSApp.isActive'))
+        self.assertLess(activity.index('NSApp.isActive'), other)
+        self.assertGreater(activity.index('activationState'), other)
+
+    def testDrawAsksOnlyOnADueTick(self):
+        due = swift_body(self.viewport, 'private func airTickDue(')
+        self.assertIsNotNone(due, 'Coordinator.airTickDue not found')
+        ask = due.index('engine.lightAirAnimating')
+        self.assertLess(due.index('guard let interval = AirRedrawGate.interval('), ask)
+        self.assertLess(due.index('guard AirRedrawGate.due('), ask)
+        self.assertEqual(due.count('lightAirAnimating'), 1)
+        # The only ask in the viewport, and airTickDue's only caller is draw(in:)
+        # behind the cheap terms.
+        self.assertEqual(self.viewport.count('lightAirAnimating'), 1)
+        self.assertEqual(len(re.findall(r'(?<!func )\bairTickDue\(view:', self.viewport)), 1)
+        draw = swift_body(self.viewport, 'func draw(in view: MTKView)')
+        self.assertRegex(draw, r'let airDue = !pending && !forceRedraw && hasRenderedOnce\s*'
+                               r'&& airTickDue\(view: view, engine: engine\)')
+        self.assertLess(draw.index('let pending ='), draw.index('let airDue ='))
+        self.assertLess(draw.index('let airDue ='), draw.index('RenderGate.decide('))
+        self.assertIn('redisplayPending: pending || airDue', draw)
+        self.assertEqual(draw.count('RenderGate.decide('), 1)
+        # Every rendered frame stamps the clock the gate reads.
+        self.assertLess(draw.index('engine.renderMetalFrame('),
+                        draw.index('lastFrameTime = CACurrentMediaTime()'))
+        self.assertEqual(self.viewport.count('private var lastFrameTime: CFTimeInterval = 0'), 1)
+        self.assertEqual(len(re.findall(r'\blastFrameTime\s*=', self.viewport)), 1,
+                         'stamped once, after the render')
+
+    def testRenderGateAndDrawAreMasters(self):
+        gate = swift_body(self.viewport, 'enum RenderGate {', keep_signature=True)
+        self.assertEqual(digest(gate), MASTER_RENDER_GATE, 'RenderGate changed')
+        draw = swift_body(self.viewport, 'func draw(in view: MTKView)')
+        for pattern, replacement in AIR_DRAW_EDITS:
+            draw, count = pattern.subn(replacement, draw)
+            self.assertEqual(count, 1, pattern.pattern)
+        self.assertEqual(digest(draw), MASTER_DRAW,
+                         'draw(in:) differs from master beyond the air\'s three edits')

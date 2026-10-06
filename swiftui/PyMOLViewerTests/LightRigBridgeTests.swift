@@ -47,6 +47,8 @@ final class LightRigBridgeTests: XCTestCase {
         engine.runPython(
             "from pymol import cmd as _lrb_cmd\n"
             + "_lrb_cmd.set_lights(None)\n"
+            + "_lrb_cmd.delete('_lrb_air')\n"
+            + "_lrb_cmd.set('metal_light_air_time', -1.0)\n"
             + "if '_lrb_view' in globals():\n"
             + "    _lrb_cmd.set_view(_lrb_view)\n"
             + "    del _lrb_view\n")
@@ -443,6 +445,81 @@ final class LightRigBridgeTests: XCTestCase {
         XCTAssertEqual(engine.setLight(0, "colour", 1), .unknownField)
         XCTAssertEqual(engine.setLight(0, "orbit", .nan), .badValue)
         XCTAssertEqual(posts.count, 2)
+    }
+}
+
+// MARK: - the air's redraw query (#618)
+
+/// PyMOLEngine.lightAirAnimating (PyMOLBridge_AirAnimating ->
+/// SceneLightsAirAnimating), what the render loop's air tick asks: true only
+/// while the rig's dust moves on its own. lighting_air.py (TestAnimating)
+/// covers every case through _cmd; these show the bridge reaches the same C++
+/// and follows a live rig edit with no Python in between.
+extension LightRigBridgeTests {
+
+    /// An enabled rig with one light and moving dust (no haze), over a small
+    /// peptide `_lrb_air` so the scene has something shown. tearDown deletes
+    /// it and unpins the dust clock.
+    private func setDustRig() {
+        engine.runPython("from pymol import cmd as _lrb_cmd\n_lrb_cmd.fab('ACDEFG', '_lrb_air')\n")
+        setRig("""
+            {'enabled': True, 'centre': [0.0, 0.0, 0.0], 'size': 10.0,
+             'air': {'haze': 0.0, 'dust': 0.5, 'dust_size': 0.35, 'dust_speed': 1.0,
+                     'scatter': 0.55, 'seed': 0},
+             'lights': [{'name': 'key', 'orbit': -40.0, 'pitch': 30.0}]}
+            """)
+    }
+
+    private func pinDustClock(_ seconds: Double) {
+        engine.runPython("from pymol import cmd as _lrb_cmd\n"
+                         + "_lrb_cmd.set('metal_light_air_time', \(seconds))\n")
+    }
+
+    func testAirAnimatingFalseWithNoRig() throws {
+        try requireEngine()
+        XCTAssertFalse(engine.lightAirAnimating, "no rig, no dust: nothing to animate")
+    }
+
+    func testAirAnimatingWithMovingDust() throws {
+        try requireEngine()
+        pinDustClock(-1)
+        setDustRig()
+        XCTAssertTrue(engine.lightAirAnimating,
+                      "an enabled rig with dust 0.5 and dust_speed 1 over a shown peptide moves")
+    }
+
+    /// The query follows live rig edits through the bridge (no Python): speed
+    /// 0, dust 0 and a rig switched off each hold the dust still.
+    func testAirAnimatingFollowsRigEdits() throws {
+        try requireEngine()
+        pinDustClock(-1)
+        setDustRig()
+        XCTAssertTrue(engine.lightAirAnimating)
+
+        XCTAssertEqual(engine.setLight(-1, "dust_speed", 0), .ok)
+        XCTAssertFalse(engine.lightAirAnimating, "dust_speed 0: the dust holds still")
+        XCTAssertEqual(engine.setLight(-1, "dust_speed", 1), .ok)
+        XCTAssertTrue(engine.lightAirAnimating)
+
+        XCTAssertEqual(engine.setLight(-1, "dust", 0), .ok)
+        XCTAssertFalse(engine.lightAirAnimating, "haze alone is still")
+        XCTAssertEqual(engine.setLight(-1, "dust", 0.5), .ok)
+        XCTAssertTrue(engine.lightAirAnimating)
+
+        XCTAssertEqual(engine.setLight(-1, "enabled", 0), .ok)
+        XCTAssertFalse(engine.lightAirAnimating, "a rig that is off draws no air")
+    }
+
+    /// metal_light_air_time >= 0 pins the dust clock, so nothing moves.
+    func testAirAnimatingFalseWhenTheClockIsPinned() throws {
+        try requireEngine()
+        setDustRig()
+        pinDustClock(1)
+        XCTAssertFalse(engine.lightAirAnimating, "metal_light_air_time 1 pins the dust")
+        pinDustClock(0)
+        XCTAssertFalse(engine.lightAirAnimating, "a pin at 0 is still a pin")
+        pinDustClock(-1)
+        XCTAssertTrue(engine.lightAirAnimating, "below 0 the clock runs again")
     }
 }
 
