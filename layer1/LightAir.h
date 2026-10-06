@@ -69,6 +69,10 @@ inline constexpr int kLightAirHazeSteps = 48;
 inline constexpr int kLightAirDustLayers = 32;
 /// The scatter (Henyey-Greenstein g) is clamped to +-this.
 inline constexpr double kLightAirMaxScatter = 0.9;
+/// Half resolution: the upsample's depth similarity is a Gaussian this share
+/// of the air's range wide (the eye depth where each march stopped), so the
+/// air does not bleed across a silhouette. Used only by the shader.
+inline constexpr double kLightAirDepthSigma = 0.02;
 
 /// metal_light_air_resolution / metal_light_air_shadow_filter values.
 inline constexpr int kLightAirFull = 1;

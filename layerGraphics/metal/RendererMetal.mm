@@ -58,14 +58,16 @@ constexpr NSUInteger kRTLightRigBufferIndex = 13;
 
 // The air pass (#618; kAirSrc): its own library and its own index space. The
 // air block (pymol::LightAirBlock, MSL LightAirU) and a copy of the rig block
-// (LightRigU); the scene colour and depth and the studio maps (or _airNoMaps);
-// the post sampler and the maps' compare sampler. None of these is the rig's
+// (LightRigU); the scene colour and depth, the studio maps (or _airNoMaps) and
+// the half-resolution term (_airTerm, read by the upsample); the post sampler
+// and the maps' compare sampler. None of these is the rig's
 // or the maps' index in the lit libraries.
 constexpr NSUInteger kAirParamsBufferIndex = 0;
 constexpr NSUInteger kAirRigBufferIndex = 1;
 constexpr NSUInteger kAirColorTextureIndex = 0;
 constexpr NSUInteger kAirDepthTextureIndex = 1;
 constexpr NSUInteger kAirMapsTextureIndex = 2;
+constexpr NSUInteger kAirTermTextureIndex = 3;
 constexpr NSUInteger kAirPostSamplerIndex = 0;
 constexpr NSUInteger kAirMapsSamplerIndex = 1;
 
@@ -563,6 +565,8 @@ RendererMetal::~RendererMetal()
   [_vboLinePipeline release];         [_bezierTubePipeline release];
   [_bezierTubeRigPipeline release];   // the tube's light-rig pipeline (#613)
   [_airFullPipeline release];         [_airNoMaps release];  // the air (#618)
+  [_airMarchPipeline release];        [_airUpsamplePipeline release];
+  [_airTerm release];
   [_blitPipeline release];            [_ssaoPipeline release];
   [_fxaaPipeline release];            [_outlinePipeline release];
   [_tonemapPipeline release];         [_dofPipeline release];
@@ -2113,6 +2117,7 @@ constant float kAirHazePhaseCap = 5.0;
 constant float kAirDustPhaseCap = 8.0;
 constant float kAirFalloffCap = 4.0;
 constant float kAirMaxScatter = 0.9;
+constant float kAirDepthSigma = 0.02;
 
 struct AirVOut { float4 position [[position]]; float2 uv; };
 
@@ -2380,6 +2385,97 @@ fragment float4 post_air_full(AirVOut in [[stage_in]],
   const float d = depthTex.read(px);
   const float4 t = post_air_term(in.uv, in.position.xy, d, air, rig, maps, smp);
   return float4(post_air_finish(c.rgb, t.rgb), c.a);
+}
+
+// Half resolution (metal_light_air_resolution 2, the iOS default) is two
+// passes: post_air_march writes the term for every 2x2 block of pixels into a
+// half-size RGBA16Float target, and post_air_upsample spreads it back over
+// the pixels and composites. Both march with post_air_term, so half differs
+// from full only by the resampling.
+
+// The eye depth where post_air_term's march stops for window depth d (its
+// .a): the same range, clamped the same way (a source test pins these
+// statements to the term's).
+static float post_air_stop(float d, constant LightAirU& air) {
+  const float A = air.proj.x, B = air.proj.y, ortho = air.view.y;
+  const float camNear = post_linear_depth(0.0, A, B, ortho);
+  const float camFar = post_linear_depth(1.0, A, B, ortho);
+  const float zSurf = d < 0.99999 ? post_linear_depth(d, A, B, ortho) : camFar;
+  const float zLo = max(air.range.x, camNear);
+  const float zHi = min(min(air.range.y, camFar), zSurf);
+  if (!(zHi > zLo) || !isfinite(zHi - zLo)) return zSurf;
+  return zHi;
+}
+
+// The march at half resolution: one texel per 2x2 block of pixels (the last
+// row and column clamped on an odd size). Its depth is a checkerboard of the
+// block's nearest and farthest pixel, read, never filtered, so both sides of
+// a silhouette are marched within a texel of every pixel; the view ray goes
+// through that pixel. rgb the air's light before any knee, a the eye depth
+// where the march stopped.
+fragment float4 post_air_march(AirVOut in [[stage_in]],
+    depth2d<float> depthTex [[texture(1)]],
+    depth2d_array<float> maps [[texture(2)]],
+    sampler smp [[sampler(1)]],
+    constant LightAirU& air [[buffer(0)]],
+    constant LightRigU& rig [[buffer(1)]]) {
+  const uint2 tx = uint2(in.position.xy);
+  const uint2 lim = uint2(depthTex.get_width(), depthTex.get_height()) - 1;
+  const bool nearest = ((tx.x + tx.y) & 1u) == 0u;
+  uint2 px = min(tx * 2u, lim);
+  float d = depthTex.read(px);
+  for (uint k = 1u; k < 4u; ++k) {
+    const uint2 q = min(tx * 2u + uint2(k & 1u, k >> 1u), lim);
+    const float dq = depthTex.read(q);
+    if (nearest ? dq < d : dq > d) {
+      d = dq;
+      px = q;
+    }
+  }
+  const float2 frag = float2(px) + 0.5;
+  return post_air_term(frag / float2(lim + 1u), frag, d, air, rig, maps, smp);
+}
+
+// The upsample at full resolution: a joint-bilateral filter over the four
+// nearest half-resolution texels, each weighted by its bilinear weight times
+// how close the eye depth where it stopped is to this pixel's (a Gaussian a
+// kAirDepthSigma share of the air's range wide), so the air does not bleed
+// across a silhouette. When every weight vanishes (no texel at this pixel's
+// depth) it takes the texel nearest in depth. Then the composite; colour and
+// depth read at this pixel, alpha kept.
+fragment float4 post_air_upsample(AirVOut in [[stage_in]],
+    texture2d<float> colorTex [[texture(0)]],
+    depth2d<float> depthTex [[texture(1)]],
+    texture2d<float> termTex [[texture(3)]],
+    constant LightAirU& air [[buffer(0)]]) {
+  const uint2 px = uint2(in.position.xy);
+  const float4 c = colorTex.read(px);
+  const float z = post_air_stop(depthTex.read(px), air);
+  const float2 h = in.position.xy * 0.5 - 0.5;
+  const float2 b = floor(h);
+  const float2 f = h - b;
+  const int2 lim = int2(termTex.get_width(), termTex.get_height()) - 1;
+  const float sigma = max(kAirDepthSigma * (air.range.y - air.range.x), 1e-3);
+  float3 sum = float3(0.0);
+  float wsum = 0.0;
+  float3 nearest = float3(0.0);
+  float best = 3.0e38;
+  for (int k = 0; k < 4; ++k) {
+    const int2 o = int2(k & 1, k >> 1);
+    const float4 t = termTex.read(uint2(clamp(int2(b) + o, int2(0), lim)));
+    const float dz = abs(t.a - z);
+    const float wb = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y);
+    const float r = dz / sigma;
+    const float w = wb * exp(-r * r);
+    sum += t.rgb * w;
+    wsum += w;
+    if (dz < best) {
+      best = dz;
+      nearest = t.rgb;
+    }
+  }
+  const float3 a = wsum > 1e-4 ? sum / wsum : nearest;
+  return float4(post_air_finish(c.rgb, a), c.a);
 }
 )";
 
@@ -12049,13 +12145,40 @@ static id<MTLFunction> airFunction(id<MTLLibrary> lib, NSString* name)
   return fn;
 }
 
+// One of the air's pipelines (#618): post_air_vertex with the fragment `name`
+// (from airFunction), single-sample, no depth attachment, colour `format`.
+// +1, caller owns; nil (logged) on failure. The function is released here.
+static id<MTLRenderPipelineState> newAirPipeline(id<MTLDevice> device,
+    id<MTLLibrary> lib, id<MTLFunction> vfn, NSString* name, MTLPixelFormat format)
+{
+  id<MTLFunction> ffn = airFunction(lib, name);
+  if (!ffn) {
+    NSLog(@"RendererMetal: air function %@ missing", name);
+    return nil;
+  }
+  MTLRenderPipelineDescriptor* pd = [[MTLRenderPipelineDescriptor alloc] init];
+  pd.vertexFunction = vfn;
+  pd.fragmentFunction = ffn;
+  pd.colorAttachments[0].pixelFormat = format;
+  pd.rasterSampleCount = 1;
+  NSError* err = nil;
+  id<MTLRenderPipelineState> ps = [device newRenderPipelineStateWithDescriptor:pd error:&err];
+  if (!ps)
+    NSLog(@"RendererMetal: air pipeline %@ failed: %@", name, err);
+  // MRC: the pipeline state keeps what it needs.
+  [pd release]; [ffn release];
+  return ps;
+}
+
 // The air's pipelines (#618), built the first time a frame draws air, so a
 // session without air compiles nothing new. One attempt per renderer
 // (_airPipelinesTried): a failure is logged once and the air is skipped from
-// then on; the rest of the frame is unchanged. Single-sample post pipelines
-// (no depth attachment), so a sample-count change does not touch them. Only
-// the pipeline state is kept: the library, functions and descriptor are
-// released here.
+// then on; the rest of the frame is unchanged. Full resolution needs
+// post_air_full and the maps' stand-in; half resolution also needs the march
+// (into RGBA16Float) and the upsample, and without them it draws at full.
+// Single-sample post pipelines (no depth attachment), so a sample-count
+// change does not touch them. Only the pipeline states are kept: the library
+// and functions are released here.
 bool RendererMetal::ensureAirPipelines()
 {
   if (_airFullPipeline)
@@ -12072,26 +12195,36 @@ bool RendererMetal::ensureAirPipelines()
     return false;
   }
   id<MTLFunction> vfn = airFunction(lib, @"post_air_vertex");
-  id<MTLFunction> ffn = airFunction(lib, @"post_air_full");
-  if (!vfn || !ffn) {
+  if (!vfn) {
     NSLog(@"RendererMetal: air functions missing");
-    [vfn release]; [ffn release]; [lib release];
+    [lib release];
     return false;
   }
-  MTLRenderPipelineDescriptor* pd = [[MTLRenderPipelineDescriptor alloc] init];
-  pd.vertexFunction = vfn;
-  pd.fragmentFunction = ffn;
-  pd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
-  pd.rasterSampleCount = 1;
-  _airFullPipeline = [_device newRenderPipelineStateWithDescriptor:pd error:&err];
-  if (!_airFullPipeline)
-    NSLog(@"RendererMetal: air pipeline failed: %@", err);
-  // MRC: the pipeline state keeps what it needs.
-  [pd release]; [vfn release]; [ffn release]; [lib release];
+  _airFullPipeline = newAirPipeline(_device, lib, vfn, @"post_air_full",
+                                    MTLPixelFormatBGRA8Unorm);
+  if (_airFullPipeline) {
+    _airMarchPipeline = newAirPipeline(_device, lib, vfn, @"post_air_march",
+                                       MTLPixelFormatRGBA16Float);
+    _airUpsamplePipeline = newAirPipeline(_device, lib, vfn, @"post_air_upsample",
+                                          MTLPixelFormatBGRA8Unorm);
+    if (!_airMarchPipeline || !_airUpsamplePipeline) {
+      // logged by newAirPipeline; half resolution draws at full
+      [_airMarchPipeline release];
+      [_airUpsamplePipeline release];
+      _airMarchPipeline = nil;
+      _airUpsamplePipeline = nil;
+    }
+  }
+  // MRC: the pipeline states keep what they need.
+  [vfn release]; [lib release];
   // The maps' stand-in, in the same single attempt.
   if (_airFullPipeline && !ensureAirNoMaps()) {
     [_airFullPipeline release];
     _airFullPipeline = nil;
+    [_airMarchPipeline release];
+    [_airUpsamplePipeline release];
+    _airMarchPipeline = nil;
+    _airUpsamplePipeline = nil;
   }
   return _airFullPipeline != nil;
 }
@@ -12119,14 +12252,46 @@ id<MTLTexture> RendererMetal::ensureAirNoMaps()
   return _airNoMaps;
 }
 
-// The air pass (#618) over sceneSrc, at full resolution, into the other
-// ping-pong target. It binds value copies of the frame's blocks in its own
-// index space and never touches the lit draws' bindings (bindLightRig):
+// The half-resolution air term (#618): RGBA16Float, ceil(w/2) x ceil(h/2) for
+// a w x h frame, private, made on the first half-resolution frame and re-made
+// when the size changes. A size it could not be made for is logged once and
+// not retried until the size changes; the frame then draws at full.
+bool RendererMetal::ensureAirTerm(NSUInteger w, NSUInteger h)
+{
+  const NSUInteger hw = (w + 1) / 2;
+  const NSUInteger hh = (h + 1) / 2;
+  if (hw == _airTermW && hh == _airTermH)
+    return _airTerm != nil;
+  // MRC: release the term made for the old size.
+  [_airTerm release];
+  _airTerm = nil;
+  _airTermW = hw;
+  _airTermH = hh;
+  if (hw == 0 || hh == 0)
+    return false;
+  MTLTextureDescriptor* d = [MTLTextureDescriptor
+      texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
+                                   width:hw height:hh mipmapped:NO];
+  d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+  d.storageMode = MTLStorageModePrivate;
+  _airTerm = [_device newTextureWithDescriptor:d];
+  if (!_airTerm)
+    NSLog(@"RendererMetal: air term %lux%lu failed; drawing the air at full resolution",
+          (unsigned long) hw, (unsigned long) hh);
+  return _airTerm != nil;
+}
+
+// The air pass (#618) over sceneSrc, into the other ping-pong target. It binds
+// value copies of the frame's blocks in its own index space and never touches
+// the lit draws' bindings (bindLightRig):
 // - the air block, with this frame's projection (ortho, A, B, X, Y);
 // - the rig block, with the whole slice as the shadow tile (a grid frame
 //   draws no air) and head.w (the maps this frame) 0 unless the maps were
 //   rendered (lightShadowsReady), so planned but unrendered maps are never
 //   read; _airNoMaps is bound in their place then.
+// At full resolution (view.x 1) one pass, post_air_full. At half (view.x 0.5)
+// post_air_march into _airTerm, then post_air_upsample; without the half
+// pipelines or the term it falls back to full (view.x set to 1).
 // Encoded on _cmdBuffer, so metal_gpu_timing's frame time includes it.
 id<MTLTexture> RendererMetal::encodeAirPass(id<MTLTexture> sceneSrc)
 {
@@ -12148,19 +12313,40 @@ id<MTLTexture> RendererMetal::encodeAirPass(id<MTLTexture> sceneSrc)
   if (!mapsTex || !_postSampler || !_shadowSampler)
     return sceneSrc;
   id<MTLTexture> dst = (sceneSrc == _sceneColor) ? _postColor : _sceneColor;
+  const bool half = air.view[0] < 0.75f && _airMarchPipeline && _airUpsamplePipeline &&
+                    ensureAirTerm(dst.width, dst.height);
+  if (!half)
+    air.view[0] = 1.0f;
+  // What every air pass reads: the depth, the maps, the blocks, the samplers.
+  auto bindAir = [&](id<MTLRenderCommandEncoder> e) {
+    [e setFragmentTexture:_sceneDepth atIndex:kAirDepthTextureIndex];
+    [e setFragmentTexture:mapsTex atIndex:kAirMapsTextureIndex];
+    [e setFragmentSamplerState:_postSampler atIndex:kAirPostSamplerIndex];
+    [e setFragmentSamplerState:_shadowSampler atIndex:kAirMapsSamplerIndex];
+    [e setFragmentBytes:&air length:sizeof(air) atIndex:kAirParamsBufferIndex];
+    [e setFragmentBytes:&rig length:sizeof(rig) atIndex:kAirRigBufferIndex];
+  };
+  if (half) {
+    MTLRenderPassDescriptor* md = [MTLRenderPassDescriptor renderPassDescriptor];
+    md.colorAttachments[0].texture = _airTerm;
+    md.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+    md.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> em = [_cmdBuffer renderCommandEncoderWithDescriptor:md];
+    [em setRenderPipelineState:_airMarchPipeline];
+    bindAir(em);
+    [em drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    [em endEncoding];
+  }
   MTLRenderPassDescriptor* pd = [MTLRenderPassDescriptor renderPassDescriptor];
   pd.colorAttachments[0].texture = dst;
   pd.colorAttachments[0].loadAction = MTLLoadActionDontCare;
   pd.colorAttachments[0].storeAction = MTLStoreActionStore;
   id<MTLRenderCommandEncoder> ea = [_cmdBuffer renderCommandEncoderWithDescriptor:pd];
-  [ea setRenderPipelineState:_airFullPipeline];
+  [ea setRenderPipelineState:(half ? _airUpsamplePipeline : _airFullPipeline)];
+  bindAir(ea);
   [ea setFragmentTexture:sceneSrc atIndex:kAirColorTextureIndex];
-  [ea setFragmentTexture:_sceneDepth atIndex:kAirDepthTextureIndex];
-  [ea setFragmentTexture:mapsTex atIndex:kAirMapsTextureIndex];
-  [ea setFragmentSamplerState:_postSampler atIndex:kAirPostSamplerIndex];
-  [ea setFragmentSamplerState:_shadowSampler atIndex:kAirMapsSamplerIndex];
-  [ea setFragmentBytes:&air length:sizeof(air) atIndex:kAirParamsBufferIndex];
-  [ea setFragmentBytes:&rig length:sizeof(rig) atIndex:kAirRigBufferIndex];
+  if (half)
+    [ea setFragmentTexture:_airTerm atIndex:kAirTermTextureIndex];
   [ea drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
   [ea endEncoding];
   return dst;

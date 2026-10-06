@@ -521,11 +521,23 @@ private:
   // Only the pipeline state is kept. _airNoMaps: a 1x1, 3-slice depth array
   // bound in place of the studio maps on a frame without them (never
   // sampled: the rig copy's head.w is 0 then), so one pipeline serves both.
+  // Half resolution (the air block's view.x 0.5) marches into _airTerm
+  // (RGBA16Float, ceil(w/2) x ceil(h/2), private; made on the first half
+  // frame and re-made on a size change; _airTermW/_airTermH the half size it
+  // was made, or tried, for) with _airMarchPipeline, then upsamples and
+  // composites with _airUpsamplePipeline. Without those pipelines or the term
+  // the frame draws the air at full resolution.
   id<MTLRenderPipelineState> _airFullPipeline = nil;
+  id<MTLRenderPipelineState> _airMarchPipeline = nil;
+  id<MTLRenderPipelineState> _airUpsamplePipeline = nil;
   bool _airPipelinesTried = false;
   id<MTLTexture> _airNoMaps = nil;
+  id<MTLTexture> _airTerm = nil;
+  NSUInteger _airTermW = 0;
+  NSUInteger _airTermH = 0;
   bool ensureAirPipelines();
   id<MTLTexture> ensureAirNoMaps();
+  bool ensureAirTerm(NSUInteger w, NSUInteger h);
   // Encodes the air over sceneSrc into the other ping-pong target, on
   // _cmdBuffer, and returns that target (sceneSrc when it cannot draw).
   id<MTLTexture> encodeAirPass(id<MTLTexture> sceneSrc);
