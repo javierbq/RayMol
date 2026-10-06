@@ -56,7 +56,7 @@ echo "current: $CUR_MARKETING / build $CUR_BUILD"
 ```
 - Sanity-check `$LAST` against `$CUR_MARKETING` — they should be the same release (or LAST one behind if a bump hasn't shipped).
 - If the only commits past the tag are release bookkeeping (a bump + appcast commit), **there is nothing to release** — say so and stop; don't invent a release.
-- Choose the bump from the commit mix (standard semver): any real `feat`s → **minor** (`1.5.1` → `1.6.0`); only `fix`/`perf`/`docs`/`build` → **patch** (`1.5.1` → `1.5.2`). New build `N = CUR_BUILD + 1`.
+- Choose the bump from the commit mix (standard semver): any real `feat`s → **minor** (`1.5.1` → `1.6.0`); only `fix`/`perf`/`docs`/`build` → **patch** (`1.5.1` → `1.5.2`). New build **`N = max(CUR_BUILD, highest macOS build on ASC) + 1`** — run `.claude/skills/cut-mas-release/scripts/asc_status.py` and take its `next Mac release build must be >= N` line. The same number ships to the Mac App Store, where Apple requires a Mac build number to exceed every earlier macOS build across all versions, and the "macOS Beta (master)" Xcode Cloud workflow uploads betas numbered from the shared Xcode Cloud counter (e.g. 190). `CUR_BUILD + 1` would then pass Sparkle but be rejected by the MAS upload. Sparkle only needs the number to increase, so jumping is harmless for the DMG.
 - A **minor or major** bump also means preparing a fresh in-app "What's New" splash page (Step 2, via the `whats-new-preparer` agent); a **patch** bump skips it. Note which applies when you recommend the version.
 - The release is **macOS-facing**: fixes/features that only touch the iOS path (App Store) should NOT headline the macOS notes. Recommend the version + build to the user and confirm before proceeding.
 

@@ -4,6 +4,10 @@ name: iOS pipeline script tests
 #   scripts/ios_deps_fingerprint.sh    scripts/apply_ci_versions.sh
 #   scripts/nightly_version.sh         scripts/assert_ios_build_inputs.sh
 #   scripts/prune_ios_deps.sh
+# and, since the macOS beta workflow joined it, the macOS side of the same hook:
+#   scripts/ci_platform.sh             scripts/apply_mas_restrictions.sh
+#   scripts/assert_macos_build_inputs.sh
+# (every scripts/tests/run_*_test.sh is discovered by glob — see below)
 #
 # WHY THIS WORKFLOW EXISTS. These suites are the only automated check on that
 # pipeline. Neither half of it can be exercised in a PR: the deps workflow needs

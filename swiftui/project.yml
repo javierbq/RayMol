@@ -273,6 +273,14 @@ targets:
           ENABLE_HARDENED_RUNTIME: YES
           ENABLE_APP_SANDBOX: YES
           CODE_SIGN_ENTITLEMENTS: PyMOLViewer/RayMol.entitlements
+          # macOS gets its own file: RayMol.entitlements' keychain-access-groups
+          # is a provisioning-profile entitlement on the Mac, and Xcode Cloud
+          # archives ad hoc (CODE_SIGN_IDENTITY=-), where it fails with "has
+          # entitlements that require signing with a development certificate".
+          # Nothing in the app calls the Keychain APIs (no SecItem* anywhere in
+          # swiftui/ or modules/), so the Mac file simply omits it. The DMG is
+          # unaffected: make_dmg.sh signs with RayMol_DeveloperID.entitlements.
+          "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": PyMOLViewer/RayMolMac.entitlements
           # OPT-IN, not enabled: PyMOLViewer/RayMolIOS.entitlements requests the
           # Increased Memory Limit entitlement, which roughly doubles what an on-device
           # fold can be — see PredictSizeGuard, where an unentitled iPhone 15 Pro budget

@@ -2,6 +2,15 @@
 # ci_post_clone.sh — Xcode Cloud post-clone: stage everything xcodebuild needs
 # that is not in the repository, then build the C++ core.
 #
+# Serves TWO workflows, because Apple runs this one script for every action:
+#   iOS Beta (master)    PyMOLViewer_iOS   — deps_ios artifact + device core
+#   macOS Beta (master)  PyMOLViewer_macOS — deps_macos + Metal-only core, and
+#                        the project rewritten to its Mac App Store variant
+#                        (no Sparkle, RAYMOL_MAS_RESTRICTED): TestFlight for Mac
+#                        only accepts sandboxed App Store builds
+# scripts/ci_platform.sh decides which. Steps marked [iOS] / [macOS] run for
+# that platform only; everything else is shared.
+#
 # Apple's environment, all of which this script depends on:
 #   * runs with swiftui/ci_scripts as the working directory, so we cd to the repo
 #   * NO sudo is available — Homebrew is preinstalled and needs none
@@ -19,7 +28,12 @@ cd "$CI_PRIMARY_REPOSITORY_PATH"
 
 REPO="javierbq/RayMol"
 
+PLATFORM="$(bash scripts/ci_platform.sh)"
+echo "== platform: $PLATFORM (CI_PRODUCT_PLATFORM='${CI_PRODUCT_PLATFORM:-}' CI_XCODE_SCHEME='${CI_XCODE_SCHEME:-}') =="
+
 echo "== 1/7  Allow the mlx-swift build-tool plugin =="
+# Both platforms: Design mode links MPNNKit — and so mlx-swift — into the macOS
+# slice too (see archive_appstore.sh, which needs the same switches locally).
 # mlx-swift's Cmlx target carries a `CudaBuild` .buildTool() plugin. Xcode
 # fingerprints package plugins and refuses to run one that has not been trusted;
 # in the IDE that trust is a dialog, and there is no dialog on Xcode Cloud. The
@@ -68,7 +82,19 @@ echo "== 2/7  Toolchain =="
 # Deliberately NOT installed: GLEW, libxml2, libomp and netcdf are all inside
 # `NOT PYMOL_IOS` guards in appkit/CMakeLists.txt, so the iOS build never looks
 # for them.
-brew install cmake glm xcodegen libpng freetype
+#
+# [macOS] adds libomp. The Metal-only core compiles OpenMP surface sampling
+# (appkit/CMakeLists.txt PYMOL_OPENMP, finds omp.h under the prefix) and the
+# app links $(PYMOL_EXTERNAL_PREFIX)/opt/libomp/lib/libomp.a STATICALLY
+# (PyMOLBridge.xcconfig PYMOL_LIBOMP_STATIC). On macOS libpng and freetype are
+# also LINKED from the prefix (-lfreetype -lpng16), not just read for headers;
+# the "Bundle Homebrew dylibs" build phase then copies them into the app.
+# GLEW, libxml2 and netcdf stay out: the Metal-only build (PYMOL_METAL_ONLY,
+# -DPYMOL_LIBXML=OFF) never looks for them either.
+case "$PLATFORM" in
+  iOS)   brew install cmake glm xcodegen libpng freetype ;;
+  macOS) brew install cmake glm xcodegen libpng freetype libomp ;;
+esac
 # Read the prefix rather than trusting /opt/homebrew: Xcode Cloud runs at
 # /usr/local. Hardcoding /opt/homebrew here would be the same mistake line 22
 # of PyMOLBridge.xcconfig made before the sed patch below.
@@ -99,8 +125,20 @@ test -f "$PYMOL_EXTERNAL_PREFIX/include/glm/vec3.hpp" \
   && echo "  glm/vec3.hpp present under the patched prefix" \
   || { echo "ERROR: glm/vec3.hpp missing under $PYMOL_EXTERNAL_PREFIX/include" >&2; exit 1; }
 
-echo "== 3/7  Fetch prebuilt deps_ios =="
+if [ "$PLATFORM" = macOS ]; then
+  # [macOS] The static OpenMP runtime is linked BY PATH (PYMOL_LIBOMP_STATIC),
+  # derived from the prefix patched above. A missing archive is otherwise an
+  # opaque "file not found" at the final link, ~20 minutes in.
+  test -f "$PYMOL_EXTERNAL_PREFIX/opt/libomp/lib/libomp.a" \
+    && echo "  libomp.a present under the patched prefix" \
+    || { echo "ERROR: $PYMOL_EXTERNAL_PREFIX/opt/libomp/lib/libomp.a missing" >&2; exit 1; }
+fi
+
+DEPS_ID=""
+if [ "$PLATFORM" = iOS ]; then
+echo "== 3/7  [iOS] Fetch prebuilt deps_ios =="
 FP="$(bash scripts/ios_deps_fingerprint.sh)"
+DEPS_ID="deps fingerprint $FP"
 TARBALL="deps_ios-$FP.tar.gz"
 BASE="https://github.com/$REPO/releases/download/ios-deps-$FP"
 echo "  fingerprint=$FP"
@@ -122,6 +160,16 @@ curl -fL --retry 3 --retry-delay 5 -o "$TARBALL.sha256" "$BASE/$TARBALL.sha256"
 shasum -a 256 -c "$TARBALL.sha256"
 tar -xzf "$TARBALL"
 rm -f "$TARBALL" "$TARBALL.sha256"
+else
+echo "== 3/7  [macOS] Stage deps_macos (standalone Python + numpy + Biopython) =="
+# Unlike deps_ios there is no prebuilt artifact to fetch: the macOS tree is a
+# relocatable python-build-standalone download plus two pinned wheels, all
+# fetched from their upstreams in about a minute. setup_macos_deps.sh imports
+# both packages through the embedded interpreter before returning, so a broken
+# tree stops here rather than in the app's Python bundling phase.
+bash scripts/setup_macos_deps.sh
+DEPS_ID="deps_macos staged"
+fi
 
 echo "== 4/7  Stamp marketing version + build number =="
 # nightly_version.sh emits the next PATCH after project.yml's version, so betas
@@ -141,6 +189,31 @@ echo "  version=$MKT build=$CI_BUILD_NUMBER label=$BETA_LABEL"
 # MARKETING_VERSION, CURRENT_PROJECT_VERSION and RAYMOL_BETA_LABEL from
 # project.yml into the generated .pbxproj.
 bash scripts/apply_ci_versions.sh swiftui/project.yml "$MKT" "$CI_BUILD_NUMBER" "$BETA_LABEL"
+# [macOS] One extra constraint the iOS side does not have: a Mac app's build
+# number must increase across ALL versions, not just within one (Apple,
+# "Setting the next build number for Xcode Cloud builds"). Xcode Cloud stamps
+# its own CI_BUILD_NUMBER into every build it distributes regardless — the
+# export options carry "buildNumber" — so once a macOS beta ships as e.g. 190,
+# the next Mac App Store release must be numbered above 190 too. The
+# cut-mas-release and cut-macos-release skills read the highest macOS build
+# from App Store Connect for exactly this reason.
+
+if [ "$PLATFORM" = macOS ]; then
+  echo "== 4b/7 [macOS] Rewrite project.yml as the Mac App Store variant =="
+  # TestFlight for Mac only takes sandboxed App Store builds: Sparkle out (its
+  # helpers fail sandbox validation, error 90296), RAYMOL_MAS_RESTRICTED in.
+  # Xcode Cloud runs its own `xcodebuild archive`, so the compilation condition
+  # cannot be passed on a command line the way archive_appstore.sh passes it;
+  # it has to be in the generated project. Must precede xcodegen (step 5).
+  #
+  # Dropping the Sparkle package also changes the package graph from what the
+  # committed Package.resolved was made for. That is fine: the strict
+  # `xcodebuild -resolvePackageDependencies -disableAutomaticPackageResolution
+  # -onlyUsePackageVersionsFromResolvedFile` resolve was verified against
+  # exactly this edit — an unused pin is ignored, every remaining package keeps
+  # its pinned version.
+  bash scripts/apply_mas_restrictions.sh swiftui/project.yml
+fi
 
 echo "== 5/7  Regenerate the Xcode project =="
 # project.yml is the source of truth and the committed .pbxproj can lag it —
@@ -148,10 +221,22 @@ echo "== 5/7  Regenerate the Xcode project =="
 # It is also what picks up the version stamp from step 4.
 ( cd swiftui && xcodegen generate )
 
-echo "== 6/7  Build libpymol_core.a (device) =="
-bash swiftui/build_ios.sh device
+if [ "$PLATFORM" = iOS ]; then
+  echo "== 6/7  [iOS] Build libpymol_core.a (device) =="
+  bash swiftui/build_ios.sh device
 
-echo "== 7/7  Assert build inputs before xcodebuild =="
-bash scripts/assert_ios_build_inputs.sh "$CI_PRIMARY_REPOSITORY_PATH"
+  echo "== 7/7  [iOS] Assert build inputs before xcodebuild =="
+  bash scripts/assert_ios_build_inputs.sh "$CI_PRIMARY_REPOSITORY_PATH"
+else
+  echo "== 6/7  [macOS] Build libpymol_core.a (Metal-only, arm64) =="
+  # CLEAN=1 is what make_dmg.sh and the Mac App Store recipe use: an incremental
+  # core can carry a stale setting default (1.6.1's metal_outline). A fresh
+  # checkout has nothing to be stale against, but say so explicitly rather than
+  # depend on it. PYMOL_EXTERNAL_PREFIX is exported from step 2.
+  CLEAN=1 bash swiftui/build_macos.sh
 
-echo "ci_post_clone OK — $MKT ($CI_BUILD_NUMBER), deps fingerprint $FP"
+  echo "== 7/7  [macOS] Assert build inputs before xcodebuild =="
+  bash scripts/assert_macos_build_inputs.sh "$CI_PRIMARY_REPOSITORY_PATH"
+fi
+
+echo "ci_post_clone OK — $PLATFORM $MKT ($CI_BUILD_NUMBER), $DEPS_ID"
