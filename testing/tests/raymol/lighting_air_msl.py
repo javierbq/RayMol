@@ -8,8 +8,9 @@ the regression renders against master, L2 and L3 prove on a Mac:
 
 * TestMasterUnchanged: every shader literal that master has is master's
   (sha256 of the comment-stripped, whitespace-free text, taken from master
-  83dd31bbe with these parsers, never from this branch), kAirSrc is the only
-  new one, and runPostChain, beginFrame, SceneRenderMetal and
+  83dd31bbe with these parsers, never from this branch), except kMaterialSrc,
+  which #615 changes and pins at its head (CHANGED_BY_615); kAirSrc is the
+  only new one; and runPostChain, beginFrame, SceneRenderMetal and
   SceneLightsFrame are master's once the air's own statement is taken out;
 * TestLibrary: kAirSrc is built once, as kEyeReconSrc + kMaterialSrc +
   kAirSrc, inside ensureAirPipelines (one attempt, every failure logged in
@@ -112,6 +113,15 @@ MASTER_LITERALS = {
     'kSphereImpostorSrc': '1ed9ba64205bd960',
     'kVBOSrc': '728416d46e47293d',
 }
+# #615 (Materials own their response to studio lights) changes kMaterialSrc
+# itself: MaterialU carries the studio response, light_response reads it, and
+# the material shaders name their light constants. MASTER_LITERALS keeps
+# master's digest; this is the branch's, taken with the same parsers at
+# #615's head. #615 (re-take only when #615 changes kMaterialSrc);
+# lighting_material_msl.py pins what changed.
+CHANGED_BY_615 = {
+    'kMaterialSrc': 'ba3bdd0bca5f983a',
+}
 # The same digests of four functions on master (cpp_function's body, braces
 # included, comments stripped); on this branch with the air's statement
 # taken out (AIR_STATEMENTS).
@@ -205,7 +215,12 @@ class TestMasterUnchanged(AirMSLCase):
     def testEveryMasterLiteralIsMasters(self):
         for name, want in sorted(MASTER_LITERALS.items()):
             self.assertIn(name, self.msl)
+            # #615: a literal it changed is pinned at #615's head instead
+            if name in CHANGED_BY_615:
+                self.assertNotEqual(CHANGED_BY_615[name], want, name)
+                want = CHANGED_BY_615[name]
             self.assertEqual(digest(strip_comments(self.msl[name])), want, name)
+        self.assertLessEqual(set(CHANGED_BY_615), set(MASTER_LITERALS))
         self.assertEqual(set(self.msl) - set(MASTER_LITERALS), {'kAirSrc'})
 
     def testFunctionsAreMastersWithoutTheAir(self):

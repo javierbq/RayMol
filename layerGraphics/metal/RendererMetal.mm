@@ -8,6 +8,7 @@
 #endif
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <initializer_list>
 #include <iterator>
@@ -87,15 +88,37 @@ struct MaterialU {
   float p[6];
   int refrOrtho;    // 1: the projection is orthographic (#588)
   float _pad2;
+  // How this material takes a studio light (#615): MaterialLightResponseFor
+  // of the draw's params, read by the MSL light_response for every family
+  // but default (which compiles in the neutral response). lightSharpness is
+  // the response's exponent over the frame's shininess
+  // (MaterialLightSharpness), so the GPU's max(shininess * sharpness, 1) is
+  // the material's own exponent. lightClassic is the rig's classic scale for
+  // the material-internal key-light terms (1 with no rig).
+  float lightDiffuse;
+  float lightHighlight;
+  float lightSharpness;
+  float lightTint;
+  float lightWrap;
+  float lightClassic;
+  float _pad3;
+  float _pad4;
 };
-static_assert(sizeof(MaterialU) == 128, "MaterialU must match the MSL struct");
+static_assert(sizeof(MaterialU) == 160, "MaterialU must match the MSL struct");
+static_assert(offsetof(MaterialU, lightDiffuse) == 128,
+    "the studio response is appended after the 128 bytes before #615");
 static_assert(sizeof(MaterialU) % 16 == 0, "MaterialU must stay 16-byte aligned");
 
 // Fill and bind MaterialU for the draw about to be issued. Called from EVERY
 // lit draw path, so a material cannot leak from one representation onto the
 // next; the reps that have no material of their own bind a neutral `default`.
+//
+// `shininess` is the rig's (LightRigBlock head.y) while the rig is on, else 0:
+// it only turns the response's exponent into #613's sharpness, which no
+// classic pipeline reads. `classicScale` is the rig's classic (1 with no rig).
 void bindMaterialU(id<MTLRenderCommandEncoder> enc, const MaterialParams& mp,
-    const float* invModelview, float refrPx = 0.0f, int refrOrtho = 0)
+    const float* invModelview, float refrPx = 0.0f, int refrOrtho = 0,
+    float shininess = 0.0f, float classicScale = 1.0f)
 {
   if (!enc)
     return;
@@ -111,6 +134,13 @@ void bindMaterialU(id<MTLRenderCommandEncoder> enc, const MaterialParams& mp,
   u.refrOrtho = refrOrtho;
   for (int i = 0; i < 6; ++i)
     u.p[i] = mp.p[i];
+  const MaterialLightResponse r = MaterialLightResponseFor(mp);
+  u.lightDiffuse = r.diffuse;
+  u.lightHighlight = r.highlight;
+  u.lightSharpness = MaterialLightSharpness(r.exponent, shininess);
+  u.lightTint = r.tint;
+  u.lightWrap = r.wrap;
+  u.lightClassic = classicScale;
   [enc setFragmentBytes:&u length:sizeof(u) atIndex:kMaterialBufferIndex];
 }
 
@@ -898,7 +928,10 @@ void RendererMetal::bindRepMaterial()
                                 : 0.0f;
   // An orthographic projection has w = 1 everywhere: its last row is 0,0,0,1.
   const int ortho = _projectionMatrix[15] != 0.0f ? 1 : 0;
-  bindMaterialU(_encoder, _repMatParams, _modelviewInv.data(), refrPx, ortho);
+  // The studio response's exponent becomes a sharpness against the rig's
+  // shininess (#615); without the rig no pipeline reads it.
+  bindMaterialU(_encoder, _repMatParams, _modelviewInv.data(), refrPx, ortho,
+                _lightRigOn ? _lightRigBlock.head[1] : 0.0f);
   if (refracts && refrPx > 0.0f)
     _oitHasRefraction = true;
   // The light rig (#613) goes with the material on every draw that shades
@@ -7279,6 +7312,13 @@ constant float kMatGlassBaseAttenuation = 0.82;
 constant float kMatGlassKeyGlint = 1.2;
 constant float kMatGlassHeadGlint = 0.9;
 constant float kMatGlassGlintExp = 60.0;
+// How roughness (frosted_glass's Frost) dims and widens them: strength times
+// (1 - kMatGlassFrostDim * rough), the exponent down to kMatGlassFrostExpScale
+// of itself at rough 1. Named for #615, whose studio response reproduces this
+// law (layer1/Material.cpp mirrors every constant it reads; lighting_material_
+// msl.py pins them equal).
+constant float kMatGlassFrostDim = 0.8;
+constant float kMatGlassFrostExpScale = 0.1;
 // How much of that surface reflection -- the Fresnel rim and the glints
 // together -- glass shows (#590). Refraction (#588) made the body read as
 // glass on its own, and at full strength the glints crowded the view through
@@ -7384,8 +7424,9 @@ static float3 mat_glass_shade(float3 base, float3 N, float3 V, float rough,
                    ? max(dot(N, normalize(halfVec)), 0.0) : 0.0;
   // frosted_glass (rough 0.6) lands at 46% of the exponent (27.6 of 60) and
   // about half the strength: a soft bloom where clear glass has a sharp point.
-  float expo = mix(kMatGlassGlintExp, kMatGlassGlintExp * 0.1, saturate(rough));
-  float glint = (1.0 - 0.8 * saturate(rough)) *
+  float expo = mix(kMatGlassGlintExp, kMatGlassGlintExp * kMatGlassFrostExpScale,
+                   saturate(rough));
+  float glint = (1.0 - kMatGlassFrostDim * saturate(rough)) *
                 (kMatGlassKeyGlint * pow(ndoth1, expo) +
                  kMatGlassHeadGlint * pow(ndotv, expo));
 
@@ -7553,7 +7594,32 @@ struct MaterialU {
   float p[6];
   int refrOrtho;    // glass refraction: 1 = orthographic projection
   float _pad2;
+  // The studio response (#615; MaterialLightResponseFor), read by
+  // light_response: the LightResponse fields, sharpness already against the
+  // rig's shininess. lightClassic: the rig's classic scale (1 with no rig).
+  float lightDiffuse;
+  float lightHighlight;
+  float lightSharpness;
+  float lightTint;
+  float lightWrap;
+  float lightClassic;
+  float _pad3;
+  float _pad4;
 };
+
+// Jelly's light law (mat_jelly_shade), named for #615, whose studio response
+// reproduces it (layer1/Material.cpp mirrors these; lighting_material_msl.py
+// pins them equal): the inner glow's wrap and gain, and the tight wet
+// highlight's exponent and tint toward the base.
+constant float kMatJellyGlowWrap = 0.6;
+constant float kMatJellyGlowGain = 1.15;
+constant float kMatJellyWetExp = 70.0;
+constant float kMatJellyWetTint = 0.25;
+
+// Rubber's broad key highlight (mat_shade_procedural): its exponent and tint
+// toward the base, named and mirrored for #615 as jelly's are.
+constant float kMatRubberHighlightExp = 8.0;
+constant float kMatRubberHighlightTint = 0.7;
 
 // Jelly (#496): a gummy -- a dense scattering BODY under a sharp wet skin. It
 // shares the glass family's pipeline and its peel, and is otherwise the
@@ -7618,9 +7684,10 @@ static float3 mat_jelly_shade(float3 base, float3 N, float3 V,
   // more of it at the rim meant denser; here it runs from the absorbed body
   // toward a LIGHT glow, so more of it at the rim would undo the absorption
   // that the silhouette is made of.
-  float wrapLit = ambient + reflectAmt * saturate((dot(N, L1) + 0.6) / 1.6)
-                          + direct * saturate((ndotv + 0.6) / 1.6);
-  float3 glow = saturate(base * 1.15) * min(wrapLit, 1.0);
+  float wrapLit = ambient
+      + reflectAmt * saturate((dot(N, L1) + kMatJellyGlowWrap) / (1.0 + kMatJellyGlowWrap))
+      + direct * saturate((ndotv + kMatJellyGlowWrap) / (1.0 + kMatJellyGlowWrap));
+  float3 glow = saturate(base * kMatJellyGlowGain) * min(wrapLit, 1.0);
   float3 col = mix(body, glow, saturate(m.p[1] * (1.0 - 0.6 * rim)));
 
   // The wet skin: the room, unblurred, at a full dielectric Fresnel.
@@ -7643,8 +7710,8 @@ static float3 mat_jelly_shade(float3 base, float3 N, float3 V,
   float3 halfVec = L1 + V;
   float ndoth = dot(halfVec, halfVec) > 1e-8
                   ? max(dot(N, normalize(halfVec)), 0.0) : 0.0;
-  col += (m.p[2] * pow(ndoth, 70.0) + 0.12 * pow(ndoth, 8.0))
-         * mix(float3(1.0), saturate(base * 1.3), 0.25);
+  col += (m.p[2] * pow(ndoth, kMatJellyWetExp) + 0.12 * pow(ndoth, 8.0))
+         * mix(float3(1.0), saturate(base * 1.3), kMatJellyWetTint);
   return mat_soft_knee(col);
 }
 
@@ -7779,9 +7846,11 @@ static float3 mat_shade_procedural(float3 base, float3 N, float3 pModel,
     float3 L1 = normalize(keyDir);
     float3 H = normalize(L1 + float3(0.0, 0.0, 1.0));
     float n1 = max(dot(N, L1), 0.0);
-    float spec = m.p[2] * pow(max(dot(N, H), 0.0), 8.0) * (n1 > 0.0 ? 1.0 : 0.0);
+    float spec = m.p[2] * pow(max(dot(N, H), 0.0), kMatRubberHighlightExp) *
+                 (n1 > 0.0 ? 1.0 : 0.0);
     float sheen = m.p[3] * pow(1.0 - saturate(N.z), 3.0);
-    return col + (spec + sheen) * mix(float3(1.0), saturate(base * 1.4), 0.7);
+    return col + (spec + sheen) *
+                 mix(float3(1.0), saturate(base * 1.4), kMatRubberHighlightTint);
   }
   if (m.mode == kMatMode_clay) {
     // Dead-matte ceramic: faint grain, no specular at all, and a dry grazing
@@ -7806,8 +7875,10 @@ static float3 mat_shade_procedural(float3 base, float3 N, float3 pModel,
 // RendererMetal::materialFragmentFunction always sets it.
 //
 // The light_ helpers below never read a function constant, so a library can
-// call them unspecialised. Each carries __attribute__((unused)), as
-// mat_glass_cover does: a library that skips one gets no new warning.
+// call them unspecialised -- except light_response, which reads kMatFamily
+// (#615): default compiles in the neutral response. Each carries
+// __attribute__((unused)), as mat_glass_cover does: a library that skips one
+// gets no new warning.
 constant bool kLightRig [[function_constant(1)]];
 
 // One light as the GPU reads it. Mirrors pymol::LightRigBlockLight
@@ -7870,12 +7941,22 @@ __attribute__((unused)) static LightResponse light_response_neutral() {
   return r;
 }
 
-// How THIS material takes the rig. #613: neutral for every material. #615
-// replaces only this body (from the material's parameters); no call site
-// changes.
+// How THIS material takes the rig (#615): the response the CPU derived from
+// the draw's MaterialParams (MaterialLightResponseFor), carried in MaterialU.
+// `default` returns the compiled-in neutral response under the compile-time
+// kMatFamily == 0, so its rig pipelines fold exactly as #613's did and a
+// default render under any rig is unchanged; the runtime fields would not
+// fold. No per-material table here: the core owns the response.
 __attribute__((unused)) static LightResponse light_response(
     constant MaterialU& mat) {
-  return light_response_neutral();
+  if (kMatFamily == 0) return light_response_neutral();
+  LightResponse r;
+  r.diffuse = mat.lightDiffuse;
+  r.highlight = mat.lightHighlight;
+  r.sharpness = mat.lightSharpness;
+  r.tint = mat.lightTint;
+  r.wrap = mat.lightWrap;
+  return r;
 }
 
 // How much of light i reaches p. #613: all of it. #616 replaces this with the

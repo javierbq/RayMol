@@ -158,7 +158,9 @@ MASTER_613 = {
         ('2eb0f1493ffb3b10', 'd201685b5438c819'),
     ('kMaterialSrc', 'light_response_neutral'):
         ('f9d29c479d573b42', '54a48318b1bd91ef'),
-    ('kMaterialSrc', 'light_response'): ('0671125f88c96948', 'f2e7e832e8d95ec9'),
+    # ('kMaterialSrc', 'light_response') is left out since #615: its body is
+    # #615's own (the material's response from MaterialU), and
+    # lighting_material_msl.py pins it. Every other #613 helper is master's.
     ('kMaterialSrc', 'light_visibility'): ('0fa4d419dcaabf46', 'c6f76bc0d21bd512'),
     ('kMaterialSrc', 'light_terms_view'): ('c3ee53eb972837b6', 'bcd134015fcc1123'),
     ('kMaterialSrc', 'light_terms'): ('8eb781b0326cac3f', '5700796aaac4b937'),
