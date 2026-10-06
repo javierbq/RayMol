@@ -407,6 +407,33 @@ struct OrbitDragSession {
     mutating func end() { isEnded = true }
 }
 
+/// One touch sequence of a drag on the plan or the arc, told apart from the
+/// next by its start location. SwiftUI does not call a gesture's `onEnded`
+/// when the gesture is cancelled (a system gesture, an alert, the app going
+/// to the background), so a "pressed" flag cleared only there could stay set:
+/// the next press would then skip its hit test and drive the cancelled
+/// gesture's session (a tap anywhere moving the light dragged before), or do
+/// nothing at all. A change whose start differs from the recorded one is a
+/// new press, whether or not the previous sequence ended.
+struct OrbitTouchSequence: Equatable {
+    /// Where the current sequence began; nil between sequences.
+    private(set) var start: CGPoint?
+
+    /// A sequence is under way (its press has been handled, hit or miss).
+    var isActive: Bool { start != nil }
+
+    /// Records a change of the sequence that began at `start`; true when it
+    /// is a new press (no sequence, or another start).
+    mutating func isNewPress(startingAt start: CGPoint) -> Bool {
+        if self.start == start { return false }
+        self.start = start
+        return true
+    }
+
+    /// The sequence ended normally.
+    mutating func end() { start = nil }
+}
+
 /// One pinch on the plan: radius only, from the radius at the pinch's start.
 struct OrbitPinchSession {
     /// The lowercased name of the light the pinch began on.

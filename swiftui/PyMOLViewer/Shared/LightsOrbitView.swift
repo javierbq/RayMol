@@ -161,14 +161,19 @@ struct OrbitCanvases: View {
     var slop: CGFloat = LightsOrbitMetrics.defaultSlop
 
     // One drag on the plan, one on the arc and one pinch at a time. A
-    // `…Pressed` flag marks a touch sequence whose press was handled (hit or
-    // miss), so a press that missed never starts a session mid-drag.
+    // `…Touch` sequence marks a drag whose press was handled (hit or miss),
+    // so a press that missed never starts a session mid-drag; it tells a new
+    // press by its start, so a cancelled drag (no `onEnded`) never carries
+    // its session into the next press.
     @State private var planSession: OrbitDragSession?
-    @State private var planPressed = false
+    @State private var planTouch = OrbitTouchSequence()
     @State private var arcSession: OrbitDragSession?
-    @State private var arcPressed = false
+    @State private var arcTouch = OrbitTouchSequence()
     @State private var pinchSession: OrbitPinchSession?
     @State private var pinchActive = false
+    /// True while a pinch runs; SwiftUI resets it when the pinch ends or is
+    /// cancelled, and the reset ends the pinch (`onEnded` misses a cancel).
+    @GestureState private var pinching = false
     /// The plan's extent while a pinch runs (the plan never rescales under
     /// the fingers).
     @State private var pinchExtent: Double?
@@ -219,9 +224,13 @@ struct OrbitCanvases: View {
             )
             .simultaneousGesture(
                 MagnifyGesture()
+                    .updating($pinching) { _, active, _ in active = true }
                     .onChanged { pinchChanged($0.magnification, state: state) }
                     .onEnded { _ in pinchEnded() }
             )
+            .onChange(of: pinching) { _, now in
+                if !now { pinchEnded() }
+            }
             .accessibilityElement()
             .accessibilityLabel(state.planLabel)
             .accessibilityValue(state.planValue)
@@ -249,8 +258,10 @@ struct OrbitCanvases: View {
     }
 
     private func planChanged(_ drag: DragGesture.Value, state: LightsOrbitState, layout: OrbitPlanLayout) {
-        if !planPressed {
-            planPressed = true
+        if planTouch.isNewPress(startingAt: drag.startLocation) {
+            // Whatever a cancelled sequence left behind is dropped here.
+            planSession = nil
+            if !pinchActive { dragSuppressed = false }
             guard !dragSuppressed, !pinchActive else { return }
             planSession = interaction.beginPlan(at: drag.startLocation, state: state, layout: layout)
         }
@@ -261,7 +272,7 @@ struct OrbitCanvases: View {
 
     private func planEnded() {
         planSession = nil
-        planPressed = false
+        planTouch.end()
         if !pinchActive { dragSuppressed = false }
     }
 
@@ -285,7 +296,7 @@ struct OrbitCanvases: View {
         pinchSession = nil
         pinchActive = false
         pinchExtent = nil
-        if !planPressed { dragSuppressed = false }
+        if !planTouch.isActive { dragSuppressed = false }
     }
 
     // MARK: arc
@@ -301,7 +312,7 @@ struct OrbitCanvases: View {
                     .onChanged { arcChanged($0, state: state, layout: layout) }
                     .onEnded { _ in
                         arcSession = nil
-                        arcPressed = false
+                        arcTouch.end()
                     }
             )
             .accessibilityElement()
@@ -318,8 +329,7 @@ struct OrbitCanvases: View {
     }
 
     private func arcChanged(_ drag: DragGesture.Value, state: LightsOrbitState, layout: PitchArcLayout) {
-        if !arcPressed {
-            arcPressed = true
+        if arcTouch.isNewPress(startingAt: drag.startLocation) {
             arcSession = interaction.beginArc(at: drag.startLocation, state: state, layout: layout)
         }
         guard var session = arcSession else { return }

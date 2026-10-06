@@ -94,6 +94,52 @@ final class LightsOrbitViewTests: XCTestCase {
         XCTAssertEqual(OrbitCanvases.planLayout(state, frozenExtent: nil).slop, LightsOrbitMetrics.defaultSlop)
     }
 
+    func testATouchSequenceIsToldApartByItsStart() {
+        var touch = OrbitTouchSequence()
+        XCTAssertFalse(touch.isActive)
+        let a = CGPoint(x: 40, y: 150), b = CGPoint(x: 97, y: 20)
+        XCTAssertTrue(touch.isNewPress(startingAt: a), "the first change is the press")
+        XCTAssertFalse(touch.isNewPress(startingAt: a), "later changes of the same drag")
+        XCTAssertTrue(touch.isActive)
+        // Cancelled: SwiftUI calls no onEnded, so end() never runs. The next
+        // drag starts elsewhere and is still a new press.
+        XCTAssertTrue(touch.isNewPress(startingAt: b))
+        touch.end()
+        XCTAssertFalse(touch.isActive)
+        XCTAssertTrue(touch.isNewPress(startingAt: b), "after a normal end, the same start is a new press")
+    }
+
+    func testACancelledDragNeverDrivesTheNextPress() {
+        // OrbitCanvases' bookkeeping: drag the key's lamp, have the drag
+        // cancelled (no onEnded), then tap empty space. The tap is a new
+        // press that hits nothing, so the key does not move again.
+        let (store, controller) = sketchTwoController()
+        let interaction = LightsOrbitInteraction(controller: controller)
+        guard let state = LightsOrbitState(controller) else { return XCTFail("no state") }
+        let layout = OrbitPlanLayout(extent: state.extent, slop: 6)
+        var touch = OrbitTouchSequence()
+        var session: OrbitDragSession?
+        func changed(start: CGPoint, location: CGPoint) {
+            if touch.isNewPress(startingAt: start) {
+                session = interaction.beginPlan(at: start, state: LightsOrbitState(controller)!, layout: layout)
+            }
+            guard var s = session else { return }
+            interaction.move(&s, to: location)
+            session = s
+        }
+        let key = layout.lampPoint(orbit: -45, radius: 3)
+        changed(start: key, location: key)
+        changed(start: key, location: layout.lampPoint(orbit: -90, radius: 3))
+        XCTAssertEqual(store.lights[0].orbit, -90, accuracy: 1e-9)
+        // Cancelled here. A tap in empty space, up and left of the centre:
+        let empty = CGPoint(x: layout.centre.x - 30, y: layout.centre.y - 30)
+        XCTAssertNil(OrbitHitTest.plan(at: empty, layout: layout, state: LightsOrbitState(controller)!))
+        changed(start: empty, location: empty)
+        changed(start: empty, location: CGPoint(x: empty.x + 10, y: empty.y))
+        XCTAssertNil(session, "the cancelled drag's session is dropped")
+        XCTAssertEqual(store.lights[0].orbit, -90, accuracy: 1e-9, "the tap does not move the key")
+    }
+
     func testLabelPlacement() {
         let p = CGPoint(x: 50, y: 50)
         let right = OrbitLabelPlacement(beside: p, dx: 1, dy: 0, clear: 6)

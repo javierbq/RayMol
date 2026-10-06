@@ -403,6 +403,20 @@ class TestOrbitSource(testing.PyMOLTestCase):
                          'one drag on the plan, one on the arc')
         self.assertIn('accessibilityAdjustableAction', canvases)
 
+    def testACancelledGestureLeavesNothingBehind(self):
+        """SwiftUI calls no onEnded for a cancelled gesture, so the drags
+        tell a new press by its start (OrbitTouchSequence) and the pinch
+        ends on its @GestureState reset, never only in onEnded."""
+        canvases = body(self.read(VIEW), 'struct OrbitCanvases: View')
+        self.assertIsNotNone(canvases, 'OrbitCanvases not found')
+        self.assertEqual(len(re.findall(r'\.isNewPress\(startingAt:\s*drag\.startLocation\)',
+                                        canvases)), 2,
+                         'the plan and the arc each tell a new press by its start')
+        self.assertNotRegex(canvases, r'\b(planPressed|arcPressed)\b')
+        self.assertRegex(canvases, r'@GestureState\s+private\s+var\s+pinching\b')
+        self.assertRegex(canvases, r'MagnifyGesture\(\)\s*\.updating\(\$pinching\)')
+        self.assertRegex(canvases, r'\.onChange\(of:\s*pinching\)[^}]*pinchEnded\(\)')
+
     def testTheCardStartsCollapsedOnEveryIPhone(self):
         """ContentView seeds the orbit card collapsed on compact width or
         compact height (every iPhone, both orientations), never on macOS,
