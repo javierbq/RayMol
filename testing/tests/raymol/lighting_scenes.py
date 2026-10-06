@@ -966,3 +966,334 @@ class TestBlendValues(_BlendCase):
         self.assertEqual(anim._name_from_hex('c3a9'), 'é')
         for bad in ('', 'c3a', 'zz', ' 41', '41 ', 'ff', None, 41):
             self.assertIsNone(anim._name_from_hex(bad), bad)
+
+
+class TestSceneMovieBlend(_BlendCase):
+    """Done-when: a 2-scene movie changes a light smoothly."""
+
+    def setUp(self):
+        super().setUp()
+        self.a = self.store('A', MOVIE_A)
+        self.b = self.store('B', MOVIE_B)
+
+    def build(self, power=0.0, linear=0):
+        rebuild(scene_item(1, 'A', power, linear),
+                scene_item(25, 'B', power, linear))
+
+    def expected(self, f, a=None, b=None, power=SMOOTH):
+        return anim.blend_rigs(a or self.a, b or self.b,
+                               eased_t(f, power=power))
+
+    def testRebuildBlendsFrameByFrame(self):
+        self.build()
+        orbits = []
+        for f in range(1, 26):
+            got = played(f)
+            if f == 1:
+                self.assertEqual(got, self.a)
+            elif f == 25:
+                self.assertEqual(got, self.b)
+            else:
+                self.assertRigAlmostEqual(got, self.expected(f), 'f%d' % f)
+            orbits.append(self.light(got, 'key')['orbit'])
+        self.assertEqual(orbits, sorted(orbits))         # monotone
+        self.assertEqual(eased_t(13), 0.5)
+        self.assertEqual(eased_t(7), 0.189465)
+        mid = played(13)
+        self.assertAlmostEqual(self.light(mid, 'key')['orbit'], 0.0, places=5)
+        self.assertAlmostEqual(self.light(mid, 'rim')['orbit'], 180.0, places=4)
+        self.assertEqual(len(mid['lights']), 4)
+        # the renderer reads the blend: the packed light's radiance is the
+        # blended colour x warmth x intensity
+        frame = lighting._light_frame()
+        self.assertTrue(frame['rig_on'])
+        packed = {l['name']: l for l in frame['rig']['lights']}
+        for l in mid['lights']:
+            w = lighting._light_warmth(l['warmth'])
+            want = [c * k * l['intensity'] for c, k in zip(l['color'], w)]
+            for got, value in zip(packed[l['name']]['radiance'], want):
+                self.assertAlmostEqual(got, value, places=4)
+
+    def testRandomAccessAndBackwardScrub(self):
+        self.build()
+        played(1)
+        self.assertRigAlmostEqual(played(13), self.expected(13))
+        for f in (25, 19, 13, 7, 1):
+            got = played(f)
+            if f == 25:
+                self.assertEqual(got, self.b)
+            elif f == 1:
+                self.assertEqual(got, self.a)
+            else:
+                self.assertRigAlmostEqual(got, self.expected(f), 'f%d' % f)
+
+    def testLinearEasing(self):
+        self.build(power=1.0, linear=1)
+        for f in (2, 7, 13, 19, 24):
+            self.assertEqual(anim._lights_track[f][2],
+                             float('%.6g' % ((f - 1) / 24.0)))
+            self.assertRigAlmostEqual(played(f),
+                                      self.expected(f, power=1.0), 'f%d' % f)
+        self.assertEqual(anim._lights_track[7][2], 0.25)
+
+    def check_received(self, calls):
+        """Every interior frame of every distinct pair author() received
+        plays the blend at that pair's eased t."""
+        (keyframes,), kw = calls[-1][0][:1], calls[-1][1]
+        power = kw.get('power')
+        kfs = sorted(keyframes, key=lambda k: int(k[0]))
+        checked = 0
+        for (f0, n0, p0), (f1, n1, p1) in zip(kfs, kfs[1:]):
+            if f1 - f0 < 2 or n0 == n1:
+                continue
+            pw = anim.effective_power(p0, p1, power)
+            ra = raymol_scenes.scene_lights(n0)
+            rb = raymol_scenes.scene_lights(n1)
+            for f in range(f0 + 1, f1):
+                t = eased_t(f, f0, f1, pw)
+                self.assertEqual(anim._lights_track[f], (n0, n1, t))
+                self.assertRigAlmostEqual(played(f), anim.blend_target(ra, rb, t),
+                                          'f%d' % f)
+                checked += 1
+        self.assertTrue(checked)
+        return kfs
+
+    def testOtherAuthoringPaths(self):
+        # the Movie Builder sheet: movie.add_scenes between its markers
+        with spying(anim, 'author') as calls:
+            appkit_movie.make_movie('scenes', loop=0, pause=0.5,
+                                    scenes=['A', 'B'])
+        kfs = self.check_received(calls)
+        self.assertEqual([n for _f, n, _p in kfs], ['A', 'A', 'B', 'B'])
+
+        # script-only paths: place_scene and append_template('scenes') blend
+        # between the frames _scene_keyframes reports -- today the native
+        # scene CUT frames, not the markers (a proposed follow-up updates
+        # this on purpose)
+        appkit_movie.reset_movie()
+        cmd.mset('1 x25')
+        with spying(anim, 'author') as calls:
+            appkit_movie.place_scene(1, 'A')
+            appkit_movie.place_scene(25, 'B')
+        kfs = self.check_received(calls)
+        self.assertEqual(kfs, [(1, 'A', 0.0), (13, 'B', 0.0)])
+
+        appkit_movie.reset_movie()
+        with spying(anim, 'author') as calls:
+            appkit_movie.append_template('scenes', seconds_per_scene=0.5,
+                                         scenes=['A', 'B'])
+        self.check_received(calls)
+
+    def testOneCompactCommandPerFrame(self):
+        self.build()
+        cmds = raw_movie_commands()
+        self.assertEqual(len(cmds), 25)
+        for f in range(1, 26):
+            n = cmds[f - 1].count('_lights_blend')
+            if f in (1, 25):
+                self.assertEqual(n, 0, cmds[f - 1])
+            else:
+                self.assertEqual(n, 1, cmds[f - 1])
+                self.assertIn(';_lights_blend 41, 42, %s' % ('%.6g' % eased_t(f)),
+                              cmds[f - 1])
+
+    def testEditingASceneNeedsNoReauthoring(self):
+        self.build()
+        other = copy.deepcopy(MOVIE_B)
+        other['lights'][0]['orbit'] = 120.0
+        b2 = self.set_rig(other)
+        with spying(anim, 'author') as calls:
+            cmd.scene('B', 'update')
+        self.assertEqual(calls, [])
+        self.assertRigAlmostEqual(played(13), self.expected(13, b=b2))
+
+        # scenes stored with NO rig before authoring blend once they get rigs
+        self.store('A', None)
+        self.store('B', None)
+        self.build()
+        self.assertTrue(anim._lights_track)
+        self.assertIsNone(played(13))
+        self.store('A', MOVIE_A)
+        self.store('B', MOVIE_B)
+        lighting.set_lights(None)
+        self.assertRigAlmostEqual(played(13), self.expected(13))
+
+    def testMoviePseRoundTrip(self):
+        self.build()
+        before = played(13)
+        track = dict(anim._lights_track)
+        session = cmd.get_session()
+        self.assertFalse(any('_lights_blend' in c for c in session['movie'][5]))
+        self.assertEqual(session['raymol_movie_anim']['lights'],
+                         [[f, 'A', 'B', track[f][2]] for f in range(2, 25)])
+        with testing.mktemp('.pse') as filename:
+            cmd.save(filename)
+            cmd.reinitialize()
+            reset_module_state()
+            cmd.load(filename)
+        self.assertEqual(cmd.get_movie_locked(), 0)
+        self.assertEqual(anim._lights_track, track)
+        cmds = raw_movie_commands()
+        self.assertEqual(sum(c.count('_lights_blend') for c in cmds), 23)
+        lighting.set_lights(None)
+        self.assertEqual(played(13), before)
+        self.assertEqual(played(25), self.b)
+
+    def testOlderBuildsIgnoreTheTrack(self):
+        """Q4: an older build sees no frame command of ours (stripped) and
+        reads only 'track' and 'marks', which the rig leaves as they were."""
+        self.build()
+        payload = cmd.get_session()['raymol_movie_anim']
+        self.assertEqual(payload['track'], {})
+        self.assertEqual(payload['marks'], [[1, 'A'], [25, 'B']])
+        old = {'raymol_movie_anim': {'track': payload['track'],
+                                     'marks': payload['marks']}}
+        with spying(cmd, 'mappend') as calls:
+            anim.session_restore(old)
+        self.assertEqual(anim._lights_track, {})
+        self.assertFalse(any('_lights_blend' in a[1] for a, _kw in calls))
+
+    def testMalformedLightsTrack(self):
+        self.build()                                     # 25 frames
+        session = {'raymol_movie_anim': {'track': {}, 'marks': [], 'lights': [
+            [5, 'A', 'B', 0.25],
+            [6, "A'; quit", 'B', 0.5],
+            [0, 'A', 'B', 0.5], ['7', 'A', 'B', 0.5], [True, 'A', 'B', 0.5],
+            [8.0, 'A', 'B', 0.5], [9, 5, 'B', 0.5], [10, b'A', 'B', 0.5],
+            [11, 'A', None, 0.5], [12, 'A', 'B', float('nan')],
+            [13, 'A', 'B', float('inf')], [14, 'A', 'B', -0.1],
+            [15, 'A', 'B', 1.1], [16, 'A', 'B'], [17, 'A', 'B', 0.5, 1],
+            [18, 'A', 'B', '0.5'], [19, 'A', 'B', True], 'junk', None,
+            [26, 'A', 'B', 0.5], [99999, 'A', 'B', 0.5],
+            [24, 'A', 'B', 1]]}}
+        out = io.StringIO()
+        with spying(cmd, 'mappend') as calls, contextlib.redirect_stdout(out):
+            anim.session_restore(session)
+        self.assertEqual(anim._lights_track, {5: ('A', 'B', 0.25),
+                                              6: ("A'; quit", 'B', 0.5),
+                                              24: ('A', 'B', 1.0)})
+        self.assertEqual(sorted((a[0], a[1]) for a, _kw in calls),
+                         [(5, '_lights_blend 41, 42, 0.25'),
+                          (6, '_lights_blend 41273b2071756974, 42, 0.5'),
+                          (24, '_lights_blend 41, 42, 1')])
+        self.assertEqual(out.getvalue(), '')
+        # not a list at all: nothing
+        anim.session_restore({'raymol_movie_anim': {'lights': 'junk'}})
+        self.assertEqual(anim._lights_track, {})
+
+    def testLightsBlendIgnoresBadInput(self):
+        live = self.set_rig(RIG_B)
+        bad = [('4', '42', '0.5'), ('zz', '42', '0.5'), ('ff', '42', '0.5'),
+               ('41', '4', '0.5'), ('5a', '42', '0.5'), ('41', '42', 'abc'),
+               ('41', '42', 'nan'), ('41', '42', 'inf'), ('', '', ''),
+               (None, '42', '0.5')]
+        for args in bad:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                lighting._lights_blend(*args)
+                cmd._lights_blend(*args)
+            self.assertEqual(out.getvalue(), '', args)
+            self.assertEqual(cmd.get_lights(), live, args)
+        for line in ('_lights_blend 4, 42, 0.5', '_lights_blend zz, 42, 0.5',
+                     '_lights_blend ff, 42, 0.5', '_lights_blend 5a, 42, 0.5',
+                     '_lights_blend 41, 42, abc', '_lights_blend 41, 42, nan',
+                     '_lights_blend'):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                cmd.do(line, echo=0)
+            self.assertEqual(out.getvalue(), '', line)
+            self.assertEqual(cmd.get_lights(), live, line)
+        # and the good command through the parser does blend
+        cmd.do('_lights_blend 41, 42, 0.5', echo=0)
+        self.assertRigAlmostEqual(cmd.get_lights(),
+                                  anim.blend_rigs(self.a, self.b, 0.5))
+        # t is clamped
+        lighting._lights_blend('41', '42', '7')
+        self.assertEqual(cmd.get_lights(), self.b)
+
+    def testAuthoringLeavesTheLiveRigAlone(self):
+        live = self.set_rig(RIG_B)
+        self.build()
+        # untouched, or what the frame on screen (rewind: frame 1) shows
+        self.assertIn(cmd.get_lights(), (live, self.a))
+        self.assertEqual(cmd.get_frame(), 1)
+
+    def testShadowStepsAtTheCut(self):
+        self.build()
+        self.assertFalse(self.light(self.a, 'key')['shadow'])
+        self.assertTrue(self.light(self.b, 'key')['shadow'])
+        for f in range(1, 26):
+            rig_now = played(f)
+            self.assertEqual(self.light(rig_now, 'key')['shadow'], f == 25, f)
+            # A's top keeps its shadow until the cut, B's fill has none
+            names = [l['name'] for l in rig_now['lights']]
+            if 'top' in names:
+                self.assertTrue(self.light(rig_now, 'top')['shadow'], f)
+            if 'fill' in names and f < 25:
+                self.assertFalse(self.light(rig_now, 'fill')['shadow'], f)
+
+    def testNoSettingOrColourWritten(self):
+        """Lights never change a setting or a colour: playing a movie whose
+        scenes differ only in their rigs leaves both as they were."""
+        self.build()
+        # (the frame and the current scene are what playing a movie changes)
+        names = [n for n in setting.get_name_list()
+                 if n not in ('frame', 'scene_current_name')]
+
+        def values():
+            return {n: cmd.get(n) for n in names}
+
+        def colours():
+            out = []
+            cmd.iterate('all', 'out.append(color)', space={'out': out})
+            return out
+
+        settings, colors = values(), colours()
+        for f in list(range(1, 26)) + [13, 1]:
+            cmd.frame(f)
+            self.assertEqual(values(), settings, f)
+            self.assertEqual(colours(), colors, f)
+
+    def testRiglessMovieRendersUnchanged(self):
+        """With no rig anywhere the blend commands are no-ops: no rig is
+        created and the renderer's lighting is the settings'."""
+        self.store('A', None)
+        self.store('B', None)
+        lighting.set_lights(None)
+        self.build()
+        self.assertTrue(anim._lights_track)              # Q4: authored
+        with counting(lighting, 'set_lights') as set_calls, \
+                counting(lighting, '_light_set') as light_set:
+            for f in range(1, 26):
+                self.assertIsNone(played(f), f)
+                self.assertIsNone(lighting._light_frame()['rig'], f)
+        self.assertEqual((set_calls, light_set), ([], []))
+        self.assertEqual(cmd.get_movie_locked(), 0)
+        with testing.mktemp('.pse') as filename:
+            cmd.save(filename)
+            cmd.load(filename)
+        self.assertEqual(cmd.get_movie_locked(), 0)
+        self.assertIsNone(played(13))
+
+        # scenes with no entry (an older .pse): no track, no 'lights' key
+        raymol_scenes._scene_lights.clear()
+        self.build()
+        self.assertEqual(anim._lights_track, {})
+        self.assertNotIn('lights', cmd.get_session()['raymol_movie_anim'])
+        self.assertFalse(any('_lights_blend' in c for c in raw_movie_commands()))
+
+    def testLoopWrapIsNotBlended(self):
+        """Known limit (Q8): the loop-wrap span after the last marker has no
+        keyframe pair, so the rig holds B there and pops to A at frame 1."""
+        rebuild(scene_item(1, 'A'), scene_item(40, 'B', end=60))
+        cmds = raw_movie_commands()
+        self.assertEqual(len(cmds), 60)
+        self.assertTrue(all('_lights_blend' in cmds[f - 1] for f in range(2, 40)))
+        self.assertFalse(any('_lights_blend' in cmds[f - 1]
+                             for f in range(40, 61)))
+        # played in order: the cut at 40 applies B, which then holds
+        for f in range(1, 61):
+            got = played(f)
+            if f >= 40:
+                self.assertEqual(got, self.b, f)
+        self.assertEqual(played(1), self.a)

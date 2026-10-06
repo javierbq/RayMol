@@ -760,6 +760,42 @@ def lights_command(a, b, t):
     return '_lights_blend %s, %s, %s' % (_name_hex(a), _name_hex(b), _fmt(t))
 
 
+def build_lights_track(keyframes, power=None):
+    """{frame: (scene_a, scene_b, t)} for the interior frames of every
+    transition between two DISTINCT scenes, at least one of which holds a rig
+    entry now ('off' or a dict). `t` is the camera's eased position (the
+    easing build_track uses), stored pre-rounded so a restore regenerates the
+    same command text."""
+    from pymol import raymol_scenes as _rs
+    track = {}
+    kfs = sorted(keyframes, key=lambda k: int(k[0]))
+    for (f0, n0, p0), (f1, n1, p1) in zip(kfs, kfs[1:]):
+        f0, f1 = int(f0), int(f1)
+        span = f1 - f0
+        if span < 2 or n0 == n1:
+            continue
+        if _rs.scene_lights(n0) is None and _rs.scene_lights(n1) is None:
+            continue
+        pw = effective_power(p0, p1, power)
+        for f in range(f0 + 1, f1):
+            t = float(_fmt(ease((f - f0) / float(span), pw)))
+            track[f] = (n0, n1, t)
+    return track
+
+
+def emit_lights_track(track, _self=cmd):
+    """One mappend of lights_command per frame. Returns the frames touched."""
+    done = []
+    for f in sorted(track):
+        a, b, t = track[f]
+        try:
+            _self.mappend(int(f), lights_command(a, b, t))
+            done.append(int(f))
+        except Exception as e:
+            print('MOVIE_ERR:' + str(e))
+    return done
+
+
 def lights_blend(a_hex, b_hex, t, _self=cmd):
     """The `_lights_blend` frame command: blend scene A's stored rig towards
     B's at position `t`, reading both now. Bad arguments (not hex, odd
@@ -787,8 +823,10 @@ def lights_blend(a_hex, b_hex, t, _self=cmd):
 # The animation authored into the CURRENT movie, regenerated on every rebuild.
 # {frame: {setting: float}} for interior transition frames...
 _track = {}
-# ...and [(frame, scene_name)] for the scene keyframes carrying enter_scene.
+# ...and [(frame, scene_name)] for the scene keyframes carrying enter_scene...
 _scene_marks = []
+# ...and {frame: (scene_a, scene_b, t)} for the rig blend's _lights_blend.
+_lights_track = {}
 
 
 def clear_authored(_self=cmd):
@@ -804,6 +842,7 @@ def clear_authored(_self=cmd):
     keyframes, not frame commands. Returns the frames blanked."""
     frames = set(int(f) for f in _track)
     frames.update(int(f) for f, _n in _scene_marks)
+    frames.update(int(f) for f in _lights_track)
     try:
         length = int(_self.get_movie_length())
     except Exception:
@@ -839,6 +878,7 @@ def author(keyframes, _self=cmd, power=None):
     clear_authored(_self)             # BEFORE the reset: needs the old frame list
     _track.clear()
     _scene_marks[:] = []
+    _lights_track.clear()
     marks = [(int(f), n) for f, n, _p in keyframes]
     track = build_track(keyframes, power)
     # DOF owns focus/aperture/enable wherever it applies, so it goes on LAST and
@@ -848,8 +888,12 @@ def author(keyframes, _self=cmd, power=None):
         track.setdefault(f, {}).update(vals)
     _track.update(track)
     _scene_marks[:] = sorted(set(marks))
+    # The rig blend (#617): read at play time, so it only records which
+    # transitions to blend and where along each one the camera is.
+    _lights_track.update(build_lights_track(keyframes, power))
     touched = set(emit_scene_marks(_scene_marks, _self))
     touched.update(emit_track(_track, _self))
+    touched.update(emit_lights_track(_lights_track, _self))
     return len(touched)
 
 
@@ -862,6 +906,8 @@ def _our_commands():
         s = frame_command(vals)
         if s:
             out.setdefault(int(f), []).append(s)
+    for f, (a, b, t) in _lights_track.items():
+        out.setdefault(int(f), []).append(lights_command(a, b, t))
     return out
 
 
@@ -882,10 +928,16 @@ def session_save(session, *, _self=cmd):
     re-author that only appended would pile new commands on top of stale ones
     and session_save could no longer strip what it cannot regenerate. See
     clear_authored for the full rationale."""
-    session['raymol_movie_anim'] = {
+    payload = {
         'track': {str(f): dict(v) for f, v in _track.items()},
         'marks': [[int(f), n] for f, n in _scene_marks],
     }
+    # Only when there is one, so a movie without rig blends saves exactly
+    # what it did before (and older builds ignore the extra key anyway).
+    if _lights_track:
+        payload['lights'] = [[int(f), a, b, float(t)] for f, (a, b, t)
+                             in sorted(_lights_track.items())]
+    session['raymol_movie_anim'] = payload
     try:
         mv = session.get('movie')
         cmds = mv[5] if (isinstance(mv, list) and len(mv) > 5) else None
@@ -915,6 +967,7 @@ def session_restore(session, *, _self=cmd):
         return 1
     _track.clear()
     _scene_marks[:] = []
+    _lights_track.clear()
     d = session.get('raymol_movie_anim')
     if not isinstance(d, dict):
         return 1
@@ -959,9 +1012,39 @@ def session_restore(session, *, _self=cmd):
             except Exception:
                 continue
     _scene_marks[:] = sorted(set(_scene_marks))
+    _restore_lights_track(d.get('lights'), _self)
     emit_scene_marks(_scene_marks, _self)
     emit_track(_track, _self)
+    emit_lights_track(_lights_track, _self)
     return 1
+
+
+def _restore_lights_track(raw, _self=cmd):
+    """Read the saved rig-blend track into _lights_track. Each entry must be
+    [frame, scene_a, scene_b, t]: an int frame >= 1 within the movie (bool
+    refused; frames past the end are skipped, so a hostile payload cannot
+    print a Movie-Error per frame), two str names (bytes refused) and a
+    finite t in [0, 1]. Anything else is dropped. The command text is
+    regenerated from these values, never read from the file."""
+    if not isinstance(raw, (list, tuple)):
+        return
+    try:
+        length = int(_self.get_movie_length())
+    except Exception:
+        length = None
+    for ent in raw:
+        if not isinstance(ent, (list, tuple)) or len(ent) != 4:
+            continue
+        f, a, b, t = ent
+        if isinstance(f, bool) or not isinstance(f, int) or f < 1:
+            continue
+        if length is not None and f > length:
+            continue
+        if not isinstance(a, str) or not isinstance(b, str):
+            continue
+        if not _is_num(t) or not 0.0 <= t <= 1.0:
+            continue
+        _lights_track[f] = (a, b, float(t))
 
 
 def enter_scene(name_b64, _self=cmd):
@@ -999,5 +1082,12 @@ def enter_scene(name_b64, _self=cmd):
         print('MOVIE_ERR:' + str(e))
     try:
         _rs.apply_focus_target(name, _self)
+    except Exception:
+        pass
+    # ...and the scene's light rig, exactly (#617): the cut is where the
+    # stepped fields (shadow, outline, anchor, aim, on/off) change. A scene
+    # with no entry leaves the rig alone; a matching rig writes nothing.
+    try:
+        _rs.apply_lights(name, _self)
     except Exception:
         pass
