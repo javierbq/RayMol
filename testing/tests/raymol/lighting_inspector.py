@@ -17,9 +17,11 @@ CI builds the GLUT flavour without a GPU, so this exercises _cmd and Python
 only. A small peptide (cmd.fab) gives the rig a real frame.
 
 The inspector's Swift sources are checked too (comments stripped; skipped
-outside a checkout): LightParameter's ranges are the core's field table, and
-the per-frame hook (MetalViewport.draw(in:) -> lightsFrameRendered) runs only
-in Lights mode and only reads through the bridge.
+outside a checkout): LightParameter's ranges are the core's field table, the
+per-frame hook (MetalViewport.draw(in:) -> lightsFrameRendered) runs only in
+Lights mode and only reads through the bridge, the inspector's shadow cap is
+lighting_commands.MAX_SHADOWS, and its Shadows hint reads the setting the
+scene poll reports (#616: studio shadows show only while metal_shadows is on).
 
 Runs on a RayMol build:
     pymol -ckqy testing/testing.py --run testing/tests/raymol/lighting_inspector.py
@@ -33,7 +35,7 @@ import re
 
 import pymol
 import pymol.invocation
-from pymol import appkit_lights, cmd, lighting, testing
+from pymol import appkit_inspector, appkit_lights, cmd, lighting, lighting_commands, testing
 
 # The peptide that gives the rig its frame.
 PEPTIDE = 'ACDEFG'
@@ -324,6 +326,7 @@ APP = os.path.join('swiftui', 'PyMOLViewer')
 CONTENT_VIEW = os.path.join(SHARED, 'ContentView.swift')
 SIDE_COLUMN = os.path.join(SHARED, 'LightsSideColumn.swift')
 INSPECTOR = os.path.join(SHARED, 'LightsInspector.swift')
+CONTROLLER = os.path.join(SHARED, 'LightsController.swift')
 
 # `case .x: return a...b` (a range line of LightParameter.range).
 RANGE_CASE = re.compile(
@@ -502,4 +505,50 @@ class TestInspectorSource(testing.PyMOLTestCase):
         self.assertIsNotNone(card, 'LightsInspector not found')
         view_body = body(card, 'var body: some View')
         self.assertIsNotNone(view_body, 'LightsInspector.body not found')
-        self.assertRegex(view_body, r'if\s+let\s+state\s*=\s*LightsInspectorState\(controller\)')
+        self.assertRegex(view_body, r'if\s+let\s+state\s*=\s*LightsInspectorState\(controller\b')
+
+    def testShadowCapMatches(self):
+        """LightsController.maxShadowed (the inspector's refusal notice) is
+        the `lights` command's MAX_SHADOWS, and the per-field setter the
+        bridge calls (what setShadow writes through) refuses exactly the light
+        after it, leaving the rig unchanged (setShadow gets .refused)."""
+        found = re.search(r'static\s+let\s+maxShadowed\s*=\s*(\d+)\b', self.read(CONTROLLER))
+        self.assertIsNotNone(found, 'LightsController.maxShadowed not found')
+        self.assertEqual(int(found.group(1)), lighting_commands.MAX_SHADOWS)
+
+        cmd.reinitialize()
+        cmd.fab(PEPTIDE, 'pep')
+        names = ['key', 'fill', 'rim', 'light4']
+        self.assertGreater(len(names), lighting_commands.MAX_SHADOWS)
+        lighting.set_lights({'enabled': True,
+                             'lights': [{'name': n} for n in names]})
+        for i in range(lighting_commands.MAX_SHADOWS):
+            lighting._light_set(i, 'shadow', 1)
+        before = lighting._lights_json()
+        with self.assertRaisesRegex(pymol.CmdException, r'refused'):
+            lighting._light_set(lighting_commands.MAX_SHADOWS, 'shadow', 1)
+        self.assertEqual(lighting._lights_json(), before, 'a refusal changes nothing')
+        cmd.reinitialize()
+
+    def testShadowsHintReadsThePolledSetting(self):
+        """The Shadows hint reads metal_shadows from the scene poll
+        (appkit_inspector.SCENE_SETTINGS, polled in every mode), and Turn On
+        sets that setting with one command."""
+        self.assertIn('metal_shadows', appkit_inspector.SCENE_SETTINGS)
+        engine = self.read(ENGINE)
+        shadows_on = body(engine, 'var sceneShadowsOn: Bool?')
+        self.assertIsNotNone(shadows_on, 'PyMOLEngine.sceneShadowsOn not found')
+        self.assertIn('sceneState.values["metal_shadows"]', shadows_on)
+        turn_on = body(engine, 'func enableSceneShadows()')
+        self.assertIsNotNone(turn_on, 'PyMOLEngine.enableSceneShadows not found')
+        self.assertIn('runCommand("set metal_shadows, 1")', turn_on)
+        self.assertNotIn('runPython', turn_on)
+        column_site = body(self.read(CONTENT_VIEW), 'private var lightsSideColumn')
+        self.assertIsNotNone(column_site, 'lightsSideColumn not found')
+        self.assertIn('sceneShadowsOn: engine.sceneShadowsOn', column_site)
+        self.assertIn('engine.enableSceneShadows()', column_site)
+        # The command the button runs is a valid one.
+        cmd.reinitialize()
+        cmd.do('set metal_shadows, 1')
+        self.assertEqual(int(cmd.get_setting_int('metal_shadows')), 1)
+        cmd.set('metal_shadows', 0)
