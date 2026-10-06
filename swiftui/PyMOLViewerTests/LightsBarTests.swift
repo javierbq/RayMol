@@ -212,6 +212,8 @@ final class LightsBarSnapshotTests: XCTestCase {
         var select: String?
         var width: CGFloat
         var dark: Bool
+        /// The touch profile's minimum target (44: iOS, drawn on macOS).
+        var touch: CGFloat = 0
     }
 
     private static let three = ["key", "fill", "rim"]
@@ -249,8 +251,14 @@ final class LightsBarSnapshotTests: XCTestCase {
         shots += [
             Shot(name: "compact_3_light", lights: Self.three, select: "fill", width: 600, dark: false),
             Shot(name: "compact_6_light", lights: Self.six, width: 600, dark: false),
+            // #623: a 375 pt phone with every control a 44 pt target; the
+            // compact bar still shows about two chips.
+            Shot(name: "compact_3_ios44_375_light", lights: Self.three, select: "fill", width: 375,
+                 dark: false, touch: 44),
+            Shot(name: "compact_6_ios44_375_dark", lights: Self.six, width: 375, dark: true, touch: 44),
+            Shot(name: "compact_0_ios44_375_light", lights: nil, width: 375, dark: false, touch: 44),
         ]
-        XCTAssertEqual(shots.count, 10)
+        XCTAssertEqual(shots.count, 13)
 
         let dir = Self.outputDirectory
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -280,6 +288,7 @@ final class LightsBarSnapshotTests: XCTestCase {
         let root = LightsBar(controller: controller, style: style(dark: shot.dark), onDone: {})
             .frame(width: shot.width)
             .fixedSize(horizontal: false, vertical: true)
+            .environment(\.lightsTouchMinimum, shot.touch)
         let host = NSHostingView(rootView: root)
         host.appearance = NSAppearance(named: shot.dark ? .darkAqua : .aqua)
         let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: shot.width, height: 60),
@@ -297,6 +306,13 @@ final class LightsBarSnapshotTests: XCTestCase {
         }
         let bitmap = try XCTUnwrap(rep, "\(shot.name): no bitmap")
         XCTAssertFalse(Self.isFlat(bitmap), "\(shot.name): the picture is one flat colour")
+        if shot.touch > 0 {
+            // 44 pt targets plus the bar's 8 pt padding above and below.
+            XCTAssertGreaterThanOrEqual(host.fittingSize.height, shot.touch + 16 - 0.5,
+                                        "\(shot.name): the bar's controls are 44 pt tall")
+        } else {
+            XCTAssertLessThan(host.fittingSize.height, 44 + 16, "\(shot.name): the macOS bar keeps its height")
+        }
         let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
         try png.write(to: url)
         XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))

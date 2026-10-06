@@ -662,6 +662,8 @@ final class LightsInspectorSnapshotTests: XCTestCase {
         var collapsed = false
         var withBar = false
         var sceneShadowsOn: Bool?
+        /// The touch profile's minimum target (44: iOS, drawn on macOS).
+        var touch: CGFloat = 0
         var setUp: (FakeRigStore) -> Void = { _ in }
         var after: (LightsController, FakeRigStore) -> Void = { _, _ in }
     }
@@ -748,6 +750,16 @@ final class LightsInspectorSnapshotTests: XCTestCase {
                 controller.select(name: "light4")
                 XCTAssertEqual(controller.setShadow(true), .refused)
             }),
+            // #623: the iOS profile. The header's menu, Shadow, Pin and
+            // chevron are 44 pt targets; the six swatches are 44 pt targets in
+            // three columns (the card's 260 pt of content), the custom picker
+            // beside the label.
+            Shot(name: "ios44_swatch_grid_light", height: 680, touch: 44, setUp: Self.sketchKey),
+            Shot(name: "ios44_swatch_grid_custom_dark", dark: true, height: 680, touch: 44, setUp: { store in
+                Self.sketchKey(store)
+                store.lights[0].color = SIMD3(1, 0.62, 0.3)
+            }),
+            Shot(name: "ios44_collapsed_light", height: 120, collapsed: true, touch: 44, setUp: Self.sketchKey),
         ]
         let dir = Self.outputDirectory
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -790,7 +802,8 @@ final class LightsInspectorSnapshotTests: XCTestCase {
                                 sceneShadowsOn: shot.sceneShadowsOn)
                     .padding(12)
                     .frame(width: shot.width, height: shot.height, alignment: .top)
-                    .background(viewport))
+                    .background(viewport)
+                    .environment(\.lightsTouchMinimum, shot.touch))
         }
         let host = NSHostingView(rootView: root)
         host.appearance = NSAppearance(named: shot.dark ? .darkAqua : .aqua)

@@ -37,8 +37,12 @@ struct LightsOrbitView: View {
     /// Collapsed to its header (with a one-line summary). Plain view state,
     /// seeded per mode entry and never persisted.
     @State private var collapsed: Bool
+    /// 44 on iOS (the chevron a 44 pt target, #623), 0 on macOS.
+    @Environment(\.lightsTouchMinimum) private var touchMinimum
 
     static let width: CGFloat = LightsInspector.width
+    /// The header row's height on macOS; on iOS the 44 pt chevron sets it.
+    static let headerHeight: CGFloat = 18
     /// Between the card's edge and the canvases, and between the canvases.
     static let inset: CGFloat = 12
     static let gap: CGFloat = 8
@@ -57,10 +61,11 @@ struct LightsOrbitView: View {
 
     private func card(_ state: LightsOrbitState) -> some View {
         VStack(alignment: .leading, spacing: 0) {
+            // On iOS the 44 pt header carries the vertical padding.
             header(state)
                 .padding(.horizontal, Self.inset)
-                .padding(.top, 8)
-                .padding(.bottom, collapsed ? 8 : 2)
+                .padding(.top, touchMinimum > 0 ? 0 : 8)
+                .padding(.bottom, collapsed && touchMinimum == 0 ? 8 : 2)
             if !collapsed {
                 OrbitCanvases(controller: controller, eye: controller.eye, style: style)
                     .padding(.horizontal, Self.inset)
@@ -106,7 +111,7 @@ struct LightsOrbitView: View {
             }
             collapseButton
         }
-        .frame(height: 18)
+        .frame(height: max(Self.headerHeight, touchMinimum))
     }
 
     private func title(_ text: String) -> some View {
@@ -125,6 +130,7 @@ struct LightsOrbitView: View {
                 .foregroundColor(style.text.opacity(0.7))
                 .frame(width: 18, height: 18)
                 .contentShape(Rectangle())
+                .lightsTouchTarget()
         }
         .buttonStyle(.plain)
         .help(LightsOrbitState.collapseLabel(collapsed: collapsed))
