@@ -134,13 +134,42 @@ final class LightPaletteTests: XCTestCase {
 
 /// A fake rig store: what the core would hold, written out as the full v1 JSON
 /// (every key LightRigToJSON writes), so LightRigSnapshot decodes it. The
-/// actions do what #612's `lights` command does to the names and the switch.
+/// actions do what #612's `lights` command does to the names and the switch,
+/// and the setters what LightRigSet does (layer1/LightRig.h): the core's
+/// clamps, the orbit wrap, anchor 0/1, re-pinning a pinned light's placement
+/// and the 3-shadow cap. Eye space is served from the stored values for
+/// camera lights and from `eyePlacements` for pinned ones (a test moves a
+/// pinned light's eye placement to stand for a camera turn).
 final class FakeRigStore {
     struct Light: Equatable {
         var name: String
         var orbit = 0.0
         var color = SIMD3<Double>(1, 1, 1)
+        var pinned = false
+        var pitch = 30.0
+        var radius = 4.0
+        var beam = 45.0
+        var softness = 0.4
+        var warmth = 6500.0
+        var intensity = 1.0
+        var shadow = false
+
+        var placement: LightPlacement {
+            get { LightPlacement(orbit: orbit, pitch: pitch, radius: radius) }
+            set {
+                orbit = newValue.orbit
+                pitch = newValue.pitch
+                radius = newValue.radius
+            }
+        }
     }
+
+    /// The core's ranges (layer1/LightRig.cpp) and its shadow cap.
+    static let ranges: [String: ClosedRange<Double>] = [
+        "pitch": -90...90, "radius": 0.5...8, "beam": 1...170, "softness": 0...1,
+        "warmth": 1500...15000, "intensity": 0...4,
+    ]
+    static let maxShadowed = 3
 
     var exists = false
     var enabled = false
@@ -151,10 +180,21 @@ final class FakeRigStore {
     var busy = false
     var clock: TimeInterval = 1000
 
+    /// A pinned light's current placement in eye space, by lowercased name
+    /// (absent: its stored placement).
+    var eyePlacements: [String: LightPlacement] = [:]
+    /// When set, `eyeSpace` serves this instead (`.some(nil)`: no rig), for a
+    /// stale or mismatched read.
+    var eyeOverride: LightEyeSpace?? = .none
+    /// Run after every number write (before it returns): a test can change
+    /// things in the middle of a multi-field write.
+    var afterNumberWrite: (() -> Void)?
+
     private(set) var performed: [LightsAction] = []
     private(set) var numberWrites: [(index: Int, field: String, value: Double)] = []
     private(set) var vectorWrites: [(index: Int, field: String, value: SIMD3<Double>)] = []
     private(set) var reads = 0
+    private(set) var eyeReads = 0
     private(set) var presetLoads = 0
     var presetList: [LightPreset] = [
         LightPreset(name: "three_point", description: "Classic portrait"),
@@ -174,11 +214,20 @@ final class FakeRigStore {
         exists = true
         self.enabled = enabled
         lights = names.map { Light(name: $0) }
+        eyePlacements = [:]
     }
 
     func removeLight(_ name: String) {
         lights.removeAll { $0.name.lowercased() == name.lowercased() }
+        eyePlacements[name.lowercased()] = nil
         if lights.isEmpty { enabled = false }
+    }
+
+    /// Light `index`'s current placement (eye space for a pinned light).
+    func currentPlacement(_ index: Int) -> LightPlacement {
+        let light = lights[index]
+        guard light.pinned else { return light.placement }
+        return eyePlacements[light.name.lowercased()] ?? light.placement
     }
 
     private static func num(_ x: Double) -> String { String(describing: x) }
@@ -187,17 +236,41 @@ final class FakeRigStore {
     var json: String? {
         guard exists else { return nil }
         let lightsJSON = lights.map { light in
-            "{\"name\":\"\(light.name)\",\"anchor\":\"camera\",\"orbit\":\(Self.num(light.orbit)),"
-            + "\"pitch\":30.0,\"radius\":4.0,\"position\":[0.0,0.0,0.0],\"aim\":\"centre\","
-            + "\"aim_point\":[0.0,0.0,0.0],\"aim_selection\":\"\",\"beam\":45.0,\"softness\":0.4,"
-            + "\"color\":\(Self.vec(light.color)),\"warmth\":6500.0,\"intensity\":1.0,\"highlight\":0.5,"
-            + "\"falloff\":2.0,\"shadow\":false,\"outline\":false}"
+            "{\"name\":\"\(light.name)\",\"anchor\":\"\(light.pinned ? "pinned" : "camera")\","
+            + "\"orbit\":\(Self.num(light.orbit)),\"pitch\":\(Self.num(light.pitch)),"
+            + "\"radius\":\(Self.num(light.radius)),\"position\":[0.0,0.0,0.0],\"aim\":\"centre\","
+            + "\"aim_point\":[0.0,0.0,0.0],\"aim_selection\":\"\",\"beam\":\(Self.num(light.beam)),"
+            + "\"softness\":\(Self.num(light.softness)),\"color\":\(Self.vec(light.color)),"
+            + "\"warmth\":\(Self.num(light.warmth)),\"intensity\":\(Self.num(light.intensity)),"
+            + "\"highlight\":0.5,\"falloff\":2.0,\"shadow\":\(light.shadow),\"outline\":false}"
         }.joined(separator: ",")
         let frame = lights.isEmpty ? "\"centre\":null,\"size\":null"
             : "\"centre\":[\(Self.num(centreX)),0.0,0.0],\"size\":10.0"
         return "{\"version\":1,\"enabled\":\(enabled),\(frame),\"ambient\":0.05,\"classic\":0.0,"
             + "\"air\":{\"haze\":0.0,\"dust\":0.0,\"dust_size\":0.35,\"dust_speed\":1.0,\"scatter\":0.55,\"seed\":0},"
             + "\"lights\":[\(lightsJSON)]}"
+    }
+
+    /// The rig in eye space, as PyMOLBridge_LightsEyeSpace resolves it (only
+    /// the fields the controller reads are meaningful).
+    var eyeSpace: LightEyeSpace? {
+        guard ready, exists else { return nil }
+        return LightEyeSpace(
+            enabled: enabled, hasFrame: !lights.isEmpty,
+            centre: SIMD3(Float(centreX), 0, 0), size: 10,
+            lights: lights.indices.map { index in
+                let light = lights[index]
+                let place = currentPlacement(index)
+                let cosOuter = Float(cos(light.beam / 2 * .pi / 180))
+                return LightEyeSpace.Light(
+                    position: .zero, target: .zero, direction: SIMD3(0, 0, -1),
+                    aimDistance: Float(place.radius * 10),
+                    cosOuter: cosOuter, cosInner: min(1, cosOuter + 0.01),
+                    orbit: Float(place.orbit), pitch: Float(place.pitch),
+                    radius: Float(place.radius),
+                    anchor: light.pinned ? .pinned : .camera, aim: .centre,
+                    shadow: light.shadow, outline: false)
+            })
     }
 
     /// The core's next default name (LightRigNextName).
@@ -207,6 +280,13 @@ final class FakeRigStore {
         var i = 4
         while taken.contains("light\(i)") { i += 1 }
         return "light\(i)"
+    }
+
+    private static func light(from snapshot: LightRigSnapshot.Light) -> Light {
+        Light(name: snapshot.name, orbit: snapshot.orbit, color: snapshot.color,
+              pinned: snapshot.anchor == .pinned, pitch: snapshot.pitch,
+              radius: snapshot.radius, beam: snapshot.beam, softness: snapshot.softness,
+              warmth: snapshot.warmth, intensity: snapshot.intensity, shadow: snapshot.shadow)
     }
 
     func perform(_ action: LightsAction) {
@@ -229,6 +309,7 @@ final class FakeRigStore {
             guard exists, !lights.isEmpty else { return }
             enabled = on
         case .restore(let json):
+            eyePlacements = [:]
             if json == "null" {
                 exists = false
                 enabled = false
@@ -239,8 +320,69 @@ final class FakeRigStore {
             exists = true
             enabled = rig.enabled
             centreX = rig.centre?.x ?? 0
-            lights = rig.lights.map { Light(name: $0.name, orbit: $0.orbit, color: $0.color) }
+            lights = rig.lights.map(Self.light(from:))
+        case .restoreLight(let name, let json):
+            // appkit_lights.restore_light: that light only, at its index now.
+            let key = name.lowercased()
+            guard exists,
+                  let rig = try? LightRigSnapshot.decode(Data(json.utf8)),
+                  let entry = rig.lights.first(where: { $0.name.lowercased() == key }),
+                  let index = lights.firstIndex(where: { $0.name.lowercased() == key })
+            else { return }
+            let restored = Self.light(from: entry)
+            let shadowed = lights.enumerated().filter { $0.offset != index && $0.element.shadow }.count
+            guard !restored.shadow || shadowed < Self.maxShadowed else { return }
+            eyePlacements[key] = nil
+            lights[index] = restored
         }
+    }
+
+    /// LightRigSet for a number field of a light.
+    private func setNumber(_ index: Int, _ field: String, _ value: Double) -> LightSetResult {
+        guard ready, exists else { return .noRig }
+        guard lights.indices.contains(index) else { return .badIndex }
+        guard value.isFinite else { return .badValue }
+        var light = lights[index]
+        let key = light.name.lowercased()
+        switch field {
+        case "orbit", "pitch", "radius":
+            var place = currentPlacement(index)
+            switch field {
+            case "orbit": place.orbit = LightAngles.wrap(value)
+            case "pitch": place.pitch = value.clamped(to: Self.ranges["pitch"]!)
+            default: place.radius = value.clamped(to: Self.ranges["radius"]!)
+            }
+            light.placement = place
+            // A pinned light is re-pinned at the new place.
+            if light.pinned { eyePlacements[key] = place }
+        case "beam": light.beam = value.clamped(to: Self.ranges[field]!)
+        case "softness": light.softness = value.clamped(to: Self.ranges[field]!)
+        case "warmth": light.warmth = value.clamped(to: Self.ranges[field]!)
+        case "intensity": light.intensity = value.clamped(to: Self.ranges[field]!)
+        case "anchor":
+            guard value == 0 || value == 1 else { return .badValue }
+            if value == 1, !light.pinned {
+                // Pinned where it is now.
+                light.pinned = true
+                eyePlacements[key] = light.placement
+            } else if value == 0, light.pinned {
+                // Unpinned, its placement derived from where it is now.
+                var place = currentPlacement(index)
+                place.radius = place.radius.clamped(to: Self.ranges["radius"]!)
+                light.placement = place
+                light.pinned = false
+                eyePlacements[key] = nil
+            }
+        case "shadow":
+            let on = value >= 0.5
+            if on, !light.shadow,
+               lights.filter(\.shadow).count >= Self.maxShadowed { return .refused }
+            light.shadow = on
+        default:
+            return .unknownField
+        }
+        lights[index] = light
+        return .ok
     }
 
     var seams: LightsSeams {
@@ -251,18 +393,18 @@ final class FakeRigStore {
             },
             setNumber: { index, field, value in
                 self.numberWrites.append((index, field, value))
-                guard self.ready, self.exists else { return .noRig }
-                guard self.lights.indices.contains(index) else { return .badIndex }
-                guard field == "orbit" else { return .unknownField }
-                self.lights[index].orbit = value
-                return .ok
+                let result = self.setNumber(index, field, value)
+                self.afterNumberWrite?()
+                return result
             },
             setVector: { index, field, value in
                 self.vectorWrites.append((index, field, value))
                 guard self.ready, self.exists else { return .noRig }
                 guard self.lights.indices.contains(index) else { return .badIndex }
                 guard field == "color" else { return .unknownField }
-                self.lights[index].color = value
+                guard value.x.isFinite, value.y.isFinite, value.z.isFinite else { return .badValue }
+                self.lights[index].color = SIMD3(value.x.clamped(to: 0...1), value.y.clamped(to: 0...1),
+                                                 value.z.clamped(to: 0...1))
                 return .ok
             },
             perform: { self.perform($0) },
@@ -272,7 +414,18 @@ final class FakeRigStore {
             },
             isReady: { self.ready },
             isBusy: { self.busy },
-            now: { self.clock })
+            now: { self.clock },
+            eyeSpace: {
+                self.eyeReads += 1
+                if case .some(let served) = self.eyeOverride { return served }
+                return self.eyeSpace
+            })
+    }
+}
+
+private extension Double {
+    func clamped(to range: ClosedRange<Double>) -> Double {
+        min(max(self, range.lowerBound), range.upperBound)
     }
 }
 
@@ -535,7 +688,7 @@ final class LightsControllerTests: XCTestCase {
 
         // A refused write is returned as is and changes nothing.
         let json = store.json
-        XCTAssertEqual(controller.edit("beam", 10), .unknownField)
+        XCTAssertEqual(controller.edit("colour", 10), .unknownField)
         XCTAssertEqual(store.json, json)
     }
 

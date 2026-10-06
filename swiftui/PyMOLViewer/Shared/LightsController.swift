@@ -12,6 +12,12 @@
 // per-field setters for continuous edits; a console command or one Python
 // call for a button press) and the unit tests fake. Continuous edits use only
 // the setter seams, so a drag runs no Python per tick (#610).
+//
+// The typed edit API every light tool shares (set, step, setPlacement,
+// setColour, setPinned) is in LightsEditing.swift; the per-frame eye data
+// (each light's current orbit, pitch and radius, and on demand the whole rig
+// in eye space) is in LightsEyeState below, a separate object so a per-frame
+// update redraws only the views that show it, never the bar.
 
 import Foundation
 import Combine
@@ -157,6 +163,10 @@ enum LightsAction: Equatable {
     case setEnabled(Bool)
     /// Put back the rig whose JSON this is ("null" = no rig).
     case restore(String)
+    /// Put back the light called `name` (ignoring case) as it is in the rig
+    /// whose JSON this is, at the index it has now; every other light and the
+    /// rig's own fields stay as they are (Revert this light, #620).
+    case restoreLight(name: String, json: String)
 }
 
 /// What the controller needs from the engine. The engine wires the real ones;
@@ -179,6 +189,56 @@ struct LightsSeams {
     var isBusy: () -> Bool
     /// A monotonic clock in seconds.
     var now: () -> TimeInterval
+    /// The rig resolved to eye space for the live camera, or nil when there is
+    /// no rig (a bridge read: C++, no Python). Read only while a light is
+    /// pinned or a tool asks for every frame (`LightsEyeDemand`).
+    var eyeSpace: () -> LightEyeSpace? = { nil }
+}
+
+// MARK: - Eye state
+
+/// How much eye-space data the light tools need per rendered frame.
+enum LightsEyeDemand: Equatable {
+    /// Only the placements of pinned lights (they move with the camera):
+    /// no bridge read at all while no light is pinned.
+    case pinnedOnly
+    /// The whole rig in eye space every rendered frame (#622's gizmo, while
+    /// it shows), published in `LightsEyeState.eyeSpace`.
+    case everyFrame
+}
+
+/// The per-frame eye data, owned by the controller and kept apart from it so
+/// that a per-frame update re-renders only the views observing this object
+/// (the inspector's placement rows, #621's orbit view, #622's gizmo), never
+/// the bar or the rest of the inspector.
+@MainActor
+final class LightsEyeState: ObservableObject {
+    /// One per rig light, in rig order: a camera light's stored orbit, pitch
+    /// and radius, a pinned light's current ones in eye space. Empty while
+    /// Lights mode is off.
+    @Published fileprivate(set) var placements: [LightPlacement] = []
+    /// The latest eye-space read, published only while the demand is
+    /// `.everyFrame` (nil otherwise), so float noise from lights nobody shows
+    /// never re-renders the inspector.
+    @Published fileprivate(set) var eyeSpace: LightEyeSpace?
+
+    /// Publish `new` when its count differs or some value moved by more than
+    /// `tolerance` (0: any change).
+    fileprivate func publish(_ new: [LightPlacement], tolerance: Double) {
+        if new.count != placements.count
+            || zip(new, placements).contains(where: { $0.differs(from: $1, by: tolerance) }) {
+            placements = new
+        }
+    }
+
+    fileprivate func publish(eyeSpace new: LightEyeSpace?) {
+        if new != eyeSpace { eyeSpace = new }
+    }
+
+    fileprivate func clear() {
+        if !placements.isEmpty { placements = [] }
+        if eyeSpace != nil { eyeSpace = nil }
+    }
 }
 
 // MARK: - Controller
@@ -212,6 +272,18 @@ final class LightsController: ObservableObject {
     /// per-light "revert this light" compares against.
     private(set) var entryRig: LightRigSnapshot?
 
+    /// The per-frame eye data (see LightsEyeState). Not @Published: a change
+    /// in it must not re-render the controller's observers.
+    let eye = LightsEyeState()
+    /// What the tools need from eye space per rendered frame. #622 sets
+    /// `.everyFrame` while its gizmo shows; back to `.pinnedOnly` clears
+    /// `eye.eyeSpace`.
+    var eyeDemand: LightsEyeDemand = .pinnedOnly {
+        didSet {
+            if eyeDemand == .pinnedOnly { eye.publish(eyeSpace: nil) }
+        }
+    }
+
     private let seams: LightsSeams
     /// The JSON `rig` was decoded from, and whether there has been a read.
     private var mirrorJSON: String?
@@ -220,6 +292,15 @@ final class LightsController: ObservableObject {
     private var lastRefresh: TimeInterval?
     /// `begin()` ran but the entry snapshot is still to be taken.
     private var needsSnapshot = false
+    /// `eye.placements` must be rebuilt on the next refresh even when the rig
+    /// is unchanged (after `end()`, or an eye read that disagreed with it).
+    private var eyeNeedsRebuild = true
+
+    /// A camera light's eye-space placement may differ from its stored one
+    /// by this much (float rounding) before the eye read counts as stale.
+    nonisolated static let eyeDriftTolerance = 1e-3
+    /// A placement must move by more than this to be republished per frame.
+    nonisolated static let placementTolerance = 1e-4
 
     init(seams: LightsSeams) {
         self.seams = seams
@@ -243,6 +324,25 @@ final class LightsController: ObservableObject {
     var isBusy: Bool { seams.isBusy() }
 
     private var canAct: Bool { isActive && !seams.isBusy() }
+
+    /// The selected light can be edited now (active, not busy, a selection).
+    var canEdit: Bool { canAct && selection.index != nil }
+
+    /// The selected light as it was when the mode was entered: the entry rig's
+    /// light with the same name, ignoring case (nil when there is none).
+    /// A light removed and added again under the same default name counts as
+    /// the entry light.
+    var entryLight: LightRigSnapshot.Light? {
+        guard let name = (selectedLight?.name ?? selection.name)?.lowercased() else { return nil }
+        return entryRig?.lights.first { $0.name.lowercased() == name }
+    }
+
+    /// Revert this light can do something: the selected light has an entry
+    /// light and differs from it (stored fields; camera motion changes none).
+    var canRevertLight: Bool {
+        guard canAct, let light = selectedLight, let entry = entryLight else { return false }
+        return light != entry
+    }
 
     var canAdd: Bool { canAct && (rig?.lights.count ?? 0) < Self.maxLights }
     var canRemove: Bool { canAct && selection.index != nil }
@@ -282,6 +382,8 @@ final class LightsController: ObservableObject {
         needsSnapshot = false
         if entryJSON != nil { entryJSON = nil }
         entryRig = nil
+        eye.clear()
+        eyeNeedsRebuild = true
     }
 
     /// Re-read the rig. Publishes only when its JSON changed, so a periodic
@@ -301,7 +403,10 @@ final class LightsController: ObservableObject {
                 if !loaded.isEmpty { presets = loaded }
             }
         }
-        guard !hasMirror || json != mirrorJSON else { return }
+        guard !hasMirror || json != mirrorJSON else {
+            if eyeNeedsRebuild { rebuildEye() }
+            return
+        }
         hasMirror = true
         mirrorJSON = json
         let decoded = json.flatMap(Self.decode)
@@ -310,7 +415,50 @@ final class LightsController: ObservableObject {
         let slots = LightPalette.assign(names: names, previous: identitySlots)
         if slots != identitySlots { identitySlots = slots }
         repairSelection()
+        rebuildEye()
     }
+
+    /// Re-read the rig unless the last read is younger than `staleAfter`:
+    /// what every edit does before it writes, so a console or MCP change since
+    /// the last read cannot send the write to the light that used to be at the
+    /// selected index. During a drag each successful write re-reads, so this
+    /// adds no read per tick.
+    func refreshIfStale() {
+        if let last = lastRefresh, seams.now() - last <= Self.staleAfter { return }
+        refresh()
+    }
+
+    // MARK: eye data (per rendered frame)
+
+    /// Called once per rendered frame in Lights mode. Refreshes
+    /// `eye.placements` (and `eye.eyeSpace` in `.everyFrame` demand) from one
+    /// eye-space read, made only while a light is pinned or the demand is
+    /// `.everyFrame`; otherwise it does nothing (no bridge call).
+    ///
+    /// The eye read carries no names, only rig order, so it is checked against
+    /// the mirror first: a different light count, a different anchor, or a
+    /// camera light whose placement differs from its stored one means the rig
+    /// changed behind the mirror's back (the console, MCP), and the rig is
+    /// re-read instead of publishing another light's numbers. (A reorder of
+    /// two pinned lights that keeps the count and the anchors passes until the
+    /// next poll.)
+    func frameRendered() {
+        guard isActive, !seams.isBusy(), seams.isReady() else { return }
+        let lights = rig?.lights ?? []
+        guard eyeDemand == .everyFrame || lights.contains(where: { $0.anchor == .pinned }) else {
+            eye.publish(eyeSpace: nil)
+            return
+        }
+        let read = seams.eyeSpace()
+        guard Self.eye(read, isConsistentWith: rig) else {
+            eyeNeedsRebuild = true
+            refresh()
+            return
+        }
+        eye.publish(Self.placements(of: lights, eye: read), tolerance: Self.placementTolerance)
+        eye.publish(eyeSpace: eyeDemand == .everyFrame ? read : nil)
+    }
+
 
     // MARK: selection
 
@@ -382,6 +530,17 @@ final class LightsController: ObservableObject {
         refresh()
     }
 
+    /// Put back only the selected light as it was when the mode was entered
+    /// (matched by name), leaving every other light and the rig's own fields
+    /// as they are. The light stays selected. A refusal (a 4th shadowed
+    /// light) changes nothing.
+    func revertSelectedLight() {
+        guard canRevertLight, let entry = entryJSON,
+              let name = selectedLight?.name else { return }
+        seams.perform(.restoreLight(name: name, json: entry))
+        refresh()
+    }
+
     // MARK: continuous edits (bridge setters only)
 
     /// Set one number field of the selected light through the bridge setter
@@ -398,23 +557,84 @@ final class LightsController: ObservableObject {
         write { self.seams.setVector($0, field, vector) }
     }
 
+    /// Set several number fields of the selected light, in order, with the
+    /// selected index fixed for the whole call: the multi-field form of
+    /// `edit(_:_:)`. Stops at the first result that is not `.ok` and returns
+    /// it; re-reads the mirror once if any write succeeded. `.badIndex` when
+    /// inactive, busy or nothing is selected.
+    @discardableResult
+    func writeNumbers(_ fields: [(String, Double)]) -> LightSetResult {
+        guard canAct, selection.index != nil else { return .badIndex }
+        refreshIfStale()
+        guard let index = selection.index else { return .badIndex }
+        var result = LightSetResult.ok
+        var wrote = false
+        for (field, value) in fields {
+            result = seams.setNumber(index, field, value)
+            guard result == .ok else { break }
+            wrote = true
+        }
+        if wrote { refresh() }
+        return result
+    }
+
     // MARK: private
 
     private func write(_ set: (Int) -> LightSetResult) -> LightSetResult {
         guard canAct, selection.index != nil else { return .badIndex }
         // A console or MCP change since the last read may have moved the
         // selected light: re-read first so the write lands on the light that
-        // is selected now. During a drag each successful write re-reads, so
-        // this adds no read per tick.
-        if let last = lastRefresh, seams.now() - last <= Self.staleAfter {
-            // fresh enough
-        } else {
-            refresh()
-        }
+        // is selected now.
+        refreshIfStale()
         guard let index = selection.index else { return .badIndex }
         let result = set(index)
         if result == .ok { refresh() }
         return result
+    }
+
+    /// Rebuild `eye.placements` for the mirror just read (only while active).
+    /// Reads eye space only while a light is pinned or the demand is
+    /// `.everyFrame`, so an edit of a pinned light shows its new placement in
+    /// the same turn; a read that disagrees with the mirror is not used.
+    private func rebuildEye() {
+        guard isActive else { return }
+        eyeNeedsRebuild = false
+        let lights = rig?.lights ?? []
+        let needsRead = eyeDemand == .everyFrame || lights.contains { $0.anchor == .pinned }
+        let read = needsRead ? seams.eyeSpace() : nil
+        let usable = needsRead && Self.eye(read, isConsistentWith: rig)
+        eye.publish(Self.placements(of: lights, eye: usable ? read : nil), tolerance: 0)
+        eye.publish(eyeSpace: eyeDemand == .everyFrame && usable ? read : nil)
+    }
+
+    /// Each light's current placement: a pinned light's from `eye` when
+    /// given (it matches `lights`), otherwise the stored one.
+    private static func placements(of lights: [LightRigSnapshot.Light],
+                                   eye: LightEyeSpace?) -> [LightPlacement] {
+        lights.enumerated().map { index, light in
+            if light.anchor == .pinned, let eye, eye.lights.indices.contains(index) {
+                return LightPlacement(eye.lights[index])
+            }
+            return light.placement
+        }
+    }
+
+    /// `read` describes the same rig as `rig`: no read only for a rig with no
+    /// lights; the same light count and anchors; and every camera light where
+    /// its stored values put it (within `eyeDriftTolerance`).
+    nonisolated static func eye(_ read: LightEyeSpace?,
+                                isConsistentWith rig: LightRigSnapshot?) -> Bool {
+        let lights = rig?.lights ?? []
+        guard let read else { return lights.isEmpty }
+        guard read.lights.count == lights.count else { return false }
+        for (seen, light) in zip(read.lights, lights) {
+            guard seen.anchor == light.anchor else { return false }
+            if light.anchor == .camera,
+               LightPlacement(seen).differs(from: light.placement, by: eyeDriftTolerance) {
+                return false
+            }
+        }
+        return true
     }
 
     private func repairSelection() {

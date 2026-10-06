@@ -34,12 +34,29 @@ final class LightsActionInvocationTests: XCTestCase {
         }
     }
 
+    func testRestoreLightIsOnePythonCallWithTheBase64OfTheJSONAndTheName() {
+        // Revert this light (#620): lighting_inspector.py TestRestoreLight runs
+        // the helper with the same arguments.
+        for json in [#"{"version":1,"enabled":true,"lights":[]}"#, "null", "{\"a\":\"é \\\" '\"}"] {
+            let encoded = Data(json.utf8).base64EncodedString()
+            for name in ["key", "Light4", "_x"] {
+                XCTAssertEqual(
+                    LightsAction.restoreLight(name: name, json: json).invocation,
+                    .python("from pymol import appkit_lights as _al\n"
+                            + "_al.restore_light('\(encoded)', '\(name)')"),
+                    "\(name) \(json)")
+            }
+        }
+    }
+
     func testBadNamesRunNothing() {
         let bad = ["", "a,b", "a b", "it's", "x\"y", "1key", "key;reinitialize", "é",
-                   String(repeating: "a", count: 33)]
+                   "key')\nimport os", String(repeating: "a", count: 33)]
         for name in bad {
             XCTAssertNil(LightsAction.remove(name).invocation, "remove \(name)")
             XCTAssertNil(LightsAction.preset(name).invocation, "preset \(name)")
+            XCTAssertNil(LightsAction.restoreLight(name: name, json: "null").invocation,
+                         "restoreLight \(name)")
         }
     }
 

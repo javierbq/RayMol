@@ -3123,7 +3123,8 @@ final class PyMOLEngine: ObservableObject {
     /// identity colours, the entry snapshot and the bar's actions. Built on first
     /// use, like ``predictController``. Continuous edits go through the bridge
     /// setters only (no Python per drag tick, #610); button presses run a `lights`
-    /// console command, and Revert one Python call (pymol.appkit_lights.restore).
+    /// console command, and Revert or Revert this light one Python call
+    /// (pymol.appkit_lights.restore / restore_light).
     lazy var lightsController: LightsController = {
         // LightsController is @MainActor; lazy vars run in a nonisolated context.
         // assumeIsolated is safe: it is first reached from setInteractionMode or a
@@ -4614,8 +4615,8 @@ typealias MoleculeObject = ObjectEntry
 // MARK: - Lights bar actions (#619)
 
 extension LightsAction {
-    /// What the engine runs for a Lights bar button: a `lights` console command,
-    /// or (Revert) one Python call.
+    /// What the engine runs for a Lights button: a `lights` console command,
+    /// or (Revert, Revert this light) one Python call.
     enum Invocation: Equatable {
         case command(String)
         case python(String)
@@ -4642,6 +4643,13 @@ extension LightsAction {
             // base64, so the JSON is never quoted into Python source.
             let encoded = Data(json.utf8).base64EncodedString()
             return .python("from pymol import appkit_lights as _al\n_al.restore('\(encoded)')")
+        case .restoreLight(let name, let json):
+            // Revert this light (#620): the entry JSON as base64 and a name
+            // that passed the core's rule, so neither is ever quoted.
+            guard Self.isValidName(name) else { return nil }
+            let encoded = Data(json.utf8).base64EncodedString()
+            return .python(
+                "from pymol import appkit_lights as _al\n_al.restore_light('\(encoded)', '\(name)')")
         }
     }
 
