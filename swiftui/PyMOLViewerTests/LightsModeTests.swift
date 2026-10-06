@@ -146,6 +146,7 @@ enum LightsLive {
     static func tearDown() {
         engine.pythonTap = nil
         engine.commandTap = nil
+        engine.viewportInputTap = nil
         engine.lightsController.eyeDemand = .pinnedOnly
         engine.setInteractionMode(.viewing)
         engine.runPython(

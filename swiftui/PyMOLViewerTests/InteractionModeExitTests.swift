@@ -184,8 +184,66 @@ final class InteractionModeExitTests: XCTestCase {
         }
     }
 
+    /// #622: leaving Lights mode, by Esc or another mode, clears the light
+    /// gizmo: no hover or drag state, the pointer's session ended (it writes
+    /// no more; the press stays swallowed until its release, so the rest of
+    /// a drag never reaches the camera), and the pick grids released.
+    func testLeavingLightsClearsTheGizmo() throws {
+        try LightsLive.requireEngine()
+        defer {
+            engine.lightGizmoPointer.cancel()
+            LightsLive.tearDown()
+        }
+        LightsLive.addPeptide()
+        // The camera at z = +100 looking at the origin (the rig's centre);
+        // LightsLive.tearDown puts the user's view back.
+        engine.runPython(
+            "from pymol import cmd as _lmt_cmd\n"
+            + "_lmt_cmd.show_as('spheres', 'lmt_pep')\n"
+            + "_lmt_cmd.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, "
+            + "0.0, 0.0, -100.0, 0.0, 0.0, 0.0, 50.0, 150.0, -20.0))\n")
+        LightsLive.setRig(LightsLive.threeLights(enabled: true))
+        let controller = engine.lightsController
+        let size = CGSize(width: 800, height: 600)
+
+        for leave in ["Esc", "Move"] {
+            engine.setInteractionMode(.lights)
+            controller.select(name: "key")
+            engine.lightsFrameRendered()
+            let layout = try XCTUnwrap(engine.lightGizmoLayout(viewSize: size), leave)
+            let key = try XCTUnwrap(layout.knob(named: "key"), leave)
+            let interaction = LightGizmoInteraction(controller: controller, picker: engine.lightGizmoPicker)
+            XCTAssertEqual(engine.lightGizmoPointer.press(at: key.centre, option: false, layout: layout,
+                                                          interaction: interaction), .gizmo, leave)
+            engine.lightGizmoUI.hovered = .knob("key")
+            engine.lightGizmoUI.track(engine.lightGizmoPointer.session, layout: layout)
+            XCTAssertEqual(engine.lightGizmoUI.active, .knob("key"), leave)
+            XCTAssertGreaterThanOrEqual(engine.prepareSurfacePick(), 1, leave)
+            let json = engine.lightRigJSON()
+
+            if leave == "Esc" {
+                XCTAssertTrue(engine.exitActiveInteractionMode())
+            } else {
+                engine.setInteractionMode(.move)
+            }
+            XCTAssertNil(engine.lightGizmoUI.hovered, leave)
+            XCTAssertNil(engine.lightGizmoUI.active, leave)
+            XCTAssertNil(engine.lightGizmoUI.readout, leave)
+            XCTAssertEqual(engine.lightGizmoPointer.session?.isEnded, true, "the session is ended: \(leave)")
+            XCTAssertTrue(engine.lightGizmoPointer.ownsPress, "the press is still swallowed: \(leave)")
+            let away = CGPoint(x: key.centre.x + 40, y: key.centre.y + 30)
+            XCTAssertEqual(engine.lightGizmoPointer.drag(to: away, interaction: interaction), .gizmo, leave)
+            XCTAssertEqual(engine.lightRigJSON(), json, "no write after leaving: \(leave)")
+            XCTAssertEqual(engine.lightGizmoPointer.release(at: away, interaction: interaction), .gizmo, leave)
+            XCTAssertFalse(engine.lightGizmoPointer.ownsPress, leave)
+            XCTAssertEqual(engine.releaseSurfacePick(), 0, "leaving Lights must release the grids: \(leave)")
+            XCTAssertNil(engine.lightGizmoLayout(viewSize: size), "no gizmo outside the mode: \(leave)")
+            engine.setInteractionMode(.viewing)
+        }
+    }
+
     /// Every other exclusive mode, with how to enter it and whether it is on.
-    private var otherModes: [(name: String, enter: () -> Void, isOn: () -> Bool)] {
+    private var otherModes:[(name: String, enter: () -> Void, isOn: () -> Bool)] {
         var modes: [(name: String, enter: () -> Void, isOn: () -> Bool)] = [
             ("Move", { self.engine.setInteractionMode(.move) }, { self.engine.interactionMode == .move }),
             ("Box Select", { self.engine.setInteractionMode(.boxSelect) },
