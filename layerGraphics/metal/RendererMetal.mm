@@ -1083,6 +1083,8 @@ void RendererMetal::beginFrame()
   _lightShadowPassActive = false;
   _lightShadowSlicesOpened = 0;
   _lightShadowFailed = false;
+  // And the air (#618): SceneRenderMetal sets it again (setLightAir).
+  _lightAirOn = false;
   _currentGridSlot = 0;
   // Start this frame's geometry record. Only the LIST of contributing cache
   // entries is re-accumulated during the opaque pass; the geometry itself stays
@@ -2488,6 +2490,20 @@ bool RendererMetal::getGpuFrameStats(GpuFrameReport* out) const
   if (!out || _gpuTimingMode <= 0)
     return false;
   return _gpuTiming->report(*out, _gpuTimingMode);
+}
+
+void RendererMetal::setLightAir(const LightAirBlock* air)
+{
+  // A value copy and nothing else: no GPU call, no allocation. The air is
+  // per frame: beginFrame clears it.
+  _lightAirOn = air != nullptr;
+  if (air)
+    _lightAirBlock = *air;
+}
+
+bool RendererMetal::offscreenFrame() const
+{
+  return _offscreen;
 }
 
 void RendererMetal::setKeyLightDir(const float* lightv)

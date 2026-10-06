@@ -23,6 +23,7 @@
 
 #include <glm/mat4x4.hpp>
 
+#include "LightAir.h"
 #include "LightRig.h"
 #include "LightRigBlock.h"
 #include "LightShading.h"
@@ -150,6 +151,11 @@ struct SceneLightFrame {
   /// This frame's maps: set when studioShadows and there are casters
   /// (SceneGetLightShadowExtent) in front of at least one shadowed light.
   std::optional<pymol::LightShadowFrame> shadows;
+  /// The air (#618): the rig's haze and dust with its frame in eye space,
+  /// copied from the frame's one rig read; set only when the rig is on and
+  /// haze or dust is above 0. Nothing else is read for it here: the gates
+  /// (grid, geometry), the clock and the settings are SceneLightsAir's.
+  std::optional<pymol::LightAirSource> airSource;
 };
 
 /**
@@ -168,6 +174,47 @@ struct SceneLightFrame {
  */
 SceneLightFrame SceneLightsFrame(PyMOLGlobals* G, const glm::dmat4& worldToEye,
     const pymol::LightShadowGridOverride* grid = nullptr);
+
+/* ---- The air (#618) ------------------------------------------------------
+ * Haze and dust, drawn by the Metal renderer's air pass. SceneRenderMetal
+ * calls SceneLightsAir() once per frame, after SceneLightsFrame(), and hands
+ * the block to the renderer (setLightAir). No air without a rig that is on
+ * with haze or dust (airSource), without geometry, or in grid mode.
+ */
+
+/// Overrides for _cmd.get_light_air_frame (CI has no renderer, grid or live
+/// clock): each unset field reads what a frame reads.
+struct SceneLightAirOptions {
+  /// The frame renders offscreen (else Renderer::offscreenFrame()).
+  std::optional<bool> offscreen;
+  /// The live clock in seconds (else UtilGetSeconds).
+  std::optional<double> wallSeconds;
+  /// The grid layout (else the scene's, G->Scene->grid).
+  const pymol::LightShadowGridOverride* grid = nullptr;
+};
+
+/**
+ * This frame's air block, or nullopt when the frame draws no air. Tests, in
+ * order and reading nothing before its turn: the frame's airSource; grid
+ * mode (D8: no air in a grid); something to light (the overlay-free extent,
+ * SceneGetLightShadowExtent, so overlays alone never get air); then reads
+ * the dust clock (LightAirClock: metal_light_air_time, movie frame and
+ * movie_fps, the renderer's offscreen flag, MoviePlaying on live frames only,
+ * the wall clock) and metal_light_air_resolution and
+ * metal_light_air_shadow_filter, and packs (LightAirPack). Writes nothing and
+ * never requests a redraw.
+ */
+std::optional<pymol::LightAirBlock> SceneLightsAir(PyMOLGlobals* G,
+    const SceneLightFrame& frame, const SceneLightAirOptions* options = nullptr);
+
+/**
+ * The dust moves on its own, so the live view must redraw for it
+ * (LightAirAnimating): the rig is on, dust and dust_speed are above 0, the
+ * clock is not pinned, no movie plays, no grid and there is geometry. Cheap
+ * tests first, the extent last. Main thread (MoviePlaying). Writes nothing and
+ * never requests a redraw: the app's redraw policy asks it (#618 D11).
+ */
+bool SceneLightsAirAnimating(PyMOLGlobals* G);
 
 /* ---- Studio shadow casters (#616) ----------------------------------------
  * Overlays never cast studio shadows (#433): the studio pre-pass excludes

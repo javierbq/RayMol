@@ -211,6 +211,10 @@ public:
   // fresh readout. getGpuFrameStats is false at mode 0.
   void setGpuTiming(int mode) override;
   bool getGpuFrameStats(GpuFrameReport* out) const override;
+  // The air (#618): see Renderer.h. setLightAir takes a value copy of the
+  // frame's air block; offscreenFrame is _offscreen.
+  void setLightAir(const LightAirBlock* air) override;
+  bool offscreenFrame() const override;
   void setKeyLightDir(const float* lightv) override;
   void setRayTraceParams(int samples, float aoRadius, float aoIntensity,
       float shadowIntensity, float scale = 1.0f) override;
@@ -862,6 +866,12 @@ private:
   // SceneRenderMetal sets it again.
   bool _lightRigOn = false;
   LightRigBlock _lightRigBlock{};
+  // The air (#618): a value copy of this frame's air block, taken by
+  // setLightAir() (SceneRenderMetal, after setGpuTiming). Valid only while
+  // _lightAirOn; off with no air, and at every beginFrame until
+  // SceneRenderMetal sets it again.
+  bool _lightAirOn = false;
+  LightAirBlock _lightAirBlock{};
   // A rig pipeline that cannot be built draws classic instead; this logs it
   // once per renderer rather than once per draw.
   bool _lightRigWarned = false;
