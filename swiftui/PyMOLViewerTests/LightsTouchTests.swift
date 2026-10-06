@@ -86,6 +86,46 @@ private func gizmoLayout(_ controller: LightsController, metrics: LightGizmoMetr
 private let iosMetrics = LightGizmoMetrics(slop: 14, minimumTarget: 44)
 private let macMetrics = LightGizmoMetrics(slop: 6, minimumTarget: 0)
 
+/// Knob A (unselected, front) at (200, 150), C (behind) at (200, 450),
+/// the selected knob B at (600, 120); B's aim dot at (600, 400) inside
+/// its rings (outer 100 pt, inner 50 pt, 72 samples each), its handles
+/// on the rings to the right.
+private func handLayout(_ metrics: LightGizmoMetrics) throws -> LightGizmoLayout {
+    let camera = LightCameraProjection(orthoscopic: false, fovDegrees: 20, cameraDistance: 200,
+                                       letterboxAspect: 0)
+    let projection = try XCTUnwrap(LightGizmoProjection(camera: camera, viewSize: gizmoViewSize))
+    let placement = LightPlacement(orbit: 0, pitch: 0, radius: 3)
+    func knob(_ name: String, _ index: Int, _ centre: CGPoint, selected: Bool, behind: Bool)
+        -> LightGizmoLayout.Knob {
+        LightGizmoLayout.Knob(
+            name: name, index: index, slot: index, centre: centre,
+            radius: selected ? metrics.selectedKnobRadius : metrics.knobRadius,
+            direction: SIMD3(0, 0, 1), placement: placement, isSelected: selected, isBehind: behind,
+            isShadowed: false, isShadowDimmed: false, opacity: 1, label: name,
+            labelPoint: offset(centre, 0, -14), labelDirection: CGVector(dx: 0, dy: -1))
+    }
+    let aim = CGPoint(x: 600, y: 400)
+    func ring(_ r: CGFloat) -> LightGizmoLayout.Ring {
+        LightGizmoLayout.Ring(radius: Double(r) / 10, samples: (0..<72).map { k in
+            let a = Double(k) * 2 * .pi / 72
+            return CGPoint(x: aim.x + r * CGFloat(cos(a)), y: aim.y + r * CGFloat(sin(a)))
+        })
+    }
+    var selected = LightGizmoLayout.Selected(
+        name: "b", index: 1, placement: placement, beam: 45, softness: 0.5, target: SIMD3(0, 0, -200),
+        direction: SIMD3(0, 0, -1), aimDistance: 30, cosOuter: 0.7, cosInner: 0.9, aimDot: aim)
+    selected.outerRing = ring(100)
+    selected.innerRing = ring(50)
+    selected.outerHandle = .init(point: offset(aim, 100, 0), ringPoint: offset(aim, 100, 0), isOffRing: false)
+    selected.innerHandle = .init(point: offset(aim, 50, 0), ringPoint: offset(aim, 50, 0), isOffRing: false)
+    return LightGizmoLayout(
+        projection: projection, metrics: metrics, centre: CGPoint(x: 400, y: 300), sphereRadius: 150,
+        knobs: [knob("a", 0, CGPoint(x: 200, y: 150), selected: false, behind: false),
+                knob("b", 1, CGPoint(x: 600, y: 120), selected: true, behind: false),
+                knob("c", 2, CGPoint(x: 200, y: 450), selected: false, behind: true)],
+        drawingOrder: [2, 0, 1], selected: selected, isOn: true, rigSize: 10)
+}
+
 @MainActor
 final class LightsTouchTargetTests: XCTestCase {
 
@@ -226,46 +266,6 @@ final class LightsTouchTargetTests: XCTestCase {
     }
 
     // MARK: the gizmo, on a layout placed by hand
-
-    /// Knob A (unselected, front) at (200, 150), C (behind) at (200, 450),
-    /// the selected knob B at (600, 120); B's aim dot at (600, 400) inside
-    /// its rings (outer 100 pt, inner 50 pt, 72 samples each), its handles
-    /// on the rings to the right.
-    private func handLayout(_ metrics: LightGizmoMetrics) throws -> LightGizmoLayout {
-        let camera = LightCameraProjection(orthoscopic: false, fovDegrees: 20, cameraDistance: 200,
-                                           letterboxAspect: 0)
-        let projection = try XCTUnwrap(LightGizmoProjection(camera: camera, viewSize: gizmoViewSize))
-        let placement = LightPlacement(orbit: 0, pitch: 0, radius: 3)
-        func knob(_ name: String, _ index: Int, _ centre: CGPoint, selected: Bool, behind: Bool)
-            -> LightGizmoLayout.Knob {
-            LightGizmoLayout.Knob(
-                name: name, index: index, slot: index, centre: centre,
-                radius: selected ? metrics.selectedKnobRadius : metrics.knobRadius,
-                direction: SIMD3(0, 0, 1), placement: placement, isSelected: selected, isBehind: behind,
-                isShadowed: false, isShadowDimmed: false, opacity: 1, label: name,
-                labelPoint: offset(centre, 0, -14), labelDirection: CGVector(dx: 0, dy: -1))
-        }
-        let aim = CGPoint(x: 600, y: 400)
-        func ring(_ r: CGFloat) -> LightGizmoLayout.Ring {
-            LightGizmoLayout.Ring(radius: Double(r) / 10, samples: (0..<72).map { k in
-                let a = Double(k) * 2 * .pi / 72
-                return CGPoint(x: aim.x + r * CGFloat(cos(a)), y: aim.y + r * CGFloat(sin(a)))
-            })
-        }
-        var selected = LightGizmoLayout.Selected(
-            name: "b", index: 1, placement: placement, beam: 45, softness: 0.5, target: SIMD3(0, 0, -200),
-            direction: SIMD3(0, 0, -1), aimDistance: 30, cosOuter: 0.7, cosInner: 0.9, aimDot: aim)
-        selected.outerRing = ring(100)
-        selected.innerRing = ring(50)
-        selected.outerHandle = .init(point: offset(aim, 100, 0), ringPoint: offset(aim, 100, 0), isOffRing: false)
-        selected.innerHandle = .init(point: offset(aim, 50, 0), ringPoint: offset(aim, 50, 0), isOffRing: false)
-        return LightGizmoLayout(
-            projection: projection, metrics: metrics, centre: CGPoint(x: 400, y: 300), sphereRadius: 150,
-            knobs: [knob("a", 0, CGPoint(x: 200, y: 150), selected: false, behind: false),
-                    knob("b", 1, CGPoint(x: 600, y: 120), selected: true, behind: false),
-                    knob("c", 2, CGPoint(x: 200, y: 450), selected: false, behind: true)],
-            drawingOrder: [2, 0, 1], selected: selected, isOn: true, rigSize: 10)
-    }
 
     func testRoundGizmoTargetsHaveA22PointFloor() throws {
         let ios = try handLayout(iosMetrics)
@@ -437,5 +437,258 @@ final class LightsTouchTargetTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(dist(place.point, key.centre),
                                         metrics.reach(key.radius) + LightGizmoOverlay.chipGap - 1e-9)
         }
+    }
+}
+
+// MARK: - Touch routing (#623 Part 2)
+
+/// The fake scene's pick (as LightGizmoTests' FakePicker): the plane at world
+/// z = 0 under gizmoRig's camera, facing it by 0.8.
+private final class PlanePicker {
+    var prepares = 0
+    var picks = 0
+
+    var seam: LightGizmoPicker {
+        LightGizmoPicker(prepare: { self.prepares += 1 }, pick: { ndc, aspect in
+            self.picks += 1
+            let slope = tan(tan(10 * Double.pi / 180))
+            let depth = 200.0
+            let eye = SIMD3<Double>(depth * Double(ndc.x) * slope * Double(aspect),
+                                    depth * Double(ndc.y) * slope, -depth)
+            let world = eye + SIMD3<Double>(0, 0, 200)
+            return SurfacePick(raw: [Float(world.x), Float(world.y), Float(world.z), 0, 0, 1,
+                                     Float(depth), 0.8], flags: 1)
+        })
+    }
+}
+
+@MainActor
+final class LightsTouchRoutingTests: XCTestCase {
+
+    private let all = LightTwoFingerKind.allCases
+
+    /// Every order the three recognizers of the family can begin in.
+    private var orders: [[LightTwoFingerKind]] {
+        func permutations(_ items: [LightTwoFingerKind]) -> [[LightTwoFingerKind]] {
+            guard items.count > 1 else { return [items] }
+            return items.indices.flatMap { i -> [[LightTwoFingerKind]] in
+                var rest = items
+                let first = rest.remove(at: i)
+                return permutations(rest).map { [first] + $0 }
+            }
+        }
+        return permutations(all)
+    }
+
+    // MARK: geometry
+
+    func testThePressPointAndTheSpan() {
+        XCTAssertEqual(LightTouchGeometry.pressPoint(location: CGPoint(x: 100, y: 80),
+                                                     translation: CGPoint(x: 12, y: -5)),
+                       CGPoint(x: 88, y: 85), "where the finger came down (#702)")
+        XCTAssertEqual(LightTouchGeometry.pressPoint(location: CGPoint(x: 3, y: 4), translation: .zero),
+                       CGPoint(x: 3, y: 4))
+        XCTAssertEqual(LightTouchGeometry.span([CGPoint(x: 0, y: 0), CGPoint(x: 30, y: 40)]), 50)
+        XCTAssertEqual(LightTouchGeometry.span([CGPoint(x: 0, y: 0), CGPoint(x: 30, y: 40), CGPoint(x: 900, y: 0)]),
+                       50, "the first two touches")
+        XCTAssertEqual(LightTouchGeometry.span([CGPoint(x: 1, y: 1)]), .infinity)
+        XCTAssertEqual(LightTouchGeometry.span([]), .infinity)
+        XCTAssertEqual(LightTouchMetrics.knobPinchMaxSpan, 120, "#623 Q9")
+    }
+
+    // MARK: the two-finger sequence
+
+    /// A knob named "key" within 10 pt of (100, 100).
+    private func knobAt(_ p: CGPoint) -> String? {
+        dist(p, CGPoint(x: 100, y: 100)) <= 10 ? "key" : nil
+    }
+
+    func testTheFirstToBeginDecidesInAnyOrder() {
+        let onKnob = CGPoint(x: 104, y: 98), offKnob = CGPoint(x: 160, y: 100)
+        for order in orders {
+            // The first begins on the knob: the whole sequence is the gizmo's,
+            // even for the kinds that begin after the centroid moved off it.
+            var sequence = LightTwoFingerSequence()
+            XCTAssertEqual(sequence.began(order[0], centroid: onKnob, span: 60, knob: knobAt), .gizmo("key"),
+                           "\(order)")
+            for kind in order.dropFirst() {
+                XCTAssertEqual(sequence.began(kind, centroid: offKnob, span: 60, knob: knobAt), .gizmo("key"),
+                               "\(order) \(kind)")
+            }
+            for kind in all { XCTAssertEqual(sequence.owner(of: kind), .gizmo("key"), "\(order) \(kind)") }
+            // The first begins off the knob: the camera's, even when a later
+            // kind begins on it.
+            var camera = LightTwoFingerSequence()
+            XCTAssertEqual(camera.began(order[0], centroid: offKnob, span: 60, knob: knobAt), .camera)
+            for kind in order.dropFirst() {
+                XCTAssertEqual(camera.began(kind, centroid: onKnob, span: 60, knob: knobAt), .camera,
+                               "\(order) \(kind)")
+            }
+        }
+    }
+
+    func testASpanOver120IsTheCameras() {
+        let onKnob = CGPoint(x: 100, y: 100)
+        for kind in all {
+            var s = LightTwoFingerSequence()
+            XCTAssertEqual(s.began(kind, centroid: onKnob, span: 120, knob: knobAt), .gizmo("key"), "at most 120")
+            s = LightTwoFingerSequence()
+            XCTAssertEqual(s.began(kind, centroid: onKnob, span: 120.1, knob: knobAt), .camera, "a wide pinch zooms")
+            s = LightTwoFingerSequence()
+            XCTAssertEqual(s.began(kind, centroid: onKnob, span: .infinity, knob: knobAt), .camera, "one touch")
+        }
+    }
+
+    func testTheOwnerIsKeptPerKindUntilAllEnd() {
+        var s = LightTwoFingerSequence()
+        XCTAssertFalse(s.isActive)
+        XCTAssertEqual(s.began(.pinch, centroid: CGPoint(x: 100, y: 100), span: 50, knob: knobAt), .gizmo("key"))
+        XCTAssertNil(s.owner(of: .pan), "the pan has not begun: its .changed is not the gizmo's")
+        XCTAssertEqual(s.began(.pan, centroid: CGPoint(x: 400, y: 400), span: 50, knob: knobAt), .gizmo("key"))
+        XCTAssertEqual(s.owner(of: .pinch), .gizmo("key"), ".changed")
+        XCTAssertEqual(s.ended(.pinch), .gizmo("key"), ".ended keeps the owner")
+        XCTAssertNil(s.owner(of: .pinch))
+        XCTAssertTrue(s.isActive, "the pan is still down")
+        XCTAssertEqual(s.owner(of: .pan), .gizmo("key"))
+        XCTAssertEqual(s.began(.rotation, centroid: CGPoint(x: 400, y: 400), span: 200, knob: knobAt),
+                       .gizmo("key"), "a late twist joins the sequence")
+        XCTAssertEqual(s.ended(.rotation), .gizmo("key"))
+        XCTAssertEqual(s.ended(.pan), .gizmo("key"), "no button-up for a pan that sent no button-down")
+        XCTAssertFalse(s.isActive)
+        XCTAssertNil(s.owner)
+        XCTAssertNil(s.ended(.pan), "an end without a begin")
+        // Reset: the next sequence decides afresh.
+        XCTAssertEqual(s.began(.rotation, centroid: CGPoint(x: 300, y: 100), span: 50, knob: knobAt), .camera)
+        XCTAssertEqual(s.ended(.rotation), .camera)
+        XCTAssertFalse(s.isActive)
+        // A kind that begins again before it ended (a lost end) is a new
+        // sequence.
+        XCTAssertEqual(s.began(.pinch, centroid: CGPoint(x: 300, y: 100), span: 50, knob: knobAt), .camera)
+        XCTAssertEqual(s.began(.pinch, centroid: CGPoint(x: 100, y: 100), span: 50, knob: knobAt), .gizmo("key"))
+        XCTAssertEqual(s.active, [.pinch])
+    }
+
+    func testTheCameraWhenTheGizmoIsHidden() {
+        // Outside Lights mode (or grid mode, an export) there is no layout,
+        // so no knob is ever found.
+        for kind in all {
+            var s = LightTwoFingerSequence()
+            XCTAssertEqual(s.began(kind, centroid: CGPoint(x: 100, y: 100), span: 30, knob: { _ in nil }), .camera)
+        }
+    }
+
+    /// The real hit test: the sequence names the fill knob, then the pinch
+    /// opens fill's radius session by name after the centroid moved off it;
+    /// each change writes the radius only, owner-guarded, no command.
+    func testAKnobPinchWritesOnlyTheRadius() throws {
+        let (store, controller) = gizmoRig()
+        let l = try XCTUnwrap(gizmoLayout(controller, metrics: iosMetrics))
+        let fill = try XCTUnwrap(l.knob(named: "fill"))
+        let knob: (CGPoint) -> String? = { LightGizmoHitTest.knob(at: $0, layout: l) }
+        var s = LightTwoFingerSequence()
+        // 21.9 pt off the fill knob: inside its 44 pt target.
+        XCTAssertEqual(s.began(.pan, centroid: offset(fill.centre, 21.9, 0), span: 70, knob: knob), .gizmo("fill"))
+        let moved = offset(fill.centre, 0, 60)
+        XCTAssertNil(knob(moved), "the centroid moved off every knob")
+        XCTAssertEqual(s.began(.pinch, centroid: moved, span: 70, knob: knob), .gizmo("fill"))
+        XCTAssertEqual(s.began(.rotation, centroid: moved, span: 70, knob: knob), .gizmo("fill"))
+        guard case .gizmo(let name)? = s.owner(of: .pinch) else { return XCTFail() }
+        let interaction = LightGizmoInteraction(controller: controller)
+        var session = try XCTUnwrap(interaction.beginPinch(named: name))
+        XCTAssertEqual(controller.selection.name, "fill", "selected first")
+        XCTAssertEqual(interaction.pinch(&session, magnification: 1.2), .ok)
+        XCTAssertEqual(store.lights[1].radius, 2.5, "0.5× grid")
+        XCTAssertEqual(interaction.pinch(&session, magnification: 1.5), .ok)
+        XCTAssertEqual(store.lights[1].radius, 3)
+        XCTAssertNil(interaction.pinch(&session, magnification: 1.52), "the same step")
+        XCTAssertEqual(store.numberWrites.map(\.field), ["radius", "radius"])
+        XCTAssertEqual(store.lights[1].beam, 45, "the beam is kept")
+        XCTAssertEqual(store.lights[0].radius, 3)
+        XCTAssertEqual(store.lights[1].orbit, 60, "the pan and the twist wrote nothing")
+        XCTAssertEqual(store.lights[1].pitch, 10)
+        XCTAssertTrue(store.performed.isEmpty, "no command per tick")
+        // Owner-guarded: once another light is selected, nothing is written.
+        controller.select(name: "key")
+        XCTAssertNotEqual(interaction.pinch(&session, magnification: 2.5), .ok)
+        XCTAssertEqual(store.numberWrites.count, 2)
+        XCTAssertEqual(store.lights[0].radius, 3)
+        XCTAssertEqual(store.lights[1].radius, 3)
+        for kind in all { s.ended(kind) }
+        XCTAssertFalse(s.isActive)
+        XCTAssertNil(interaction.beginPinch(named: "nobody"), "a light that is gone")
+    }
+
+    // MARK: long-press and option-tap
+
+    func testLongPressIsDeclinedOnlyOnPointTargets() throws {
+        let l = try handLayout(iosMetrics)
+        let s = try XCTUnwrap(l.selected)
+        let points: [(String, CGPoint)] = [
+            ("knob a", l.knobs[0].centre), ("knob a at 21.9", offset(l.knobs[0].centre, 0, 21.9)),
+            ("knob b", l.knobs[1].centre), ("knob c (behind)", l.knobs[2].centre),
+            ("aim dot", s.aimDot!), ("outer handle", s.outerHandle!.point),
+            ("inner handle", s.innerHandle!.point),
+        ]
+        for (what, p) in points {
+            XCTAssertFalse(LightTouchRouter.shouldBeginLongPress(at: p, layout: l), what)
+            XCTAssertEqual(LightTouchRouter.longPress(at: p, layout: l, hasSelection: true), .ignore, what)
+        }
+        // A ring line (the outer ring left of the aim dot, the inner one
+        // below it) and empty space: the press is a highlight.
+        let aim = s.aimDot!
+        for (what, p, target) in [("outer ring", offset(aim, -100, 0), LightGizmoTarget.outerRing),
+                                  ("inner ring", offset(aim, 0, 50), .innerRing),
+                                  ("outer ring at 21.9", offset(aim, -121.9, 0), .outerRing)] {
+            XCTAssertEqual(LightGizmoHitTest.target(at: p, layout: l), target, what)
+            XCTAssertTrue(LightTouchRouter.shouldBeginLongPress(at: p, layout: l), what)
+            XCTAssertEqual(LightTouchRouter.longPress(at: p, layout: l, hasSelection: true), .highlight, what)
+        }
+        for p in [CGPoint(x: 5, y: 5), offset(l.knobs[0].centre, 22.1, 0), offset(aim, -75, 0)] {
+            XCTAssertTrue(LightTouchRouter.shouldBeginLongPress(at: p, layout: l), "\(p)")
+            XCTAssertEqual(LightTouchRouter.longPress(at: p, layout: l, hasSelection: true), .highlight, "\(p)")
+            XCTAssertEqual(LightTouchRouter.longPress(at: p, layout: l, hasSelection: false), .ignore,
+                           "no light to highlight")
+        }
+        // The gizmo hidden: the atom context menu, and nothing is declined.
+        for p in [l.knobs[0].centre, CGPoint(x: 5, y: 5)] {
+            XCTAssertTrue(LightTouchRouter.shouldBeginLongPress(at: p, layout: nil))
+            XCTAssertEqual(LightTouchRouter.longPress(at: p, layout: nil, hasSelection: true), .contextMenu)
+        }
+        for target in [LightGizmoTarget.knob("a"), .aimDot, .outerHandle, .innerHandle] {
+            XCTAssertTrue(LightTouchRouter.isPointTarget(target), "\(target)")
+        }
+        for target in [LightGizmoTarget.outerRing, .innerRing, .rings] {
+            XCTAssertFalse(LightTouchRouter.isPointTarget(target), "\(target)")
+        }
+    }
+
+    func testOptionTapPlacesAHighlightOffEveryTarget() throws {
+        let l = try handLayout(iosMetrics)
+        let s = try XCTUnwrap(l.selected)
+        XCTAssertTrue(LightTouchRouter.optionTap(at: CGPoint(x: 5, y: 5), layout: l))
+        XCTAssertTrue(LightTouchRouter.optionTap(at: offset(s.aimDot!, -75, 0), layout: l), "inside the rings")
+        for p in [l.knobs[0].centre, s.aimDot!, s.outerHandle!.point, offset(s.aimDot!, -100, 0)] {
+            XCTAssertFalse(LightTouchRouter.optionTap(at: p, layout: l), "on a target it is a tap: \(p)")
+        }
+        XCTAssertFalse(LightTouchRouter.optionTap(at: CGPoint(x: 5, y: 5), layout: nil), "gizmo hidden: a pick")
+    }
+
+    /// The press routes to #622's placeHighlight: one `lights` command, no
+    /// write; a declined press runs nothing.
+    func testALongPressPlacesOneHighlight() throws {
+        let (store, controller) = gizmoRig()
+        let l = try XCTUnwrap(gizmoLayout(controller, metrics: iosMetrics))
+        let picker = PlanePicker()
+        let interaction = LightGizmoInteraction(controller: controller, picker: picker.seam)
+        let p = CGPoint(x: 500, y: 200)
+        XCTAssertNil(LightGizmoHitTest.target(at: p, layout: l))
+        XCTAssertEqual(LightTouchRouter.longPress(at: p, layout: l, hasSelection: controller.selectedLight != nil),
+                       .highlight)
+        XCTAssertEqual(interaction.placeHighlight(at: p, layout: l), .placed(rim: nil))
+        XCTAssertEqual(store.performed.count, 1, "one command for the press")
+        XCTAssertTrue(store.numberWrites.isEmpty)
+        let knob = l.knobs[1].centre
+        XCTAssertFalse(LightTouchRouter.shouldBeginLongPress(at: knob, layout: l))
+        XCTAssertEqual(picker.picks, 1)
     }
 }

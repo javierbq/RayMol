@@ -1151,7 +1151,16 @@ struct LightGizmoInteraction {
     /// A pinch begins at `point`: on a knob, that light selected and #621's
     /// pinch session (the 0.5× grid); nil elsewhere (the camera zooms).
     func beginPinch(at point: CGPoint, layout: LightGizmoLayout) -> OrbitPinchSession? {
-        guard let name = LightGizmoHitTest.knob(at: point, layout: layout), controller.canEdit else { return nil }
+        guard let name = LightGizmoHitTest.knob(at: point, layout: layout) else { return nil }
+        return beginPinch(named: name)
+    }
+
+    /// A pinch on the knob of light `name` (#623: a two-finger sequence
+    /// decided on that knob, opened wherever the centroid is by the time the
+    /// pinch begins): that light selected and #621's pinch session; nil when
+    /// the light cannot be edited or is gone.
+    func beginPinch(named name: String) -> OrbitPinchSession? {
+        guard controller.canEdit else { return nil }
         if !isSelected(name) { controller.select(name: name) }
         guard isSelected(name) else { return nil }
         return LightsOrbitInteraction(controller: controller).beginPinch()
