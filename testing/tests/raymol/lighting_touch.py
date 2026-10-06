@@ -10,11 +10,21 @@ controls and the gizmo's Shadow chip get 44 pt labels through
 lightsTouchTarget(), and the inspector lays its colour swatches out as 44 pt
 targets in 6 or 3 columns.
 
-The behaviour itself is unit-tested in Swift (LightsTouchTargetTests, run by
-UnitTests_macOS with the iOS profile as a parameter); this file pins, on the
-sources, that the hit tests use the floor, that the numbers give every target
-at least 22 pt on iOS and keep macOS's reach, and that each control site
-carries the modifier (comments stripped; skipped outside a checkout).
+Touch routing (Part 2): a two-finger sequence whose first recognizer begins
+on a knob with the fingers at most 120 pt apart is the gizmo's (the pinch
+sets that light's radius; the pan and the twist do nothing); a long-press
+never begins on a knob, the aim dot or a handle and places a highlight
+anywhere else while the gizmo shows (the context menu only when it is
+hidden); an option-tap off every target does the same; Move mode's
+one-finger pan hit-tests where the finger came down (#702).
+
+The behaviour itself is unit-tested in Swift (LightsTouchTargetTests and
+LightsTouchRoutingTests, run by UnitTests_macOS with the iOS profile as a
+parameter); this file pins, on the sources, that the hit tests use the floor,
+that the numbers give every target at least 22 pt on iOS and keep macOS's
+reach, that each control site carries the modifier, and the iOS routing's
+deciders, delegate and touch-down point (comments stripped; skipped outside
+a checkout). lighting_gizmo.py checks each iOS handler's order.
 
 CI builds the GLUT flavour without a GPU, so this reads Swift sources only.
 
@@ -36,6 +46,7 @@ GIZMO_MODEL = os.path.join(SHARED, 'LightGizmoModel.swift')
 GIZMO_OVERLAY = os.path.join(SHARED, 'LightGizmoOverlay.swift')
 BAR = os.path.join(SHARED, 'LightsBar.swift')
 INSPECTOR = os.path.join(SHARED, 'LightsInspector.swift')
+VIEWPORT = os.path.join(SHARED, 'MetalViewport.swift')
 
 # Apple's minimum touch target, and the iOS and macOS slops
 # (LightsOrbitMetrics.defaultSlop).
@@ -273,3 +284,117 @@ class TestTouchSource(testing.PyMOLTestCase):
         self.assertIsNotNone(colour, 'colourRow not found')
         self.assertIn('if touchMinimum > 0', colour)
         self.assertIn('swatchButton(swatch, dot: 15, padding: 2)', colour)
+
+    # --- touch routing (Part 2) ------------------------------------------------
+
+    def testTheTwoFingerRuleIsPure(self):
+        """The first recognizer of a sequence decides: the gizmo's only with
+        a span of at most 120 pt and a knob at the centroid; later kinds join
+        the decided owner, and the sequence resets when all have ended. The
+        deciders read the layout only (no controller, no Python)."""
+        text = self.read(TOUCH)
+        self.assertEqual(self.number(text, r'static let knobPinchMaxSpan: CGFloat = ([0-9.]+)',
+                                     'knobPinchMaxSpan'), 120)
+        began = body(text, 'mutating func began(_ kind: LightTwoFingerKind')
+        self.assertIsNotNone(began, 'LightTwoFingerSequence.began not found')
+        self.assertIn('if let owner {', began)
+        self.assertIn('span <= LightTouchMetrics.knobPinchMaxSpan, let name = knob(centroid)', began)
+        ended = body(text, 'mutating func ended(_ kind: LightTwoFingerKind)')
+        self.assertIsNotNone(ended, 'LightTwoFingerSequence.ended not found')
+        self.assertIn('if active.isEmpty { owner = nil }', ended)
+        press = body(text, 'static func pressPoint(location: CGPoint, translation: CGPoint)')
+        self.assertIsNotNone(press, 'pressPoint not found')
+        self.assertIn('location.x - translation.x', press)
+        self.assertIn('location.y - translation.y', press)
+        point = body(text, 'static func isPointTarget(_ target: LightGizmoTarget)')
+        self.assertIsNotNone(point, 'isPointTarget not found')
+        self.assertIn('case .knob, .aimDot, .outerHandle, .innerHandle: return true', point)
+        self.assertIn('case .outerRing, .innerRing, .rings: return false', point)
+        self.assertNotRegex(text, r'\bcontroller\.', 'the deciders never touch the controller')
+        self.assertNotRegex(text, r'\bengine\b', 'nor the engine')
+
+    def testTheLongPressDelegateDeclinesOnlyPointTargets(self):
+        """longPress.delegate is the coordinator; gestureRecognizerShouldBegin
+        asks only about a long-press, and declines it only in Lights mode on
+        a point target (LightTouchRouter.shouldBeginLongPress); every other
+        recognizer begins. Simultaneous recognition is unchanged."""
+        viewport = self.read(VIEWPORT)
+        make = body(viewport, 'func makeUIView(context: Context) -> MTKView')
+        self.assertIsNotNone(make, 'makeUIView not found')
+        self.assertIn('longPress.delegate = context.coordinator', make)
+        should = body(viewport, 'func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool')
+        self.assertIsNotNone(should, 'gestureRecognizerShouldBegin not found')
+        self.assertIn('guard g is UILongPressGestureRecognizer, let view = mtkView else { return true }',
+                      should)
+        self.assertIn('lightGizmoLongPressMayBegin(', should)
+        may = body(viewport, 'private func lightGizmoLongPressMayBegin(')
+        self.assertIsNotNone(may, 'lightGizmoLongPressMayBegin not found')
+        self.assertIn('engine.interactionMode == .lights else { return true }', may)
+        self.assertIn('LightTouchRouter.shouldBeginLongPress(', may)
+        simultaneous = body(viewport, 'shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool')
+        self.assertIsNotNone(simultaneous, 'shouldRecognizeSimultaneouslyWith not found')
+        self.assertIn('return isTwoFinger(g) && isTwoFinger(other)', simultaneous)
+        long_press = body(viewport, 'private func lightGizmoLongPress(')
+        self.assertIsNotNone(long_press, 'lightGizmoLongPress not found')
+        self.assertIn('LightTouchRouter.longPress(', long_press)
+        self.assertIn('case .contextMenu:\n                return false', long_press)
+        self.assertIn('interaction.placeHighlight(at: p, layout: layout)', long_press)
+
+    def testTheKnobPinchOpensByName(self):
+        """The iOS pinch opens the radius session on the knob the sequence
+        named (LightGizmoInteraction.beginPinch(named:)), never by a second
+        hit test, and its changes go through the owner-guarded pinch."""
+        viewport = self.read(VIEWPORT)
+        pinch = body(viewport, 'private func lightGizmoPinch(')
+        self.assertIsNotNone(pinch, 'lightGizmoPinch not found')
+        self.assertIn('lightGizmoTwoFinger(.pinch,', pinch)
+        self.assertIn('interaction.beginPinch(named: name)', pinch)
+        self.assertNotIn('beginPinch(at:', pinch)
+        self.assertIn('interaction.pinch(&session, magnification: scale)', pinch)
+        two = body(viewport, 'private func lightGizmoTwoFinger(')
+        self.assertIsNotNone(two, 'lightGizmoTwoFinger not found')
+        self.assertIn('lightTwoFinger.began(kind, centroid: centroid,', two)
+        self.assertIn('LightGizmoHitTest.knob(at: p, layout: $0)', two)
+        self.assertIn('lightTwoFinger.ended(kind)', two)
+        pan = body(viewport, 'func handleTwoFingerPan(')
+        self.assertIsNotNone(pan, 'handleTwoFingerPan not found')
+        self.assertIn('LightTouchGeometry.pressPoint(location: loc, translation: gesture.translation(in: view))',
+                      pan)
+        model = self.read(GIZMO_MODEL)
+        named = body(model, 'func beginPinch(named name: String) -> OrbitPinchSession?')
+        self.assertIsNotNone(named, 'beginPinch(named:) not found')
+        self.assertIn('LightsOrbitInteraction(controller: controller).beginPinch()', named)
+
+    def testOptionTapPlacesAHighlight(self):
+        """handleTap passes the option key to lightGizmoTap, which places a
+        highlight only off every target (LightTouchRouter.optionTap); a tap
+        on a target keeps #622's behaviour."""
+        viewport = self.read(VIEWPORT)
+        tap = body(viewport, 'func handleTap(_ gesture: UITapGestureRecognizer)')
+        self.assertIsNotNone(tap, 'handleTap not found')
+        self.assertIn('lightGizmoTap(at: p, option: gesture.modifierFlags.contains(.alternate), in: view)', tap)
+        self.assertLess(tap.find('lightGizmoTap('), tap.find('engine.pick('))
+        routine = body(viewport, 'private func lightGizmoTap(')
+        self.assertIsNotNone(routine, 'lightGizmoTap not found')
+        option = routine.find('LightTouchRouter.optionTap(at: p, layout: layout)')
+        self.assertGreaterEqual(option, 0, 'the option branch')
+        self.assertLess(option, routine.find('placeHighlight('))
+        self.assertLess(option, routine.find('if case .knob(let name) = target'))
+
+    def testMovePanGrabsWhereTheFingerCameDown(self):
+        """#702: Move mode's one-finger pan hit-tests and begins its handle
+        drag at the touch-down point (location - translation), not where
+        UIKit's slop let .began fire; the camera branch is unchanged."""
+        viewport = self.read(VIEWPORT)
+        move = body(viewport, 'private func handleMovePan(')
+        self.assertIsNotNone(move, 'handleMovePan not found')
+        began = move[move.find('case .began:'):move.find('case .changed:')]
+        press = began.find('LightTouchGeometry.pressPoint(location: location,')
+        self.assertGreaterEqual(press, 0, 'no touch-down point in .began')
+        self.assertLess(press, began.find('hitTest(ndc: CGPoint(x: CGFloat(px), y: CGFloat(py))'))
+        self.assertIn('engine.gizmoBeginDrag(hnd, ndcX: px, ndcY: py, aspect: aspect)', began)
+        self.assertIn('engine.button(PYMOL_BUTTON_LEFT, state: PYMOL_BUTTON_DOWN, x: pt.0, y: pt.1, '
+                      'modifiers: 0)', began)
+        pan = body(viewport, 'private func lightGizmoPan(')
+        self.assertIsNotNone(pan, 'lightGizmoPan not found')
+        self.assertIn('LightTouchGeometry.pressPoint(location: location,', pan)

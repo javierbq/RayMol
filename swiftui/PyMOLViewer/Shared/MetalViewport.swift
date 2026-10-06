@@ -461,6 +461,10 @@ struct MetalViewport: UIViewRepresentable {
         twoPan.delegate = context.coordinator
         pinch.delegate = context.coordinator
         rotation.delegate = context.coordinator
+        // Lights mode (#623): the delegate declines a long-press on a light
+        // gizmo knob, aim dot or handle (gestureRecognizerShouldBegin), so a
+        // press held there and dragged still drags the target.
+        longPress.delegate = context.coordinator
 
         view.addGestureRecognizer(tap)
         view.addGestureRecognizer(pan)
@@ -613,6 +617,12 @@ extension MetalViewport {
         // preview, used to skip re-picking when the pointer barely moved. .zero
         // is treated as "no prior move" (any first move re-picks).
         private var lastHoverLoc: CGPoint = .zero
+        // Lights mode (#623): the two-finger sequence under way (pinch, two-
+        // finger pan and twist recognize together); its first recognizer to
+        // begin decides whether the gizmo (a pinch on a knob) or the camera
+        // owns all three. And the scale the gizmo's pinch began at.
+        private var lightTwoFinger = LightTwoFingerSequence()
+        private var lightPinchStartScale: CGFloat = 1
         #endif
 
         // MARK: - MTKViewDelegate
@@ -917,7 +927,8 @@ extension MetalViewport {
         /// momentum is swallowed, never a camera pan).
         private var lightScroll: LightGizmoScrollSession?
         private var lightScrollLatched = false
-        /// A pinch that began over a knob (macOS trackpad; iOS is #623's).
+        /// A pinch that began over a knob (macOS trackpad), or the pinch of a
+        /// two-finger sequence the gizmo owns (iOS, #623).
         private var lightPinch: OrbitPinchSession?
         /// Clears a mouse-wheel notch's radius readout once the wheel rests.
         private var lightReadoutClear: DispatchWorkItem?
@@ -1692,11 +1703,18 @@ extension MetalViewport {
         #if os(iOS)
         /// A tap at `p` in Lights mode (#622): true when it landed on a light
         /// gizmo target. A knob selects its light (the bar and the inspector
-        /// follow); any other target takes the tap with no atom pick.
-        private func lightGizmoTap(at p: CGPoint, in view: MTKView) -> Bool {
+        /// follow); any other target takes the tap with no atom pick. An
+        /// option-tap off every target (an iPad hardware keyboard, #623)
+        /// places a highlight for the selected light, as a long-press does.
+        private func lightGizmoTap(at p: CGPoint, option: Bool, in view: MTKView) -> Bool {
             guard let engine, engine.interactionMode == .lights,
-                  let layout = lightGizmoLayout(in: view),
-                  let target = LightGizmoHitTest.target(at: p, layout: layout) else { return false }
+                  let layout = lightGizmoLayout(in: view) else { return false }
+            guard let target = LightGizmoHitTest.target(at: p, layout: layout) else {
+                guard option, LightTouchRouter.optionTap(at: p, layout: layout) else { return false }
+                let interaction = lightGizmoInteraction(engine)
+                _ = MainActor.assumeIsolated { interaction.placeHighlight(at: p, layout: layout) }
+                return true
+            }
             if case .knob(let name) = target {
                 MainActor.assumeIsolated { engine.lightsController.select(name: name) }
             }
@@ -1707,8 +1725,8 @@ extension MetalViewport {
         /// UIKit reports `.began` after its own slop, so the press is hit-
         /// tested where the finger came down (`location - translation`); a
         /// hit opens a session and owns the pan to its end, whatever the mode
-        /// does meanwhile. A miss keeps today's camera rotation. Long-press
-        /// and pinch on knobs are #623's.
+        /// does meanwhile. A miss keeps today's camera rotation. The pinch
+        /// and the long-press on targets are the routines below (#623).
         private func lightGizmoPan(_ gesture: UIPanGestureRecognizer, in view: MTKView,
                                    at location: CGPoint) -> Bool {
             guard let engine else { return false }
@@ -1718,8 +1736,8 @@ extension MetalViewport {
                     if engine.lightGizmoPointer.ownsPress { engine.lightGizmoPointer.cancel() }
                     return false
                 }
-                let t = gesture.translation(in: view)
-                let start = CGPoint(x: location.x - t.x, y: location.y - t.y)
+                let start = LightTouchGeometry.pressPoint(location: location,
+                                                          translation: gesture.translation(in: view))
                 let layout = lightGizmoLayout(in: view)
                 let interaction = lightGizmoInteraction(engine)
                 let route = MainActor.assumeIsolated {
@@ -1748,6 +1766,111 @@ extension MetalViewport {
             }
         }
 
+        /// The distance between a recognizer's first two touches (infinity
+        /// with fewer).
+        private func lightGizmoSpan(_ gesture: UIGestureRecognizer, in view: MTKView) -> CGFloat {
+            let n = min(gesture.numberOfTouches, 2)
+            return LightTouchGeometry.span((0..<n).map { gesture.location(ofTouch: $0, in: view) })
+        }
+
+        /// A two-finger recognizer's share of the sequence (#623): true when
+        /// the gizmo owns it, so its camera path (zoom, translate, roll) is
+        /// skipped from its `.began` to its end. The first of the family to
+        /// begin decides (LightTwoFingerSequence: a knob at `centroid` with
+        /// the fingers at most 120 pt apart); the others join that owner.
+        /// Outside Lights mode a new sequence is never recorded (today's
+        /// camera path), but one the gizmo already owns keeps its owner.
+        private func lightGizmoTwoFinger(_ kind: LightTwoFingerKind, _ gesture: UIGestureRecognizer,
+                                         at centroid: CGPoint, in view: MTKView) -> Bool {
+            guard let engine else { return false }
+            switch gesture.state {
+            case .began:
+                guard engine.interactionMode == .lights || lightTwoFinger.isActive else { return false }
+                let layout = lightGizmoLayout(in: view)
+                let owner = lightTwoFinger.began(kind, centroid: centroid,
+                                                 span: lightGizmoSpan(gesture, in: view)) { p in
+                    layout.flatMap { LightGizmoHitTest.knob(at: p, layout: $0) }
+                }
+                return owner.isGizmo
+            case .ended, .cancelled, .failed:
+                return lightTwoFinger.ended(kind)?.isGizmo == true
+            default:
+                return lightTwoFinger.owner(of: kind)?.isGizmo == true
+            }
+        }
+
+        /// The pinch of a two-finger sequence (#623): when the gizmo owns the
+        /// sequence, the pinch opens #621's radius session on the knob the
+        /// sequence named (wherever the centroid is by now) and each change
+        /// writes the radius through the owner-guarded setter (the 0.5× grid,
+        /// the beam kept); true while it is the gizmo's. Otherwise today's
+        /// zoom.
+        private func lightGizmoPinch(_ gesture: UIPinchGestureRecognizer, in view: MTKView) -> Bool {
+            guard let engine else { return false }
+            let centroid = gesture.location(in: view)
+            switch gesture.state {
+            case .began:
+                lightPinch = nil
+                guard lightGizmoTwoFinger(.pinch, gesture, at: centroid, in: view) else { return false }
+                guard case .gizmo(let name)? = lightTwoFinger.owner(of: .pinch) else { return true }
+                lightPinchStartScale = gesture.scale > 0 ? gesture.scale : 1
+                let interaction = lightGizmoInteraction(engine)
+                lightPinch = MainActor.assumeIsolated { interaction.beginPinch(named: name) }
+                lightReadoutClear?.cancel()
+                showLightGizmoRadius(of: lightPinch?.owner, engine, in: view)
+                return true
+            case .changed:
+                guard lightGizmoTwoFinger(.pinch, gesture, at: centroid, in: view) else { return false }
+                guard var session = lightPinch else { return true }
+                let interaction = lightGizmoInteraction(engine)
+                let scale = Double(gesture.scale / lightPinchStartScale)
+                MainActor.assumeIsolated { _ = interaction.pinch(&session, magnification: scale) }
+                lightPinch = session
+                showLightGizmoRadius(of: session.owner, engine, in: view)
+                return true
+            case .ended, .cancelled, .failed:
+                let owned = lightGizmoTwoFinger(.pinch, gesture, at: centroid, in: view)
+                if lightPinch != nil {
+                    lightPinch = nil
+                    showLightGizmoRadius(of: nil, engine, in: view)
+                }
+                return owned
+            default:
+                return lightGizmoTwoFinger(.pinch, gesture, at: centroid, in: view)
+            }
+        }
+
+        /// May a long-press begin at `p` (the recognizer's delegate, #623)?
+        /// In Lights mode, not on a knob, the aim dot or a handle, so press,
+        /// hold and drag there still drags the target; anywhere else, and
+        /// outside Lights mode, yes.
+        private func lightGizmoLongPressMayBegin(at p: CGPoint, in view: MTKView) -> Bool {
+            guard let engine, engine.interactionMode == .lights else { return true }
+            return LightTouchRouter.shouldBeginLongPress(at: p, layout: lightGizmoLayout(in: view))
+        }
+
+        /// A long-press at `p` in Lights mode (#623): true when the gizmo took
+        /// it. Off the point targets (a ring line included) it places a
+        /// highlight for the selected light (one `lights` command per press);
+        /// on a point target it does nothing; with the gizmo hidden it falls
+        /// through to today's atom context menu.
+        private func lightGizmoLongPress(at p: CGPoint, in view: MTKView) -> Bool {
+            guard let engine, engine.interactionMode == .lights else { return false }
+            let layout = lightGizmoLayout(in: view)
+            let hasSelection = MainActor.assumeIsolated { engine.lightsController.selectedLight != nil }
+            switch LightTouchRouter.longPress(at: p, layout: layout, hasSelection: hasSelection) {
+            case .contextMenu:
+                return false
+            case .ignore:
+                return true
+            case .highlight:
+                guard let layout else { return true }
+                let interaction = lightGizmoInteraction(engine)
+                _ = MainActor.assumeIsolated { interaction.placeHighlight(at: p, layout: layout) }
+                return true
+            }
+        }
+
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
             guard let engine = engine, let view = mtkView else { return }
             // Box Select: taps belong to the box (handlePan resolves them), not
@@ -1765,8 +1888,9 @@ extension MetalViewport {
             let aspect = Float(w / h)
             // Lights mode (#622): a tap on a light gizmo knob selects that
             // light; a tap on any other gizmo target does nothing (as a macOS
-            // click there); elsewhere, today's atom pick.
-            if lightGizmoTap(at: p, in: view) { return }
+            // click there); an option-tap off every target places a highlight
+            // (#623); elsewhere, today's atom pick.
+            if lightGizmoTap(at: p, option: gesture.modifierFlags.contains(.alternate), in: view) { return }
             if engine.interactionMode == .move {
                 // A tap ALWAYS selects the object under it (grab-what-you-touch).
                 // Previously it first hit-tested the gizmo and armed an axis, but
@@ -1912,12 +2036,18 @@ extension MetalViewport {
                 // cached projection stale and grab the wrong handle. Cheap: once per
                 // gesture, republished only if the projection actually moved.
                 engine.refreshGizmo(aspect: aspect)
-                var handle = engine.gizmo?.hitTest(ndc: CGPoint(x: CGFloat(nx), y: CGFloat(ny)),
+                // #702: UIKit reports .began after its pan slop, so hit-test and
+                // grab where the finger came down, not where it is now: the
+                // handle under the touch-down point is the one dragged.
+                let press = LightTouchGeometry.pressPoint(location: location,
+                                                          translation: gesture.translation(in: view))
+                let (px, py, _) = gizmoNDC(in: view, at: press) ?? (nx, ny, aspect)
+                var handle = engine.gizmo?.hitTest(ndc: CGPoint(x: CGFloat(px), y: CGFloat(py)),
                                                    aspect: CGFloat(aspect))
                 if handle == nil { handle = engine.armedAxis }  // armed-axis drag
                 panMoveHandle = handle
                 if let hnd = handle {
-                    engine.gizmoBeginDrag(hnd, ndcX: nx, ndcY: ny, aspect: aspect)
+                    engine.gizmoBeginDrag(hnd, ndcX: px, ndcY: py, aspect: aspect)
                 } else {
                     let pt = pymolPoint(in: view, at: location)
                     engine.button(PYMOL_BUTTON_LEFT, state: PYMOL_BUTTON_DOWN, x: pt.0, y: pt.1, modifiers: 0)
@@ -1947,6 +2077,9 @@ extension MetalViewport {
 
         @objc func handlePinch(_ gesture: UIPinchGestureRecognizer) {
             guard !boxSelectActive else { return }   // camera frozen (#358)
+            // Lights mode (#623): a pinch whose two-finger sequence began on a
+            // knob sets that light's radius; anywhere else, today's zoom.
+            if let view = mtkView, lightGizmoPinch(gesture, in: view) { return }
             // Pinch → zoom via explicit dolly. gesture.scale is cumulative (1.0
             // at start); feed its per-callback change as a zoom fraction (NOT
             // velocity, which fired erratically and only once).
@@ -1982,6 +2115,11 @@ extension MetalViewport {
         @objc func handleTwoFingerPan(_ gesture: UIPanGestureRecognizer) {
             guard let view = mtkView, !boxSelectActive else { return }   // camera frozen (#358)
             let loc = gesture.location(in: view)
+            // Lights mode (#623): a sequence the gizmo owns (a pinch on a knob)
+            // sends no button-down and so no button-up: the camera stays put.
+            // The pan decides where its fingers came down.
+            let press = LightTouchGeometry.pressPoint(location: loc, translation: gesture.translation(in: view))
+            if lightGizmoTwoFinger(.pan, gesture, at: press, in: view) { return }
             let pt = pymolPoint(in: view, at: CGPoint(x: loc.x, y: view.bounds.height - loc.y))
             switch gesture.state {
             case .began:
@@ -2007,6 +2145,11 @@ extension MetalViewport {
 
         @objc func handleRotation(_ gesture: UIRotationGestureRecognizer) {
             guard !boxSelectActive else { return }   // camera frozen (#358)
+            // Lights mode (#623): the twist of a sequence the gizmo owns (a
+            // pinch on a knob) runs nothing.
+            if let view = mtkView, lightGizmoTwoFinger(.rotation, gesture, at: gesture.location(in: view), in: view) {
+                return
+            }
             // Two-finger rotation → Z-axis roll (`turn z`). Per-callback delta of
             // the cumulative gesture.rotation, in degrees. runPython (not run-
             // Command) to avoid echoing into the log every frame.
@@ -2070,6 +2213,9 @@ extension MetalViewport {
             // pop-up menu that this Metal backend never renders (internal_gui=0)
             // — so long-press used to do nothing visible.
             let p = gesture.location(in: view)
+            // Lights mode (#623): a highlight for the selected light off the
+            // point targets; the context menu only while the gizmo is hidden.
+            if lightGizmoLongPress(at: p, in: view) { return }
             let w = view.bounds.width, h = view.bounds.height
             guard w > 0, h > 0 else { return }
             let ndcX = Float(p.x / w) * 2 - 1
@@ -2096,6 +2242,15 @@ extension MetalViewport.Coordinator: UIGestureRecognizerDelegate {
             return false
         }
         return isTwoFinger(g) && isTwoFinger(other)
+    }
+
+    // Lights mode (#623): a long-press never begins on a light gizmo knob, aim
+    // dot or handle (press, hold and drag there drags the target); every
+    // other recognizer, and a long-press anywhere else or outside Lights
+    // mode, begins as before.
+    func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
+        guard g is UILongPressGestureRecognizer, let view = mtkView else { return true }
+        return lightGizmoLongPressMayBegin(at: g.location(in: view), in: view)
     }
 }
 #endif

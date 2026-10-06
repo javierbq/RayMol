@@ -580,6 +580,13 @@ ROUTING = (
                                            'engine.measurePick(')),
     ('func handleHover(', 'lightGizmoHover(', ('hoverPreview(',)),
     ('func handlePan(', 'lightGizmoPan(', ('handleMovePan(', 'engine?.button(')),
+    # iOS two-finger family and long-press (#623): a sequence the gizmo owns
+    # (a pinch on a knob) never zooms, translates or rolls the camera, and a
+    # long-press in Lights mode places a highlight before any context menu.
+    ('func handlePinch(', 'lightGizmoPinch(', ('zoomBy(',)),
+    ('func handleTwoFingerPan(', 'lightGizmoTwoFinger(', ('engine?.button(', 'engine?.drag(')),
+    ('func handleRotation(', 'lightGizmoTwoFinger(', ('runPython(',)),
+    ('func handleLongPress(', 'lightGizmoLongPress(', ('longPressPick(',)),
 )
 # Nothing the gizmo's routing does may reach Python, the console, the
 # camera or the core's pick directly.
@@ -873,9 +880,10 @@ class TestGizmoSource(testing.PyMOLTestCase):
 
     def testEveryViewportHandlerConsultsTheGizmoFirst(self):
         """Each MetalViewport input handler (macOS mouse, scroll and pinch;
-        iOS tap, hover and pan) calls its light gizmo routine before its
-        camera or atom-pick path, so a press, scroll or pinch on a gizmo
-        target never reaches the camera."""
+        iOS tap, hover, pan, pinch, two-finger pan, twist and long-press)
+        calls its light gizmo routine before its camera, atom-pick or
+        context-menu path, so a press, scroll or pinch on a gizmo target
+        never reaches the camera."""
         viewport = self.read(VIEWPORT)
         for signature, routine, camera in ROUTING:
             with self.subTest(signature):
@@ -911,6 +919,10 @@ class TestGizmoSource(testing.PyMOLTestCase):
                            ('lightGizmoHover', 'engine.interactionMode == .lights'),
                            ('lightGizmoPress', 'engine.interactionMode == .lights'),
                            ('lightGizmoTap', 'engine.interactionMode == .lights'),
+                           ('lightGizmoLongPress', 'engine.interactionMode == .lights'),
+                           ('lightGizmoLongPressMayBegin', 'engine.interactionMode == .lights'),
+                           ('lightGizmoTwoFinger',
+                            'engine.interactionMode == .lights || lightTwoFinger.isActive'),
                            ('lightGizmoDrag', 'pointer.ownsPress || pointer.candidate != nil'),
                            ('lightGizmoRelease', 'pointer.ownsPress || pointer.candidate != nil')):
             with self.subTest(name, gate=gate):
