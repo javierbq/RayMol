@@ -25,10 +25,16 @@ This file pins what the gizmo relies on in the core:
   together) aim at the surface_at hit, put the light in front of it (the
   mirror rule) or behind it (rim=145), keep a pinned light pinned with pin=1,
   and change nothing on a miss;
+- TestRingsAreTheBeamCone: the rings the gizmo draws (aim distance x
+  tan(acos(cos_outer or cos_inner)), LightGizmoLayout) invert, through the
+  setter, to the beam and softness that produce them (the band clamp near
+  softness 0 as the resolver documents it), and a radius write keeps the beam;
 - TestGizmoSource: the Swift sources keep one owner guard for every gesture
   write, the eye demand in the engine's mode switch, the renderer's projection
-  slope, and the gizmo out of LightRigBridge.swift (comments stripped;
-  skipped outside a checkout).
+  slope, and the gizmo out of LightRigBridge.swift; the gizmo's model
+  (LightGizmoModel.swift) writes only through the owner-guarded setters and
+  picks only through its picker seam (comments stripped; skipped outside a
+  checkout).
 
 CI builds the GLUT flavour without a GPU, so this exercises _cmd and Python
 only.
@@ -414,6 +420,88 @@ class TestHighlightCommand(testing.PyMOLTestCase):
         self.assertEqual(lighting._lights_json(), before)
 
 
+class TestRingsAreTheBeamCone(GizmoCase):
+    """The outer ring is the beam cone's section in the plane through the aim
+    point (radius aim distance x tan(acos(cos_outer))), the inner ring the
+    same at cos_inner; a ring drag writes the inverse (beam = 2 atan(r / d),
+    softness = 1 - atan(r_inner / d) / acos(cos_outer)), so a ring dragged to
+    a radius is redrawn at that radius."""
+
+    BEAMS = (1.5, 10.0, 45.0, 120.0, 170.0)
+    SOFTNESSES = (0.0, 0.4, 1.0)
+
+    @staticmethod
+    def rings(entry):
+        """(outer, inner) ring radii in A, as LightGizmoLayout draws them."""
+        d = entry['aim_distance']
+        return (d * math.tan(math.acos(min(1.0, entry['cos_outer']))),
+                d * math.tan(math.acos(min(1.0, entry['cos_inner']))))
+
+    @staticmethod
+    def resolved_softness(beam, softness):
+        """The softness the inner ring stands for: the light's own, except
+        where LightRigResolve's band clamp (cos_inner at least cos_outer +
+        min(1e-4, half the room below 1)) moves the inner ring in."""
+        half = math.radians(beam) / 2.0
+        cos_outer = math.cos(half)
+        band = min(1e-4, 0.5 * (1.0 - cos_outer))
+        if math.cos(half * (1.0 - softness)) >= cos_outer + band:
+            return softness
+        return 1.0 - math.acos(cos_outer + band) / half
+
+    def testRingsInvertToTheBeamAndSoftness(self):
+        self.turn()
+        for beam in self.BEAMS:
+            for softness in self.SOFTNESSES:
+                msg = 'beam %r softness %r' % (beam, softness)
+                self.rig([{'name': 'key', 'orbit': -30.0, 'pitch': 20.0,
+                           'radius': 2.0, 'beam': beam, 'softness': softness}])
+                entry = eye_light()
+                d = entry['aim_distance']
+                self.assertClose(d, 2.0 * SIZE, msg=msg)
+                outer, inner = self.rings(entry)
+                self.assertLessEqual(inner, outer * (1.0 + 1e-6), msg)
+                # The ring drags' inverse.
+                got_beam = 2.0 * math.degrees(math.atan2(outer, d))
+                half = math.acos(entry['cos_outer'])
+                got_softness = 1.0 - math.atan2(inner, d) / half
+                self.assertAlmostEqual(got_beam, beam, delta=2e-3 * beam, msg=msg)
+                self.assertAlmostEqual(got_softness,
+                                       self.resolved_softness(beam, softness),
+                                       delta=3e-3, msg=msg)
+                # Written back through the setter from another cone: the
+                # redrawn rings are where they were.
+                lighting._light_set(0, 'beam', 60.0)
+                lighting._light_set(0, 'softness', 0.7)
+                lighting._light_set(0, 'beam', got_beam)
+                lighting._light_set(0, 'softness',
+                                    min(1.0, max(0.0, got_softness)))
+                again = self.rings(eye_light())
+                self.assertAlmostEqual(again[0], outer, delta=2e-3 * outer + 1e-6,
+                                       msg=msg)
+                self.assertAlmostEqual(again[1], inner, delta=3e-3 * outer + 1e-6,
+                                       msg=msg)
+
+    def testRadiusKeepsTheBeam(self):
+        """Decision 8: a scroll or pinch on a knob changes the radius only;
+        the cone keeps its angle, so the rings scale with the aim distance."""
+        self.turn()
+        self.rig([{'name': 'key', 'orbit': 40.0, 'pitch': -10.0,
+                   'radius': 2.0, 'beam': 30.0, 'softness': 0.5}])
+        before = eye_light()
+        outer, inner = self.rings(before)
+        lighting._light_set(0, 'radius', 3.0)
+        after = eye_light()
+        light = lighting.get_lights()['lights'][0]
+        self.assertEqual(light['beam'], 30.0)
+        self.assertEqual(light['softness'], 0.5)
+        self.assertEqual(after['cos_outer'], before['cos_outer'])
+        self.assertEqual(after['cos_inner'], before['cos_inner'])
+        o2, i2 = self.rings(after)
+        self.assertClose(o2, outer * 1.5)
+        self.assertClose(i2, inner * 1.5)
+
+
 # --- the Swift sources ----------------------------------------------------------
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir,
@@ -423,6 +511,7 @@ EDITING = os.path.join(SHARED, 'LightsEditing.swift')
 ENGINE = os.path.join(SHARED, 'PyMOLEngine.swift')
 BRIDGE = os.path.join(SHARED, 'LightRigBridge.swift')
 GEOMETRY = os.path.join(SHARED, 'LightGizmoGeometry.swift')
+MODEL = os.path.join(SHARED, 'LightGizmoModel.swift')
 METAL_PICK = os.path.join('modules', 'pymol', 'metal_pick.py')
 SCENE_RENDER = os.path.join('layer1', 'SceneRender.cpp')
 
@@ -432,6 +521,35 @@ def strip_comments(text):
     comment can neither satisfy nor trip a check."""
     text = re.sub(r'/\*.*?\*/', '', text, flags=re.S)
     return re.sub(r'//[^\n]*', '', text)
+
+
+def call_arguments(text, start):
+    """The text between the parenthesis that opens at `start` and its
+    balanced close (None when unbalanced)."""
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == '(':
+            depth += 1
+        elif text[i] == ')':
+            depth -= 1
+            if depth == 0:
+                return text[start + 1:i]
+    return None
+
+
+# What the gizmo's model may touch on the controller: reads, the
+# owner-guarded gesture writes, and the button presses (selection, the
+# gesture start, the option-click and the Shadow chip).
+MODEL_READS = {'isActive', 'isBusy', 'isOn', 'rig', 'selection', 'selectedIndex',
+               'selectedLight', 'identitySlot', 'eye', 'canEdit', 'placement',
+               'value', 'freshValue', 'isBehind'}
+MODEL_GUARDED_WRITES = {'set', 'setPlacement', 'setAim'}
+MODEL_PRESSES = {'select', 'beginGesture', 'placeHighlight', 'setShadow'}
+# Seams, unguarded write paths, mirror and eye drivers, and the engine's own
+# pick entry points: none may appear in the model.
+MODEL_FORBIDDEN = ('seams', '.edit(', 'writeNumbers(', 'perform(', 'eyeDemand',
+                   'refresh(', 'frameRendered(', 'pickSurface', 'prepareSurfacePick',
+                   'releaseSurfacePick', 'PyMOLEngine', 'runPython', 'runCommand')
 
 
 def body(text, signature):
@@ -552,3 +670,42 @@ class TestGizmoSource(testing.PyMOLTestCase):
         self.assertIn('letterboxAspect(handle:', reader)
         self.assertIn('"field_of_view"', reader)
         self.assertNotRegex(reader, r'runPython|runCommand')
+
+    def testTheModelWritesOnlyThroughTheOwnerGuard(self):
+        """LightGizmoModel.swift reaches the rig only through the
+        owner-guarded setters (set, setPlacement and setAim, each with
+        owner:) and the button presses; it names no seam, no unguarded write
+        path, nothing that drives the mirror or the eye reads, and no engine
+        pick."""
+        text = self.read(MODEL)
+        for name in MODEL_FORBIDDEN:
+            with self.subTest(name):
+                self.assertNotIn(name, text)
+        members = set(re.findall(r'\bcontroller\.(\w+)', text))
+        allowed = MODEL_READS | MODEL_GUARDED_WRITES | MODEL_PRESSES
+        self.assertEqual(members - allowed, set())
+        self.assertLessEqual(MODEL_GUARDED_WRITES | {'beginGesture'}, members)
+        for name in sorted(MODEL_GUARDED_WRITES):
+            calls = [m.end() - 1 for m in
+                     re.finditer(r'\bcontroller\.%s\(' % name, text)]
+            self.assertGreater(len(calls), 0, name)
+            for start in calls:
+                arguments = call_arguments(text, start)
+                self.assertIsNotNone(arguments)
+                with self.subTest(name, arguments=arguments):
+                    self.assertIn('owner:', arguments)
+
+    def testEveryPickGoesThroughThePickerSeam(self):
+        """The aim drag and the option-click pick only through
+        LightGizmoPicker (the engine wires it with updateReps: false)."""
+        text = self.read(MODEL)
+        calls = re.findall(r'(\w+)\??\.(pick|prepare)\(', text)
+        self.assertGreater(len(calls), 0)
+        for receiver, method in calls:
+            with self.subTest(method):
+                self.assertEqual(receiver, 'picker')
+        seam = body(text, 'struct LightGizmoPicker')
+        self.assertIsNotNone(seam, 'LightGizmoPicker not found')
+        self.assertIn('var prepare: () -> Void', seam)
+        self.assertIn('var pick:', seam)
+        self.assertIn('-> SurfacePick?', seam)
