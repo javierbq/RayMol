@@ -127,6 +127,13 @@ As in Materials Checklist A, steps 2–3:
    - show cartoon, sticks, spheres and surface;
    - apply a 3-light rig with one shadowed light;
    - for #618, add haze and dust.
+
+   Also set `SIMCTL_CHILD_PYMOL_SKIP_GESTURE_HELP=1` and
+   `SIMCTL_CHILD_PYMOL_SKIP_FIRSTBOOT_THEME=1` (the app's own UI-test hooks).
+   Without them, a simulator whose app data is fresh shows the first-run
+   "Touch gestures" card or the Theme Studio over the viewport, and the
+   screenshot can't show the lit scene. They hide the overlays without
+   resetting any app or simulator state.
 3. Confirm `Metal API Validation Enabled` in the log. **Pass = no validation
    errors** and the lit scene visible.
 
