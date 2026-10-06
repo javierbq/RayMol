@@ -8,8 +8,10 @@
 //
 // Contract for #621 and #622:
 // - select a light with `LightsController.select(index:)` (or `select(name:)`);
-// - write with `set`, `step`, `setPlacement`, `setColour` and `setPinned`
-//   (and `setShadow` once it exists); nothing else writes the rig per tick;
+// - write with `set`, `step`, `setPlacement`, `setColour`, `setPinned` and
+//   `setShadow`; nothing else writes the rig per tick. A refused shadow (a 4th
+//   shadowed light) sets `shadowRefused`, which the inspector shows as a
+//   notice; the next edit or selection change clears it;
 // - read `rig`, `selection` and `identitySlot(for:)` from the controller, the
 //   current orbit, pitch and radius of every light from `eye.placements`, and
 //   the full eye-space rig from `eye.eyeSpace` after setting
@@ -343,5 +345,14 @@ extension LightsController {
     @discardableResult
     func setPinned(_ on: Bool) -> LightSetResult {
         writeNumbers([("anchor", on ? 1 : 0)])
+    }
+
+    /// Turn the selected light's shadow on or off. `.refused` (and
+    /// `shadowRefused` set) when `maxShadowed` other lights already cast one:
+    /// the core keeps the cap, nothing changes. A shadow shows only while the
+    /// scene's Shadows switch is on (#616); the inspector says so.
+    @discardableResult
+    func setShadow(_ on: Bool) -> LightSetResult {
+        writeNumbers([("shadow", on ? 1 : 0)])
     }
 }

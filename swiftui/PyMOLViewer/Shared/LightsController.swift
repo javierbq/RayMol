@@ -14,10 +14,10 @@
 // the setter seams, so a drag runs no Python per tick (#610).
 //
 // The typed edit API every light tool shares (set, step, setPlacement,
-// setColour, setPinned) is in LightsEditing.swift; the per-frame eye data
-// (each light's current orbit, pitch and radius, and on demand the whole rig
-// in eye space) is in LightsEyeState below, a separate object so a per-frame
-// update redraws only the views that show it, never the bar.
+// setColour, setPinned, setShadow) is in LightsEditing.swift; the per-frame
+// eye data (each light's current orbit, pitch and radius, and on demand the
+// whole rig in eye space) is in LightsEyeState below, a separate object so a
+// per-frame update redraws only the views that show it, never the bar.
 
 import Foundation
 import Combine
@@ -249,6 +249,10 @@ final class LightsEyeState: ObservableObject {
 final class LightsController: ObservableObject {
     /// A rig holds at most this many lights.
     nonisolated static let maxLights = Int(PYMOL_LIGHTS_MAX)
+    /// At most this many lights cast shadows: the core refuses a 4th
+    /// (kLightRigMaxShadowed in layer1/LightRig.h). lighting_inspector.py
+    /// checks it against lighting_commands.MAX_SHADOWS.
+    nonisolated static let maxShadowed = 3
 
     /// A mirror older than this is re-read before an edit writes to it, so a
     /// gesture never writes to the light that used to be at the selected index.
@@ -271,6 +275,10 @@ final class LightsController: ObservableObject {
     /// The rig the mode was entered with, decoded (nil for no rig): what a
     /// per-light "revert this light" compares against.
     private(set) var entryRig: LightRigSnapshot?
+    /// The last write turned a light's shadow on and was refused: `maxShadowed`
+    /// lights already cast one. The inspector shows a notice while it is set;
+    /// the next edit, a selection change or leaving the mode clears it.
+    @Published private(set) var shadowRefused = false
 
     /// The per-frame eye data (see LightsEyeState). Not @Published: a change
     /// in it must not re-render the controller's observers.
@@ -382,6 +390,7 @@ final class LightsController: ObservableObject {
         needsSnapshot = false
         if entryJSON != nil { entryJSON = nil }
         entryRig = nil
+        noteShadowRefused(false)
         eye.clear()
         eyeNeedsRebuild = true
     }
@@ -561,7 +570,8 @@ final class LightsController: ObservableObject {
     /// selected index fixed for the whole call: the multi-field form of
     /// `edit(_:_:)`. Stops at the first result that is not `.ok` and returns
     /// it; re-reads the mirror once if any write succeeded. `.badIndex` when
-    /// inactive, busy or nothing is selected.
+    /// inactive, busy or nothing is selected. A refused `shadow` write sets
+    /// `shadowRefused`; any other write clears it.
     @discardableResult
     func writeNumbers(_ fields: [(String, Double)]) -> LightSetResult {
         guard canAct, selection.index != nil else { return .badIndex }
@@ -569,12 +579,17 @@ final class LightsController: ObservableObject {
         guard let index = selection.index else { return .badIndex }
         var result = LightSetResult.ok
         var wrote = false
+        var refusedShadow = false
         for (field, value) in fields {
             result = seams.setNumber(index, field, value)
-            guard result == .ok else { break }
+            guard result == .ok else {
+                refusedShadow = result == .refused && field == "shadow"
+                break
+            }
             wrote = true
         }
         if wrote { refresh() }
+        noteShadowRefused(refusedShadow)
         return result
     }
 
@@ -589,7 +604,12 @@ final class LightsController: ObservableObject {
         guard let index = selection.index else { return .badIndex }
         let result = set(index)
         if result == .ok { refresh() }
+        noteShadowRefused(false)
         return result
+    }
+
+    private func noteShadowRefused(_ refused: Bool) {
+        if shadowRefused != refused { shadowRefused = refused }
     }
 
     /// Rebuild `eye.placements` for the mirror just read (only while active).
@@ -642,7 +662,10 @@ final class LightsController: ObservableObject {
     }
 
     private func setSelection(_ new: LightSelection) {
-        if new != selection { selection = new }
+        guard new != selection else { return }
+        selection = new
+        // The refusal notice was about the light that was selected.
+        noteShadowRefused(false)
     }
 
     private static func decode(_ json: String) -> LightRigSnapshot? {

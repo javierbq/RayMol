@@ -467,6 +467,120 @@ final class LightsEditTests: XCTestCase {
         XCTAssertGreaterThan(store.numberWrites.count, 100)
     }
 
+    // MARK: Shadow (#616's cap of 3 shadowed lights)
+
+    func testTheShadowCapIsTheCores() {
+        XCTAssertEqual(LightsController.maxShadowed, 3)
+        XCTAssertEqual(LightsController.maxShadowed, FakeRigStore.maxShadowed,
+                       "the fake models the core's cap")
+    }
+
+    func testSetShadowWritesShadow() {
+        controller.select(name: "fill")
+        XCTAssertEqual(controller.setShadow(true), .ok)
+        XCTAssertEqual(store.numberWrites.last?.index, 1)
+        XCTAssertEqual(store.numberWrites.last?.field, "shadow")
+        XCTAssertEqual(store.numberWrites.last?.value, 1)
+        XCTAssertEqual(controller.selectedLight?.shadow, true, "the mirror shows it at once")
+        XCTAssertEqual(controller.setShadow(false), .ok)
+        XCTAssertEqual(store.numberWrites.last?.value, 0)
+        XCTAssertEqual(controller.selectedLight?.shadow, false)
+        XCTAssertFalse(controller.shadowRefused)
+        XCTAssertTrue(store.performed.isEmpty, "a toggle is a bridge write, not a command")
+    }
+
+    /// Key, fill and rim cast shadows; light4 is selected.
+    private func threeShadowsAndALight4() {
+        store.lights.append(.init(name: "light4"))
+        for i in 0..<3 { store.lights[i].shadow = true }
+        controller.refresh()
+        controller.select(name: "light4")
+    }
+
+    func testAFourthShadowIsRefusedWithANotice() {
+        threeShadowsAndALight4()
+        let json = store.json
+        XCTAssertEqual(controller.setShadow(true), .refused)
+        XCTAssertTrue(controller.shadowRefused)
+        XCTAssertEqual(store.json, json, "the core keeps the cap: nothing changed")
+        XCTAssertEqual(controller.selectedLight?.shadow, false)
+
+        // Turning one off makes room.
+        controller.select(name: "rim")
+        XCTAssertFalse(controller.shadowRefused, "a selection change clears the notice")
+        XCTAssertEqual(controller.setShadow(false), .ok)
+        controller.select(name: "light4")
+        XCTAssertEqual(controller.setShadow(true), .ok)
+        XCTAssertFalse(controller.shadowRefused)
+        XCTAssertEqual(store.lights.filter(\.shadow).map(\.name), ["key", "fill", "light4"])
+    }
+
+    func testTheNoticeClearsOnTheNextEditOrSelectionOrDone() {
+        threeShadowsAndALight4()
+        let changes = LightsChangeCounter()
+        let sink = controller.objectWillChange.sink { changes.count += 1 }
+        defer { sink.cancel() }
+
+        // The next number edit.
+        XCTAssertEqual(controller.setShadow(true), .refused)
+        XCTAssertTrue(controller.shadowRefused)
+        XCTAssertEqual(controller.set(.intensity, 2), .ok)
+        XCTAssertFalse(controller.shadowRefused)
+        // A colour edit (the vector setter).
+        XCTAssertEqual(controller.setShadow(true), .refused)
+        XCTAssertEqual(controller.setColour(SIMD3(0, 1, 1)), .ok)
+        XCTAssertFalse(controller.shadowRefused)
+        // Turning the light's shadow off (nothing to do, still an edit).
+        XCTAssertEqual(controller.setShadow(true), .refused)
+        XCTAssertEqual(controller.setShadow(false), .ok)
+        XCTAssertFalse(controller.shadowRefused)
+        // A selection change.
+        XCTAssertEqual(controller.setShadow(true), .refused)
+        controller.select(name: "key")
+        XCTAssertFalse(controller.shadowRefused)
+        // Leaving the mode.
+        controller.select(name: "light4")
+        XCTAssertEqual(controller.setShadow(true), .refused)
+        controller.end()
+        XCTAssertFalse(controller.shadowRefused)
+
+        // A second refusal in a row publishes nothing new, and a run of edits
+        // after a cleared notice republishes nothing for it.
+        controller.begin()
+        controller.select(name: "light4")
+        XCTAssertEqual(controller.setShadow(true), .refused)
+        changes.count = 0
+        XCTAssertEqual(controller.setShadow(true), .refused)
+        XCTAssertEqual(changes.count, 0, "an unchanged notice is not republished")
+    }
+
+    func testOnlyARefusedShadowSetsTheNotice() {
+        // Other failures are not the shadow cap.
+        XCTAssertEqual(controller.writeNumbers([("shadow", .nan)]), .badValue)
+        XCTAssertFalse(controller.shadowRefused)
+        XCTAssertEqual(controller.writeNumbers([("nosuch", 1)]), .unknownField)
+        XCTAssertFalse(controller.shadowRefused)
+        // A refusal in the middle of a multi-field write is still the cap.
+        threeShadowsAndALight4()
+        XCTAssertEqual(controller.writeNumbers([("beam", 50), ("shadow", 1)]), .refused)
+        XCTAssertTrue(controller.shadowRefused)
+        XCTAssertEqual(controller.selectedLight?.beam, 50, "the write before it stays")
+        // Inactive: nothing is written, the notice is not touched.
+        controller.end()
+        XCTAssertEqual(controller.setShadow(true), .badIndex)
+        XCTAssertFalse(controller.shadowRefused)
+    }
+
+    func testShadowEditsUseOnlyTheBridge() {
+        threeShadowsAndALight4()
+        for tick in 0..<30 {
+            controller.select(index: tick % 4)
+            _ = controller.setShadow(tick % 3 != 0)
+        }
+        XCTAssertTrue(store.performed.isEmpty, "Shadow must not run a command or Python")
+        XCTAssertLessThanOrEqual(store.lights.filter(\.shadow).count, LightsController.maxShadowed)
+    }
+
     // MARK: Revert this light
 
     func testRevertLightPerformsRestoreLightWithTheEntryJSON() throws {
@@ -555,6 +669,9 @@ final class LightsEditTests: XCTestCase {
         XCTAssertEqual(controller.selection.name, "key")
     }
 }
+
+/// A mutable count a Combine sink can bump.
+final class LightsChangeCounter { var count = 0 }
 
 // MARK: - The eye state
 
