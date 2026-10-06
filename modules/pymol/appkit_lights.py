@@ -1,25 +1,37 @@
 '''
-The app's Lights mode helpers (#619, lighting epic #610).
+The app's Lights mode helpers (#619, #620, lighting epic #610).
 
 The Lights bar runs the `lights` command (#612) for its buttons, through the
 app's command line, so the console echoes each one. Python is used for only
-two things, both here:
+three things, all here, each on a button press:
 
-* ``restore(json_b64)``: *Revert*. Puts back the rig the app read through
-  PyMOLBridge_LightsJSON when the mode was entered ('null' when there was no
-  rig). The JSON holds the shortest floats that read back exactly and
-  set_lights stores in-range values unchanged, so the rig comes back byte for
-  byte (the bridge JSON before entry equals the JSON after Revert).
+* ``restore(json_b64)``: the bar's *Revert*. Puts back the rig the app read
+  through PyMOLBridge_LightsJSON when the mode was entered ('null' when
+  there was no rig). The JSON holds the shortest floats that read back
+  exactly and set_lights stores in-range values unchanged, so the rig comes
+  back byte for byte (the bridge JSON before entry equals the JSON after
+  Revert).
+* ``restore_light(json_b64, name)``: the inspector's *Revert this light*
+  (#620). Takes the same entry JSON and puts back only the light of that
+  name (matched ignoring case), at the index it has now. Every other light,
+  `enabled`, the frame, `ambient`, `classic` and the air stay as they are
+  now. It restores what the bridge setters cannot (the aim selection text,
+  pin and aim together). Matching is by name: a light whose name did not
+  exist at entry has nothing to go back to, and a default name that was
+  removed and added again (`lights add` reuses the first free one) counts
+  as the entry light of that name.
 * ``write_presets(path_b64)``: writes the preset list for the bar's menu,
   once per process, as [{"name": n, "description": d}, ...] (the format the
   Swift side decodes).
 
-Both take base64 text, so the app never quotes JSON or a path into Python
-source. Both print at most one line, return a bool and never raise: a Revert
-or a menu load must not throw into the app.
+They take base64 text, so the app never quotes JSON or a path into Python
+source (the light name is checked to be a plain name on the Swift side).
+Each prints at most one line, returns a bool and never raises: a Revert or a
+menu load must not throw into the app.
 
-Continuous edits (drags in the gizmo, orbit view and inspector) never come
-here: they go through the bridge setters, without Python.
+Continuous edits (drags in the gizmo, orbit view and inspector, and the
+inspector's steppers and typed values) never come here: they go through the
+bridge setters, without Python.
 
 Only the module functions of pymol.lighting are called, with `_self`, never
 cmd.set_lights (as lighting_commands asks). Nothing runs at import.
@@ -82,6 +94,62 @@ def restore(json_b64, *, _self=cmd):
         print(' lights: revert failed: %s' % _reason(exc))
         return False
     print(' lights: reverted')
+    return True
+
+
+def _named(lights, name):
+    '''The index of the light called `name` (ignoring case) in a list of
+    light dicts, or None.'''
+    key = name.lower()
+    for index, light in enumerate(lights):
+        if (isinstance(light, dict) and isinstance(light.get('name'), str)
+                and light['name'].lower() == key):
+            return index
+    return None
+
+
+def restore_light(json_b64, name, *, _self=cmd):
+    '''
+    Put back the light called `name` (ignoring case) as it was in the rig
+    whose bridge JSON is in base64 (the JSON the app read when the mode was
+    entered). The light keeps its index in the current rig; every other
+    light and the rig's own fields (enabled, the frame, ambient, classic,
+    air) are left as they are now. Prints ' lights: <name> reverted', or one
+    ' lights: revert failed: <reason>' line and leaves the rig as it was
+    (set_lights is atomic, so a 4th shadowed light is refused whole).
+    Returns True on success; never raises.
+    '''
+    try:
+        if not isinstance(name, str) or not name:
+            raise ValueError('no light name given')
+        text = _decode(json_b64)
+        try:
+            entry = json.loads(text)
+        except ValueError as exc:
+            raise ValueError('the payload is not JSON (%s)' % exc)
+        if entry is None:
+            raise ValueError('there was no rig when the mode was entered')
+        if not isinstance(entry, dict) or not isinstance(
+                entry.get('lights'), list):
+            raise ValueError('the payload is not a rig (a JSON object with '
+                             'a light list)')
+        at = _named(entry['lights'], name)
+        if at is None:
+            raise ValueError("no light named '%s' when the mode was entered"
+                             % name)
+        light = entry['lights'][at]
+        rig = lighting.get_lights(_self=_self)
+        if rig is None:
+            raise ValueError('there is no rig now')
+        index = _named(rig['lights'], name)
+        if index is None:
+            raise ValueError("no light named '%s' now" % name)
+        rig['lights'][index] = light
+        lighting.set_lights(rig, _self=_self)
+    except Exception as exc:
+        print(' lights: revert failed: %s' % _reason(exc))
+        return False
+    print(' lights: %s reverted' % light['name'])
     return True
 
 
