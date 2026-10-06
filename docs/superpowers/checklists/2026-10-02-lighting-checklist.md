@@ -112,9 +112,10 @@ As in Materials Checklist A, step 1:
 | `kSphereImpostorSrc`, `kCylinderImpostorSrc` | `kMaterialSrc`, `kMaterialImpostorSrc` |
 | `kBezierTubeRigSrc` | `kMaterialSrc`, `kBezierTubeSrc` |
 | `kRTSrc`, `kPostSrc` | `kEyeReconSrc` |
+| `kAirSrc` | `kEyeReconSrc`, `kMaterialSrc` |
 
 Lighting code lives in `kMaterialSrc` (shading, shadows, outlines) and
-`kPostSrc` (air), so both rows change in most rendering tickets. Note that a
+`kAirSrc` (air), so both rows change in most rendering tickets. Note that a
 runtime shader failure is otherwise silent, apart from an `NSLog`.
 
 ## L4. iOS simulator under Metal API validation

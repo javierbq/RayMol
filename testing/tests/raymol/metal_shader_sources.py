@@ -53,6 +53,9 @@ _PREPENDED = {
     # and the shared block's light_ helpers. The classic kBezierTubeSrc is
     # still compiled alone.
     'kBezierTubeRigSrc': ('kMaterialSrc', 'kBezierTubeSrc'),
+    # The air (#618): the eye reconstruction and the shared block's rig,
+    # shadow lookup, knee and noise.
+    'kAirSrc': ('kEyeReconSrc', 'kMaterialSrc'),
 }
 
 
@@ -136,7 +139,7 @@ class TestMetalShaderSources(testing.PyMOLTestCase):
         for name in ('kEyeReconSrc', 'kPostSrc', 'kRTSrc', 'kMaterialSrc',
                      'kMaterialImpostorSrc', 'kVBOSrc', 'kSphereImpostorSrc',
                      'kCylinderImpostorSrc', 'kBezierTubeSrc',
-                     'kBezierTubeRigSrc'):
+                     'kBezierTubeRigSrc', 'kAirSrc'):
             self.assertIn(name, literals)
 
     def testPrependsMirrorTheCallSites(self):

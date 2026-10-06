@@ -2116,7 +2116,8 @@ constant float kAirMaxScatter = 0.9;
 
 struct AirVOut { float4 position [[position]]; float2 uv; };
 
-// post_vertex (kPostSrc) verbatim: kPostSrc is not in this library.
+// kPostSrc's fullscreen-triangle vertex function, verbatim: kPostSrc is not
+// in this library.
 vertex AirVOut post_air_vertex(uint vid [[vertex_id]]) {
   // Oversized triangle covering the screen: ids 0,1,2 -> (0,0),(2,0),(0,2).
   float2 p = float2((vid << 1) & 2, vid & 2);
