@@ -709,3 +709,27 @@ class TestGizmoSource(testing.PyMOLTestCase):
         self.assertIn('var prepare: () -> Void', seam)
         self.assertIn('var pick:', seam)
         self.assertIn('-> SurfacePick?', seam)
+
+    def testTheEnginePickerNeverUpdatesReps(self):
+        """The engine's lightGizmoPicker prepares and picks with
+        updateReps: false (C++ only: what the last frame drew, no Python on
+        a press or a drag tick), and lightGizmoLayout(viewSize:) builds the
+        layout from the controller's published state, with no read of its
+        own."""
+        engine = self.read(ENGINE)
+        picker = body(engine, 'var lightGizmoPicker: LightGizmoPicker')
+        self.assertIsNotNone(picker, 'lightGizmoPicker not in PyMOLEngine.swift')
+        self.assertNotIn('updateReps: true', picker)
+        self.assertNotRegex(picker, r'runPython|runCommand')
+        for name in ('prepareSurfacePick', 'pickSurface'):
+            calls = [m.end() - 1 for m in re.finditer(r'\b%s\(' % name, picker)]
+            self.assertEqual(len(calls), 1, name)
+            arguments = call_arguments(picker, calls[0])
+            with self.subTest(name, arguments=arguments):
+                self.assertIn('updateReps: false', arguments)
+        layout = body(engine, 'func lightGizmoLayout(viewSize: CGSize')
+        self.assertIsNotNone(layout, 'lightGizmoLayout(viewSize:) not in PyMOLEngine.swift')
+        self.assertIn('LightGizmoLayout.make(', layout)
+        self.assertIn('LightGizmoInputs(controller: lightsController', layout)
+        self.assertNotRegex(layout, r'runPython|runCommand|captureView|lightsEyeSpace|'
+                                    r'lightCameraProjection|PyMOLBridge_|pickSurface')

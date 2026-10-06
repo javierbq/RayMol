@@ -3192,6 +3192,45 @@ final class PyMOLEngine: ObservableObject {
             fieldOfView: sceneState.values["field_of_view"].map { Float($0) })
     }
 
+    /// The surface pick the light gizmo's aim drag and option-click use
+    /// (#622, #614): what the last frame drew, with `updateReps: false` on
+    /// both calls, so a press and every drag tick stay C++ only (no Python,
+    /// #610). Leaving Lights mode releases the grids (`setInteractionMode`).
+    var lightGizmoPicker: LightGizmoPicker {
+        LightGizmoPicker(
+            prepare: { [weak self] in
+                _ = self?.prepareSurfacePick(updateReps: false)
+            },
+            pick: { [weak self] viewNDC, viewAspect in
+                self?.pickSurface(viewNDCX: viewNDC.x, viewNDCY: viewNDC.y,
+                                  viewAspect: viewAspect, updateReps: false)
+            })
+    }
+
+    /// `grid_mode` is on, as the scene poll last read it: the gizmo hides
+    /// (each cell has its own view, which its whole-view projection cannot
+    /// match).
+    var lightGizmoGridMode: Bool {
+        (sceneState.values["grid_mode"] ?? 0) > 0.5
+    }
+
+    /// The light gizmo as it is drawn and hit now in a view of `viewSize`
+    /// points (#622): the overlay and the viewport both build it here, from
+    /// the controller's published eye space and projection, so what is drawn
+    /// is what is hit-tested. nil when the gizmo is hidden (not in Lights
+    /// mode, a movie export, no lights, grid mode, no eye data). No bridge
+    /// or Python call.
+    func lightGizmoLayout(viewSize: CGSize,
+                          metrics: LightGizmoMetrics = LightGizmoMetrics()) -> LightGizmoLayout? {
+        guard interactionMode == .lights else { return nil }
+        return MainActor.assumeIsolated {
+            LightGizmoLayout.make(
+                LightGizmoInputs(controller: lightsController, viewSize: viewSize,
+                                 gridMode: lightGizmoGridMode, sceneShadowsOn: sceneShadowsOn),
+                metrics: metrics)
+        }
+    }
+
     /// The scene's Shadows switch (metal_shadows) as the scene poll last read
     /// it (~500 ms, in every mode); nil before the first poll. Studio shadows
     /// render only while it is on (#616), so the light inspector hints when a
