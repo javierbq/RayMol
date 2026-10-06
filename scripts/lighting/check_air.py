@@ -28,7 +28,8 @@ describes every tag). The checks read, by tag:
   ovl_{air,noair}_rt0                   only a _move_gizmo CGO is shown.
   airoff_rt<n>                          haze 0 and dust 0, other air fields set.
   grid_{air,noair}_rt0                  grid_mode 1.
-  whitebg_{none,haze}_rt<n>             bg_rgb white.
+  whitebg_{none,haze}_rt<n>             bg_rgb white, cross_none's lights (no air,
+      haze 0.5).
 
 Checks (pure functions on arrays; testing/tests/raymol/lighting_air_check.py
 exercises each on synthetic images, a pass and a fail):
@@ -38,7 +39,8 @@ exercises each on synthetic images, a pass and a fail):
   rt_match   RT on and off agree (air minus its no-air twin): background
              pixels at least BG_MARGIN px from geometry differ by at most
              RT_BG_MAX between rt0 and rt1 (and the air is there: at least
-             RT_PRESENT_PX of them gain light); on geometry under the knee,
+             RT_PRESENT_PX of them gain light); on geometry under the knee
+             with and without the air (the composite is linear there),
              |delta rt0 - delta rt1| <= RT_GEO_TOL on RT_GEO_SHARE of the
              pixels, mean <= RT_GEO_MEAN.
   shafts     every shadowed light darkens its own haze: on background pixels,
@@ -47,16 +49,19 @@ exercises each on synthetic images, a pass and a fail):
              reverse; ab: both drop); spot_haze is darker than spot_hazens
              behind the molecule; spot_haze_ms0 == spot_hazens_ms0 (no maps at
              metal_shadows 0).
-  reach      A's (B's) darkening reaches into REACH_BOXES['a'] (['b']), past
-             the casters' sphere: shafts do not stop at the light's far plane.
+  reach      A's (B's) shaft reaches into REACH_BOXES['a'] (['b']), where its
+             beam is past the light's far plane: REACH_SHARE of the box's
+             (at least REACH_PX) background pixels darken by REACH_DARKEN.
+             Without the far-plane pull-back the air there reads lit.
   in_beams   the pixels the dust changes (hazedust against haze) number at
              least IN_BEAMS_PX, and IN_BEAMS_SHARE of them lie inside the haze
              footprint (haze against none) dilated by IN_BEAMS_DILATE px.
   colour     cross_dust's motes take their light's colour: in A's footprint
              (red-only haze in cross_none) red-dominant, in B's blue-dominant.
   unchanged  the composite adds light and changes nothing else:
-             whitebg_haze == whitebg_none outside spot_haze's footprint
-             (dilated), and every white pixel stays 255.
+             whitebg_haze == whitebg_none outside cross_none's footprint
+             (against cross_noair, dilated; the same lights and haze), no
+             pixel gets darker, and every white pixel stays 255.
   moves      consecutive frames of the dust strip differ.
   clock      t2_haze == t4_haze (haze is still); t2_dust != t4_dust; still ==
              movie_f1; movie_f16 == movie_f16b == pinned05; movie_f17 !=
@@ -124,11 +129,15 @@ RT_GEO_MEAN = 1.0         # ... with a mean of at most this
 SHAFT_DARKEN = 8          # shafts: a channel drops by at least this (levels)
 SHAFT_PX = 500            # ... on at least this many background pixels
 SHAFT_OTHER = 2           # ... while the other light's channel moves by at most this
-REACH_PX = 100            # reach: darkened pixels inside the light's box
-REACH_BOXES = {           # (x0, y0, x1, y1), end-exclusive, at 1280x720: past the
-    'a': (1200, 300, 1280, 720),   # casters' sphere along A's beam (right, low)
-    'b': (0, 0, 80, 420),          # and B's (left, high)
-}
+REACH_PX = 500            # reach: background pixels the light's box must hold
+REACH_DARKEN = 24         # ... a channel drops by at least this (levels)
+REACH_SHARE = 0.90        # ... on at least this share of them
+REACH_BOXES = {           # (x0, y0, x1, y1), end-exclusive, at 1280x720: where the
+    'a': (1200, 500, 1280, 720),   # beam leaves its map's far plane, past the
+    'b': (0, 0, 64, 128),          # casters' sphere (A right and low, B left and
+}                         #   high). Tuned on round 1 against a build without the
+                          #   far-plane pull-back: A 100% of the box darkened by
+                          #   24+ with it, 0.1% without; B 100% / 42%.
 IN_BEAMS_PX = 50          # in_beams: the dust changes at least this many pixels
 IN_BEAMS_SHARE = 0.98     # ... and this share of them is inside the haze footprint
 IN_BEAMS_DILATE = 3       # ... dilated by this many pixels
@@ -255,8 +264,13 @@ def check_rt_match(none0, none1, air0, air1, subject=''):
         return Result('rt_match', subject, False, 'no background pixel')
     top = int(np.abs(_f(air0) - _f(air1)).max(axis=2)[bg].max())
     present = int((footprint(air0, none0) & bg).sum())
+    # Geometry where the composite is linear: the bases AND the results under
+    # the knee. Past it, post_air_finish compresses what the air adds by how
+    # bright the base already was, and the traced and raster bases differ, so
+    # the same air term lands differently (tuned on round 1).
     geo = (geometry(none0, none1) & (_f(none0).max(axis=2) < KNEE)
-           & (_f(none1).max(axis=2) < KNEE))
+           & (_f(none1).max(axis=2) < KNEE) & (_f(air0).max(axis=2) < KNEE)
+           & (_f(air1).max(axis=2) < KNEE))
     ngeo = int(geo.sum())
     if ngeo:
         dd = np.abs(added(air0, none0) - added(air1, none1)).max(axis=2)[geo]
@@ -322,9 +336,13 @@ def check_reach(noair, none, x, box, channel='r', subject=''):
         return bad
     drop = (_f(none) - _f(x))[..., _CH[channel]]
     inside = _box_mask(_np().asarray(x).shape, box) & background(noair)
-    n = int(((drop >= SHAFT_DARKEN) & inside).sum())
-    return Result('reach', subject, n >= REACH_PX,
-                  '%d darkened px in %d,%d,%d,%d (>= %d)' % ((n,) + tuple(box) + (REACH_PX,)))
+    n = int(inside.sum())
+    dark = int(((drop >= REACH_DARKEN) & inside).sum())
+    share = dark / float(n) if n else 0.0
+    return Result('reach', subject, n >= REACH_PX and share >= REACH_SHARE,
+                  '%s of %d background px in %d,%d,%d,%d (>= %d) darkened by >= %d '
+                  '(>= %s)' % ((_pct(share), n) + tuple(box) +
+                               (REACH_PX, REACH_DARKEN, _pct(REACH_SHARE))))
 
 
 def check_in_beams(none, haze, hazedust, subject=''):
@@ -367,21 +385,27 @@ def check_colour(noair, none, dust, subject=''):
 
 def check_unchanged(none, haze, white_none, white_haze, subject='', need_white=False):
     """Outside the haze footprint (found on black, dilated) the white-background
-    pair is byte-equal, and no white pixel loses its 255."""
+    pair is byte-equal (and there is such an outside), no pixel of it gets
+    darker in any channel, and no white pixel loses its 255."""
     bad = _same_size('unchanged', subject, none, haze, white_none, white_haze)
     if bad:
         return bad
     np = _np()
     outside = ~dilate(footprint(haze, none), UNCHANGED_DILATE)
+    noutside = int(outside.sum())
     d = np.abs(_f(white_haze) - _f(white_none)).max(axis=2)
-    top = int(d[outside].max()) if outside.any() else 0
+    top = int(d[outside].max()) if noutside else 0
+    darker = int((_f(white_haze) < _f(white_none)).any(axis=2).sum())
     white = (_f(white_none) >= 255).all(axis=2)
     nwhite = int(white.sum())
     kept = bool((_f(white_haze)[white] >= 255).all()) if nwhite else True
-    ok = outside.any() and top == 0 and kept and (nwhite >= WHITE_PX or not need_white)
+    ok = (noutside > 0 and top == 0 and darker == 0 and kept
+          and (nwhite >= WHITE_PX or not need_white))
     return Result('unchanged', subject, ok,
-                  'outside the footprint max |d| %d (== 0); %d white px%s, %s' % (
-                      top, nwhite, ' (>= %d)' % WHITE_PX if need_white else '',
+                  'outside the footprint (%d px, > 0) max |d| %d (== 0); %d px darker '
+                  '(== 0); %d white px%s, %s' % (
+                      noutside, top, darker, nwhite,
+                      ' (>= %d)' % WHITE_PX if need_white else '',
                       'all stay 255' if kept else 'some lose 255'))
 
 
@@ -465,7 +489,7 @@ def l2_plan():
                  ['cross_noair_rt0', 'cross_none_rt0', 'cross_dust_rt0'], {}))
     for rt in RTS:
         plan.append(('unchanged', 'whitebg_rt%d' % rt, check_unchanged,
-                     ['spot_none_rt%d' % rt, 'spot_haze_rt%d' % rt,
+                     ['cross_noair_rt%d' % rt, 'cross_none_rt%d' % rt,
                       'whitebg_none_rt%d' % rt, 'whitebg_haze_rt%d' % rt],
                      {'need_white': rt == 1}))
     strip = ('0', '05', '1', '2', '4')

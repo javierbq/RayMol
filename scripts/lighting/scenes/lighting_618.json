@@ -1,5 +1,5 @@
 {
- "comment": "#618 L2: haze and dust, checked with scripts/lighting/check_air.py l2 (its docstring names what every check reads). 1rx1 at 1280x720 on black: a grey80 surface plus organic sticks, metal_shadows 1, depth_cue 0. Every rig is the scene's own (cmd._l618_rig, the cmd.set_lights shim of lighting_616.json: the frozen harness calls cmd.set_lights after the scene's lines, and the shim installs cmd._l618_rig instead; hasattr guard, the app runs the script twice), with an explicit centre and size (the extent of m) and its own air. metal_light_air_time is pinned at 2.0 s except in the clock tags (still, movie_*, pinned05, speed0_*). Every line that sets a #618 setting goes through _l618_opt (set only where the setting exists). spot: a warm shadowed spot (orbit -50, pitch 45, beam 30, intensity 2) plus a dim fill; none = no air, haze 0.6, hazedust 0.6/0.6, dust only (beam 22, dust 1, dust_size 0.45); hazens: the spot unshadowed; _ms0: metal_shadows 0. backlit: a shadowed back light (orbit 165, pitch 18) and a front fill, haze 0.18, dust 0.5; g09: scatter 0.9, haze 0.6; *_noair: the same lights, no air (the no-air twins of rt_match). cross: red A (orbit -80, pitch 25) and blue B (orbit 100, pitch -25), beam 28, haze 0.5; the molecule is each shaft's caster (the beams are narrower than it at the centre); noair: no air (the background mask), none: no shadowed light, a/b/ab: the shadowed lights; dust: dust 0.8, no haze. s3: three shadowed lights, haze 0.3, dust 0.5. half: metal_light_air_resolution 2; filter9: metal_light_air_shadow_filter 2. t<s>_dust/_haze: pinned at <s> seconds (05 = 0.5). Clock tags: mset 1 x48, movie_fps 30, frame N (f16b goes to 40 first). ovl: m disabled, only a _move_gizmo sphere at the rig centre shown (an overlay: no geometry; a scene with nothing shown renders one colour, which the harness refuses); airoff: haze 0 and dust 0 with the other air fields non-default; grid: grid_mode 1, m and m2; whitebg: bg_rgb white. ortho, glass, transparent and rttrans (metal_rt_transparent 1) are for the eye only. Checked in CI by testing/tests/raymol/lighting_air_check.py.",
+ "comment": "#618 L2: haze and dust, checked with scripts/lighting/check_air.py l2 (its docstring names what every check reads). 1rx1 at 1280x720 on black: a grey80 surface plus organic sticks, metal_shadows 1, depth_cue 0. Every rig is the scene's own (cmd._l618_rig, the cmd.set_lights shim of lighting_616.json: the frozen harness calls cmd.set_lights after the scene's lines, and the shim installs cmd._l618_rig instead; hasattr guard, the app runs the script twice), with an explicit centre and size (the extent of m) and its own air. metal_light_air_time is pinned at 2.0 s except in the clock tags (still, movie_*, pinned05, speed0_*). Every line that sets a #618 setting goes through _l618_opt (set only where the setting exists). spot: a warm shadowed spot (orbit -50, pitch 45, beam 30, intensity 2) plus a dim fill; none = no air, haze 0.6, hazedust 0.6/0.6, dust only (beam 22, dust 1, dust_size 0.45); hazens: the spot unshadowed; _ms0: metal_shadows 0. backlit: a shadowed back light (orbit 165, pitch 18) and a front fill, haze 0.18, dust 0.5; g09: scatter 0.9, haze 0.6; *_noair: the same lights, no air (the no-air twins of rt_match). cross: red A (orbit -80, pitch 25) and blue B (orbit 100, pitch -25), beam 28, haze 0.5; the molecule is each shaft's caster (the beams are narrower than it at the centre); noair: no air (the background mask), none: no shadowed light, a/b/ab: the shadowed lights; dust: dust 0.8, no haze. s3: three shadowed lights, haze 0.3, dust 0.5. half: metal_light_air_resolution 2; filter9: metal_light_air_shadow_filter 2. t<s>_dust/_haze: pinned at <s> seconds (05 = 0.5). Clock tags: mset 1 x48, movie_fps 30, frame N (f16b goes to 40 first). ovl: m disabled, only a _move_gizmo sphere at the rig centre shown (an overlay: no geometry; a scene with nothing shown renders one colour, which the harness refuses); airoff: haze 0 and dust 0 with the other air fields non-default; grid: grid_mode 1, m and m2; whitebg: bg_rgb white, cross_none's lights (red and blue, unshadowed; no air, haze 0.5): unlike the spot scene's fill, their beams leave part of the frame unlit, which unchanged needs. ortho, glass, transparent and rttrans (metal_rt_transparent 1) are for the eye only. Checked in CI by testing/tests/raymol/lighting_air_check.py.",
  "base": null,
  "rig": "on",
  "size": [
@@ -528,7 +528,7 @@
    "lines": [
     "_l618_base()",
     "cmd.set('bg_rgb', [1.0, 1.0, 1.0])",
-    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill])"
+    "cmd._l618_rig = _l618_make([_l618_red, _l618_blue])"
    ]
   },
   {
@@ -537,7 +537,7 @@
    "lines": [
     "_l618_base()",
     "cmd.set('bg_rgb', [1.0, 1.0, 1.0])",
-    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], haze=0.6)"
+    "cmd._l618_rig = _l618_make([_l618_red, _l618_blue], haze=0.5)"
    ]
   },
   {
@@ -546,7 +546,7 @@
    "lines": [
     "_l618_base()",
     "cmd.set('bg_rgb', [1.0, 1.0, 1.0])",
-    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill])"
+    "cmd._l618_rig = _l618_make([_l618_red, _l618_blue])"
    ]
   },
   {
@@ -555,7 +555,7 @@
    "lines": [
     "_l618_base()",
     "cmd.set('bg_rgb', [1.0, 1.0, 1.0])",
-    "cmd._l618_rig = _l618_make([_l618_spot, _l618_fill], haze=0.6)"
+    "cmd._l618_rig = _l618_make([_l618_red, _l618_blue], haze=0.5)"
    ]
   },
   {

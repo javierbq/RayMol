@@ -153,8 +153,8 @@ class TestChecks(testing.PyMOLTestCase):
             'ADD_MIN': 1, 'VISIBLE_PX': 2000, 'VISIBLE_MEAN': 2.0, 'BG_MARGIN': 3,
             'KNEE': 204, 'RT_BG_MAX': 1, 'RT_PRESENT_PX': 2000, 'RT_GEO_TOL': 4,
             'RT_GEO_SHARE': 0.99, 'RT_GEO_MEAN': 1.0, 'SHAFT_DARKEN': 8, 'SHAFT_PX': 500,
-            'SHAFT_OTHER': 2, 'REACH_PX': 100,
-            'REACH_BOXES': {'a': (1200, 300, 1280, 720), 'b': (0, 0, 80, 420)},
+            'SHAFT_OTHER': 2, 'REACH_PX': 500, 'REACH_DARKEN': 24, 'REACH_SHARE': 0.90,
+            'REACH_BOXES': {'a': (1200, 500, 1280, 720), 'b': (0, 0, 64, 128)},
             'IN_BEAMS_PX': 50, 'IN_BEAMS_SHARE': 0.98, 'IN_BEAMS_DILATE': 3,
             'FOOT_MIN': 2, 'MOTE_MIN': 10, 'HUE_MIN': 8, 'COLOUR_SHARE': 0.90,
             'COLOUR_PX': 20, 'UNCHANGED_DILATE': 3, 'WHITE_PX': 1000, 'HALF_TOL': 8,
@@ -189,6 +189,11 @@ class TestChecks(testing.PyMOLTestCase):
         # the air on geometry disagrees
         geo = plus(haze, GEO, (6, 6, 6))
         self.assertFalse(self.c.check_rt_match(none, none, haze, geo).ok)
+        # ...but not where the composite crosses the knee: past it the air
+        # is compressed by the base's brightness, which the two paths shade
+        # differently (round 1)
+        bright = plus(haze, GEO, (90, 90, 90))                # 120 + 90 > 204
+        self.assertTrue(self.c.check_rt_match(none, none, haze, bright).ok)
         # no air at all: nothing to match
         self.assertFalse(self.c.check_rt_match(none, none, none, none).ok)
 
@@ -226,11 +231,21 @@ class TestChecks(testing.PyMOLTestCase):
 
     def testReach(self):
         c = self.c
-        noair, none, a, _, _, _, _ = self.shafts_set()
-        self.assertTrue(c.check_reach(noair, none, a, (100, 0, 128, 30), 'r').ok)
+        noair, none, _, _, _, a_shaft, _ = self.shafts_set()
+        box = (80, 2, 128, 20)                               # a_shaft: 864 px
+        deep = plus(none, a_shaft, (-30, 0, 0))
+        self.assertTrue(c.check_reach(noair, none, deep, box, 'r').ok)
         # the shaft stops short of the box
-        self.assertFalse(c.check_reach(noair, none, a, (0, 0, 60, 30), 'r').ok)
-        self.assertFalse(c.check_reach(noair, none, a, (100, 0, 128, 30), 'b').ok)
+        self.assertFalse(c.check_reach(noair, none, deep, (0, 0, 60, 30), 'r').ok)
+        self.assertFalse(c.check_reach(noair, none, deep, box, 'b').ok)
+        # past the far plane the air reads lit: a shallow drop
+        shallow = plus(none, a_shaft, (-12, 0, 0))
+        self.assertFalse(c.check_reach(noair, none, shallow, box, 'r').ok)
+        # ...or only part of the box
+        part = plus(none, (slice(2, 11), slice(80, 128)), (-30, 0, 0))
+        self.assertFalse(c.check_reach(noair, none, part, box, 'r').ok)
+        # a box with too few background pixels checks nothing
+        self.assertFalse(c.check_reach(noair, none, deep, (80, 2, 100, 20), 'r').ok)
 
     def testInBeams(self):
         none, haze = scene_none(), scene_haze()
@@ -285,6 +300,13 @@ class TestChecks(testing.PyMOLTestCase):
         # no white where white is required
         self.assertFalse(c.check_unchanged(none, haze, none, haze, need_white=True).ok)
         self.assertTrue(c.check_unchanged(none, haze, none, haze, need_white=False).ok)
+        # a geometry pixel inside the footprint gets darker (a whole-pixel knee)
+        darker = wh.copy()
+        darker[30, 60] = 110
+        self.assertFalse(c.check_unchanged(none, haze, wn, darker).ok)
+        # the air lights every pixel: no outside to compare, nothing checked
+        everywhere = plus(none, (slice(None), slice(None)), (3, 3, 3))
+        self.assertFalse(c.check_unchanged(none, everywhere, wn, wh).ok)
 
     def testHalfAndFilter(self):
         c = self.c
@@ -404,7 +426,7 @@ def l2_expected(tag):
         ('s3', (0.3, 0.5)), ('half_hazedust', (0.6, 0.6)), ('filter9_haze', (0.6, 0.0)),
         ('ovl_air', (0.6, 0.6)), ('ovl_noair', (0.0, 0.0)), ('airoff', (0.0, 0.0)),
         ('grid_air', (0.6, 0.6)), ('grid_noair', (0.0, 0.0)), ('whitebg_none', (0.0, 0.0)),
-        ('whitebg_haze', (0.6, 0.0)),
+        ('whitebg_haze', (0.5, 0.0)),
     ]
     if re.match(r'^t\d+_dust$', base):
         e['haze'], e['dust'] = 0.0, 1.0
@@ -430,6 +452,8 @@ def l2_expected(tag):
         e['shadowed'] = []
     elif base.startswith('backlit'):
         e['shadowed'] = ['back']
+    elif base.startswith('whitebg'):
+        e['shadowed'] = []
     elif base.startswith('cross_'):
         k = base[len('cross_'):]
         e['shadowed'] = {'a': ['red'], 'b': ['blue'], 'ab': ['red', 'blue']}.get(k, [])
