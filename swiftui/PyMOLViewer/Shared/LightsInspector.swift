@@ -1016,8 +1016,10 @@ extension View {
 /// PYMOL_AUTOLIGHTS_EDIT='<token>;<token>…' (debug builds only): inspector
 /// edits a simulator run applies through the same controller calls the card
 /// makes. Tokens: `<parameter>:<value>` for every LightParameter, `pin:0|1`,
-/// `shadow:0|1`, `color:r:g:b` (0...1) and `expand` (the card starts expanded
-/// on compact width).
+/// `shadow:0|1`, `color:r:g:b` (0...1), `expand` (the inspector and the orbit
+/// view start expanded on iPhone), and the orbit view's gestures (`tap:`,
+/// `plan:`, `square:`, `arc:`, `pinch:`; OrbitAutoGesture parses and runs
+/// them through LightsOrbitInteraction).
 enum LightsAutoEdit {
     enum Token: Equatable {
         case set(LightParameter, Double)
@@ -1025,6 +1027,7 @@ enum LightsAutoEdit {
         case shadow(Bool)
         case color(SIMD3<Double>)
         case expand
+        case gesture(OrbitAutoGesture)
     }
 
     struct Parsed: Equatable {
@@ -1040,6 +1043,16 @@ enum LightsAutoEdit {
         for raw in text.split(separator: ";") {
             let token = raw.trimmingCharacters(in: .whitespaces)
             guard !token.isEmpty else { continue }
+            // An orbit-view gesture's key: it parses, or it is rejected (never
+            // passed on to the inspector's forms).
+            if OrbitAutoGesture.claims(token) {
+                if let gesture = OrbitAutoGesture.parse(token) {
+                    parsed.tokens.append(.gesture(gesture))
+                } else {
+                    parsed.rejected.append(token)
+                }
+                continue
+            }
             let parts = token.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
             let key = parts[0].lowercased()
             let numbers = parts.dropFirst().map { Double($0.trimmingCharacters(in: .whitespaces)) }
@@ -1063,6 +1076,7 @@ enum LightsAutoEdit {
 
     /// Apply `tokens` to the selected light; one `<edit> -> <result>` entry
     /// per edit (`expand` is a layout choice, applied before the mode opens).
+    /// A gesture's entry is `<token> -> <result> <field>=<value>`.
     @MainActor
     static func apply(_ tokens: [Token], to controller: LightsController) -> [String] {
         tokens.compactMap { token in
@@ -1077,6 +1091,8 @@ enum LightsAutoEdit {
                 return "color=\(fmt(rgb.x)):\(fmt(rgb.y)):\(fmt(rgb.z)) -> \(controller.setColour(rgb))"
             case .expand:
                 return nil
+            case .gesture(let gesture):
+                return OrbitAutoGesture.apply(gesture, to: controller)
             }
         }
     }

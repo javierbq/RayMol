@@ -157,7 +157,7 @@ struct ContentView: View {
     // demand via the app menu / Settings (see WhatsNewModel / WhatsNewModal).
     @StateObject private var whatsNew = WhatsNewModel()
     // Debug hook only (PYMOL_AUTOLIGHTS_EDIT `expand`): the Lights inspector
-    // starts expanded on compact width. Always false in normal runs.
+    // and the orbit view start expanded on iPhone. Always false in normal runs.
     @State private var lightsInspectorExpandOverride = false
     @State private var showThemeStudio = false   // inline Theme studio (replaces a panel region)
 
@@ -4054,8 +4054,8 @@ struct ContentView: View {
                        background: themeManager.active.panelBackground.color)
     }
 
-    // The Lights side column (#620): the selected light's inspector, and later
-    // #621's orbit view above it. Placed by macLightsOverlay (macOS) and the
+    // The Lights side column (#620, #621): the orbit view above the selected
+    // light's inspector. Placed by macLightsOverlay (macOS) and the
     // viewportView top-trailing overlay (iOS), each naming only this property.
     // The inspector's Shadows hint reads the scene's Shadows switch from the
     // scene poll (~500 ms, also in Lights mode) and its Turn On button sets it.
@@ -4063,6 +4063,7 @@ struct ContentView: View {
         LightsSideColumn(controller: engine.lightsController,
                          style: lightsStyle,
                          inspectorStartsCollapsed: lightsInspectorStartsCollapsed,
+                         orbitStartsCollapsed: lightsOrbitStartsCollapsed,
                          sceneShadowsOn: engine.sceneShadowsOn,
                          onEnableSceneShadows: { engine.enableSceneShadows() })
     }
@@ -4079,17 +4080,34 @@ struct ContentView: View {
         #endif
     }
 
+    // The orbit view (#621) starts collapsed on every iPhone: compact width
+    // (portrait) or compact height (landscape, including the large phones
+    // whose landscape width is regular), where the expanded card would cover
+    // the scene; expanded on iPad and macOS. Seeded each time the mode opens,
+    // never persisted; the DEBUG `expand` token expands it (#623 replaces the
+    // iPhone card with a sheet).
+    private var lightsOrbitStartsCollapsed: Bool {
+        #if os(iOS)
+        return (hSize == .compact || vSize == .compact) && !lightsInspectorExpandOverride
+        #else
+        return false
+        #endif
+    }
+
     /// Test affordance: PYMOL_AUTOLIGHTS=<1|light name> enters Lights mode after
     /// 4.0 s (after PYMOL_AUTOMOVE's 3.8 s; PYMOL_AUTOLOAD and PYMOL_AUTOCMD run
     /// during engine init, before it) and, unless the value is 1, selects that
     /// light, so the bar can be screenshotted without a tap. The NSLog line lets
-    /// a simulator console prove the state.
+    /// a simulator console prove the state: `inspector=` is the inspector's
+    /// summary and `plan=` the orbit view's (LightsOrbitState.summary).
     ///
     /// Debug builds also read PYMOL_AUTOLIGHTS_EDIT='<token>;...' (see
-    /// LightsAutoEdit): `expand` opens the inspector expanded on compact width,
-    /// and 0.5 s after entry the edits run through the inspector's controller
-    /// calls, logged as `PYMOL_AUTOLIGHTS_EDIT: orbit=120 -> ok; ...` with the
-    /// inspector's state after them.
+    /// LightsAutoEdit): `expand` opens the inspector and the orbit view
+    /// expanded on iPhone, and 0.5 s after entry the edits run through the
+    /// inspector's controller calls and the orbit view's gestures (`tap:`,
+    /// `plan:`, `square:`, `arc:`, `pinch:`), logged as
+    /// `PYMOL_AUTOLIGHTS_EDIT: orbit=120 -> ok; ...` with the inspector's and
+    /// the orbit view's state after them.
     private func autoEnterLightsModeFromEnv() {
         let env = ProcessInfo.processInfo.environment
         guard let value = env["PYMOL_AUTOLIGHTS"] else { return }
@@ -4105,7 +4123,8 @@ struct ContentView: View {
                 let names = (lights.rig?.lights ?? []).map(\.name).joined(separator: ",")
                 let inspector = LightsInspectorState(lights, sceneShadowsOn: engine.sceneShadowsOn)?
                     .summary ?? "none"
-                NSLog("PYMOL_AUTOLIGHTS: active=\(lights.isActive) lights=\(names) selected=\(lights.selection.name ?? "none") inspector=\(inspector)")
+                let plan = LightsOrbitState(lights)?.summary ?? "none"
+                NSLog("PYMOL_AUTOLIGHTS: active=\(lights.isActive) lights=\(names) selected=\(lights.selection.name ?? "none") inspector=\(inspector) plan=\(plan)")
             }
             #if DEBUG
             guard !edits.tokens.isEmpty || !edits.rejected.isEmpty else { return }
@@ -4116,7 +4135,8 @@ struct ContentView: View {
                     entries += edits.rejected.map { "\($0) -> rejected" }
                     let inspector = LightsInspectorState(lights, sceneShadowsOn: engine.sceneShadowsOn)?
                         .summary ?? "none"
-                    NSLog("PYMOL_AUTOLIGHTS_EDIT: \(entries.joined(separator: "; ")) inspector=\(inspector)")
+                    let plan = LightsOrbitState(lights)?.summary ?? "none"
+                    NSLog("PYMOL_AUTOLIGHTS_EDIT: \(entries.joined(separator: "; ")) inspector=\(inspector) plan=\(plan)")
                 }
             }
             #endif
