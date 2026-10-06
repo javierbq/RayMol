@@ -397,7 +397,7 @@ def expected(which, tag):
         if base.startswith(('sticks_', 'spheres_')):        # silhouettes
             a = '_a' in base
             return (['amber'] if a else []), [1.0], int(a)
-        if base.startswith('ovl_'):
+        if base.startswith(('ovl_', 'ctl_caster')):     # overlay check and its control
             return ['amber'], [1.0], 1
         if base == 'rig3':
             return ['amber', 'cyan', 'magenta'], [1.0, 1.0, 1.0], 1
