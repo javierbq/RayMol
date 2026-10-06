@@ -265,6 +265,9 @@ if True:
         _cache_mark = internal._cache_mark
         _sdof = internal._sdof
 
+        # the scene-movie rig blend's frame command (#617, raymol_scene_anim)
+        from .lighting import _lights_blend
+
         #######################################################################
         # now import modules which depend on the above
         #######################################################################

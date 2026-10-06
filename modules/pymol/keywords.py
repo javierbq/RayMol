@@ -18,6 +18,7 @@ def get_command_keywords(self_cmd=cmd):
         'alignto'       : [ self_cmd.alignto           , 0 , 0 , ''  , parsing.STRICT ],
         'alter'         : [ self_cmd.alter             , 0 , 0 , ''  , parsing.LITERAL1 ], # insecure
         '_alt'          : [ self_cmd._alt              , 0 , 0 , ''  , parsing.STRICT ],
+        '_lights_blend' : [ self_cmd._lights_blend     , 0 , 0 , ''  , parsing.STRICT ],
         'alter_state'   : [ self_cmd.alter_state       , 0 , 0 , ''  , parsing.LITERAL2 ], # insecure
         'alphatoall'    : [ self_cmd.alphatoall        , 0 , 0 , ''  , parsing.STRICT ],
         'angle'         : [ self_cmd.angle             , 0 , 0 , ''  , parsing.STRICT ],

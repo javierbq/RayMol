@@ -11,17 +11,27 @@ leaves the rig alone. The .pse holds them under 'raymol_scene_lights' as
 light_rig_from_session), so #611's lenient reader is reused. A partial
 restore leaves every per-scene extra and the movie track alone.
 
+Scene movies blend the rigs (raymol_scene_anim): one `_lights_blend A, B, t`
+frame command per interior frame of each transition, reading the stored rigs
+at play time, with the camera's easing; the scene keyframe applies the
+scene's rig exactly. The track is saved as data, stripped from the saved
+movie (no movie lock) and re-authored on load.
+
 The C++ converters are tested through _cmd (#611's decision: no catch2 job).
 
 Runs on a RayMol build:
     pymol -ckqy testing/testing.py --run testing/tests/raymol/lighting_scenes.py
 """
+import base64
 import contextlib
 import copy
+import io
+import json
+import math
 
 import pymol
 from pymol import cmd, colorprinting, lighting, setting, testing
-from pymol import raymol_scene_anim, raymol_scenes
+from pymol import appkit_movie, raymol_scene_anim, raymol_scenes
 
 # Two protein atoms in a 4 x 6 x 12 A box.
 _PDB = """\
@@ -592,3 +602,367 @@ class TestSceneRigSession(_SceneRigCase):
                          {'Scène': a, 'Off': 'off'})
         self.assertEqual(len(lines), 1, lines)
         self.assertIn('bad scene name', lines[0])
+
+
+# --- the movie blend ---------------------------------------------------------
+
+anim = raymol_scene_anim
+
+# Two rigs for the movie tests, like the L2 movie: key and rim in both (the
+# rim crosses 180 the short way), top only in A, fill only in B; B's key is
+# shadowed, A's top is.
+MOVIE_A = {
+    'enabled': True, 'ambient': 0.05, 'classic': 0.0,
+    'air': {'haze': 0.1, 'dust': 0.2, 'seed': 4},
+    'lights': [
+        {'name': 'key', 'orbit': -60.0, 'pitch': 30.0, 'radius': 4.0,
+         'beam': 40.0, 'softness': 0.3, 'color': [1.0, 0.55, 0.2],
+         'intensity': 1.6},
+        {'name': 'rim', 'orbit': 160.0, 'pitch': 20.0,
+         'color': [0.2, 0.8, 1.0]},
+        {'name': 'top', 'pitch': 80.0, 'intensity': 1.0, 'shadow': True},
+    ],
+}
+MOVIE_B = {
+    'enabled': True, 'ambient': 0.15, 'classic': 0.2,
+    'air': {'haze': 0.3, 'dust': 0.0, 'seed': 9},
+    'lights': [
+        {'name': 'key', 'orbit': 60.0, 'pitch': 45.0, 'radius': 3.0,
+         'beam': 60.0, 'softness': 0.6, 'color': [0.3, 0.45, 1.0],
+         'intensity': 1.2, 'shadow': True},
+        {'name': 'rim', 'orbit': -160.0, 'color': [1.0, 0.25, 0.8]},
+        {'name': 'fill', 'orbit': -100.0, 'pitch': 0.0, 'warmth': 3200.0,
+         'intensity': 0.8},
+    ],
+}
+
+SMOOTH = 1.4
+
+
+def eased_t(f, f0=1, f1=25, power=SMOOTH):
+    """The t the author stores for frame f: the camera's easing, pre-rounded
+    like the command text."""
+    return float('%.6g' % anim.ease((f - f0) / float(f1 - f0), power))
+
+
+def b64(name):
+    return base64.b64encode(name.encode('utf-8')).decode('ascii')
+
+
+def scene_item(frame, name, power=0.0, linear=0, **extra):
+    return dict({'frame': frame, 'scene': b64(name), 'power': power,
+                 'linear': linear}, **extra)
+
+
+def rebuild(*items):
+    appkit_movie.rebuild(json.dumps(list(items)))
+
+
+def played(f):
+    cmd.frame(f)
+    return cmd.get_lights()
+
+
+def raw_movie_commands():
+    """The movie's frame commands as the core holds them: get_session()
+    without raymol_scene_anim's save task (which strips ours)."""
+    tasks = cmd._pymol._session_save_tasks
+    saved = list(tasks)
+    tasks[:] = [t for t in tasks if t is not anim.session_save]
+    try:
+        return list(cmd.get_session()['movie'][5])
+    finally:
+        tasks[:] = saved
+
+
+def rig(source):
+    """A complete rig dict (the get_lights() format) for `source`, from the
+    core, leaving the live rig as it was."""
+    live = cmd.get_lights()
+    lighting.set_lights(copy.deepcopy(source))
+    try:
+        return cmd.get_lights()
+    finally:
+        lighting.set_lights(live)
+
+
+@contextlib.contextmanager
+def spying(module, name):
+    """Record (args, kwargs) of each call to module.name, still calling it."""
+    calls = []
+    original = getattr(module, name)
+
+    def spy(*args, **kw):
+        calls.append((args, kw))
+        return original(*args, **kw)
+
+    setattr(module, name, spy)
+    try:
+        yield calls
+    finally:
+        setattr(module, name, original)
+
+
+class _BlendCase(_SceneRigCase):
+
+    def assertRigAlmostEqual(self, got, want, path='rig'):
+        """Numbers almost equal (relative 1e-5: the core stores floats),
+        everything else exactly."""
+        if isinstance(want, dict):
+            self.assertIsInstance(got, dict, path)
+            self.assertEqual(set(got), set(want), path)
+            for k in want:
+                self.assertRigAlmostEqual(got[k], want[k], '%s.%s' % (path, k))
+        elif isinstance(want, (list, tuple)):
+            self.assertIsInstance(got, (list, tuple), path)
+            self.assertEqual(len(got), len(want), path)
+            for i, (g, w) in enumerate(zip(got, want)):
+                self.assertRigAlmostEqual(g, w, '%s[%d]' % (path, i))
+        elif isinstance(want, float) and not isinstance(got, bool):
+            self.assertIsInstance(got, (int, float), path)
+            tol = 1e-5 * max(1.0, abs(want))
+            self.assertTrue(abs(got - want) <= tol,
+                            '%s: %r != %r' % (path, got, want))
+        else:
+            self.assertEqual(got, want, path)
+
+    def light(self, r, name):
+        for l in r['lights']:
+            if l['name'] == name:
+                return l
+        self.fail('no light %r in %r' % (name, [l['name'] for l in r['lights']]))
+
+
+class TestBlendValues(_BlendCase):
+    """Blend values at t = 0, 0.5 and 1 (args): shortest-path angles,
+    linear-RGB colour, one-sided fades and the step-at-cut fields."""
+
+    A = {'enabled': True, 'centre': [0.0, 0.0, 0.0], 'size': 2.0,
+         'ambient': 0.1, 'classic': 0.0,
+         'air': {'haze': 0.0, 'dust': 0.2, 'dust_size': 0.2,
+                 'dust_speed': 1.0, 'scatter': -0.5, 'seed': 3},
+         'lights': [
+             {'name': 'key', 'orbit': 170.0, 'pitch': 10.0, 'radius': 2.0,
+              'beam': 20.0, 'softness': 0.2, 'intensity': 1.0,
+              'highlight': 0.2, 'falloff': 1.0, 'warmth': 3000.0,
+              'color': [1.0, 0.0, 0.0]},
+             {'name': 'k2', 'orbit': -60.0}]}
+    B = {'enabled': True, 'centre': [2.0, 4.0, 6.0], 'size': 6.0,
+         'ambient': 0.3, 'classic': 0.5,
+         'air': {'haze': 0.4, 'dust': 0.6, 'dust_size': 1.0,
+                 'dust_speed': 3.0, 'scatter': 0.5, 'seed': 9},
+         'lights': [
+             {'name': 'key', 'orbit': -170.0, 'pitch': 50.0, 'radius': 6.0,
+              'beam': 60.0, 'softness': 0.6, 'intensity': 3.0,
+              'highlight': 0.8, 'falloff': 2.0, 'warmth': 9000.0,
+              'color': [0.0, 0.0, 1.0]},
+             {'name': 'k2', 'orbit': 60.0}]}
+
+    def testBlendEndpoints(self):
+        a, b = rig(self.A), rig(self.B)
+        self.assertEqual(anim.blend_target(a, b, 0.0), a)
+        self.assertEqual(anim.blend_target(a, b, -0.5), a)
+        self.assertEqual(anim.blend_target(a, b, 1.0), b)
+        self.assertEqual(anim.blend_target(a, b, 1.5), b)
+        # blend_rigs itself is exact at its ends for every interpolated field
+        r = anim.blend_rigs(a, b, 0.0)
+        self.assertEqual(r, a)
+        # copies: the stored rigs are never aliased
+        got = anim.blend_target(a, b, 0.0)
+        got['lights'][0]['orbit'] = 1.0
+        self.assertNotEqual(got, a)
+
+    def testBlendMidpoint(self):
+        a, b = rig(self.A), rig(self.B)
+        m = anim.blend_rigs(a, b, 0.5)
+        key, k2 = self.light(m, 'key'), self.light(m, 'k2')
+        self.assertAlmostEqual(key['orbit'], 180.0)      # 170 -> -170
+        self.assertAlmostEqual(k2['orbit'], 0.0)         # -60 -> 60
+        for field, want in (('pitch', 30.0), ('radius', 4.0), ('beam', 40.0),
+                            ('softness', 0.4), ('intensity', 2.0),
+                            ('highlight', 0.5), ('falloff', 1.5),
+                            ('warmth', 6000.0)):
+            self.assertAlmostEqual(key[field], want, places=5, msg=field)
+        # linear RGB, not the sRGB average (0.5, 0, 0.5)
+        for got, want in zip(key['color'], (0.7354, 0.0, 0.7354)):
+            self.assertAlmostEqual(got, want, places=4)
+        self.assertAlmostEqual(m['ambient'], 0.2)
+        self.assertAlmostEqual(m['classic'], 0.25)
+        for got, want in zip(m['centre'], (1.0, 2.0, 3.0)):
+            self.assertAlmostEqual(got, want)
+        self.assertAlmostEqual(m['size'], 4.0)
+        air = m['air']
+        for field, want in (('haze', 0.2), ('dust', 0.4), ('dust_size', 0.6),
+                            ('dust_speed', 2.0), ('scatter', 0.0)):
+            self.assertAlmostEqual(air[field], want, places=5, msg=field)
+        self.assertEqual(air['seed'], 3)                 # steps with A (Q3)
+        self.assertTrue(m['enabled'])
+        # the core takes it as it is
+        lighting.set_lights(m)
+        self.assertRigAlmostEqual(cmd.get_lights(), m)
+
+    def testShortestPathAngles(self):
+        lerp = anim._lerp_angle
+        self.assertAlmostEqual(lerp(160.0, -160.0, 0.5), 180.0)
+        self.assertAlmostEqual(lerp(160.0, -160.0, 0.75), -170.0)
+        self.assertAlmostEqual(lerp(-170.0, 170.0, 0.5), 180.0)
+        self.assertAlmostEqual(lerp(-170.0, 170.0, 0.25), -175.0)
+        self.assertAlmostEqual(lerp(10.0, 350.0, 0.5), 0.0)
+        self.assertEqual(lerp(-37.25, 60.0, 0.0), -37.25)  # exact at t = 0
+        for a, b in ((179.0, -179.0), (-90.0, 90.0), (0.0, 180.0)):
+            for e in (0.0, 0.3, 0.5, 0.9, 1.0):
+                v = lerp(a, b, e)
+                self.assertTrue(-180.0 < v <= 180.0, (a, b, e, v))
+
+    def testColourInLinearRgb(self):
+        c = anim._lerp_color([1.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.5)
+        self.assertAlmostEqual(c[0], 0.735357, places=5)
+        self.assertEqual(c[1], 0.0)
+        self.assertAlmostEqual(c[2], 0.735357, places=5)
+        for v in (0.0, 0.02, 0.04045, 0.2, 0.5, 1.0):
+            self.assertAlmostEqual(
+                anim._linear_to_srgb(anim._srgb_to_linear(v)), v, places=6)
+        self.assertEqual(anim._lerp_color([0.2, 0.4, 0.6], [1, 1, 1], 0.0),
+                         [0.2, 0.4, 0.6])
+
+    def testOneSidedFades(self):
+        a = rig({'enabled': True, 'lights': [
+            {'name': 'key'}, {'name': 'solo', 'intensity': 2.0,
+                              'shadow': True}]})
+        b = rig({'enabled': True, 'lights': [
+            {'name': 'key'}, {'name': 'newb', 'intensity': 1.5,
+                              'shadow': True, 'outline': True}]})
+        m = anim.blend_target(a, b, 0.5)
+        self.assertEqual([l['name'] for l in m['lights']],
+                         ['key', 'solo', 'newb'])       # A's, then B's own
+        solo, newb = self.light(m, 'solo'), self.light(m, 'newb')
+        self.assertAlmostEqual(solo['intensity'], 1.0)
+        self.assertTrue(solo['shadow'])
+        self.assertAlmostEqual(newb['intensity'], 0.75)
+        self.assertFalse(newb['shadow'])
+        self.assertFalse(newb['outline'])
+        q = anim.blend_target(a, b, 0.25)
+        self.assertAlmostEqual(self.light(q, 'solo')['intensity'], 1.5)
+        self.assertAlmostEqual(self.light(q, 'newb')['intensity'], 0.375)
+        end = anim.blend_target(a, b, 1.0)
+        self.assertTrue(self.light(end, 'newb')['shadow'])
+        self.assertNotIn('solo', [l['name'] for l in end['lights']])
+
+    def testStepFields(self):
+        a = rig({'enabled': True, 'lights': [
+            {'name': 'key', 'orbit': -40.0, 'pitch': 20.0, 'outline': True},
+            {'name': 'pt', 'aim': 'point', 'aim_point': [0.0, 0.0, 0.0],
+             'aim_selection': 'name CA'}]})
+        b = rig({'enabled': True, 'lights': [
+            {'name': 'key', 'anchor': 'pinned', 'position': [9.0, 9.0, 9.0],
+             'aim': 'point', 'aim_point': [1.0, 1.0, 1.0], 'shadow': True},
+            {'name': 'pt', 'aim': 'point', 'aim_point': [2.0, 4.0, 6.0],
+             'aim_selection': 'name N'}]})
+        ka, kb = self.light(a, 'key'), self.light(b, 'key')
+        for t in (0.5, 0.999):
+            m = anim.blend_target(a, b, t)
+            key = self.light(m, 'key')
+            for field in ('shadow', 'outline', 'anchor', 'aim', 'aim_point',
+                          'position', 'orbit', 'pitch', 'radius'):
+                # an anchor mismatch holds A's placement, an aim mismatch
+                # A's aim
+                self.assertEqual(key[field], ka[field], (t, field))
+            pt = self.light(m, 'pt')
+            self.assertEqual(pt['aim_selection'], 'name CA')
+            for got, want in zip(pt['aim_point'], (2 * t, 4 * t, 6 * t)):
+                self.assertAlmostEqual(got, want)
+        end = anim.blend_target(a, b, 1.0)
+        self.assertEqual(self.light(end, 'key'), kb)
+
+    def testPinnedPositionsArcAroundTheCentre(self):
+        def pinned_rig(centre, position):
+            return {'enabled': True, 'centre': centre, 'size': 5.0,
+                    'lights': [{'name': 'p', 'anchor': 'pinned',
+                                'position': position}]}
+
+        # opposite sides of the centre
+        a = rig(pinned_rig([0.0, 0.0, 0.0], [10.0, 0.0, 0.0]))
+        b = rig(pinned_rig([2.0, 0.0, 0.0], [-6.0, 0.0, 0.0]))
+        self.assertEqual(self.light(anim.blend_rigs(a, b, 0.0), 'p')['position'],
+                         [10.0, 0.0, 0.0])               # exactly pa
+        for t in (0.25, 0.5, 0.75):
+            m = anim.blend_rigs(a, b, t)
+            c = m['centre']
+            p = self.light(m, 'p')['position']
+            d = math.dist(p, c)
+            self.assertAlmostEqual(d, 10.0 + (8.0 - 10.0) * t, places=6)
+            self.assertGreaterEqual(d, 8.0 - 1e-9)
+            # deterministic: the same path every time
+            self.assertEqual(anim.blend_rigs(a, b, t), m)
+        # antipodal: turns about normalize(oa x y) = z, so it passes over +y
+        mid = self.light(anim.blend_rigs(a, b, 0.5), 'p')['position']
+        for got, want in zip(mid, (1.0, 9.0, 0.0)):
+            self.assertAlmostEqual(got, want, places=6)
+
+        # a 90-degree pair follows the shortest arc
+        a = rig(pinned_rig([0.0, 0.0, 0.0], [10.0, 0.0, 0.0]))
+        b = rig(pinned_rig([0.0, 0.0, 0.0], [0.0, 0.0, 10.0]))
+        mid = self.light(anim.blend_rigs(a, b, 0.5), 'p')['position']
+        h = 10.0 * math.sqrt(0.5)
+        for got, want in zip(mid, (h, 0.0, h)):
+            self.assertAlmostEqual(got, want, places=5)
+        q = self.light(anim.blend_rigs(a, b, 1.0 / 3.0), 'p')['position']
+        for got, want in zip(q, (10 * math.cos(math.pi / 6), 0.0,
+                                 10 * math.sin(math.pi / 6))):
+            self.assertAlmostEqual(got, want, places=5)
+
+        # a vertical offset turns about the x axis
+        off = anim._slerp_offset([0.0, 4.0, 0.0], [0.0, -4.0, 0.0], 0.5)
+        for got, want in zip(off, (0.0, 0.0, 4.0)):
+            self.assertAlmostEqual(got, want, places=6)
+        # a zero-length offset lerps
+        self.assertEqual(anim._slerp_offset([0, 0, 0], [4, 0, 0], 0.5),
+                         [2.0, 0.0, 0.0])
+
+    def testCaseInsensitiveMatch(self):
+        a = rig({'enabled': True, 'lights': [{'name': 'Key', 'orbit': -20.0}]})
+        b = rig({'enabled': True, 'lights': [{'name': 'key', 'orbit': 40.0}]})
+        m = anim.blend_rigs(a, b, 0.5)
+        self.assertEqual([l['name'] for l in m['lights']], ['Key'])
+        self.assertAlmostEqual(m['lights'][0]['orbit'], 10.0)
+        lighting.set_lights(m)
+
+    def testUnionCap(self):
+        a = rig({'enabled': True, 'lights': [
+            {'name': 'a%d' % i, 'orbit': 30.0 * i, 'shadow': i < 3}
+            for i in range(6)]})
+        b = rig({'enabled': True, 'lights': [
+            {'name': 'b%d' % i, 'orbit': -30.0 * i, 'shadow': i >= 3}
+            for i in range(6)]})
+        for step in range(21):
+            t = step * 0.05
+            m = anim.blend_target(a, b, t)
+            self.assertLessEqual(len(m['lights']), 6, t)
+            self.assertLessEqual(sum(l['shadow'] for l in m['lights']), 3, t)
+            lighting.set_lights(m)                       # accepted
+        names = lambda t: [l['name'] for l in anim.blend_target(a, b, t)['lights']]
+        self.assertEqual(names(0.25), ['a%d' % i for i in range(6)])
+        self.assertEqual(names(0.75), ['b%d' % i for i in range(6)])
+        # a tie drops the later light first
+        self.assertEqual(names(0.5), ['a%d' % i for i in range(6)])
+
+    def testOffOrAbsentSteps(self):
+        a = rig(MOVIE_A)
+        self.assertEqual(anim.blend_target(a, 'off', 0.5), a)
+        self.assertEqual(anim.blend_target(a, 'off', 1.0), 'off')
+        self.assertEqual(anim.blend_target('off', a, 0.5), 'off')
+        self.assertEqual(anim.blend_target('off', a, 1.0), a)
+        self.assertIsNone(anim.blend_target(None, a, 0.5))
+        self.assertIsNone(anim.blend_target(None, a, 1.0))
+        self.assertIsNone(anim.blend_target(a, None, 1.0))
+        disabled = dict(a, enabled=False)
+        self.assertEqual(anim.blend_target(disabled, a, 0.5), disabled)
+
+    def testLightsCommand(self):
+        self.assertEqual(anim.lights_command('A', 'B', 0.5),
+                         '_lights_blend 41, 42, 0.5')
+        self.assertEqual(anim.lights_command("x'; y=1", 'é', 0.1894651234),
+                         '_lights_blend 78273b20793d31, c3a9, 0.189465')
+        self.assertEqual(anim._name_from_hex('c3a9'), 'é')
+        for bad in ('', 'c3a', 'zz', ' 41', '41 ', 'ff', None, 41):
+            self.assertIsNone(anim._name_from_hex(bad), bad)
