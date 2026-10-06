@@ -2,7 +2,11 @@
 //
 // A card that holds the exact values of the selected light: Orbit and Pitch
 // (dial, field and stepper), sliders for Radius, Intensity, Warmth, Beam and
-// Softness, colour swatches plus a picker, Pin, Revert this light and Delete.
+// Softness, colour swatches plus a picker, Shadow and Pin, Revert this light
+// and Delete. Under the header it says why a Shadow press did nothing (a 4th
+// shadowed light) and when the selected light's shadow cannot show because
+// the scene's Shadows switch is off (#616: studio shadows render only while
+// it is on), with a Turn On button the owner (ContentView) wires.
 // It sits in the Lights side column (LightsSideColumn.swift): under the bar on
 // macOS, at the viewport's top-trailing corner on iOS (ContentView places it).
 //
@@ -155,6 +159,17 @@ struct LightsInspectorState: Equatable {
     static let menuHint = "Choose the light to edit"
     static let pinLabel = "Pin"
     static let pinHelp = "Pin: fix this light in the scene, so it stays put while the camera turns"
+    static let shadowLabel = "Shadow"
+    static let shadowHelp = "Shadow: this light casts its own shadow (at most "
+        + "\(LightsController.maxShadowed) lights do)"
+    /// The notice after a refused Shadow press (a 4th shadowed light).
+    static let shadowCapNotice = "At most \(LightsController.maxShadowed) lights cast shadows. "
+        + "Turn one off first."
+    /// The hint while the selected light casts a shadow the scene does not show.
+    static let shadowsOffHint = "Shadows are off for this scene"
+    static let turnOnTitle = "Turn On"
+    static let turnOnLabel = "Turn on scene shadows"
+    static let turnOnHelp = "Turn on the scene's Shadows switch, so lights with Shadow cast them"
     static let customColourLabel = "Custom colour"
     static let rigOffText = "Lights off"
     static let revertTitle = "Revert this light"
@@ -198,6 +213,12 @@ struct LightsInspectorState: Equatable {
     var slot: Int
     var menu: [MenuItem]
     var isPinned: Bool
+    var isShadowed: Bool
+    /// The notice under the header (a refused Shadow press), nil when none.
+    var notice: String?
+    /// The selected light casts a shadow and the scene's Shadows switch is off
+    /// (known to be off: nil, not yet read, shows no hint).
+    var showsShadowsHint: Bool
     var isOn: Bool
     /// The muted header status (`Lights off`), nil while the rig is on.
     var status: String?
@@ -210,8 +231,10 @@ struct LightsInspectorState: Equatable {
     /// Every LightParameter, in declaration order.
     var rows: [Row]
 
+    /// `sceneShadowsOn`: the scene's Shadows switch (metal_shadows) as last
+    /// read, nil when unknown.
     @MainActor
-    init?(_ controller: LightsController) {
+    init?(_ controller: LightsController, sceneShadowsOn: Bool? = nil) {
         guard controller.isActive, let light = controller.selectedLight,
               let index = controller.selectedIndex,
               let lights = controller.rig?.lights else { return nil }
@@ -223,6 +246,9 @@ struct LightsInspectorState: Equatable {
                      isSelected: i == index)
         }
         isPinned = light.anchor == .pinned
+        isShadowed = light.shadow
+        notice = controller.shadowRefused ? Self.shadowCapNotice : nil
+        showsShadowsHint = light.shadow && sceneShadowsOn == false
         isOn = controller.isOn
         status = controller.isOn ? nil : Self.rigOffText
         canEdit = controller.canEdit
@@ -255,6 +281,7 @@ struct LightsInspectorState: Equatable {
     /// VoiceOver's name for the card: `Light inspector, key`.
     var containerLabel: String { "Light inspector, \(name)" }
     var pinValue: String { isPinned ? "On" : "Off" }
+    var shadowValue: String { isShadowed ? "On" : "Off" }
     var revertLabel: String { "Revert \(name)" }
     var deleteLabel: String { "Delete \(name)" }
 
@@ -266,11 +293,12 @@ struct LightsInspectorState: Equatable {
         }
         let rgb = String(format: "%.3f,%.3f,%.3f", color.x, color.y, color.z)
         let swatch = swatchIndex.map { LightColour.swatches[$0].name } ?? "custom"
-        return "\(name) slot=\(slot) pin=\(isPinned ? 1 : 0) on=\(isOn ? 1 : 0)"
+        return "\(name) slot=\(slot) pin=\(isPinned ? 1 : 0) shadow=\(isShadowed ? 1 : 0) on=\(isOn ? 1 : 0)"
             + " orbit=\(v(.orbit, "%.1f")) pitch=\(v(.pitch, "%.1f")) radius=\(v(.radius, "%.2f"))"
             + " intensity=\(v(.intensity, "%.2f")) warmth=\(v(.warmth, "%.0f"))"
             + " beam=\(v(.beam, "%.1f")) softness=\(v(.softness, "%.2f"))"
             + " color=\(rgb) swatch=\(swatch) edit=\(canEdit ? 1 : 0) revert=\(canRevertLight ? 1 : 0)"
+            + (notice == nil ? "" : " notice=shadow_cap") + (showsShadowsHint ? " hint=shadows_off" : "")
     }
 }
 
@@ -621,6 +649,11 @@ private struct LightsInspectorHeightKey: PreferenceKey {
 struct LightsInspector: View {
     @ObservedObject var controller: LightsController
     var style: LightsBarStyle
+    /// The scene's Shadows switch (metal_shadows) as last read; nil when
+    /// unknown (no Shadows hint then).
+    var sceneShadowsOn: Bool?
+    /// Turn the scene's Shadows switch on (the hint's Turn On button).
+    var onEnableSceneShadows: () -> Void
 
     /// Collapsed to its header row. Plain view state, seeded per mode entry and
     /// never persisted (the test host shares the installed app's defaults).
@@ -633,14 +666,17 @@ struct LightsInspector: View {
     static let width: CGFloat = 284
     static let estimatedHeight: CGFloat = 480
 
-    init(controller: LightsController, style: LightsBarStyle, initiallyCollapsed: Bool) {
+    init(controller: LightsController, style: LightsBarStyle, initiallyCollapsed: Bool,
+         sceneShadowsOn: Bool? = nil, onEnableSceneShadows: @escaping () -> Void = {}) {
         self.controller = controller
         self.style = style
+        self.sceneShadowsOn = sceneShadowsOn
+        self.onEnableSceneShadows = onEnableSceneShadows
         _collapsed = State(initialValue: initiallyCollapsed)
     }
 
     var body: some View {
-        if let state = LightsInspectorState(controller) {
+        if let state = LightsInspectorState(controller, sceneShadowsOn: sceneShadowsOn) {
             card(state)
         }
     }
@@ -649,6 +685,15 @@ struct LightsInspector: View {
         VStack(alignment: .leading, spacing: 0) {
             header(state)
                 .padding(.horizontal, 12).padding(.vertical, 8)
+            // Shown even while collapsed: both answer the header's Shadow chip.
+            if let notice = state.notice {
+                noticeRow(notice)
+                    .padding(.horizontal, 12).padding(.bottom, 8)
+            }
+            if state.showsShadowsHint {
+                shadowsHintRow(state)
+                    .padding(.horizontal, 12).padding(.bottom, 8)
+            }
             if !collapsed {
                 Rectangle().fill(style.text.opacity(0.12)).frame(height: 0.5)
                 ScrollView(.vertical) {
@@ -679,20 +724,28 @@ struct LightsInspector: View {
     // MARK: header
 
     private func header(_ state: LightsInspectorState) -> some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(LightPalette.color(state.slot))
-                .frame(width: 10, height: 10)
-                .opacity(state.isOn ? 1 : 0.45)
-                .accessibilityHidden(true)
-            lightMenu(state)
-            if let status = state.status {
-                Text(status)
-                    .font(.system(size: 11))
-                    .foregroundColor(style.text.opacity(0.55))
-                    .lineLimit(1)
+        HStack(spacing: 6) {
+            // The status goes under the name, so the Shadow and Pin chips
+            // leave room for any light name and `Lights off`.
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(LightPalette.color(state.slot))
+                        .frame(width: 10, height: 10)
+                        .opacity(state.isOn ? 1 : 0.45)
+                        .accessibilityHidden(true)
+                    lightMenu(state)
+                }
+                if let status = state.status {
+                    Text(status)
+                        .font(.system(size: 11))
+                        .foregroundColor(style.text.opacity(0.55))
+                        .lineLimit(1)
+                        .padding(.leading, 16)
+                }
             }
-            Spacer(minLength: 4)
+            Spacer(minLength: 2)
+            shadowToggle(state)
             pinToggle(state)
             Button { withAnimation(.easeOut(duration: 0.15)) { collapsed.toggle() } } label: {
                 Image(systemName: collapsed ? "chevron.down" : "chevron.up")
@@ -708,30 +761,91 @@ struct LightsInspector: View {
         }
     }
 
-    // A toggle drawn as the bar's chips are, so On reads at a glance (the
-    // system button-style toggle barely changes on macOS).
+    private func shadowToggle(_ state: LightsInspectorState) -> some View {
+        let on = state.isShadowed
+        return chip(LightsInspectorState.shadowLabel, systemImage: nil, on: on,
+                    enabled: state.canEdit) { controller.setShadow(!on) }
+            .help(LightsInspectorState.shadowHelp)
+            .accessibilityLabel(LightsInspectorState.shadowLabel)
+            .accessibilityValue(state.shadowValue)
+            .accessibilityIdentifier("lights.inspector.shadow")
+    }
+
     private func pinToggle(_ state: LightsInspectorState) -> some View {
         let on = state.isPinned
-        return Button { controller.setPinned(!on) } label: {
+        return chip(LightsInspectorState.pinLabel, systemImage: on ? "pin.fill" : "pin", on: on,
+                    enabled: state.canEdit) { controller.setPinned(!on) }
+            .help(LightsInspectorState.pinHelp)
+            .accessibilityLabel(LightsInspectorState.pinLabel)
+            .accessibilityValue(state.pinValue)
+            .accessibilityIdentifier("lights.inspector.pin")
+    }
+
+    // A toggle drawn as the bar's chips are, so On reads at a glance (the
+    // system button-style toggle barely changes on macOS).
+    private func chip(_ title: String, systemImage: String?, on: Bool, enabled: Bool,
+                      action: @escaping () -> Void) -> some View {
+        Button(action: action) {
             HStack(spacing: 3) {
-                Image(systemName: on ? "pin.fill" : "pin").font(.system(size: 10))
-                Text(LightsInspectorState.pinLabel).font(.system(size: 12, weight: .medium))
+                if let systemImage {
+                    Image(systemName: systemImage).font(.system(size: 10))
+                }
+                Text(title).font(.system(size: 12, weight: .medium))
             }
+            .lineLimit(1)
+            .fixedSize()
             .foregroundColor(on ? style.accent : style.text.opacity(0.85))
-            .padding(.horizontal, 9).padding(.vertical, 3)
+            .padding(.horizontal, 8).padding(.vertical, 3)
             .background(Capsule().fill(on ? style.accent.opacity(0.15) : Color.clear))
             .overlay(Capsule().stroke(on ? style.accent : style.text.opacity(0.25),
                                       lineWidth: on ? 1.5 : 1))
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .disabled(!state.canEdit)
-        .opacity(state.canEdit ? 1 : 0.5)
-        .help(LightsInspectorState.pinHelp)
-        .accessibilityLabel(LightsInspectorState.pinLabel)
-        .accessibilityValue(state.pinValue)
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.5)
         .accessibilityAddTraits(.isToggle)
-        .accessibilityIdentifier("lights.inspector.pin")
+    }
+
+    // MARK: notice and hint
+
+    private func noticeRow(_ notice: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 10))
+                .foregroundColor(.orange)
+                .accessibilityHidden(true)
+            Text(verbatim: notice)
+                .font(.system(size: 11))
+                .foregroundColor(style.text.opacity(0.85))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("lights.inspector.notice")
+    }
+
+    private func shadowsHintRow(_ state: LightsInspectorState) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "info.circle")
+                .font(.system(size: 10))
+                .foregroundColor(style.text.opacity(0.7))
+                .accessibilityHidden(true)
+            Text(LightsInspectorState.shadowsOffHint)
+                .font(.system(size: 11))
+                .foregroundColor(style.text.opacity(0.85))
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("lights.inspector.shadows_hint")
+            Spacer(minLength: 4)
+            Button(LightsInspectorState.turnOnTitle) { onEnableSceneShadows() }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .font(.system(size: 11, weight: .medium))
+                .disabled(!state.canEdit)
+                .help(LightsInspectorState.turnOnHelp)
+                .accessibilityLabel(LightsInspectorState.turnOnLabel)
+                .accessibilityIdentifier("lights.inspector.shadows_turn_on")
+        }
     }
 
     // Text items with a checkmark on the selected one: macOS menus draw only
@@ -878,12 +992,13 @@ extension View {
 /// PYMOL_AUTOLIGHTS_EDIT='<token>;<token>…' (debug builds only): inspector
 /// edits a simulator run applies through the same controller calls the card
 /// makes. Tokens: `<parameter>:<value>` for every LightParameter, `pin:0|1`,
-/// `color:r:g:b` (0...1) and `expand` (the card starts expanded on compact
-/// width).
+/// `shadow:0|1`, `color:r:g:b` (0...1) and `expand` (the card starts expanded
+/// on compact width).
 enum LightsAutoEdit {
     enum Token: Equatable {
         case set(LightParameter, Double)
         case pin(Bool)
+        case shadow(Bool)
         case color(SIMD3<Double>)
         case expand
     }
@@ -908,8 +1023,9 @@ enum LightsAutoEdit {
             let allNumbers = finite.count == numbers.count
             if key == "expand", parts.count == 1 {
                 parsed.tokens.append(.expand)
-            } else if key == "pin", parts.count == 2, allNumbers, finite[0] == 0 || finite[0] == 1 {
-                parsed.tokens.append(.pin(finite[0] == 1))
+            } else if key == "pin" || key == "shadow", parts.count == 2, allNumbers,
+                      finite[0] == 0 || finite[0] == 1 {
+                parsed.tokens.append(key == "pin" ? .pin(finite[0] == 1) : .shadow(finite[0] == 1))
             } else if key == "color" || key == "colour", parts.count == 4, allNumbers {
                 parsed.tokens.append(.color(SIMD3(finite[0], finite[1], finite[2])))
             } else if let parameter = LightParameter(rawValue: key), parts.count == 2, allNumbers {
@@ -931,6 +1047,8 @@ enum LightsAutoEdit {
                 return "\(parameter.field)=\(fmt(value)) -> \(controller.set(parameter, value))"
             case .pin(let on):
                 return "pin=\(on ? 1 : 0) -> \(controller.setPinned(on))"
+            case .shadow(let on):
+                return "shadow=\(on ? 1 : 0) -> \(controller.setShadow(on))"
             case .color(let rgb):
                 return "color=\(fmt(rgb.x)):\(fmt(rgb.y)):\(fmt(rgb.z)) -> \(controller.setColour(rgb))"
             case .expand:

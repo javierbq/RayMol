@@ -470,4 +470,111 @@ final class LightsInspectorLiveTests: XCTestCase {
         engine.setInteractionMode(.lights)
         XCTAssertFalse(inspectorShows, "no light, no inspector")
     }
+
+    // MARK: Shadow, the cap and the Shadows switch (Part 5, #616)
+
+    func testShadowToggleReachesTheCoreAndTheCapHolds() throws {
+        try enterWithThreeLights(selecting: "fill")   // key casts a shadow
+        controller.add()                               // a 4th light (a button press)
+        let fourth = try XCTUnwrap(controller.selectedLight?.name)
+        XCTAssertEqual(controller.rig?.lights.count, 4)
+
+        let python = Lines(), commands = Lines()
+        engine.pythonTap = { python.lines.append($0) }
+        engine.commandTap = { commands.lines.append($0) }
+        defer {
+            engine.pythonTap = nil
+            engine.commandTap = nil
+        }
+
+        controller.select(name: "fill")
+        XCTAssertEqual(controller.setShadow(true), .ok)
+        XCTAssertEqual(try coreRig().lights[1].shadow, true, "the toggle reached the core")
+        assertMirrorIsCurrent("shadow on")
+        controller.select(name: "rim")
+        XCTAssertEqual(controller.setShadow(true), .ok)
+        XCTAssertEqual(try coreRig().lights.filter(\.shadow).map(\.name), ["key", "fill", "rim"])
+
+        // A 4th is refused by the core; nothing changes; the card says why.
+        controller.select(name: fourth)
+        let json = engine.lightRigJSON()
+        XCTAssertEqual(controller.setShadow(true), .refused)
+        XCTAssertEqual(engine.lightRigJSON(), json, "the core keeps its cap of 3")
+        XCTAssertTrue(controller.shadowRefused)
+        XCTAssertEqual(LightsInspectorState(controller)?.notice, LightsInspectorState.shadowCapNotice)
+        XCTAssertEqual(LightsController.maxShadowed, 3)
+
+        // The next edit clears the notice; turning one off makes room.
+        XCTAssertEqual(controller.set(.intensity, 1.5), .ok)
+        XCTAssertNil(LightsInspectorState(controller)?.notice)
+        controller.select(name: "key")
+        XCTAssertEqual(controller.setShadow(false), .ok)
+        controller.select(name: fourth)
+        XCTAssertEqual(controller.setShadow(true), .ok)
+        XCTAssertEqual(try coreRig().lights.filter(\.shadow).map(\.name), ["fill", "rim", fourth])
+        assertMirrorIsCurrent("after the swap")
+
+        XCTAssertEqual(python.lines, [], "the Shadow toggle runs no Python")
+        XCTAssertEqual(commands.lines, [], "the Shadow toggle runs no command")
+    }
+
+    /// Re-poll the scene settings until the Shadows switch reads `expected`
+    /// (the ~500 ms scene poll, also in Lights mode); false on a timeout.
+    private func waitForSceneShadows(_ expected: Bool?, timeout: TimeInterval = 8) -> Bool {
+        waitForScene(timeout: timeout) { $0 == expected }
+    }
+
+    private func waitForScene(timeout: TimeInterval = 8, until done: (Bool?) -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastPoll = Date.distantPast
+        while Date() < deadline {
+            if done(engine.sceneShadowsOn) { return true }
+            if Date().timeIntervalSince(lastPoll) > 0.4 {
+                engine.refreshExpandedDetail()
+                lastPoll = Date()
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+        return done(engine.sceneShadowsOn)
+    }
+
+    func testShadowsHintFollowsTheSceneSwitchAndTurnOnSetsIt() throws {
+        try enterWithThreeLights(selecting: "key")   // key casts a shadow
+        XCTAssertTrue(waitForScene { $0 != nil }, "the scene poll never reported metal_shadows")
+        let original = try XCTUnwrap(engine.sceneShadowsOn)
+        defer {
+            engine.runPython("from pymol import cmd as _lmt_cmd\n"
+                             + "_lmt_cmd.set('metal_shadows', \(original ? 1 : 0))\n")
+        }
+
+        // Off: the poll sees it while Lights mode is open, and the hint shows.
+        engine.runPython("from pymol import cmd as _lmt_cmd\n_lmt_cmd.set('metal_shadows', 0)\n")
+        XCTAssertTrue(waitForSceneShadows(false), "sceneState is not refreshed in Lights mode")
+        XCTAssertEqual(engine.interactionMode, .lights)
+        XCTAssertEqual(LightsInspectorState(controller, sceneShadowsOn: engine.sceneShadowsOn)?
+            .showsShadowsHint, true)
+        controller.select(name: "fill")
+        XCTAssertEqual(LightsInspectorState(controller, sceneShadowsOn: engine.sceneShadowsOn)?
+            .showsShadowsHint, false, "fill casts no shadow")
+        controller.select(name: "key")
+
+        // Turn On: one console command (a button press), shown at once.
+        let python = Lines(), commands = Lines()
+        engine.pythonTap = { python.lines.append($0) }
+        engine.commandTap = { commands.lines.append($0) }
+        engine.enableSceneShadows()
+        engine.pythonTap = nil
+        engine.commandTap = nil
+        XCTAssertEqual(commands.lines, ["set metal_shadows, 1"])
+        XCTAssertEqual(python.lines, [])
+        XCTAssertEqual(engine.sceneShadowsOn, true, "reflected before the next poll")
+        XCTAssertEqual(LightsInspectorState(controller, sceneShadowsOn: engine.sceneShadowsOn)?
+            .showsShadowsHint, false)
+
+        // The core has it: the next poll reads 1 back (the optimistic value is
+        // knocked out first so only the poll can restore it).
+        engine.sceneState.values["metal_shadows"] = nil
+        XCTAssertTrue(waitForSceneShadows(true), "the setting did not reach the core")
+        XCTAssertTrue(controller.isActive, "the mode stays open")
+    }
 }

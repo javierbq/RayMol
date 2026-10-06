@@ -19,6 +19,10 @@ struct LightsSideColumn: View {
     var style: LightsBarStyle
     /// The inspector starts collapsed to its header (compact width, iPhone).
     var inspectorStartsCollapsed: Bool
+    /// The scene's Shadows switch as last read (nil: unknown), for the
+    /// inspector's Shadows hint, and what its Turn On button does.
+    var sceneShadowsOn: Bool? = nil
+    var onEnableSceneShadows: () -> Void = {}
 
     static let width: CGFloat = LightsInspector.width
 
@@ -26,7 +30,9 @@ struct LightsSideColumn: View {
         VStack(alignment: .trailing, spacing: 8) {
             // #621: the orbit view goes here, above the inspector.
             LightsInspector(controller: controller, style: style,
-                            initiallyCollapsed: inspectorStartsCollapsed)
+                            initiallyCollapsed: inspectorStartsCollapsed,
+                            sceneShadowsOn: sceneShadowsOn,
+                            onEnableSceneShadows: onEnableSceneShadows)
         }
         .frame(width: Self.width, alignment: .trailing)
     }

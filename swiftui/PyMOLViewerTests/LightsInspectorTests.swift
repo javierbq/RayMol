@@ -353,10 +353,75 @@ final class LightsInspectorStateTests: XCTestCase {
         let state = try XCTUnwrap(LightsInspectorState(controller))
         XCTAssertEqual(state.containerLabel, "Light inspector, key")
         XCTAssertEqual(state.summary,
-                       "key slot=0 pin=0 on=1 orbit=-45.0 pitch=35.0 radius=3.00 intensity=1.80"
+                       "key slot=0 pin=0 shadow=0 on=1 orbit=-45.0 pitch=35.0 radius=3.00 intensity=1.80"
                        + " warmth=3800 beam=40.0 softness=0.50 color=0.000,1.000,1.000 swatch=Cyan"
                        + " edit=1 revert=0")
         XCTAssertEqual(state.summary, try XCTUnwrap(LightsInspectorState(controller)).summary, "stable")
+    }
+
+    // MARK: Shadow, the refusal notice and the Shadows hint (Part 5)
+
+    func testShadowToggleState() throws {
+        begin(with: ["key", "fill"])
+        var state = try XCTUnwrap(LightsInspectorState(controller))
+        XCTAssertFalse(state.isShadowed)
+        XCTAssertEqual(state.shadowValue, "Off")
+        XCTAssertEqual(controller.setShadow(true), .ok)   // what the chip does
+        state = try XCTUnwrap(LightsInspectorState(controller))
+        XCTAssertTrue(state.isShadowed)
+        XCTAssertEqual(state.shadowValue, "On")
+        XCTAssertTrue(state.summary.contains(" shadow=1 "), state.summary)
+        controller.select(name: "fill")
+        XCTAssertFalse(try XCTUnwrap(LightsInspectorState(controller)).isShadowed, "per light")
+    }
+
+    func testTheRefusalNotice() throws {
+        store.setRig(["key", "fill", "rim", "light4"])
+        for i in 0..<3 { store.lights[i].shadow = true }
+        controller.begin()
+        controller.select(name: "light4")
+        XCTAssertNil(try XCTUnwrap(LightsInspectorState(controller)).notice)
+        XCTAssertEqual(controller.setShadow(true), .refused)
+        var state = try XCTUnwrap(LightsInspectorState(controller))
+        XCTAssertEqual(state.notice, "At most 3 lights cast shadows. Turn one off first.")
+        XCTAssertEqual(state.notice, LightsInspectorState.shadowCapNotice)
+        XCTAssertFalse(state.isShadowed, "the toggle stays off")
+        XCTAssertTrue(state.summary.hasSuffix(" notice=shadow_cap"), state.summary)
+        // The next edit clears it.
+        XCTAssertEqual(controller.set(.beam, 50), .ok)
+        state = try XCTUnwrap(LightsInspectorState(controller))
+        XCTAssertNil(state.notice)
+        XCTAssertFalse(state.summary.contains("notice="), state.summary)
+        // So does a selection change.
+        XCTAssertEqual(controller.setShadow(true), .refused)
+        controller.select(name: "key")
+        XCTAssertNil(try XCTUnwrap(LightsInspectorState(controller)).notice)
+    }
+
+    func testTheShadowsHint() throws {
+        store.setRig(["key", "fill"])
+        store.lights[0].shadow = true
+        controller.begin()
+        func hint(_ scene: Bool?) throws -> Bool {
+            try XCTUnwrap(LightsInspectorState(controller, sceneShadowsOn: scene)).showsShadowsHint
+        }
+        XCTAssertTrue(try hint(false), "a shadowed light while the Shadows switch is off")
+        XCTAssertFalse(try hint(true), "the switch is on: the shadow shows")
+        XCTAssertFalse(try hint(nil), "not read yet: no hint")
+        XCTAssertFalse(try XCTUnwrap(LightsInspectorState(controller)).showsShadowsHint,
+                       "unknown by default")
+        let state = try XCTUnwrap(LightsInspectorState(controller, sceneShadowsOn: false))
+        XCTAssertTrue(state.summary.hasSuffix(" hint=shadows_off"), state.summary)
+        // A light without a shadow needs no hint.
+        controller.select(name: "fill")
+        XCTAssertFalse(try hint(false))
+        // Turning its shadow on brings the hint.
+        XCTAssertEqual(controller.setShadow(true), .ok)
+        XCTAssertTrue(try hint(false))
+        // The rig being off does not change it (the Lights off status says that).
+        store.enabled = false
+        controller.refresh()
+        XCTAssertTrue(try hint(false))
     }
 }
 
@@ -374,14 +439,17 @@ final class LightsAutoEditTests: XCTestCase {
             XCTAssertEqual(LightsAutoEdit.parse("\(p.rawValue):2").tokens, [.set(p, 2)], "\(p)")
         }
         XCTAssertEqual(LightsAutoEdit.parse("pin:0").tokens, [.pin(false)])
+        XCTAssertEqual(LightsAutoEdit.parse("shadow:1;shadow:0").tokens, [.shadow(true), .shadow(false)])
         XCTAssertFalse(LightsAutoEdit.parse("orbit:1").expands)
         XCTAssertEqual(LightsAutoEdit.parse("").tokens, [])
     }
 
     func testUnknownTokensAndBadNumbersAreReported() {
-        let parsed = LightsAutoEdit.parse("spin:3;orbit:x;pin:2;color:1:2;; beam:40 ;warmth:nan;expand:1")
+        let parsed = LightsAutoEdit.parse(
+            "spin:3;orbit:x;pin:2;color:1:2;; beam:40 ;warmth:nan;expand:1;shadow:2;shadow")
         XCTAssertEqual(parsed.tokens, [.set(.beam, 40)])
-        XCTAssertEqual(parsed.rejected, ["spin:3", "orbit:x", "pin:2", "color:1:2", "warmth:nan", "expand:1"])
+        XCTAssertEqual(parsed.rejected, ["spin:3", "orbit:x", "pin:2", "color:1:2", "warmth:nan", "expand:1",
+                                         "shadow:2", "shadow"])
     }
 
     func testAppliesThroughTheController() {
@@ -390,11 +458,12 @@ final class LightsAutoEditTests: XCTestCase {
         let controller = LightsController(seams: store.seams)
         controller.begin()
         controller.select(name: "fill")
-        let entries = LightsAutoEdit.apply(LightsAutoEdit.parse("orbit:120;pin:1;color:0:1:1;expand").tokens,
-                                           to: controller)
-        XCTAssertEqual(entries, ["orbit=120 -> ok", "pin=1 -> ok", "color=0:1:1 -> ok"])
+        let entries = LightsAutoEdit.apply(
+            LightsAutoEdit.parse("orbit:120;pin:1;shadow:1;color:0:1:1;expand").tokens, to: controller)
+        XCTAssertEqual(entries, ["orbit=120 -> ok", "pin=1 -> ok", "shadow=1 -> ok", "color=0:1:1 -> ok"])
         XCTAssertEqual(store.lights[1].orbit, 120)
         XCTAssertTrue(store.lights[1].pinned)
+        XCTAssertTrue(store.lights[1].shadow)
         XCTAssertEqual(store.lights[1].color, SIMD3(0, 1, 1))
         XCTAssertEqual(store.lights[0], FakeRigStore.Light(name: "key"), "key untouched")
         XCTAssertTrue(store.performed.isEmpty, "no button press, no Python")
@@ -444,6 +513,14 @@ final class LightsInspectorAccessibilityTests: XCTestCase {
         XCTAssertEqual(LightsInspectorState.customColourLabel, "Custom colour")
         XCTAssertEqual(state.revertLabel, "Revert key")
         XCTAssertEqual(state.deleteLabel, "Delete key")
+        // Part 5: the Shadow chip, the notice and the Shadows hint.
+        XCTAssertEqual(LightsInspectorState.shadowLabel, "Shadow")
+        XCTAssertEqual(state.shadowValue, "Off")
+        XCTAssertEqual(LightsInspectorState.shadowCapNotice,
+                       "At most 3 lights cast shadows. Turn one off first.")
+        XCTAssertEqual(LightsInspectorState.shadowsOffHint, "Shadows are off for this scene")
+        XCTAssertEqual(LightsInspectorState.turnOnTitle, "Turn On")
+        XCTAssertEqual(LightsInspectorState.turnOnLabel, "Turn on scene shadows")
     }
 }
 
@@ -566,6 +643,7 @@ final class LightsInspectorSnapshotTests: XCTestCase {
         var height: CGFloat = 520
         var collapsed = false
         var withBar = false
+        var sceneShadowsOn: Bool?
         var setUp: (FakeRigStore) -> Void = { _ in }
         var after: (LightsController, FakeRigStore) -> Void = { _, _ in }
     }
@@ -636,6 +714,20 @@ final class LightsInspectorSnapshotTests: XCTestCase {
             Shot(name: "with_bar_rim_from_header_dark", dark: true, width: 900, height: 600, withBar: true,
                  setUp: Self.sketchKey,
                  after: { controller, _ in controller.select(index: 2) }),   // a header menu pick
+            // Part 5: the key casts a shadow while the scene's Shadows switch is off.
+            Shot(name: "shadows_off_hint_light", sceneShadowsOn: false, setUp: { store in
+                Self.sketchKey(store)
+                store.lights[0].shadow = true
+            }),
+            // Part 5: a 4th Shadow press, refused (key, fill and rim cast one).
+            Shot(name: "shadow_cap_notice_dark", dark: true, sceneShadowsOn: true, setUp: { store in
+                Self.sketchKey(store)
+                store.lights.append(.init(name: "light4"))
+                for i in 0..<3 { store.lights[i].shadow = true }
+            }, after: { controller, _ in
+                controller.select(name: "light4")
+                XCTAssertEqual(controller.setShadow(true), .refused)
+            }),
         ]
         let dir = Self.outputDirectory
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -651,6 +743,8 @@ final class LightsInspectorSnapshotTests: XCTestCase {
         let controller = LightsController(seams: store.seams)
         controller.begin()
         shot.after(controller, store)
+        // Drawing must write nothing beyond what `after` did.
+        let writesBefore = (store.numberWrites.count, store.vectorWrites.count, store.performed.count)
         let style = Self.style(dark: shot.dark)
         // A neutral viewport behind the card.
         let viewport = shot.dark ? Color(white: 0.08) : Color(white: 0.55)
@@ -661,7 +755,8 @@ final class LightsInspectorSnapshotTests: XCTestCase {
                 VStack(alignment: .trailing, spacing: 8) {
                     LightsBar(controller: controller, style: style, onDone: {})
                     LightsSideColumn(controller: controller, style: style,
-                                     inspectorStartsCollapsed: shot.collapsed)
+                                     inspectorStartsCollapsed: shot.collapsed,
+                                     sceneShadowsOn: shot.sceneShadowsOn)
                         .padding(.trailing, 10).padding(.bottom, 10)
                 }
                 .frame(width: shot.width, height: shot.height, alignment: .top)
@@ -669,7 +764,8 @@ final class LightsInspectorSnapshotTests: XCTestCase {
         } else {
             root = AnyView(
                 LightsSideColumn(controller: controller, style: style,
-                                 inspectorStartsCollapsed: shot.collapsed)
+                                 inspectorStartsCollapsed: shot.collapsed,
+                                 sceneShadowsOn: shot.sceneShadowsOn)
                     .padding(12)
                     .frame(width: shot.width, height: shot.height, alignment: .top)
                     .background(viewport))
@@ -695,9 +791,14 @@ final class LightsInspectorSnapshotTests: XCTestCase {
         NSLog("LIGHTSINSPECTOR_SNAPSHOT: \(url.path)")
         window.orderOut(nil)
 
-        XCTAssertTrue(store.numberWrites.isEmpty, "\(shot.name): drawing wrote \(store.numberWrites)")
-        XCTAssertTrue(store.vectorWrites.isEmpty, "\(shot.name): drawing wrote a colour")
-        XCTAssertTrue(store.performed.isEmpty, "\(shot.name): drawing pressed \(store.performed)")
+        XCTAssertEqual(store.numberWrites.count, writesBefore.0,
+                       "\(shot.name): drawing wrote \(store.numberWrites.dropFirst(writesBefore.0))")
+        XCTAssertEqual(store.vectorWrites.count, writesBefore.1, "\(shot.name): drawing wrote a colour")
+        XCTAssertEqual(store.performed.count, writesBefore.2,
+                       "\(shot.name): drawing pressed \(store.performed.dropFirst(writesBefore.2))")
+        if shot.name == "shadow_cap_notice_dark" {
+            XCTAssertTrue(controller.shadowRefused, "drawing must not clear the notice")
+        }
     }
 
     private func draw(_ host: NSView, in window: NSWindow, size: NSSize) -> NSBitmapImageRep? {

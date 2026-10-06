@@ -4057,10 +4057,14 @@ struct ContentView: View {
     // The Lights side column (#620): the selected light's inspector, and later
     // #621's orbit view above it. Placed by macLightsOverlay (macOS) and the
     // viewportView top-trailing overlay (iOS), each naming only this property.
+    // The inspector's Shadows hint reads the scene's Shadows switch from the
+    // scene poll (~500 ms, also in Lights mode) and its Turn On button sets it.
     private var lightsSideColumn: some View {
         LightsSideColumn(controller: engine.lightsController,
                          style: lightsStyle,
-                         inspectorStartsCollapsed: lightsInspectorStartsCollapsed)
+                         inspectorStartsCollapsed: lightsInspectorStartsCollapsed,
+                         sceneShadowsOn: engine.sceneShadowsOn,
+                         onEnableSceneShadows: { engine.enableSceneShadows() })
     }
 
     // The inspector starts collapsed to its header on compact width (iPhone),
@@ -4099,7 +4103,8 @@ struct ContentView: View {
                 let lights = engine.lightsController
                 if !value.isEmpty && value != "1" { lights.select(name: value) }
                 let names = (lights.rig?.lights ?? []).map(\.name).joined(separator: ",")
-                let inspector = LightsInspectorState(lights)?.summary ?? "none"
+                let inspector = LightsInspectorState(lights, sceneShadowsOn: engine.sceneShadowsOn)?
+                    .summary ?? "none"
                 NSLog("PYMOL_AUTOLIGHTS: active=\(lights.isActive) lights=\(names) selected=\(lights.selection.name ?? "none") inspector=\(inspector)")
             }
             #if DEBUG
@@ -4109,7 +4114,8 @@ struct ContentView: View {
                     let lights = engine.lightsController
                     var entries = LightsAutoEdit.apply(edits.tokens, to: lights)
                     entries += edits.rejected.map { "\($0) -> rejected" }
-                    let inspector = LightsInspectorState(lights)?.summary ?? "none"
+                    let inspector = LightsInspectorState(lights, sceneShadowsOn: engine.sceneShadowsOn)?
+                        .summary ?? "none"
                     NSLog("PYMOL_AUTOLIGHTS_EDIT: \(entries.joined(separator: "; ")) inspector=\(inspector)")
                 }
             }

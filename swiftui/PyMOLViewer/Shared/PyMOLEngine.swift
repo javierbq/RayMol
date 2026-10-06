@@ -3175,6 +3175,24 @@ final class PyMOLEngine: ObservableObject {
         MainActor.assumeIsolated { lightsController.frameRendered() }
     }
 
+    /// The scene's Shadows switch (metal_shadows) as the scene poll last read
+    /// it (~500 ms, in every mode); nil before the first poll. Studio shadows
+    /// render only while it is on (#616), so the light inspector hints when a
+    /// light casts a shadow and it is off.
+    var sceneShadowsOn: Bool? {
+        sceneState.values["metal_shadows"].map { $0 > 0.5 }
+    }
+
+    /// Turn the scene's Shadows switch on: the inspector hint's Turn On button
+    /// (a button press, never a drag tick). A console command, echoed like a
+    /// typed one, reflected in sceneState at once as the Tab shortcut does
+    /// (the next poll still has the last word).
+    func enableSceneShadows() {
+        guard isReady else { return }
+        runCommand("set metal_shadows, 1")
+        sceneState.values["metal_shadows"] = 1
+    }
+
     /// The preset menu, read once per process (empty until a read succeeds).
     private var cachedLightPresets: [LightPreset] = []
 
