@@ -33,7 +33,12 @@ This file pins what the gizmo relies on in the core:
   write, the eye demand in the engine's mode switch, the renderer's projection
   slope, and the gizmo out of LightRigBridge.swift; the gizmo's model
   (LightGizmoModel.swift) writes only through the owner-guarded setters and
-  picks only through its picker seam (comments stripped; skipped outside a
+  picks only through its picker seam; the overlay (LightGizmoOverlay.swift)
+  is a Canvas that takes no hits, with the Shadow chip and its Turn On as its
+  only buttons, writing only through the chip and the VoiceOver Select; no
+  gizmo file makes scene geometry; ContentView places the overlay on the
+  viewport under the bar and the side column on both platforms and logs
+  gizmo= beside inspector= and plan= (comments stripped; skipped outside a
   checkout).
 
 CI builds the GLUT flavour without a GPU, so this exercises _cmd and Python
@@ -512,6 +517,9 @@ ENGINE = os.path.join(SHARED, 'PyMOLEngine.swift')
 BRIDGE = os.path.join(SHARED, 'LightRigBridge.swift')
 GEOMETRY = os.path.join(SHARED, 'LightGizmoGeometry.swift')
 MODEL = os.path.join(SHARED, 'LightGizmoModel.swift')
+OVERLAY = os.path.join(SHARED, 'LightGizmoOverlay.swift')
+CONTENT_VIEW = os.path.join(SHARED, 'ContentView.swift')
+GIZMO_FILES = (GEOMETRY, MODEL, OVERLAY)
 METAL_PICK = os.path.join('modules', 'pymol', 'metal_pick.py')
 SCENE_RENDER = os.path.join('layer1', 'SceneRender.cpp')
 
@@ -545,6 +553,15 @@ MODEL_READS = {'isActive', 'isBusy', 'isOn', 'rig', 'selection', 'selectedIndex'
                'value', 'freshValue', 'isBehind'}
 MODEL_GUARDED_WRITES = {'set', 'setPlacement', 'setAim'}
 MODEL_PRESSES = {'select', 'beginGesture', 'placeHighlight', 'setShadow'}
+# What the overlay may touch on the controller: the observed state, the
+# chip's enablement and the VoiceOver Select action (the chip writes through
+# LightGizmoInteraction.toggleShadow, the inspector's setShadow).
+OVERLAY_MEMBERS = {'eye', 'facing', 'canEdit', 'select'}
+# Scene geometry: the gizmo must never be in the scene (#610, #433).
+SCENE_GEOMETRY = ('load_cgo', 'cgo.', 'pseudoatom', 'cmd.')
+# The overlay's site on the viewport (both platforms).
+GIZMO_SITE = '.overlay { if engine.interactionMode == .lights { lightGizmoOverlay } }'
+
 # Seams, unguarded write paths, mirror and eye drivers, and the engine's own
 # pick entry points: none may appear in the model.
 MODEL_FORBIDDEN = ('seams', '.edit(', 'writeNumbers(', 'perform(', 'eyeDemand',
@@ -733,3 +750,98 @@ class TestGizmoSource(testing.PyMOLTestCase):
         self.assertIn('LightGizmoInputs(controller: lightsController', layout)
         self.assertNotRegex(layout, r'runPython|runCommand|captureView|lightsEyeSpace|'
                                     r'lightCameraProjection|PyMOLBridge_|pickSurface')
+
+    def testTheOverlayIsACanvasThatTakesNoHits(self):
+        """The gizmo is drawn by one Canvas with .allowsHitTesting(false)
+        inside a GeometryReader; its only buttons are the Shadow chip and
+        the hint's Turn On."""
+        text = self.read(OVERLAY)
+        self.assertEqual(len(re.findall(r'\bCanvas\s*\{', text)), 1)
+        self.assertRegex(text, r'\bCanvas\s*\{[^{}]*\}\s*\.allowsHitTesting\(false\)')
+        self.assertIn('GeometryReader', text)
+        self.assertEqual(len(re.findall(r'\bButton\s*[({]', text)), 2,
+                         'the chip and Turn On are the only buttons')
+        self.assertIn('.accessibilityChildren', text)
+
+    def testNoGizmoFileMakesSceneGeometry(self):
+        """No gizmo file names a CGO, a pseudoatom or a cmd call: the gizmo
+        is never scene geometry, so it casts no shadow, never enters ray
+        tracing and never widens the extent."""
+        for rel in GIZMO_FILES:
+            text = self.read(rel)
+            for name in SCENE_GEOMETRY:
+                with self.subTest(rel, name=name):
+                    self.assertNotIn(name, text)
+
+    def testTheOverlayWritesOnlyThroughTheChipAndSelect(self):
+        """The overlay reads the controller's observed state and writes only
+        through the Shadow chip (LightGizmoInteraction.toggleShadow, the
+        inspector's setShadow) and the VoiceOver Select action; of the UI
+        state it sets only its own size."""
+        text = self.read(OVERLAY)
+        members = set(re.findall(r'\bcontroller\.(\w+)', text))
+        self.assertEqual(members - OVERLAY_MEMBERS, set())
+        self.assertEqual(len(re.findall(r'\.toggleShadow\(\)', text)), 1)
+        self.assertIn('LightGizmoInteraction(controller: controller).toggleShadow()', text)
+        for name in ('.set(', 'setPlacement(', 'setAim(', 'setShadow(', 'placeHighlight(',
+                     'beginGesture(', 'perform(', 'seams'):
+            with self.subTest(name):
+                self.assertNotIn(name, text)
+        self.assertEqual(set(re.findall(r'\bui\.(\w+)\s*=(?!=)', text)), {'viewSize'})
+
+    def testContentViewPlacesTheOverlay(self):
+        """ContentView puts the overlay on MetalViewport in Lights mode on
+        both platforms: in macViewport before the overlay that holds the bar
+        and the side column, in viewportView before the side column overlay
+        (one site for the four iOS layouts, full screen included), each naming
+        only lightGizmoOverlay, which passes the engine's UI state, grid mode,
+        Shadows switch and Turn On."""
+        content = self.read(CONTENT_VIEW)
+        self.assertEqual(content.count(GIZMO_SITE), 2)
+        mac = body(content, 'private var macViewport: some View')
+        self.assertIsNotNone(mac, 'macViewport not found')
+        self.assertGreaterEqual(mac.find(GIZMO_SITE), 0)
+        self.assertLess(mac.find(GIZMO_SITE), mac.find('.overlay(alignment: .top)'))
+        self.assertLess(mac.find('MetalViewport()'), mac.find(GIZMO_SITE))
+        ios = body(content, 'private var viewportView')
+        self.assertIsNotNone(ios, 'viewportView not found')
+        self.assertGreaterEqual(ios.find(GIZMO_SITE), 0)
+        self.assertLess(ios.find(GIZMO_SITE), ios.find('lightsSideColumn.padding(8)'))
+        self.assertLess(ios.find('MetalViewport()'), ios.find(GIZMO_SITE))
+        site = body(content, 'private var lightGizmoOverlay: some View')
+        self.assertIsNotNone(site, 'lightGizmoOverlay not found')
+        for needle in ('LightGizmoOverlay(controller: engine.lightsController',
+                       'ui: engine.lightGizmoUI', 'gridMode: engine.lightGizmoGridMode',
+                       'sceneShadowsOn: engine.sceneShadowsOn', 'engine.enableSceneShadows()'):
+            with self.subTest(needle):
+                self.assertIn(needle, site)
+
+    def testTheLogLinesCarryTheGizmo(self):
+        """Both PYMOL_AUTOLIGHTS log lines carry gizmo=<LightGizmoState
+        summary> beside inspector= and plan=, and the DEBUG gestures run with
+        the overlay's own size and the engine's picker."""
+        hook = body(self.read(CONTENT_VIEW), 'private func autoEnterLightsModeFromEnv()')
+        self.assertIsNotNone(hook, 'autoEnterLightsModeFromEnv not found')
+        lines = re.findall(r'NSLog\("PYMOL_AUTOLIGHTS(?:_EDIT)?:[^\n]*', hook)
+        self.assertEqual(len(lines), 2)
+        for line in lines:
+            with self.subTest(line[:30]):
+                self.assertIn('inspector=', line)
+                self.assertIn(' plan=', line)
+                self.assertIn(' gizmo=\\(gizmo)', line)
+        self.assertEqual(len(re.findall(r'LightGizmoState\(lights, sceneShadowsOn: '
+                                        r'engine\.sceneShadowsOn\)\?\.summary', hook)), 2)
+        self.assertIn('GizmoAutoContext(viewSize: engine.lightGizmoUI.viewSize', hook)
+        self.assertIn('picker: engine.lightGizmoPicker', hook)
+        self.assertIn('LightsAutoEdit.apply(edits.tokens, to: lights, gizmo: context)', hook)
+
+    def testLeavingTheModeResetsTheGizmoUI(self):
+        """The engine owns one LightGizmoUIState and resets it when Lights
+        mode ends (after end()), so no hover, drag or readout outlives the
+        mode."""
+        engine = self.read(ENGINE)
+        self.assertRegex(engine, r'lazy var lightGizmoUI: LightGizmoUIState')
+        mode = body(engine, 'func setInteractionMode(_ mode: InteractionMode)')
+        self.assertIsNotNone(mode, 'setInteractionMode not found')
+        self.assertGreater(mode.find('lightGizmoUI.reset()'), mode.find('lightsController.end()'))
+        self.assertEqual(len(re.findall(r'lightGizmoUI\.reset\(\)', engine)), 1)

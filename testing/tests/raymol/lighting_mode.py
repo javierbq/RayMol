@@ -363,7 +363,8 @@ NO_PYTHON_SOURCES = [os.path.join(SHARED, 'LightsController.swift'),
                      os.path.join(SHARED, 'LightsOrbitModel.swift'),
                      os.path.join(SHARED, 'LightsOrbitView.swift'),
                      os.path.join(SHARED, 'LightGizmoGeometry.swift'),
-                     os.path.join(SHARED, 'LightGizmoModel.swift')]
+                     os.path.join(SHARED, 'LightGizmoModel.swift'),
+                     os.path.join(SHARED, 'LightGizmoOverlay.swift')]
 NO_PYTHON = re.compile(
     r'\brunPython\w*|\bRunPython\w*|\brunCommand\w*|\bRunCommand\w*'
     r'|appkit_lights|\bPyMOLBridge_\w+\s*\(')
