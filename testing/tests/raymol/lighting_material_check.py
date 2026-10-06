@@ -101,6 +101,8 @@ SPOT = (slice(30, 34), slice(60, 66))       # a highlight: 24 pixels (0.75%)
 SPOT2 = (slice(40, 48), slice(40, 50))      # a second one: 80 pixels
 BROAD = (slice(16, 56), slice(24, 80))      # most of the geometry (70%)
 RIM = (slice(16, 18), slice(24, 104))       # the top edge (5%)
+LOBE = (slice(28, 44), slice(56, 76))       # a broad highlight: 320 pixels (10%)
+SHEEN = (slice(16, 24), slice(24, 104))     # a grazing band: the top 8 rows (20%)
 
 
 def img(value=0):
@@ -146,18 +148,23 @@ class TestChecks(testing.PyMOLTestCase):
         self.assertFalse(r.ok, r)
 
     def testThresholdsInForce(self):
-        """The provisional values of plan section 9.4 (frozen after round 1:
-        this test then pins the frozen ones)."""
+        """The thresholds frozen on round 1 (plan section 9.4: tuned once by
+        #613's half-margin rule, the measurements written beside each in
+        check_materials.py; never re-tuned to make a later round pass)."""
         c = self.c
         self.assertEqual((c.CHANGE, c.HIGHLIGHT_MAX_DELTA, c.HIGHLIGHT_MIN_FRACTION,
-                          c.HIGHLIGHT_MAX_FRACTION, c.NEVER_DARKER), (8, 40, 0.002, 0.40, -1))
+                          c.HIGHLIGHT_MAX_FRACTION, c.NEVER_DARKER), (8, 13, 0.048, 0.72, -1))
         self.assertEqual((c.NEUTRAL_RED, c.NEUTRAL_MAX, c.MIN_PIXELS), (12, 3.0, 50))
-        self.assertEqual((c.TINT_DROP, c.TINT_HUE, c.TINT_NEUTRAL), (0.30, 25.0, 0.10))
+        self.assertEqual((c.TINT_DROP, c.TINT_HUE, c.TINT_NEUTRAL), (0.35, 25.0, 0.14))
         self.assertEqual(c.TINT_BASE, (0.85, 0.45, 0.10))
-        self.assertEqual((c.GLINT_MAX_FRACTION, c.GLINT_PEAK, c.GLINT_NEUTRAL), (0.10, 30, 6.0))
+        self.assertEqual((c.GLINT_MAX_FRACTION, c.GLINT_PEAK, c.GLINT_NEUTRAL), (0.63, 56, 6.0))
         self.assertEqual((c.DIFFUSE_TOLERANCE, c.DIFFUSE_LIT), (0.08, 4))
-        self.assertEqual((c.WRAP_LIT, c.WRAP_MARGIN), (2, 0.02))
-        self.assertEqual((c.SHEEN_MAX_DELTA, c.SHEEN_FRACTION), (8, 0.005))
+        self.assertEqual((c.WRAP_LIT, c.WRAP_MARGIN), (2, 0.006))
+        self.assertEqual((c.SHEEN_MAX_DELTA, c.SHEEN_FRACTION), (36, 0.10))
+        # the frozen block says so, and nothing is left marked provisional
+        src = open(os.path.join(LIGHTING, 'check_materials.py')).read()
+        self.assertIn('FROZEN', src)
+        self.assertNotIn('provisional', src.lower())
         # the expected diffuse ratios follow plan 3.1 (#615 Q4)
         self.assertEqual(c.DIFFUSE_EXPECTED, {'plastic': 1.0, 'matte': 1.0, 'metallic': 0.79})
         self.assertAlmostEqual(c.DIFFUSE_EXPECTED['metallic'], 1.0 - 0.6 * 0.35, places=6)
@@ -175,11 +182,12 @@ class TestChecks(testing.PyMOLTestCase):
     def testHighlight(self):
         c = self.c
         off = grey()
-        self.assertPass(c.check_highlight(plus(off, SPOT, (60, 60, 60)), off))
+        self.assertPass(c.check_highlight(plus(off, LOBE, (60, 60, 60)), off))
         self.assertFail(c.check_highlight(off, off.copy()))                 # none
-        self.assertFail(c.check_highlight(plus(off, SPOT, (20, 20, 20)), off))   # too dim
-        self.assertFail(c.check_highlight(plus(off, BROAD, (60, 60, 60)), off))  # a diffuse
-        darker = plus(plus(off, SPOT, (60, 60, 60)), SPOT2, (-5, -5, -5))
+        self.assertFail(c.check_highlight(plus(off, LOBE, (10, 10, 10)), off))   # too dim
+        self.assertFail(c.check_highlight(plus(off, SPOT, (60, 60, 60)), off))   # too few pixels
+        self.assertFail(c.check_highlight(plus(off, GEO, (60, 60, 60)), off))    # a diffuse
+        darker = plus(plus(off, LOBE, (60, 60, 60)), SPOT2, (-5, -5, -5))
         self.assertFail(c.check_highlight(darker, off))                     # darker somewhere
         self.assertFail(c.check_highlight(img(), img()))                    # no geometry
 
@@ -279,10 +287,10 @@ class TestChecks(testing.PyMOLTestCase):
     def testSheenKept(self):
         c = self.c
         a = grey(30)
-        self.assertPass(c.check_sheen_kept(plus(a, RIM, (20, 20, 20)), a))
+        self.assertPass(c.check_sheen_kept(plus(a, SHEEN, (40, 40, 40)), a))
         self.assertFail(c.check_sheen_kept(a, a.copy()))
-        self.assertFail(c.check_sheen_kept(plus(a, (slice(16, 17), slice(24, 30)), (20, 20, 20)),
-                                           a))
+        self.assertFail(c.check_sheen_kept(plus(a, SHEEN, (20, 20, 20)), a))    # too faint
+        self.assertFail(c.check_sheen_kept(plus(a, RIM, (40, 40, 40)), a))      # too few pixels
 
     def testRowsEscapeBars(self):
         r = self.c.Result('highlight', 's', True, 'max |d| 3', group='default')
@@ -311,9 +319,16 @@ class TestChecks(testing.PyMOLTestCase):
                   'rubber_surface_rt0', 'jelly_surface_rt0', 'marble_surface_rt0',
                   'metallic_spheres_rt0', 'metallic_surface_rt1', 'metallic_surface_sh_rt0'):
             self.assertIn(('highlight', s), subjects)
-        for s in ('glass_surface_rt0', 'glass_sticks_rt0', 'glass_dots_rt0',
-                  'glass_surface_rt1', 'glass_surface_sh_rt0'):
+        for s in ('glass_surface_rt0', 'glass_sticks_rt0', 'glass_surface_rt1',
+                  'glass_surface_sh_rt0'):
             self.assertIn(('glints', s), subjects)
+        self.assertIn(('frost', 'frosted_surface'), subjects)
+        # the surface dots left glints and frost at the round-1 freeze (their
+        # glints average away in the stacked OIT; see INFORMATIONAL)
+        self.assertFalse([p for p in plan if 'dots' in p[2]])
+        for tag in ('glass_dots_hi1_rt0', 'glass_dots_hi0_rt0', 'frosted_dots_hi1_rt0',
+                    'frosted_dots_hi0_rt0'):
+            self.assertIn(tag, self.c.INFORMATIONAL)
         for s in ('rubber_k3z_surface', 'jelly_k3z_surface'):
             self.assertIn(('knobs_dark', s), subjects)
 
@@ -358,9 +373,9 @@ class TestChecks(testing.PyMOLTestCase):
             elif check == 'tint_control':
                 imgs = [twhite, torange]
             elif check == 'highlight':
-                imgs = [plus(off, SPOT, (60, 60, 60)), off]
+                imgs = [plus(off, LOBE, (60, 60, 60)), off]
             elif check == 'sheen_kept':
-                imgs = [plus(off, RIM, (20, 20, 20)), off]
+                imgs = [plus(off, SHEEN, (40, 40, 40)), off]
             for tag, image in zip(tags, imgs):
                 self.write(directory, tag, image)
 

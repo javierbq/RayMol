@@ -54,35 +54,63 @@ import os
 import sys
 
 # --- thresholds ----------------------------------------------------------------
-# PROVISIONAL UNTIL ROUND 1 (#615 plan section 9.4). The values below are the
-# plan's. They are re-measured ONCE on the first full L2 round and frozen by
-# #613's rule (about half the smallest measured margin, the measured numbers
-# written here, pinned by lighting_material_check.py), never re-tuned to make
-# a later round pass. nohighlight and knobs_dark are exact (max 0) and never
-# tuned.
+# Tuned ONCE, on #615's first full L2 round (round 1: the 79 images of
+# lighting_615.json, 1rx1 at 1280x720, app built from 973cbdea8), and FROZEN:
+# never re-tuned to make a later round pass (#615 plan section 9.4).
+#
+# #613's rule (check_lit.py): a threshold a measured value must reach is about
+# half the smallest value measured in its class, rounded down; a cap a value
+# must stay under sits about halfway between the largest value measured and
+# what the failure it guards against would give. Definitions (what counts as
+# a changed or lit pixel, which pixels a ratio reads), sign checks and bands
+# the measurements sit deep inside keep the plan's values. "measured" is round
+# 1's extreme and the subject it came from. nohighlight and knobs_dark are
+# exact (max 0) and never tuned.
 
 CHANGE = 8                  # a pixel "changes" when its largest channel delta is at least this
-HIGHLIGHT_MAX_DELTA = 40    # highlight: its brightest added channel at least this
-HIGHLIGHT_MIN_FRACTION = 0.002   # ... changing at least this fraction of the geometry
-HIGHLIGHT_MAX_FRACTION = 0.40    # ... and at most this (a highlight, not a diffuse)
+HIGHLIGHT_MAX_DELTA = 13    # highlight: its brightest added channel at least this
+                            #   (plan 40; measured 27, marble_surface, jelly_surface and
+                            #   jelly_spheres, whose bright bases sit at the 8-bit knee, #624;
+                            #   others 70-148)
+HIGHLIGHT_MIN_FRACTION = 0.048   # ... changing at least this fraction of the geometry
+                                 #   (plan 0.002; measured 9.708%, marble_surface)
+HIGHLIGHT_MAX_FRACTION = 0.72    # ... and at most this (a highlight, not a diffuse)
+                                 #   (plan 0.40; measured 45.512%, metallic_surface_rt0, whose
+                                 #   exponent-30 lobe is broad; the rig's diffuse lights 98.762%)
 NEVER_DARKER = -1           # highlight, glints, classic_glints: the smallest delta at least this
+                            #   (measured -1, glass_surface: rounding)
 NEUTRAL_RED = 12            # neutral, tint: only pixels whose red delta is at least this
-NEUTRAL_MAX = 3.0           # neutral: |mean(dR - dB)| at most this many levels
+NEUTRAL_MAX = 3.0           # neutral: |mean(dR - dB)| at most this many levels (measured 0.00)
 MIN_PIXELS = 50             # neutral, tint: at least this many such pixels to judge
-TINT_DROP = 0.30            # tint: the table's mean dB/dR is under Custom tint 0's by this
-                            #   (rule B, #615 Q1; rule A would be 0.15)
+TINT_DROP = 0.35            # tint: the table's mean dB/dR is under Custom tint 0's by this
+                            #   (plan 0.30 under rule B, #615 Q1; measured 0.719,
+                            #   metallic_surface; spheres 0.720)
 TINT_HUE = 25.0             # tint: the table's delta hue within this many degrees of the base's
-TINT_NEUTRAL = 0.10         # tint (t0) and tint_control: mean dB/dR within this of 1
+                            #   (measured 0.4)
+TINT_NEUTRAL = 0.14         # tint (t0) and tint_control: mean dB/dR within this of 1
+                            #   (plan 0.10; measured 1.068, the plastic control: the knee
+                            #   compresses the orange base's red more than its blue; t0 1.038)
 TINT_BASE = (0.85, 0.45, 0.10)   # the saturated base of the tint scenes
-GLINT_MAX_FRACTION = 0.10   # glints, classic_glints: at most this fraction of the geometry changes
-GLINT_PEAK = 30             # ... the 99.9th percentile of the delta over the geometry at least this
+GLINT_MAX_FRACTION = 0.63   # glints, classic_glints: at most this fraction of the geometry changes
+                            #   (plan 0.10; measured 27.381%, glass_sticks: four exponent-60
+                            #   lobes, the headlight's on every face turned to the viewer;
+                            #   classic_glints 20.344%; the rig's diffuse lights 98.762%)
+GLINT_PEAK = 56             # ... the 99.9th percentile of the delta over the geometry at least this
+                            #   (plan 30; measured 113, glass_surface rt0, rt1 and sh)
 GLINT_NEUTRAL = 6.0         # glints: |mean(dR - dB)| over the changed pixels at most this
+                            #   (measured 0.00)
 DIFFUSE_TOLERANCE = 0.08    # diffuse: the ratio within this of the expected value
+                            #   (measured 1.000 matte and plastic, 0.791 metallic)
 DIFFUSE_LIT = 4             # diffuse: default's lit pixels (largest channel delta at least this)
 WRAP_LIT = 2                # wrap: a pixel is lit when its largest channel delta is at least this
-WRAP_MARGIN = 0.02          # wrap: lit fraction above matte's by at least this (of the geometry)
-SHEEN_MAX_DELTA = 8         # sheen_kept: the largest channel difference at least this
-SHEEN_FRACTION = 0.005      # ... on at least this fraction of the geometry
+WRAP_MARGIN = 0.006         # wrap: lit fraction above matte's by at least this (of the geometry)
+                            #   (plan 0.02; measured +1.231%, marble_surface; jelly +1.238%;
+                            #   default and plastic, without wrap, +0.000%: the dim rig's three
+                            #   lights already reach 98.762% of the surface)
+SHEEN_MAX_DELTA = 36        # sheen_kept: the largest channel difference at least this
+                            #   (plan 8; measured 73)
+SHEEN_FRACTION = 0.10       # ... on at least this fraction of the geometry
+                            #   (plan 0.005; measured 20.794%)
 
 # The studio diffuse each material should take, over default's (plan 3.1,
 # #615 Q4: reflective diffuse 1 - reflect * tint; metallic 1 - 0.6 * 0.35).
@@ -91,7 +119,20 @@ DIFFUSE_EXPECTED = {'plastic': 1.0, 'matte': 1.0, 'metallic': 0.79}
 GROUPS = ('default', 'procedural', 'reflective', 'glass')
 
 # Tags of lighting_615.json no check reads: for the eye (the contact sheet).
-INFORMATIONAL = ('frosted_surface_hi1_rt0', 'frosted_surface_hi0_rt0',
+# The lobe tags are informational by plan. The surface dots (clear and frosted
+# glass on sphere impostors) left the glints and frost checks at the round-1
+# freeze: that path folds its glints into the colour and composites through
+# the glass's coverage in the weighted OIT (no mat_glass_cover), so across
+# the stacked dots each glint is averaged with the dots behind it. Measured
+# at round 1: hi1 against hi0 moves no pixel by more than 2 levels (glass)
+# or 3 (frosted), and PyMOL's own glints there (classic 1 against 0, every
+# light dark) by at most 7, so no glint threshold can be met on that subject
+# with or without #615. The path stays drawn here for the eye, its source is
+# pinned by lighting_material_msl.py and lighting_msl.py, and its no-rig
+# pixels by lighting_615_default.json's surfdots tags; frost reads the
+# surfaces (the VBO OIT path) instead.
+INFORMATIONAL = ('glass_dots_hi1_rt0', 'glass_dots_hi0_rt0',
+                 'frosted_dots_hi1_rt0', 'frosted_dots_hi0_rt0',
                  'lobe_plastic_spheres_rt0', 'lobe_metallic_spheres_rt0')
 
 # The negative control (plan 9.4): with a renderer that gives every material
@@ -473,12 +514,13 @@ def l2_plan():
                      _pair('default_surface', 'dim0', 'dimdark'),
                      {'expected': DIFFUSE_EXPECTED[mat]}))
     # glass (clear, frosted and jelly)
-    for s, rt in (('glass_surface', 0), ('glass_sticks', 0), ('glass_dots', 0),
+    for s, rt in (('glass_surface', 0), ('glass_sticks', 0),
                   ('glass_surface', 1), ('glass_surface_sh', 0)):
         plan.append(('glass', 'glints', '%s_rt%d' % (s, rt), check_glints,
                      _pair(s, 'hi1', 'hi0', rt), {}))
-    plan.append(('glass', 'frost', 'frosted_dots', check_frost,
-                 _pair('frosted_dots', 'hi1', 'hi0') + _pair('glass_dots', 'hi1', 'hi0'), {}))
+    plan.append(('glass', 'frost', 'frosted_surface', check_frost,
+                 _pair('frosted_surface', 'hi1', 'hi0') + _pair('glass_surface', 'hi1', 'hi0'),
+                 {}))
     plan.append(('glass', 'classic_glints', 'glass_surface', check_classic_glints,
                  _pair('glass_surface', 'dark_c1', 'dark'), {}))
     hl('glass', 'jelly_surface')
