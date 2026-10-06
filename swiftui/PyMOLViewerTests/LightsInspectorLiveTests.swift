@@ -434,10 +434,10 @@ final class LightsInspectorLiveTests: XCTestCase {
 
     // MARK: visibility
 
-    /// What the inspector shows from (LightsInspectorState, Part 4, is built on
-    /// the same state): the mode is active with a selected, editable light.
+    /// The card shows (LightsInspectorState exists: the mode is active with a
+    /// selected light) and its controls are live.
     private var inspectorShows: Bool {
-        controller.isActive && controller.selectedLight != nil && controller.canEdit
+        LightsInspectorState(controller) != nil && controller.canEdit
     }
 
     func testInspectorHiddenOutsideTheMode() throws {
@@ -446,6 +446,7 @@ final class LightsInspectorLiveTests: XCTestCase {
 
         engine.setInteractionMode(.viewing)   // Done
         XCTAssertFalse(inspectorShows, "after Done")
+        XCTAssertNil(LightsInspectorState(controller), "the card draws nothing after Done")
         let json = engine.lightRigJSON()
         XCTAssertEqual(controller.set(.orbit, 80), .badIndex, "an edit after Done is refused")
         XCTAssertEqual(engine.lightRigJSON(), json)
