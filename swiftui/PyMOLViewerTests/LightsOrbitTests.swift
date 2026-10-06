@@ -1266,5 +1266,35 @@ final class OrbitAutoGestureTests: XCTestCase {
         controller.end()
         XCTAssertEqual(OrbitAutoGesture.apply(.arc(10), to: controller), "arc:10 -> no_light")
     }
+
+    /// #623: the gestures run on the canvases the active placement shows:
+    /// the compact sheet's 164 pt plan, the expanded sheet's least pinned
+    /// plan (120) beside its widest arc (98), and the side panel's.
+    func testAppliesAtThePlacementSizes() {
+        let sizes: [(String, CGSize, CGSize)] = [
+            ("compact", CGSize(width: 164, height: 164), LightsOrbitMetrics.arcSize),
+            ("pinned 120", CGSize(width: 120, height: 120), CGSize(width: 98, height: 120)),
+            ("pinned 194", CGSize(width: 194, height: 194), CGSize(width: 98, height: 194)),
+        ]
+        for (name, plan, arc) in sizes {
+            let (store, controller) = sketchRig()
+            let lines = ["plan:key:100", "square:2.5", "arc:20", "pinch:1.5", "tap:fill"].map {
+                OrbitAutoGesture.apply(OrbitAutoGesture.parse($0)!, to: controller, planSize: plan, arcSize: arc)
+            }
+            XCTAssertEqual(lines, ["plan:key:100 -> ok orbit=105", "square:2.5 -> ok radius=2.5",
+                                   "arc:20 -> ok pitch=20", "pinch:1.5 -> ok radius=4",
+                                   "tap:fill -> ok selected=fill"], name)
+            XCTAssertEqual(store.lights[0].orbit, 105, name)
+            XCTAssertTrue(store.performed.isEmpty, name)
+        }
+        // LightsAutoEdit passes the sizes through.
+        let (store, controller) = sketchRig()
+        let parsed = LightsAutoEdit.parse("arc:-20")
+        XCTAssertEqual(LightsAutoEdit.apply(parsed.tokens, to: controller,
+                                            orbitPlanSize: CGSize(width: 120, height: 120),
+                                            orbitArcSize: CGSize(width: 98, height: 120)),
+                       ["arc:-20 -> ok pitch=-20"])
+        XCTAssertEqual(store.lights[0].pitch, -20)
+    }
 }
 #endif

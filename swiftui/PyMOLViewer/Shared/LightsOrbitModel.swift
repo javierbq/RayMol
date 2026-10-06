@@ -845,13 +845,18 @@ enum OrbitAutoGesture: Equatable {
     /// Run the gesture on `controller`; one `<token> -> <result> <value>`
     /// line: the last write's result (`none` when nothing was written, `miss`
     /// when the press hit no target) and the selected light's value after.
+    /// `planSize` and `arcSize` are the canvases' sizes in the placement that
+    /// shows them (the card's by default; #623's sheet and side panel pass
+    /// theirs), so a run drives the plan the user sees.
     @MainActor
     static func apply(_ gesture: OrbitAutoGesture, to controller: LightsController,
-                      slop: CGFloat = LightsOrbitMetrics.defaultSlop) -> String {
+                      slop: CGFloat = LightsOrbitMetrics.defaultSlop,
+                      planSize: CGSize = LightsOrbitMetrics.planSize,
+                      arcSize: CGSize = LightsOrbitMetrics.arcSize) -> String {
         let interaction = LightsOrbitInteraction(controller: controller)
         guard let state = LightsOrbitState(controller) else { return "\(gesture.token) -> no_light" }
-        let plan = OrbitPlanLayout(extent: state.extent, slop: slop)
-        let arc = PitchArcLayout(slop: slop)
+        let plan = OrbitPlanLayout(size: planSize, extent: state.extent, slop: slop)
+        let arc = PitchArcLayout(size: arcSize, slop: slop)
         let ticks = LightsOrbitMetrics.autoTicks
         var last: LightSetResult?
         func drag(_ session: inout OrbitDragSession, _ path: (Double) -> CGPoint) {

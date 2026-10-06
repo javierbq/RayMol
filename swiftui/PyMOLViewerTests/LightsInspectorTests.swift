@@ -664,6 +664,8 @@ final class LightsInspectorSnapshotTests: XCTestCase {
         var sceneShadowsOn: Bool?
         /// The touch profile's minimum target (44: iOS, drawn on macOS).
         var touch: CGFloat = 0
+        /// The whole card, or only its header or rows (#623's sheet).
+        var presentation: LightsInspectorPresentation = .card
         var setUp: (FakeRigStore) -> Void = { _ in }
         var after: (LightsController, FakeRigStore) -> Void = { _, _ in }
     }
@@ -760,6 +762,22 @@ final class LightsInspectorSnapshotTests: XCTestCase {
                 store.lights[0].color = SIMD3(1, 0.62, 0.3)
             }),
             Shot(name: "ios44_collapsed_light", height: 120, collapsed: true, touch: 44, setUp: Self.sketchKey),
+            // #623: the sheet's presentations. The header alone (no chevron,
+            // no card chrome), with the Shadows hint and Turn On under it;
+            // the rows alone at a phone sheet's 351 pt (six swatches in one
+            // row of 44 pt targets).
+            Shot(name: "ios44_header_hint_light", width: 375, height: 120, sceneShadowsOn: false, touch: 44,
+                 presentation: .header, setUp: { store in
+                     Self.sketchKey(store)
+                     store.lights[0].shadow = true
+                 }),
+            Shot(name: "header_lights_off_dark", dark: true, width: 375, height: 80, presentation: .header,
+                 setUp: { store in
+                     Self.sketchKey(store)
+                     store.enabled = false
+                 }),
+            Shot(name: "ios44_rows_351_light", width: 375, height: 560, touch: 44, presentation: .rows,
+                 setUp: Self.sketchKey),
         ]
         let dir = Self.outputDirectory
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -793,6 +811,16 @@ final class LightsInspectorSnapshotTests: XCTestCase {
                 }
                 .frame(width: shot.width, height: shot.height, alignment: .top)
                 .background(viewport))
+        } else if shot.presentation != .card {
+            // A presentation alone, on the tools' background, padded as the
+            // sheet pads it.
+            root = AnyView(
+                LightsInspector(controller: controller, style: style,
+                                sceneShadowsOn: shot.sceneShadowsOn, presentation: shot.presentation)
+                    .padding(.horizontal, 12)
+                    .frame(width: shot.width, height: shot.height, alignment: .top)
+                    .background(style.background)
+                    .environment(\.lightsTouchMinimum, shot.touch))
         } else {
             // The inspector card alone, so these pictures keep #620's meaning
             // (the orbit card has its own in LightsOrbitSnapshotTests).

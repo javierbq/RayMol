@@ -160,11 +160,34 @@ struct OrbitCollapsedSummary: View {
 /// The plan and the pitch arc, side by side, with their gestures and their
 /// VoiceOver elements. Observes the controller and `eye` (pinned lamps move
 /// with the camera) and holds the gesture sessions.
+///
+/// The card draws them at LightsOrbitMetrics' sizes; the iPhone sheet and the
+/// side panel (#623, LightsSheet.swift) pass their own: a 164 pt plan alone in
+/// the compact sheet, a pinned plan and a wider arc when pulled up. The
+/// layouts, the hit tests and the gestures all follow the sizes given.
 struct OrbitCanvases: View {
     @ObservedObject var controller: LightsController
     @ObservedObject var eye: LightsEyeState
     var style: LightsBarStyle
-    var slop: CGFloat = LightsOrbitMetrics.defaultSlop
+    var slop: CGFloat
+    /// The plan canvas's size, the arc canvas's, and whether the arc shows.
+    var planSize: CGSize
+    var arcSize: CGSize
+    var showsArc: Bool
+
+    init(controller: LightsController, eye: LightsEyeState, style: LightsBarStyle,
+         slop: CGFloat = LightsOrbitMetrics.defaultSlop,
+         planSize: CGSize = LightsOrbitMetrics.planSize,
+         arcSize: CGSize = LightsOrbitMetrics.arcSize,
+         showsArc: Bool = true) {
+        self.controller = controller
+        self.eye = eye
+        self.style = style
+        self.slop = slop
+        self.planSize = planSize
+        self.arcSize = arcSize
+        self.showsArc = showsArc
+    }
 
     // One drag on the plan, one on the arc and one pinch at a time. A
     // `…Touch` sequence marks a drag whose press was handled (hit or miss),
@@ -190,7 +213,9 @@ struct OrbitCanvases: View {
         if let state = LightsOrbitState(controller) {
             HStack(alignment: .top, spacing: LightsOrbitView.gap) {
                 plan(state)
-                arc(state)
+                if showsArc {
+                    arc(state)
+                }
             }
             .opacity(state.canEdit ? 1 : 0.5)
         }
@@ -201,8 +226,9 @@ struct OrbitCanvases: View {
     /// The plan's layout now: frozen at the press during a drag or a pinch,
     /// else fitted to the lamps.
     static func planLayout(_ state: LightsOrbitState, frozenExtent: Double?,
-                           slop: CGFloat = LightsOrbitMetrics.defaultSlop) -> OrbitPlanLayout {
-        OrbitPlanLayout(extent: frozenExtent ?? state.extent, slop: slop)
+                           slop: CGFloat = LightsOrbitMetrics.defaultSlop,
+                           size: CGSize = LightsOrbitMetrics.planSize) -> OrbitPlanLayout {
+        OrbitPlanLayout(size: size, extent: frozenExtent ?? state.extent, slop: slop)
     }
 
     private var frozenExtent: Double? { planSession?.plan?.extent ?? pinchExtent }
@@ -217,11 +243,11 @@ struct OrbitCanvases: View {
     // MARK: plan
 
     private func plan(_ state: LightsOrbitState) -> some View {
-        let layout = Self.planLayout(state, frozenExtent: frozenExtent, slop: slop)
+        let layout = Self.planLayout(state, frozenExtent: frozenExtent, slop: slop, size: planSize)
         let painter = OrbitPlanPainter(state: state, layout: layout, squareAngle: frozenSquareAngle,
                                        style: style)
         let owner = state.selected.name
-        return OrbitCanvas(size: LightsOrbitMetrics.planSize) { painter.draw(in: &$0) }
+        return OrbitCanvas(size: planSize) { painter.draw(in: &$0) }
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0, coordinateSpace: .local)
@@ -308,10 +334,10 @@ struct OrbitCanvases: View {
     // MARK: arc
 
     private func arc(_ state: LightsOrbitState) -> some View {
-        let layout = PitchArcLayout(slop: slop)
+        let layout = PitchArcLayout(size: arcSize, slop: slop)
         let painter = PitchArcPainter(state: state, layout: layout, style: style)
         let owner = state.selected.name
-        return OrbitCanvas(size: LightsOrbitMetrics.arcSize) { painter.draw(in: &$0) }
+        return OrbitCanvas(size: arcSize) { painter.draw(in: &$0) }
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0, coordinateSpace: .local)

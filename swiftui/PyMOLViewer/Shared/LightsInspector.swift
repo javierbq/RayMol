@@ -9,6 +9,8 @@
 // it is on), with a Turn On button the owner (ContentView) wires.
 // It sits in the Lights side column (LightsSideColumn.swift): under the bar on
 // macOS, at the viewport's top-trailing corner on iOS (ContentView places it).
+// The iPhone sheet and the side panel (#623, LightsSheet.swift) draw its
+// header and its rows apart (LightsInspectorPresentation), from the same code.
 //
 // It observes LightsController, the one Lights model the bar (#619), the orbit
 // view (#621) and the gizmo (#622) share, so a chip tap selects here and an
@@ -589,6 +591,9 @@ struct LightAngleFieldRow: View {
         .onChange(of: focused) { _, now in
             if now { editor.begin(light: lightName) } else { commit() }
         }
+        // The iPhone sheet and the side panel keep the scene's size while a
+        // field has the keyboard (#623): they read this.
+        .preference(key: LightsFieldFocusKey.self, value: focused)
     }
 
     private var textBinding: Binding<String> {
@@ -661,6 +666,27 @@ extension LightsController {
 
 // MARK: - The card
 
+/// True while an Orbit or Pitch field has the keyboard focus. The iPhone
+/// sheet and the side panel (#623) forward it, so the viewport does not
+/// resize for the keyboard while a Lights field is edited.
+struct LightsFieldFocusKey: PreferenceKey {
+    static var defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) {
+        value = value || nextValue()
+    }
+}
+
+/// What part of the inspector a view draws:
+/// - `card`: the whole card (#620: the side column, the iPad float);
+/// - `header`: the identity dot, the light menu, the status line, Shadow and
+///   Pin, then the cap notice and the Shadows hint (with Turn On); no
+///   chevron, fixed width or card chrome (the iPhone sheet's header row);
+/// - `rows`: the content rows and the footer only; no header, inner
+///   ScrollView or chrome (the sheet and the side panel scroll them).
+enum LightsInspectorPresentation: Equatable {
+    case card, header, rows
+}
+
 private struct LightsInspectorHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
@@ -678,6 +704,8 @@ struct LightsInspector: View {
     var sceneShadowsOn: Bool?
     /// Turn the scene's Shadows switch on (the hint's Turn On button).
     var onEnableSceneShadows: () -> Void
+    /// The whole card, or only its header or rows (#623's sheet).
+    var presentation: LightsInspectorPresentation
 
     /// Collapsed to its header row. Plain view state, seeded per mode entry and
     /// never persisted (the test host shares the installed app's defaults).
@@ -695,24 +723,55 @@ struct LightsInspector: View {
     static let width: CGFloat = 284
     static let estimatedHeight: CGFloat = 480
 
-    init(controller: LightsController, style: LightsBarStyle, initiallyCollapsed: Bool,
-         sceneShadowsOn: Bool? = nil, onEnableSceneShadows: @escaping () -> Void = {}) {
+    init(controller: LightsController, style: LightsBarStyle, initiallyCollapsed: Bool = false,
+         sceneShadowsOn: Bool? = nil, onEnableSceneShadows: @escaping () -> Void = {},
+         presentation: LightsInspectorPresentation = .card) {
         self.controller = controller
         self.style = style
         self.sceneShadowsOn = sceneShadowsOn
         self.onEnableSceneShadows = onEnableSceneShadows
+        self.presentation = presentation
         _collapsed = State(initialValue: initiallyCollapsed)
     }
 
     var body: some View {
         if let state = LightsInspectorState(controller, sceneShadowsOn: sceneShadowsOn) {
-            card(state)
+            switch presentation {
+            case .card:
+                card(state)
+            case .header:
+                headerBlock(state)
+            case .rows:
+                content(state)
+                    .tint(style.accent)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("lights.inspector.rows")
+            }
         }
+    }
+
+    /// The `header` presentation: the header row without its chevron, then
+    /// the notice and the Shadows hint, which answer the header's Shadow chip.
+    private func headerBlock(_ state: LightsInspectorState) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header(state, showsChevron: false)
+                .padding(.vertical, touchMinimum > 0 ? 0 : 8)
+            if let notice = state.notice {
+                noticeRow(notice).padding(.bottom, 8)
+            }
+            if state.showsShadowsHint {
+                shadowsHintRow(state).padding(.bottom, 8)
+            }
+        }
+        .tint(style.accent)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(state.containerLabel)
+        .accessibilityIdentifier("lights.inspector.header")
     }
 
     private func card(_ state: LightsInspectorState) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            header(state)
+            header(state, showsChevron: true)
                 // The 44 pt targets carry the header's height on iOS.
                 .padding(.horizontal, 12).padding(.vertical, touchMinimum > 0 ? 0 : 8)
             // Shown even while collapsed: both answer the header's Shadow chip.
@@ -753,7 +812,7 @@ struct LightsInspector: View {
 
     // MARK: header
 
-    private func header(_ state: LightsInspectorState) -> some View {
+    private func header(_ state: LightsInspectorState, showsChevron: Bool) -> some View {
         HStack(spacing: 6) {
             // The status goes under the name, so the Shadow and Pin chips
             // leave room for any light name and `Lights off`.
@@ -777,18 +836,20 @@ struct LightsInspector: View {
             Spacer(minLength: 2)
             shadowToggle(state)
             pinToggle(state)
-            Button { withAnimation(.easeOut(duration: 0.15)) { collapsed.toggle() } } label: {
-                Image(systemName: collapsed ? "chevron.down" : "chevron.up")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(style.text.opacity(0.7))
-                    .frame(width: 18, height: 18)
-                    .contentShape(Rectangle())
-                    .lightsTouchTarget()
+            if showsChevron {
+                Button { withAnimation(.easeOut(duration: 0.15)) { collapsed.toggle() } } label: {
+                    Image(systemName: collapsed ? "chevron.down" : "chevron.up")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(style.text.opacity(0.7))
+                        .frame(width: 18, height: 18)
+                        .contentShape(Rectangle())
+                        .lightsTouchTarget()
+                }
+                .buttonStyle(.plain)
+                .help(LightsInspectorState.collapseLabel(collapsed: collapsed))
+                .accessibilityLabel(LightsInspectorState.collapseLabel(collapsed: collapsed))
+                .accessibilityIdentifier("lights.inspector.collapse")
             }
-            .buttonStyle(.plain)
-            .help(LightsInspectorState.collapseLabel(collapsed: collapsed))
-            .accessibilityLabel(LightsInspectorState.collapseLabel(collapsed: collapsed))
-            .accessibilityIdentifier("lights.inspector.collapse")
         }
     }
 
@@ -1165,9 +1226,13 @@ enum LightsAutoEdit {
     /// A gesture's entry is `<token> -> <result> <field>=<value>`. Gizmo
     /// gestures run with `gizmo` (the overlay's size and the engine's
     /// picker); without it each logs `<token> -> noview`.
+    /// `orbitPlanSize` and `orbitArcSize`: the orbit canvases' sizes in the
+    /// active placement (OrbitAutoGesture.apply), the card's by default.
     @MainActor
     static func apply(_ tokens: [Token], to controller: LightsController,
-                      gizmo: GizmoAutoContext? = nil) -> [String] {
+                      gizmo: GizmoAutoContext? = nil,
+                      orbitPlanSize: CGSize = LightsOrbitMetrics.planSize,
+                      orbitArcSize: CGSize = LightsOrbitMetrics.arcSize) -> [String] {
         tokens.compactMap { token in
             switch token {
             case .set(let parameter, let value):
@@ -1181,7 +1246,8 @@ enum LightsAutoEdit {
             case .expand:
                 return nil
             case .gesture(let gesture):
-                return OrbitAutoGesture.apply(gesture, to: controller)
+                return OrbitAutoGesture.apply(gesture, to: controller, planSize: orbitPlanSize,
+                                              arcSize: orbitArcSize)
             case .gizmo(let gesture):
                 return GizmoAutoGesture.apply(gesture, to: controller, context: gizmo)
             }
