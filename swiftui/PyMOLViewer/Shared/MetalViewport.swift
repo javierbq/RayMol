@@ -131,6 +131,40 @@ enum AirRedrawGate {
     }
 }
 
+#if DEBUG
+/// DEBUG check for the light gizmo (#622): the overlay lays the gizmo out at
+/// its own size (`LightGizmoUIState.viewSize`), the viewport hit-tests it at
+/// the MTKView's bounds. A difference over half a point (safe area or
+/// letterbox drift) would put targets where nothing is drawn, so it is
+/// logged, once per Lights session: the overlay's size is nil between
+/// sessions, which re-arms the check.
+struct LightGizmoSizeCheck: Equatable {
+    static let tolerance: CGFloat = 0.5
+
+    /// Lines produced so far, and the last one.
+    private(set) var count = 0
+    private(set) var lastLine: String?
+    private var armed = true
+
+    /// The line to log for this comparison, or nil.
+    mutating func check(overlay: CGSize?, viewport: CGSize) -> String? {
+        guard let overlay else {
+            armed = true
+            return nil
+        }
+        guard armed,
+              abs(overlay.width - viewport.width) > Self.tolerance
+                || abs(overlay.height - viewport.height) > Self.tolerance else { return nil }
+        armed = false
+        count += 1
+        let line = String(format: "LightGizmo: overlay size %.1fx%.1f != viewport %.1fx%.1f",
+                          overlay.width, overlay.height, viewport.width, viewport.height)
+        lastLine = line
+        return line
+    }
+}
+#endif
+
 #if os(macOS)
 struct MetalViewport: NSViewRepresentable {
     @EnvironmentObject var engine: PyMOLEngine
@@ -868,6 +902,143 @@ extension MetalViewport {
             return g.hitTest(ndc: CGPoint(x: CGFloat(nx), y: CGFloat(ny)), aspect: CGFloat(aspect))
         }
 
+        // MARK: - Light gizmo input (#622)
+        //
+        // The overlay draws the gizmo (LightGizmoOverlay, SwiftUI); the
+        // viewport hit-tests the same layout (the Box Select pattern), built
+        // by the engine from the controller's published eye space and
+        // projection at the MTKView's own size. Every branch below runs only
+        // in Lights mode, or for a press, scroll or pinch the gizmo already
+        // owns; a miss keeps today's camera gesture. A drag tick reaches only
+        // the owner-guarded light setters (bridge, no Python, #610).
+
+        /// A scroll the gizmo owns: the trackpad scroll that began over a
+        /// knob, latched from its `.began` to the end of its momentum (the
+        /// momentum is swallowed, never a camera pan).
+        private var lightScroll: LightGizmoScrollSession?
+        private var lightScrollLatched = false
+        /// A pinch that began over a knob (macOS trackpad; iOS is #623's).
+        private var lightPinch: OrbitPinchSession?
+        /// Clears a mouse-wheel notch's radius readout once the wheel rests.
+        private var lightReadoutClear: DispatchWorkItem?
+
+        #if DEBUG
+        /// The overlay draws at its own size and the viewport hit-tests at
+        /// the MTKView's bounds; a difference (safe area, letterbox drift)
+        /// would put targets where nothing is drawn. Logged once per Lights
+        /// session.
+        var lightGizmoSizeCheck = LightGizmoSizeCheck()
+        #endif
+
+        /// A view point in the top-left points the gizmo is laid out in
+        /// (macOS views are bottom-left; UIKit's are already top-left).
+        private func lightGizmoPoint(_ p: CGPoint, in view: MTKView) -> CGPoint {
+            #if os(macOS)
+            return CGPoint(x: p.x, y: view.bounds.height - p.y)
+            #else
+            return p
+            #endif
+        }
+
+        /// The gizmo as drawn now over `view`, or nil when it is hidden (not
+        /// Lights mode, no lights or eye data, grid mode, an export).
+        private func lightGizmoLayout(in view: MTKView) -> LightGizmoLayout? {
+            guard let engine, engine.interactionMode == .lights else { return nil }
+            let size = view.bounds.size
+            #if DEBUG
+            let overlay = MainActor.assumeIsolated { engine.lightGizmoUI.viewSize }
+            if let line = lightGizmoSizeCheck.check(overlay: overlay, viewport: size) {
+                NSLog("%@", line)
+            }
+            #endif
+            return engine.lightGizmoLayout(viewSize: size)
+        }
+
+        private func lightGizmoInteraction(_ engine: PyMOLEngine) -> LightGizmoInteraction {
+            MainActor.assumeIsolated {
+                LightGizmoInteraction(controller: engine.lightsController, picker: engine.lightGizmoPicker)
+            }
+        }
+
+        /// The overlay shows the pointer's drag (none once it ended), with
+        /// the readout of the layout after the tick's write.
+        private func showLightGizmoDrag(_ engine: PyMOLEngine, in view: MTKView) {
+            let layout = engine.lightGizmoPointer.session == nil ? nil : lightGizmoLayout(in: view)
+            MainActor.assumeIsolated {
+                engine.lightGizmoUI.track(engine.lightGizmoPointer.session, layout: layout)
+            }
+        }
+
+        /// The overlay shows the radius of `name`'s light (a scroll or a
+        /// pinch on its knob), or no readout when `name` is nil.
+        private func showLightGizmoRadius(of name: String?, _ engine: PyMOLEngine, in view: MTKView) {
+            let layout = name == nil ? nil : lightGizmoLayout(in: view)
+            let shown = name.flatMap { layout?.knob(named: $0)?.name }
+            MainActor.assumeIsolated { engine.lightGizmoUI.showRadius(of: shown, layout: layout) }
+        }
+
+        /// Hover (macOS pointer, iPad pointer): the target under `p`
+        /// (top-left points), nil off every target or when `p` is nil (the
+        /// pointer left). Lights mode only.
+        private func lightGizmoHover(at p: CGPoint?, in view: MTKView) {
+            guard let engine, engine.interactionMode == .lights else { return }
+            let target = p.flatMap { point in
+                lightGizmoLayout(in: view).flatMap { LightGizmoHitTest.target(at: point, layout: $0) }
+            }
+            MainActor.assumeIsolated { engine.lightGizmoUI.hovered = target }
+        }
+
+        /// A press at `p` (top-left points): true when the gizmo took it (a
+        /// target was hit and its session opened, or an option-press off
+        /// every target waits to be a click). Outside Lights mode it only
+        /// forgets a press the gizmo still held (its release never came).
+        private func lightGizmoPress(at p: CGPoint, option: Bool, in view: MTKView) -> Bool {
+            guard let engine else { return false }
+            guard engine.interactionMode == .lights else {
+                let pointer = engine.lightGizmoPointer
+                if pointer.ownsPress || pointer.candidate != nil { engine.lightGizmoPointer.cancel() }
+                return false
+            }
+            let layout = lightGizmoLayout(in: view)
+            let interaction = lightGizmoInteraction(engine)
+            let route = MainActor.assumeIsolated {
+                engine.lightGizmoPointer.press(at: p, option: option, layout: layout, interaction: interaction)
+            }
+            if route == .gizmo { showLightGizmoDrag(engine, in: view) }
+            return route != .camera
+        }
+
+        /// A drag to `p`: true while the gizmo owns the press, whatever the
+        /// mode is now (after Esc the session writes no more and the rest of
+        /// the drag is swallowed), or while an option-press is still within
+        /// its slop. False hands it to today's camera path.
+        private func lightGizmoDrag(to p: CGPoint, in view: MTKView) -> Bool {
+            guard let engine else { return false }
+            let pointer = engine.lightGizmoPointer
+            guard pointer.ownsPress || pointer.candidate != nil else { return false }
+            let interaction = lightGizmoInteraction(engine)
+            let route = MainActor.assumeIsolated {
+                engine.lightGizmoPointer.drag(to: p, interaction: interaction)
+            }
+            if route == .gizmo { showLightGizmoDrag(engine, in: view) }
+            return route != .camera
+        }
+
+        /// The press ends at `p`: true when it was the gizmo's (the session
+        /// ends; an option-click that never dragged places a highlight at its
+        /// press point). No atom pick and no button-up follow.
+        private func lightGizmoRelease(at p: CGPoint, in view: MTKView) -> Bool {
+            guard let engine else { return false }
+            let pointer = engine.lightGizmoPointer
+            guard pointer.ownsPress || pointer.candidate != nil else { return false }
+            let interaction = lightGizmoInteraction(engine)
+            let route = MainActor.assumeIsolated {
+                engine.lightGizmoPointer.release(at: p, interaction: interaction)
+            }
+            showLightGizmoDrag(engine, in: view)
+            return route != .camera
+        }
+
         // MARK: - macOS mouse handling
 
         #if os(macOS)
@@ -888,6 +1059,12 @@ extension MetalViewport {
             // button event is ever sent, so the camera cannot move.
             if boxSelectActive {
                 boxBegin(in: view, at: mouseDownLoc)
+                return
+            }
+            // Lights mode (#622): a press on a light gizmo target is the
+            // gizmo's to its release; no PyMOL button event is ever sent.
+            if lightGizmoPress(at: lightGizmoPoint(mouseDownLoc, in: view),
+                               option: event.modifierFlags.contains(.option), in: view) {
                 return
             }
             // Move mode: remember whether the press landed on a gizmo handle, so
@@ -952,8 +1129,13 @@ extension MetalViewport {
             }
             guard engine?.measureMode == nil else { return }
             // Lights mode (#619) skips the atom hover pick: its readout would
-            // cover the Lights bar's Done. #622 adds knob hit-tests here.
-            guard engine?.interactionMode != .lights else { return }
+            // cover the Lights bar's Done. The light gizmo's hover hit test
+            // runs instead (#622): the overlay strokes the target a press
+            // would take.
+            if engine?.interactionMode == .lights {
+                lightGizmoHover(at: lightGizmoPoint(loc, in: view), in: view)
+                return
+            }
             let w = view.bounds.width, h = view.bounds.height
             guard w > 0, h > 0 else { return }
             let ndcX = Float(loc.x / w) * 2 - 1
@@ -977,6 +1159,8 @@ extension MetalViewport {
             // Drop Shift adjust-mode when the pointer leaves, so the gizmo doesn't
             // stay greyed if Shift is released outside the viewport.
             if engine?.moveShiftHeld == true { engine?.moveShiftHeld = false }
+            // Lights mode (#622): no light gizmo hover once the pointer left.
+            lightGizmoHover(at: nil, in: view)
         }
 
         func handleMouseUp(_ event: NSEvent, in view: MTKView) {
@@ -987,6 +1171,12 @@ extension MetalViewport {
             let loc = view.convert(event.locationInWindow, from: nil)
             if boxSelectActive {
                 boxEnd(in: view, at: loc)
+                return
+            }
+            // A press the light gizmo owns ends here, whatever the mode is now
+            // (#622): no button-up and no atom pick. An option-click that never
+            // dragged places a highlight instead of picking an atom.
+            if lightGizmoRelease(at: lightGizmoPoint(loc, in: view), in: view) {
                 return
             }
             let mods = pymolModifiers(event.modifierFlags.rawValue)
@@ -1131,6 +1321,11 @@ extension MetalViewport {
                 boxUpdate(in: view, at: loc)
                 return
             }
+            // A press the light gizmo owns drags the gizmo, even after Esc
+            // (#622): nothing reaches the camera until the release.
+            if lightGizmoDrag(to: lightGizmoPoint(loc, in: view), in: view) {
+                return
+            }
             let mods = pymolModifiers(event.modifierFlags.rawValue)
 
             if engine?.interactionMode == .move {
@@ -1259,6 +1454,11 @@ extension MetalViewport {
         func handleScrollWheel(_ event: NSEvent, in view: MTKView) {
             guard !boxSelectActive else { return }   // camera frozen (#358)
             let loc = view.convert(event.locationInWindow, from: nil)
+            // Lights mode (#622): a wheel notch, or a trackpad scroll that
+            // begins, over a light's knob sets that light's radius.
+            if lightGizmoScroll(event, at: lightGizmoPoint(loc, in: view), in: view) {
+                return
+            }
             let pt = pymolPoint(in: view, at: loc)
             let mods = pymolModifiers(event.modifierFlags.rawValue)
 
@@ -1338,8 +1538,113 @@ extension MetalViewport {
                            x: panCursorX, y: panCursorY, modifiers: gestureMods)
         }
 
+        /// The light gizmo's share of a scroll event (#622), at `p` (top-left
+        /// points): true when it is consumed.
+        /// - A trackpad scroll that began over a knob stays the gizmo's from
+        ///   its `.began` to the end of its momentum: each change adds to the
+        ///   radius (one 0.5× step per `trackpadStep` points; positive
+        ///   `scrollingDeltaY` is farther, as a wheel's forward); the
+        ///   momentum is swallowed. A new gesture or a wheel notch ends it.
+        /// - In Lights mode, a wheel notch over a knob is one step (forward:
+        ///   farther), and a trackpad scroll whose `.began` lands on a knob
+        ///   latches. Anywhere else, today's clip and pan.
+        private func lightGizmoScroll(_ event: NSEvent, at p: CGPoint, in view: MTKView) -> Bool {
+            guard let engine else { return false }
+            let phase = event.phase, momentum = event.momentumPhase
+            let isWheel = phase == [] && momentum == []
+            if lightScrollLatched {
+                if isWheel || phase == .began || phase == .mayBegin {
+                    lightScrollLatched = false
+                    lightScroll = nil
+                } else {
+                    if phase == .changed, var session = lightScroll {
+                        let interaction = lightGizmoInteraction(engine)
+                        MainActor.assumeIsolated { _ = interaction.scroll(&session, deltaY: event.scrollingDeltaY) }
+                        lightScroll = session
+                        showLightGizmoRadius(of: session.owner, engine, in: view)
+                    }
+                    if phase == .ended || phase == .cancelled, lightScroll != nil {
+                        lightScroll = nil
+                        showLightGizmoRadius(of: nil, engine, in: view)
+                    }
+                    if phase == .cancelled || momentum == .ended { lightScrollLatched = false }
+                    return true
+                }
+            }
+            guard engine.interactionMode == .lights else { return false }
+            if isWheel {
+                guard let layout = lightGizmoLayout(in: view),
+                      let name = LightGizmoHitTest.knob(at: p, layout: layout) else { return false }
+                let wheel = event.scrollingDeltaY != 0 ? event.scrollingDeltaY : event.deltaY
+                guard wheel != 0 else { return true }
+                let interaction = lightGizmoInteraction(engine)
+                MainActor.assumeIsolated { _ = interaction.scrollWheel(at: p, up: wheel > 0, layout: layout) }
+                showLightGizmoRadius(of: name, engine, in: view)
+                lightReadoutClear?.cancel()
+                let clear = DispatchWorkItem { [weak self, weak engine, weak view] in
+                    guard let self, let engine, let view, self.lightScroll == nil, self.lightPinch == nil else { return }
+                    self.showLightGizmoRadius(of: nil, engine, in: view)
+                }
+                lightReadoutClear = clear
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: clear)
+                return true
+            }
+            guard phase == .began, !panActive, let layout = lightGizmoLayout(in: view) else { return false }
+            let interaction = lightGizmoInteraction(engine)
+            guard var session = MainActor.assumeIsolated({ interaction.beginScroll(at: p, layout: layout) }) else {
+                return false
+            }
+            lightReadoutClear?.cancel()
+            MainActor.assumeIsolated { _ = interaction.scroll(&session, deltaY: event.scrollingDeltaY) }
+            lightScroll = session
+            lightScrollLatched = true
+            showLightGizmoRadius(of: session.owner, engine, in: view)
+            return true
+        }
+
+        /// The light gizmo's share of a trackpad pinch (#622): one that
+        /// begins over a knob sets that light's radius (#621's pinch session,
+        /// the 0.5× grid) until it ends; true when it is consumed.
+        private func lightGizmoMagnification(_ gesture: NSMagnificationGestureRecognizer) -> Bool {
+            guard let engine, let view = mtkView else { return false }
+            switch gesture.state {
+            case .began:
+                lightPinch = nil
+                guard engine.interactionMode == .lights, let layout = lightGizmoLayout(in: view) else { return false }
+                let p = lightGizmoPoint(gesture.location(in: view), in: view)
+                let interaction = lightGizmoInteraction(engine)
+                guard let session = MainActor.assumeIsolated({ interaction.beginPinch(at: p, layout: layout) }) else {
+                    return false
+                }
+                lightReadoutClear?.cancel()
+                lightPinch = session
+                showLightGizmoRadius(of: session.owner, engine, in: view)
+                return true
+            case .changed:
+                guard var session = lightPinch else { return false }
+                let interaction = lightGizmoInteraction(engine)
+                // NSMagnificationGestureRecognizer counts from 0; the pinch
+                // session takes a scale that starts at 1 (SwiftUI's).
+                let scale = 1 + Double(gesture.magnification)
+                MainActor.assumeIsolated { _ = interaction.pinch(&session, magnification: scale) }
+                lightPinch = session
+                showLightGizmoRadius(of: session.owner, engine, in: view)
+                return true
+            case .ended, .cancelled, .failed:
+                guard lightPinch != nil else { return false }
+                lightPinch = nil
+                showLightGizmoRadius(of: nil, engine, in: view)
+                return true
+            default:
+                return lightPinch != nil
+            }
+        }
+
         @objc func handleMagnification(_ gesture: NSMagnificationGestureRecognizer) {
             guard !boxSelectActive else { return }   // camera frozen (#358)
+            // Lights mode (#622): a pinch that begins over a knob is the light
+            // gizmo's (radius); anywhere else, today's zoom.
+            if lightGizmoMagnification(gesture) { return }
             switch gesture.state {
             case .began:
                 lastMag = 0
@@ -1385,6 +1690,64 @@ extension MetalViewport {
         // MARK: - iPadOS gesture handling
 
         #if os(iOS)
+        /// A tap at `p` in Lights mode (#622): true when it landed on a light
+        /// gizmo target. A knob selects its light (the bar and the inspector
+        /// follow); any other target takes the tap with no atom pick.
+        private func lightGizmoTap(at p: CGPoint, in view: MTKView) -> Bool {
+            guard let engine, engine.interactionMode == .lights,
+                  let layout = lightGizmoLayout(in: view),
+                  let target = LightGizmoHitTest.target(at: p, layout: layout) else { return false }
+            if case .knob(let name) = target {
+                MainActor.assumeIsolated { engine.lightsController.select(name: name) }
+            }
+            return true
+        }
+
+        /// A one-finger pan (#622): true when the light gizmo owns it.
+        /// UIKit reports `.began` after its own slop, so the press is hit-
+        /// tested where the finger came down (`location - translation`); a
+        /// hit opens a session and owns the pan to its end, whatever the mode
+        /// does meanwhile. A miss keeps today's camera rotation. Long-press
+        /// and pinch on knobs are #623's.
+        private func lightGizmoPan(_ gesture: UIPanGestureRecognizer, in view: MTKView,
+                                   at location: CGPoint) -> Bool {
+            guard let engine else { return false }
+            switch gesture.state {
+            case .began:
+                guard engine.interactionMode == .lights else {
+                    if engine.lightGizmoPointer.ownsPress { engine.lightGizmoPointer.cancel() }
+                    return false
+                }
+                let t = gesture.translation(in: view)
+                let start = CGPoint(x: location.x - t.x, y: location.y - t.y)
+                let layout = lightGizmoLayout(in: view)
+                let interaction = lightGizmoInteraction(engine)
+                let route = MainActor.assumeIsolated {
+                    // A new pan is a new touch sequence.
+                    engine.lightGizmoPointer.cancel()
+                    return engine.lightGizmoPointer.touchChanged(start: start, at: location, layout: layout,
+                                                                 interaction: interaction)
+                }
+                guard route == .gizmo else { return false }
+                showLightGizmoDrag(engine, in: view)
+                return true
+            case .changed:
+                guard engine.lightGizmoPointer.ownsPress else { return false }
+                _ = lightGizmoDrag(to: location, in: view)
+                return true
+            case .ended, .cancelled, .failed:
+                guard engine.lightGizmoPointer.ownsPress else { return false }
+                let interaction = lightGizmoInteraction(engine)
+                MainActor.assumeIsolated {
+                    _ = engine.lightGizmoPointer.touchEnded(at: location, interaction: interaction)
+                }
+                showLightGizmoDrag(engine, in: view)
+                return true
+            default:
+                return engine.lightGizmoPointer.ownsPress
+            }
+        }
+
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
             guard let engine = engine, let view = mtkView else { return }
             // Box Select: taps belong to the box (handlePan resolves them), not
@@ -1400,6 +1763,10 @@ extension MetalViewport {
             let ndcX = Float(p.x / w) * 2 - 1
             let ndcY = 1 - Float(p.y / h) * 2
             let aspect = Float(w / h)
+            // Lights mode (#622): a tap on a light gizmo knob selects that
+            // light; a tap on any other gizmo target does nothing (as a macOS
+            // click there); elsewhere, today's atom pick.
+            if lightGizmoTap(at: p, in: view) { return }
             if engine.interactionMode == .move {
                 // A tap ALWAYS selects the object under it (grab-what-you-touch).
                 // Previously it first hit-tested the gizmo and armed an axis, but
@@ -1464,8 +1831,12 @@ extension MetalViewport {
                     return
                 }
                 guard engine.measureMode == nil else { return }
-                // Lights mode (#619) skips the atom hover pick (see macOS).
-                guard engine.interactionMode != .lights else { return }
+                // Lights mode (#619) skips the atom hover pick (see macOS);
+                // the light gizmo's hover hit test runs instead (#622).
+                if engine.interactionMode == .lights {
+                    lightGizmoHover(at: p, in: view)
+                    return
+                }
                 let w = view.bounds.width, h = view.bounds.height
                 guard w > 0, h > 0 else { return }
                 let ndcX = Float(p.x / w) * 2 - 1
@@ -1484,6 +1855,7 @@ extension MetalViewport {
                 engine.clearHoverPreview()
                 if engine.hoveredHandle != nil { engine.hoveredHandle = nil }
                 if engine.moveShiftHeld { engine.moveShiftHeld = false }
+                lightGizmoHover(at: nil, in: view)   // Lights mode only (#622)
             default:
                 break
             }
@@ -1503,6 +1875,10 @@ extension MetalViewport {
                 }
                 return
             }
+
+            // Lights mode (#622): a pan that starts on a light gizmo target
+            // drags it to its end, even if the mode ends meanwhile.
+            if lightGizmoPan(gesture, in: view, at: location) { return }
 
             if engine?.interactionMode == .move {
                 handleMovePan(gesture, in: view, at: location)

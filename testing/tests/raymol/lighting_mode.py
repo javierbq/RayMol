@@ -19,6 +19,9 @@ TestBarCommands runs the bar's exact command strings through cmd.do (the path
 of the app's runCommand -> PyMOLBridge_RunCommand) and checks what the
 controller expects of each. The same literals are pinned on the Swift side by
 LightsActionInvocationTests (LightsModeTests.swift); change both together.
+The gizmo's highlight strings (LightsAction.highlight, #622: `lights <name>,
+click=x/y[, rim=deg][, pin=1]`) are the same pair with
+lighting_gizmo.py TestHighlightCommand.
 
 CI builds the GLUT flavour without a GPU, so this exercises _cmd and Python
 only. A small peptide (cmd.fab) gives the rig a real frame.
@@ -348,7 +351,8 @@ ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir,
 SHARED = os.path.join('swiftui', 'PyMOLViewer', 'Shared')
 
 # The Lights model, the bar, the shared edit path, the inspector, the side
-# column (#620) and the orbit view's model (#621): every button press goes through LightsSeams.perform and every
+# column (#620), the orbit view's model (#621) and the gizmo's geometry and
+# model (#622): every button press goes through LightsSeams.perform and every
 # drag tick through the bridge setter seams the engine wires, so these files
 # name no Python or console entry point, no helper and no bridge function.
 NO_PYTHON_SOURCES = [os.path.join(SHARED, 'LightsController.swift'),
@@ -357,7 +361,10 @@ NO_PYTHON_SOURCES = [os.path.join(SHARED, 'LightsController.swift'),
                      os.path.join(SHARED, 'LightsInspector.swift'),
                      os.path.join(SHARED, 'LightsSideColumn.swift'),
                      os.path.join(SHARED, 'LightsOrbitModel.swift'),
-                     os.path.join(SHARED, 'LightsOrbitView.swift')]
+                     os.path.join(SHARED, 'LightsOrbitView.swift'),
+                     os.path.join(SHARED, 'LightGizmoGeometry.swift'),
+                     os.path.join(SHARED, 'LightGizmoModel.swift'),
+                     os.path.join(SHARED, 'LightGizmoOverlay.swift')]
 NO_PYTHON = re.compile(
     r'\brunPython\w*|\bRunPython\w*|\brunCommand\w*|\bRunCommand\w*'
     r'|appkit_lights|\bPyMOLBridge_\w+\s*\(')

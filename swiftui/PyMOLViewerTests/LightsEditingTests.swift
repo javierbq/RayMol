@@ -668,6 +668,89 @@ final class LightsEditTests: XCTestCase {
         XCTAssertEqual(store.json, json)
         XCTAssertEqual(controller.selection.name, "key")
     }
+
+    // MARK: the gizmo's owner-guarded writes (#622)
+
+    func testOwnerSetPlacementWritesPitchThenOrbitWithOneReread() throws {
+        controller.select(name: "rim")
+        let owner = try XCTUnwrap(controller.beginGesture())
+        let reads = store.reads
+        XCTAssertEqual(controller.setPlacement(orbit: -60, pitch: 40, owner: owner), .ok)
+        XCTAssertEqual(store.numberWrites.map(\.field), ["pitch", "orbit"],
+                       "pitch first: one knob tick writes both")
+        XCTAssertEqual(store.numberWrites.map(\.index), [2, 2])
+        XCTAssertEqual(store.reads - reads, 1, "one mirror read for the tick")
+        XCTAssertEqual(controller.placement(at: 2), LightPlacement(orbit: -60, pitch: 40, radius: 4))
+        XCTAssertEqual(controller.setPlacement(orbit: 10, pitch: 5, radius: 2.5, owner: "RIM"), .ok,
+                       "case is ignored")
+        XCTAssertEqual(store.numberWrites.suffix(3).map(\.field), ["pitch", "orbit", "radius"])
+        XCTAssertTrue(store.performed.isEmpty)
+        XCTAssertTrue(store.vectorWrites.isEmpty)
+    }
+
+    func testOwnerWritesRefuseAnotherLight() {
+        // key is selected: a gesture that began on fill writes nothing.
+        XCTAssertEqual(controller.setPlacement(orbit: 30, pitch: 20, owner: "fill"), .badIndex)
+        XCTAssertEqual(controller.setAim(SIMD3(1, 2, 3), owner: "fill"), .badIndex)
+        XCTAssertEqual(controller.set(.beam, 30, owner: "fill"), .badIndex)
+        XCTAssertTrue(store.numberWrites.isEmpty)
+        XCTAssertTrue(store.vectorWrites.isEmpty)
+    }
+
+    /// set, setPlacement and setAim share one guard: after a console remove
+    /// behind the mirror's back each re-reads, finds its owner gone and writes
+    /// nothing (the light that slid into the index is untouched).
+    func testOwnerWritesRefusedTheSameWayAfterAConsoleRemove() {
+        let writes: [(String, @MainActor (LightsController) -> LightSetResult)] = [
+            ("set", { $0.set(.orbit, 30, owner: "key") }),
+            ("setPlacement", { $0.setPlacement(orbit: 30, pitch: 20, owner: "key") }),
+            ("setAim", { $0.setAim(SIMD3(1, 2, 3), owner: "key") }),
+        ]
+        for (name, write) in writes {
+            let store = FakeRigStore()
+            let controller = LightsController(seams: store.seams)
+            store.setRig(["key", "fill", "rim"])
+            controller.begin()
+            XCTAssertEqual(controller.beginGesture(), "key", name)
+            store.removeLight("key")
+            store.clock += 1
+            XCTAssertEqual(write(controller), .badIndex, name)
+            XCTAssertTrue(store.numberWrites.isEmpty, name)
+            XCTAssertTrue(store.vectorWrites.isEmpty, name)
+            XCTAssertEqual(controller.selection.name, "fill", "the re-read repaired the selection: \(name)")
+            XCTAssertEqual(store.lights[0].placement, LightPlacement(orbit: 0, pitch: 30, radius: 4), name)
+            XCTAssertNil(store.lights[0].aimPoint, name)
+            // And while it cannot edit.
+            store.busy = true
+            XCTAssertEqual(write(controller), .badIndex, name)
+            store.busy = false
+            controller.end()
+            XCTAssertEqual(write(controller), .badIndex, name)
+            XCTAssertTrue(store.numberWrites.isEmpty, name)
+            XCTAssertTrue(store.vectorWrites.isEmpty, name)
+        }
+    }
+
+    func testSetAimWritesAimPoint() throws {
+        controller.select(name: "fill")
+        let owner = try XCTUnwrap(controller.beginGesture())
+        let reads = store.reads
+        XCTAssertEqual(controller.setAim(SIMD3(1.5, -2, 3.25), owner: owner), .ok)
+        XCTAssertEqual(store.vectorWrites.count, 1)
+        let write = try XCTUnwrap(store.vectorWrites.last)
+        XCTAssertEqual(write.index, 1)
+        XCTAssertEqual(write.field, "aim_point")
+        XCTAssertEqual(write.value, SIMD3(1.5, -2, 3.25))
+        XCTAssertEqual(store.reads - reads, 1, "one mirror read")
+        // The mirror shows it in the same turn.
+        XCTAssertEqual(controller.selectedLight?.aim, .point)
+        XCTAssertEqual(controller.selectedLight?.aimPoint, SIMD3(1.5, -2, 3.25))
+        XCTAssertTrue(store.numberWrites.isEmpty)
+        XCTAssertTrue(store.performed.isEmpty)
+        // A non-finite point is the core's refusal, passed back.
+        XCTAssertEqual(controller.setAim(SIMD3(.nan, 0, 0), owner: owner), .badValue)
+        XCTAssertEqual(controller.selectedLight?.aimPoint, SIMD3(1.5, -2, 3.25))
+    }
 }
 
 /// A mutable count a Combine sink can bump.

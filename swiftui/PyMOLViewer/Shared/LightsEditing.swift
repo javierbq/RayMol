@@ -20,7 +20,14 @@
 // - a direct-manipulation gesture starts with `beginGesture()` (its owner),
 //   writes every tick with `set(_:_:owner:)` (refused once the owner is no
 //   longer selected), reads a step's base with `freshValue`, and snaps with
-//   `LightSnap` (orbit 15°, radius 0.5×, pitch 1°).
+//   `LightSnap` (orbit 15°, radius 0.5×, pitch 1°);
+// - #622's gizmo reuses that gesture start and that one owner guard
+//   (`ownsGesture`): a knob tick writes orbit and pitch together with
+//   `setPlacement(orbit:pitch:radius:owner:)` (pitch first, one re-read, so
+//   pitch never lands without orbit), an aim-dot tick writes the picked
+//   point with `setAim(_:owner:)`, and the eye demand follows Lights mode
+//   (the engine sets `.everyFrame` while the mode is on), so `eye.eyeSpace`
+//   and `eye.projection` are there whenever the gizmo shows.
 //
 // Like LightsController.swift, this file names no Python, console or bridge
 // entry point: every write goes through the controller's seams, so a drag runs
@@ -386,10 +393,41 @@ extension LightsController {
     /// name check refuses the write (`.badIndex`).
     @discardableResult
     func set(_ parameter: LightParameter, _ value: Double, owner: String) -> LightSetResult {
-        guard canEdit else { return .badIndex }
-        refreshIfStale()
-        guard selection.name?.lowercased() == owner.lowercased() else { return .badIndex }
+        guard ownsGesture(owner) else { return .badIndex }
         return set(parameter, value)
+    }
+
+    /// Move the light a gesture began on (#622's knob tick): `ownsGesture`,
+    /// then `setPlacement(orbit:pitch:radius:)` (pitch, orbit, radius, the
+    /// selected index fixed, one re-read), so a tick writes its values
+    /// together or not at all. `.badIndex` once `owner` is not selected.
+    @discardableResult
+    func setPlacement(orbit: Double?, pitch: Double?, radius: Double? = nil,
+                      owner: String) -> LightSetResult {
+        guard ownsGesture(owner) else { return .badIndex }
+        return setPlacement(orbit: orbit, pitch: pitch, radius: radius)
+    }
+
+    /// Aim the light a gesture began on at a world point (#622's aim dot,
+    /// the point #614's surface pick found): the core sets the aim to that
+    /// point and clears the aim selection. `.badIndex` once `owner` is not
+    /// selected.
+    @discardableResult
+    func setAim(_ point: SIMD3<Double>, owner: String) -> LightSetResult {
+        guard ownsGesture(owner) else { return .badIndex }
+        return edit("aim_point", point)
+    }
+
+    /// The one owner guard of every gesture write (`set`, `setPlacement` and
+    /// `setAim` with `owner:`): the selected light can be edited, a stale
+    /// mirror is re-read, and only then is the selected name compared with
+    /// `owner` (ignoring case). A console or MCP remove since the last read
+    /// slides another light into the selected index; the re-read repairs the
+    /// selection onto it and the name check refuses the write.
+    private func ownsGesture(_ owner: String) -> Bool {
+        guard canEdit else { return false }
+        refreshIfStale()
+        return selection.name?.lowercased() == owner.lowercased()
     }
 
     /// The selected light's current value of `parameter`, read fresh: a

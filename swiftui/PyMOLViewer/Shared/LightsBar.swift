@@ -2,7 +2,8 @@
 //
 // The bar shows the rig as a row of chips, one per light, each with the
 // light's identity dot (the colour the orbit view #621 and the gizmo #622 use
-// for it too), and the rig-wide actions: add, remove, a preset, Re-centre,
+// for it too; hollow while the light is behind the molecule, the gizmo's
+// front/behind rule), and the rig-wide actions: add, remove, a preset, Re-centre,
 // on/off, Revert and Done. It floats at the top of the viewport on macOS and
 // docks at the bottom of the top stack on iOS (ContentView places it).
 //
@@ -58,8 +59,13 @@ struct LightsBarState: Equatable {
         var index: Int
         var slot: Int
         var isSelected: Bool
+        /// The light is behind the molecule (`LightsController.isBehind`)
+        /// when the state was made. The chip itself observes
+        /// `controller.facing`, so it follows a crossing without the bar.
+        var isBehind = false
         var id: String { name }
         var accessibilityLabel: String { LightsBarState.chipAccessibilityLabel(name) }
+        var accessibilityValue: String { LightsBarState.chipAccessibilityValue(behind: isBehind) }
         var accessibilityIdentifier: String { "lights.chip.\(name)" }
     }
 
@@ -72,6 +78,12 @@ struct LightsBarState: Equatable {
     /// VoiceOver's name for a chip.
     static func chipAccessibilityLabel(_ name: String) -> String {
         "\(name) light"
+    }
+
+    /// VoiceOver's value for a chip: where the light is (#622; the hollow
+    /// dot shows the same).
+    static func chipAccessibilityValue(behind: Bool) -> String {
+        behind ? "behind the molecule" : "in front of the molecule"
     }
 
     var chips: [Chip]
@@ -97,7 +109,8 @@ struct LightsBarState: Equatable {
         chips = lights.enumerated().map { index, light in
             Chip(name: light.name, index: index,
                  slot: controller.identitySlot(for: light.name),
-                 isSelected: index == selected)
+                 isSelected: index == selected,
+                 isBehind: controller.isBehind(light.name))
         }
         status = lights.isEmpty ? Self.noLightsText : nil
         isOn = controller.hasLights && controller.isOn
@@ -216,7 +229,11 @@ struct LightsBar: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 4) {
                         ForEach(state.chips) { chip in
-                            chipButton(chip, rigOn: state.isOn).id(chip.id)
+                            LightChipButton(chip: chip, facing: controller.facing,
+                                            rigOn: state.isOn, style: style) {
+                                controller.select(index: chip.index)
+                            }
+                            .id(chip.id)
                         }
                     }
                     .padding(.vertical, 1)
@@ -239,31 +256,6 @@ struct LightsBar: View {
     private func scrollToSelected(_ state: LightsBarState, _ proxy: ScrollViewProxy) {
         guard let id = state.chips.first(where: \.isSelected)?.id else { return }
         proxy.scrollTo(id)
-    }
-
-    private func chipButton(_ chip: LightsBarState.Chip, rigOn: Bool) -> some View {
-        Button { controller.select(index: chip.index) } label: {
-            HStack(spacing: 4) {
-                Circle()
-                    .fill(LightPalette.color(chip.slot))
-                    .frame(width: 8, height: 8)
-                    .opacity(rigOn ? 1 : 0.45)
-                Text(chip.name)
-                    .font(.system(size: 12, weight: chip.isSelected ? .semibold : .regular))
-                    .foregroundColor(style.text.opacity(rigOn ? 1 : 0.75))
-                    .lineLimit(1)
-            }
-            .padding(.horizontal, 8).padding(.vertical, 3)
-            .background(Capsule().fill(chip.isSelected ? style.accent.opacity(0.15) : Color.clear))
-            .overlay(Capsule().stroke(chip.isSelected ? style.accent : style.text.opacity(0.2),
-                                      lineWidth: chip.isSelected ? 1.5 : 1))
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .help("Select \(chip.name)")
-        .accessibilityLabel(chip.accessibilityLabel)
-        .accessibilityAddTraits(chip.isSelected ? .isSelected : [])
-        .accessibilityIdentifier(chip.accessibilityIdentifier)
     }
 
     // MARK: actions
@@ -397,5 +389,61 @@ struct LightsBar: View {
             .controlSize(.small)
             .help(Self.doneHelp)
             .accessibilityIdentifier("lights.done")
+    }
+}
+
+// MARK: - A chip
+
+/// One light's chip: its identity dot and name. It observes
+/// `controller.facing`, so when a light crosses behind the molecule (a pinned
+/// light under a turning camera, a gizmo drag) only the chips re-render: the
+/// dot turns hollow, and VoiceOver reads "behind the molecule".
+struct LightChipButton: View {
+    var chip: LightsBarState.Chip
+    @ObservedObject var facing: LightsFacingState
+    var rigOn: Bool
+    var style: LightsBarStyle
+    var onSelect: () -> Void
+
+    init(chip: LightsBarState.Chip, facing: LightsFacingState, rigOn: Bool,
+         style: LightsBarStyle, onSelect: @escaping () -> Void) {
+        self.chip = chip
+        self.facing = facing
+        self.rigOn = rigOn
+        self.style = style
+        self.onSelect = onSelect
+    }
+
+    var body: some View {
+        let behind = facing.isBehind(chip.name)
+        let colour = LightPalette.color(chip.slot)
+        Button(action: onSelect) {
+            HStack(spacing: 4) {
+                ZStack {
+                    if behind {
+                        Circle().strokeBorder(colour, lineWidth: 1.5)
+                    } else {
+                        Circle().fill(colour)
+                    }
+                }
+                .frame(width: 8, height: 8)
+                .opacity(rigOn ? 1 : 0.45)
+                Text(chip.name)
+                    .font(.system(size: 12, weight: chip.isSelected ? .semibold : .regular))
+                    .foregroundColor(style.text.opacity(rigOn ? 1 : 0.75))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(Capsule().fill(chip.isSelected ? style.accent.opacity(0.15) : Color.clear))
+            .overlay(Capsule().stroke(chip.isSelected ? style.accent : style.text.opacity(0.2),
+                                      lineWidth: chip.isSelected ? 1.5 : 1))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help("Select \(chip.name)")
+        .accessibilityLabel(chip.accessibilityLabel)
+        .accessibilityValue(LightsBarState.chipAccessibilityValue(behind: behind))
+        .accessibilityAddTraits(chip.isSelected ? .isSelected : [])
+        .accessibilityIdentifier(chip.accessibilityIdentifier)
     }
 }

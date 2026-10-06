@@ -313,13 +313,18 @@ class TestOrbitSource(testing.PyMOLTestCase):
                 self.assertEqual(math.fmod(high, step), 0.0)
 
     def testOwnerGuardComesAfterTheStaleReread(self):
-        """set(_:_:owner:) re-reads a stale mirror before it compares the
-        selected name, so a light removed behind the mirror is caught."""
+        """set(_:_:owner:) goes through the one owner guard, ownsGesture
+        (#622 moved it there unchanged), which re-reads a stale mirror
+        before it compares the selected name, so a light removed behind the
+        mirror is caught."""
         text = self.read(EDITING)
         guarded = body(text, 'func set(_ parameter: LightParameter, _ value: Double, owner:')
         self.assertIsNotNone(guarded, 'set(_:_:owner:) not found')
-        reread = guarded.find('refreshIfStale()')
-        check = guarded.find('selection.name')
+        self.assertIn('ownsGesture(owner)', guarded)
+        guard = body(text, 'func ownsGesture(_ owner: String) -> Bool')
+        self.assertIsNotNone(guard, 'ownsGesture(_:) not found')
+        reread = guard.find('refreshIfStale()')
+        check = guard.find('selection.name')
         self.assertGreaterEqual(reread, 0)
         self.assertGreater(check, reread)
         begin = body(self.read(CONTROLLER), 'func beginGesture()')

@@ -60,6 +60,47 @@ final class LightsActionInvocationTests: XCTestCase {
         }
     }
 
+    /// #622's ⌥-click: #612's click= helper, run once. lighting_gizmo.py
+    /// TestHighlightCommand runs these exact strings through the core.
+    func testHighlightStrings() {
+        XCTAssertEqual(LightsAction.highlight(name: "key", x: 0.125, y: -0.0625, rim: nil, pin: false).invocation,
+                       .command("lights key, click=0.1250/-0.0625"))
+        XCTAssertEqual(LightsAction.highlight(name: "key", x: 0.125, y: -0.0625, rim: 145, pin: false).invocation,
+                       .command("lights key, click=0.1250/-0.0625, rim=145"))
+        XCTAssertEqual(LightsAction.highlight(name: "key", x: 0.125, y: -0.0625, rim: nil, pin: true).invocation,
+                       .command("lights key, click=0.1250/-0.0625, pin=1"))
+        XCTAssertEqual(LightsAction.highlight(name: "Light4", x: 0.125, y: -0.0625, rim: 145, pin: true).invocation,
+                       .command("lights Light4, click=0.1250/-0.0625, rim=145, pin=1"))
+        // A zero coordinate, negative zero normalised, and the range ends.
+        XCTAssertEqual(LightsAction.highlight(name: "key", x: 0, y: 0.25, rim: nil, pin: false).invocation,
+                       .command("lights key, click=0.0000/0.2500"))
+        XCTAssertEqual(LightsAction.highlight(name: "key", x: -0.00001, y: -0.0, rim: nil, pin: false).invocation,
+                       .command("lights key, click=0.0000/0.0000"))
+        XCTAssertEqual(LightsAction.highlight(name: "key", x: -1, y: 1, rim: nil, pin: false).invocation,
+                       .command("lights key, click=-1.0000/1.0000"))
+        XCTAssertEqual(LightsAction.highlight(name: "key", x: 0.33333, y: -0.99996, rim: 30.4, pin: false).invocation,
+                       .command("lights key, click=0.3333/-1.0000, rim=30"))
+        XCTAssertEqual(LightsAction.clickCoordinate(-0.00004), "0.0000")
+        XCTAssertEqual(LightsAction.rimDegrees(0.6), 1)
+        XCTAssertEqual(LightsAction.rimDegrees(179.4), 179)
+    }
+
+    func testHighlightRefusalsRunNothing() {
+        for name in ["", "a b", "key, rim=1", "1key", "key;reinitialize", "é"] {
+            XCTAssertNil(LightsAction.highlight(name: name, x: 0, y: 0, rim: nil, pin: false).invocation, name)
+        }
+        for bad in [1.00001, -1.00001, 2, .nan, .infinity, -.infinity] {
+            XCTAssertNil(LightsAction.highlight(name: "key", x: bad, y: 0, rim: nil, pin: false).invocation, "x \(bad)")
+            XCTAssertNil(LightsAction.highlight(name: "key", x: 0, y: bad, rim: nil, pin: false).invocation, "y \(bad)")
+        }
+        // rim must round to 1...179 (0 is the mirror rule; the helper takes
+        // under 180).
+        for rim in [0, 0.4, -5, 179.5, 180, 200, .nan, .infinity] {
+            XCTAssertNil(LightsAction.highlight(name: "key", x: 0, y: 0, rim: rim, pin: false).invocation,
+                         "rim \(rim)")
+        }
+    }
+
     func testGoodNames() {
         for name in ["key", "_x", "Light4", "a_b_9", String(repeating: "a", count: 32)] {
             XCTAssertTrue(LightsAction.isValidName(name), name)
@@ -105,6 +146,7 @@ enum LightsLive {
     static func tearDown() {
         engine.pythonTap = nil
         engine.commandTap = nil
+        engine.viewportInputTap = nil
         engine.lightsController.eyeDemand = .pinnedOnly
         engine.setInteractionMode(.viewing)
         engine.runPython(
