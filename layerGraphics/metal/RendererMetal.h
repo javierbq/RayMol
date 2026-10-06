@@ -199,6 +199,8 @@ public:
   void setLightingParams(float ambient, float direct, float reflect,
       float specular, float shininess, float sssWrap = 0.0f) override;
   void setLightRig(const LightRigBlock* rig) override;
+  // The rig's classic scale (#615): see Renderer.h. A value copy.
+  void setLightClassicScale(float scale) override;
   // Per-light shadow maps (#616): see Renderer.h. The maps are chained slices
   // of one array (beginLightShadowMap per slot), and one scene-pass reopen
   // (endLightShadowMaps) ends them.
@@ -895,6 +897,11 @@ private:
   // SceneRenderMetal sets it again.
   bool _lightRigOn = false;
   LightRigBlock _lightRigBlock{};
+  // The rig's classic scale this frame (#615; setLightClassicScale, right
+  // after setLightRig), for MaterialU.lightClassic. Read only while
+  // _lightRigOn, which beginFrame clears and SceneRenderMetal sets just
+  // before it, so there is no beginFrame reset.
+  float _lightClassicScale = 1.0f;
   // The air (#618): a value copy of this frame's air block, taken by
   // setLightAir() (SceneRenderMetal, after setGpuTiming). Valid only while
   // _lightAirOn; off with no air, and at every beginFrame until

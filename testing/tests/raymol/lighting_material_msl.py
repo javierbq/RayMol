@@ -24,7 +24,16 @@ prove on a Mac:
   master's;
 * TestConstants: the shader constants layer1/Material.cpp mirrors equal
   their MSL twins, the material shaders use them by name where they used
-  literals, and the C++ response reads them by name.
+  literals, and the C++ response reads them by name;
+* TestClassicLight (Part 4): the material shaders' own classic light terms
+  follow the rig's classic. kLightRig is declared once, at the top beside
+  kMatFamily and before MaterialU; mat_classic_light (right after MaterialU)
+  is kLightRig ? lightClassic : 1.0; it scales exactly glass's glints, jelly's
+  wet pair and rubber's highlight, never an environment term or rubber's
+  sheen; every mat_glass_shade call hands it over last; bindRepMaterial
+  passes the rig's classic scale only while the rig is on;
+  setLightClassicScale is a value copy SceneRenderMetal calls once, right
+  after setLightRig.
 
 Pure source parsing (skipped, not passed, outside a repo checkout; in a
 checkout a missing source file fails).
@@ -42,6 +51,9 @@ from pymol import testing
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, os.pardir, os.pardir, os.pardir))
 METAL_MM = os.path.join(ROOT, 'layerGraphics', 'metal', 'RendererMetal.mm')
+METAL_H = os.path.join(ROOT, 'layerGraphics', 'metal', 'RendererMetal.h')
+RENDERER_H = os.path.join(ROOT, 'layerGraphics', 'Renderer.h')
+SCENE_RENDER = os.path.join(ROOT, 'layer1', 'SceneRender.cpp')
 MATERIAL_CPP = os.path.join(ROOT, 'layer1', 'Material.cpp')
 
 
@@ -131,6 +143,28 @@ USES = {
 RUBBER_USES = ('pow(max(dot(N,H),0.0),kMatRubberHighlightExp)',
                'mix(float3(1.0),saturate(base*1.4),kMatRubberHighlightTint);')
 RUBBER_LITERALS = ('pow(max(dot(N,H),0.0),8.0)', 'saturate(base*1.4),0.7)')
+
+# Part 4: mat_classic_light, signature and body (whitespace removed).
+CLASSIC_LIGHT_SIGNATURE = (
+    '__attribute__((unused))staticfloatmat_classic_light(constantMaterialU&m)')
+CLASSIC_LIGHT_BODY = '{returnkLightRig?m.lightClassic:1.0;}'
+# The statements it scales, whole (whitespace removed), and the neighbouring
+# ones it must not: environment terms and rubber's view-only sheen.
+GLASS_GLINT = ('floatglint=(1.0-kMatGlassFrostDim*saturate(rough))*'
+               '(kMatGlassKeyGlint*pow(ndoth1,expo)+'
+               'kMatGlassHeadGlint*pow(ndotv,expo))*classic;')
+GLASS_HI = ('hi=(room*F+float3(1.0-exp(-2.0*glint)))*'
+            '(kMatGlassReflection*saturate(reflection));')
+JELLY_WET = ('col+=(m.p[2]*pow(ndoth,kMatJellyWetExp)+0.12*pow(ndoth,8.0))'
+             '*mat_classic_light(m)'
+             '*mix(float3(1.0),saturate(base*1.3),kMatJellyWetTint);')
+JELLY_ROOM = 'col+=room*F*0.8;'
+RUBBER_SPEC = ('floatspec=m.p[2]*pow(max(dot(N,H),0.0),kMatRubberHighlightExp)*'
+               '(n1>0.0?1.0:0.0)*mat_classic_light(m);')
+RUBBER_SHEEN = 'floatsheen=m.p[3]*pow(1.0-saturate(N.z),3.0);'
+# Every mat_glass_shade call, by library, with the MaterialU it hands over.
+GLASS_CALLS = {'kMaterialImpostorSrc': ['m'], 'kVBOSrc': ['mat', 'mat'],
+               'kSphereImpostorSrc': ['mat', 'mat'], 'kCylinderImpostorSrc': ['mat']}
 
 
 def read(path):
@@ -338,8 +372,10 @@ class TestLightResponse(MaterialMSLCase):
     def testTheLightBlockCommentNamesTheException(self):
         """The light block says light_response reads kMatFamily (#615)."""
         literal = self.msl['kMaterialSrc']
+        # (#615 moved kLightRig's declaration to the top: the block's comment
+        # runs to its first struct)
         block = literal[literal.index('--- Studio light rig'):
-                        literal.index('constant bool kLightRig')]
+                        literal.index('struct LightRigLight')]
         self.assertRegex(re.sub(r'\s*//\s*', ' ', block),
                          r'except light_response, which reads kMatFamily \(#615\)')
 
@@ -427,3 +463,130 @@ class TestConstants(MaterialMSLCase):
         for literal in ('1.2f', '60.0f', '0.35f', '70.0f', '0.25f', '0.6f',
                         '1.15f', '8.0f', '0.7f'):
             self.assertNotIn(literal, body, literal)
+
+
+class TestClassicLight(MaterialMSLCase):
+    """Part 4: the material shaders' own classic light terms (glass's glints,
+    jelly's wet pair, rubber's highlight) follow the rig's classic."""
+
+    def testDeclaredOnceBeforeMaterialU(self):
+        code = self.material_code
+        decls = [m.start() for m in re.finditer(
+            r'constant\s+bool\s+kLightRig\s*\[\[\s*function_constant\(1\)\s*\]\]\s*;',
+            code)]
+        self.assertEqual(len(decls), 1)
+        self.assertEqual(len(re.findall(r'\bkLightRig\s*\[\[', code)), 1)
+        self.assertLess(code.index('constant int kMatFamily [[function_constant(0)]];'),
+                        decls[0])
+        self.assertLess(decls[0], code.index('struct MaterialU {'))
+        # before every material function, the light block after them all
+        self.assertLess(decls[0], min(code.index(sig) for name, (sig, _b)
+                                      in self.material.items()
+                                      if name.startswith('mat_')))
+
+    def testMatClassicLight(self):
+        self.assertIn('mat_classic_light', self.material)
+        sig, body = self.material['mat_classic_light']
+        self.assertEqual(squash(sig), CLASSIC_LIGHT_SIGNATURE)
+        self.assertEqual(squash(body), CLASSIC_LIGHT_BODY)
+        # right after struct MaterialU: the next thing defined after its `};`
+        code = self.material_code
+        struct_end = code.index('};', code.index('struct MaterialU {')) + 2
+        self.assertEqual(code[struct_end:].lstrip().index(sig.strip()), 0)
+        # defined only here
+        for name, literal in self.msl.items():
+            if name != 'kMaterialSrc':
+                self.assertNotIn('mat_classic_light', msl_functions(literal), name)
+
+    def testGlassGlints(self):
+        sig, body = self.material['mat_glass_shade']
+        # the last parameter, after `hi`
+        self.assertRegex(squash(sig), r'threadfloat3&hi,floatclassic\)$')
+        code = squash(body)
+        self.assertEqual(code.count(GLASS_GLINT), 1)
+        self.assertEqual(code.count(GLASS_HI), 1)
+        # `classic` scales the glints and nothing else
+        self.assertEqual(len(re.findall(r'\bclassic\b', body)), 1)
+        self.assertNotIn('mat_classic_light', body)
+
+    def testJellyWetPair(self):
+        code = squash(self.material['mat_jelly_shade'][1])
+        self.assertEqual(code.count('mat_classic_light('), 1)
+        self.assertEqual(code.count(JELLY_WET), 1)
+        self.assertEqual(code.count(JELLY_ROOM), 1)
+        # the glow takes decision 15's already-scaled terms; nothing else here
+        self.assertLess(code.index(JELLY_ROOM), code.index(JELLY_WET))
+
+    def testRubberHighlightNotSheen(self):
+        procedural = squash(self.material['mat_shade_procedural'][1])
+        rubber = procedural[procedural.index('if(m.mode==kMatMode_rubber)'):
+                            procedural.index('if(m.mode==kMatMode_clay)')]
+        self.assertEqual(procedural.count('mat_classic_light('), 1)
+        self.assertEqual(rubber.count(RUBBER_SPEC), 1)
+        self.assertEqual(rubber.count(RUBBER_SHEEN), 1)
+
+    def testScalesNothingElse(self):
+        """In kMaterialSrc only jelly's and rubber's terms call it (glass
+        takes it as a parameter); no environment helper sees it."""
+        callers = sorted(name for name, (_sig, body) in self.material.items()
+                         if re.search(r'\bmat_classic_light\s*\(', body))
+        self.assertEqual(callers, ['mat_jelly_shade', 'mat_shade_procedural'])
+        for name in ('mat_env_specular', 'mat_glass_cover', 'mat_soft_knee',
+                     'mat_body_shade', 'mat_matte_shade'):
+            if name in self.material:
+                self.assertNotIn('classic', self.material[name][1], name)
+        # the ray tracer has no MaterialU and no classic scale
+        self.assertNotIn('mat_classic_light', self.msl['kRTSrc'])
+
+    def testEveryGlassCallHandsItOver(self):
+        found = {}
+        for name, literal in self.msl.items():
+            code = strip_comments(literal)
+            for m in re.finditer(r'(?<![\w])mat_glass_shade\s*\(', code):
+                close = _msl.match_paren(code, m.end() - 1)
+                if re.match(r'\s*\{', code[close + 1:]):
+                    continue                    # the definition
+                args = squash(code[m.end():close])
+                last = re.search(r',hi,mat_classic_light\((\w+)\)$', args)
+                self.assertIsNotNone(last, '%s: %s' % (name, args))
+                found.setdefault(name, []).append(last.group(1))
+        self.assertEqual(found, GLASS_CALLS)
+        self.assertEqual(sum(len(v) for v in found.values()), 6)
+
+    def testBindRepMaterialPassesTheScale(self):
+        rep = squash(cpp_function(self.mm, 'RendererMetal::bindRepMaterial'))
+        self.assertEqual(rep.count('bindMaterialU('), 1)
+        self.assertIn('bindMaterialU(_encoder,_repMatParams,_modelviewInv.data(),'
+                      'refrPx,ortho,_lightRigOn?_lightRigBlock.head[1]:0.0f,'
+                      '_lightRigOn?_lightClassicScale:1.0f);', rep)
+
+    def testSetLightClassicScaleIsAValueCopy(self):
+        body = squash(cpp_function(self.mm, 'RendererMetal::setLightClassicScale'))
+        self.assertEqual(body, '{_lightClassicScale=scale;}')
+        # read only by bindRepMaterial (under _lightRigOn), written only here;
+        # beginFrame never resets it
+        self.assertEqual(len(re.findall(r'\b_lightClassicScale\b', self.code)), 2)
+        self.assertNotIn('_lightClassicScale',
+                         cpp_function(self.mm, 'RendererMetal::beginFrame'))
+        header = strip_comments(read(METAL_H))
+        self.assertEqual(len(re.findall(r'\bfloat\s+_lightClassicScale\s*=\s*1\.0f\s*;',
+                                        header)), 1)
+        self.assertRegex(header, r'void\s+setLightClassicScale\(float\s+scale\)\s*'
+                                 r'override\s*;')
+        renderer = strip_comments(read(RENDERER_H))
+        self.assertRegex(renderer, r'virtual\s+void\s+setLightClassicScale\('
+                                   r'float\s*(?:/\*\s*scale\s*\*/)?\s*\)\s*\{\s*\}')
+
+    def testSceneRenderHandsItOverOnceAfterTheRig(self):
+        source = read(SCENE_RENDER)
+        body = cpp_function(source, 'SceneRenderMetal')
+        calls = re.findall(r'setLightClassicScale\(([^;]*)\);', body)
+        self.assertEqual([squash(c) for c in calls], ['lights.classic.scale'])
+        rig = re.search(r'G->Renderer->setLightRig\([^;]*\);\s*', body)
+        self.assertIsNotNone(rig)
+        # the very next statement
+        self.assertTrue(body[rig.end():].startswith(
+            'G->Renderer->setLightClassicScale(lights.classic.scale);'))
+        self.assertLess(body.index('setLightClassicScale('),
+                        body.index('SceneRenderAll('))
+        self.assertEqual(strip_comments(source).count('setLightClassicScale('), 1)

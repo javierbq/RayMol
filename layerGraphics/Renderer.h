@@ -450,6 +450,15 @@ public:
   // keeps. Default: no-op (the GL renderer ignores the rig).
   virtual void setLightRig(const LightRigBlock* /*rig*/) {}
 
+  // The rig's classic scale this frame (#615): the factor decision 15 applies
+  // to the classic direct, reflect and specular terms (LightClassicTerms
+  // scale; 1 with no rig or a rig that is off). The material shaders apply it
+  // to their own key-light and headlight terms (glass's glints, jelly's wet
+  // highlights, rubber's highlight) while the rig is on. SceneRenderMetal
+  // calls it once per frame, right after setLightRig(). A value; nothing to
+  // keep. Default: no-op (the GL renderer ignores the rig).
+  virtual void setLightClassicScale(float /*scale*/) {}
+
   // Per-light shadow maps (#616). SceneRenderMetal calls setLightShadowFrame()
   // once per frame, after setLightRig(): `studioShadows` (a light of the rig
   // is shadowed while metal_shadows is on; the whole-pixel shadow is then off)

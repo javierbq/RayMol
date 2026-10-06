@@ -460,6 +460,13 @@ move their studio highlights, and jelly's Inner glow its studio diffuse.
 Out-of-range values are clamped as the renderer clamps them (a negative
 Highlight gives none).
 
+**PyMOL's own lights inside a material.** Glass's key-light and headlight
+glints, jelly's wet highlights and rubber's highlight reflect PyMOL's own
+lights, not the room. While a rig is on they follow its `classic`, as
+PyMOL's diffuse and specular do: at `classic` 0 they are gone, and the
+glints you see are the studio lights'. Environment reflections and rubber's
+Sheen (a grazing term with no light direction) stay under every rig.
+
 **Limits.**
 
 - With `shininess` 0 every studio highlight has exponent 1, as `default`'s

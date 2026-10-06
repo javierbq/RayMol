@@ -929,9 +929,11 @@ void RendererMetal::bindRepMaterial()
   // An orthographic projection has w = 1 everywhere: its last row is 0,0,0,1.
   const int ortho = _projectionMatrix[15] != 0.0f ? 1 : 0;
   // The studio response's exponent becomes a sharpness against the rig's
-  // shininess (#615); without the rig no pipeline reads it.
+  // shininess, and the material's own classic light terms take the rig's
+  // classic scale (#615); without the rig no pipeline reads either.
   bindMaterialU(_encoder, _repMatParams, _modelviewInv.data(), refrPx, ortho,
-                _lightRigOn ? _lightRigBlock.head[1] : 0.0f);
+                _lightRigOn ? _lightRigBlock.head[1] : 0.0f,
+                _lightRigOn ? _lightClassicScale : 1.0f);
   if (refracts && refrPx > 0.0f)
     _oitHasRefraction = true;
   // The light rig (#613) goes with the material on every draw that shades
@@ -2907,6 +2909,12 @@ void RendererMetal::setLightRig(const LightRigBlock* rig)
   _lightRigOn = rig && rig->head[0] >= 1.0f;
   if (_lightRigOn)
     _lightRigBlock = *rig;
+}
+
+void RendererMetal::setLightClassicScale(float scale)
+{
+  // A value copy and nothing else (#615): read only while _lightRigOn.
+  _lightClassicScale = scale;
 }
 
 void RendererMetal::setLightShadowFrame(bool studioShadows, int mapSize)
@@ -7294,6 +7302,16 @@ constant bool kMatProcedural = (kMatFamily == 1);
 constant bool kMatReflective = (kMatFamily == 2);
 constant bool kMatGlass = (kMatFamily == 3);
 
+// The studio light rig (#613): specialised per PIPELINE, as kMatFamily is: a
+// lit colour fragment declares the rig at buffer(9) under this constant and
+// wraps every rig statement in `if (kLightRig)`. The classic pipelines
+// specialise it false, which removes the argument and every rig statement
+// before code generation, so with no rig a render is byte-identical to the
+// build before the rig. RendererMetal::materialFragmentFunction always sets
+// it. Declared here, beside kMatFamily, since #615: mat_classic_light (after
+// MaterialU) reads it; the rig's own block stays at the end of this library.
+constant bool kLightRig [[function_constant(1)]];
+
 constant int kMatMode_frosted_glass = 5;
 constant int kMatMode_jelly = 6;
 
@@ -7380,7 +7398,7 @@ static float3 mat_fresnel(float3 f0, float vdoth) {
 // distribution would alias worse than the offsets do.
 static float3 mat_glass_shade(float3 base, float3 N, float3 V, float rough,
     float reflection, int taps, float3 keyDir, texturecube<float> envMap,
-    sampler envSmp, thread float3& hi) {
+    sampler envSmp, thread float3& hi, float classic) {
   float3 R = reflect(-V, N);
   float lod = sqrt(saturate(rough)) * 7.0;
   float3 room = float3(0.0);
@@ -7426,9 +7444,11 @@ static float3 mat_glass_shade(float3 base, float3 N, float3 V, float rough,
   // about half the strength: a soft bloom where clear glass has a sharp point.
   float expo = mix(kMatGlassGlintExp, kMatGlassGlintExp * kMatGlassFrostExpScale,
                    saturate(rough));
+  // `classic` (#615, mat_classic_light: 1 without the rig) scales both: they
+  // are PyMOL's key light and headlight, which the rig's classic scales.
   float glint = (1.0 - kMatGlassFrostDim * saturate(rough)) *
                 (kMatGlassKeyGlint * pow(ndoth1, expo) +
-                 kMatGlassHeadGlint * pow(ndotv, expo));
+                 kMatGlassHeadGlint * pow(ndotv, expo)) * classic;
 
   // What the SURFACE reflects is returned apart from what the BODY transmits:
   // under weighted-blended OIT everything a fragment emits is scaled by its
@@ -7607,6 +7627,19 @@ struct MaterialU {
   float _pad4;
 };
 
+// The scale on a material's OWN classic light terms (#615): the terms its
+// shader reflects from PyMOL's key light or headlight with constants of its
+// own -- glass's glints, jelly's wet highlights, rubber's highlight. Decision
+// 15 scales the classic direct, reflect and specular by the rig's classic
+// while the rig is on; these follow it, so at classic 0 they no longer shine
+// where no light is. Environment reflections and view-only terms (rubber's
+// sheen) are not light terms and are not scaled. The classic pipelines
+// specialise kLightRig false, so this is the literal 1.0 and `x * 1.0` folds
+// away before code generation: a classic render cannot move.
+__attribute__((unused)) static float mat_classic_light(constant MaterialU& m) {
+  return kLightRig ? m.lightClassic : 1.0;
+}
+
 // Jelly's light law (mat_jelly_shade), named for #615, whose studio response
 // reproduces it (layer1/Material.cpp mirrors these; lighting_material_msl.py
 // pins them equal): the inner glow's wrap and gain, and the tight wet
@@ -7710,7 +7743,10 @@ static float3 mat_jelly_shade(float3 base, float3 N, float3 V,
   float3 halfVec = L1 + V;
   float ndoth = dot(halfVec, halfVec) > 1e-8
                   ? max(dot(N, normalize(halfVec)), 0.0) : 0.0;
+  // Both are the key light's, so both follow the rig's classic (#615,
+  // mat_classic_light: 1 without the rig).
   col += (m.p[2] * pow(ndoth, kMatJellyWetExp) + 0.12 * pow(ndoth, 8.0))
+         * mat_classic_light(m)
          * mix(float3(1.0), saturate(base * 1.3), kMatJellyWetTint);
   return mat_soft_knee(col);
 }
@@ -7846,8 +7882,12 @@ static float3 mat_shade_procedural(float3 base, float3 N, float3 pModel,
     float3 L1 = normalize(keyDir);
     float3 H = normalize(L1 + float3(0.0, 0.0, 1.0));
     float n1 = max(dot(N, L1), 0.0);
+    // The highlight is the key light's, so it follows the rig's classic
+    // (#615, mat_classic_light: 1 without the rig). The sheen has no light
+    // direction (a view-only grazing term, like the environment rim) and is
+    // kept under every rig.
     float spec = m.p[2] * pow(max(dot(N, H), 0.0), kMatRubberHighlightExp) *
-                 (n1 > 0.0 ? 1.0 : 0.0);
+                 (n1 > 0.0 ? 1.0 : 0.0) * mat_classic_light(m);
     float sheen = m.p[3] * pow(1.0 - saturate(N.z), 3.0);
     return col + (spec + sheen) *
                  mix(float3(1.0), saturate(base * 1.4), kMatRubberHighlightTint);
@@ -7867,19 +7907,14 @@ static float3 mat_shade_procedural(float3 base, float3 N, float3 pModel,
 
 // --- Studio light rig (#613, lighting epic #610) ------------------------------
 // The rig's spot lights, added on top of what each lit fragment already
-// shades. Specialised per PIPELINE, as kMatFamily is: a lit colour fragment
-// declares the rig at buffer(9) under this constant and wraps every rig
-// statement in `if (kLightRig)`. The classic pipelines specialise it false,
-// which removes the argument and every rig statement before code generation,
-// so with no rig a render is byte-identical to the build before the rig.
-// RendererMetal::materialFragmentFunction always sets it.
+// shades, under kLightRig (declared at the top of this library, beside
+// kMatFamily, since #615).
 //
 // The light_ helpers below never read a function constant, so a library can
 // call them unspecialised -- except light_response, which reads kMatFamily
 // (#615): default compiles in the neutral response. Each carries
 // __attribute__((unused)), as mat_glass_cover does: a library that skips one
 // gets no new warning.
-constant bool kLightRig [[function_constant(1)]];
 
 // One light as the GPU reads it. Mirrors pymol::LightRigBlockLight
 // (layer1/LightRigBlock.h), and kRTSrc carries a verbatim copy of these
@@ -8267,7 +8302,7 @@ static float3 mat_impostor_composite(float3 base, float3 N, float3 pEye,
     // from, so it is simply added; the OIT fragment uses mat_glass_cover.
     float3 hi;
     float3 body = mat_glass_shade(base, N, V, m.rough, m.p[0], taps, keyDir,
-                                  envMap, envSmp, hi);
+                                  envMap, envSmp, hi, mat_classic_light(m));
     return mat_soft_knee(body + hi);
   }
   if (kMatReflective) {
@@ -8420,7 +8455,7 @@ static float3 vbo_material_shade(float3 baseColor, float3 nEye, float3 pModel,
     float3 hi;
     float3 body = mat_glass_shade(baseColor, N, V, mat.rough, mat.p[0], taps,
                                   float3(lt.klx, lt.kly, lt.klz), envMap,
-                                  envSmp, hi);
+                                  envSmp, hi, mat_classic_light(mat));
     return mat_soft_knee(body + hi);
   }
   if (kMatReflective) {
@@ -8672,7 +8707,7 @@ fragment OITFragOut vbo_fragment_oit(VBOVertexOut in [[stage_in]],
     float3 body = mat_glass_shade(in.color.rgb, N, float3(0.0, 0.0, 1.0),
                                   mat.rough, mat.p[0], taps,
                                   float3(lt.klx, lt.kly, lt.klz), envMap,
-                                  envSmp, hi);
+                                  envSmp, hi, mat_classic_light(mat));
     // The light rig (#613) splits as the classic light does: its diffuse
     // lights the BODY, which reaches the screen at the glass's own coverage,
     // so a beam never turns glass opaque; its highlights join the glints in
@@ -10579,7 +10614,7 @@ static float3 sphere_glass_rig(float3 rgb, float3 base, float3 n, float3 pt,
   float3 hi;
   float3 body = mat_glass_shade(base, n, float3(0.0, 0.0, 1.0), mat.rough,
                                 mat.p[0], taps, float3(u.klx, u.kly, u.klz),
-                                envMap, envSmp, hi);
+                                envMap, envSmp, hi, mat_classic_light(mat));
   const LightTerms rigLight = light_terms(rig, base, n, pt, light_response(mat));
   body += base * kMatGlassBaseAttenuation * rigLight.diffuse;
   hi += light_glass_glints(rigLight.specular) *
@@ -10601,7 +10636,7 @@ static float3 sphere_glass_rig_shadowed(float3 rgb, float3 base, float3 n,
   float3 hi;
   float3 body = mat_glass_shade(base, n, float3(0.0, 0.0, 1.0), mat.rough,
                                 mat.p[0], taps, float3(u.klx, u.kly, u.klz),
-                                envMap, envSmp, hi);
+                                envMap, envSmp, hi, mat_classic_light(mat));
   const LightTerms rigLight = light_terms_shadowed(rig, maps, smp, base, n, pt,
                                                    light_response(mat));
   body += base * kMatGlassBaseAttenuation * rigLight.diffuse;
@@ -11446,7 +11481,7 @@ fragment CylOITOut cyl_impostor_fragment_oit(CylVOut in [[stage_in]],
       float3 hi;
       float3 body = mat_glass_shade(base, n, float3(0.0, 0.0, 1.0), mat.rough,
                                     mat.p[0], taps, float3(u.klx, u.kly, u.klz),
-                                    envMap, envSmp, hi);
+                                    envMap, envSmp, hi, mat_classic_light(mat));
       // The light rig (#613) splits as on the VBO glass (vbo_fragment_oit):
       // its diffuse lights the body at the glass's coverage, its highlights
       // join the glints through the classic curve and the Reflection knob.

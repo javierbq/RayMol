@@ -2531,6 +2531,9 @@ void SceneRenderMetal(PyMOLGlobals* G)
         lights.classic.direct, lights.classic.reflect, lights.classic.specular,
         lights.shininess, SettingGetGlobal_f(G, cSetting_metal_sss_wrap));
     G->Renderer->setLightRig(lights.rig ? &*lights.rig : nullptr);
+    // The material shaders' own classic light terms follow the same scale
+    // (#615); 1 with no rig, and read only while the rig is on.
+    G->Renderer->setLightClassicScale(lights.classic.scale);
     // Studio shadows (#616): whether they are on (the whole-pixel shadow is
     // then off) and each map's size. Two scalars; false and 0 with no rig.
     G->Renderer->setLightShadowFrame(lights.studioShadows, lights.shadowMapSize);
