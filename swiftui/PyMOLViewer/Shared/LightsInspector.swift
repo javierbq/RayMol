@@ -1017,9 +1017,11 @@ extension View {
 /// edits a simulator run applies through the same controller calls the card
 /// makes. Tokens: `<parameter>:<value>` for every LightParameter, `pin:0|1`,
 /// `shadow:0|1`, `color:r:g:b` (0...1), `expand` (the inspector and the orbit
-/// view start expanded on iPhone), and the orbit view's gestures (`tap:`,
+/// view start expanded on iPhone), the orbit view's gestures (`tap:`,
 /// `plan:`, `square:`, `arc:`, `pinch:`; OrbitAutoGesture parses and runs
-/// them through LightsOrbitInteraction).
+/// them through LightsOrbitInteraction) and the gizmo's (`knob:`, `flip:`,
+/// `outer:`, `inner:`, `aimat:`, `wheel:`, `kpinch:`, `hl:`, `gshadow:`;
+/// GizmoAutoGesture parses and runs them through LightGizmoInteraction).
 enum LightsAutoEdit {
     enum Token: Equatable {
         case set(LightParameter, Double)
@@ -1028,6 +1030,7 @@ enum LightsAutoEdit {
         case color(SIMD3<Double>)
         case expand
         case gesture(OrbitAutoGesture)
+        case gizmo(GizmoAutoGesture)
     }
 
     struct Parsed: Equatable {
@@ -1043,8 +1046,16 @@ enum LightsAutoEdit {
         for raw in text.split(separator: ";") {
             let token = raw.trimmingCharacters(in: .whitespaces)
             guard !token.isEmpty else { continue }
-            // An orbit-view gesture's key: it parses, or it is rejected (never
-            // passed on to the inspector's forms).
+            // A gizmo or orbit-view gesture's key: it parses, or it is
+            // rejected (never passed on to the inspector's forms).
+            if GizmoAutoGesture.claims(token) {
+                if let gesture = GizmoAutoGesture.parse(token) {
+                    parsed.tokens.append(.gizmo(gesture))
+                } else {
+                    parsed.rejected.append(token)
+                }
+                continue
+            }
             if OrbitAutoGesture.claims(token) {
                 if let gesture = OrbitAutoGesture.parse(token) {
                     parsed.tokens.append(.gesture(gesture))
@@ -1076,9 +1087,12 @@ enum LightsAutoEdit {
 
     /// Apply `tokens` to the selected light; one `<edit> -> <result>` entry
     /// per edit (`expand` is a layout choice, applied before the mode opens).
-    /// A gesture's entry is `<token> -> <result> <field>=<value>`.
+    /// A gesture's entry is `<token> -> <result> <field>=<value>`. Gizmo
+    /// gestures run with `gizmo` (the overlay's size and the engine's
+    /// picker); without it each logs `<token> -> noview`.
     @MainActor
-    static func apply(_ tokens: [Token], to controller: LightsController) -> [String] {
+    static func apply(_ tokens: [Token], to controller: LightsController,
+                      gizmo: GizmoAutoContext? = nil) -> [String] {
         tokens.compactMap { token in
             switch token {
             case .set(let parameter, let value):
@@ -1093,6 +1107,8 @@ enum LightsAutoEdit {
                 return nil
             case .gesture(let gesture):
                 return OrbitAutoGesture.apply(gesture, to: controller)
+            case .gizmo(let gesture):
+                return GizmoAutoGesture.apply(gesture, to: controller, context: gizmo)
             }
         }
     }
