@@ -3,6 +3,7 @@
 
 import SwiftUI
 import MetalKit
+import QuartzCore   // CACurrentMediaTime (the air redraw policy, #618)
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -67,6 +68,67 @@ enum RenderGate {
     /// 120 Hz, where the extra ticks buy nothing and each one still costs a
     /// `PyMOL_Idle` poll on the main thread.
     static func preferredFPS(rayTracing: Bool) -> Float { rayTracing ? 60 : 120 }
+}
+
+// MARK: - Air redraw policy (#618)
+
+/// When the light rig's moving dust may ask the render loop for a frame.
+///
+/// The dust (`atmosphere dust=...`) moves with the clock, so it needs frames
+/// that no redisplay flag asks for. Animated dust must not keep the GPU busy
+/// when nobody can see it or the device is saving power, and must not run at
+/// the display's full rate otherwise. So, like `RenderGate`, the decision is
+/// a pure type the tests pin down, and `draw(in:)` only feeds it:
+///
+/// - no air tick at all while the app is inactive, its window hidden,
+///   occluded or miniaturised, in Low Power Mode, or at a serious or critical
+///   thermal state (the dust holds still; the next real change still renders);
+/// - otherwise at most `activeFPS` air ticks a second.
+///
+/// The core is asked whether the dust moves (`PyMOLEngine.lightAirAnimating`,
+/// plain C++) only on a tick this allows. A due tick then goes through the
+/// unchanged `RenderGate.decide`, so the in-flight cap, the first frame and
+/// wake behave as for any other redisplay.
+enum AirRedrawGate {
+
+    /// Air ticks a second while the app is active and visible. Provisional:
+    /// #623 sets the iOS rate from device runs.
+    static let activeFPS: Double = 30
+
+    /// A tick counts as due at this share of the interval, so display-link
+    /// jitter (a tick landing a hair early) does not drop the dust to half
+    /// the rate.
+    static let dueShare: Double = 0.95
+
+    /// What the platform says about the app and its window this tick.
+    struct Activity: Equatable {
+        /// The app is the active one (macOS) or its scene is in the
+        /// foreground and active (iOS).
+        var active: Bool
+        /// The viewport's window is on screen: present, not occluded and not
+        /// miniaturised.
+        var visible: Bool
+        /// Low Power Mode is on or the thermal state is serious or critical.
+        var lowPower: Bool
+    }
+
+    /// Whether the device is saving power: Low Power Mode, or a thermal state
+    /// of serious or worse.
+    static func lowPower(lowPowerMode: Bool, thermalState: ProcessInfo.ThermalState) -> Bool {
+        lowPowerMode || thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue
+    }
+
+    /// The time between air ticks, or nil when the dust must hold still.
+    static func interval(_ activity: Activity) -> TimeInterval? {
+        guard activity.active, activity.visible, !activity.lowPower else { return nil }
+        return 1 / activeFPS
+    }
+
+    /// Whether an air tick is due `now`, given when the last one was taken
+    /// (both in seconds on the same clock).
+    static func due(interval: TimeInterval, now: TimeInterval, lastFrame: TimeInterval) -> Bool {
+        now - lastFrame >= dueShare * interval
+    }
 }
 
 #if os(macOS)
@@ -530,6 +592,12 @@ extension MetalViewport {
         private var wasSuppressed = false
         private var hasRenderedOnce = false
         private var moveSyncCounter = 0
+        // The air redraw policy (#618, AirRedrawGate): when the last frame
+        // rendered, and when the core was last asked whether the dust moves
+        // (so a rig whose dust holds still is asked at most activeFPS times
+        // a second, not on every display tick). CACurrentMediaTime seconds.
+        private var lastFrameTime: CFTimeInterval = 0
+        private var lastAirCheckTime: CFTimeInterval = 0
 
         // Keep the tick rate matched to how expensive frames currently are
         // (#396). On macOS the view owns the display link we drive; on iOS
@@ -545,6 +613,40 @@ extension MetalViewport {
                 view.preferredFramesPerSecond = target
             }
             #endif
+        }
+
+        /// What the platform says about the app and the viewport's window this
+        /// tick, for AirRedrawGate (#618). Main thread (draw(in:)).
+        private func airActivity(of view: MTKView) -> AirRedrawGate.Activity {
+            let info = ProcessInfo.processInfo
+            let lowPower = AirRedrawGate.lowPower(lowPowerMode: info.isLowPowerModeEnabled,
+                                                  thermalState: info.thermalState)
+            #if os(macOS)
+            let visible = view.window.map {
+                $0.isVisible && $0.occlusionState.contains(.visible) && !$0.isMiniaturized
+            } ?? false
+            return AirRedrawGate.Activity(active: NSApp.isActive, visible: visible,
+                                          lowPower: lowPower)
+            #else
+            let window = view.window
+            let active = window?.windowScene?.activationState == .foregroundActive
+            return AirRedrawGate.Activity(active: active, visible: window != nil && !view.isHidden,
+                                          lowPower: lowPower)
+            #endif
+        }
+
+        /// Whether this tick should render for the moving dust alone (#618).
+        /// The core is asked only when AirRedrawGate allows a tick and one is
+        /// due; otherwise this costs a few platform reads and no bridge call.
+        private func airTickDue(view: MTKView, engine: PyMOLEngine) -> Bool {
+            guard let interval = AirRedrawGate.interval(airActivity(of: view)) else { return false }
+            let now = CACurrentMediaTime()
+            guard AirRedrawGate.due(interval: interval, now: now,
+                                    lastFrame: max(lastFrameTime, lastAirCheckTime)) else {
+                return false
+            }
+            lastAirCheckTime = now
+            return engine.lightAirAnimating
         }
 
         func draw(in view: MTKView) {
@@ -615,9 +717,14 @@ extension MetalViewport {
             // this tick has committed to encoding a frame, so a throttled tick
             // leaves the request standing instead of swallowing it (#396).
             let pending = engine.instance.map { PyMOLBridge_GetRedisplay($0, 0) != 0 } ?? false
+            // Moving dust (#618) asks for a frame that no flag requests, but
+            // only on a tick AirRedrawGate allows, and only when nothing else
+            // already renders this tick: the core is not asked otherwise.
+            let airDue = !pending && !forceRedraw && hasRenderedOnce
+                && airTickDue(view: view, engine: engine)
             switch RenderGate.decide(forceRedraw: forceRedraw,
                                      hasRenderedOnce: hasRenderedOnce,
-                                     redisplayPending: pending,
+                                     redisplayPending: pending || airDue,
                                      framesInFlight: engine.metalFramesInFlight) {
             case .skip:
                 // Nothing is dirty, so no deferred rep build is waiting on a
@@ -648,6 +755,7 @@ extension MetalViewport {
                                                     height: Int(size.height))
             hasRenderedOnce = hasRenderedOnce || presented
             forceRedraw = RenderGate.forceRedrawAfterRender(presented: presented)
+            lastFrameTime = CACurrentMediaTime()
             // This frame built any deferred rep geometry (e.g. a surface mesh);
             // let the engine clear the "Calculating…" overlay once the build
             // frame(s) have completed.
