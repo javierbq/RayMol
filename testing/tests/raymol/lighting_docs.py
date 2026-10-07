@@ -28,6 +28,11 @@ without the page fails here until the page says the same thing:
   stripped, so a renamed control fails here.
 * TestGallerySection: the gallery section names gallery.py's sections, image
   counts, scene files and options.
+* TestReleaseNotes: the release-notes draft
+  (docs/release-notes/unreleased/lighting.md, args Q2) is in the house style
+  (a '### Studio lights' section, the updater footer last), macOS-facing (no
+  iPhone, iPad or touch wording outside its header comment), links to this
+  page, and every bold UI label in it is a literal in its Swift file.
 * TestExamples: every line of every `pymol` block runs through cmd.do and
   every `python` block runs, each block in a fresh session (1rx1 as m with a
   surface, cartoon and organic sticks, viewport 640x480, the harness's view)
@@ -62,6 +67,9 @@ ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir,
 DOCS = os.path.join(ROOT, 'docs')
 DOC = os.path.join(DOCS, 'lighting.md')
 MATERIALS = os.path.join(DOCS, 'materials.md')
+NOTES = os.path.join(DOCS, 'release-notes', 'unreleased', 'lighting.md')
+STYLE = os.path.join(ROOT, '.claude', 'skills', 'cut-macos-release',
+                     'references', 'release-notes-style.md')
 LIGHTING_SCRIPTS = os.path.join(ROOT, 'scripts', 'lighting')
 PDB = os.path.join(ROOT, 'testing', 'data', '1rx1.pdb')
 SHARED = os.path.join(ROOT, 'swiftui', 'PyMOLViewer', 'Shared')
@@ -274,7 +282,7 @@ class TestStructure(DocCase):
 
     def testRelativeLinksResolve(self):
         checked = 0
-        for path in (DOC, MATERIALS):
+        for path in (DOC, MATERIALS, NOTES):
             text = read(path)
             for target in LINK_RE.findall(without_fences(text)):
                 if re.match(r'^[a-z]+:', target):
@@ -625,6 +633,80 @@ class TestGallerySection(DocCase):
             self.assertIn("add_argument('%s'" % option, source, option)
             self.assertIn(option, section(self.raw,
                                           'Regenerating the gallery'), option)
+
+
+# --- the release-notes draft ----------------------------------------------
+
+# The footer every macOS release note ends with (release-notes-style.md).
+FOOTER = ('Built on the open-source PyMOL engine. Updates install '
+          'automatically via the in-app updater (**Check for Updates\u2026** '
+          'in the app menu).')
+
+# Words that mark an iOS-only item: those go in the PR's iOS What's New block
+# for cut-ios-release, never in the Sparkle notes.
+IOS_WORDS = re.compile(r'\b(iPhone|iPad|iOS|touch|long[- ]press|pinch)\b', re.I)
+
+
+class TestReleaseNotes(DocCase):
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        raw = read(NOTES)
+        # the header comment is for the release cut, not the user
+        cls.notes = re.sub(r'<!--.*?-->', '', raw, flags=re.S).strip()
+        cls.studio = cls.notes[cls.notes.index('\n### Studio lights\n'):
+                               cls.notes.index('\nSee [docs/lighting.md]')]
+
+    def testHouseStyle(self):
+        self.assertTrue(self.notes.startswith('## RayMol'), self.notes[:40])
+        self.assertTrue(self.notes.endswith(FOOTER), self.notes[-200:])
+        if os.path.isfile(STYLE):
+            self.assertIn(FOOTER, read(STYLE))
+        # every bullet bolds its change first
+        bullets = [l for l in self.studio.splitlines() if l.startswith('- ')]
+        self.assertGreaterEqual(len(bullets), 8)
+        for line in bullets:
+            self.assertTrue(line.startswith('- **'), line[:60])
+
+    def testMacOnly(self):
+        found = IOS_WORDS.findall(self.notes)
+        self.assertEqual(found, [], 'iOS-only wording in the macOS notes')
+
+    def testLinksTheGuide(self):
+        self.assertIn('](../../lighting.md)', self.notes)
+
+    def testBoldLabelsAreInTheirSwiftFiles(self):
+        spans = [flat(s) for s in BOLD_RE.findall(self.studio)]
+        labels = [s for s in spans if not s.endswith(('.', ':'))]
+        self.assertGreaterEqual(len(set(labels)), 10)
+        for label in labels:
+            self.assertIn(label, LABELS, 'bold %r is not a known UI label' %
+                          label)
+            self.assertIn('"%s"' % label, swift(LABELS[label]), label)
+
+    def testQuotedCommandsRun(self):
+        # the commands the notes quote are real and run without an error
+        quoted = ('lights three_point', 'lights key, warmth=3800, intensity=1.3',
+                  'lights add, back, orbit=180', 'lights',
+                  'atmosphere haze=0.3, dust=0.5', 'set metal_light_hdr, 2',
+                  'lights off')
+        for line in quoted:
+            self.assertIn('`%s`' % line, self.notes, line)
+        options = pymol.invocation.options
+        exit_on_error, options.exit_on_error = options.exit_on_error, 0
+        cmd.reinitialize()
+        cmd.load(PDB, 'm')
+        cmd.show_as('cartoon')
+        try:
+            with capture_output() as out:
+                for line in quoted:
+                    cmd.do(line, echo=0)
+            self.assertNotIn('Error', out(), out())
+        finally:
+            options.exit_on_error = exit_on_error
+            cmd.set_lights(None)
+            cmd.reinitialize()
 
 
 # --- runnable examples ------------------------------------------------------
