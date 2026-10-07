@@ -161,7 +161,13 @@ SECTIONS = [
         3,
         (('air_haze', 'air_none'), ('air_dust', 'air_haze'),
          ('air_dust_t1', 'air_dust_t0'), ('air_dust_t2', 'air_dust_t1')),
-        {}),
+        {('air_dust', 'air_haze'): {
+            'share': 0.002,
+            'reason': 'dust 0.6 adds sparse motes to the same haze beam: '
+                      '0.42% of pixels differ by more than 8 levels in the '
+                      'first L2 run (#627 round 1), under the default 0.5%; '
+                      '0.2% keeps a 2x margin and still fails a dust value '
+                      'the renderer ignored (0%)'}}),
     Section(
         'exposure', 'Exposure and HDR',
         'a spot at intensity 3.5, then metal_exposure 0.5; an orange key and '
