@@ -850,8 +850,10 @@ class TestGizmoSource(testing.PyMOLTestCase):
 
     def testTheLogLinesCarryTheGizmo(self):
         """Both PYMOL_AUTOLIGHTS log lines carry gizmo=<LightGizmoState
-        summary> beside inspector= and plan=, and the DEBUG gestures run with
-        the overlay's own size and the engine's picker."""
+        summary> beside inspector= and plan=, then tools=<placement>
+        touch=<floor> (#623); the DEBUG gestures run with the overlay's own
+        size and the engine's picker, and the orbit tokens at the active
+        placement's canvases."""
         hook = body(self.read(CONTENT_VIEW), 'private func autoEnterLightsModeFromEnv()')
         self.assertIsNotNone(hook, 'autoEnterLightsModeFromEnv not found')
         lines = re.findall(r'NSLog\("PYMOL_AUTOLIGHTS(?:_EDIT)?:[^\n]*', hook)
@@ -861,11 +863,22 @@ class TestGizmoSource(testing.PyMOLTestCase):
                 self.assertIn('inspector=', line)
                 self.assertIn(' plan=', line)
                 self.assertIn(' gizmo=\\(gizmo)', line)
+                # #623: where the tools are (tools=... touch=...).
+                self.assertIn(' \\(tools)', line)
+        self.assertEqual(len(re.findall(r'let tools = lightsToolsFields\(detent:', hook)), 2)
+        fields = body(self.read(CONTENT_VIEW), 'private func lightsToolsFields(detent: LightsSheetDetent)')
+        self.assertIsNotNone(fields, 'lightsToolsFields not found')
+        self.assertIn('tools=', fields)
+        self.assertIn('touch=', fields)
+        self.assertIn('LightsSheetState.toolsSummary(placement: lightsPlacement, detent: detent)', fields)
         self.assertEqual(len(re.findall(r'LightGizmoState\(lights, sceneShadowsOn: '
                                         r'engine\.sceneShadowsOn\)\?\.summary', hook)), 2)
         self.assertIn('GizmoAutoContext(viewSize: engine.lightGizmoUI.viewSize', hook)
         self.assertIn('picker: engine.lightGizmoPicker', hook)
-        self.assertIn('LightsAutoEdit.apply(edits.tokens, to: lights, gizmo: context)', hook)
+        # The orbit tokens lay out at the canvases on screen (#623).
+        self.assertIn('LightsAutoEdit.apply(edits.tokens, to: lights, gizmo: context,', hook)
+        self.assertIn('orbitPlanSize: sizes.plan, orbitArcSize: sizes.arc)', hook)
+        self.assertIn('let sizes = lightsOrbitSizes', hook)
 
     def testLeavingTheModeResetsTheGizmoUI(self):
         """The engine owns one LightGizmoUIState and resets it when Lights

@@ -327,6 +327,7 @@ CONTENT_VIEW = os.path.join(SHARED, 'ContentView.swift')
 SIDE_COLUMN = os.path.join(SHARED, 'LightsSideColumn.swift')
 INSPECTOR = os.path.join(SHARED, 'LightsInspector.swift')
 CONTROLLER = os.path.join(SHARED, 'LightsController.swift')
+SHEET = os.path.join(SHARED, 'LightsSheet.swift')
 
 # `case .x: return a...b` (a range line of LightParameter.range).
 RANGE_CASE = re.compile(
@@ -471,11 +472,14 @@ class TestInspectorSource(testing.PyMOLTestCase):
             'LightsSeams.eyeSpace must be wired to lightsEyeSpace()')
 
     def testInspectorPlacedOnBothPlatforms(self):
-        """The Lights side column (and so the inspector) is placed on both
-        platforms: on macOS macLightsOverlay shows the bar and the column and
-        is the Lights branch of the viewport's top overlay chain; on iOS
-        viewportView shows the column in Lights mode only (one site for the
-        four layouts); the column holds the inspector."""
+        """The inspector is placed on both platforms: on macOS
+        macLightsOverlay shows the bar and the side column and is the Lights
+        branch of the viewport's top overlay chain; on iOS (#623) the phone
+        portrait sheet (lightsSheet, in iPhoneLayout's bottom region) and
+        the compact-height side panel (lightsSidePanel, in both landscape
+        layouts' trailing slots) show its header and rows, and viewportView
+        shows the column, in Lights mode only, for the iPad float
+        placement; the column holds the inspector."""
         content = self.read(CONTENT_VIEW)
         mac = body(content, 'private var macLightsOverlay')
         self.assertIsNotNone(mac, 'macLightsOverlay not found')
@@ -488,13 +492,33 @@ class TestInspectorSource(testing.PyMOLTestCase):
         self.assertIsNotNone(ios, 'viewportView not found')
         self.assertRegex(
             ios,
-            r'if\s+engine\.interactionMode\s*==\s*\.lights[^{]*\{\s*lightsSideColumn\b',
-            'viewportView must show lightsSideColumn in Lights mode only')
+            r'if\s+engine\.interactionMode\s*==\s*\.lights[^{]*lightsPlacement\s*==\s*\.floating\s*'
+            r'\{\s*lightsSideColumn\b',
+            'viewportView must show lightsSideColumn in Lights mode, for the float only')
         column_site = body(content, 'private var lightsSideColumn')
         self.assertIsNotNone(column_site, 'lightsSideColumn not found')
         self.assertIn('LightsSideColumn(', column_site)
         column = self.read(SIDE_COLUMN)
         self.assertIn('LightsInspector(', column)
+        sheet_site = body(content, 'private func lightsSheet(room: CGSize)')
+        self.assertIsNotNone(sheet_site, 'lightsSheet not found')
+        self.assertIn('LightsSheet(controller: engine.lightsController', sheet_site)
+        self.assertIn('placement: .bottom', sheet_site)
+        side_site = body(content, 'private var lightsSidePanel: some View')
+        self.assertIsNotNone(side_site, 'lightsSidePanel not found')
+        self.assertIn('placement: .side', side_site)
+        for site in (sheet_site, side_site):
+            self.assertIn('sceneShadowsOn: engine.sceneShadowsOn', site)
+            self.assertIn('engine.enableSceneShadows()', site)
+        docked = body(content, 'private var phoneLightsDocked: Bool')
+        self.assertIsNotNone(docked, 'phoneLightsDocked not found')
+        self.assertIn('engine.interactionMode == .lights', docked)
+        side_shown = body(content, 'private var lightsSidePanelShown: Bool')
+        self.assertIsNotNone(side_shown, 'lightsSidePanelShown not found')
+        self.assertIn('engine.interactionMode == .lights', side_shown)
+        sheet = self.read(SHEET)
+        self.assertIn('presentation: .header', sheet)
+        self.assertIn('presentation: .rows', sheet)
 
     def testInspectorDrawsOnlyWithItsState(self):
         """The card draws only when LightsInspectorState(controller) exists

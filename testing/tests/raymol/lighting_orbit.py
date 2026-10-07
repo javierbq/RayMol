@@ -422,21 +422,43 @@ class TestOrbitSource(testing.PyMOLTestCase):
         self.assertRegex(canvases, r'MagnifyGesture\(\)\s*\.updating\(\$pinching\)')
         self.assertRegex(canvases, r'\.onChange\(of:\s*pinching\)[^}]*pinchEnded\(\)')
 
-    def testTheCardStartsCollapsedOnEveryIPhone(self):
-        """ContentView seeds the orbit card collapsed on compact width or
-        compact height (every iPhone, both orientations), never on macOS,
-        and passes the seed to the column."""
+    def testPhonesDockTheTools(self):
+        """Phones never show the orbit card over the viewport (#623): the
+        placement is by size class (LightsToolsPlacement.resolve on iOS,
+        the column on macOS); phone portrait docks the bottom sheet under
+        the viewport and compact height the side panel in the trailing
+        slot; the viewport's iOS side column overlay shows only for the
+        iPad float placement, and macOS keeps its column."""
         content = self.read(CONTENT_VIEW)
+        placement = body(content, 'private var lightsPlacement: LightsToolsPlacement')
+        self.assertIsNotNone(placement, 'lightsPlacement not found')
+        ios, _, mac = placement.partition('#else')
+        self.assertIn('LightsToolsPlacement.resolve(compactWidth: hSize == .compact, '
+                      'compactHeight: vSize == .compact)', ios)
+        self.assertIn('return .column', mac)
+        phone = body(content, 'private func iPhoneLayout(geo: GeometryProxy)')
+        self.assertIsNotNone(phone, 'iPhoneLayout not found')
+        self.assertRegex(phone, r'if\s+phoneLightsDocked\s*\{\s*lightsSheet\(room:\s*lower\.size\)')
+        for layout in ('private func iPhoneLandscapeLayout(geo: GeometryProxy)',
+                       'private func iPadMacStyleLayout(geo: GeometryProxy)'):
+            with self.subTest(layout):
+                text = body(content, layout)
+                self.assertIsNotNone(text, '%s not found' % layout)
+                self.assertRegex(text, r'if\s+lightsSidePanelShown\s*\{[^}]*lightsSidePanel\b')
+        viewport = body(content, 'private var viewportView')
+        self.assertIsNotNone(viewport, 'viewportView not found')
+        self.assertRegex(viewport, r'if\s+engine\.interactionMode\s*==\s*\.lights\s*&&\s*!iosFullScreen'
+                                   r'\s*&&\s*lightsPlacement\s*==\s*\.floating\s*\{\s*lightsSideColumn\b')
+        for name in ('lightsSheet(', 'lightsSidePanel', 'LightsSheet('):
+            with self.subTest(name):
+                self.assertNotIn(name, viewport, 'no docked tool sits over the viewport')
+        mac_overlay = body(content, 'private var macLightsOverlay')
+        self.assertIsNotNone(mac_overlay, 'macLightsOverlay not found')
+        self.assertIn('lightsSideColumn', mac_overlay)
+        # The orbit card's iPhone seed is kept for the column (now iPad only).
         seed = body(content, 'private var lightsOrbitStartsCollapsed')
         self.assertIsNotNone(seed, 'lightsOrbitStartsCollapsed not found')
-        ios, _, mac = seed.partition('#else')
-        self.assertIn('hSize == .compact', ios)
-        self.assertIn('vSize == .compact', ios)
-        self.assertIn('!lightsInspectorExpandOverride', ios)
-        self.assertIn('return false', mac)
-        site = body(content, 'private var lightsSideColumn')
-        self.assertIsNotNone(site, 'lightsSideColumn not found')
-        self.assertIn('orbitStartsCollapsed: lightsOrbitStartsCollapsed', site)
+        self.assertIn('return false', seed.partition('#else')[2])
 
     def testTheIPadColumnClearsTheHelpButton(self):
         """On iPad the column (orbit card above the inspector) reaches the

@@ -25,6 +25,13 @@ controller's typed API, the pinned canvases outside the rows' ScrollView,
 the inspector's header and rows presentations and the fields' focus
 preference.
 
+The phone wiring (Part 4, ContentView): the portrait viewport and the sheet
+in one unconditional GeometryReader (one MTKView per launch), the console
+and sequence strip giving way without their stored flags being written, the
+side panel in both landscape slots, the drawable frozen only for a snap
+with the safety resets, the focused-field keyboard rule and the DEBUG log
+lines.
+
 The behaviour itself is unit-tested in Swift (LightsTouchTargetTests and
 LightsTouchRoutingTests, run by UnitTests_macOS with the iOS profile as a
 parameter); this file pins, on the sources, that the hit tests use the floor,
@@ -55,6 +62,7 @@ BAR = os.path.join(SHARED, 'LightsBar.swift')
 INSPECTOR = os.path.join(SHARED, 'LightsInspector.swift')
 VIEWPORT = os.path.join(SHARED, 'MetalViewport.swift')
 SHEET = os.path.join(SHARED, 'LightsSheet.swift')
+CONTENT_VIEW = os.path.join(SHARED, 'ContentView.swift')
 
 # Apple's minimum touch target, and the iOS and macOS slops
 # (LightsOrbitMetrics.defaultSlop).
@@ -578,3 +586,157 @@ class TestTouchSource(testing.PyMOLTestCase):
         self.assertIsNotNone(apply, 'OrbitAutoGesture.apply not found')
         self.assertIn('OrbitPlanLayout(size: planSize, extent: state.extent, slop: slop)', apply)
         self.assertIn('PitchArcLayout(size: arcSize, slop: slop)', apply)
+
+    # --- the phone wiring (Part 4) -------------------------------------------
+
+    def testThePortraitViewportKeepsOnePosition(self):
+        """iPhoneLayout puts the viewport and the bottom region in one
+        unconditional GeometryReader, the sheet first in the bottom region
+        while docked (Theme Studio and the inspector after it), with the
+        parked tongue hidden meanwhile; a DEBUG line counts the MTKViews
+        made, so a simulator log shows one per launch."""
+        content = self.read(CONTENT_VIEW)
+        phone = body(content, 'private func iPhoneLayout(geo: GeometryProxy)')
+        self.assertIsNotNone(phone, 'iPhoneLayout not found')
+        self.assertEqual(phone.count('viewportView'), 1)
+        self.assertRegex(phone, r'GeometryReader\s*\{\s*lower\s+in\s*VStack\(spacing:\s*0\)\s*\{\s*'
+                                r'viewportView\b')
+        wrapper = phone.find('GeometryReader { lower in')
+        self.assertNotRegex(phone[:wrapper], r'if[^{\n]*\{\s*$', 'the wrapper is unconditional')
+        sheet = phone.find('if phoneLightsDocked {')
+        studio = phone.find('} else if showThemeStudio {')
+        inspector = phone.find('} else if showObjectPanel {')
+        self.assertGreater(sheet, wrapper)
+        self.assertGreater(studio, sheet)
+        self.assertGreater(inspector, studio)
+        self.assertIn('!showObjectPanel && !phoneLightsDocked', phone, 'the parked tongue hides')
+        tongue = body(content, 'private var bottomTongueShown: Bool')
+        self.assertIsNotNone(tongue, 'bottomTongueShown not found')
+        self.assertIn('!phoneLightsDocked', tongue)
+        viewport = self.read(VIEWPORT)
+        make = body(viewport, 'func makeUIView(context: Context) -> MTKView')
+        self.assertIsNotNone(make, 'makeUIView not found')
+        debug = make.find('#if DEBUG')
+        self.assertGreaterEqual(debug, 0)
+        self.assertGreater(make.find('NSLog("MetalViewport: makeUIView n='), debug)
+
+    def testThePanesGiveWayWithoutWritingTheirFlags(self):
+        """Phone portrait Lights mode hides the console and the sequence
+        strip through the effective bindings (LightsPaneRule), which
+        iPhoneLayout and the rail's pills read; only the bindings' setters
+        (a pill tap) write the stored flags, and the mode's resets write
+        only the overrides."""
+        content = self.read(CONTENT_VIEW)
+        for name, flag, override in (('consoleBinding', 'showCommandPanel', 'lightsShowsConsole'),
+                                     ('sequenceBinding', 'engine.sequenceVisible', 'lightsShowsSequence')):
+            with self.subTest(name):
+                binding = body(content, 'private var %s: Binding<Bool>' % name)
+                self.assertIsNotNone(binding, '%s not found' % name)
+                self.assertIn('if phoneLightsDocked {', binding)
+                self.assertIn('LightsPaneRule.shows(stored: %s' % flag, binding)
+                self.assertIn('set: { %s = $0; %s = $0 }' % (override, flag), binding)
+        phone = body(content, 'private func iPhoneLayout(geo: GeometryProxy)')
+        self.assertIn('let cTerm = consoleBinding.wrappedValue && !iosFullScreen', phone)
+        self.assertIn('let showSequence = sequenceBinding.wrappedValue', phone)
+        self.assertNotIn('engine.sequenceVisible', phone)
+        rail = body(content, 'private func topPaneRail(')
+        self.assertIsNotNone(rail, 'topPaneRail not found')
+        self.assertIn('shown: consoleBinding', rail)
+        self.assertIn('shown: sequenceBinding', rail)
+        for signature in ('private func lightsModeChanged(', 'private func endLightsSheetMotion()',
+                          'private func observingLightsLayout<', 'private func autoEnterLightsModeFromEnv()'):
+            with self.subTest(signature):
+                text = body(content, signature)
+                self.assertIsNotNone(text, '%s not found' % signature)
+                self.assertNotRegex(text, r'showCommandPanel\s*=[^=]')
+                self.assertNotRegex(text, r'sequenceVisible\s*=[^=]')
+        reset = body(content, 'private func lightsModeChanged(')
+        self.assertIn('lightsShowsConsole = false', reset)
+        self.assertIn('lightsShowsSequence = false', reset)
+        self.assertIn("lightsSheetDetent = mode == .lights ? lightsSheetSeed : .compact", reset)
+        seed = body(content, 'private var lightsSheetSeed: LightsSheetDetent')
+        self.assertIn('lightsInspectorExpandOverride ? .expanded : .compact', seed)
+        rule = body(self.read(SHEET), 'static func shows(stored: Bool, override: Bool, docked: Bool)')
+        self.assertIsNotNone(rule, 'LightsPaneRule.shows not found')
+        self.assertIn('stored && (!docked || override)', rule)
+
+    def testTheSidePanelTakesBothLandscapeSlots(self):
+        """On compact height the tools take the trailing slot of
+        iPhoneLandscapeLayout and the right column of iPadMacStyleLayout's
+        landscape branch (the large phones), whatever the Objects toggle
+        says, with the vertical tongue hidden meanwhile."""
+        content = self.read(CONTENT_VIEW)
+        shown = body(content, 'private var lightsSidePanelShown: Bool')
+        self.assertIsNotNone(shown, 'lightsSidePanelShown not found')
+        self.assertIn('lightsPlacement == .sidePanel', shown)
+        land = body(content, 'private func iPhoneLandscapeLayout(geo: GeometryProxy)')
+        self.assertIsNotNone(land, 'iPhoneLandscapeLayout not found')
+        self.assertIn('(lightsSidePanelShown || showThemeStudio || objectsBinding.wrappedValue)', land)
+        self.assertLess(land.find('if lightsSidePanelShown {'), land.find('} else if showThemeStudio {'))
+        self.assertIn('!objectsBinding.wrappedValue && !lightsSidePanelShown', land)
+        pad = body(content, 'private func iPadMacStyleLayout(geo: GeometryProxy)')
+        self.assertIsNotNone(pad, 'iPadMacStyleLayout not found')
+        landscape = pad[:pad.find('} else {')]
+        self.assertLess(landscape.find('if lightsSidePanelShown {'), landscape.find('} else if showThemeStudio {'))
+        self.assertIn('!showRight && !lightsSidePanelShown', landscape)
+
+    def testTheDrawableFreezesOnlyForTheSnap(self):
+        """The sheet's onMoving sets the drawable freeze and the gizmo fade
+        together and only on a change; leaving the mode, a placement change
+        and the sheet's onDisappear (LightsSheet) reset them."""
+        content = self.read(CONTENT_VIEW)
+        moving = body(content, 'private func setLightsSheetMoving(_ moving: Bool)')
+        self.assertIsNotNone(moving, 'setLightsSheetMoving not found')
+        self.assertIn('guard moving != lightsSheetMoving else { return }', moving)
+        self.assertIn('engine.suppressDrawableResize = moving', moving)
+        sheet = body(content, 'private func lightsSheet(room: CGSize)')
+        self.assertIsNotNone(sheet, 'lightsSheet not found')
+        self.assertIn('onMoving: { setLightsSheetMoving($0) }', sheet)
+        self.assertIn('heights: lightsSheetHeights(room: room)', sheet)
+        end = body(content, 'private func endLightsSheetMotion()')
+        self.assertIn('setLightsSheetMoving(false)', end)
+        self.assertIn('endLightsSheetMotion()', body(content, 'private func lightsModeChanged('))
+        observers = body(content, 'private func observingLightsLayout<')
+        self.assertIn('.onChange(of: engine.interactionMode) { _, mode in lightsModeChanged(mode) }', observers)
+        self.assertIn('.onChange(of: lightsPlacement) { _, _ in endLightsSheetMotion() }', observers)
+        self.assertIn('observingLightsLayout(Group {', content)
+        gizmo = body(content, 'private var lightGizmoOverlay: some View')
+        self.assertIn('.opacity(lightsSheetMoving ? 0 : 1)', gizmo)
+        self.assertEqual(len(re.findall(r'engine\.suppressDrawableResize\s*=\s*moving', content)), 1)
+
+    def testAFocusedLightFieldKeepsTheViewport(self):
+        """While an Orbit or Pitch field of the sheet or the side panel has
+        the keyboard, the viewport-plus-tools container of each phone layout
+        ignores it (an unconditional modifier with a dynamic argument); only
+        the tools' onFieldFocus sets the flag (the iPad card's fields keep
+        today's keyboard avoidance)."""
+        content = self.read(CONTENT_VIEW)
+        rule = '.ignoresSafeArea(lightsFieldFocused ? .keyboard : [], edges: .bottom)'
+        self.assertEqual(content.count(rule), 3)
+        for signature in ('private func iPhoneLayout(geo: GeometryProxy)',
+                          'private func iPhoneLandscapeLayout(geo: GeometryProxy)',
+                          'private func iPadMacStyleLayout(geo: GeometryProxy)'):
+            with self.subTest(signature):
+                self.assertIn(rule, body(content, signature))
+        self.assertEqual(content.count('onFieldFocus: { lightsFieldFocused = $0 }'), 2)
+        self.assertNotIn('onPreferenceChange(LightsFieldFocusKey', content)
+        self.assertIn('if lightsFieldFocused { lightsFieldFocused = false }',
+                      body(content, 'private func endLightsSheetMotion()'))
+
+    def testThePhoneLogLines(self):
+        """A DEBUG LightsLayout line names the tools, the scene, the sheet's
+        slot, the panes and the touch floor on each change (iOS only), and
+        the orbit DEBUG tokens lay out at the active placement's canvases."""
+        content = self.read(CONTENT_VIEW)
+        log = body(content, 'private func logLightsLayout(')
+        self.assertIsNotNone(log, 'logLightsLayout not found')
+        for field in ('LightsLayout: tools=', ' scene=', ' sheet=', ' panes=', ' touch='):
+            with self.subTest(field):
+                self.assertIn(field, log)
+        guard = content.rfind('#if os(iOS) && DEBUG', 0, content.find('private func logLightsLayout('))
+        self.assertGreaterEqual(guard, 0)
+        self.assertIn('observed.onChange(of: lightsLayoutLogKey)', content)
+        sizes = body(content, 'private var lightsOrbitSizes: (plan: CGSize, arc: CGSize)')
+        self.assertIsNotNone(sizes, 'lightsOrbitSizes not found')
+        self.assertIn('LightsSheetModel.activeCanvases(placement: lightsPlacement', sizes)
+
