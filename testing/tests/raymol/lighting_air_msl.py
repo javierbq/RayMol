@@ -701,15 +701,17 @@ class TestModel(AirMSLCase):
 
     def testCompositeOnlyAddsLight(self):
         # #624: under kLightHdr the air is added in scene units, T(Tinv(c) +
-        # e a), never negative and nothing non-finite; otherwise #618's
-        # composite through the rig's 8-bit knee, light_finish's false arm
-        # written out (lighting_hdr_msl.py pins both arms)
+        # e a), never negative and nothing non-finite, and never under c in
+        # any channel (T scales by the largest channel: coloured air must not
+        # lower the others); otherwise #618's composite through the rig's
+        # 8-bit knee, light_finish's false arm written out (lighting_hdr_msl.py
+        # pins both arms)
         sig, finish = self.fn('post_air_finish')
         self.assertIn('float3post_air_finish(float3c,float3a,floate)', squash(sig))
         self.assertEqual(squash(finish),
                          '{if(kLightHdr){constfloat3add=all(isfinite(a))?'
-                         'max(a,float3(0.0))*e:float3(0.0);returnlight_tone('
-                         'light_tone_inverse(saturate(c))+add);}'
+                         'max(a,float3(0.0))*e:float3(0.0);returnmax(saturate(c),'
+                         'light_tone(light_tone_inverse(saturate(c))+add));}'
                          'returnc+max(mat_soft_knee(c+a)-mat_soft_knee(c),float3(0.0));}')
         _, full = self.fn('post_air_full')
         self.assertIn('post_air_finish(', full)
