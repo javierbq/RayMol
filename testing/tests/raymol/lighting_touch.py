@@ -44,6 +44,12 @@ stays the default; RAYMOL_AIR_FPS (1-120) and RAYMOL_AIR_LOG=1 are launch
 switches read once in AirRedrawGate, and draw(in:) names none of it (the
 hold log runs inside airTickDue; lighting_air_msl.py pins the gate itself).
 
+The real-recognizer UI tests (Part 7, LightsGestureUITests.swift, run by
+UITests_iOS on the ticket simulators): a PYMOL_UITEST=1 probe in ContentView
+(lightsProbe: the selected light, a camera hash and the rig) and the
+viewport's raymol.viewport identifier exist only under that switch, read
+without writing, and the UI test file names every gesture it covers.
+
 The behaviour itself is unit-tested in Swift (LightsTouchTargetTests and
 LightsTouchRoutingTests, run by UnitTests_macOS with the iOS profile as a
 parameter); this file pins, on the sources, that the hit tests use the floor,
@@ -77,6 +83,7 @@ SHEET = os.path.join(SHARED, 'LightsSheet.swift')
 CONTENT_VIEW = os.path.join(SHARED, 'ContentView.swift')
 FLOAT = os.path.join(SHARED, 'LightsFloatingTools.swift')
 PANEL_LAYOUT = os.path.join(SHARED, 'PanelLayout.swift')
+UI_TESTS = os.path.join('swiftui', 'PyMOLViewerUITests', 'LightsGestureUITests.swift')
 
 # Apple's minimum touch target, and the iOS and macOS slops
 # (LightsOrbitMetrics.defaultSlop).
@@ -928,3 +935,58 @@ class TestTouchSource(testing.PyMOLTestCase):
             with self.subTest(name):
                 self.assertNotIn(name, draw)
         self.assertEqual(text.count('noteAirHold('), 2, 'declared once and called once')
+
+    # --- real-recognizer UI tests (Part 7) ----------------------------------
+
+    def testTheUITestHooksExistOnlyUnderTheSwitch(self):
+        """LightsUITestProbe.enabled is PYMOL_UITEST == "1"; the probe is
+        built only inside the PYMOL_UITEST overlay and only in Lights mode;
+        the viewport's identifier comes from a modifier that leaves the
+        viewport untouched when the switch is off; the probe only reads (no
+        Python, no light write, no camera write)."""
+        content = self.read(CONTENT_VIEW)
+        probe = body(content, 'struct LightsUITestProbe: View')
+        self.assertIsNotNone(probe, 'LightsUITestProbe not found')
+        self.assertIn('static let enabled = ProcessInfo.processInfo.environment["PYMOL_UITEST"] == "1"',
+                      probe)
+        self.assertIn('static let identifier = "lightsProbe"', probe)
+        self.assertIn('static let viewportIdentifier = "raymol.viewport"', probe)
+        self.assertIn('TimelineView(.periodic(', probe)
+        for write in ('runPython', 'perform(', '.set(', 'setPlacement', 'setColour', 'restoreView',
+                      'PyMOLBridge_Set', 'select(name'):
+            with self.subTest(write):
+                self.assertNotIn(write, probe)
+        modifier = body(content, 'struct LightsUITestViewportIdentifier: ViewModifier')
+        self.assertIsNotNone(modifier, 'the viewport identifier modifier not found')
+        self.assertIn('var enabled: Bool = LightsUITestProbe.enabled', modifier)
+        self.assertRegex(modifier, r'if enabled \{\s*content\s*\.accessibilityElement\(children: \.ignore\)'
+                                   r'\s*\.accessibilityIdentifier\(LightsUITestProbe\.viewportIdentifier\)'
+                                   r'\s*\} else \{\s*content\s*\}')
+        viewport = body(content, 'private var viewportView: some View')
+        self.assertRegex(viewport, r'MetalViewport\(\)\s*\.modifier\(LightsUITestViewportIdentifier\(\)\)')
+        at = viewport.find('if ProcessInfo.processInfo.environment["PYMOL_UITEST"] == "1" {')
+        self.assertGreaterEqual(at, 0, 'the PYMOL_UITEST overlay not found')
+        hook = viewport[at:]
+        site = hook.find('LightsUITestProbe(controller: engine.lightsController')
+        self.assertGreater(site, 0, 'the probe is not inside the PYMOL_UITEST overlay')
+        self.assertIn('if LightsUITestProbe.enabled && engine.interactionMode == .lights {', hook[:site])
+        self.assertEqual(content.count('LightsUITestProbe(controller:'), 1, 'one probe site')
+        self.assertEqual(content.count('LightsUITestViewportIdentifier()'), 1, 'one viewport site')
+
+    def testTheUITestsCoverEveryGesture(self):
+        """LightsGestureUITests runs the off-target camera gestures, the knob
+        pinch and press-hold-drag, the iPhone grabber and the iPad grip,
+        reads the probe and the viewport by identifier, and skips (with the
+        reason) when a knob is unreachable instead of passing silently."""
+        text = self.read(UI_TESTS)
+        for name in ('testOffTargetDragRotates', 'testOffTargetPinchZooms', 'testOffTargetTwistRolls',
+                     'testKnobPinchChangesOnlyTheRadius', 'testPressHoldDragOnAKnobDrags',
+                     'testGrabberDragExpandsTheSheet', 'testGripDragMovesTheFloat'):
+            with self.subTest(name):
+                self.assertIn('func %s() throws' % name, text)
+        for needle in ('"lightsProbe"', '"raymol.viewport"', '"lights.gizmo.knob."',
+                       '"lights.sheet.grabber"', '"lights.float.grip"', '"PYMOL_UITEST"',
+                       'XCTSkip(', 'press(forDuration: 0.8, thenDragTo:'):
+            with self.subTest(needle):
+                self.assertIn(needle, text)
+        self.assertIn('XCTAssertEqual(after.cam, before.cam, "the knob pinch moved the camera")', text)
