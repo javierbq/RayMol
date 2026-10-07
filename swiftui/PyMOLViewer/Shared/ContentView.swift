@@ -183,6 +183,16 @@ struct ContentView: View {
     // there keeps the size classes of the moment it was made, while State
     // reads stay live.
     @State private var lightsPlacementSeen: LightsToolsPlacement = .column
+    // The iPad's floating orbit view (#623): its corner is remembered across
+    // launches (bottom-leading when absent); the DEBUG `corner:` token
+    // overrides it for one run without storing anything. The viewport's
+    // bottom chrome reports its heights (the float keeps clear of them), and
+    // the float its cards' frames (the DEBUG covered= field).
+    @AppStorage(PanelLayout.lightsOrbitCornerKey) private var lightsOrbitCornerStored =
+        LightsFloatCorner.default.rawValue
+    @State private var lightsOrbitCornerOverride: LightsFloatCorner?
+    @State private var viewportChrome = ViewportChromeHeights()
+    @State private var lightsFloatFrames: LightsFloatLayout.Frames?
     @State private var showThemeStudio = false   // inline Theme studio (replaces a panel region)
 
     @AppStorage("mouseLegendCollapsed") private var mouseLegendCollapsed = false
@@ -2998,6 +3008,8 @@ struct ContentView: View {
                     // Sit clear ABOVE the floating transport (only present when a
                     // movie exists and we're NOT in timeline mode).
                     .padding(.bottom, 12)
+                    // Its height, for the Lights float to keep clear (#623).
+                    .reportsViewportChrome(\.bottomLeading, shown: bottomLeadingChromeShown)
             }
             // Camera control dock: a bottom-docked icon strip (one control open at
             // a time). Same component on iPhone / iPad. Drag down or tap the chip
@@ -3008,6 +3020,8 @@ struct ContentView: View {
                     CameraDock(engine: engine, onClose: { withAnimation(.easeOut(duration: 0.22)) { showCameraPanel = false } })
                         .padding(.horizontal, 10)
                         .padding(.bottom, cameraDockBottomPad)
+                        // Its height while open, for the Lights float (#623).
+                        .reportsViewportChrome(\.dock)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                         .gesture(DragGesture().onEnded { v in
                             if v.translation.height > 40 {
@@ -3035,16 +3049,21 @@ struct ContentView: View {
             .overlay(alignment: .topTrailing) {
                 hoverReadoutOverlay.padding(.top, 44)
             }
-            // Lights mode (#620): the Lights side column (the selected light's
-            // inspector) in the top-trailing corner. One site covers the four iOS
-            // layouts; the bar docks in the top stack above the viewport, and the
-            // hover readout above never fills in Lights mode. Phones dock the
-            // tools beside the viewport instead (#623: the sheet, the side
-            // panel), so the column shows only for the iPad float placement.
-            .overlay(alignment: .topTrailing) {
+            // The bottom chrome's heights (the camera button, an open dock),
+            // which the Lights float keeps clear of.
+            .onPreferenceChange(ViewportChromeHeightsKey.self) { heights in
+                if heights != viewportChrome { viewportChrome = heights }
+            }
+            // Lights mode on iPad (#623): the floating orbit card in its corner
+            // and the inspector at the top-trailing corner, after the gizmo
+            // site so the cards sit above the gizmo. One site covers the iOS
+            // layouts; the bar docks in the top stack above the viewport, and
+            // the hover readout above never fills in Lights mode. Phones dock
+            // the tools beside the viewport instead (the sheet, the side
+            // panel), so this shows only for the float placement.
+            .overlay {
                 if engine.interactionMode == .lights && !iosFullScreen && lightsPlacement == .floating {
-                    lightsSideColumn.padding(8)
-                        .padding(.bottom, lightsSideColumnBottomInset)
+                    lightsFloatingTools
                 }
             }
             // Test-only hook (PYMOL_UITEST=1): surface the live selection size
@@ -4190,19 +4209,20 @@ struct ContentView: View {
                        background: themeManager.active.panelBackground.color)
     }
 
+    #if os(macOS)
     // The Lights side column (#620, #621): the orbit view above the selected
-    // light's inspector. Placed by macLightsOverlay (macOS) and the
-    // viewportView top-trailing overlay (iOS), each naming only this property.
-    // The inspector's Shadows hint reads the scene's Shadows switch from the
-    // scene poll (~500 ms, also in Lights mode) and its Turn On button sets it.
+    // light's inspector, placed by macLightsOverlay (iOS places the cards by
+    // size class instead, #623). The inspector's Shadows hint reads the
+    // scene's Shadows switch from the scene poll (~500 ms, also in Lights
+    // mode) and its Turn On button sets it.
     private var lightsSideColumn: some View {
         LightsSideColumn(controller: engine.lightsController,
                          style: lightsStyle,
                          inspectorStartsCollapsed: lightsInspectorStartsCollapsed,
-                         orbitStartsCollapsed: lightsOrbitStartsCollapsed,
                          sceneShadowsOn: engine.sceneShadowsOn,
                          onEnableSceneShadows: { engine.enableSceneShadows() })
     }
+    #endif
 
     // The in-scene light gizmo (#622): a Canvas over the viewport (never scene
     // geometry), with the selected light's Shadow chip. Placed on MetalViewport
@@ -4222,42 +4242,16 @@ struct ContentView: View {
             .opacity(lightsSheetMoving ? 0 : 1)
     }
 
-    // The inspector starts collapsed to its header on compact width (iPhone),
-    // where it would cover most of the scene being lit; expanded on iPad and
-    // macOS. Seeded each time the mode opens, never persisted (#623 replaces
-    // the iPhone card with a sheet).
+    // The inspector card starts collapsed to its header in the iPad float
+    // (#623), so the default three_point knobs stay free (the DEBUG `expand`
+    // token expands it); expanded on macOS. Phones show no card (the sheet
+    // and the side panel show its header and rows). Seeded each time the
+    // mode opens, never persisted.
     private var lightsInspectorStartsCollapsed: Bool {
         #if os(iOS)
-        return hSize == .compact && !lightsInspectorExpandOverride
+        return lightsPlacement == .floating && !lightsInspectorExpandOverride
         #else
         return false
-        #endif
-    }
-
-    // The orbit view (#621) starts collapsed on every iPhone: compact width
-    // (portrait) or compact height (landscape, including the large phones
-    // whose landscape width is regular), where the expanded card would cover
-    // the scene; expanded on iPad and macOS. Seeded each time the mode opens,
-    // never persisted; the DEBUG `expand` token expands it (#623 replaces the
-    // iPhone card with a sheet).
-    private var lightsOrbitStartsCollapsed: Bool {
-        #if os(iOS)
-        return (hSize == .compact || vSize == .compact) && !lightsInspectorExpandOverride
-        #else
-        return false
-        #endif
-    }
-
-    // The iOS column's extra bottom inset. On iPad (regular width and height)
-    // the expanded orbit card and inspector reach the viewport's bottom, so
-    // the column stops above the bottom-trailing Gesture help button. On
-    // iPhone the cards start collapsed and the viewport has no room to give
-    // up (#623's sheet replaces them there); macOS places the column itself.
-    private var lightsSideColumnBottomInset: CGFloat {
-        #if os(iOS)
-        return (hSize == .compact || vSize == .compact) ? 0 : LightsSideColumn.helpButtonClearance
-        #else
-        return 0
         #endif
     }
 
@@ -4316,7 +4310,41 @@ struct ContentView: View {
     private func noteLightsSheetHeader(_ measured: CGFloat) {
         if measured > 0, abs(measured - lightsSheetHeader) > 0.5 { lightsSheetHeader = measured }
     }
+
+    // The iPad float (#623): the orbit card in its corner, its header the
+    // grip (a release snaps it to the nearest corner, which is remembered),
+    // and the inspector at the top-trailing corner, clear of the help
+    // button, the camera button and an open CameraDock. Its edits go through
+    // the cards' own paths (no Python per tick).
+    private var lightsFloatingTools: some View {
+        LightsFloatingTools(controller: engine.lightsController, style: lightsStyle,
+                            corner: lightsOrbitCornerBinding, chrome: viewportChrome,
+                            inspectorStartsCollapsed: lightsInspectorStartsCollapsed,
+                            sceneShadowsOn: engine.sceneShadowsOn,
+                            onEnableSceneShadows: { engine.enableSceneShadows() },
+                            onFrames: { frames in
+                                if frames != lightsFloatFrames { lightsFloatFrames = frames }
+                            })
+            .onDisappear { lightsFloatFrames = nil }
+    }
     #endif
+
+    // The float's corner: the DEBUG override for this run, else the stored
+    // one. A move during an overridden run stays in the override (nothing
+    // stored); otherwise it is remembered.
+    private var lightsOrbitCorner: LightsFloatCorner {
+        lightsOrbitCornerOverride ?? LightsFloatCorner.stored(lightsOrbitCornerStored)
+    }
+
+    private var lightsOrbitCornerBinding: Binding<LightsFloatCorner> {
+        Binding(get: { lightsOrbitCorner }, set: { corner in
+            if lightsOrbitCornerOverride != nil {
+                lightsOrbitCornerOverride = corner
+            } else {
+                lightsOrbitCornerStored = corner.rawValue
+            }
+        })
+    }
 
     // The sheet's snap (true before, false in its completion): the drawable
     // is frozen for the snap's one reshape and the gizmo fades. Only a change
@@ -4375,7 +4403,7 @@ struct ContentView: View {
 
     // The tools= and touch= fields of the PYMOL_AUTOLIGHTS log lines.
     private func lightsToolsFields(detent: LightsSheetDetent) -> String {
-        "tools=\(LightsSheetState.toolsSummary(placement: lightsLivePlacement, detent: detent)) "
+        "tools=\(LightsSheetState.toolsSummary(placement: lightsLivePlacement, detent: detent, corner: lightsOrbitCorner)) "
             + "touch=\(Int(LightsTouch.minimumTarget))"
     }
 
@@ -4405,11 +4433,14 @@ struct ContentView: View {
         var sheet: Int?
         var panes: String
         var room: CGSize
+        /// The float's cards (iPad): what covered= checks the knobs against.
+        var float: LightsFloatLayout.Frames? = nil
     }
 
     private var lightsLayoutLogKey: LightsLayoutLogKey? {
         guard engine.interactionMode == .lights, !iosFullScreen else { return nil }
-        let tools = LightsSheetState.toolsSummary(placement: lightsPlacement, detent: lightsSheetDetent)
+        let tools = LightsSheetState.toolsSummary(placement: lightsPlacement, detent: lightsSheetDetent,
+                                                  corner: lightsOrbitCorner)
         if phoneLightsDocked {
             // Not before the sheet has reported its room.
             guard lightsRoom.height > 0 else { return nil }
@@ -4423,20 +4454,36 @@ struct ContentView: View {
             guard lightsSideSize.height > 0 else { return nil }
             return LightsLayoutLogKey(tools: tools, sheet: nil, panes: "n/a", room: lightsSideSize)
         }
+        if lightsPlacement == .floating {
+            // Not before the float has laid its cards out.
+            guard let frames = lightsFloatFrames else { return nil }
+            return LightsLayoutLogKey(tools: tools, sheet: nil, panes: "n/a", room: .zero, float: frames)
+        }
         return LightsLayoutLogKey(tools: tools, sheet: nil, panes: "n/a", room: .zero)
     }
 
     // `LightsLayout: tools=sheet:compact scene=393x377 sheet=286 panes=hidden
-    // touch=44`, logged after the layout settles (past the 0.22 s snap): the
-    // scene is the viewport's size as the gizmo overlay measured it, and
-    // `sheet` the committed slot.
+    // covered=none touch=44`, logged after the layout settles (past the
+    // 0.22 s snap): the scene is the viewport's size as the gizmo overlay
+    // measured it, `sheet` the committed slot, and `covered` the lights whose
+    // knob (with its whole touch target) lies under a floating card
+    // (LightsFloatLayout.coveredKnobs; docked tools cover nothing).
     private func logLightsLayout(_ key: LightsLayoutLogKey?) {
         guard let key else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
             MainActor.assumeIsolated {
                 let scene = engine.lightGizmoUI.viewSize ?? .zero
                 let sheet = key.sheet.map { String($0) } ?? "n/a"
-                NSLog("LightsLayout: tools=\(key.tools) scene=\(Int(scene.width.rounded()))x\(Int(scene.height.rounded())) sheet=\(sheet) panes=\(key.panes) touch=\(Int(LightsTouch.minimumTarget))")
+                var covered: [String] = []
+                if let frames = lightsFloatFrames ?? key.float {
+                    covered = LightsFloatLayout.coveredKnobs(layout: engine.lightGizmoLayout(viewSize: scene),
+                                                             frames: frames.all)
+                }
+                let cards = (lightsFloatFrames ?? key.float).map { f in
+                    " card=\(Int(f.card.minX)),\(Int(f.card.minY)),\(Int(f.card.width))x\(Int(f.card.height))"
+                        + " inspector=\(Int(f.inspector.minX)),\(Int(f.inspector.minY)),\(Int(f.inspector.width))x\(Int(f.inspector.height))"
+                } ?? ""
+                NSLog("LightsLayout: tools=\(key.tools) scene=\(Int(scene.width.rounded()))x\(Int(scene.height.rounded())) sheet=\(sheet) panes=\(key.panes) covered=\(LightsFloatLayout.coveredSummary(covered))\(cards) touch=\(Int(LightsTouch.minimumTarget))")
             }
         }
     }
@@ -4451,12 +4498,14 @@ struct ContentView: View {
     /// `gizmo=` the gizmo's (LightGizmoState.summary), so one run shows the
     /// three tools agree.
     ///
-    /// Both lines end with `tools=<sheet:compact|sheet:expanded|side|float|
-    /// column> touch=<minimum target>` (#623): where the tools are.
+    /// Both lines end with `tools=<sheet:compact|sheet:expanded|side|
+    /// float:<tl|tr|bl|br>|column> touch=<minimum target>` (#623): where the
+    /// tools are.
     ///
     /// Debug builds also read PYMOL_AUTOLIGHTS_EDIT='<token>;...' (see
     /// LightsAutoEdit): `expand` opens the phone sheet expanded (the iPad
-    /// inspector expanded), and 0.5 s after entry the edits run through the
+    /// inspector expanded), `corner:<tl|tr|bl|br>` puts the iPad float in
+    /// that corner for this run (nothing stored), and 0.5 s after entry the edits run through the
     /// inspector's controller calls and the orbit view's gestures (`tap:`,
     /// `plan:`, `square:`, `arc:`, `pinch:`, at the canvases on screen) and the gizmo's (`knob:`, `flip:`,
     /// `outer:`, `inner:`, `aimat:`, `wheel:`, `kpinch:`, `hl:`, `gshadow:`,
@@ -4470,6 +4519,7 @@ struct ContentView: View {
             #if DEBUG
             let edits = LightsAutoEdit.parse(env["PYMOL_AUTOLIGHTS_EDIT"] ?? "")
             if edits.expands { lightsInspectorExpandOverride = true }
+            if let corner = edits.corner { lightsOrbitCornerOverride = corner }
             let seed: LightsSheetDetent = edits.expands ? .expanded : .compact
             #else
             let seed = LightsSheetDetent.compact
@@ -4535,6 +4585,12 @@ struct ContentView: View {
         .buttonStyle(.plain)
         .accessibilityLabel("Camera settings")
         .accessibilityIdentifier("camera")
+    }
+
+    // The bottom-left chrome draws something (scene buttons or the camera
+    // button); empty, it reports no height to the Lights float (#623).
+    private var bottomLeadingChromeShown: Bool {
+        (showSceneButtons && !engine.sceneNames.isEmpty) || !engine.objects.isEmpty
     }
 
     // Bottom-left viewport chrome: optional scene buttons stacked above the camera
