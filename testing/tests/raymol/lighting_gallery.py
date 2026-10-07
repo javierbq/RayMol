@@ -15,7 +15,9 @@ cannot run (no GPU, no app). These tests pin what CI can check:
   runs in-process twice (the way the app runs it), both runs leave the same
   rig, and the rig is the one its tag names: the preset, the swept field, the
   placement helper's result, the shadowed lights, the air and the pinned dust
-  clock. tearDown puts cmd.set_lights back and removes every cmd._lg_*
+  clock. highlight= refuses in the app's launch pass (no viewport size
+  yet), so those two scenes add a dark key there; testHighlightUnsizedPass
+  runs that pass with get_viewport reporting 0x1. tearDown puts cmd.set_lights back and removes every cmd._lg_*
   attribute, since CI runs every test file in one process.
 
 Source-reading, so skipped (not passed) outside a repo checkout, decided by
@@ -396,6 +398,31 @@ class TestScenesRun(testing.PyMOLTestCase):
             positions[tag] = self.eye_position('key')
         self.assertGreater(math.dist(positions['place_highlight'],
                                      positions['place_highlight_rim']), 1.0)
+
+    def testHighlightUnsizedPass(self):
+        """The app's launch pass of PYMOL_AUTOCMD has no viewport size yet
+        (get_viewport 0x1), where highlight= refuses: that pass adds a dark
+        key instead, so both passes leave the marker; the pass before the
+        export (sized) places the light."""
+        sized = cmd.get_viewport
+        for tag in ('place_highlight', 'place_highlight_rim'):
+            job = self.jobs[tag]
+            out = os.path.join(self.tmp, 'unsized')
+            self.render.write_scripts(ROOT, out, [job])
+            marker = self.render.marker_path(out, tag)
+            if os.path.exists(marker):
+                os.remove(marker)
+            cmd.get_viewport = lambda *a, **k: (0, 1)
+            try:
+                cmd.run(self.render.script_path(out, tag))
+            finally:
+                cmd.get_viewport = sized
+            key = self.key(cmd.get_lights())
+            self.assertEqual((key['intensity'], key['aim']), (0.0, 'centre'), tag)
+            cmd.run(self.render.script_path(out, tag))
+            self.assertIsNone(self.render.check_marker(marker, tag, job.rig), tag)
+            key = self.key(cmd.get_lights())
+            self.assertEqual((key['intensity'], key['aim_selection']), (2.0, HIGHLIGHT_SELE), tag)
 
     def testCameraVsPinned(self):
         positions = {}
