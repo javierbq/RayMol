@@ -371,10 +371,11 @@ class TestFrameGate(LightingCase):
             self.assertIs(frame['rig_on'], False, label)
             self.assertIsNone(frame['rig'], label)
             self.assertTermsAreSettings(frame, label)
+            # #615 adds 'classic_scale' (1 here; lighting_materials.py)
             self.assertEqual(sorted(frame), sorted(
                 ['ambient', 'direct', 'reflect', 'specular', 'shininess',
                  'rig_on', 'rig', 'studio_shadows', 'shadow_map_size',
-                 'shadows']), label)
+                 'shadows', 'classic_scale']), label)
             # #616: no rig, no studio shadows and nothing planned
             self.assertIs(frame['studio_shadows'], False, label)
             self.assertEqual(frame['shadow_map_size'], 0, label)

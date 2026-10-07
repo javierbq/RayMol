@@ -126,7 +126,8 @@ class TestSceneFiles(testing.PyMOLTestCase):
     def testSceneFilesLoad(self):
         self.assertEqual({k: len(v) for k, v in self.jobs.items()},
                          {'pairs': 60, 'params': 46, 'default': 16, 'default_off': 16,
-                          'd15': 5})
+                          # #615 took surfdots_glass out (the file says why)
+                          'd15': 4})
         for which in ('pairs', 'params'):
             spec = self.specs[which]
             self.assertEqual((spec['base'], spec['rig']), (None, 'on'), which)
@@ -235,8 +236,9 @@ class TestSceneFiles(testing.PyMOLTestCase):
     def testD15Complete(self):
         """Every no-rig decision-15 render has a rig-on dark twin with the
         same representation, material and camera, in the pairs or params
-        file; the default family is the control, and each family with its own
-        rig specialisation is there."""
+        file; the default family is the control, and the procedural and
+        reflective families are there (jelly and, since #615, glass are left
+        out: the scene file says why)."""
         dark = {j.tag: j for w in ('pairs', 'params') for j in self.jobs[w]}
         subjects = set()
         for job in self.jobs['d15']:
@@ -257,8 +259,10 @@ class TestSceneFiles(testing.PyMOLTestCase):
                               "cmd.set('reflect', 0.0)", "cmd.set('specular', 0.0)"],
                              job.tag)
             subjects.add(m.group('s'))
-        self.assertEqual(subjects, {'cartoon', 'cartoon_marble', 'spheres_metallic',
-                                    'surfdots_glass'})
+        # #615: surfdots_glass left d15 (glass's own classic glints follow
+        # the rig's classic since #615; no setting reproduces that without
+        # the rig); check_materials.py classic_glints covers them
+        self.assertEqual(subjects, {'cartoon', 'cartoon_marble', 'spheres_metallic'})
 
     # --- the scripts, run in-process the way the app runs them ---------------
 

@@ -291,9 +291,16 @@ class TestLightBlock(LightMSLCase):
             self.assertRegex(functions[helper][0],
                              r'^\s*__attribute__\(\(unused\)\)\s+static\s',
                              helper)
+        # #615: kLightRig is declared once, at the top beside kMatFamily and
+        # before MaterialU (mat_classic_light, right after MaterialU, reads
+        # it); the block itself starts at struct LightRigLight
+        self.assertEqual(len(re.findall(r'\bkLightRig\s*\[\[', material)), 1)
+        self.assertLess(constant.start(), material.index('struct MaterialU {'))
+        self.assertLess(material.index('kMatFamily [[function_constant(0)]]'),
+                        constant.start())
         # appended at the END: after MaterialU (light_response takes it) and
         # after every material helper, so it is one block, not interleaved
-        block = constant.start()
+        block = material.index('struct LightRigLight {')
         self.assertLess(material.index('struct MaterialU {'), block)
         last_mat = max(material.index(sig) for name, (sig, _) in functions.items()
                        if name.startswith('mat_'))
@@ -632,12 +639,15 @@ class TestLitFragments(LightMSLCase):
                            ['mat_impostor_composite'][1])
         self.assertIn('inttaps=(m.mode==kMatMode_frosted_glass)?int(max(1.0,m.p[5])):1;',
                       composite)
+        # (#615: both glass calls end with the material's classic scale)
         self.assertIn('float3body=mat_glass_shade(base,N,V,m.rough,m.p[0],taps,keyDir,'
-                      'envMap,envSmp,hi);returnmat_soft_knee(body+hi);', composite)
+                      'envMap,envSmp,hi,mat_classic_light(m));'
+                      'returnmat_soft_knee(body+hi);', composite)
         self.assertIn('inttaps=(mat.mode==kMatMode_frosted_glass)?int(max(1.0,mat.p[5])):1;',
                       helper)
         self.assertIn('float3body=mat_glass_shade(base,n,float3(0.0,0.0,1.0),mat.rough,'
-                      'mat.p[0],taps,float3(u.klx,u.kly,u.klz),envMap,envSmp,hi);', helper)
+                      'mat.p[0],taps,float3(u.klx,u.kly,u.klz),envMap,envSmp,hi,'
+                      'mat_classic_light(mat));', helper)
         self.assertIn('mat_impostor_composite(in.color.rgb,n,pt,u.lAmbient,u.lDirect,'
                       'u.lReflect,float3(u.klx,u.kly,u.klz),mat,', squash(lit))
 
@@ -653,6 +663,9 @@ class TestLitFragments(LightMSLCase):
         terms = glass.index('light_terms(')
         self.assertLess(glass.index('mat_glass_shade('), terms)
         self.assertLess(terms, cover)
+        # #615: the classic glints take the material's classic scale
+        self.assertRegex(glass, r'mat_glass_shade\([^;]*,\s*envSmp,\s*hi,\s*'
+                                r'mat_classic_light\(mat\)\);')
         self.assertRegex(glass[terms:cover],
                          r'body\s*\+=\s*in\.color\.rgb\s*\*\s*'
                          r'kMatGlassBaseAttenuation\s*\*\s*\w+\.diffuse')

@@ -1035,6 +1035,8 @@ PyObject* LightFrameAsPyDict(
       !setItem(dict.get(), "direct", PyFloat_FromDouble(c.direct)) ||
       !setItem(dict.get(), "reflect", PyFloat_FromDouble(c.reflect)) ||
       !setItem(dict.get(), "specular", PyFloat_FromDouble(c.specular)) ||
+      // #615: the rig's classic while it is on, 1 otherwise
+      !setItem(dict.get(), "classic_scale", PyFloat_FromDouble(c.scale)) ||
       !setItem(dict.get(), "shininess", PyFloat_FromDouble(frame.shininess)) ||
       !setItem(dict.get(), "rig_on", PyBool_FromLong(frame.rig.has_value())) ||
       !setItem(dict.get(), "studio_shadows",

@@ -8,9 +8,12 @@ the regression renders against master, L2 and L3 prove on a Mac:
 
 * TestMasterUnchanged: every shader literal that master has is master's
   (sha256 of the comment-stripped, whitespace-free text, taken from master
-  83dd31bbe with these parsers, never from this branch), kAirSrc is the only
-  new one, and runPostChain, beginFrame, SceneRenderMetal and
-  SceneLightsFrame are master's once the air's own statement is taken out;
+  83dd31bbe with these parsers, never from this branch), except kMaterialSrc,
+  which #615 changes and pins at its head (CHANGED_BY_615), and four lit
+  libraries once #615's mat_classic_light arguments are taken out; kAirSrc
+  is the only new one; and runPostChain, beginFrame, SceneRenderMetal and
+  SceneLightsFrame are master's once the air's own statement (and, in
+  SceneRenderMetal, #615's setLightClassicScale statement) is taken out;
 * TestLibrary: kAirSrc is built once, as kEyeReconSrc + kMaterialSrc +
   kAirSrc, inside ensureAirPipelines (one attempt, every failure logged in
   the L4 console's words, everything but the pipeline released), which only
@@ -112,6 +115,23 @@ MASTER_LITERALS = {
     'kSphereImpostorSrc': '1ed9ba64205bd960',
     'kVBOSrc': '728416d46e47293d',
 }
+# #615 (Materials own their response to studio lights) changes kMaterialSrc
+# itself: MaterialU carries the studio response, light_response reads it, the
+# material shaders name their light constants, and their own classic light
+# terms take the rig's classic scale (mat_classic_light; kLightRig declared
+# at the top). MASTER_LITERALS keeps
+# master's digest; this is the branch's, taken with the same parsers at
+# #615's head. #615 (re-take only when #615 changes kMaterialSrc);
+# lighting_material_msl.py pins what changed.
+CHANGED_BY_615 = {
+    'kMaterialSrc': '4f4f1e7f4c703bad',
+}
+# #615 appends the material's classic scale to every mat_glass_shade call
+# (`, mat_classic_light(m)`). These four literals carry such calls and nothing
+# else of #615's: with the argument taken out they are master's.
+CLASSIC_LIGHT_ARGUMENT = re.compile(r',\s*mat_classic_light\(\s*\w+\s*\)')
+CLASSIC_LIGHT_LITERALS = ('kVBOSrc', 'kSphereImpostorSrc', 'kCylinderImpostorSrc',
+                          'kMaterialImpostorSrc')
 # The same digests of four functions on master (cpp_function's body, braces
 # included, comments stripped); on this branch with the air's statement
 # taken out (AIR_STATEMENTS).
@@ -130,6 +150,13 @@ AIR_STATEMENTS = {
     'SceneLightsFrame': re.compile(
         r'if\s*\(frame\.rig && pymol::LightAirActive\(rig->air\)\)\s*'
         r'frame\.airSource\s*=[^;]*;'),
+}
+# #615's own statements in those functions, taken out the same way (exactly
+# one match each): SceneRenderMetal hands the renderer the rig's classic
+# scale right after the rig.
+STATEMENTS_615 = {
+    'SceneRenderMetal': re.compile(
+        r'G->Renderer->setLightClassicScale\(lights\.classic\.scale\);'),
 }
 
 # #616's shadow tokens (lighting_shadow_msl.py): never in another library.
@@ -205,7 +232,17 @@ class TestMasterUnchanged(AirMSLCase):
     def testEveryMasterLiteralIsMasters(self):
         for name, want in sorted(MASTER_LITERALS.items()):
             self.assertIn(name, self.msl)
-            self.assertEqual(digest(strip_comments(self.msl[name])), want, name)
+            # #615: a literal it changed is pinned at #615's head instead
+            if name in CHANGED_BY_615:
+                self.assertNotEqual(CHANGED_BY_615[name], want, name)
+                want = CHANGED_BY_615[name]
+            code = strip_comments(self.msl[name])
+            # #615: the classic-scale argument of the glass calls taken out
+            if name in CLASSIC_LIGHT_LITERALS:
+                self.assertTrue(CLASSIC_LIGHT_ARGUMENT.search(code), name)
+                code = CLASSIC_LIGHT_ARGUMENT.sub('', code)
+            self.assertEqual(digest(code), want, name)
+        self.assertLessEqual(set(CHANGED_BY_615), set(MASTER_LITERALS))
         self.assertEqual(set(self.msl) - set(MASTER_LITERALS), {'kAirSrc'})
 
     def testFunctionsAreMastersWithoutTheAir(self):
@@ -216,7 +253,12 @@ class TestMasterUnchanged(AirMSLCase):
             body = cpp_function(sources[path], name)
             statement = AIR_STATEMENTS[name]
             self.assertEqual(len(statement.findall(body)), 1, name)
-            self.assertEqual(digest(statement.sub('', body, count=1)), want, name)
+            body = statement.sub('', body, count=1)
+            # #615's statement, taken out as the air's is
+            if name in STATEMENTS_615:
+                self.assertEqual(len(STATEMENTS_615[name].findall(body)), 1, name)
+                body = STATEMENTS_615[name].sub('', body, count=1)
+            self.assertEqual(digest(body), want, name)
 
 
 class TestLibrary(AirMSLCase):

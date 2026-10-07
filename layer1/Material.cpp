@@ -9,6 +9,9 @@
 #include "ObjectMolecule.h"
 #include "Rep.h"
 
+#include <algorithm>
+#include <cmath>
+
 namespace
 {
 /* One row of the material table. Adding a material is adding a row.
@@ -334,6 +337,151 @@ MaterialRayParams MaterialRayParamsFor(int id)
   }
   return r;
 }
+
+/* ---- How a material takes a studio light (#615) ------------------------- */
+
+namespace
+{
+/* Mirrors of the Metal shader constants (kMaterialSrc in
+   layerGraphics/metal/RendererMetal.mm). The studio response reproduces each
+   material's own key-light law, so it must use the shader's own numbers:
+   testing/tests/raymol/lighting_material_msl.py pins each one equal to its
+   MSL twin. */
+constexpr float kMatGlassKeyGlint = 1.2f;       // mat_glass_shade: key glint
+constexpr float kMatGlassGlintExp = 60.0f;      // its exponent at rough 0
+constexpr float kMatGlassFrostDim = 0.8f;       // strength x (1 - 0.8*rough)
+constexpr float kMatGlassFrostExpScale = 0.1f;  // exponent at rough 1: x 0.1
+constexpr float kMatMarbleWrap = 0.35f;         // marble's diffuse wrap
+constexpr float kMatJellyWetExp = 70.0f;        // mat_jelly_shade: wet glint
+constexpr float kMatJellyWetTint = 0.25f;       // its tint toward the base
+constexpr float kMatJellyGlowWrap = 0.6f;       // the glow's wrap, (n.l + 0.6)/1.6
+constexpr float kMatJellyGlowGain = 1.15f;      // the glow, base * 1.15
+constexpr float kMatRubberHighlightExp = 8.0f;  // rubber's key highlight
+constexpr float kMatRubberHighlightTint = 0.7f; // its tint toward the base
+
+/* C++ only. The studio light `highlight` at which a material's response
+   equals its own key-light highlight: a new light's default (LightRig.h,
+   pinned by lighting_materials.py). The roughness floor keeps the reflective
+   lobe's exponent finite (n <= 198) for a Custom roughness under 0.1. */
+constexpr float kMaterialLightHighlightRef = 0.5f;
+constexpr float kMaterialLightMinRough = 0.1f;
+
+constexpr float kPi = 3.14159265358979f;
+
+/* NaN-safe clamps: a NaN compares false and lands on the low end. */
+float Clamp01(float x)
+{
+  return x > 0.0f ? (x < 1.0f ? x : 1.0f) : 0.0f;
+}
+
+float NonNegative(float x)
+{
+  return x > 0.0f ? x : 0.0f;
+}
+
+/* The reflective family's studio highlight tint gain, from the two tables
+   that already exist: the table metallic gets exactly the CPU ray mapping's
+   highlight tint (MaterialRayParamsFor: "a metal read as metal without an
+   environment"), and a Custom tint scales from there. Decided by #615's
+   tint A/B (option B). */
+float ReflectiveTintGain()
+{
+  float const table = kMaterialTable[cMaterial_metallic].params.tint;
+  float const ray = MaterialRayParamsFor(cMaterial_metallic).specTint;
+  return table > 0.0f ? ray / table : 1.0f;
+}
+} // namespace
+
+MaterialLightResponse MaterialLightResponseFor(const MaterialParams& p)
+{
+  MaterialLightResponse r; // neutral: default's, and every unknown case
+  if (p.family == cMaterialFamily_default)
+    return r;
+  /* The mode is the material's own id. Anything that is not a material of
+     the family the pipeline is specialised on is neutral. */
+  const MaterialRow* row = MaterialFindRow(p.mode);
+  if (!row || row->family != p.family)
+    return r;
+
+  switch (p.mode) {
+  case cMaterial_matte:
+  case cMaterial_clay:
+    // Lambert only: neither shader has a specular term.
+    r.highlight = 0.0f;
+    break;
+  case cMaterial_rubber:
+    // Its broad key highlight, p[2] * pow(n.h, 8), tinted toward the base.
+    r.highlight = NonNegative(p.p[2]) / kMaterialLightHighlightRef;
+    r.exponent = kMatRubberHighlightExp;
+    r.tint = kMatRubberHighlightTint;
+    break;
+  case cMaterial_marble:
+    // default's model, with marble's own wrap.
+    r.wrap = kMatMarbleWrap;
+    break;
+  case cMaterial_plastic:
+  case cMaterial_metallic: {
+    /* The environment lobe as a lamp would show in it: a normalised
+       Blinn-Phong of exponent n = 2/a^2 - 2 at a = rough (floored), with
+       strength reflect*(n+2)/(2*pi). Diffuse drops by what the tint
+       reflects, as the CPU ray mapping dims metal's (metallic 0.79,
+       plastic 1). */
+    float const reflect = Clamp01(p.reflect);
+    float const tint = Clamp01(p.tint);
+    float const a = std::max(Clamp01(p.rough), kMaterialLightMinRough);
+    float const n = std::max(2.0f / (a * a) - 2.0f, 1.0f);
+    r.diffuse = 1.0f - reflect * tint;
+    r.highlight = reflect * (n + 2.0f) / (2.0f * kPi);
+    r.exponent = n;
+    r.tint = std::min(1.0f, tint * ReflectiveTintGain());
+    break;
+  }
+  case cMaterial_glass:
+  case cMaterial_frosted_glass: {
+    /* Glass's key-glint law (mat_glass_shade). The body takes the diffuse at
+       its coverage; the Reflection knob is applied where the glints are
+       added, not here. */
+    float const rough = Clamp01(p.rough);
+    r.highlight = kMatGlassKeyGlint * (1.0f - kMatGlassFrostDim * rough) /
+                  kMaterialLightHighlightRef;
+    r.exponent = kMatGlassGlintExp +
+                 (kMatGlassGlintExp * kMatGlassFrostExpScale -
+                     kMatGlassGlintExp) * rough;
+    break;
+  }
+  case cMaterial_jelly:
+    // Its inner glow lights the body; its wet glint is the highlight.
+    r.diffuse = kMatJellyGlowGain * Clamp01(p.p[1]);
+    r.highlight = NonNegative(p.p[2]) / kMaterialLightHighlightRef;
+    r.exponent = kMatJellyWetExp;
+    r.tint = kMatJellyWetTint;
+    r.wrap = kMatJellyGlowWrap;
+    break;
+  default:
+    return MaterialLightResponse{};
+  }
+
+  // The invariants the GPU relies on, whatever a knob held.
+  r.diffuse = NonNegative(r.diffuse);
+  r.highlight = NonNegative(r.highlight);
+  if (r.exponent > 0.0f)
+    r.exponent = std::max(r.exponent, 1.0f);
+  else
+    r.exponent = 0.0f;
+  r.tint = Clamp01(r.tint);
+  r.wrap = NonNegative(r.wrap);
+  return r;
+}
+
+float MaterialLightSharpness(float exponent, float shininess)
+{
+  if (!(exponent > 0.0f) || !std::isfinite(exponent) ||
+      !(shininess > 1e-3f) || !std::isfinite(shininess))
+    return 1.0f;
+  return exponent / shininess;
+}
+
+/* ---- end studio light response (#615) ------------------------------------ */
 
 int MaterialRayId(PyMOLGlobals* G, const CSetting* set1,
     const CSetting* set2, int repType, const CoordSet* cs)

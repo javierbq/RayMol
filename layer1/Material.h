@@ -326,6 +326,52 @@ struct MaterialRayParams {
 MaterialRayParams MaterialRayParamsFor(int id);
 
 /**
+ * How a material takes a studio light (#615): the five terms the Metal rig
+ * fragments read as their LightResponse, derived from the draw's FINAL
+ * MaterialParams (table row plus Custom knobs, MaterialDrawParams), so any
+ * light gets the material's own response and the Custom knobs flow through.
+ *
+ * The principle: a studio light reaches a material the way that material's
+ * own shader takes PyMOL's key light, with strength relative to a light at
+ * its default `highlight` of 0.5. The reflective family is the stated
+ * exception: its key-light highlight is default's, so its studio highlight
+ * comes from its environment lobe instead (a lamp is a bright spot in the
+ * room it reflects).
+ *
+ *   - `diffuse` scales each studio light's diffuse;
+ *   - `highlight` scales each light's own `highlight`;
+ *   - `exponent` is the highlight's Blinn-Phong exponent (>= 1), or 0 for
+ *     "the scene's shininess" (default's model);
+ *   - `tint` mixes the highlight from the light's colour (0) toward the base
+ *     colour (1);
+ *   - `wrap` lets the diffuse reach past the terminator.
+ *
+ * The neutral response {1, 1, 0, 0, 0} is `default`'s, and also what an
+ * unknown family, or a mode that is no material of its family, gets.
+ * Inputs are clamped here (reflect, tint and rough to 0..1, as
+ * RendererMetal::setRepMaterial does; p-derived highlights at >= 0; jelly's
+ * glow to 0..1), so `_cmd.material_light_response` and the renderer agree.
+ * Pure: no PyMOLGlobals, nothing read or written.
+ */
+struct MaterialLightResponse {
+  float diffuse = 1.0f;
+  float highlight = 1.0f;
+  float exponent = 0.0f;
+  float tint = 0.0f;
+  float wrap = 0.0f;
+};
+
+MaterialLightResponse MaterialLightResponseFor(const MaterialParams& p);
+
+/**
+ * The response's exponent as #613's LightResponse.sharpness, the factor the
+ * GPU multiplies the frame's shininess by: `exponent / shininess` when the
+ * material has an exponent of its own (> 0) and the shininess is finite and
+ * above 1e-3, else 1 (the scene's shininess). Never inf or NaN.
+ */
+float MaterialLightSharpness(float exponent, float shininess);
+
+/**
  * The material id `ray` stamps on a representation's primitives: the
  * representation's material after the draw-time degradations
  * (MaterialResolveForDraw), so `ray` and the viewport agree about what the

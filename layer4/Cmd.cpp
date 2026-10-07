@@ -5809,6 +5809,34 @@ static PyObject* CmdLightAirAnimating(PyObject* self, PyObject* args)
 
 /* ---- end the air (#618) ------------------------------------------------- */
 
+/* ---- material light response (#615) ---------------------------------------
+ * How a material takes a studio light (MaterialLightResponseFor and
+ * MaterialLightSharpness, layer1/Material.h), exposed so CI can test the C++
+ * from Python without a GPU.
+ */
+
+/// The studio light response of one draw's material params. `params` is the
+/// tuple _cmd.get_material_draw_params returns -- (family, mode, reflect,
+/// tint, rough, (p0..p5)) -- and `shininess` the frame's (get_light_frame's
+/// 'shininess'). Returns {'diffuse', 'highlight', 'exponent', 'tint',
+/// 'wrap', 'sharpness'}. Pure: reads and writes nothing.
+static PyObject* CmdMaterialLightResponse(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  MaterialParams p;
+  float shininess = 0.0f;
+  API_SETUP_ARGS(G, self, args, "O(iifff(ffffff))f", &self, &p.family,
+      &p.mode, &p.reflect, &p.tint, &p.rough, &p.p[0], &p.p[1], &p.p[2],
+      &p.p[3], &p.p[4], &p.p[5], &shininess);
+  const MaterialLightResponse r = MaterialLightResponseFor(p);
+  return Py_BuildValue("{sdsdsdsdsdsd}", "diffuse", double(r.diffuse),
+      "highlight", double(r.highlight), "exponent", double(r.exponent),
+      "tint", double(r.tint), "wrap", double(r.wrap), "sharpness",
+      double(MaterialLightSharpness(r.exponent, shininess)));
+}
+
+/* ---- end material light response (#615) -------------------------------- */
+
 static PyObject *CmdGetMinMax(PyObject * self, PyObject * args)
 {
   PyMOLGlobals *G = nullptr;
@@ -7820,6 +7848,8 @@ static PyMethodDef Cmd_methods[] = {
   {"light_air_resolution", CmdLightAirResolution, METH_VARARGS},
   {"light_air_shadow_filter", CmdLightAirShadowFilter, METH_VARARGS},
   {"light_air_animating", CmdLightAirAnimating, METH_VARARGS},
+  /* material light response (#615) */
+  {"material_light_response", CmdMaterialLightResponse, METH_VARARGS},
   /* end light shading */
   {"get_mtl_obj", CmdGetMtlObj, METH_VARARGS},
   {"get_model", CmdGetModel, METH_VARARGS},

@@ -208,8 +208,8 @@ def _light_frame(matrix=None, grid=None, *, _self=cmd):
     scene's grid layout, or (n_col, n_row, first_slot) for a grid in its
     place. Reads only: nothing is written.
 
-    {'ambient', 'direct', 'reflect', 'specular', 'shininess',
-     'rig_on': bool, 'studio_shadows': bool, 'shadow_map_size': int,
+    {'ambient', 'direct', 'reflect', 'specular', 'classic_scale',
+     'shininess', 'rig_on': bool, 'studio_shadows': bool, 'shadow_map_size': int,
      'rig': None or {'count', 'head': [4], 'block': [168],
                      'shadow_grid': [4], 'shadow_tile': [4],
                      'lights': [{'name', 'position', 'shadow_slot',
@@ -225,7 +225,9 @@ def _light_frame(matrix=None, grid=None, *, _self=cmd):
 
     With no rig, or a rig that is off, 'rig' and 'shadows' are None and the
     terms are the settings (specular and shininess after PyMOL's light-count
-    adjustment). 'block' is the 672-byte block the GPU reads, as 168 floats
+    adjustment) and 'classic_scale' is 1; while the rig is on it is the
+    rig's classic, the factor decision 15 scaled direct, reflect and
+    specular by (#615). 'block' is the 672-byte block the GPU reads, as 168 floats
     (layer1/LightRigBlock.h has the offsets): floats 0-99 are the head and
     six lights (#613), 100-159 three shadow maps of 20 floats (a column-major
     eye -> light clip matrix, then tan(half fov), map size, normal offset and

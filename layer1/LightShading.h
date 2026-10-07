@@ -71,13 +71,20 @@ struct LightClassicTerms {
   float direct;
   float reflect;
   float specular; ///< the reflect light's adjusted specular
+  /// #615: the factor decision 15 scaled direct, reflect and specular by --
+  /// the rig's `classic` while it is on, 1 otherwise. The material shaders'
+  /// own key-light and headlight terms (glass's glints, jelly's wet
+  /// highlights, rubber's highlight) follow it. The default keeps every
+  /// four-value initialisation meaning "no rig".
+  float scale = 1.0f;
 };
 
 /**
  * Decision 15. When the rig is on, the rig's `ambient` replaces the ambient
  * setting and `direct`, `reflect` and `specular` are scaled by its `classic`
- * (float multiplication). Otherwise `settings` comes back as it is, with no
- * arithmetic. Nothing is written anywhere.
+ * (float multiplication), which also comes back as `scale` (#615).
+ * Otherwise `settings` comes back as it is, with no arithmetic. Nothing is
+ * written anywhere.
  */
 LightClassicTerms LightRigClassic(
     const LightRig* rig, const LightClassicTerms& settings);

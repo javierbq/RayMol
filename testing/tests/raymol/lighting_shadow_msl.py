@@ -158,7 +158,9 @@ MASTER_613 = {
         ('2eb0f1493ffb3b10', 'd201685b5438c819'),
     ('kMaterialSrc', 'light_response_neutral'):
         ('f9d29c479d573b42', '54a48318b1bd91ef'),
-    ('kMaterialSrc', 'light_response'): ('0671125f88c96948', 'f2e7e832e8d95ec9'),
+    # ('kMaterialSrc', 'light_response') is left out since #615: its body is
+    # #615's own (the material's response from MaterialU), and
+    # lighting_material_msl.py pins it. Every other #613 helper is master's.
     ('kMaterialSrc', 'light_visibility'): ('0fa4d419dcaabf46', 'c6f76bc0d21bd512'),
     ('kMaterialSrc', 'light_terms_view'): ('c3ee53eb972837b6', 'bcd134015fcc1123'),
     ('kMaterialSrc', 'light_terms'): ('8eb781b0326cac3f', '5700796aaac4b937'),
@@ -171,6 +173,18 @@ MASTER_613 = {
 
 def digest(text):
     return hashlib.sha256(squash(text).encode()).hexdigest()[:16]
+
+
+# #615 appends the material's classic scale to every mat_glass_shade call
+# (`, mat_classic_light(m)`; lighting_material_msl.py pins it). Taken out
+# before hashing, so the rest of each #613 fragment and helper still has to
+# be master's.
+CLASSIC_LIGHT_ARGUMENT = re.compile(r',\s*mat_classic_light\(\s*\w+\s*\)')
+
+
+def without_classic_light(text):
+    """`text` with #615's mat_classic_light arguments taken out."""
+    return CLASSIC_LIGHT_ARGUMENT.sub('', text)
 
 
 def read(path):
@@ -325,8 +339,10 @@ class TestShadowBlock(ShadowMSLCase):
             if name in [f for fs in RIG_FRAGMENTS.values() for f in fs]:
                 continue
             got_sig, got_body = msl_functions(self.msl[lib])[name]
-            self.assertEqual((digest(got_sig), digest(got_body)), (sig, body),
-                             '%s.%s' % (lib, name))
+            # #615's classic-scale argument (sphere_glass_rig) taken out
+            self.assertEqual((digest(got_sig),
+                              digest(without_classic_light(got_body))),
+                             (sig, body), '%s.%s' % (lib, name))
 
 
 class TestDriftGuard(ShadowMSLCase):
@@ -464,7 +480,9 @@ class TestFragments(ShadowMSLCase):
                 sig, body = fragments(self.msl[lib])[name]
                 self.assertEqual(
                     (digest(squash(sig).replace(SHADOW_ARGUMENTS_SQUASHED, '')),
-                     digest(without_shadow(body))),
+                     # #615's classic-scale argument taken out (the glass
+                     # calls of vbo_fragment_oit, cyl_impostor_fragment_oit)
+                     digest(without_classic_light(without_shadow(body)))),
                     MASTER_613[(lib, name)], '%s.%s' % (lib, name))
 
     def testShadowArmsAreThe613ArmsShadowed(self):
