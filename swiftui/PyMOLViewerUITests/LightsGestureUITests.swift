@@ -61,6 +61,7 @@ final class LightsGestureUITests: XCTestCase {
         mark("drag")
         start.press(forDuration: 0.05, thenDragTo: end)
         let after = try waitForProbe("the camera to rotate") { $0.cam != before.cam }
+        settle(1.5)  // the result stays on screen for the recording
         report(before, after)
         attach("off-target-drag")
         XCTAssertEqual(after.rig, before.rig, "a camera drag changed a light")
@@ -72,6 +73,7 @@ final class LightsGestureUITests: XCTestCase {
         mark("pinch")
         viewport().pinch(withScale: 1.8, velocity: 1.5)
         let after = try waitForProbe("the camera to zoom") { $0.cam != before.cam }
+        settle(1.5)  // the result stays on screen for the recording
         report(before, after)
         attach("off-target-pinch")
         XCTAssertEqual(after.rig, before.rig, "a camera pinch changed a light")
@@ -82,6 +84,7 @@ final class LightsGestureUITests: XCTestCase {
         mark("twist")
         viewport().rotate(CGFloat.pi / 3, withVelocity: 1.0)
         let after = try waitForProbe("the camera to roll") { $0.cam != before.cam }
+        settle(1.5)  // the result stays on screen for the recording
         report(before, after)
         attach("off-target-twist")
         XCTAssertEqual(after.rig, before.rig, "a camera twist changed a light")
@@ -110,6 +113,7 @@ final class LightsGestureUITests: XCTestCase {
         let after = try waitForProbe("the \(name) radius to change") {
             ($0.rig[name]?.radius ?? light.radius) != light.radius
         }
+        settle(1.5)  // the result stays on screen for the recording
         report(before, after)
         attach("knob-pinch")
         let edited = try XCTUnwrap(after.rig[name])
@@ -147,6 +151,7 @@ final class LightsGestureUITests: XCTestCase {
             guard let moved = $0.rig["fill"] else { return false }
             return moved.orbit != fill.orbit || moved.pitch != fill.pitch
         }
+        settle(1.5)  // the result stays on screen for the recording
         report(before, after)
         attach("knob-press-hold-drag")
         XCTAssertEqual(after.cam, before.cam, "the knob drag moved the camera")
