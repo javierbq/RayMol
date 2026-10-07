@@ -47,9 +47,15 @@ struct LightsOrbitView: View {
     static let inset: CGFloat = 12
     static let gap: CGFloat = 8
 
-    init(controller: LightsController, style: LightsBarStyle, initiallyCollapsed: Bool = false) {
+    /// The iPad float's grip (#623): the header row (not its chevron) drags
+    /// the card, with a capsule in the top padding; nil elsewhere.
+    var grip: LightsOrbitGrip?
+
+    init(controller: LightsController, style: LightsBarStyle, initiallyCollapsed: Bool = false,
+         grip: LightsOrbitGrip? = nil) {
         self.controller = controller
         self.style = style
+        self.grip = grip
         _collapsed = State(initialValue: initiallyCollapsed)
     }
 
@@ -76,6 +82,7 @@ struct LightsOrbitView: View {
         .background(style.background)
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(style.text.opacity(0.18), lineWidth: 0.5))
+        .overlay(alignment: .top) { if let grip { gripHandle(grip) } }
         .tint(style.accent)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(state.containerLabel)
@@ -86,32 +93,59 @@ struct LightsOrbitView: View {
     // collapsed header shows the selected light's values on one line instead.
     private func header(_ state: LightsOrbitState) -> some View {
         HStack(spacing: 0) {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(LightPalette.color(state.selected.slot))
-                    .frame(width: 10, height: 10)
-                    .opacity(state.isOn ? 1 : 0.45)
-                    .accessibilityHidden(true)
-                title(LightsOrbitState.orbitTitle)
-                if collapsed {
-                    OrbitCollapsedSummary(controller: controller, eye: controller.eye, style: style)
-                } else {
-                    Text(verbatim: state.selected.name)
-                        .font(.system(size: 11))
-                        .foregroundColor(style.text.opacity(0.55))
-                        .lineLimit(1)
+            HStack(spacing: 0) {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(LightPalette.color(state.selected.slot))
+                        .frame(width: 10, height: 10)
+                        .opacity(state.isOn ? 1 : 0.45)
                         .accessibilityHidden(true)
+                    title(LightsOrbitState.orbitTitle)
+                    if collapsed {
+                        OrbitCollapsedSummary(controller: controller, eye: controller.eye, style: style)
+                    } else {
+                        Text(verbatim: state.selected.name)
+                            .font(.system(size: 11))
+                            .foregroundColor(style.text.opacity(0.55))
+                            .lineLimit(1)
+                            .accessibilityHidden(true)
+                    }
+                    Spacer(minLength: 2)
                 }
-                Spacer(minLength: 2)
+                .frame(width: collapsed ? nil : LightsOrbitMetrics.planSize.width + Self.gap, alignment: .leading)
+                if !collapsed {
+                    title(LightsOrbitState.pitchTitle)
+                    Spacer(minLength: 2)
+                }
             }
-            .frame(width: collapsed ? nil : LightsOrbitMetrics.planSize.width + Self.gap, alignment: .leading)
-            if !collapsed {
-                title(LightsOrbitState.pitchTitle)
-                Spacer(minLength: 2)
-            }
+            // The float's grip: the header row up to the chevron.
+            .modifier(OrbitGripRegion(grip: grip))
             collapseButton
         }
         .frame(height: max(Self.headerHeight, touchMinimum))
+    }
+
+    /// The grip's capsule in the top padding, and its VoiceOver element
+    /// (the corner as its value, a move action per other corner). Touches
+    /// pass through to the header row, which carries the drag.
+    private func gripHandle(_ grip: LightsOrbitGrip) -> some View {
+        Capsule()
+            .fill(style.text.opacity(0.35))
+            .frame(width: LightsFloatMetrics.gripSize.width, height: LightsFloatMetrics.gripSize.height)
+            .padding(.top, 3)
+            .frame(width: 60, height: 14, alignment: .top)
+            .contentShape(Rectangle())
+            .allowsHitTesting(false)
+            .accessibilityElement()
+            .accessibilityLabel(grip.label)
+            .accessibilityValue(grip.value)
+            .accessibilityHint(grip.hint)
+            .accessibilityIdentifier(grip.identifier)
+            .accessibilityActions {
+                ForEach(Array(grip.actions.enumerated()), id: \.offset) { _, action in
+                    Button(action.name, action: action.perform)
+                }
+            }
     }
 
     private func title(_ text: String) -> some View {
@@ -136,6 +170,40 @@ struct LightsOrbitView: View {
         .help(LightsOrbitState.collapseLabel(collapsed: collapsed))
         .accessibilityLabel(LightsOrbitState.collapseLabel(collapsed: collapsed))
         .accessibilityIdentifier(LightsOrbitState.collapseIdentifier)
+    }
+}
+
+/// What the iPad float hands the orbit card (#623): the drag its header
+/// row carries, and the grip's VoiceOver element. The float owns the drag's
+/// state (LightsFloatingTools); the card only places it.
+struct LightsOrbitGrip {
+    struct Action {
+        var name: String
+        var perform: () -> Void
+    }
+
+    var gesture: AnyGesture<Void>
+    var label: String
+    var value: String
+    var hint: String
+    var identifier: String
+    var actions: [Action]
+}
+
+/// The header row as the grip: hit-testable across its width (a 44 pt
+/// target on iOS), carrying the float's drag; unchanged without a grip.
+private struct OrbitGripRegion: ViewModifier {
+    let grip: LightsOrbitGrip?
+
+    func body(content: Content) -> some View {
+        if let grip {
+            content
+                .lightsTouchTarget(width: false)
+                .contentShape(Rectangle())
+                .gesture(grip.gesture)
+        } else {
+            content
+        }
     }
 }
 

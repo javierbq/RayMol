@@ -384,12 +384,13 @@ enum LightsSheetState {
 
     /// Where the tools are, for the `tools=` field of the PYMOL_AUTOLIGHTS
     /// and LightsLayout log lines: `sheet:compact`, `sheet:expanded`,
-    /// `side`, `float` or `column`.
-    static func toolsSummary(placement: LightsToolsPlacement, detent: LightsSheetDetent) -> String {
+    /// `side`, `float:<corner>` (`float:bl`) or `column`.
+    static func toolsSummary(placement: LightsToolsPlacement, detent: LightsSheetDetent,
+                             corner: LightsFloatCorner = .default) -> String {
         switch placement {
         case .bottomSheet: return "sheet:\(detent.rawValue)"
         case .sidePanel: return "side"
-        case .floating: return "float"
+        case .floating: return "float:\(corner.rawValue)"
         case .column: return "column"
         }
     }

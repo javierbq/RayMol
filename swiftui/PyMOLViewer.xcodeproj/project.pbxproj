@@ -37,6 +37,7 @@
 		154AFFF34817365145396F33 /* whatsnew-1110-raytrace.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = B402EB5834127D4E6B217EFE /* whatsnew-1110-raytrace.mp4 */; };
 		154E7F765059977CA80711DA /* RFD3Kit in Frameworks */ = {isa = PBXBuildFile; productRef = C723443B5003DD836EF6A008 /* RFD3Kit */; };
 		15630C292DBEE7FBA8DA1D44 /* LightsController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40FC41A2798A30FE8E223CEC /* LightsController.swift */; };
+		15DA981AD21097BFFD1CE170 /* LightsFloatTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F2E04AAE95A3210E0090C69 /* LightsFloatTests.swift */; };
 		1624BC38CDD73398C68FC135 /* MPNNGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56BE219EF1CF1EB2B05E44AD /* MPNNGate.swift */; };
 		1691ECBD7CEDBFFB64B1D690 /* LightGizmoModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DE5E23E8AA19BB9D3F2C227 /* LightGizmoModel.swift */; };
 		174EA423F2E0ED999474C506 /* DesignInferenceSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B45634C95AE991CC91CFBA75 /* DesignInferenceSmokeTests.swift */; };
@@ -214,6 +215,7 @@
 		A874BBD4EC51E65F61ECD5D2 /* whatsnew-1120-sidechains.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 1926971439F96C03DB81AA8E /* whatsnew-1120-sidechains.jpg */; };
 		AA00B9355E30A51B8F4C207B /* AppBuildInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 525F338CAB2EE18987CD1701 /* AppBuildInfo.swift */; };
 		AA36D034CEC68207CFC82340 /* WhatsNewModal.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4D170B35BCCF683A6B3D655 /* WhatsNewModal.swift */; };
+		AC2B01766D25FC00186F9D2E /* LightsFloatingTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8090F993FEBF06819166C82 /* LightsFloatingTools.swift */; };
 		AC4CB915ECB531A4406CF387 /* InferenceRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71574A2074A14803B91ED695 /* InferenceRouter.swift */; };
 		ACBE8F70B980BCCE6730141A /* MovieBuilderSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0ED5BFF3FEE9D6621BB40AE5 /* MovieBuilderSheet.swift */; };
 		AD60DB0C0F26872BE1F2E284 /* LightsTouch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1507FB2A1549FB5126C07E81 /* LightsTouch.swift */; };
@@ -236,6 +238,7 @@
 		B84291E694521C66BCB749CD /* whatsnew-161-hover.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 6E2FC2AD1A8FEE912986DF9D /* whatsnew-161-hover.mp4 */; };
 		B88942D786AB0D1CDC354C1F /* DesignAvailabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2345D7E2703CF29D4A2AA277 /* DesignAvailabilityTests.swift */; };
 		B8F3D19B819EC1F1CDD6C36D /* LightsInspector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 051212FB14CE38F9CAFC3546 /* LightsInspector.swift */; };
+		BA5F8346B75009D86D7C7815 /* LightsFloatingTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8090F993FEBF06819166C82 /* LightsFloatingTools.swift */; };
 		BA6C9B288CFD5EB53D0E0057 /* RayMolMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9371B6FFB30D6166234C678B /* RayMolMain.swift */; };
 		BAAE4478A0C2B308D407E7C1 /* LightGizmoModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DE5E23E8AA19BB9D3F2C227 /* LightGizmoModel.swift */; };
 		BAF51FE61B64C23C51DF4AAF /* ProtenixJobManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B2D0B8DEF98F905922AE2FD /* ProtenixJobManager.swift */; };
@@ -409,6 +412,7 @@
 		4C675D41EFF244D46FCD0F46 /* LightsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsSheet.swift; sourceTree = "<group>"; };
 		4D6A959CC1590FC60333582B /* DesignEditInferenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignEditInferenceTests.swift; sourceTree = "<group>"; };
 		4EE8A26A41F551AB296B2F8E /* ProtenixSizeGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProtenixSizeGuard.swift; sourceTree = "<group>"; };
+		4F2E04AAE95A3210E0090C69 /* LightsFloatTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsFloatTests.swift; sourceTree = "<group>"; };
 		525F338CAB2EE18987CD1701 /* AppBuildInfo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppBuildInfo.swift; sourceTree = "<group>"; };
 		55094A33AFF9AEF5561CFD96 /* whatsnew-152-timeline.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-152-timeline.png"; sourceTree = "<group>"; };
 		55F4F52D951CF1F96606F41C /* SmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokeTests.swift; sourceTree = "<group>"; };
@@ -508,6 +512,7 @@
 		D4847B7F5C09AD3E9412C3EB /* PredictScreenAwake.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictScreenAwake.swift; sourceTree = "<group>"; };
 		D55EF2F596852510DDACA576 /* SelectionInputField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SelectionInputField.swift; sourceTree = "<group>"; };
 		D60E5CB80464F5616064A91C /* PredictControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictControllerTests.swift; sourceTree = "<group>"; };
+		D8090F993FEBF06819166C82 /* LightsFloatingTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsFloatingTools.swift; sourceTree = "<group>"; };
 		D965CB609C447033E5DB0046 /* PyMOLApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PyMOLApp.swift; sourceTree = "<group>"; };
 		DA4A62DDBB48F5166D118F32 /* PredictSizeGuardIOSTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictSizeGuardIOSTests.swift; sourceTree = "<group>"; };
 		DB57918069BC56804621C327 /* MaterialDropdownTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MaterialDropdownTests.swift; sourceTree = "<group>"; };
@@ -536,7 +541,7 @@
 		FEE394EC8EC4DF566360104C /* LightGizmoGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightGizmoGeometry.swift; sourceTree = "<group>"; };
 		FF4FB7F151982A2927D612F0 /* DesignController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignController.swift; sourceTree = "<group>"; };
 		FFD9E3092D310E443F7CD546 /* DesignTargetSelectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTargetSelectionTests.swift; sourceTree = "<group>"; };
-		"TEMP_BC5961F8-BC08-43E3-A005-580AC830F06E" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
+		"TEMP_799B0F68-EA16-4CC6-A80A-5E87AD29DCD4" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -703,6 +708,7 @@
 				35444C782524F25C4DDD4F9F /* LightsBar.swift */,
 				40FC41A2798A30FE8E223CEC /* LightsController.swift */,
 				79E014A631DA05BA1F8C7E8A /* LightsEditing.swift */,
+				D8090F993FEBF06819166C82 /* LightsFloatingTools.swift */,
 				051212FB14CE38F9CAFC3546 /* LightsInspector.swift */,
 				C2B4F9C3E6672206F1101E14 /* LightsOrbitModel.swift */,
 				142BDBF375FA246776AB2CD1 /* LightsOrbitView.swift */,
@@ -785,6 +791,7 @@
 				755441AFAB067D11B52B6066 /* LightsBarTests.swift */,
 				43806DC3D1AEE6532E3F262D /* LightsControllerTests.swift */,
 				C14BA8BC49311C1D073B8E10 /* LightsEditingTests.swift */,
+				4F2E04AAE95A3210E0090C69 /* LightsFloatTests.swift */,
 				8DEA6DC52AD30B61F6EC3E1F /* LightsInspectorLiveTests.swift */,
 				2BEE4A89F9323D032B1F5F3B /* LightsInspectorTests.swift */,
 				1A08DDE3F66EA94988BF884F /* LightsModeTests.swift */,
@@ -843,10 +850,10 @@
 			path = Bridge;
 			sourceTree = "<group>";
 		};
-		"TEMP_59A24E52-D217-4D13-8830-A908211A3397" /* swiftui */ = {
+		"TEMP_82C1AA6F-AA12-4A8C-95E4-BD1456C8169E" /* swiftui */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_BC5961F8-BC08-43E3-A005-580AC830F06E" /* PyMOLBridge.xcconfig */,
+				"TEMP_799B0F68-EA16-4CC6-A80A-5E87AD29DCD4" /* PyMOLBridge.xcconfig */,
 			);
 			path = swiftui;
 			sourceTree = "<group>";
@@ -1569,6 +1576,7 @@
 				4B44C7F76ACF711C57EC68E2 /* LightsBarTests.swift in Sources */,
 				5FC43853E90D1328E52B67B1 /* LightsControllerTests.swift in Sources */,
 				4C754E670F4EB9FDE0000E74 /* LightsEditingTests.swift in Sources */,
+				15DA981AD21097BFFD1CE170 /* LightsFloatTests.swift in Sources */,
 				39920DAA96E8A4E1A1BE4F93 /* LightsInspectorLiveTests.swift in Sources */,
 				1A70AA9F48AEED67CB42092A /* LightsInspectorTests.swift in Sources */,
 				AD903558AFD4C6F1FF807D13 /* LightsModeTests.swift in Sources */,
@@ -1637,6 +1645,7 @@
 				814595565760E06BD42E682E /* LightsBar.swift in Sources */,
 				15630C292DBEE7FBA8DA1D44 /* LightsController.swift in Sources */,
 				A192423AE56E195D87474E57 /* LightsEditing.swift in Sources */,
+				AC2B01766D25FC00186F9D2E /* LightsFloatingTools.swift in Sources */,
 				74E99B05BC014BA3D289E566 /* LightsInspector.swift in Sources */,
 				4BB737CEF6F2933860EAF8C2 /* LightsOrbitModel.swift in Sources */,
 				E4297BB35BAA562115F71EF2 /* LightsOrbitView.swift in Sources */,
@@ -1726,6 +1735,7 @@
 				B5C4C6AA1972C0CED1527FB1 /* LightsBar.swift in Sources */,
 				E2F5A088F804B59B38054C81 /* LightsController.swift in Sources */,
 				C55DDA064774EC13D91649B2 /* LightsEditing.swift in Sources */,
+				BA5F8346B75009D86D7C7815 /* LightsFloatingTools.swift in Sources */,
 				B8F3D19B819EC1F1CDD6C36D /* LightsInspector.swift in Sources */,
 				F8266F4B39070E8CFBA38D1D /* LightsOrbitModel.swift in Sources */,
 				D70F90009D4B06C4EC31C5F0 /* LightsOrbitView.swift in Sources */,
@@ -1963,7 +1973,7 @@
 		};
 		76B7E9DB75E073D1E60928FA /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_BC5961F8-BC08-43E3-A005-580AC830F06E" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_799B0F68-EA16-4CC6-A80A-5E87AD29DCD4" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -2070,7 +2080,7 @@
 		};
 		D8F44FDFF036013D2F03BA83 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_BC5961F8-BC08-43E3-A005-580AC830F06E" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_799B0F68-EA16-4CC6-A80A-5E87AD29DCD4" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;

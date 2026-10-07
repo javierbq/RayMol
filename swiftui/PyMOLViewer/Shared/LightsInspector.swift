@@ -1153,7 +1153,9 @@ extension View {
 /// edits a simulator run applies through the same controller calls the card
 /// makes. Tokens: `<parameter>:<value>` for every LightParameter, `pin:0|1`,
 /// `shadow:0|1`, `color:r:g:b` (0...1), `expand` (the phone light sheet
-/// starts expanded; the iPad inspector expanded), the orbit view's gestures (`tap:`,
+/// starts expanded; the iPad inspector expanded), `corner:tl|tr|bl|br` (the
+/// iPad's floating orbit view starts there, for this run only: nothing is
+/// stored), the orbit view's gestures (`tap:`,
 /// `plan:`, `square:`, `arc:`, `pinch:`; OrbitAutoGesture parses and runs
 /// them through LightsOrbitInteraction) and the gizmo's (`knob:`, `flip:`,
 /// `outer:`, `inner:`, `aimat:`, `wheel:`, `kpinch:`, `hl:`, `gshadow:`;
@@ -1165,6 +1167,7 @@ enum LightsAutoEdit {
         case shadow(Bool)
         case color(SIMD3<Double>)
         case expand
+        case corner(LightsFloatCorner)
         case gesture(OrbitAutoGesture)
         case gizmo(GizmoAutoGesture)
     }
@@ -1175,6 +1178,13 @@ enum LightsAutoEdit {
         var rejected: [String] = []
 
         var expands: Bool { tokens.contains(.expand) }
+        /// The last `corner:` token's corner (nil: the stored one).
+        var corner: LightsFloatCorner? {
+            tokens.reduce(nil) { found, token in
+                if case .corner(let corner) = token { return corner }
+                return found
+            }
+        }
     }
 
     static func parse(_ text: String) -> Parsed {
@@ -1207,6 +1217,10 @@ enum LightsAutoEdit {
             let allNumbers = finite.count == numbers.count
             if key == "expand", parts.count == 1 {
                 parsed.tokens.append(.expand)
+            } else if key == "corner", parts.count == 2,
+                      let corner = LightsFloatCorner(rawValue: parts[1].trimmingCharacters(in: .whitespaces)
+                        .lowercased()) {
+                parsed.tokens.append(.corner(corner))
             } else if key == "pin" || key == "shadow", parts.count == 2, allNumbers,
                       finite[0] == 0 || finite[0] == 1 {
                 parsed.tokens.append(key == "pin" ? .pin(finite[0] == 1) : .shadow(finite[0] == 1))
@@ -1222,7 +1236,8 @@ enum LightsAutoEdit {
     }
 
     /// Apply `tokens` to the selected light; one `<edit> -> <result>` entry
-    /// per edit (`expand` is a layout choice, applied before the mode opens).
+    /// per edit (`expand` and `corner:` are layout choices, applied before
+    /// the mode opens).
     /// A gesture's entry is `<token> -> <result> <field>=<value>`. Gizmo
     /// gestures run with `gizmo` (the overlay's size and the engine's
     /// picker); without it each logs `<token> -> noview`.
@@ -1243,7 +1258,7 @@ enum LightsAutoEdit {
                 return "shadow=\(on ? 1 : 0) -> \(controller.setShadow(on))"
             case .color(let rgb):
                 return "color=\(fmt(rgb.x)):\(fmt(rgb.y)):\(fmt(rgb.z)) -> \(controller.setColour(rgb))"
-            case .expand:
+            case .expand, .corner:
                 return nil
             case .gesture(let gesture):
                 return OrbitAutoGesture.apply(gesture, to: controller, planSize: orbitPlanSize,

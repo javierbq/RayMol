@@ -371,7 +371,11 @@ final class LightsPhoneWiringTests: XCTestCase {
         XCTAssertEqual(LightsSheetState.toolsSummary(placement: .bottomSheet, detent: .expanded), "sheet:expanded")
         for detent in LightsSheetDetent.allCases {
             XCTAssertEqual(LightsSheetState.toolsSummary(placement: .sidePanel, detent: detent), "side")
-            XCTAssertEqual(LightsSheetState.toolsSummary(placement: .floating, detent: detent), "float")
+            XCTAssertEqual(LightsSheetState.toolsSummary(placement: .floating, detent: detent), "float:bl")
+            for corner in LightsFloatCorner.allCases {
+                XCTAssertEqual(LightsSheetState.toolsSummary(placement: .floating, detent: detent, corner: corner),
+                               "float:\(corner.rawValue)")
+            }
             XCTAssertEqual(LightsSheetState.toolsSummary(placement: .column, detent: detent), "column")
         }
     }
