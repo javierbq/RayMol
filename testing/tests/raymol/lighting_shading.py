@@ -3,7 +3,7 @@
 The Metal renderer reads the lighting once per frame through SceneLightsFrame
 (layer1/SceneLights.cpp): PyMOL's classic light terms after decision 15
 (LightRigClassic) and the rig packed into the block the GPU reads (#613's
-400 bytes, then #616's shadow maps: 672 bytes in all)
+400 bytes, then #616's shadow maps, then #624's tone: 688 bytes in all)
 (LightRigFrameBlock / LightRigPack, layer1/LightShading.cpp), each light's
 colour tinted by its warmth (LightWarmthRGB). These tests reach that C++
 through _cmd.get_light_frame and _cmd.light_warmth_rgb
@@ -66,10 +66,14 @@ LIGHT_FLOATS = 16          # one light: 4 float4
 HEAD_FLOATS = 4
 # #613's block: the head and six lights, 400 bytes. #616 appends three shadow
 # maps of 20 floats, the shadow grid and the per-draw tile (one float4 each).
+# #624 appends the tone (exposure, 1 = HDR, 0, 0): [1, 1, 0, 0] while the rig
+# is on with the settings at their defaults; lighting_hdr.py tests it.
 PREFIX_FLOATS = HEAD_FLOATS + 6 * LIGHT_FLOATS
 SHADOW_FLOATS = 20
-BLOCK_FLOATS = PREFIX_FLOATS + 3 * SHADOW_FLOATS + 4 + 4
-assert PREFIX_FLOATS == 100 and BLOCK_FLOATS == 168
+TONE_AT = PREFIX_FLOATS + 3 * SHADOW_FLOATS + 4 + 4
+BLOCK_FLOATS = TONE_AT + 4
+DEFAULT_TONE = [1.0, 1.0, 0.0, 0.0]
+assert PREFIX_FLOATS == 100 and TONE_AT == 168 and BLOCK_FLOATS == 172
 
 
 def f32(x):
@@ -493,8 +497,9 @@ class TestFrameValues(LightingCase):
         self.assertEqual(aimed['radiance'], [f32(0.7)] * 3)
         self.assertIs(frame['studio_shadows'], False)
         self.assertIsNone(frame['shadows'])
-        self.assertEqual(packed['block'][PREFIX_FLOATS:],
-                         [0.0] * (BLOCK_FLOATS - PREFIX_FLOATS))
+        self.assertEqual(packed['block'][PREFIX_FLOATS:TONE_AT],
+                         [0.0] * (TONE_AT - PREFIX_FLOATS))
+        self.assertEqual(packed['block'][TONE_AT:], DEFAULT_TONE)
 
         # metal_shadows on (#616): the key, the only shadowed light, gets
         # map slot 0 and head[3] counts one map; nothing else of #613's 400
@@ -548,8 +553,9 @@ class TestFrameValues(LightingCase):
         self.rig(lights=LIGHTS[:2])
         block = lighting._light_frame(column_major(MATRIX))['rig']['block']
         self.assertEqual(len(block), BLOCK_FLOATS)
-        self.assertEqual(block[HEAD_FLOATS + 2 * LIGHT_FLOATS:],
-                         [0.0] * (BLOCK_FLOATS - HEAD_FLOATS - 2 * LIGHT_FLOATS))
+        self.assertEqual(block[HEAD_FLOATS + 2 * LIGHT_FLOATS:TONE_AT],
+                         [0.0] * (TONE_AT - HEAD_FLOATS - 2 * LIGHT_FLOATS))
+        self.assertEqual(block[TONE_AT:], DEFAULT_TONE)
         # with a map planned, the unused light slots stay zero
         cmd.set('metal_shadows', 1)
         block = lighting._light_frame(column_major(MATRIX))['rig']['block']
@@ -599,7 +605,7 @@ class TestFrameValues(LightingCase):
 
 
 class TestBlockLayout(LightingCase):
-    """The block the GPU reads: 168 floats at the offsets LightRigBlock.h
+    """The block the GPU reads: 172 floats at the offsets LightRigBlock.h
     documents (and MSL LightRigU mirrors). Checked against independent
     values, not only against the decoded dict."""
 
@@ -630,7 +636,9 @@ class TestBlockLayout(LightingCase):
             self.assertEqual(s[13], f32(light['falloff']), label)
             self.assertEqual(s[14], want['aim_distance'], label)
             self.assertEqual(s[15], 1.0 if light['outline'] else 0.0, label)
-        self.assertEqual(block[PREFIX_FLOATS:], [0.0] * (BLOCK_FLOATS - PREFIX_FLOATS))
+        self.assertEqual(block[PREFIX_FLOATS:TONE_AT], [0.0] * (TONE_AT - PREFIX_FLOATS))
+        self.assertEqual(block[TONE_AT:], DEFAULT_TONE)
+        self.assertEqual(packed['tone'], block[TONE_AT:])
 
     def testShadowOffsets(self):
         """#616's tail at the documented offsets: map s at 100 + 20 s (16
@@ -658,6 +666,7 @@ class TestBlockLayout(LightingCase):
         self.assertEqual(frame['rig']['shadow_grid'], block[160:164])
         self.assertEqual(block[164:168], [0.0] * 4)
         self.assertEqual(frame['rig']['shadow_tile'], block[164:168])
+        self.assertEqual(block[TONE_AT:], DEFAULT_TONE)   # #624, last
 
     def testDecodedFromTheBlock(self):
         self.rig()
@@ -675,8 +684,8 @@ class TestBlockLayout(LightingCase):
     def testBlockSourceMatchesTheDocumentedLayout(self):
         """LightRigBlock.h: a float4 head and six lights of four float4,
         400 bytes (#613), then three shadow maps of a 4x4 and a float4, the
-        shadow grid and the per-draw tile (#616): 672 bytes, asserted at
-        compile time."""
+        shadow grid and the per-draw tile (#616), then the tone (#624): 688
+        bytes, asserted at compile time."""
         path = checkout_source(self, os.path.join('layer1', 'LightRigBlock.h'))
         with open(path, encoding='utf-8') as handle:
             text = strip_comments(handle.read())
@@ -685,7 +694,7 @@ class TestBlockLayout(LightingCase):
         self.assertEqual(re.findall(r'float\s+(\w+)\[4\];', light.group(1)),
                          ['pos', 'axis', 'radiance', 'misc'])
         self.assertEqual(re.findall(r'float\s+(\w+)\[4\];', block.group(1)),
-                         ['head', 'shadowGrid', 'shadowTile'])
+                         ['head', 'shadowGrid', 'shadowTile', 'tone'])
         self.assertRegex(block.group(1),
                          r'LightRigBlockLight\s+light\[kLightRigBlockSlots\];')
         # #613's fields first, in order; #616's appended after them
@@ -694,19 +703,21 @@ class TestBlockLayout(LightingCase):
             ('float', 'head', '4'),
             ('LightRigBlockLight', 'light', 'kLightRigBlockSlots'),
             ('LightRigBlockShadow', 'shadow', 'kLightRigBlockShadowSlots'),
-            ('float', 'shadowGrid', '4'), ('float', 'shadowTile', '4')])
+            ('float', 'shadowGrid', '4'), ('float', 'shadowTile', '4'),
+            ('float', 'tone', '4')])
         shadow = re.search(r'struct LightRigBlockShadow\s*\{(.*?)\};', text,
                            re.S)
         self.assertEqual(re.findall(r'float\s+(\w+)\[(\d+)\];', shadow.group(1)),
                          [('viewProj', '16'), ('info', '4')])
         self.assertRegex(text, r'kLightRigBlockSlots\s*=\s*6;')
         self.assertRegex(text, r'kLightRigBlockShadowSlots\s*=\s*3;')
-        self.assertRegex(text, r'sizeof\(LightRigBlock\)\s*==\s*672')
+        self.assertRegex(text, r'sizeof\(LightRigBlock\)\s*==\s*688')
         self.assertRegex(text, r'sizeof\(LightRigBlockLight\)\s*==\s*64')
         self.assertRegex(text, r'sizeof\(LightRigBlockShadow\)\s*==\s*80')
         self.assertRegex(text, r'offsetof\(LightRigBlock,\s*shadow\)\s*==\s*400')
         self.assertRegex(text, r'offsetof\(LightRigBlock,\s*shadowGrid\)\s*==\s*640')
         self.assertRegex(text, r'offsetof\(LightRigBlock,\s*shadowTile\)\s*==\s*656')
+        self.assertRegex(text, r'offsetof\(LightRigBlock,\s*tone\)\s*==\s*672')
 
 
 class TestDecision15(LightingCase):

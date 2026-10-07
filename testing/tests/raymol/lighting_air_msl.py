@@ -158,6 +158,17 @@ STATEMENTS_615 = {
     'SceneRenderMetal': re.compile(
         r'G->Renderer->setLightClassicScale\(lights\.classic\.scale\);'),
 }
+# #624's (HDR) statement, taken out the same way (exactly one match):
+# SceneLightsFrame fills the rig block's tone only while the rig is on.
+STATEMENTS_624 = {
+    'SceneLightsFrame': re.compile(
+        r'if\s*\(\s*frame\.rig\s*\)\s*SceneLightsToneFill\(G,\s*\*frame\.rig\);'),
+}
+# #624 appends `float4 tone;` to the rig block's MSL mirror (LightRigU) in
+# kMaterialSrc and kRTSrc (layer1/LightRigBlock.h, 688 bytes). With the field
+# taken out (exactly one match each) the literals are what they were.
+TONE_FIELD_624 = re.compile(r'(?<=float4 shadowTile;)\s*float4\s+tone\s*;')
+TONE_FIELD_LITERALS = ('kMaterialSrc', 'kRTSrc')
 
 # #616's shadow tokens (lighting_shadow_msl.py): never in another library.
 SHADOW_TOKENS = re.compile(r'\bkLightShadow\b|\blightShadow\w*|\w+_shadowed\b')
@@ -237,6 +248,10 @@ class TestMasterUnchanged(AirMSLCase):
                 self.assertNotEqual(CHANGED_BY_615[name], want, name)
                 want = CHANGED_BY_615[name]
             code = strip_comments(self.msl[name])
+            # #624: the rig block's tone field taken out
+            if name in TONE_FIELD_LITERALS:
+                self.assertEqual(len(TONE_FIELD_624.findall(code)), 1, name)
+                code = TONE_FIELD_624.sub('', code, count=1)
             # #615: the classic-scale argument of the glass calls taken out
             if name in CLASSIC_LIGHT_LITERALS:
                 self.assertTrue(CLASSIC_LIGHT_ARGUMENT.search(code), name)
@@ -258,6 +273,10 @@ class TestMasterUnchanged(AirMSLCase):
             if name in STATEMENTS_615:
                 self.assertEqual(len(STATEMENTS_615[name].findall(body)), 1, name)
                 body = STATEMENTS_615[name].sub('', body, count=1)
+            # #624's statement, taken out as the air's is
+            if name in STATEMENTS_624:
+                self.assertEqual(len(STATEMENTS_624[name].findall(body)), 1, name)
+                body = STATEMENTS_624[name].sub('', body, count=1)
             self.assertEqual(digest(body), want, name)
 
 

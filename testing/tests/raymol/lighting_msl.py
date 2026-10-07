@@ -1190,22 +1190,24 @@ class TestLayout(LightMSLCase):
         self.assertEqual(light_fields, [('float4', 'pos'), ('float4', 'axis'),
                                         ('float4', 'radiance'), ('float4', 'misc')])
         rig_fields = re.findall(r'(\w+)\s+(\w+)(?:\[(\d+)\])?\s*;', rig.group(1))
-        # #613's head and lights first, unchanged, then #616's tail
+        # #613's head and lights first, unchanged, then #616's tail, then
+        # #624's tone (appended)
         self.assertEqual(rig_fields[:2], [('float4', 'head', ''),
                                           ('LightRigLight', 'L', '6')])
         prefix = 16 + int(rig_fields[1][2]) * 16 * len(light_fields)
         self.assertEqual(prefix, 400)
         self.assertEqual(rig_fields[2:], [('LightRigShadow', 'S', '3'),
                                           ('float4', 'shadowGrid', ''),
-                                          ('float4', 'shadowTile', '')])
+                                          ('float4', 'shadowTile', ''),
+                                          ('float4', 'tone', '')])
         shadow = re.search(r'struct LightRigShadow\s*\{(.*?)\};', material, re.S)
         shadow_fields = re.findall(r'(\w+)\s+(\w+)\s*;', shadow.group(1))
         self.assertEqual(shadow_fields, [('float4x4', 'viewProj'),
                                          ('float4', 'info')])
         shadow_size = 64 + 16
         # float4x4 and float4 are 16-byte aligned: no padding anywhere
-        size = prefix + int(rig_fields[2][2]) * shadow_size + 16 + 16
-        self.assertEqual(size, 672)
+        size = prefix + int(rig_fields[2][2]) * shadow_size + 16 + 16 + 16
+        self.assertEqual(size, 688)
         header = strip_comments(read(BLOCK_H))
         cpp_light = re.search(r'struct LightRigBlockLight\s*\{(.*?)\};', header, re.S)
         cpp_rig = re.search(r'struct LightRigBlock\s*\{(.*?)\};', header, re.S)
@@ -1214,7 +1216,7 @@ class TestLayout(LightMSLCase):
         self.assertEqual(re.findall(r'float\s+(\w+)\[4\];', cpp_light.group(1)),
                          [name for _, name in light_fields])
         self.assertEqual(re.findall(r'float\s+(\w+)\[4\];', cpp_rig.group(1)),
-                         ['head', 'shadowGrid', 'shadowTile'])
+                         ['head', 'shadowGrid', 'shadowTile', 'tone'])
         self.assertEqual(re.findall(r'float\s+(\w+)\[(\d+)\];', cpp_shadow.group(1)),
                          [('viewProj', '16'), ('info', '4')])
         slots = re.search(r'kLightRigBlockSlots\s*=\s*(\d+);', header).group(1)

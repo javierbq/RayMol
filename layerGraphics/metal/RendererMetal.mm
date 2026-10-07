@@ -3173,6 +3173,7 @@ struct LightRigU {
   LightRigShadow S[3];  // read by no RT function (#616: hits stay unshadowed)
   float4 shadowGrid;
   float4 shadowTile;
+  float4 tone;          // exposure, 1 = HDR, 0, 0 (#624)
 };
 struct LightResponse {
   float diffuse;
@@ -7934,8 +7935,8 @@ struct LightRigShadow {
                      // (texels), w depth bias (window z)
 };
 
-// The whole rig, 672 bytes: #613's 400 (head and lights), then #616's shadow
-// maps. Mirrors pymol::LightRigBlock.
+// The whole rig, 688 bytes: #613's 400 (head and lights), then #616's shadow
+// maps, then #624's tone. Mirrors pymol::LightRigBlock.
 struct LightRigU {
   float4 head;      // x light count, y shininess, z 1 = this draw is
                     // orthographic, w shadow maps this frame (#616)
@@ -7944,6 +7945,8 @@ struct LightRigU {
   float4 shadowGrid;    // tiles per side (1 = no grid), first grid slot,
                         // columns, rows (#616)
   float4 shadowTile;    // this draw's tile in slice uv: u0, v0, du, dv (#616)
+  float4 tone;          // x exposure (scene units), y 1 = HDR else 0 (the
+                        // 8-bit soft knee), z and w 0 (#624)
 };
 
 // How a material takes the rig's light: diffuse and highlight strength, the

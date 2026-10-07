@@ -401,8 +401,11 @@ class TestLightResponse(MaterialMSLCase):
 
     def testTheRayTracerIsUntouched(self):
         """kRTSrc keeps its #613 copies (and the neutral response) byte for
-        byte: master's whole-literal digest."""
-        self.assertEqual(digest(strip_comments(self.msl['kRTSrc'])),
+        byte: master's whole-literal digest, once #624's tone field in its
+        LightRigU mirror is taken out (lighting_air_msl.py TONE_FIELD_624)."""
+        rt_code = strip_comments(self.msl['kRTSrc'])
+        self.assertEqual(len(_air.TONE_FIELD_624.findall(rt_code)), 1)
+        self.assertEqual(digest(_air.TONE_FIELD_624.sub('', rt_code, count=1)),
                          _air.MASTER_LITERALS['kRTSrc'])
         rt = msl_functions(self.msl['kRTSrc'])
         self.assertNotIn('light_response', rt)
