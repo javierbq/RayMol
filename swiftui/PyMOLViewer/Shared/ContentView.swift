@@ -4428,9 +4428,11 @@ struct ContentView: View {
         #endif
     }
 
-    // The tools= and touch= fields of the PYMOL_AUTOLIGHTS log lines.
+    // The tools= and touch= fields of the PYMOL_AUTOLIGHTS log lines
+    // (`sheet:air` / `side:air` while the phone shows the air alone).
     private func lightsToolsFields(detent: LightsSheetDetent) -> String {
-        "tools=\(LightsSheetState.toolsSummary(placement: lightsLivePlacement, detent: detent, corner: lightsOrbitCorner)) "
+        let airOnly = LightsSheet.showsAirOnly(engine.lightsController)
+        return "tools=\(LightsSheetState.toolsSummary(placement: lightsLivePlacement, detent: detent, corner: lightsOrbitCorner, airOnly: airOnly)) "
             + "touch=\(Int(LightsTouch.minimumTarget))"
     }
 
@@ -4466,12 +4468,17 @@ struct ContentView: View {
 
     private var lightsLayoutLogKey: LightsLayoutLogKey? {
         guard engine.interactionMode == .lights, !iosFullScreen else { return nil }
+        // With no light the phone shows the air alone (#726), at the compact
+        // height whatever the detent.
+        let airOnly = LightsSheet.showsAirOnly(engine.lightsController)
         let tools = LightsSheetState.toolsSummary(placement: lightsPlacement, detent: lightsSheetDetent,
-                                                  corner: lightsOrbitCorner)
+                                                  corner: lightsOrbitCorner, airOnly: airOnly)
         if phoneLightsDocked {
             // Not before the sheet has reported its room.
             guard lightsRoom.height > 0 else { return nil }
-            let sheet = lightsSheetHeights(room: lightsRoom).height(lightsSheetDetent)
+            let heights = lightsSheetHeights(room: lightsRoom)
+            let sheet = airOnly ? LightsSheetModel.airOnlyFrame(heights: heights).slot
+                : heights.height(lightsSheetDetent)
             let panes = LightsPaneRule.summary(console: consoleBinding.wrappedValue,
                                                sequence: sequenceBinding.wrappedValue)
             return LightsLayoutLogKey(tools: tools, sheet: Int(sheet.rounded()), panes: panes, room: lightsRoom)
@@ -4492,7 +4499,8 @@ struct ContentView: View {
     // `LightsLayout: tools=sheet:compact scene=393x377 sheet=286 panes=hidden
     // covered=none touch=44`, logged after the layout settles (past the
     // 0.22 s snap): the scene is the viewport's size as the gizmo overlay
-    // measured it, `sheet` the committed slot, and `covered` the lights whose
+    // measured it, `sheet` the committed slot (the compact height for the
+    // air-only `sheet:air`), and `covered` the lights whose
     // knob (with its whole touch target) lies under a floating card
     // (LightsFloatLayout.coveredKnobs; docked tools cover nothing). The
     // float adds its cards' frames: `card=`, `inspector=` and `atmosphere=`
@@ -4528,9 +4536,10 @@ struct ContentView: View {
     /// `gizmo=` the gizmo's (LightGizmoState.summary), so one run shows the
     /// three tools agree.
     ///
-    /// Both lines end with `tools=<sheet:compact|sheet:expanded|side|
-    /// float:<tl|tr|bl|br>|column> touch=<minimum target>` (#623): where the
-    /// tools are.
+    /// Both lines end with `tools=<sheet:compact|sheet:expanded|sheet:air|
+    /// side|side:air|float:<tl|tr|bl|br>|column> touch=<minimum target>`
+    /// (#623, #726): where the tools are (`:air`: the phone's air-only sheet,
+    /// no light).
     ///
     /// Debug builds also read PYMOL_AUTOLIGHTS_EDIT='<token>;...' (see
     /// LightsAutoEdit): `expand` opens the phone sheet expanded (the iPad
