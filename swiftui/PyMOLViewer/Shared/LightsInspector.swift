@@ -1152,8 +1152,8 @@ extension View {
 /// PYMOL_AUTOLIGHTS_EDIT='<token>;<token>…' (debug builds only): inspector
 /// edits a simulator run applies through the same controller calls the card
 /// makes. Tokens: `<parameter>:<value>` for every LightParameter, `pin:0|1`,
-/// `shadow:0|1`, `color:r:g:b` (0...1), `expand` (the inspector and the orbit
-/// view start expanded on iPhone), the orbit view's gestures (`tap:`,
+/// `shadow:0|1`, `color:r:g:b` (0...1), `expand` (the phone light sheet
+/// starts expanded; the iPad inspector expanded), the orbit view's gestures (`tap:`,
 /// `plan:`, `square:`, `arc:`, `pinch:`; OrbitAutoGesture parses and runs
 /// them through LightsOrbitInteraction) and the gizmo's (`knob:`, `flip:`,
 /// `outer:`, `inner:`, `aimat:`, `wheel:`, `kpinch:`, `hl:`, `gshadow:`;

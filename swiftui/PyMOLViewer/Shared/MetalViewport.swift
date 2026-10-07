@@ -402,7 +402,18 @@ class PyMOLMTKView: MTKView {
 struct MetalViewport: UIViewRepresentable {
     @EnvironmentObject var engine: PyMOLEngine
 
+    #if DEBUG
+    /// MTKViews made this launch: a simulator log shows one viewport per
+    /// launch (`MetalViewport: makeUIView n=1`), so the phone light sheet's
+    /// layouts never rebuild it (#623).
+    private static var makeCount = 0
+    #endif
+
     func makeUIView(context: Context) -> MTKView {
+        #if DEBUG
+        MetalViewport.makeCount += 1
+        NSLog("MetalViewport: makeUIView n=\(MetalViewport.makeCount)")
+        #endif
         let view = MTKView(frame: .zero)
         view.device = MTLCreateSystemDefaultDevice()
         view.delegate = context.coordinator
