@@ -321,6 +321,97 @@ final class LightsSheetStateTests: XCTestCase {
     }
 }
 
+// MARK: - The phone wiring (Part 4)
+
+/// What ContentView's phone wiring decides with pure rules: the panes that
+/// give way to the portrait sheet, the `tools=` log field and the orbit
+/// canvases the DEBUG orbit tokens lay out at in each placement.
+final class LightsPhoneWiringTests: XCTestCase {
+    typealias M = LightsSheetMetrics
+
+    func testPanesGiveWayWhileDocked() {
+        // Outside the docked sheet the stored flag decides, as before.
+        for stored in [false, true] {
+            for override in [false, true] {
+                XCTAssertEqual(LightsPaneRule.shows(stored: stored, override: override, docked: false), stored)
+            }
+        }
+        // Docked: hidden until the rail brings the pane back (the override),
+        // and never shown with the stored flag off.
+        XCTAssertFalse(LightsPaneRule.shows(stored: true, override: false, docked: true))
+        XCTAssertTrue(LightsPaneRule.shows(stored: true, override: true, docked: true))
+        XCTAssertFalse(LightsPaneRule.shows(stored: false, override: true, docked: true))
+        XCTAssertFalse(LightsPaneRule.shows(stored: false, override: false, docked: true))
+    }
+
+    func testThePillSetterKeepsTheRuleConsistent() {
+        // The rail pill's setter writes the override and the stored flag
+        // together (ContentView's consoleBinding / sequenceBinding), so what
+        // the pill shows always follows the tap while docked.
+        var stored = true
+        var override = false
+        func set(_ value: Bool) { override = value; stored = value }
+        XCTAssertFalse(LightsPaneRule.shows(stored: stored, override: override, docked: true))
+        set(true)
+        XCTAssertTrue(LightsPaneRule.shows(stored: stored, override: override, docked: true))
+        set(false)
+        XCTAssertFalse(LightsPaneRule.shows(stored: stored, override: override, docked: true))
+        XCTAssertFalse(stored, "a pane the user closed stays closed after the mode")
+    }
+
+    func testPanesSummary() {
+        XCTAssertEqual(LightsPaneRule.summary(console: false, sequence: false), "hidden")
+        XCTAssertEqual(LightsPaneRule.summary(console: true, sequence: false), "console")
+        XCTAssertEqual(LightsPaneRule.summary(console: false, sequence: true), "sequence")
+        XCTAssertEqual(LightsPaneRule.summary(console: true, sequence: true), "both")
+    }
+
+    func testToolsSummary() {
+        XCTAssertEqual(LightsSheetState.toolsSummary(placement: .bottomSheet, detent: .compact), "sheet:compact")
+        XCTAssertEqual(LightsSheetState.toolsSummary(placement: .bottomSheet, detent: .expanded), "sheet:expanded")
+        for detent in LightsSheetDetent.allCases {
+            XCTAssertEqual(LightsSheetState.toolsSummary(placement: .sidePanel, detent: detent), "side")
+            XCTAssertEqual(LightsSheetState.toolsSummary(placement: .floating, detent: detent), "float")
+            XCTAssertEqual(LightsSheetState.toolsSummary(placement: .column, detent: detent), "column")
+        }
+    }
+
+    func testOrbitTokensUseTheActiveCanvases() {
+        // The 852 pt phone's room under the bar.
+        let room = CGSize(width: 393, height: 663)
+        let content = LightsSheetModel.expandedContent(header: 44, rows: 430, bottomInset: 34, width: room.width)
+        let heights = LightsSheetModel.layout(room: room.height, header: 44, bottomInset: 34,
+                                              expandedContent: content)
+        func sizes(_ placement: LightsToolsPlacement, _ detent: LightsSheetDetent,
+                   side: CGSize = .zero) -> (plan: CGSize, arc: CGSize) {
+            LightsSheetModel.activeCanvases(placement: placement, detent: detent, heights: heights, room: room,
+                                            header: 44, bottomInset: 34, sideSize: side)
+        }
+        // Compact sheet: the 164 pt plan.
+        XCTAssertEqual(sizes(.bottomSheet, .compact).plan, CGSize(width: 164, height: 164))
+        // Expanded sheet: the pinned canvases at the expanded height.
+        let expanded = sizes(.bottomSheet, .expanded)
+        let pinned = LightsSheetModel.expandedCanvases(sheet: heights.expanded, header: 44, bottomInset: 34,
+                                                       width: room.width)
+        XCTAssertEqual(expanded.plan, pinned.planSize)
+        XCTAssertEqual(expanded.arc, pinned.arcSize)
+        XCTAssertEqual(expanded.plan, CGSize(width: 194, height: 194))
+        XCTAssertEqual(expanded.arc, CGSize(width: 98, height: 194))
+        // Side panel: its canvases in the panel below the top inset.
+        let panel = CGSize(width: 393, height: 380)
+        let side = sizes(.sidePanel, .compact, side: panel)
+        let expect = LightsSheetModel.sideCanvases(size: CGSize(width: 393, height: 380 - M.sideTopInset),
+                                                   header: 44)
+        XCTAssertEqual(side.plan, expect.planSize)
+        XCTAssertEqual(side.arc, expect.arcSize)
+        // The column and the float: the card's sizes.
+        for placement in [LightsToolsPlacement.column, .floating] {
+            XCTAssertEqual(sizes(placement, .expanded).plan, LightsOrbitMetrics.planSize)
+            XCTAssertEqual(sizes(placement, .expanded).arc, LightsOrbitMetrics.arcSize)
+        }
+    }
+}
+
 // MARK: - Pictures
 
 /// The sheet drawn offscreen, as LightsInspectorSnapshotTests draws the card:

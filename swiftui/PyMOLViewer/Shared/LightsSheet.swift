@@ -286,6 +286,56 @@ enum LightsSheetModel {
         guard let keyboardTop else { return 0 }
         return max(0, bottom - keyboardTop)
     }
+
+    /// The orbit canvases' sizes in the active placement, so the DEBUG orbit
+    /// tokens (`plan:`, `square:`, `arc:`, `pinch:`) lay out at what is on
+    /// screen: the compact sheet's 164 pt plan (no arc), the expanded sheet's
+    /// pinned canvases at its height in `room`, the side panel's canvases in
+    /// a panel of `sideSize`, else the card's (the column and the float).
+    static func activeCanvases(placement: LightsToolsPlacement, detent: LightsSheetDetent,
+                               heights: LightsSheetHeights, room: CGSize, header: CGFloat,
+                               bottomInset: CGFloat, sideSize: CGSize) -> (plan: CGSize, arc: CGSize) {
+        switch placement {
+        case .bottomSheet:
+            guard detent == .expanded else {
+                return (CGSize(width: M.compactPlanSide, height: M.compactPlanSide), LightsOrbitMetrics.arcSize)
+            }
+            let canvases = expandedCanvases(sheet: heights.expanded, header: header, bottomInset: bottomInset,
+                                            width: room.width)
+            return (canvases.planSize, canvases.arcSize)
+        case .sidePanel:
+            let canvases = sideCanvases(size: CGSize(width: sideSize.width,
+                                                     height: sideSize.height - M.sideTopInset),
+                                        header: header)
+            return (canvases.planSize, canvases.arcSize)
+        case .column, .floating:
+            return (LightsOrbitMetrics.planSize, LightsOrbitMetrics.arcSize)
+        }
+    }
+}
+
+// MARK: - The phone panes
+
+/// Phone portrait Lights mode (#623 Q7): the console and the sequence strip
+/// give way to the docked sheet. Their stored flags are never written by the
+/// mode; a pane shows when its flag is on and, while the tools are docked,
+/// once the user brings it back from the rail (the override, reset each time
+/// the mode opens). The rail pill's setter writes both, so once touched the
+/// pill behaves as usual. Pure.
+enum LightsPaneRule {
+    static func shows(stored: Bool, override: Bool, docked: Bool) -> Bool {
+        stored && (!docked || override)
+    }
+
+    /// The panes shown beside the docked sheet, for the DEBUG layout line.
+    static func summary(console: Bool, sequence: Bool) -> String {
+        switch (console, sequence) {
+        case (false, false): return "hidden"
+        case (true, false): return "console"
+        case (false, true): return "sequence"
+        case (true, true): return "both"
+        }
+    }
 }
 
 // MARK: - Strings
@@ -330,6 +380,18 @@ enum LightsSheetState {
 
     static func swatchIdentifier(_ name: String) -> String {
         "lights.sheet.swatch.\(name.lowercased())"
+    }
+
+    /// Where the tools are, for the `tools=` field of the PYMOL_AUTOLIGHTS
+    /// and LightsLayout log lines: `sheet:compact`, `sheet:expanded`,
+    /// `side`, `float` or `column`.
+    static func toolsSummary(placement: LightsToolsPlacement, detent: LightsSheetDetent) -> String {
+        switch placement {
+        case .bottomSheet: return "sheet:\(detent.rawValue)"
+        case .sidePanel: return "side"
+        case .floating: return "float"
+        case .column: return "column"
+        }
     }
 }
 
