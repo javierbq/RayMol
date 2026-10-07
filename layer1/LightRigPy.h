@@ -119,12 +119,13 @@ PyObject* LightRigEyeAsPyDict(
     const pymol::LightRig& rig, const pymol::LightRigEye& eye);
 
 /**
- * One frame's lighting (SceneLightsFrame, #613, #616), for
+ * One frame's lighting (SceneLightsFrame, #613, #616, #624), for
  * _cmd.get_light_frame():
  *   {'ambient', 'direct', 'reflect', 'specular', 'shininess',
  *    'rig_on': bool, 'studio_shadows': bool, 'shadow_map_size': int,
- *    'rig': None | {'count': int, 'head': [4 floats], 'block': [168 floats],
+ *    'rig': None | {'count': int, 'head': [4 floats], 'block': [172 floats],
  *                   'shadow_grid': [4 floats], 'shadow_tile': [4 floats],
+ *                   'tone': [4 floats],
  *                   'lights': [{'name', 'position': [3], 'shadow_slot': int,
  *                               'direction': [3], 'cos_outer',
  *                               'radiance': [3], 'cos_inner', 'highlight',
@@ -137,7 +138,7 @@ PyObject* LightRigEyeAsPyDict(
  *                                  'normal_offset', 'depth_bias', 'near',
  *                                  'far', 'beam_fit'}, ...]}}
  * 'block' is the LightRigBlock as the GPU reads it, float by float, and
- * 'lights', 'shadow_grid', 'shadow_tile' and each slot's 'view_proj' to
+ * 'lights', 'shadow_grid', 'shadow_tile', 'tone' and each slot's 'view_proj' to
  * 'depth_bias' are decoded from it at the offsets LightRigBlock.h documents,
  * so the tests pin the layout as well as the values; 'view', 'proj', 'near',
  * 'far' and 'beam_fit' come from the plan (LightShadowFrame). Matrices are

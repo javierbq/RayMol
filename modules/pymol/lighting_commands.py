@@ -1577,7 +1577,8 @@ LIGHT FIELDS
                      255 when any is above 1); sets color
     warmth (kelvin)  kelvin, 1500 to 15000, default 6500 (neutral); it
                      multiplies color
-    intensity (int)  0 to 4, default 1 (above about 2 clips)
+    intensity (int)  0 to 4, default 1 (bright rigs roll off; metal_exposure
+                     tames them)
     highlight (spec) strength of the coloured specular, 0 to 1, default 0.5.
                      A selection instead of a number places the light (see
                      PLACEMENT).

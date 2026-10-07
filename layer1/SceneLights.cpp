@@ -244,6 +244,19 @@ bool SceneLightsAnyShadowed(
 }
 } // namespace
 
+void SceneLightsToneFill(PyMOLGlobals* G, pymol::LightRigBlock& block)
+{
+  block.tone[0] = pymol::LightToneExposure(
+      SettingGetGlobal_f(G, cSetting_metal_exposure));
+  block.tone[1] = pymol::LightHdrOn(
+                      SettingGetGlobal_i(G, cSetting_metal_light_hdr),
+                      kSceneLightsMobile)
+                      ? 1.0f
+                      : 0.0f;
+  block.tone[2] = 0.0f;
+  block.tone[3] = 0.0f;
+}
+
 SceneLightFrame SceneLightsFrame(PyMOLGlobals* G, const glm::dmat4& worldToEye,
     const pymol::LightShadowGridOverride* grid)
 {
@@ -266,6 +279,8 @@ SceneLightFrame SceneLightsFrame(PyMOLGlobals* G, const glm::dmat4& worldToEye,
   frame.classic = pymol::LightRigClassic(rig, settings);
   frame.shininess = specPower;
   frame.rig = pymol::LightRigFrameBlock(rig, worldToEye, specPower);
+  if (frame.rig)
+    SceneLightsToneFill(G, *frame.rig);
 
   // Studio shadows (#616). Nothing below runs, and nothing more is read,
   // unless the rig is on (frame.rig), metal_shadows is on and a light has

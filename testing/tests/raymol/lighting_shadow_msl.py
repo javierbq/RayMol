@@ -81,7 +81,17 @@ def _load_lighting_msl():
     return module
 
 
+def _load_lighting_air_msl():
+    """lighting_air_msl.py, for #624's without_hdr_624, loaded the same way."""
+    spec = importlib.util.spec_from_file_location(
+        '_lighting_shadow_msl_air', os.path.join(HERE, 'lighting_air_msl.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 _msl = _load_lighting_msl()
+_air = _load_lighting_air_msl()
 shader_literals = _msl.shader_literals
 strip_comments = _msl.strip_comments
 msl_functions = _msl.msl_functions
@@ -185,6 +195,14 @@ CLASSIC_LIGHT_ARGUMENT = re.compile(r',\s*mat_classic_light\(\s*\w+\s*\)')
 def without_classic_light(text):
     """`text` with #615's mat_classic_light arguments taken out."""
     return CLASSIC_LIGHT_ARGUMENT.sub('', text)
+
+
+def without_hdr(text):
+    """`text` with #624's shader edits put back (lighting_air_msl.py
+    without_hdr_624: light_finish's exposure and HDR arm, the glints' HDR arm,
+    the rig glass covers, the sphere glass helpers' seam). The pins below are
+    #613's code; with kLightHdr false #624 compiles to it."""
+    return _air.without_hdr_624(text)[0]
 
 
 def read(path):
@@ -339,9 +357,10 @@ class TestShadowBlock(ShadowMSLCase):
             if name in [f for fs in RIG_FRAGMENTS.values() for f in fs]:
                 continue
             got_sig, got_body = msl_functions(self.msl[lib])[name]
-            # #615's classic-scale argument (sphere_glass_rig) taken out
-            self.assertEqual((digest(got_sig),
-                              digest(without_classic_light(got_body))),
+            # #615's classic-scale argument (sphere_glass_rig) taken out, and
+            # #624's edits put back
+            self.assertEqual((digest(without_hdr(got_sig)),
+                              digest(without_classic_light(without_hdr(got_body)))),
                              (sig, body), '%s.%s' % (lib, name))
 
 
@@ -481,8 +500,10 @@ class TestFragments(ShadowMSLCase):
                 self.assertEqual(
                     (digest(squash(sig).replace(SHADOW_ARGUMENTS_SQUASHED, '')),
                      # #615's classic-scale argument taken out (the glass
-                     # calls of vbo_fragment_oit, cyl_impostor_fragment_oit)
-                     digest(without_classic_light(without_shadow(body)))),
+                     # calls of vbo_fragment_oit, cyl_impostor_fragment_oit),
+                     # and #624's rig glass covers put back
+                     digest(without_classic_light(
+                         without_hdr(without_shadow(body))))),
                     MASTER_613[(lib, name)], '%s.%s' % (lib, name))
 
     def testShadowArmsAreThe613ArmsShadowed(self):
@@ -576,23 +597,34 @@ class TestPipelines(ShadowMSLCase):
         self.assertLess(m.start(), body.index('constantValues:'))
         self.assertRegex(self.header, r'materialFragmentFunction\(\s*id<MTLLibrary> lib,'
                                       r'\s*NSString\* name,\s*int family,\s*'
-                                      r'bool lightRig = false,\s*bool lightShadow = false\);')
-        # the classic builds pass three arguments, #613's rig builds four
+                                      r'bool lightRig = false,\s*bool lightShadow = false,'
+                                      # #624's kLightHdr after it
+                                      r'\s*bool lightHdr = false\);')
+        # the classic builds pass three arguments; #613's rig builds ask for
+        # the rig and not its maps (since #624 they pass the hdr choice too,
+        # so the maps' argument is written out, false)
         for fn, count in (('RendererMetal::buildVBOPipelines', 3),
-                          ('RendererMetal::buildImpostorPipelines', 3),
-                          ('RendererMetal::vboRigFragmentFunction', 4),
-                          ('RendererMetal::ensureSphereRigPipelines', 4)):
+                          ('RendererMetal::buildImpostorPipelines', 3)):
             calls = re.findall(r'materialFragmentFunction\(([^;]*)\);', self.body(fn))
             self.assertTrue(calls, fn)
             for args in calls:
                 self.assertEqual(len(args.split(',')), count, (fn, args))
-        # the shadow variants ask for both
-        for fn in ('RendererMetal::vboRigShadowFragmentFunction',
-                   'RendererMetal::ensureSphereRigShadowPipelines'):
-            calls = re.findall(r'materialFragmentFunction\(([^;]*)\);', self.body(fn))
+        for fn in ('RendererMetal::vboRigFragmentFunction',
+                   'RendererMetal::ensureSphereRigPipelines'):
+            calls = re.findall(r'materialFragmentFunction\(([^;]*)\);',
+                               strip_block_comments(self.body(fn)))
             self.assertTrue(calls, fn)
             for args in calls:
-                self.assertEqual(squash(args).split(',')[-2:], ['true', 'true'], fn)
+                self.assertEqual(squash(args).split(',')[3:], ['true', 'false', 'hdr'],
+                                 (fn, args))
+        # the shadow variants ask for both (and the hdr choice, #624)
+        for fn in ('RendererMetal::vboRigShadowFragmentFunction',
+                   'RendererMetal::ensureSphereRigShadowPipelines'):
+            calls = re.findall(r'materialFragmentFunction\(([^;]*)\);',
+                               strip_block_comments(self.body(fn)))
+            self.assertTrue(calls, fn)
+            for args in calls:
+                self.assertEqual(squash(args).split(',')[3:], ['true', 'true', 'hdr'], fn)
         # the tube's fallback sets it false
         tube = self.body('bezierTubeRigFunction')
         self.assertRegex(tube, r'bool shadow = false;\s*\[cv setConstantValue:&shadow '
@@ -600,14 +632,18 @@ class TestPipelines(ShadowMSLCase):
 
     def testOnlyTheShadowVariantsAskForTheMaps(self):
         """materialFragmentFunction is asked for kLightShadow (a fifth
-        argument) only by the three shadow builders."""
+        argument that is not false) only by the three shadow builders. Since
+        #624 the rig builders also write out a false fifth argument, ahead of
+        the hdr choice."""
         callers = set()
-        for m in re.finditer(r'\bmaterialFragmentFunction\(([^;]*)\);',
-                             strip_block_comments(self.code)):
-            if len(m.group(1).split(',')) < 5:
+        code = strip_block_comments(self.code)
+        for m in re.finditer(r'\bmaterialFragmentFunction\(([^;]*)\);', code):
+            args = squash(m.group(1)).split(',')
+            if len(args) < 5 or args[4] == 'false':
                 continue
+            # the owner from the same text the match came from
             owner = re.findall(r'^[\w<>:\*\s]*RendererMetal::(\w+)\s*\(',
-                               self.code[:m.start()], re.M)
+                               code[:m.start()], re.M)
             callers.add(owner[-1])
         self.assertEqual(callers, {'vboRigShadowFragmentFunction',
                                    'ensureSphereRigShadowPipelines',
@@ -631,15 +667,17 @@ class TestPipelines(ShadowMSLCase):
         rig_mix = cached.index('if (lightRig) mix(0x4C52);')
         shadow_mix = cached.index('if (lightShadow) mix(0x4C53);')
         self.assertLess(rig_mix, shadow_mix)
-        self.assertEqual(len(re.findall(r'\bmix\(', cached)), 10)
+        # ...and HDR colour's (#624) after it
+        self.assertLess(shadow_mix, cached.index('if (lightHdr) mix(0x4C48);'))
+        self.assertEqual(len(re.findall(r'\bmix\(', cached)), 11)
         # Lit: the shadow function only under lightShadow, the rig's otherwise
         block = re.search(r'if\s*\(\s*variant == VBOPipelineVariant::Lit && '
                           r'lightShadow\s*\)\s*\{', cached)
         self.assertIsNotNone(block)
         inside = cached[block.end():match_brace(cached, block.end() - 1)]
-        self.assertIn('vboRigShadowFragmentFunction(family, false)', inside)
-        self.assertIn('vboRigShadowFragmentFunction(cMaterialFamily_default, false)',
-                      inside)
+        self.assertIn('vboRigShadowFragmentFunction(family, false, lightHdr)', inside)
+        self.assertRegex(inside, r'vboRigShadowFragmentFunction\(cMaterialFamily_default,'
+                                 r' false,\s*lightHdr\)')
         self.assertIn('_lightShadowWarned = true;', inside)
         self.assertRegex(cached, r'if\s*\(\s*shadowFn\s*\)\s*\{\s*ffn = shadowFn;\s*\}'
                                  r'\s*else if\s*\(\s*variant == VBOPipelineVariant::Lit'
@@ -650,12 +688,12 @@ class TestPipelines(ShadowMSLCase):
         block = re.search(r'if\s*\(\s*lightRig && lightShadowsReady\(\)\s*\)\s*\{', oit)
         self.assertIsNotNone(block)
         inside = oit[block.end():match_brace(oit, block.end() - 1)]
-        self.assertIn('ffn = vboRigShadowFragmentFunction(family, true);', inside)
+        self.assertIn('ffn = vboRigShadowFragmentFunction(family, true, lightHdr);', inside)
         self.assertIn('_lightShadowWarned = true;', inside)
         self.assertEqual(len(re.findall(r'vboRigShadowFragmentFunction\(', oit)), 1)
         # ...falling back to #613's choice
         self.assertRegex(oit, r'if\s*\(\s*!ffn\s*\)\s*ffn = lightRig \? '
-                              r'vboRigFragmentFunction\(family, true\)\s*:\s*'
+                              r'vboRigFragmentFunction\(family, true, lightHdr\)\s*:\s*'
                               r'_vboFragmentOitFunc\[family\];')
         # nobody else asks for a VBO shadow function
         self.assertEqual(len(re.findall(r'(?<!::)\bvboRigShadowFragmentFunction\(',
@@ -666,20 +704,24 @@ class TestPipelines(ShadowMSLCase):
 
     def testVBOShadowFunctionsAreLazyAndReleased(self):
         fn = self.body('RendererMetal::vboRigShadowFragmentFunction')
-        self.assertIn('bool& tried = _vboRigShadowFuncTried[family][oit ? 1 : 0];', fn)
+        # per hdr variant (#624: re-taken)
+        self.assertIn('bool& tried = _vboRigShadowFuncTried[h][family][oit ? 1 : 0];', fn)
         self.assertRegex(fn, r'if\s*\(\s*!\*slot && !tried\s*\)\s*\{\s*tried = true;')
         self.assertIn('_vboLibrary', fn)
         release = self.body('RendererMetal::releaseVBORigFunctions')
-        for member in ('_vboFragmentRigShadowFunc[f]', '_vboFragmentOitRigShadowFunc[f]'):
+        for member in ('_vboFragmentRigShadowFunc[h][f]',
+                       '_vboFragmentOitRigShadowFunc[h][f]'):
             self.assertIn('[%s release];' % member, release)
             self.assertIn('%s = nil;' % member, release)
-        self.assertIn('_vboRigShadowFuncTried[f][0] = _vboRigShadowFuncTried[f][1] = false;',
-                      release)
+        self.assertIn('_vboRigShadowFuncTried[h][f][0] = _vboRigShadowFuncTried[h][f][1]'
+                      ' = false;', release)
 
     def testSphereShadowPipelines(self):
         ensure = self.body('RendererMetal::ensureSphereRigShadowPipelines')
-        self.assertRegex(ensure, r'^\{\s*if\s*\(\s*_sphereRigShadowBuilt\s*\)\s*return\s*;'
-                                 r'\s*_sphereRigShadowBuilt\s*=\s*true\s*;')
+        # one attempt per build, per hdr set (#624: re-taken)
+        self.assertRegex(ensure, r'^\{\s*const int h = hdr \? 1 : 0;\s*'
+                                 r'if\s*\(\s*_sphereRigShadowBuilt\[h\]\s*\)\s*return\s*;'
+                                 r'\s*_sphereRigShadowBuilt\[h\]\s*=\s*true\s*;')
         calls = re.findall(r'materialFragmentFunction\(([^;]*)\);', ensure)
         self.assertEqual(sorted(squash(c).split(',')[1] for c in calls),
                          ['@"sphere_impostor_fragment"',
@@ -695,9 +737,10 @@ class TestPipelines(ShadowMSLCase):
                                  r'\s*f == cMaterialFamily_glass\)')
         # released (and retried) with #613's rig pipelines
         release = self.body('RendererMetal::releaseSphereRigPipelines')
-        for member in ('_sphereRigShadowPipeline[f]', '_sphereRigShadowOitPipeline[f]'):
+        for member in ('_sphereRigShadowPipeline[h][f]',
+                       '_sphereRigShadowOitPipeline[h][f]'):
             self.assertIn('[%s release];' % member, release)
-        self.assertIn('_sphereRigShadowBuilt = false;', release)
+        self.assertIn('_sphereRigShadowBuilt[h] = false;', release)
         for fn in ('RendererMetal::rebuildDrawPipelines',
                    'RendererMetal::~RendererMetal'):
             self.assertIn('releaseSphereRigPipelines();', self.body(fn), fn)
@@ -708,27 +751,31 @@ class TestPipelines(ShadowMSLCase):
                           draw)
         self.assertIsNotNone(block)
         inside = draw[block.end():match_brace(draw, block.end() - 1)]
-        self.assertIn('ensureSphereRigShadowPipelines();', inside)
-        self.assertRegex(inside, r'_oitActive\s*\?\s*_sphereRigShadowOitPipeline\s*:\s*'
-                                 r'_sphereRigShadowPipeline')
+        # this frame's hdr set (#624: re-taken)
+        self.assertIn('ensureSphereRigShadowPipelines(_lightHdrOn);', inside)
+        self.assertRegex(inside, r'_oitActive\s*\?\s*_sphereRigShadowOitPipeline'
+                                 r'\[sphereHdr\]\s*:\s*_sphereRigShadowPipeline\[sphereHdr\]')
         self.assertIn('shadowSet[cMaterialFamily_default]', inside)
         self.assertRegex(inside, r'if\s*\(\s*shadowPipeline\s*\)\s*\{\s*'
                                  r'rigPipeline = shadowPipeline;')
         self.assertIn('_lightShadowWarned = true;', inside)
-        self.assertLess(draw.index('ensureSphereRigPipelines();'), block.start())
+        self.assertLess(draw.index('ensureSphereRigPipelines(_lightHdrOn);'), block.start())
         self.assertEqual(len(re.findall(r'(?<!::)\bensureSphereRigShadowPipelines\(',
                                         self.code)), 1)
 
     def testCylinderShadowEntries(self):
+        # HDR colour's 6th element after it (#624: re-taken)
         self.assertRegex(self.header, r'std::map<std::tuple<NSUInteger,\s*int,\s*int,'
-                                      r'\s*bool,\s*bool>,\s*CylinderPipelines>')
+                                      r'\s*bool,\s*bool,\s*bool>,\s*CylinderPipelines>')
         self.assertRegex(self.header, r'void buildCylinderImpostorPipeline\('
                                       r'const CylinderImpostorDrawCall& call,\s*'
-                                      r'bool lightRig = false,\s*bool lightShadow = false\);')
+                                      r'bool lightRig = false,\s*bool lightShadow = false,'
+                                      r'\s*bool lightHdr = false\);')
         build = self.body('RendererMetal::buildCylinderImpostorPipeline')
         self.assertRegex(build, r'^\{\s*lightShadow = lightShadow && lightRig;')
         self.assertRegex(build, r'std::make_tuple\(\s*static_cast<NSUInteger>\(call\.stride\),'
-                                r'\s*call\.capOff,\s*cylFam,\s*lightRig,\s*lightShadow\)')
+                                r'\s*call\.capOff,\s*cylFam,\s*lightRig,\s*lightShadow,'
+                                r'\s*lightHdr\)')
         # no shadow or peel pipeline, and a failed entry is cached, as #613's
         self.assertRegex(build, r'sfn\s*=\s*lightRig\s*\?\s*nil\s*:')
         self.assertIn('if (_cylinderImpostorPipeline || lightRig)', build)
@@ -743,8 +790,11 @@ class TestPipelines(ShadowMSLCase):
                           r'\s*\)\s*\{', draw)
         self.assertIsNotNone(block)
         inside = draw[block.end():match_brace(draw, block.end() - 1)]
-        calls = re.findall(r'buildCylinderImpostorPipeline\(([^;]*)\);', inside)
-        self.assertEqual([squash(c) for c in calls], ['call,true,true', 'call,true'])
+        calls = re.findall(r'buildCylinderImpostorPipeline\(([^;]*)\);',
+                           strip_block_comments(inside))
+        # this frame's hdr variant of each (#624: re-taken)
+        self.assertEqual([squash(c) for c in calls],
+                         ['call,true,true,cylHdr', 'call,true,false,cylHdr'])
         self.assertIn('_lightShadowWarned = true;', inside)
         self.assertLess(draw.index('buildCylinderImpostorPipeline(call, false);'),
                         block.start())
@@ -759,8 +809,8 @@ class TestPipelines(ShadowMSLCase):
                          ('RendererMetal::drawSphereImpostors',
                           r'ensureSphereRigShadowPipelines\('),
                          ('RendererMetal::drawCylinderImpostors',
-                          r'buildCylinderImpostorPipeline\(call,\s*true,\s*true\)')):
-            body = self.body(fn)
+                          r'buildCylinderImpostorPipeline\(call,\s*true,\s*true,')):
+            body = strip_block_comments(self.body(fn))
             found = list(re.finditer(call, body))
             self.assertTrue(found, fn)
             for m in found:

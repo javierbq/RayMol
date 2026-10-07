@@ -130,7 +130,7 @@ file-static state and packed settings.
 | `softness` | 0–1 | 0.4 | Fraction of the cone that fades out. |
 | `color` | sRGB | white | PyMOL name, `rgb=` or picker. |
 | `warmth` | kelvin, 1500–15000 | 6500 | Multiplies `color`; 6500 K is neutral. |
-| `intensity` | 0–4 | 1 | Above ~2 clips until HDR (#624). |
+| `intensity` | 0–4 | 1 | Bright rigs roll off through #624's tone curve; `metal_exposure` scales them. |
 | `highlight` | 0–1 | 0.5 | Strength of the coloured specular. |
 | `falloff` | exponent, 0–2 | 2 | (aim distance / distance)^falloff: 2 = inverse square, 1 at the aim point; 0 = none. |
 | `shadow` | bool | false | At most 3 lights; the 4th is refused with a message. |
@@ -281,8 +281,9 @@ the tickets carry permalinks.
   - no air without geometry;
   - redraws only while dust moves and the app is active; a capped rate in
     low-power mode.
-- **HDR (#624):** float scene colour plus exposure, replacing the 8-bit soft
-  knee.
+- **HDR (#624):** scene-referred float light plus exposure and one
+  hue-preserving white-point curve inside the rig shaders (the air adds light
+  through its inverse), replacing the 8-bit soft knee; storage stays 8 bit.
 
 ## 8. Performance budget
 

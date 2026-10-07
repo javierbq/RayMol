@@ -51,11 +51,20 @@ constexpr NSUInteger kLightShadowConstantIndex = 2;
 constexpr NSUInteger kLightShadowTextureIndex = 7;
 constexpr NSUInteger kLightShadowSamplerIndex = 7;
 
+// HDR colour (#624): the MSL kLightHdr (kMaterialSrc), set on every
+// specialisation of a function that can reach the light_ helpers
+// (materialFragmentFunction, bezierTubeRigFunction, airFunction), true only
+// for the rig variants of an HDR frame.
+constexpr NSUInteger kLightHdrConstantIndex = 3;
+
 // The ray tracer's light rig (#613): kRTSrc's kRTLightRig and the composite's
 // LightRigU argument. The RT library has its own indices (kRTTrans is 0, and
 // buffers 0-12 are taken by the RT pass), so these are not the ones above.
 constexpr NSUInteger kRTLightRigConstantIndex = 1;
 constexpr NSUInteger kRTLightRigBufferIndex = 13;
+// kRTSrc's own kLightHdr (#624): set on every RT specialisation, as
+// kRTLightRig is.
+constexpr NSUInteger kRTLightHdrConstantIndex = 2;
 
 // The air pass (#618; kAirSrc): its own library and its own index space. The
 // air block (pymol::LightAirBlock, MSL LightAirU) and a copy of the rig block
@@ -468,9 +477,11 @@ void RendererMetal::rebuildDrawPipelines()
   [_sphereShadowPipeline release];     _sphereShadowPipeline = nil;
   [_spherePeelPipeline release];       _spherePeelPipeline = nil;
   [_bezierTubePipeline release];       _bezierTubePipeline = nil;
-  // The tube's light-rig pipeline (#613): lazy, rebuilt at the new sample
-  // count the next time a rig-on frame draws a tube.
-  [_bezierTubeRigPipeline release];    _bezierTubeRigPipeline = nil;
+  // The tube's light-rig pipelines (#613; both hdr variants, #624): lazy,
+  // rebuilt at the new sample count the next time a rig-on frame draws a tube.
+  for (int h = 0; h < 2; ++h) {
+    [_bezierTubeRigPipeline[h] release];  _bezierTubeRigPipeline[h] = nil;
+  }
   _bezierTubeRigTried = false;
   [_labelPipeline release];            _labelPipeline = nil;
   [_connectorPipeline release];        _connectorPipeline = nil;
@@ -593,9 +604,12 @@ RendererMetal::~RendererMetal()
   [_aoExemptMaskTex release];         [_aoMaskPipeline release];
   [_aoMaskDepthState release];
   [_vboLinePipeline release];         [_bezierTubePipeline release];
-  [_bezierTubeRigPipeline release];   // the tube's light-rig pipeline (#613)
-  [_airFullPipeline release];         [_airNoMaps release];  // the air (#618)
-  [_airMarchPipeline release];        [_airUpsamplePipeline release];
+  // the tube's light-rig pipelines (#613; both hdr variants, #624)
+  [_bezierTubeRigPipeline[0] release]; [_bezierTubeRigPipeline[1] release];
+  [_airNoMaps release];  // the air (#618); both hdr composites (#624)
+  [_airFullPipeline[0] release];      [_airFullPipeline[1] release];
+  [_airUpsamplePipeline[0] release];  [_airUpsamplePipeline[1] release];
+  [_airMarchPipeline release];
   [_airTerm release];
   [_blitPipeline release];            [_ssaoPipeline release];
   [_fxaaPipeline release];            [_outlinePipeline release];
@@ -604,7 +618,10 @@ RendererMetal::~RendererMetal()
   [_exportAlphaPipeline release];
   [_rtAOPipeline release];            [_rtResolvePipeline release];
   [_rtAOPipelineT release];           [_rtResolvePipelineT release];
-  [_rtResolvePipelineRig release];    [_rtResolvePipelineTRig release];  // #613
+  // the rig composites (#613), [transparent][hdr] (#624)
+  for (int t = 0; t < 2; ++t)
+    for (int h = 0; h < 2; ++h)
+      [_rtResolvePipelineRig[t][h] release];
   [_rtLib release];
   releaseRayTracingTransAS();
   [_rtAOAccumPipeline release];       [_labelPipeline release];
@@ -1129,6 +1146,8 @@ void RendererMetal::beginFrame()
   // The light rig (#613) is per frame: SceneRenderMetal sets it again before
   // any draw, so a frame that never reaches it draws without the rig.
   _lightRigOn = false;
+  // So is its HDR colour (#624), derived from it by setLightRig.
+  _lightHdrOn = false;
   // So are its studio shadow maps (#616): no frame reads another's.
   _lightShadowMapsReady = false;
   _lightStudioShadows = false;
@@ -2127,9 +2146,11 @@ fragment float4 post_ao_accum(PostVOut in [[stage_in]],
 // beams and shadowed by every shadowed light. Its own library, compiled as
 // kEyeReconSrc + kMaterialSrc + kAirSrc (RendererMetal::ensureAirPipelines) on
 // the first frame that draws air, so it calls the shared helpers (post_eye_pos,
-// post_linear_depth, LightRigU, light_shadow_lookup, light_finish, mat_hash,
-// mat_noise) and carries no copy of them. It declares no function constant
-// and every function in it is a post_air_ one.
+// post_linear_depth, LightRigU, light_shadow_lookup, light_tone,
+// light_tone_inverse, mat_soft_knee, mat_hash, mat_noise) and carries no copy
+// of them. It declares no function constant (its composite reads kMaterialSrc's
+// kLightHdr, #624, so airFunction sets it) and every function in it is a
+// post_air_ one.
 static NSString* const kAirSrc = @R"(
 // The air block. Mirrors pymol::LightAirBlock (layer1/LightAirBlock.h):
 // change them together.
@@ -2396,14 +2417,27 @@ static float4 post_air_term(float2 uv, float2 frag, float d,
   return float4(max(add, float3(0.0)), zHi);
 }
 
-// The composite: the air only ADDS light. The colour through the rig's knee
-// with the air, minus the colour through it without, never negative, added to
-// the colour as it was. With no air (a = 0) that is c exactly, so a pixel the
-// air does not reach round-trips the 8-bit target unchanged, white included;
-// a bright pixel takes little extra and nothing is dimmed. light_finish is
-// the rig's only knee, so #624's HDR replaces this with it.
-static float3 post_air_finish(float3 c, float3 a) {
-  return c + max(light_finish(c + a) - light_finish(c), float3(0.0));
+// The composite: the air only ADDS light. Under kLightHdr (#624) it adds in
+// scene units: the colour back through T's inverse, plus the air at the
+// frame's exposure `e` (tone.x), through T again, and never under the colour
+// in any channel. T scales a colour by its largest channel, so coloured air
+// over a bright pixel would otherwise LOWER the others (white under red haze
+// lost green and blue: #618's guard that the air never dims a pixel); with
+// the max, white stays white, a pixel the air misses round-trips within one
+// 8-bit level (exactly at or below the knee), and the air rolls off with the
+// light instead of saturating. A non-finite air term adds nothing (the NaN
+// rule). Otherwise the rig's 8-bit knee as before #624:
+// the colour through mat_soft_knee with the air, minus the colour through it
+// without, never negative, added to the colour as it was. With no air (a = 0)
+// that is c exactly, so a pixel the air does not reach round-trips the 8-bit
+// target unchanged, white included; a bright pixel takes little extra and
+// nothing is dimmed.
+static float3 post_air_finish(float3 c, float3 a, float e) {
+  if (kLightHdr) {
+    const float3 add = all(isfinite(a)) ? max(a, float3(0.0)) * e : float3(0.0);
+    return max(saturate(c), light_tone(light_tone_inverse(saturate(c)) + add));
+  }
+  return c + max(mat_soft_knee(c + a) - mat_soft_knee(c), float3(0.0));
 }
 
 // The air at full resolution: colour and depth read at this pixel (never
@@ -2419,7 +2453,7 @@ fragment float4 post_air_full(AirVOut in [[stage_in]],
   const float4 c = colorTex.read(px);
   const float d = depthTex.read(px);
   const float4 t = post_air_term(in.uv, in.position.xy, d, air, rig, maps, smp);
-  return float4(post_air_finish(c.rgb, t.rgb), c.a);
+  return float4(post_air_finish(c.rgb, t.rgb, rig.tone.x), c.a);
 }
 
 // Half resolution (metal_light_air_resolution 2, the default on both) is two
@@ -2482,7 +2516,8 @@ fragment float4 post_air_upsample(AirVOut in [[stage_in]],
     texture2d<float> colorTex [[texture(0)]],
     depth2d<float> depthTex [[texture(1)]],
     texture2d<float> termTex [[texture(3)]],
-    constant LightAirU& air [[buffer(0)]]) {
+    constant LightAirU& air [[buffer(0)]],
+    constant LightRigU& rig [[buffer(1)]]) {
   const uint2 px = uint2(in.position.xy);
   const float4 c = colorTex.read(px);
   const float z = post_air_stop(depthTex.read(px), air);
@@ -2510,7 +2545,7 @@ fragment float4 post_air_upsample(AirVOut in [[stage_in]],
     }
   }
   const float3 a = wsum > 1e-4 ? sum / wsum : nearest;
-  return float4(post_air_finish(c.rgb, a), c.a);
+  return float4(post_air_finish(c.rgb, a, rig.tone.x), c.a);
 }
 )";
 
@@ -2909,6 +2944,10 @@ void RendererMetal::setLightRig(const LightRigBlock* rig)
   _lightRigOn = rig && rig->head[0] >= 1.0f;
   if (_lightRigOn)
     _lightRigBlock = *rig;
+  // HDR colour (#624): the block's tone[1] (SceneLightsToneFill, from
+  // metal_light_hdr) is 1 for an HDR frame and 0 at the 8-bit knee. Read
+  // only with the rig on.
+  _lightHdrOn = _lightRigOn && rig->tone[1] > 0.5f;
 }
 
 void RendererMetal::setLightClassicScale(float scale)
@@ -3157,6 +3196,14 @@ constant bool kRTTrans [[function_constant(0)]];
 // #615's light_response needs MaterialU, which this library has no copy of.
 constant bool kRTLightRig [[function_constant(1)]];
 
+// HDR colour (#624): kMaterialSrc's kLightHdr, under the same name so the
+// copies of the tone helpers and light_finish below stay verbatim, at this
+// library's own index. Set on every RT specialisation as kRTLightRig is:
+// false on every classic pipeline (buildRTPipelines), and on the rig
+// composite of a frame without HDR, so a reflection hit then takes the knee
+// as before #624.
+constant bool kLightHdr [[function_constant(2)]];
+
 struct LightRigLight {
   float4 pos;       // xyz eye-space position (A); w shadow slot (#616)
   float4 axis;      // xyz unit beam direction; w cos(outer cone)
@@ -3173,6 +3220,7 @@ struct LightRigU {
   LightRigShadow S[3];  // read by no RT function (#616: hits stay unshadowed)
   float4 shadowGrid;
   float4 shadowTile;
+  float4 tone;          // exposure, 1 = HDR, 0, 0 (#624)
 };
 struct LightResponse {
   float diffuse;
@@ -3244,7 +3292,48 @@ __attribute__((unused)) static float3 mat_soft_knee(float3 c) {
   return min(c, float3(knee)) + over / (float3(1.0) + over) * (1.0 - knee);
 }
 
-__attribute__((unused)) static float3 light_finish(float3 c) {
+constant float kLightToneKnee = 0.55;
+constant float kLightToneWhite = 10.0;
+
+__attribute__((unused)) static float light_tone_scalar(float m) {
+  m = (isfinite(m) && m > 0.0) ? m : 0.0;
+  if (m <= kLightToneKnee) return m;
+  if (m >= kLightToneWhite) return 1.0;
+  const float s = 1.0 - kLightToneKnee;
+  const float w = (kLightToneWhite - kLightToneKnee) / s;
+  const float t = (m - kLightToneKnee) / s;
+  return kLightToneKnee + s * t * (1.0 + t / (w * w)) / (1.0 + t);
+}
+
+__attribute__((unused)) static float light_tone_scalar_inverse(float y) {
+  y = (isfinite(y) && y > 0.0) ? y : 0.0;
+  if (y <= kLightToneKnee) return y;
+  if (y >= 1.0) return kLightToneWhite;
+  const float s = 1.0 - kLightToneKnee;
+  const float w = (kLightToneWhite - kLightToneKnee) / s;
+  const float u = (y - kLightToneKnee) / s;
+  const float t = 2.0 * u / ((1.0 - u) + sqrt((1.0 - u) * (1.0 - u) + 4.0 * u / (w * w)));
+  return kLightToneKnee + s * t;
+}
+
+__attribute__((unused)) static float3 light_tone(float3 c) {
+  if (!all(isfinite(c))) return float3(0.0);
+  c = max(c, float3(0.0));
+  const float m = max(c.r, max(c.g, c.b));
+  if (m <= kLightToneKnee) return c;
+  return c * light_tone_scalar(m) / m;
+}
+
+__attribute__((unused)) static float3 light_tone_inverse(float3 c) {
+  if (!all(isfinite(c))) return float3(0.0);
+  c = clamp(c, float3(0.0), float3(1.0));
+  const float m = max(c.r, max(c.g, c.b));
+  if (m <= kLightToneKnee) return c;
+  return c * light_tone_scalar_inverse(m) / m;
+}
+
+__attribute__((unused)) static float3 light_finish(float3 c, float exposure) {
+  if (kLightHdr) return light_tone(c * exposure);
   return mat_soft_knee(c);
 }
 
@@ -3254,7 +3343,8 @@ __attribute__((unused)) static float3 light_finish(float3 c) {
 // The rig is in eye space: the inverse modelview is a rotation plus a
 // translation, so model -> eye is its transposed rotation (as Re is below).
 // The view vector is the way the ray came, -R, as for the classic highlight
-// of a hit. Called only under `if (kRTLightRig)`.
+// of a hit. Called only under `if (kRTLightRig)`. Through light_finish at the
+// frame's exposure, as every raster rig path is (#624: T under kLightHdr).
 static float3 rt_rig_hit(constant LightRigU& rig, constant RTU& u,
     float3 shaded, float3 base, float3 pModel, float3 nModel, float3 R) {
   const float3x3 toEye = transpose(float3x3(u.invModelview[0].xyz,
@@ -3265,7 +3355,7 @@ static float3 rt_rig_hit(constant LightRigU& rig, constant RTU& u,
   const float3 V = -normalize(toEye * R);
   const LightTerms t = light_terms_view(rig, base, nEye, pEye, V,
                                         light_response_neutral());
-  return light_finish(shaded + base * t.diffuse + t.specular);
+  return light_finish(shaded + base * t.diffuse + t.specular, rig.tone.x);
 }
 
 // Transmittance along a ray through the transparent structure: the product of
@@ -4727,7 +4817,7 @@ void RendererMetal::ensureRayTracingAS()
 // The RT pass pipelines, specialised on kRTTrans (function constant 0). The
 // light rig's constant (kRTLightRig) is always set, false: these are the
 // pipelines every frame without a rig runs. Its variants come from
-// buildRTRigComposite.
+// buildRTRigComposite. So is HDR's (#624, kLightHdr), always false here.
 void RendererMetal::buildRTPipelines(bool transparent,
     id<MTLRenderPipelineState>* ao, id<MTLRenderPipelineState>* composite)
 {
@@ -4737,6 +4827,8 @@ void RendererMetal::buildRTPipelines(bool transparent,
   [fc setConstantValue:&t type:MTLDataTypeBool atIndex:0];
   bool rig = false;
   [fc setConstantValue:&rig type:MTLDataTypeBool atIndex:kRTLightRigConstantIndex];
+  bool hdr = false;
+  [fc setConstantValue:&hdr type:MTLDataTypeBool atIndex:kRTLightHdrConstantIndex];
   id<MTLFunction> vtx = [_rtLib newFunctionWithName:@"rt_vertex"];
   id<MTLFunction> fao = [_rtLib newFunctionWithName:@"rt_ao" constantValues:fc error:&err];
   id<MTLFunction> fco = fao ? [_rtLib newFunctionWithName:@"rt_composite" constantValues:fc error:&err] : nil;
@@ -4767,9 +4859,13 @@ void RendererMetal::buildRTPipelines(bool transparent,
 
 // The light rig's composite (#613): rt_composite specialised with kRTLightRig
 // true (and kRTTrans as asked), with the default composite's descriptor. The
-// AO pass never sees the rig, so it has no variant. Returns +1, or nil after
-// logging; the caller tries once and draws the classic composite otherwise.
-id<MTLRenderPipelineState> RendererMetal::buildRTRigComposite(bool transparent)
+// AO pass never sees the rig, so it has no variant. HDR's constant (#624,
+// kLightHdr) as asked: true for an HDR frame (a traced hit goes through the
+// tone curve at the frame's exposure), false for the 8-bit knee as before
+// #624. Both come from the retained _rtLib, so neither compiles the library
+// again. Returns +1, or nil after logging; the caller tries each once and
+// draws the classic composite otherwise.
+id<MTLRenderPipelineState> RendererMetal::buildRTRigComposite(bool transparent, bool hdr)
 {
   if (!_rtLib)
     return nil;
@@ -4779,6 +4875,8 @@ id<MTLRenderPipelineState> RendererMetal::buildRTRigComposite(bool transparent)
   [fc setConstantValue:&t type:MTLDataTypeBool atIndex:0];
   bool rig = true;
   [fc setConstantValue:&rig type:MTLDataTypeBool atIndex:kRTLightRigConstantIndex];
+  bool h = hdr;
+  [fc setConstantValue:&h type:MTLDataTypeBool atIndex:kRTLightHdrConstantIndex];
   id<MTLFunction> vtx = [_rtLib newFunctionWithName:@"rt_vertex"];
   id<MTLFunction> fco = [_rtLib newFunctionWithName:@"rt_composite" constantValues:fc error:&err];
   [fc release];
@@ -4792,8 +4890,8 @@ id<MTLRenderPipelineState> RendererMetal::buildRTRigComposite(bool transparent)
     [pd release];
   }
   if (!pipeline)
-    NSLog(@"RendererMetal RT: light-rig %s composite failed: %@",
-          transparent ? "transparent" : "default", err);
+    NSLog(@"RendererMetal RT: light-rig %s%s composite failed: %@",
+          transparent ? "transparent" : "default", hdr ? " HDR" : "", err);
   [vtx release]; [fco release];
   return pipeline;
 }
@@ -5034,17 +5132,19 @@ void RendererMetal::runPostChain()
     // The light rig on the reflection hits (#613): its composite only while a
     // rig is on AND something reflects (the rig code lives in the reflection
     // block, which matCount 0 skips). Otherwise, or if the variant cannot be
-    // built, today's composite.
+    // built, today's composite. The variant follows the frame: transparent or
+    // not, and HDR colour or the knee (#624, _lightHdrOn).
     id<MTLRenderPipelineState> composite =
         doRTTrans ? _rtResolvePipelineT : _rtResolvePipeline;
     bool rtRig = false;
     if (_lightRigOn && u.matCount > 0.5f) {
-      id<MTLRenderPipelineState>* rigComposite =
-          doRTTrans ? &_rtResolvePipelineTRig : &_rtResolvePipelineRig;
-      bool* tried = doRTTrans ? &_rtRigTTried : &_rtRigTried;
+      const int rigT = doRTTrans ? 1 : 0;
+      const int rigH = _lightHdrOn ? 1 : 0;
+      id<MTLRenderPipelineState>* rigComposite = &_rtResolvePipelineRig[rigT][rigH];
+      bool* tried = &_rtRigTried[rigT][rigH];
       if (!*rigComposite && !*tried) {
         *tried = true;
-        *rigComposite = buildRTRigComposite(doRTTrans);
+        *rigComposite = buildRTRigComposite(doRTTrans, _lightHdrOn);
       }
       if (*rigComposite) {
         composite = *rigComposite;
@@ -5414,11 +5514,16 @@ void RendererMetal::runPostChain()
   // ahead of the !_offscreen block so the offscreen PNG capture (which reads
   // sceneSrc directly) is processed identically to the live view. Exposure is
   // independent of the tone-map toggle, so the pass also runs when exposure != 1.
-  bool exposureActive = (_exposure < 0.999f || _exposure > 1.001f);
+  // HDR colour (#624): in an HDR rig frame the rig shaders apply the exposure
+  // in scene units (the block's tone.x), so this pass exposes at 1 (ACES
+  // only, when metal_tonemap is on). Without a rig, or at the 8-bit knee,
+  // postExposure is metal_exposure, as before #624.
+  const float postExposure = _lightHdrOn ? 1.0f : _exposure;
+  bool exposureActive = (postExposure < 0.999f || postExposure > 1.001f);
   if ((_tonemapEnabled || exposureActive) && _tonemapPipeline) {
     id<MTLTexture> dst = (sceneSrc == _sceneColor) ? _postColor : _sceneColor;
     struct { float exposure; float tonemap; float _p0, _p1; } u;
-    u.exposure = _exposure;
+    u.exposure = postExposure;
     u.tonemap = _tonemapEnabled ? 1.0f : 0.0f;
     u._p0 = u._p1 = 0.0f;
     MTLRenderPassDescriptor* pd = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -7934,8 +8039,8 @@ struct LightRigShadow {
                      // (texels), w depth bias (window z)
 };
 
-// The whole rig, 672 bytes: #613's 400 (head and lights), then #616's shadow
-// maps. Mirrors pymol::LightRigBlock.
+// The whole rig, 688 bytes: #613's 400 (head and lights), then #616's shadow
+// maps, then #624's tone. Mirrors pymol::LightRigBlock.
 struct LightRigU {
   float4 head;      // x light count, y shininess, z 1 = this draw is
                     // orthographic, w shadow maps this frame (#616)
@@ -7944,6 +8049,8 @@ struct LightRigU {
   float4 shadowGrid;    // tiles per side (1 = no grid), first grid slot,
                         // columns, rows (#616)
   float4 shadowTile;    // this draw's tile in slice uv: u0, v0, du, dv (#616)
+  float4 tone;          // x exposure (scene units), y 1 = HDR else 0 (the
+                        // 8-bit soft knee), z and w 0 (#624)
 };
 
 // How a material takes the rig's light: diffuse and highlight strength, the
@@ -8068,11 +8175,88 @@ __attribute__((unused)) static LightTerms light_terms(constant LightRigU& rig,
   return light_terms_view(rig, base, nEye, pEye, V, r);
 }
 
-// The ONLY knee on the rig path: mat_soft_knee (#494), so several bright
-// lights compress toward white instead of clipping flat. #624 replaces it
-// with HDR. (Clear and frosted glass knee their body in mat_glass_cover
-// instead, which #624 replaces too.)
-__attribute__((unused)) static float3 light_finish(float3 c) {
+// --- HDR colour (#624) ---------------------------------------------------------
+// While the rig is on with HDR (metal_light_hdr, carried in tone.y), a rig
+// fragment keeps its light in scene units (above 1 where the rig is bright),
+// multiplies it by the exposure (tone.x, metal_exposure) and maps it ONCE
+// through the tone curve T below before the 8-bit store. Specialised per
+// PIPELINE, as kLightRig and kLightShadow are: true only on the rig variants
+// of an HDR frame. False (every classic pipeline, and every rig pipeline at
+// metal_light_hdr 2) leaves each two-arm helper below with its #613 statement,
+// so the knee fallback compiles to what it was. Every specialiser that can
+// reach these helpers sets it: RendererMetal::materialFragmentFunction,
+// bezierTubeRigFunction and airFunction (kRTSrc has its own copy, at its own
+// index). It is the ONLY function constant the light_ helpers read.
+constant bool kLightHdr [[function_constant(3)]];
+
+// T's knee k and white point W (pymol::kLightToneKnee, kLightToneWhite in
+// layer1/LightTone.h, which mirrors these functions operation for operation;
+// lighting_hdr_msl.py pins them equal).
+constant float kLightToneKnee = 0.55;
+constant float kLightToneWhite = 10.0;
+
+// T1(m): the identity up to the knee, then an extended-Reinhard shoulder, C1
+// at the knee (slope 1), exactly 1 at the white point and 1 beyond. With
+// s = 1 - k, w = (W - k) / s and t = (m - k) / s:
+// T1 = k + s t (1 + t / w^2) / (1 + t). Non-finite and negative input reads
+// as 0 (the NaN rule: a NaN would not stay local under OIT).
+__attribute__((unused)) static float light_tone_scalar(float m) {
+  m = (isfinite(m) && m > 0.0) ? m : 0.0;
+  if (m <= kLightToneKnee) return m;
+  if (m >= kLightToneWhite) return 1.0;
+  const float s = 1.0 - kLightToneKnee;
+  const float w = (kLightToneWhite - kLightToneKnee) / s;
+  const float t = (m - kLightToneKnee) / s;
+  return kLightToneKnee + s * t * (1.0 + t / (w * w)) / (1.0 + t);
+}
+
+// T1's inverse on 0..1, closed form and rationalised so it stays stable near
+// the knee: u = (y - k) / s, t = 2u / ((1 - u) + sqrt((1 - u)^2 + 4u / w^2)).
+// The identity to the knee, W at 1 (and above). NaN rule as above.
+__attribute__((unused)) static float light_tone_scalar_inverse(float y) {
+  y = (isfinite(y) && y > 0.0) ? y : 0.0;
+  if (y <= kLightToneKnee) return y;
+  if (y >= 1.0) return kLightToneWhite;
+  const float s = 1.0 - kLightToneKnee;
+  const float w = (kLightToneWhite - kLightToneKnee) / s;
+  const float u = (y - kLightToneKnee) / s;
+  const float t = 2.0 * u / ((1.0 - u) + sqrt((1.0 - u) * (1.0 - u) + 4.0 * u / (w * w)));
+  return kLightToneKnee + s * t;
+}
+
+// T(c), hue-preserving: the largest channel goes through T1 and the others
+// follow it (c * T1(m) / m), so a coloured light keeps its hue and chroma
+// however bright it is, where a per-channel curve whitens it. Exactly the
+// identity at or below the knee; every channel at most 1, the largest
+// exactly 1 at or beyond W. A colour with any non-finite channel is black;
+// negative channels read as 0.
+__attribute__((unused)) static float3 light_tone(float3 c) {
+  if (!all(isfinite(c))) return float3(0.0);
+  c = max(c, float3(0.0));
+  const float m = max(c.r, max(c.g, c.b));
+  if (m <= kLightToneKnee) return c;
+  return c * light_tone_scalar(m) / m;
+}
+
+// T's inverse on a display colour (clipped to 0..1 first): the air adds its
+// light in scene units over a colour already through T. Tinv(1) = W, so
+// white stays white. NaN rule as light_tone.
+__attribute__((unused)) static float3 light_tone_inverse(float3 c) {
+  if (!all(isfinite(c))) return float3(0.0);
+  c = clamp(c, float3(0.0), float3(1.0));
+  const float m = max(c.r, max(c.g, c.b));
+  if (m <= kLightToneKnee) return c;
+  return c * light_tone_scalar_inverse(m) / m;
+}
+
+// The rig path's one seam: a rig fragment's whole colour (decision 15's
+// scaled classic terms plus the rig) goes through here once. Under kLightHdr,
+// the exposure in scene units and T (HDR, #624); otherwise mat_soft_knee
+// (#494), the 8-bit soft knee the rig had before #624, so several bright
+// lights compress toward white instead of clipping flat. (Clear and frosted
+// glass take light_glass_cover instead, or mat_glass_cover's knee.)
+__attribute__((unused)) static float3 light_finish(float3 c, float exposure) {
+  if (kLightHdr) return light_tone(c * exposure);
   return mat_soft_knee(c);
 }
 
@@ -8120,19 +8304,43 @@ __attribute__((unused)) static float3 light_outline(float3 rgb, float3 pEye,
 }
 
 // The rig added to an already-shaded colour `rgb`: the lights' diffuse on the
-// base colour plus their highlights, through the knee, then the outlines.
+// base colour plus their highlights, through light_finish at the frame's
+// exposure (tone.x), then the outlines (painted after T, in display space).
 __attribute__((unused)) static float3 light_apply(float3 rgb, float3 base,
     float3 nEye, float3 pEye, constant LightRigU& rig, LightResponse r) {
   const LightTerms t = light_terms(rig, base, nEye, pEye, r);
-  return light_outline(light_finish(rgb + base * t.diffuse + t.specular),
+  return light_outline(light_finish(rgb + base * t.diffuse + t.specular,
+                                    rig.tone.x),
                        pEye, rig);
 }
 
-// Glass's glints from the rig: its specular through the same soft saturation
-// as the classic glints, 1 - exp(-2 s) (mat_glass_shade), per channel. The
-// caller scales it by the Reflection knob as mat_glass_shade does.
+// Glass's glints from the rig. Under kLightHdr (#624) they stay linear in
+// scene units, 2 s: the slope of the knee arm's curve at 0, so a faint glint
+// keeps its strength and T rolls the peaks off where the colour is composed
+// (light_glass_cover). Otherwise the same soft saturation as the classic
+// glints, 1 - exp(-2 s) (mat_glass_shade), per channel. The caller scales it
+// by the Reflection knob as mat_glass_shade does.
 __attribute__((unused)) static float3 light_glass_glints(float3 s) {
+  if (kLightHdr) return 2.0 * s;
   return float3(1.0) - exp(-2.0 * s);
+}
+
+// mat_glass_cover for the rig under kLightHdr (#624): ONE coverage per
+// fragment, the glints buying it as there, but the colour composed in scene
+// units and mapped through T once, at the exposure e, so bright glints over a
+// lit body roll off together instead of each being squeezed and the sum
+// clipping. The straight colour is at most 1 by construction (no saturate);
+// at e = 1 it is mat_glass_cover's wherever the body, the glints and the
+// composed colour all stay at or below the knee (the same operations, in the
+// same order, on T's identity branch). Callers choose it only under
+// `kLightRig && kLightHdr` and mat_glass_cover otherwise. The divide is by at
+// least 1e-4, and T zeroes anything non-finite (the NaN rule).
+__attribute__((unused)) static float4 light_glass_cover(float3 body, float3 hi,
+    float a, float e) {
+  const float h = light_tone_scalar(e * max(hi.r, max(hi.g, hi.b)));
+  const float cover = saturate(a + (1.0 - a) * h);
+  const float3 S = (body * a + hi) / max(cover, 1e-4);
+  return float4(light_tone(e * S), cover);
 }
 
 // --- Studio shadow maps (#616) -------------------------------------------------
@@ -8144,7 +8352,8 @@ __attribute__((unused)) static float3 light_glass_glints(float3 s) {
 // so the classic and #613 rig specialisations (kLightShadow false) compile to
 // what they were. RendererMetal::materialFragmentFunction always sets it.
 //
-// The helpers below read no function constant, as the light_ helpers above.
+// The helpers below read no function constant but kLightHdr, through
+// light_finish, as the light_ helpers above (#624).
 // The _shadowed functions are #613's light_terms_view, light_terms and
 // light_apply with (maps, smp) after `rig` and light_visibility replaced by
 // light_visibility_shadowed, and nothing else (lighting_shadow_msl.py strips
@@ -8253,7 +8462,8 @@ __attribute__((unused)) static float3 light_apply_shadowed(float3 rgb,
     float3 base, float3 nEye, float3 pEye, constant LightRigU& rig,
     depth2d_array<float> maps, sampler smp, LightResponse r) {
   const LightTerms t = light_terms_shadowed(rig, maps, smp, base, nEye, pEye, r);
-  return light_outline(light_finish(rgb + base * t.diffuse + t.specular),
+  return light_outline(light_finish(rgb + base * t.diffuse + t.specular,
+                                    rig.tone.x),
                        pEye, rig);
 }
 
@@ -8724,7 +8934,12 @@ fragment OITFragOut vbo_fragment_oit(VBOVertexOut in [[stage_in]],
       hi += light_glass_glints(rigLight.specular) *
             (kMatGlassReflection * saturate(mat.p[0]));
     }
-    c = mat_glass_cover(body, hi, in.color.a);
+    // HDR (#624): body and glints composed in scene units, one tone curve at
+    // the frame's exposure; mat_glass_cover's knee otherwise, as before.
+    if (kLightRig && kLightHdr)
+      c = light_glass_cover(body, hi, in.color.a, rig.tone.x);
+    else
+      c = mat_glass_cover(body, hi, in.color.a);
     if (kLightRig) c.rgb = light_outline(c.rgb, in.posEye, rig);
     // The far wall is not recorded. Flipped to face the viewer, its slope is
     // the exact opposite of the near wall's, and averaged with it the bend
@@ -8836,9 +9051,15 @@ fragment float4 line_aa_fragment(LineAAOut in [[stage_in]],
 // shadow variants of the rig pipelines. False (every classic and #613 rig
 // caller) removes the map arguments and every shadow statement, leaving
 // #613's statements.
+//
+// `lightHdr` is HDR colour's constant (#624, kLightHdr), set on EVERY
+// specialisation too, to `lightRig && lightHdr`: true only for the rig
+// variants of an HDR frame. False (every classic caller, and every rig
+// caller at metal_light_hdr 2) leaves the light_ helpers with their 8-bit
+// knee, as before #624.
 id<MTLFunction> RendererMetal::materialFragmentFunction(
     id<MTLLibrary> lib, NSString* name, int family, bool lightRig,
-    bool lightShadow)
+    bool lightShadow, bool lightHdr)
 {
   if (!lib || !MaterialFamilyIsImplemented(family)) {
     return nil;
@@ -8850,6 +9071,8 @@ id<MTLFunction> RendererMetal::materialFragmentFunction(
   [cv setConstantValue:&rig type:MTLDataTypeBool atIndex:kLightRigConstantIndex];
   bool shadow = lightRig && lightShadow;
   [cv setConstantValue:&shadow type:MTLDataTypeBool atIndex:kLightShadowConstantIndex];
+  bool hdr = lightRig && lightHdr;
+  [cv setConstantValue:&hdr type:MTLDataTypeBool atIndex:kLightHdrConstantIndex];
   NSError* err = nil;
   id<MTLFunction> fn = [lib newFunctionWithName:name constantValues:cv error:&err];
   [cv release];   // MRC: MTLFunctionConstantValues alloc/init is +1
@@ -8868,18 +9091,22 @@ id<MTLFunction> RendererMetal::materialFragmentFunction(
 // rig-on frame needs it, so a session without lights never compiles one.
 // One attempt per family: a failed specialisation is not retried every draw.
 // Borrowed; released with the library in buildVBOPipelines and the dtor.
-id<MTLFunction> RendererMetal::vboRigFragmentFunction(int family, bool oit)
+// `hdr` (#624) asks for HDR colour's variant (kLightHdr true), kept and
+// tried apart from the 8-bit knee's.
+id<MTLFunction> RendererMetal::vboRigFragmentFunction(int family, bool oit,
+                                                      bool hdr)
 {
   if (family < 0 || family >= cMaterialFamily_count)
     family = cMaterialFamily_default;
+  const int h = hdr ? 1 : 0;
   id<MTLFunction>* slot =
-      oit ? &_vboFragmentOitRigFunc[family] : &_vboFragmentRigFunc[family];
-  bool& tried = _vboRigFuncTried[family][oit ? 1 : 0];
+      oit ? &_vboFragmentOitRigFunc[h][family] : &_vboFragmentRigFunc[h][family];
+  bool& tried = _vboRigFuncTried[h][family][oit ? 1 : 0];
   if (!*slot && !tried) {
     tried = true;
     *slot = materialFragmentFunction(
         _vboLibrary, oit ? @"vbo_fragment_oit" : @"vbo_fragment", family,
-        /*lightRig*/ true);
+        /*lightRig*/ true, /*lightShadow*/ false, /*lightHdr*/ hdr);
   }
   return *slot;
 }
@@ -8888,33 +9115,38 @@ id<MTLFunction> RendererMetal::vboRigFragmentFunction(int family, bool oit)
 // one material family (#616): kLightRig and kLightShadow both true. Lazy and
 // tried once per family exactly as vboRigFragmentFunction, so a session that
 // never shadows a light never compiles one. Borrowed; released with the rig
-// functions (releaseVBORigFunctions).
-id<MTLFunction> RendererMetal::vboRigShadowFragmentFunction(int family, bool oit)
+// functions (releaseVBORigFunctions). `hdr` as vboRigFragmentFunction (#624).
+id<MTLFunction> RendererMetal::vboRigShadowFragmentFunction(int family, bool oit,
+                                                            bool hdr)
 {
   if (family < 0 || family >= cMaterialFamily_count)
     family = cMaterialFamily_default;
-  id<MTLFunction>* slot = oit ? &_vboFragmentOitRigShadowFunc[family]
-                              : &_vboFragmentRigShadowFunc[family];
-  bool& tried = _vboRigShadowFuncTried[family][oit ? 1 : 0];
+  const int h = hdr ? 1 : 0;
+  id<MTLFunction>* slot = oit ? &_vboFragmentOitRigShadowFunc[h][family]
+                              : &_vboFragmentRigShadowFunc[h][family];
+  bool& tried = _vboRigShadowFuncTried[h][family][oit ? 1 : 0];
   if (!*slot && !tried) {
     tried = true;
     *slot = materialFragmentFunction(
         _vboLibrary, oit ? @"vbo_fragment_oit" : @"vbo_fragment", family,
-        /*lightRig*/ true, /*lightShadow*/ true);
+        /*lightRig*/ true, /*lightShadow*/ true, /*lightHdr*/ hdr);
   }
   return *slot;
 }
 
 void RendererMetal::releaseVBORigFunctions()
 {
-  for (int f = 0; f < cMaterialFamily_count; ++f) {
-    [_vboFragmentRigFunc[f] release];     _vboFragmentRigFunc[f] = nil;
-    [_vboFragmentOitRigFunc[f] release];  _vboFragmentOitRigFunc[f] = nil;
-    _vboRigFuncTried[f][0] = _vboRigFuncTried[f][1] = false;
-    // The studio shadow maps' variants (#616), from the same library.
-    [_vboFragmentRigShadowFunc[f] release];     _vboFragmentRigShadowFunc[f] = nil;
-    [_vboFragmentOitRigShadowFunc[f] release];  _vboFragmentOitRigShadowFunc[f] = nil;
-    _vboRigShadowFuncTried[f][0] = _vboRigShadowFuncTried[f][1] = false;
+  // Both hdr variants (#624): [0] the 8-bit knee, [1] HDR colour.
+  for (int h = 0; h < 2; ++h) {
+    for (int f = 0; f < cMaterialFamily_count; ++f) {
+      [_vboFragmentRigFunc[h][f] release];     _vboFragmentRigFunc[h][f] = nil;
+      [_vboFragmentOitRigFunc[h][f] release];  _vboFragmentOitRigFunc[h][f] = nil;
+      _vboRigFuncTried[h][f][0] = _vboRigFuncTried[h][f][1] = false;
+      // The studio shadow maps' variants (#616), from the same library.
+      [_vboFragmentRigShadowFunc[h][f] release];     _vboFragmentRigShadowFunc[h][f] = nil;
+      [_vboFragmentOitRigShadowFunc[h][f] release];  _vboFragmentOitRigShadowFunc[h][f] = nil;
+      _vboRigShadowFuncTried[h][f][0] = _vboRigShadowFuncTried[h][f][1] = false;
+    }
   }
 }
 
@@ -9459,15 +9691,17 @@ static void setOitRefractAttachment(
 }
 
 id<MTLRenderPipelineState> RendererMetal::oitPipelineForVD(
-    MTLVertexDescriptor* vd, int family, bool lightRig)
+    MTLVertexDescriptor* vd, int family, bool lightRig, bool lightHdr)
 {
   if (family < 0 || family >= cMaterialFamily_count) family = cMaterialFamily_default;
+  // HDR colour's variants (#624) are variants of the rig's.
+  lightHdr = lightHdr && lightRig;
   // The studio shadow maps' variant (#616), while this frame's maps are
   // ready (cachedVBOPipeline keys it apart under the same predicate); the
   // rig's own function if it cannot be specialised (logged once).
   id<MTLFunction> ffn = nil;
   if (lightRig && lightShadowsReady()) {
-    ffn = vboRigShadowFragmentFunction(family, true);
+    ffn = vboRigShadowFragmentFunction(family, true, lightHdr);
     if (!ffn && !_lightShadowWarned) {
       NSLog(@"RendererMetal: studio-shadow VBO OIT function failed; drawing the rig without its shadow maps");
       _lightShadowWarned = true;
@@ -9475,7 +9709,7 @@ id<MTLRenderPipelineState> RendererMetal::oitPipelineForVD(
   }
   // The light rig's variant (#613) differs only in its fragment function.
   if (!ffn)
-    ffn = lightRig ? vboRigFragmentFunction(family, true)
+    ffn = lightRig ? vboRigFragmentFunction(family, true, lightHdr)
                    : _vboFragmentOitFunc[family];
   if (!_vboVertexFunc || !ffn) return nil;
   MTLRenderPipelineDescriptor* p = [[MTLRenderPipelineDescriptor alloc] init];
@@ -9515,7 +9749,8 @@ id<MTLRenderPipelineState> RendererMetal::oitPipelineForVD(
 // +1 pipeline every frame (and paid full pipeline compilation each time).
 id<MTLRenderPipelineState> RendererMetal::cachedVBOPipeline(
     VBOPipelineVariant variant, size_t stride, int posOffset, int normalOffset,
-    int colorOffset, int colorType, MTLVertexDescriptor* vd, bool lightRig)
+    int colorOffset, int colorType, MTLVertexDescriptor* vd, bool lightRig,
+    bool lightHdr)
 {
   // Stable FNV-1a key over the layout + variant + sample count.
   uint64_t key = 1469598103934665603ULL;
@@ -9547,14 +9782,19 @@ id<MTLRenderPipelineState> RendererMetal::cachedVBOPipeline(
   // rig key is exactly what it was.
   const bool lightShadow = lightRig && lightShadowsReady();
   if (lightShadow) mix(0x4C53);
+  // HDR colour's variant of a rig pipeline (#624), in an HDR frame: mixed in
+  // only then, so every classic key and every rig key at the 8-bit knee is
+  // exactly what it was.
+  lightHdr = lightHdr && lightRig;
+  if (lightHdr) mix(0x4C48);
   auto it = _vboPipelineCache.find(key);
   if (it != _vboPipelineCache.end()) return it->second;  // borrowed (cache-owned)
 
   id<MTLRenderPipelineState> ps = nil;
   if (variant == VBOPipelineVariant::Oit) {
-    ps = oitPipelineForVD(vd, family, lightRig);   // +1
+    ps = oitPipelineForVD(vd, family, lightRig, lightHdr);   // +1
     if (!ps && family != cMaterialFamily_default)
-      ps = oitPipelineForVD(vd, cMaterialFamily_default, lightRig);   // draw default, not nothing
+      ps = oitPipelineForVD(vd, cMaterialFamily_default, lightRig, lightHdr);   // draw default, not nothing
   } else if (variant == VBOPipelineVariant::Shadow) {
     ps = shadowPipelineForVD(vd);    // +1
   } else if (variant == VBOPipelineVariant::Peel) {
@@ -9574,9 +9814,10 @@ id<MTLRenderPipelineState> RendererMetal::cachedVBOPipeline(
     // default family's, else the rig's own function below (logged once).
     id<MTLFunction> shadowFn = nil;
     if (variant == VBOPipelineVariant::Lit && lightShadow) {
-      shadowFn = vboRigShadowFragmentFunction(family, false);
+      shadowFn = vboRigShadowFragmentFunction(family, false, lightHdr);
       if (!shadowFn)
-        shadowFn = vboRigShadowFragmentFunction(cMaterialFamily_default, false);
+        shadowFn = vboRigShadowFragmentFunction(cMaterialFamily_default, false,
+                                                lightHdr);
       if (!shadowFn && !_lightShadowWarned) {
         NSLog(@"RendererMetal: studio-shadow VBO function failed; drawing the rig without its shadow maps");
         _lightShadowWarned = true;
@@ -9585,8 +9826,8 @@ id<MTLRenderPipelineState> RendererMetal::cachedVBOPipeline(
     if (shadowFn) {
       ffn = shadowFn;
     } else if (variant == VBOPipelineVariant::Lit && lightRig) {
-      ffn = vboRigFragmentFunction(family, false);
-      if (!ffn) ffn = vboRigFragmentFunction(cMaterialFamily_default, false);
+      ffn = vboRigFragmentFunction(family, false, lightHdr);
+      if (!ffn) ffn = vboRigFragmentFunction(cMaterialFamily_default, false, lightHdr);
     } else if (variant == VBOPipelineVariant::Lit) {
       ffn = _vboFragmentFunc[family] ? _vboFragmentFunc[family]
                                      : _vboFragmentFunc[cMaterialFamily_default];
@@ -9771,7 +10012,8 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
   if (_lightRigOn && !_shadowMode && !_peelMode && !unlit) {
     pipeline = cachedVBOPipeline(
         _oitActive ? VBOPipelineVariant::Oit : VBOPipelineVariant::Lit, stride,
-        posOffset, normalOffset, colorOffset, colorType, vd, /*lightRig*/ true);
+        posOffset, normalOffset, colorOffset, colorType, vd, /*lightRig*/ true,
+        /*lightHdr*/ _lightHdrOn);
     if (!pipeline && !_lightRigWarned) {
       NSLog(@"RendererMetal: light-rig VBO pipeline failed; drawing without the rig");
       _lightRigWarned = true;
@@ -10089,7 +10331,8 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
   if (_lightRigOn && !_shadowMode && !_peelMode && !unlit) {
     pipeline = cachedVBOPipeline(
         _oitActive ? VBOPipelineVariant::Oit : VBOPipelineVariant::Lit, stride,
-        posOffset, normalOffset, colorOffset, colorType, vd, /*lightRig*/ true);
+        posOffset, normalOffset, colorOffset, colorType, vd, /*lightRig*/ true,
+        /*lightHdr*/ _lightHdrOn);
     if (!pipeline && !_lightRigWarned) {
       NSLog(@"RendererMetal: light-rig VBO pipeline failed; drawing without the rig");
       _lightRigWarned = true;
@@ -10604,7 +10847,9 @@ fragment SphereFOut sphere_impostor_fragment(SphereVOut in [[stage_in]],
 // classic glint curve, scaled by the Reflection knob. This path folds its
 // glints into the colour (it has no mat_glass_cover), so the rig's are folded
 // the same way: mat_impostor_composite's glass branch is redone with the rig's
-// light inside it, then the outlines. Called only under `if (kLightRig)`.
+// light inside it, through the rig's seam (light_finish at the frame's
+// exposure: T under HDR, #624; mat_soft_knee, as before, otherwise), then the
+// outlines. Called only under `if (kLightRig)`.
 static float3 sphere_glass_rig(float3 rgb, float3 base, float3 n, float3 pt,
     constant SphereU& u, constant MaterialU& mat, texturecube<float> envMap,
     sampler envSmp, constant LightRigU& rig) {
@@ -10619,7 +10864,7 @@ static float3 sphere_glass_rig(float3 rgb, float3 base, float3 n, float3 pt,
   body += base * kMatGlassBaseAttenuation * rigLight.diffuse;
   hi += light_glass_glints(rigLight.specular) *
         (kMatGlassReflection * saturate(mat.p[0]));
-  return light_outline(mat_soft_knee(body + hi), pt, rig);
+  return light_outline(light_finish(body + hi, rig.tone.x), pt, rig);
 }
 
 // sphere_glass_rig with the studio shadow maps (#616): the maps after `rig`
@@ -10642,7 +10887,7 @@ static float3 sphere_glass_rig_shadowed(float3 rgb, float3 base, float3 n,
   body += base * kMatGlassBaseAttenuation * rigLight.diffuse;
   hi += light_glass_glints(rigLight.specular) *
         (kMatGlassReflection * saturate(mat.p[0]));
-  return light_outline(mat_soft_knee(body + hi), pt, rig);
+  return light_outline(light_finish(body + hi, rig.tone.x), pt, rig);
 }
 
 fragment SphereOITOut sphere_impostor_fragment_oit(SphereVOut in [[stage_in]],
@@ -10847,13 +11092,16 @@ void RendererMetal::buildImpostorPipelines()
   [vfn release];
 }
 
-void RendererMetal::ensureSphereRigPipelines()
+// `hdr` (#624) builds HDR colour's set (kLightHdr true) into [1], the 8-bit
+// knee's into [0]; each set is built, and tried, on its own.
+void RendererMetal::ensureSphereRigPipelines(bool hdr)
 {
-  if (_sphereRigBuilt) return;
+  const int h = hdr ? 1 : 0;
+  if (_sphereRigBuilt[h]) return;
   // One attempt per build: a failed specialisation is logged once by
   // materialFragmentFunction, and the draw falls back, rather than
   // recompiling every frame.
-  _sphereRigBuilt = true;
+  _sphereRigBuilt[h] = true;
   if (!_sphereLib || !_sphereOpaqueDesc || !_sphereOitDesc) return;
   // The classic builds' own descriptors, so a rig pipeline has the same
   // vertex function, vertex descriptor, blending, formats and sample count
@@ -10861,26 +11109,28 @@ void RendererMetal::ensureSphereRigPipelines()
   NSError* err = nil;
   for (int f = 0; f < cMaterialFamily_count; ++f) {
     id<MTLFunction> fn = materialFragmentFunction(
-        _sphereLib, @"sphere_impostor_fragment", f, /*lightRig*/ true);
+        _sphereLib, @"sphere_impostor_fragment", f, /*lightRig*/ true,
+        /*lightShadow*/ false, /*lightHdr*/ hdr);
     if (fn) {
       _sphereOpaqueDesc.fragmentFunction = fn;
-      _sphereRigPipeline[f] =
+      _sphereRigPipeline[h][f] =
           [_device newRenderPipelineStateWithDescriptor:_sphereOpaqueDesc error:&err];
       [fn release];   // MRC: the pipeline and the descriptor hold their own
-      if (!_sphereRigPipeline[f])
+      if (!_sphereRigPipeline[h][f])
         NSLog(@"RendererMetal: light-rig sphere pipeline failed (family %d): %@", f, err);
     }
     id<MTLFunction> ofn = materialFragmentFunction(
-        _sphereLib, @"sphere_impostor_fragment_oit", f, /*lightRig*/ true);
+        _sphereLib, @"sphere_impostor_fragment_oit", f, /*lightRig*/ true,
+        /*lightShadow*/ false, /*lightHdr*/ hdr);
     if (ofn) {
       _sphereOitDesc.fragmentFunction = ofn;
       // The same refraction-target rule as the classic OIT loop.
       setOitRefractAttachment(_sphereOitDesc.colorAttachments[2],
                               _oitRefractEnabled, f == cMaterialFamily_glass);
-      _sphereRigOitPipeline[f] =
+      _sphereRigOitPipeline[h][f] =
           [_device newRenderPipelineStateWithDescriptor:_sphereOitDesc error:&err];
       [ofn release];
-      if (!_sphereRigOitPipeline[f])
+      if (!_sphereRigOitPipeline[h][f])
         NSLog(@"RendererMetal: light-rig sphere OIT pipeline failed (family %d): %@", f, err);
     }
   }
@@ -10889,36 +11139,38 @@ void RendererMetal::ensureSphereRigPipelines()
 // The studio shadow maps' sphere pipelines (#616): ensureSphereRigPipelines
 // with kLightShadow true as well, from the same retained library and classic
 // descriptors. Built the first time a frame with maps draws spheres; one
-// attempt per build (_sphereRigShadowBuilt).
-void RendererMetal::ensureSphereRigShadowPipelines()
+// attempt per build (_sphereRigShadowBuilt). `hdr` as
+// ensureSphereRigPipelines (#624).
+void RendererMetal::ensureSphereRigShadowPipelines(bool hdr)
 {
-  if (_sphereRigShadowBuilt) return;
-  _sphereRigShadowBuilt = true;
+  const int h = hdr ? 1 : 0;
+  if (_sphereRigShadowBuilt[h]) return;
+  _sphereRigShadowBuilt[h] = true;
   if (!_sphereLib || !_sphereOpaqueDesc || !_sphereOitDesc) return;
   NSError* err = nil;
   for (int f = 0; f < cMaterialFamily_count; ++f) {
     id<MTLFunction> fn = materialFragmentFunction(
         _sphereLib, @"sphere_impostor_fragment", f, /*lightRig*/ true,
-        /*lightShadow*/ true);
+        /*lightShadow*/ true, /*lightHdr*/ hdr);
     if (fn) {
       _sphereOpaqueDesc.fragmentFunction = fn;
-      _sphereRigShadowPipeline[f] =
+      _sphereRigShadowPipeline[h][f] =
           [_device newRenderPipelineStateWithDescriptor:_sphereOpaqueDesc error:&err];
       [fn release];   // MRC: the pipeline and the descriptor hold their own
-      if (!_sphereRigShadowPipeline[f])
+      if (!_sphereRigShadowPipeline[h][f])
         NSLog(@"RendererMetal: studio-shadow sphere pipeline failed (family %d): %@", f, err);
     }
     id<MTLFunction> ofn = materialFragmentFunction(
         _sphereLib, @"sphere_impostor_fragment_oit", f, /*lightRig*/ true,
-        /*lightShadow*/ true);
+        /*lightShadow*/ true, /*lightHdr*/ hdr);
     if (ofn) {
       _sphereOitDesc.fragmentFunction = ofn;
       setOitRefractAttachment(_sphereOitDesc.colorAttachments[2],
                               _oitRefractEnabled, f == cMaterialFamily_glass);
-      _sphereRigShadowOitPipeline[f] =
+      _sphereRigShadowOitPipeline[h][f] =
           [_device newRenderPipelineStateWithDescriptor:_sphereOitDesc error:&err];
       [ofn release];
-      if (!_sphereRigShadowOitPipeline[f])
+      if (!_sphereRigShadowOitPipeline[h][f])
         NSLog(@"RendererMetal: studio-shadow sphere OIT pipeline failed (family %d): %@", f, err);
     }
   }
@@ -10926,15 +11178,18 @@ void RendererMetal::ensureSphereRigShadowPipelines()
 
 void RendererMetal::releaseSphereRigPipelines()
 {
-  for (int f = 0; f < cMaterialFamily_count; ++f) {
-    [_sphereRigPipeline[f] release];     _sphereRigPipeline[f] = nil;
-    [_sphereRigOitPipeline[f] release];  _sphereRigOitPipeline[f] = nil;
-    // The studio shadow maps' variants (#616), built from the same library.
-    [_sphereRigShadowPipeline[f] release];     _sphereRigShadowPipeline[f] = nil;
-    [_sphereRigShadowOitPipeline[f] release];  _sphereRigShadowOitPipeline[f] = nil;
+  // Both hdr variants (#624): [0] the 8-bit knee, [1] HDR colour.
+  for (int h = 0; h < 2; ++h) {
+    for (int f = 0; f < cMaterialFamily_count; ++f) {
+      [_sphereRigPipeline[h][f] release];     _sphereRigPipeline[h][f] = nil;
+      [_sphereRigOitPipeline[h][f] release];  _sphereRigOitPipeline[h][f] = nil;
+      // The studio shadow maps' variants (#616), built from the same library.
+      [_sphereRigShadowPipeline[h][f] release];     _sphereRigShadowPipeline[h][f] = nil;
+      [_sphereRigShadowOitPipeline[h][f] release];  _sphereRigShadowOitPipeline[h][f] = nil;
+    }
+    _sphereRigBuilt[h] = false;
+    _sphereRigShadowBuilt[h] = false;
   }
-  _sphereRigBuilt = false;
-  _sphereRigShadowBuilt = false;
 }
 
 void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
@@ -10963,11 +11218,13 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
   // variant of its family's pipeline, else the rig's `default` one, else
   // the classic pipeline chosen above (logged once). With the rig off
   // `rigPipeline` stays nil and the selection below is today's.
+  // HDR colour (#624): an HDR frame's set ([1]), else the 8-bit knee's.
+  const int sphereHdr = _lightHdrOn ? 1 : 0;
   id<MTLRenderPipelineState> rigPipeline = nil;
   if (_lightRigOn && !_shadowMode && !_peelMode) {
-    ensureSphereRigPipelines();
+    ensureSphereRigPipelines(_lightHdrOn);
     id<MTLRenderPipelineState>* rigSet =
-        _oitActive ? _sphereRigOitPipeline : _sphereRigPipeline;
+        _oitActive ? _sphereRigOitPipeline[sphereHdr] : _sphereRigPipeline[sphereHdr];
     rigPipeline = rigSet[sphereFam] ? rigSet[sphereFam]
                                     : rigSet[cMaterialFamily_default];
     if (!rigPipeline && !_lightRigWarned) {
@@ -10980,9 +11237,10 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
   // default family's); the rig pipeline itself if neither was built (logged
   // once).
   if (rigPipeline && lightShadowsReady()) {
-    ensureSphereRigShadowPipelines();
+    ensureSphereRigShadowPipelines(_lightHdrOn);
     id<MTLRenderPipelineState>* shadowSet =
-        _oitActive ? _sphereRigShadowOitPipeline : _sphereRigShadowPipeline;
+        _oitActive ? _sphereRigShadowOitPipeline[sphereHdr]
+                   : _sphereRigShadowPipeline[sphereHdr];
     id<MTLRenderPipelineState> shadowPipeline =
         shadowSet[sphereFam] ? shadowSet[sphereFam]
                              : shadowSet[cMaterialFamily_default];
@@ -11496,7 +11754,12 @@ fragment CylOITOut cyl_impostor_fragment_oit(CylVOut in [[stage_in]],
         hi += light_glass_glints(rigLight.specular) *
               (kMatGlassReflection * saturate(mat.p[0]));
       }
-      float4 g = mat_glass_cover(body, hi, a);
+      // HDR (#624): as on the VBO glass (vbo_fragment_oit).
+      float4 g;
+      if (kLightRig && kLightHdr)
+        g = light_glass_cover(body, hi, a, rig.tone.x);
+      else
+        g = mat_glass_cover(body, hi, a);
       rgb = g.rgb;
       if (kLightRig) rgb = light_outline(rgb, pt, rig);
       a = g.a;
@@ -11558,10 +11821,13 @@ fragment CylShadowOut cyl_impostor_fragment_shadow(CylVOut in [[stage_in]],
 )";
 
 void RendererMetal::buildCylinderImpostorPipeline(
-    const CylinderImpostorDrawCall& call, bool lightRig, bool lightShadow)
+    const CylinderImpostorDrawCall& call, bool lightRig, bool lightShadow,
+    bool lightHdr)
 {
   // The studio shadow maps' variant (#616) is a variant of the rig's.
   lightShadow = lightShadow && lightRig;
+  // So is HDR colour's (#624).
+  lightHdr = lightHdr && lightRig;
   // Cache per vertex layout. a_cap's offset is part of the descriptor, so a
   // stick VBO (per-vertex a_cap) and a CGO VBO (constant a_cap) need different
   // pipelines even at the same stride — and Move mode draws both every frame, so
@@ -11577,10 +11843,11 @@ void RendererMetal::buildCylinderImpostorPipeline(
   // pipeline here and is not recompiled on every later frame. The light rig's
   // variant (#613) is keyed apart, so the classic entry is today's; so is the
   // studio shadow maps' variant (#616), whose element is false for every
-  // classic and #613 rig entry.
+  // classic and #613 rig entry, and HDR colour's (#624), whose element is
+  // false for every classic entry and every rig entry at the 8-bit knee.
   const auto layout = std::make_tuple(
       static_cast<NSUInteger>(call.stride), call.capOff, cylFam, lightRig,
-      lightShadow);
+      lightShadow, lightHdr);
   {
     auto it = _cylinderPipelines.find(layout);
     if (it != _cylinderPipelines.end()) {
@@ -11613,14 +11880,14 @@ void RendererMetal::buildCylinderImpostorPipeline(
   // with an unset constant, and sticks would silently stop drawing.
   id<MTLFunction> ffn =
       materialFragmentFunction(lib, @"cyl_impostor_fragment", cylFam, lightRig,
-                               lightShadow);
+                               lightShadow, lightHdr);
   if (!ffn && cylFam != cMaterialFamily_default) {
     // Draw as `default` rather than not at all. Returning here would also leave
     // the layout UNCACHED, so the MSL library would be recompiled on every
     // frame that tried this material.
     cylFam = cMaterialFamily_default;
     ffn = materialFragmentFunction(lib, @"cyl_impostor_fragment", cylFam,
-                                   lightRig, lightShadow);
+                                   lightRig, lightShadow, lightHdr);
   }
   if (!vfn || !ffn) {
     NSLog(@"RendererMetal: cyl impostor funcs missing");
@@ -11678,11 +11945,12 @@ void RendererMetal::buildCylinderImpostorPipeline(
   // and transparent sticks disappeared permanently for that layout.
   int cylOitFam = cylFam;
   id<MTLFunction> offn = materialFragmentFunction(
-      lib, @"cyl_impostor_fragment_oit", cylOitFam, lightRig, lightShadow);
+      lib, @"cyl_impostor_fragment_oit", cylOitFam, lightRig, lightShadow,
+      lightHdr);
   if (!offn && cylOitFam != cMaterialFamily_default) {
     cylOitFam = cMaterialFamily_default;
     offn = materialFragmentFunction(lib, @"cyl_impostor_fragment_oit",
-                                    cylOitFam, lightRig, lightShadow);
+                                    cylOitFam, lightRig, lightShadow, lightHdr);
   }
   if (offn) {
     MTLRenderPipelineDescriptor* op = [[MTLRenderPipelineDescriptor alloc] init];
@@ -11798,9 +12066,11 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
   // The light rig (#613): while it is on, a colour draw takes the rig's
   // entry for this layout and family; if that could not be built, the
   // classic one (logged once). Shadow and peel always take the classic entry.
-  // With the rig off this is today's call.
+  // With the rig off this is today's call. HDR colour (#624): an HDR frame's
+  // rig entries are its own (cylHdr), the 8-bit knee's otherwise.
   const bool cylRig = _lightRigOn && !_shadowMode && !_peelMode;
-  buildCylinderImpostorPipeline(call, cylRig);
+  const bool cylHdr = cylRig && _lightHdrOn;
+  buildCylinderImpostorPipeline(call, cylRig, /*lightShadow*/ false, cylHdr);
   if (cylRig && (!_cylinderImpostorPipeline ||
                  (_oitActive && !_cylinderOitPipeline))) {
     if (!_lightRigWarned) {
@@ -11812,14 +12082,14 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
     // The studio shadow maps (#616): while this frame's maps are ready, the
     // shadow variant of the rig entry just chosen; back to that rig entry (a
     // cache hit) if it could not be built (logged once).
-    buildCylinderImpostorPipeline(call, true, /*lightShadow*/ true);
+    buildCylinderImpostorPipeline(call, true, /*lightShadow*/ true, cylHdr);
     if (!_cylinderImpostorPipeline ||
         (_oitActive && !_cylinderOitPipeline)) {
       if (!_lightShadowWarned) {
         NSLog(@"RendererMetal: studio-shadow cylinder pipeline failed; drawing the rig without its shadow maps");
         _lightShadowWarned = true;
       }
-      buildCylinderImpostorPipeline(call, true);
+      buildCylinderImpostorPipeline(call, true, /*lightShadow*/ false, cylHdr);
     }
   }
   if (!_cylinderImpostorPipeline) return;
@@ -12152,14 +12422,17 @@ void RendererMetal::buildBezierTubePipeline()
     NSLog(@"RendererMetal: bezier tube pipeline failed: %@", err);
 }
 
-// One of the tube rig library's functions (#613). They read no function
-// constant, so plain newFunctionWithName: is enough. The library still
-// DECLARES kMaterialSrc's constants; should Metal ever list one against a
-// function that does not read it, the function specialised with
-// kMatFamily = default, kLightRig = false and kLightShadow = false (#616) is
-// the same code, so take that.
+// One of the tube rig library's functions (#613). The vertex function reads
+// no function constant, so plain newFunctionWithName: is enough for it. The
+// fragment reads one, kLightHdr (#624), through light_apply's light_finish,
+// so Metal lists it and the function is specialised: with kLightHdr =
+// `lightHdr` (true for an HDR frame's variant, false for the 8-bit knee, as
+// before #624), kMatFamily = default, kLightRig = false and kLightShadow =
+// false (#616), which it does not read, so every constant the library
+// declares is set.
 // +1, caller owns; nil (logged) on failure.
-static id<MTLFunction> bezierTubeRigFunction(id<MTLLibrary> lib, NSString* name)
+static id<MTLFunction> bezierTubeRigFunction(id<MTLLibrary> lib, NSString* name,
+                                             bool lightHdr)
 {
   id<MTLFunction> fn = [lib newFunctionWithName:name];
   if (fn && fn.functionConstantsDictionary.count == 0)
@@ -12175,6 +12448,10 @@ static id<MTLFunction> bezierTubeRigFunction(id<MTLLibrary> lib, NSString* name)
   // nor receive studio shadows.
   bool shadow = false;
   [cv setConstantValue:&shadow type:MTLDataTypeBool atIndex:kLightShadowConstantIndex];
+  // HDR colour's constant (#624), read by light_finish: true for an HDR
+  // frame's variant, false for the 8-bit knee.
+  bool hdr = lightHdr;
+  [cv setConstantValue:&hdr type:MTLDataTypeBool atIndex:kLightHdrConstantIndex];
   NSError* err = nil;
   fn = [lib newFunctionWithName:name constantValues:cv error:&err];
   [cv release];   // MRC: alloc/init is +1
@@ -12183,26 +12460,29 @@ static id<MTLFunction> bezierTubeRigFunction(id<MTLLibrary> lib, NSString* name)
   return fn;
 }
 
-// The bezier tube's light-rig pipeline (#613): the classic tube's descriptor
+// The bezier tube's light-rig pipelines (#613): the classic tube's descriptor
 // (lighting_msl.py keeps the two equal) with the rig library's functions.
 // Built the first time a rig-on frame draws a tube, so a session without
-// lights never compiles it; one attempt per build (_bezierTubeRigTried), so a
-// failure is not recompiled every draw. Unlike the classic builder it
-// releases what it creates: only the pipeline state is kept.
+// lights never compiles them; one attempt per build (_bezierTubeRigTried), so
+// a failure is not recompiled every draw. Unlike the classic builder it
+// releases what it creates: only the pipeline states are kept.
+// HDR colour (#624): both variants come from the one library compile, [0]
+// with kLightHdr false (the 8-bit knee) and [1] with it true (an HDR frame);
+// they share the vertex function, which reads no constant.
 void RendererMetal::buildBezierTubeRigPipeline()
 {
-  if (_bezierTubeRigPipeline || _bezierTubeRigTried) return;
+  if (_bezierTubeRigTried) return;
   _bezierTubeRigTried = true;
   NSError* err = nil;
   id<MTLLibrary> lib = [_device newLibraryWithSource:[[kMaterialSrc stringByAppendingString:kBezierTubeSrc]
                                                    stringByAppendingString:kBezierTubeRigSrc]
                                              options:nil error:&err];
   if (!lib) { NSLog(@"RendererMetal: bezier tube rig compile failed: %@", err); return; }
-  id<MTLFunction> vfn = bezierTubeRigFunction(lib, @"bezier_tube_vertex_rig");
-  id<MTLFunction> ffn = bezierTubeRigFunction(lib, @"bezier_tube_fragment_rig");
-  if (!vfn || !ffn) {
+  id<MTLFunction> vfn =
+      bezierTubeRigFunction(lib, @"bezier_tube_vertex_rig", /*lightHdr*/ false);
+  if (!vfn) {
     NSLog(@"RendererMetal: bezier tube rig funcs missing");
-    [vfn release]; [ffn release]; [lib release];
+    [lib release];
     return;
   }
 
@@ -12215,7 +12495,6 @@ void RendererMetal::buildBezierTubeRigPipeline()
 
   MTLRenderPipelineDescriptor* psd = [[MTLRenderPipelineDescriptor alloc] init];
   psd.vertexFunction = vfn;
-  psd.fragmentFunction = ffn;
   psd.vertexDescriptor = vd;
   psd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
   psd.rasterSampleCount = _sampleCount;
@@ -12226,21 +12505,36 @@ void RendererMetal::buildBezierTubeRigPipeline()
   psd.tessellationFactorFormat = MTLTessellationFactorFormatHalf;
   psd.tessellationOutputWindingOrder = MTLWindingClockwise;
   psd.tessellationPartitionMode = MTLTessellationPartitionModeInteger;
-  _bezierTubeRigPipeline = [_device newRenderPipelineStateWithDescriptor:psd error:&err];
-  if (!_bezierTubeRigPipeline)
-    NSLog(@"RendererMetal: bezier tube rig pipeline failed: %@", err);
-  // MRC: the pipeline state keeps what it needs; vd is autoreleased.
-  [psd release]; [vfn release]; [ffn release]; [lib release];
+  for (int h = 0; h < 2; ++h) {
+    id<MTLFunction> ffn = bezierTubeRigFunction(
+        lib, @"bezier_tube_fragment_rig", /*lightHdr*/ h == 1);
+    if (!ffn) {
+      NSLog(@"RendererMetal: bezier tube rig funcs missing");
+      continue;
+    }
+    psd.fragmentFunction = ffn;
+    _bezierTubeRigPipeline[h] =
+        [_device newRenderPipelineStateWithDescriptor:psd error:&err];
+    if (!_bezierTubeRigPipeline[h])
+      NSLog(@"RendererMetal: bezier tube rig pipeline failed: %@", err);
+    [ffn release];   // MRC: the pipeline state keeps what it needs
+  }
+  // MRC: the pipeline states keep what they need; vd is autoreleased.
+  [psd release]; [vfn release]; [lib release];
 }
 
 // One of the air library's functions (#618), with bezierTubeRigFunction's
-// logic: they read no function constant, so plain newFunctionWithName: is
-// enough. The library still DECLARES kMaterialSrc's constants; should Metal
-// ever list one against a function that does not read it, the function
-// specialised with kMatFamily = default, kLightRig = false and kLightShadow =
-// false is the same code, so take that.
+// logic: the vertex and march functions read no function constant, so plain
+// newFunctionWithName: is enough for them (lightHdr is then unused). The
+// composites (post_air_full, post_air_upsample) read one, kLightHdr (#624),
+// through post_air_finish, so Metal lists it and they are specialised: with
+// kLightHdr = lightHdr (true for an HDR frame's variant, false for the 8-bit
+// knee as before #624), kMatFamily = default, kLightRig = false and
+// kLightShadow = false, which they do not read, so every constant the
+// library declares is set.
 // +1, caller owns; nil (logged) on failure.
-static id<MTLFunction> airFunction(id<MTLLibrary> lib, NSString* name)
+static id<MTLFunction> airFunction(id<MTLLibrary> lib, NSString* name,
+                                   bool lightHdr)
 {
   id<MTLFunction> fn = [lib newFunctionWithName:name];
   if (fn && fn.functionConstantsDictionary.count == 0)
@@ -12253,6 +12547,10 @@ static id<MTLFunction> airFunction(id<MTLLibrary> lib, NSString* name)
   [cv setConstantValue:&rig type:MTLDataTypeBool atIndex:kLightRigConstantIndex];
   bool shadow = false;
   [cv setConstantValue:&shadow type:MTLDataTypeBool atIndex:kLightShadowConstantIndex];
+  // HDR colour's constant (#624), read by post_air_finish: true for an HDR
+  // frame's variant, false for the 8-bit knee.
+  bool hdr = lightHdr;
+  [cv setConstantValue:&hdr type:MTLDataTypeBool atIndex:kLightHdrConstantIndex];
   NSError* err = nil;
   fn = [lib newFunctionWithName:name constantValues:cv error:&err];
   [cv release];   // MRC: alloc/init is +1
@@ -12262,12 +12560,14 @@ static id<MTLFunction> airFunction(id<MTLLibrary> lib, NSString* name)
 }
 
 // One of the air's pipelines (#618): post_air_vertex with the fragment `name`
-// (from airFunction), single-sample, no depth attachment, colour `format`.
+// (from airFunction, its kLightHdr variant `hdr`, #624), single-sample, no
+// depth attachment, colour `format`.
 // +1, caller owns; nil (logged) on failure. The function is released here.
 static id<MTLRenderPipelineState> newAirPipeline(id<MTLDevice> device,
-    id<MTLLibrary> lib, id<MTLFunction> vfn, NSString* name, MTLPixelFormat format)
+    id<MTLLibrary> lib, id<MTLFunction> vfn, NSString* name, MTLPixelFormat format,
+    bool hdr)
 {
-  id<MTLFunction> ffn = airFunction(lib, name);
+  id<MTLFunction> ffn = airFunction(lib, name, hdr);
   if (!ffn) {
     NSLog(@"RendererMetal: air function %@ missing", name);
     return nil;
@@ -12292,15 +12592,20 @@ static id<MTLRenderPipelineState> newAirPipeline(id<MTLDevice> device,
 // then on; the rest of the frame is unchanged. Full resolution needs
 // post_air_full and the maps' stand-in; half resolution also needs the march
 // (into RGBA16Float) and the upsample, and without them it draws at full.
+// The composites come in both kLightHdr variants (#624), [0] the 8-bit knee
+// and [1] HDR colour, both specialised from the one compile in the one
+// attempt, so a later flip of metal_light_hdr compiles nothing; each variant
+// stands alone (a knee frame keeps its air whatever happens to the HDR one).
+// The march reads no constant: one pipeline serves both.
 // Single-sample post pipelines (no depth attachment), so a sample-count
 // change does not touch them. Only the pipeline states are kept: the library
-// and functions are released here.
+// and functions are released here. True when this frame's variant
+// (_lightHdrOn) can draw.
 bool RendererMetal::ensureAirPipelines()
 {
-  if (_airFullPipeline)
-    return true;
+  const int h = _lightHdrOn ? 1 : 0;
   if (_airPipelinesTried)
-    return false;
+    return _airFullPipeline[h] != nil;
   _airPipelinesTried = true;
   NSError* err = nil;
   id<MTLLibrary> lib = [_device newLibraryWithSource:[[kEyeReconSrc stringByAppendingString:kMaterialSrc]
@@ -12310,39 +12615,44 @@ bool RendererMetal::ensureAirPipelines()
     NSLog(@"RendererMetal: air compile failed: %@", err);
     return false;
   }
-  id<MTLFunction> vfn = airFunction(lib, @"post_air_vertex");
+  id<MTLFunction> vfn = airFunction(lib, @"post_air_vertex", false);
   if (!vfn) {
     NSLog(@"RendererMetal: air functions missing");
     [lib release];
     return false;
   }
-  _airFullPipeline = newAirPipeline(_device, lib, vfn, @"post_air_full",
-                                    MTLPixelFormatBGRA8Unorm);
-  if (_airFullPipeline) {
+  for (int v = 0; v < 2; ++v)
+    _airFullPipeline[v] = newAirPipeline(_device, lib, vfn, @"post_air_full",
+                                         MTLPixelFormatBGRA8Unorm, v == 1);
+  if (_airFullPipeline[0] || _airFullPipeline[1]) {
     _airMarchPipeline = newAirPipeline(_device, lib, vfn, @"post_air_march",
-                                       MTLPixelFormatRGBA16Float);
-    _airUpsamplePipeline = newAirPipeline(_device, lib, vfn, @"post_air_upsample",
-                                          MTLPixelFormatBGRA8Unorm);
-    if (!_airMarchPipeline || !_airUpsamplePipeline) {
-      // logged by newAirPipeline; half resolution draws at full
-      [_airMarchPipeline release];
-      [_airUpsamplePipeline release];
-      _airMarchPipeline = nil;
-      _airUpsamplePipeline = nil;
+                                       MTLPixelFormatRGBA16Float, false);
+    for (int v = 0; v < 2; ++v)
+      _airUpsamplePipeline[v] = newAirPipeline(_device, lib, vfn, @"post_air_upsample",
+                                               MTLPixelFormatBGRA8Unorm, v == 1);
+    if (!_airMarchPipeline) {
+      // logged by newAirPipeline; half resolution draws at full (a missing
+      // upsample variant does the same for its own frames: encodeAirPass)
+      for (int v = 0; v < 2; ++v) {
+        [_airUpsamplePipeline[v] release];
+        _airUpsamplePipeline[v] = nil;
+      }
     }
   }
   // MRC: the pipeline states keep what they need.
   [vfn release]; [lib release];
   // The maps' stand-in, in the same single attempt.
-  if (_airFullPipeline && !ensureAirNoMaps()) {
-    [_airFullPipeline release];
-    _airFullPipeline = nil;
+  if ((_airFullPipeline[0] || _airFullPipeline[1]) && !ensureAirNoMaps()) {
+    for (int v = 0; v < 2; ++v) {
+      [_airFullPipeline[v] release];
+      _airFullPipeline[v] = nil;
+      [_airUpsamplePipeline[v] release];
+      _airUpsamplePipeline[v] = nil;
+    }
     [_airMarchPipeline release];
-    [_airUpsamplePipeline release];
     _airMarchPipeline = nil;
-    _airUpsamplePipeline = nil;
   }
-  return _airFullPipeline != nil;
+  return _airFullPipeline[h] != nil;
 }
 
 // The stand-in for the studio maps on a frame without them (#618): 1x1, one
@@ -12407,7 +12717,9 @@ bool RendererMetal::ensureAirTerm(NSUInteger w, NSUInteger h)
 //   read; _airNoMaps is bound in their place then.
 // At full resolution (view.x 1) one pass, post_air_full. At half (view.x 0.5)
 // post_air_march into _airTerm, then post_air_upsample; without the half
-// pipelines or the term it falls back to full (view.x set to 1).
+// pipelines or the term it falls back to full (view.x set to 1). The
+// composite is this frame's kLightHdr variant (#624, _lightHdrOn), which
+// ensureAirPipelines made before the call.
 // Encoded on _cmdBuffer, so metal_gpu_timing's frame time includes it.
 id<MTLTexture> RendererMetal::encodeAirPass(id<MTLTexture> sceneSrc)
 {
@@ -12429,7 +12741,8 @@ id<MTLTexture> RendererMetal::encodeAirPass(id<MTLTexture> sceneSrc)
   if (!mapsTex || !_postSampler || !_shadowSampler)
     return sceneSrc;
   id<MTLTexture> dst = (sceneSrc == _sceneColor) ? _postColor : _sceneColor;
-  const bool half = air.view[0] < 0.75f && _airMarchPipeline && _airUpsamplePipeline &&
+  const int h = _lightHdrOn ? 1 : 0;
+  const bool half = air.view[0] < 0.75f && _airMarchPipeline && _airUpsamplePipeline[h] &&
                     ensureAirTerm(dst.width, dst.height);
   if (!half)
     air.view[0] = 1.0f;
@@ -12458,7 +12771,7 @@ id<MTLTexture> RendererMetal::encodeAirPass(id<MTLTexture> sceneSrc)
   pd.colorAttachments[0].loadAction = MTLLoadActionDontCare;
   pd.colorAttachments[0].storeAction = MTLStoreActionStore;
   id<MTLRenderCommandEncoder> ea = [_cmdBuffer renderCommandEncoderWithDescriptor:pd];
-  [ea setRenderPipelineState:(half ? _airUpsamplePipeline : _airFullPipeline)];
+  [ea setRenderPipelineState:(half ? _airUpsamplePipeline[h] : _airFullPipeline[h])];
   bindAir(ea);
   [ea setFragmentTexture:sceneSrc atIndex:kAirColorTextureIndex];
   if (half)
@@ -12497,8 +12810,10 @@ void RendererMetal::drawBezierTubes(const void* cp, size_t dataSize,
   bool tubeRig = false;
   if (_lightRigOn) {
     buildBezierTubeRigPipeline();
-    if (_bezierTubeRigPipeline) {
-      tubePipeline = _bezierTubeRigPipeline;
+    // HDR colour (#624): an HDR frame's variant, else the 8-bit knee's.
+    id<MTLRenderPipelineState> rigTube = _bezierTubeRigPipeline[_lightHdrOn ? 1 : 0];
+    if (rigTube) {
+      tubePipeline = rigTube;
       tubeRig = true;
     } else if (!_lightRigWarned) {
       NSLog(@"RendererMetal: light-rig bezier tube pipeline failed; drawing without the rig");

@@ -474,8 +474,11 @@ Sheen (a grazing term with no light direction) stay under every rig.
 - A ray-traced reflection (`metal_raytrace`) shows the reflected object
   lit with `default`'s response.
 - The CPU `ray` command has no studio lights.
-- Reflective highlights can reach white under bright presets: the image is
-  8 bit until HDR (#624).
+- Under a light rig, bright light rolls off through one tone curve that keeps
+  its hue (HDR, #624; `metal_exposure` scales the lit scene). The materials'
+  own classic terms (environment, jelly, impostor and VBO shading) still pass
+  their 8-bit soft knee first, and `metal_light_hdr 2` brings the knee back
+  for the whole rig.
 
 ## Scenes and sessions
 

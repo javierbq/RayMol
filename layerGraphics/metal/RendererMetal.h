@@ -274,22 +274,26 @@ private:
   // per material family, specialised from the retained sphere library the
   // first time a rig-on frame draws spheres, so a session without lights
   // never compiles them. One attempt per build (_sphereRigBuilt).
-  void ensureSphereRigPipelines();
+  // `hdr` (#624) builds the HDR colour set (kLightHdr true) instead of the
+  // 8-bit knee's; each set is built, and tried, on its own.
+  void ensureSphereRigPipelines(bool hdr);
   // The studio shadow maps' variants of those (#616), built the same way the
   // first time a frame with maps draws spheres (_sphereRigShadowBuilt).
   // releaseSphereRigPipelines releases both sets.
-  void ensureSphereRigShadowPipelines();
+  void ensureSphereRigShadowPipelines(bool hdr);
   void releaseSphereRigPipelines();
   // The cylinder VBO layout (stride/offsets/formats) varies with the rep, so
   // the cylinder pipeline is built lazily from the first draw call's layout
   // and rebuilt only if a later call has a different stride. `lightRig`
   // builds the light rig's variant (#613), cached apart under its own key;
   // `lightShadow` (with `lightRig`) the studio shadow maps' variant (#616),
-  // keyed apart again.
+  // keyed apart again; `lightHdr` (with `lightRig`) HDR colour's variant
+  // (#624), keyed apart again.
   void releaseCylinderPipelines();
   void buildCylinderImpostorPipeline(const CylinderImpostorDrawCall& call,
                                      bool lightRig = false,
-                                     bool lightShadow = false);
+                                     bool lightShadow = false,
+                                     bool lightHdr = false);
   void buildLabelPipeline();
   // (Re)upload the glyph atlas to an MTLTexture if the generation changed.
   void ensureLabelAtlas(const unsigned char* pixels, int w, int h,
@@ -383,26 +387,32 @@ private:
   // classic pipeline.
   // `lightShadow` is the studio shadow maps' constant (#616), always set too:
   // true only with `lightRig`, for the shadow variants.
+  // `lightHdr` is HDR colour's constant (#624, kLightHdr), always set too:
+  // true only with `lightRig`, for the rig variants of an HDR frame.
   id<MTLFunction> materialFragmentFunction(
       id<MTLLibrary> lib, NSString* name, int family, bool lightRig = false,
-      bool lightShadow = false);
+      bool lightShadow = false, bool lightHdr = false);
   // The light rig (#613): the VBO library is kept so the rig variants of
   // vbo_fragment and vbo_fragment_oit are specialised only when a rig is
   // first turned on (vboRigFragmentFunction, one attempt per family). The
   // functions are borrowed by their callers; buildVBOPipelines and the dtor
   // release them with the library (releaseVBORigFunctions).
+  // HDR colour (#624): every rig function array and tried flag has an hdr
+  // dimension first, [hdr][family]: [0] the 8-bit knee (kLightHdr false),
+  // [1] an HDR frame's variant (kLightHdr true), each specialised lazily on
+  // its own.
   id<MTLLibrary> _vboLibrary = nil;
-  id<MTLFunction> _vboFragmentRigFunc[cMaterialFamily_count] = {};
-  id<MTLFunction> _vboFragmentOitRigFunc[cMaterialFamily_count] = {};
-  bool _vboRigFuncTried[cMaterialFamily_count][2] = {};
-  id<MTLFunction> vboRigFragmentFunction(int family, bool oit);
+  id<MTLFunction> _vboFragmentRigFunc[2][cMaterialFamily_count] = {};
+  id<MTLFunction> _vboFragmentOitRigFunc[2][cMaterialFamily_count] = {};
+  bool _vboRigFuncTried[2][cMaterialFamily_count][2] = {};
+  id<MTLFunction> vboRigFragmentFunction(int family, bool oit, bool hdr);
   // The studio shadow maps' variants of the same two fragments (#616),
   // specialised lazily from the same library the first time a frame with
   // maps needs one; released with the rig functions.
-  id<MTLFunction> _vboFragmentRigShadowFunc[cMaterialFamily_count] = {};
-  id<MTLFunction> _vboFragmentOitRigShadowFunc[cMaterialFamily_count] = {};
-  bool _vboRigShadowFuncTried[cMaterialFamily_count][2] = {};
-  id<MTLFunction> vboRigShadowFragmentFunction(int family, bool oit);
+  id<MTLFunction> _vboFragmentRigShadowFunc[2][cMaterialFamily_count] = {};
+  id<MTLFunction> _vboFragmentOitRigShadowFunc[2][cMaterialFamily_count] = {};
+  bool _vboRigShadowFuncTried[2][cMaterialFamily_count][2] = {};
+  id<MTLFunction> vboRigShadowFragmentFunction(int family, bool oit, bool hdr);
   void releaseVBORigFunctions();
   id<MTLFunction> _vboVertexUnlitFunc;   // flat-color (no normal) for lines/dots
   id<MTLFunction> _vboFragmentUnlitFunc;
@@ -430,14 +440,17 @@ private:
   MTLRenderPipelineDescriptor* _sphereOitDesc = nil;
   // The light rig's sphere pipelines (#613), per family; nil until a rig-on
   // frame draws spheres (ensureSphereRigPipelines). +1 owned.
-  id<MTLRenderPipelineState> _sphereRigPipeline[cMaterialFamily_count] = {};
-  id<MTLRenderPipelineState> _sphereRigOitPipeline[cMaterialFamily_count] = {};
-  bool _sphereRigBuilt = false;
+  // HDR colour (#624): [hdr][family], [0] the 8-bit knee, [1] an HDR frame's;
+  // each set has its own one-attempt flag.
+  id<MTLRenderPipelineState> _sphereRigPipeline[2][cMaterialFamily_count] = {};
+  id<MTLRenderPipelineState> _sphereRigOitPipeline[2][cMaterialFamily_count] = {};
+  bool _sphereRigBuilt[2] = {};
   // The studio shadow maps' sphere pipelines (#616), per family; nil until a
   // frame with maps draws spheres (ensureSphereRigShadowPipelines). +1 owned.
-  id<MTLRenderPipelineState> _sphereRigShadowPipeline[cMaterialFamily_count] = {};
-  id<MTLRenderPipelineState> _sphereRigShadowOitPipeline[cMaterialFamily_count] = {};
-  bool _sphereRigShadowBuilt = false;
+  // [hdr][family] as above (#624).
+  id<MTLRenderPipelineState> _sphereRigShadowPipeline[2][cMaterialFamily_count] = {};
+  id<MTLRenderPipelineState> _sphereRigShadowOitPipeline[2][cMaterialFamily_count] = {};
+  bool _sphereRigShadowBuilt[2] = {};
   // Cylinder impostor pipelines are cached PER VERTEX LAYOUT — (stride, a_cap
   // offset) — not in a single slot. a_cap's offset is part of the vertex
   // descriptor, so a stick VBO (per-vertex a_cap) and a CGO VBO (one constant
@@ -459,8 +472,10 @@ private:
   // while a rig is on; it has no shadow or peel pipeline (those passes never
   // take the rig). The studio shadow maps' variant (#616) is another, built
   // only while a frame's maps are ready; the 5th element is false for every
-  // classic and #613 rig entry.
-  std::map<std::tuple<NSUInteger, int, int, bool, bool>, CylinderPipelines>
+  // classic and #613 rig entry. HDR colour's variant (#624) of a rig entry is
+  // another, built only in an HDR frame; the 6th element is false for every
+  // classic entry and every rig entry at the 8-bit knee.
+  std::map<std::tuple<NSUInteger, int, int, bool, bool, bool>, CylinderPipelines>
       _cylinderPipelines;
   id<MTLRenderPipelineState> _cylinderImpostorPipeline = nil; // alias, not owned
 
@@ -528,15 +543,19 @@ private:
   // frame and re-made on a size change; _airTermW/_airTermH the half size it
   // was made, or tried, for) with _airMarchPipeline, then upsamples and
   // composites with _airUpsamplePipeline. Without those pipelines or the term
-  // the frame draws the air at full resolution.
-  id<MTLRenderPipelineState> _airFullPipeline = nil;
+  // the frame draws the air at full resolution. The two composites (full and
+  // upsample) come in both kLightHdr variants (#624; [1] for an HDR frame, [0]
+  // for the 8-bit knee), all made in the one attempt from the one compile;
+  // the march reads no constant and stays single.
+  id<MTLRenderPipelineState> _airFullPipeline[2] = {};
   id<MTLRenderPipelineState> _airMarchPipeline = nil;
-  id<MTLRenderPipelineState> _airUpsamplePipeline = nil;
+  id<MTLRenderPipelineState> _airUpsamplePipeline[2] = {};
   bool _airPipelinesTried = false;
   id<MTLTexture> _airNoMaps = nil;
   id<MTLTexture> _airTerm = nil;
   NSUInteger _airTermW = 0;
   NSUInteger _airTermH = 0;
+  // True when this frame's composite (_airFullPipeline[_lightHdrOn]) exists.
   bool ensureAirPipelines();
   id<MTLTexture> ensureAirNoMaps();
   bool ensureAirTerm(NSUInteger w, NSUInteger h);
@@ -572,9 +591,11 @@ private:
   id<MTLFunction> _vboFragmentOitFunc[cMaterialFamily_count] = {};
   // Build a weighted-blended OIT MRT pipeline (vbo_vertex + vbo_fragment_oit)
   // for an arbitrary vertex layout (e.g. the surface's stride-44 layout);
-  // with `lightRig`, the light rig's variant (#613).
+  // with `lightRig`, the light rig's variant (#613); with `lightHdr` too,
+  // HDR colour's (#624).
   id<MTLRenderPipelineState> oitPipelineForVD(
-      MTLVertexDescriptor* vd, int family, bool lightRig = false);
+      MTLVertexDescriptor* vd, int family, bool lightRig = false,
+      bool lightHdr = false);
   // Build-once cache for one-off VBO pipelines whose vertex layout does not match
   // a prebuilt stride (e.g. the molecular-surface stride-44 layout). Without it,
   // drawVBO/drawVBOIndexed rebuilt a pipeline on EVERY such draw — a per-frame
@@ -583,10 +604,13 @@ private:
   // `lightRig` asks for the light rig's variant of Lit or Oit (#613): its own
   // cache entry, keyed apart only when set; a failed one is cached as nil so
   // the draw falls back to the classic pipeline without retrying.
+  // `lightHdr` (with `lightRig`) asks for HDR colour's variant of it (#624):
+  // keyed apart again, only when set, so every knee rig key is unchanged.
   enum class VBOPipelineVariant { Lit, Unlit, UnlitFlat, Oit, Shadow, Peel };
   id<MTLRenderPipelineState> cachedVBOPipeline(VBOPipelineVariant variant,
       size_t stride, int posOffset, int normalOffset, int colorOffset,
-      int colorType, MTLVertexDescriptor* vd, bool lightRig = false);
+      int colorType, MTLVertexDescriptor* vd, bool lightRig = false,
+      bool lightHdr = false);
   id<MTLRenderPipelineState> _sphereOitPipeline[cMaterialFamily_count] = {};
   id<MTLRenderPipelineState> _cylinderOitPipeline = nil; // alias, not owned
   NSUInteger _cylinderOitStride = 0;
@@ -833,7 +857,10 @@ private:
   // (kMaterialSrc + kBezierTubeSrc + kBezierTubeRigSrc), so the classic tube
   // above is untouched. Built lazily on the first rig-on tube draw, one
   // attempt per build; released with the classic one.
-  id<MTLRenderPipelineState> _bezierTubeRigPipeline = nil;
+  // HDR colour (#624): [0] the 8-bit knee (kLightHdr false), [1] an HDR
+  // frame's, both built from the one library compile under the one tried
+  // flag.
+  id<MTLRenderPipelineState> _bezierTubeRigPipeline[2] = {};
   bool _bezierTubeRigTried = false;
   void buildBezierTubeRigPipeline();
   // Per-frame post params (fog/depth-cue + SSAO), set by SceneRenderMetal.
@@ -897,6 +924,12 @@ private:
   // SceneRenderMetal sets it again.
   bool _lightRigOn = false;
   LightRigBlock _lightRigBlock{};
+  // HDR colour (#624): this frame's rig asks for it (setLightRig: the rig is
+  // on and its block's tone[1], from metal_light_hdr, is set). It chooses the
+  // kLightHdr variants of the rig pipelines and hands the exposure to the rig
+  // shaders (runPostChain then exposes at 1). Off with the rig, and at every
+  // beginFrame.
+  bool _lightHdrOn = false;
   // The rig's classic scale this frame (#615; setLightClassicScale, right
   // after setLightRig), for MaterialU.lightClassic. Read only while
   // _lightRigOn, which beginFrame clears and SceneRenderMetal sets just
@@ -1164,14 +1197,14 @@ private:
       id<MTLRenderPipelineState>* composite);
   void releaseRayTracingTransAS();
   // The light rig on traced reflection hits (#613): rt_composite specialised
-  // with kRTLightRig, default and transparent, each built the first time a
-  // rig-on frame has something reflective (one attempt each). Used only then;
-  // every other frame keeps _rtResolvePipeline / _rtResolvePipelineT.
-  id<MTLRenderPipelineState> _rtResolvePipelineRig = nil;
-  id<MTLRenderPipelineState> _rtResolvePipelineTRig = nil;
-  bool _rtRigTried = false;
-  bool _rtRigTTried = false;
-  id<MTLRenderPipelineState> buildRTRigComposite(bool transparent);
+  // with kRTLightRig, [transparent][hdr] (kRTTrans; kLightHdr, #624: 1 for an
+  // HDR frame, 0 for the 8-bit knee), each built from the retained _rtLib the
+  // first time a rig-on frame of that kind has something reflective (one
+  // attempt each, _rtRigTried). Used only then; every other frame keeps
+  // _rtResolvePipeline / _rtResolvePipelineT.
+  id<MTLRenderPipelineState> _rtResolvePipelineRig[2][2] = {};
+  bool _rtRigTried[2][2] = {};
+  id<MTLRenderPipelineState> buildRTRigComposite(bool transparent, bool hdr);
 
   // Drop the cached RT geometry derived from a CPU buffer that is about to be
   // freed (or whose contents changed). Handles both primary and alias keys.

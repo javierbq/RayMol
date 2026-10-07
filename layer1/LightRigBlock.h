@@ -1,19 +1,20 @@
 /*
  * The light rig as the GPU reads it (#613, lighting epic #610).
  *
- * One frame's rig, resolved to eye space and packed into 672 bytes: #613's
- * 400 (the head and six lights), then #616's shadow maps. The Metal
+ * One frame's rig, resolved to eye space and packed into 688 bytes: #613's
+ * 400 (the head and six lights), then #616's shadow maps, then #624's tone.
+ * The Metal
  * renderer binds it at fragment buffer 9, and only while the rig is on. Its
  * layout mirrors the MSL structs LightRigLight, LightRigShadow and LightRigU in
  * kMaterialSrc (layerGraphics/metal/RendererMetal.mm, and the verbatim copies
  * in kRTSrc): change them together. The layout is APPEND-ONLY. #616 appended
- * its shadow data after the six lights.
+ * its shadow data after the six lights; #624 its tone after the shadow tile.
  *
  * Plain data with no dependencies beyond the standard library. Renderer.h
  * includes this header, so it must stay safe for the GL and GLUT builds. The
  * packing lives in LightShading.h (LightRigPack).
  *
- * Offsets in floats (_cmd.get_light_frame returns the block as 168 floats):
+ * Offsets in floats (_cmd.get_light_frame returns the block as 172 floats):
  *   0..3                 head: count, shininess, orthographic 0|1, shadow maps
  *   4 + 16 i + 0..3      light i: eye-space position xyz, shadow slot or -1
  *   4 + 16 i + 4..7      unit beam axis xyz (light -> aim), cos(outer)
@@ -27,10 +28,15 @@
  *                        slot (0 = no grid), columns, rows
  *   164..167             this draw's shadow tile in slice uv: u0, v0, du, dv
  *                        (set per draw by the renderer; 0 here)
+ *   168..171             tone (#624): exposure (LightToneExposure of
+ *                        metal_exposure), 1 = HDR (LightHdrOn of
+ *                        metal_light_hdr) else 0, then 0, 0
  *
  * With no studio shadow (LightShadowPlan, LightShadows.h, not run) every
  * shadow slot is -1, head.w is 0 and the tail from float 100 on is zero: the
- * first 400 bytes are #613's block bit for bit.
+ * first 400 bytes are #613's block bit for bit. The tone is filled only while
+ * the rig is on (SceneLightsToneFill); the first 672 bytes are #616's block
+ * bit for bit.
  */
 
 #pragma once
@@ -86,16 +92,21 @@ struct LightRigBlock {
   /// This draw's shadow tile in slice uv: u0, v0, du, dv (#616; set per draw
   /// by the renderer, 0 here)
   float shadowTile[4];
+  /// x exposure (scene units), y 1 = HDR else 0 (the 8-bit soft knee), z and
+  /// w 0 (#624; SceneLightsToneFill)
+  float tone[4];
 };
 
 static_assert(sizeof(LightRigBlockLight) == 64, "mirrors MSL LightRigLight");
 static_assert(sizeof(LightRigBlockShadow) == 80, "mirrors MSL LightRigShadow");
-static_assert(sizeof(LightRigBlock) == 672, "mirrors MSL LightRigU");
+static_assert(sizeof(LightRigBlock) == 688, "mirrors MSL LightRigU");
 static_assert(offsetof(LightRigBlock, light) == 16, "head is one float4");
 static_assert(offsetof(LightRigBlock, shadow) == 400,
     "#613's 400 bytes come first, unchanged");
 static_assert(offsetof(LightRigBlock, shadowGrid) == 640, "after the maps");
-static_assert(offsetof(LightRigBlock, shadowTile) == 656, "last float4");
+static_assert(offsetof(LightRigBlock, shadowTile) == 656, "then the tone");
+static_assert(offsetof(LightRigBlock, tone) == 672,
+    "#616's 672 bytes come first, unchanged; the tone is the last float4");
 static_assert(offsetof(LightRigBlockShadow, info) == 64, "float4x4 then float4");
 static_assert(offsetof(LightRigBlockLight, axis) == 16, "float4 slots");
 static_assert(offsetof(LightRigBlockLight, radiance) == 32, "float4 slots");

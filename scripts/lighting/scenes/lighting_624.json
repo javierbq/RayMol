@@ -1,0 +1,1447 @@
+{
+ "comment": "#624 L2: HDR colour and exposure under a light rig, checked with scripts/lighting/check_hdr.py l2 and negative (its docstring names what every check reads). 1rx1 at 1280x720 on black, depth_cue 0, subjects grey80 unless named. A tag <base>_knee_rt<n> is the knee twin of <base>_rt<n>: the same lines after _l624_opt('metal_light_hdr', 2) (the 8-bit soft knee; the setting exists from #624 part 2, so a build without it renders the twin as the knee anyway, which is what the round-0 renders are). Every rig is the scene's own (cmd._l624_rig, the cmd.set_lights shim of lighting_616/618.json: the frozen harness calls cmd.set_lights after the scene's lines and the shim installs cmd._l624_rig instead; hasattr guard, the app runs the script twice), classic 0, with an explicit centre and size (the extent of m) and its own air (none unless named). metal_light_air_time 2.0 and metal_light_air_resolution 1 are pinned. sweep_<i>: the prototype spot (orbit -25, pitch 35, radius 3, beam 40, softness 0.4, warmth 5600, highlight 0.7, shadowed, ambient 0.06) at intensity i (0 = the ambient-only footprint reference) on a grey80 surface, metal_shadows 1; _e05: metal_exposure 0.5. rec_<rep>_a/b: the spot widened (beam 60, softness 0.5), ambient 0: a = intensity 3.5 at metal_exposure 4/7, b = 2.0 at 1 (the same light in scene units); surface and cartoon shadowed (metal_shadows 1), sticks, spheres and the bezier tube (lighting_613's CGO) not; rec_air: rec_surface plus haze 0.3. hue_x1/x2p5: lighting_613's orange key and cyan rim, both at intensity 1.6, at x1 and x2.5 (4, the field's top). peak_<mat>_i<n>: a white key (orbit -40, pitch 30, beam 55, highlight 0.7) at intensity n on surface (residues 1-60) and spheres (the rest), gold metallic (l624_gold) or orange plastic (l624_orange), material_env 2 (no environment: every highlight is the rig's); _e067: metal_exposure 2/3; _e05: metal_exposure 0.5 (HDR only, no knee twin: the contact sheets' third row, as are sweep_0p6/1p2/2p0_e05). glass_i<n>_hl<h>: clear glass, the white key and a white rim at x n, every highlight h, rig ambient 0 and material_env 2 (every light the rig's). glass_dark_i<n>: the same glass coloured black, so its body adds nothing (glass's body carries its unlit base, which exposure scales and intensity does not) and glass_dark_i3_e033 (metal_exposure 1/3) is glass_dark_i1 in scene units. glass_body_i3: orange glass under the key alone at 3, its highlight over the lit body. frosted_i3 and jelly_i3 are for the eye. shadow_cross: #618's red and blue lights, both shadowed, at intensity 3, over organic sticks. display_e06/e1: white background, rt1, a yellow lines rep (object ln) and a black label (lb) beside a cartoon under a bright white rig, metal_exposure 0.6 or 1; nocartoon: the cartoon hidden (the cartoon's footprint). unlit (rt1): a bright cartoon with magenta, white and navy lines reps (objects ln, lw, ld; line_width 4) and a label (lb; round 0 drew it magenta). below_i04: the key and rim at intensity 0.4. cont_<preset>: the lights preset over cartoon and organic sticks. edges: a back rim at 3.5 and a dim front light. fog: depth_cue 1, white background, rt1. export: ray_opaque_background 0. oit: a 50% transparent surface over the cartoon plus a glass surface (object g) at 3.5. haze683_e1/e05/noair: #618's L4 rig (three_point, its key shadowed) with haze 0.35 and dust 0.6 (noair: none) at metal_exposure 1 and 0.5, for #683. aces: sweep_3p5 at metal_tonemap 1. Checked in CI by testing/tests/raymol/lighting_hdr_check.py.",
+ "base": null,
+ "rig": "on",
+ "size": [
+  1280,
+  720
+ ],
+ "extra": [
+  "import math as _l624_math",
+  "_l624_mn, _l624_mx = cmd.get_extent('m')",
+  "_l624_c = [(a + b) / 2.0 for a, b in zip(_l624_mn, _l624_mx)]",
+  "_l624_s = _l624_math.sqrt(sum((b - a) ** 2 for a, b in zip(_l624_mn, _l624_mx))) / 2.0",
+  "_l624_opt = lambda name, value: cmd.set(name, value) if name in cmd.setting.get_name_list() else None",
+  "if not hasattr(cmd, '_l624_set'): cmd._l624_set = cmd.set_lights",
+  "cmd.set_lights = lambda rig, _c=cmd: _c._l624_set(rig if getattr(_c, '_l624_rig', None) is None else (_c._l624_rig(rig) if callable(_c._l624_rig) else _c._l624_rig))",
+  "_l624_air0 = {'haze': 0.0, 'dust': 0.0, 'dust_size': 0.35, 'dust_speed': 1.0, 'scatter': 0.55, 'seed': 7}",
+  "_l624_make = lambda lights, ambient=0.06, **air: {'version': 1, 'enabled': True, 'ambient': ambient, 'classic': 0.0, 'centre': list(_l624_c), 'size': _l624_s, 'lights': lights, 'air': dict(_l624_air0, **air)}",
+  "_l624_I = lambda light, intensity: dict(light, intensity=intensity)",
+  "_l624_x = lambda light, scale: dict(light, intensity=light['intensity'] * scale)",
+  "_l624_spot = {'name': 'spot', 'orbit': -25.0, 'pitch': 35.0, 'radius': 3.0, 'beam': 40.0, 'softness': 0.4, 'warmth': 5600.0, 'intensity': 1.2, 'highlight': 0.7, 'shadow': True}",
+  "_l624_rec = dict(_l624_spot, beam=60.0, softness=0.5)",
+  "_l624_key = {'name': 'key', 'orbit': -45.0, 'pitch': 35.0, 'radius': 3.0, 'beam': 40.0, 'softness': 0.5, 'color': [1.0, 0.55, 0.2], 'intensity': 1.6, 'highlight': 0.8}",
+  "_l624_rim = {'name': 'rim', 'orbit': 120.0, 'pitch': 20.0, 'radius': 3.0, 'beam': 50.0, 'softness': 0.4, 'color': [0.2, 0.8, 1.0], 'intensity': 2.0, 'highlight': 1.0}",
+  "_l624_white = {'name': 'key', 'orbit': -40.0, 'pitch': 30.0, 'radius': 3.0, 'beam': 55.0, 'softness': 0.5, 'intensity': 1.0, 'highlight': 0.7}",
+  "_l624_wrim = {'name': 'rim', 'orbit': 150.0, 'pitch': 25.0, 'radius': 3.0, 'beam': 50.0, 'softness': 0.4, 'intensity': 0.8, 'highlight': 0.7}",
+  "_l624_back = {'name': 'back', 'orbit': 165.0, 'pitch': 20.0, 'radius': 3.0, 'beam': 60.0, 'softness': 0.4, 'intensity': 3.5, 'highlight': 1.0}",
+  "_l624_front = {'name': 'front', 'orbit': 10.0, 'pitch': 5.0, 'radius': 3.0, 'beam': 80.0, 'softness': 0.8, 'intensity': 0.3, 'highlight': 0.0}",
+  "_l624_red = {'name': 'red', 'orbit': -80.0, 'pitch': 25.0, 'radius': 3.0, 'beam': 28.0, 'softness': 0.3, 'color': [1.0, 0.05, 0.0], 'intensity': 3.0, 'highlight': 0.0, 'shadow': True}",
+  "_l624_blue = {'name': 'blue', 'orbit': 100.0, 'pitch': -25.0, 'radius': 3.0, 'beam': 28.0, 'softness': 0.3, 'color': [0.0, 0.05, 1.0], 'intensity': 3.0, 'highlight': 0.0, 'shadow': True}",
+  "_l624_preset = lambda name, **air: (setattr(cmd, '_l624_rig', None), cmd.lights(name), dict(cmd.get_lights(), centre=list(_l624_c), size=_l624_s, air=dict(_l624_air0, **air)))[2]",
+  "_l624_tube = lambda: (cmd.load_cgo([6.0, 0.8, 0.8, 0.8, 66.0] + [p[i] + _l624_c[i] for p in [(-14.0, -8.0, 0.0), (-5.0, 14.0, 4.0), (5.0, -14.0, -4.0), (14.0, 8.0, 0.0)] for i in range(3)], 'tube', zoom=0), cmd.set('cartoon_tube_radius', 1.5))",
+  "cmd.set_color('l624_gold', [0.95, 0.70, 0.25])",
+  "cmd.set_color('l624_orange', [0.85, 0.45, 0.10])",
+  "cmd.set_color('l624_navy', [0.0, 0.0, 0.35])",
+  "cmd.set('depth_cue', 0)",
+  "cmd.set('metal_light_air_time', 2.0)",
+  "cmd.set('metal_light_air_resolution', 1)"
+ ],
+ "scenes": [
+  {
+   "tag": "sweep_0_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_spot, 0.0)])"
+   ]
+  },
+  {
+   "tag": "sweep_0p6_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_spot, 0.6)])"
+   ]
+  },
+  {
+   "tag": "sweep_0p6_knee_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_spot, 0.6)])"
+   ]
+  },
+  {
+   "tag": "sweep_0p6_e05_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('metal_exposure', 0.5)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_spot, 0.6)])"
+   ]
+  },
+  {
+   "tag": "sweep_1p2_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_spot, 1.2)])"
+   ]
+  },
+  {
+   "tag": "sweep_1p2_knee_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_spot, 1.2)])"
+   ]
+  },
+  {
+   "tag": "sweep_1p2_e05_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('metal_exposure', 0.5)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_spot, 1.2)])"
+   ]
+  },
+  {
+   "tag": "sweep_2p0_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_spot, 2.0)])"
+   ]
+  },
+  {
+   "tag": "sweep_2p0_knee_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_spot, 2.0)])"
+   ]
+  },
+  {
+   "tag": "sweep_2p0_e05_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('metal_exposure', 0.5)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_spot, 2.0)])"
+   ]
+  },
+  {
+   "tag": "sweep_3p5_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_spot, 3.5)])"
+   ]
+  },
+  {
+   "tag": "sweep_3p5_knee_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_spot, 3.5)])"
+   ]
+  },
+  {
+   "tag": "sweep_3p5_e05_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('metal_exposure', 0.5)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_spot, 3.5)])"
+   ]
+  },
+  {
+   "tag": "sweep_3p5_e05_knee_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('metal_exposure', 0.5)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_spot, 3.5)])"
+   ]
+  },
+  {
+   "tag": "sweep_3p5_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_spot, 3.5)])"
+   ]
+  },
+  {
+   "tag": "sweep_3p5_knee_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_spot, 3.5)])"
+   ]
+  },
+  {
+   "tag": "rec_surface_a_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('metal_exposure', 4.0 / 7.0)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_rec, 3.5)], ambient=0.0)"
+   ]
+  },
+  {
+   "tag": "rec_surface_a_knee_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('metal_exposure', 4.0 / 7.0)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_rec, 3.5)], ambient=0.0)"
+   ]
+  },
+  {
+   "tag": "rec_surface_b_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('metal_exposure', 1.0)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_rec, 2.0)], ambient=0.0)"
+   ]
+  },
+  {
+   "tag": "rec_surface_b_knee_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('metal_exposure', 1.0)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_rec, 2.0)], ambient=0.0)"
+   ]
+  },
+  {
+   "tag": "rec_cartoon_a_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('metal_exposure', 4.0 / 7.0)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_rec, 3.5)], ambient=0.0)"
+   ]
+  },
+  {
+   "tag": "rec_cartoon_a_knee_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('metal_exposure', 4.0 / 7.0)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_rec, 3.5)], ambient=0.0)"
+   ]
+  },
+  {
+   "tag": "rec_cartoon_b_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('metal_exposure', 1.0)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_rec, 2.0)], ambient=0.0)"
+   ]
+  },
+  {
+   "tag": "rec_cartoon_b_knee_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('metal_exposure', 1.0)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_rec, 2.0)], ambient=0.0)"
+   ]
+  },
+  {
+   "tag": "rec_sticks_a_rt0",
+   "from": "sticks_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 0)",
+    "cmd.set('metal_exposure', 4.0 / 7.0)",
+    "cmd._l624_rig = _l624_make([_l624_I(dict(_l624_rec, shadow=False), 3.5)], ambient=0.0)"
+   ]
+  },
+  {
+   "tag": "rec_sticks_b_rt0",
+   "from": "sticks_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 0)",
+    "cmd.set('metal_exposure', 1.0)",
+    "cmd._l624_rig = _l624_make([_l624_I(dict(_l624_rec, shadow=False), 2.0)], ambient=0.0)"
+   ]
+  },
+  {
+   "tag": "rec_spheres_a_rt0",
+   "from": "spheres_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 0)",
+    "cmd.set('metal_exposure', 4.0 / 7.0)",
+    "cmd._l624_rig = _l624_make([_l624_I(dict(_l624_rec, shadow=False), 3.5)], ambient=0.0)"
+   ]
+  },
+  {
+   "tag": "rec_spheres_b_rt0",
+   "from": "spheres_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 0)",
+    "cmd.set('metal_exposure', 1.0)",
+    "cmd._l624_rig = _l624_make([_l624_I(dict(_l624_rec, shadow=False), 2.0)], ambient=0.0)"
+   ]
+  },
+  {
+   "tag": "rec_tube_a_rt0",
+   "rt": 0,
+   "lines": [
+    "_l624_tube()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd.set('metal_exposure', 4.0 / 7.0)",
+    "cmd._l624_rig = _l624_make([_l624_I(dict(_l624_rec, shadow=False), 3.5)], ambient=0.0)"
+   ]
+  },
+  {
+   "tag": "rec_tube_b_rt0",
+   "rt": 0,
+   "lines": [
+    "_l624_tube()",
+    "cmd.set('metal_shadows', 0)",
+    "cmd.set('metal_exposure', 1.0)",
+    "cmd._l624_rig = _l624_make([_l624_I(dict(_l624_rec, shadow=False), 2.0)], ambient=0.0)"
+   ]
+  },
+  {
+   "tag": "rec_surface_a_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('metal_exposure', 4.0 / 7.0)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_rec, 3.5)], ambient=0.0)"
+   ]
+  },
+  {
+   "tag": "rec_surface_b_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('metal_exposure', 1.0)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_rec, 2.0)], ambient=0.0)"
+   ]
+  },
+  {
+   "tag": "rec_air_a_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('metal_exposure', 4.0 / 7.0)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_rec, 3.5)], ambient=0.0, haze=0.3)"
+   ]
+  },
+  {
+   "tag": "rec_air_a_knee_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('metal_exposure', 4.0 / 7.0)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_rec, 3.5)], ambient=0.0, haze=0.3)"
+   ]
+  },
+  {
+   "tag": "rec_air_b_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('metal_exposure', 1.0)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_rec, 2.0)], ambient=0.0, haze=0.3)"
+   ]
+  },
+  {
+   "tag": "rec_air_b_knee_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('metal_exposure', 1.0)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_rec, 2.0)], ambient=0.0, haze=0.3)"
+   ]
+  },
+  {
+   "tag": "hue_x1_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd._l624_rig = _l624_make([_l624_x(_l624_key, 1.0), _l624_I(_l624_rim, 1.6)])"
+   ]
+  },
+  {
+   "tag": "hue_x1_knee_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd._l624_rig = _l624_make([_l624_x(_l624_key, 1.0), _l624_I(_l624_rim, 1.6)])"
+   ]
+  },
+  {
+   "tag": "hue_x2p5_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd._l624_rig = _l624_make([_l624_x(_l624_key, 2.5), _l624_I(_l624_rim, 4.0)])"
+   ]
+  },
+  {
+   "tag": "hue_x2p5_knee_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd._l624_rig = _l624_make([_l624_x(_l624_key, 2.5), _l624_I(_l624_rim, 4.0)])"
+   ]
+  },
+  {
+   "tag": "peak_metallic_i1_rt0",
+   "rt": 0,
+   "lines": [
+    "cmd.show('surface', 'm and polymer and resi 1-60')",
+    "cmd.show('spheres', 'm and not hydro and not resi 1-60')",
+    "cmd.color('l624_gold', 'm')",
+    "cmd.set('surface_material', 'metallic', 'm')",
+    "cmd.set('sphere_material', 'metallic', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 1.0)])"
+   ]
+  },
+  {
+   "tag": "peak_metallic_i1_knee_rt0",
+   "rt": 0,
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.show('surface', 'm and polymer and resi 1-60')",
+    "cmd.show('spheres', 'm and not hydro and not resi 1-60')",
+    "cmd.color('l624_gold', 'm')",
+    "cmd.set('surface_material', 'metallic', 'm')",
+    "cmd.set('sphere_material', 'metallic', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 1.0)])"
+   ]
+  },
+  {
+   "tag": "peak_metallic_i1_e05_rt0",
+   "rt": 0,
+   "lines": [
+    "cmd.show('surface', 'm and polymer and resi 1-60')",
+    "cmd.show('spheres', 'm and not hydro and not resi 1-60')",
+    "cmd.color('l624_gold', 'm')",
+    "cmd.set('surface_material', 'metallic', 'm')",
+    "cmd.set('sphere_material', 'metallic', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd.set('metal_exposure', 0.5)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 1.0)])"
+   ]
+  },
+  {
+   "tag": "peak_metallic_i2_rt0",
+   "rt": 0,
+   "lines": [
+    "cmd.show('surface', 'm and polymer and resi 1-60')",
+    "cmd.show('spheres', 'm and not hydro and not resi 1-60')",
+    "cmd.color('l624_gold', 'm')",
+    "cmd.set('surface_material', 'metallic', 'm')",
+    "cmd.set('sphere_material', 'metallic', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 2.0)])"
+   ]
+  },
+  {
+   "tag": "peak_metallic_i2_knee_rt0",
+   "rt": 0,
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.show('surface', 'm and polymer and resi 1-60')",
+    "cmd.show('spheres', 'm and not hydro and not resi 1-60')",
+    "cmd.color('l624_gold', 'm')",
+    "cmd.set('surface_material', 'metallic', 'm')",
+    "cmd.set('sphere_material', 'metallic', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 2.0)])"
+   ]
+  },
+  {
+   "tag": "peak_metallic_i2_e05_rt0",
+   "rt": 0,
+   "lines": [
+    "cmd.show('surface', 'm and polymer and resi 1-60')",
+    "cmd.show('spheres', 'm and not hydro and not resi 1-60')",
+    "cmd.color('l624_gold', 'm')",
+    "cmd.set('surface_material', 'metallic', 'm')",
+    "cmd.set('sphere_material', 'metallic', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd.set('metal_exposure', 0.5)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 2.0)])"
+   ]
+  },
+  {
+   "tag": "peak_metallic_i3_rt0",
+   "rt": 0,
+   "lines": [
+    "cmd.show('surface', 'm and polymer and resi 1-60')",
+    "cmd.show('spheres', 'm and not hydro and not resi 1-60')",
+    "cmd.color('l624_gold', 'm')",
+    "cmd.set('surface_material', 'metallic', 'm')",
+    "cmd.set('sphere_material', 'metallic', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 3.0)])"
+   ]
+  },
+  {
+   "tag": "peak_metallic_i3_knee_rt0",
+   "rt": 0,
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.show('surface', 'm and polymer and resi 1-60')",
+    "cmd.show('spheres', 'm and not hydro and not resi 1-60')",
+    "cmd.color('l624_gold', 'm')",
+    "cmd.set('surface_material', 'metallic', 'm')",
+    "cmd.set('sphere_material', 'metallic', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 3.0)])"
+   ]
+  },
+  {
+   "tag": "peak_metallic_i3_e05_rt0",
+   "rt": 0,
+   "lines": [
+    "cmd.show('surface', 'm and polymer and resi 1-60')",
+    "cmd.show('spheres', 'm and not hydro and not resi 1-60')",
+    "cmd.color('l624_gold', 'm')",
+    "cmd.set('surface_material', 'metallic', 'm')",
+    "cmd.set('sphere_material', 'metallic', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd.set('metal_exposure', 0.5)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 3.0)])"
+   ]
+  },
+  {
+   "tag": "peak_plastic_i1_rt0",
+   "rt": 0,
+   "lines": [
+    "cmd.show('surface', 'm and polymer and resi 1-60')",
+    "cmd.show('spheres', 'm and not hydro and not resi 1-60')",
+    "cmd.color('l624_orange', 'm')",
+    "cmd.set('surface_material', 'plastic', 'm')",
+    "cmd.set('sphere_material', 'plastic', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 1.0)])"
+   ]
+  },
+  {
+   "tag": "peak_plastic_i1_knee_rt0",
+   "rt": 0,
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.show('surface', 'm and polymer and resi 1-60')",
+    "cmd.show('spheres', 'm and not hydro and not resi 1-60')",
+    "cmd.color('l624_orange', 'm')",
+    "cmd.set('surface_material', 'plastic', 'm')",
+    "cmd.set('sphere_material', 'plastic', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 1.0)])"
+   ]
+  },
+  {
+   "tag": "peak_plastic_i1_e05_rt0",
+   "rt": 0,
+   "lines": [
+    "cmd.show('surface', 'm and polymer and resi 1-60')",
+    "cmd.show('spheres', 'm and not hydro and not resi 1-60')",
+    "cmd.color('l624_orange', 'm')",
+    "cmd.set('surface_material', 'plastic', 'm')",
+    "cmd.set('sphere_material', 'plastic', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd.set('metal_exposure', 0.5)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 1.0)])"
+   ]
+  },
+  {
+   "tag": "peak_plastic_i2_rt0",
+   "rt": 0,
+   "lines": [
+    "cmd.show('surface', 'm and polymer and resi 1-60')",
+    "cmd.show('spheres', 'm and not hydro and not resi 1-60')",
+    "cmd.color('l624_orange', 'm')",
+    "cmd.set('surface_material', 'plastic', 'm')",
+    "cmd.set('sphere_material', 'plastic', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 2.0)])"
+   ]
+  },
+  {
+   "tag": "peak_plastic_i2_knee_rt0",
+   "rt": 0,
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.show('surface', 'm and polymer and resi 1-60')",
+    "cmd.show('spheres', 'm and not hydro and not resi 1-60')",
+    "cmd.color('l624_orange', 'm')",
+    "cmd.set('surface_material', 'plastic', 'm')",
+    "cmd.set('sphere_material', 'plastic', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 2.0)])"
+   ]
+  },
+  {
+   "tag": "peak_plastic_i2_e05_rt0",
+   "rt": 0,
+   "lines": [
+    "cmd.show('surface', 'm and polymer and resi 1-60')",
+    "cmd.show('spheres', 'm and not hydro and not resi 1-60')",
+    "cmd.color('l624_orange', 'm')",
+    "cmd.set('surface_material', 'plastic', 'm')",
+    "cmd.set('sphere_material', 'plastic', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd.set('metal_exposure', 0.5)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 2.0)])"
+   ]
+  },
+  {
+   "tag": "peak_plastic_i3_rt0",
+   "rt": 0,
+   "lines": [
+    "cmd.show('surface', 'm and polymer and resi 1-60')",
+    "cmd.show('spheres', 'm and not hydro and not resi 1-60')",
+    "cmd.color('l624_orange', 'm')",
+    "cmd.set('surface_material', 'plastic', 'm')",
+    "cmd.set('sphere_material', 'plastic', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 3.0)])"
+   ]
+  },
+  {
+   "tag": "peak_plastic_i3_knee_rt0",
+   "rt": 0,
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.show('surface', 'm and polymer and resi 1-60')",
+    "cmd.show('spheres', 'm and not hydro and not resi 1-60')",
+    "cmd.color('l624_orange', 'm')",
+    "cmd.set('surface_material', 'plastic', 'm')",
+    "cmd.set('sphere_material', 'plastic', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 3.0)])"
+   ]
+  },
+  {
+   "tag": "peak_plastic_i3_e05_rt0",
+   "rt": 0,
+   "lines": [
+    "cmd.show('surface', 'm and polymer and resi 1-60')",
+    "cmd.show('spheres', 'm and not hydro and not resi 1-60')",
+    "cmd.color('l624_orange', 'm')",
+    "cmd.set('surface_material', 'plastic', 'm')",
+    "cmd.set('sphere_material', 'plastic', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd.set('metal_exposure', 0.5)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 3.0)])"
+   ]
+  },
+  {
+   "tag": "peak_metallic_i3_e067_rt0",
+   "rt": 0,
+   "lines": [
+    "cmd.show('surface', 'm and polymer and resi 1-60')",
+    "cmd.show('spheres', 'm and not hydro and not resi 1-60')",
+    "cmd.color('l624_gold', 'm')",
+    "cmd.set('surface_material', 'metallic', 'm')",
+    "cmd.set('sphere_material', 'metallic', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd.set('metal_exposure', 2.0 / 3.0)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 3.0)])"
+   ]
+  },
+  {
+   "tag": "peak_metallic_i3_e067_knee_rt0",
+   "rt": 0,
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.show('surface', 'm and polymer and resi 1-60')",
+    "cmd.show('spheres', 'm and not hydro and not resi 1-60')",
+    "cmd.color('l624_gold', 'm')",
+    "cmd.set('surface_material', 'metallic', 'm')",
+    "cmd.set('sphere_material', 'metallic', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd.set('metal_exposure', 2.0 / 3.0)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 3.0)])"
+   ]
+  },
+  {
+   "tag": "peak_metallic_i3_rt1",
+   "rt": 1,
+   "lines": [
+    "cmd.show('surface', 'm and polymer and resi 1-60')",
+    "cmd.show('spheres', 'm and not hydro and not resi 1-60')",
+    "cmd.color('l624_gold', 'm')",
+    "cmd.set('surface_material', 'metallic', 'm')",
+    "cmd.set('sphere_material', 'metallic', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 3.0)])"
+   ]
+  },
+  {
+   "tag": "peak_metallic_i3_knee_rt1",
+   "rt": 1,
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.show('surface', 'm and polymer and resi 1-60')",
+    "cmd.show('spheres', 'm and not hydro and not resi 1-60')",
+    "cmd.color('l624_gold', 'm')",
+    "cmd.set('surface_material', 'metallic', 'm')",
+    "cmd.set('sphere_material', 'metallic', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 3.0)])"
+   ]
+  },
+  {
+   "tag": "glass_i1_hl0_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('surface_material', 'glass', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 1.0), highlight=0.0), dict(_l624_x(_l624_wrim, 1.0), highlight=0.0)], ambient=0.0)"
+   ]
+  },
+  {
+   "tag": "glass_i1_hl0_knee_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.set('surface_material', 'glass', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 1.0), highlight=0.0), dict(_l624_x(_l624_wrim, 1.0), highlight=0.0)], ambient=0.0)"
+   ]
+  },
+  {
+   "tag": "glass_i1_hl1_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('surface_material', 'glass', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 1.0), highlight=1.0), dict(_l624_x(_l624_wrim, 1.0), highlight=1.0)], ambient=0.0)"
+   ]
+  },
+  {
+   "tag": "glass_i1_hl1_knee_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.set('surface_material', 'glass', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 1.0), highlight=1.0), dict(_l624_x(_l624_wrim, 1.0), highlight=1.0)], ambient=0.0)"
+   ]
+  },
+  {
+   "tag": "glass_i3_hl0_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('surface_material', 'glass', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 3.0), highlight=0.0), dict(_l624_x(_l624_wrim, 3.0), highlight=0.0)], ambient=0.0)"
+   ]
+  },
+  {
+   "tag": "glass_i3_hl0_knee_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.set('surface_material', 'glass', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 3.0), highlight=0.0), dict(_l624_x(_l624_wrim, 3.0), highlight=0.0)], ambient=0.0)"
+   ]
+  },
+  {
+   "tag": "glass_i3_hl1_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('surface_material', 'glass', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 3.0), highlight=1.0), dict(_l624_x(_l624_wrim, 3.0), highlight=1.0)], ambient=0.0)"
+   ]
+  },
+  {
+   "tag": "glass_i3_hl1_knee_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.set('surface_material', 'glass', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 3.0), highlight=1.0), dict(_l624_x(_l624_wrim, 3.0), highlight=1.0)], ambient=0.0)"
+   ]
+  },
+  {
+   "tag": "glass_dark_i1_hl1_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('black', 'm')",
+    "cmd.set('surface_material', 'glass', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 1.0), highlight=1.0), dict(_l624_x(_l624_wrim, 1.0), highlight=1.0)], ambient=0.0)"
+   ]
+  },
+  {
+   "tag": "glass_dark_i3_e033_hl1_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('black', 'm')",
+    "cmd.set('surface_material', 'glass', 'm')",
+    "cmd.set('metal_exposure', 1.0 / 3.0)",
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 3.0), highlight=1.0), dict(_l624_x(_l624_wrim, 3.0), highlight=1.0)], ambient=0.0)"
+   ]
+  },
+  {
+   "tag": "glass_dark_i1_hl1_knee_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('black', 'm')",
+    "cmd.set('surface_material', 'glass', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 1.0), highlight=1.0), dict(_l624_x(_l624_wrim, 1.0), highlight=1.0)], ambient=0.0)"
+   ]
+  },
+  {
+   "tag": "glass_dark_i3_e033_hl1_knee_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('black', 'm')",
+    "cmd.set('surface_material', 'glass', 'm')",
+    "cmd.set('metal_exposure', 1.0 / 3.0)",
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 3.0), highlight=1.0), dict(_l624_x(_l624_wrim, 3.0), highlight=1.0)], ambient=0.0)"
+   ]
+  },
+  {
+   "tag": "glass_body_i3_hl0_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('l624_orange', 'm')",
+    "cmd.set('surface_material', 'glass', 'm')",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 3.0), highlight=0.0)])"
+   ]
+  },
+  {
+   "tag": "glass_body_i3_hl0_knee_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('l624_orange', 'm')",
+    "cmd.set('surface_material', 'glass', 'm')",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 3.0), highlight=0.0)])"
+   ]
+  },
+  {
+   "tag": "glass_body_i3_hl1_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('l624_orange', 'm')",
+    "cmd.set('surface_material', 'glass', 'm')",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 3.0), highlight=1.0)])"
+   ]
+  },
+  {
+   "tag": "glass_body_i3_hl1_knee_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('l624_orange', 'm')",
+    "cmd.set('surface_material', 'glass', 'm')",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 3.0), highlight=1.0)])"
+   ]
+  },
+  {
+   "tag": "frosted_i3_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('surface_material', 'frosted_glass', 'm')",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 3.0), highlight=1.0), dict(_l624_x(_l624_wrim, 3.0), highlight=1.0)])"
+   ]
+  },
+  {
+   "tag": "frosted_i3_knee_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.set('surface_material', 'frosted_glass', 'm')",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 3.0), highlight=1.0), dict(_l624_x(_l624_wrim, 3.0), highlight=1.0)])"
+   ]
+  },
+  {
+   "tag": "jelly_i3_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('surface_material', 'jelly', 'm')",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 3.0), highlight=1.0), dict(_l624_x(_l624_wrim, 3.0), highlight=1.0)])"
+   ]
+  },
+  {
+   "tag": "jelly_i3_knee_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.set('surface_material', 'jelly', 'm')",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 3.0), highlight=1.0), dict(_l624_x(_l624_wrim, 3.0), highlight=1.0)])"
+   ]
+  },
+  {
+   "tag": "shadow_cross_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.show('sticks', 'm and organic and not hydro')",
+    "util.cbag('m and organic')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l624_rig = _l624_make([_l624_red, _l624_blue])"
+   ]
+  },
+  {
+   "tag": "shadow_cross_knee_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.show('sticks', 'm and organic and not hydro')",
+    "util.cbag('m and organic')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l624_rig = _l624_make([_l624_red, _l624_blue])"
+   ]
+  },
+  {
+   "tag": "shadow_cross_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.show('sticks', 'm and organic and not hydro')",
+    "util.cbag('m and organic')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l624_rig = _l624_make([_l624_red, _l624_blue])"
+   ]
+  },
+  {
+   "tag": "shadow_cross_knee_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.show('sticks', 'm and organic and not hydro')",
+    "util.cbag('m and organic')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd._l624_rig = _l624_make([_l624_red, _l624_blue])"
+   ]
+  },
+  {
+   "tag": "display_e06_rt1",
+   "from": "cartoon_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('bg_rgb', [1.0, 1.0, 1.0])",
+    "cmd.create('ln', 'm and resi 100-130', zoom=0)",
+    "cmd.hide('everything', 'ln')",
+    "cmd.show('lines', 'ln')",
+    "cmd.color('yellow', 'ln')",
+    "cmd.set('line_width', 3.0)",
+    "cmd.pseudoatom('lb', pos=[_l624_c[0], _l624_c[1] + 0.6 * _l624_s, _l624_c[2] + 0.5 * _l624_s], label='EXPOSURE')",
+    "cmd.hide('nonbonded', 'lb')",
+    "cmd.color('black', 'lb')",
+    "cmd.set('label_color', 'black', 'lb')",
+    "cmd.set('label_size', 36)",
+    "cmd.set('metal_exposure', 0.6)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 3.0), _l624_x(_l624_wrim, 3.0)])"
+   ]
+  },
+  {
+   "tag": "display_e06_knee_rt1",
+   "from": "cartoon_rt1",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.set('bg_rgb', [1.0, 1.0, 1.0])",
+    "cmd.create('ln', 'm and resi 100-130', zoom=0)",
+    "cmd.hide('everything', 'ln')",
+    "cmd.show('lines', 'ln')",
+    "cmd.color('yellow', 'ln')",
+    "cmd.set('line_width', 3.0)",
+    "cmd.pseudoatom('lb', pos=[_l624_c[0], _l624_c[1] + 0.6 * _l624_s, _l624_c[2] + 0.5 * _l624_s], label='EXPOSURE')",
+    "cmd.hide('nonbonded', 'lb')",
+    "cmd.color('black', 'lb')",
+    "cmd.set('label_color', 'black', 'lb')",
+    "cmd.set('label_size', 36)",
+    "cmd.set('metal_exposure', 0.6)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 3.0), _l624_x(_l624_wrim, 3.0)])"
+   ]
+  },
+  {
+   "tag": "display_e1_rt1",
+   "from": "cartoon_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('bg_rgb', [1.0, 1.0, 1.0])",
+    "cmd.create('ln', 'm and resi 100-130', zoom=0)",
+    "cmd.hide('everything', 'ln')",
+    "cmd.show('lines', 'ln')",
+    "cmd.color('yellow', 'ln')",
+    "cmd.set('line_width', 3.0)",
+    "cmd.pseudoatom('lb', pos=[_l624_c[0], _l624_c[1] + 0.6 * _l624_s, _l624_c[2] + 0.5 * _l624_s], label='EXPOSURE')",
+    "cmd.hide('nonbonded', 'lb')",
+    "cmd.color('black', 'lb')",
+    "cmd.set('label_color', 'black', 'lb')",
+    "cmd.set('label_size', 36)",
+    "cmd.set('metal_exposure', 1.0)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 3.0), _l624_x(_l624_wrim, 3.0)])"
+   ]
+  },
+  {
+   "tag": "display_e1_knee_rt1",
+   "from": "cartoon_rt1",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.set('bg_rgb', [1.0, 1.0, 1.0])",
+    "cmd.create('ln', 'm and resi 100-130', zoom=0)",
+    "cmd.hide('everything', 'ln')",
+    "cmd.show('lines', 'ln')",
+    "cmd.color('yellow', 'ln')",
+    "cmd.set('line_width', 3.0)",
+    "cmd.pseudoatom('lb', pos=[_l624_c[0], _l624_c[1] + 0.6 * _l624_s, _l624_c[2] + 0.5 * _l624_s], label='EXPOSURE')",
+    "cmd.hide('nonbonded', 'lb')",
+    "cmd.color('black', 'lb')",
+    "cmd.set('label_color', 'black', 'lb')",
+    "cmd.set('label_size', 36)",
+    "cmd.set('metal_exposure', 1.0)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 3.0), _l624_x(_l624_wrim, 3.0)])"
+   ]
+  },
+  {
+   "tag": "display_nocartoon_rt1",
+   "from": "cartoon_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('bg_rgb', [1.0, 1.0, 1.0])",
+    "cmd.create('ln', 'm and resi 100-130', zoom=0)",
+    "cmd.hide('everything', 'ln')",
+    "cmd.show('lines', 'ln')",
+    "cmd.color('yellow', 'ln')",
+    "cmd.set('line_width', 3.0)",
+    "cmd.pseudoatom('lb', pos=[_l624_c[0], _l624_c[1] + 0.6 * _l624_s, _l624_c[2] + 0.5 * _l624_s], label='EXPOSURE')",
+    "cmd.hide('nonbonded', 'lb')",
+    "cmd.color('black', 'lb')",
+    "cmd.set('label_color', 'black', 'lb')",
+    "cmd.set('label_size', 36)",
+    "cmd.hide('cartoon', 'm')",
+    "cmd.set('metal_exposure', 1.0)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 3.0), _l624_x(_l624_wrim, 3.0)])"
+   ]
+  },
+  {
+   "tag": "unlit_rt1",
+   "from": "cartoon_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.create('ln', 'm and resi 60-80', zoom=0)",
+    "cmd.create('lw', 'm and resi 120-140', zoom=0)",
+    "cmd.create('ld', 'm and resi 20-35', zoom=0)",
+    "cmd.hide('everything', 'ln or lw or ld')",
+    "cmd.show('lines', 'ln or lw or ld')",
+    "cmd.color('magenta', 'ln')",
+    "cmd.color('white', 'lw')",
+    "cmd.color('l624_navy', 'ld')",
+    "cmd.set('line_width', 4.0)",
+    "cmd.pseudoatom('lb', pos=[_l624_c[0], _l624_c[1] + 0.6 * _l624_s, _l624_c[2] + 0.5 * _l624_s], label='UNLIT')",
+    "cmd.hide('nonbonded', 'lb')",
+    "cmd.color('magenta', 'lb')",
+    "cmd.set('label_color', 'magenta', 'lb')",
+    "cmd.set('label_size', 36)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 3.0), _l624_x(_l624_wrim, 3.0)])"
+   ]
+  },
+  {
+   "tag": "unlit_knee_rt1",
+   "from": "cartoon_rt1",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.create('ln', 'm and resi 60-80', zoom=0)",
+    "cmd.create('lw', 'm and resi 120-140', zoom=0)",
+    "cmd.create('ld', 'm and resi 20-35', zoom=0)",
+    "cmd.hide('everything', 'ln or lw or ld')",
+    "cmd.show('lines', 'ln or lw or ld')",
+    "cmd.color('magenta', 'ln')",
+    "cmd.color('white', 'lw')",
+    "cmd.color('l624_navy', 'ld')",
+    "cmd.set('line_width', 4.0)",
+    "cmd.pseudoatom('lb', pos=[_l624_c[0], _l624_c[1] + 0.6 * _l624_s, _l624_c[2] + 0.5 * _l624_s], label='UNLIT')",
+    "cmd.hide('nonbonded', 'lb')",
+    "cmd.color('magenta', 'lb')",
+    "cmd.set('label_color', 'magenta', 'lb')",
+    "cmd.set('label_size', 36)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 3.0), _l624_x(_l624_wrim, 3.0)])"
+   ]
+  },
+  {
+   "tag": "below_i04_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_key, 0.4), _l624_I(_l624_rim, 0.4)])"
+   ]
+  },
+  {
+   "tag": "below_i04_knee_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_key, 0.4), _l624_I(_l624_rim, 0.4)])"
+   ]
+  },
+  {
+   "tag": "cont_three_point_rt0",
+   "from": "shadows_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.show('sticks', 'm and organic and not hydro')",
+    "util.cbag('m and organic')",
+    "cmd._l624_rig = _l624_preset('three_point')"
+   ]
+  },
+  {
+   "tag": "cont_three_point_knee_rt0",
+   "from": "shadows_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.show('sticks', 'm and organic and not hydro')",
+    "util.cbag('m and organic')",
+    "cmd._l624_rig = _l624_preset('three_point')"
+   ]
+  },
+  {
+   "tag": "cont_softbox_rt0",
+   "from": "shadows_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.show('sticks', 'm and organic and not hydro')",
+    "util.cbag('m and organic')",
+    "cmd._l624_rig = _l624_preset('softbox')"
+   ]
+  },
+  {
+   "tag": "cont_softbox_knee_rt0",
+   "from": "shadows_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.show('sticks', 'm and organic and not hydro')",
+    "util.cbag('m and organic')",
+    "cmd._l624_rig = _l624_preset('softbox')"
+   ]
+  },
+  {
+   "tag": "cont_rembrandt_rt0",
+   "from": "shadows_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.show('sticks', 'm and organic and not hydro')",
+    "util.cbag('m and organic')",
+    "cmd._l624_rig = _l624_preset('rembrandt')"
+   ]
+  },
+  {
+   "tag": "cont_rembrandt_knee_rt0",
+   "from": "shadows_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.show('sticks', 'm and organic and not hydro')",
+    "util.cbag('m and organic')",
+    "cmd._l624_rig = _l624_preset('rembrandt')"
+   ]
+  },
+  {
+   "tag": "cont_neon_rt0",
+   "from": "shadows_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.show('sticks', 'm and organic and not hydro')",
+    "util.cbag('m and organic')",
+    "cmd._l624_rig = _l624_preset('neon')"
+   ]
+  },
+  {
+   "tag": "cont_neon_knee_rt0",
+   "from": "shadows_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.show('sticks', 'm and organic and not hydro')",
+    "util.cbag('m and organic')",
+    "cmd._l624_rig = _l624_preset('neon')"
+   ]
+  },
+  {
+   "tag": "edges_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd._l624_rig = _l624_make([_l624_back, _l624_front])"
+   ]
+  },
+  {
+   "tag": "edges_knee_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd._l624_rig = _l624_make([_l624_back, _l624_front])"
+   ]
+  },
+  {
+   "tag": "fog_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('depth_cue', 1)",
+    "cmd.set('bg_rgb', [1.0, 1.0, 1.0])",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 3.0), _l624_x(_l624_wrim, 3.0)])"
+   ]
+  },
+  {
+   "tag": "fog_knee_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.set('depth_cue', 1)",
+    "cmd.set('bg_rgb', [1.0, 1.0, 1.0])",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 3.0), _l624_x(_l624_wrim, 3.0)])"
+   ]
+  },
+  {
+   "tag": "export_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('ray_opaque_background', 0)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 3.5), _l624_x(_l624_wrim, 3.5)])"
+   ]
+  },
+  {
+   "tag": "export_knee_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.set('ray_opaque_background', 0)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 3.5), _l624_x(_l624_wrim, 3.5)])"
+   ]
+  },
+  {
+   "tag": "export_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('ray_opaque_background', 0)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 3.5), _l624_x(_l624_wrim, 3.5)])"
+   ]
+  },
+  {
+   "tag": "export_knee_rt1",
+   "from": "surface_rt1",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.set('ray_opaque_background', 0)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 3.5), _l624_x(_l624_wrim, 3.5)])"
+   ]
+  },
+  {
+   "tag": "oit_rt0",
+   "from": "transparent_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.create('g', 'm and resi 100-140', zoom=0)",
+    "cmd.hide('everything', 'g')",
+    "cmd.show('surface', 'g')",
+    "cmd.set('surface_material', 'glass', 'g')",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 3.5), _l624_x(_l624_wrim, 3.5)])"
+   ]
+  },
+  {
+   "tag": "oit_knee_rt0",
+   "from": "transparent_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.create('g', 'm and resi 100-140', zoom=0)",
+    "cmd.hide('everything', 'g')",
+    "cmd.show('surface', 'g')",
+    "cmd.set('surface_material', 'glass', 'g')",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 3.5), _l624_x(_l624_wrim, 3.5)])"
+   ]
+  },
+  {
+   "tag": "oit_rt1",
+   "from": "transparent_rt1",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.create('g', 'm and resi 100-140', zoom=0)",
+    "cmd.hide('everything', 'g')",
+    "cmd.show('surface', 'g')",
+    "cmd.set('surface_material', 'glass', 'g')",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 3.5), _l624_x(_l624_wrim, 3.5)])"
+   ]
+  },
+  {
+   "tag": "oit_knee_rt1",
+   "from": "transparent_rt1",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.create('g', 'm and resi 100-140', zoom=0)",
+    "cmd.hide('everything', 'g')",
+    "cmd.show('surface', 'g')",
+    "cmd.set('surface_material', 'glass', 'g')",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 3.5), _l624_x(_l624_wrim, 3.5)])"
+   ]
+  },
+  {
+   "tag": "haze683_e1_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.show('sticks', 'm and organic and not hydro')",
+    "util.cbag('m and organic')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('metal_exposure', 1.0)",
+    "cmd._l624_rig = _l624_preset('three_point', haze=0.35, dust=0.6)"
+   ]
+  },
+  {
+   "tag": "haze683_e1_knee_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.show('sticks', 'm and organic and not hydro')",
+    "util.cbag('m and organic')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('metal_exposure', 1.0)",
+    "cmd._l624_rig = _l624_preset('three_point', haze=0.35, dust=0.6)"
+   ]
+  },
+  {
+   "tag": "haze683_e05_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.show('sticks', 'm and organic and not hydro')",
+    "util.cbag('m and organic')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('metal_exposure', 0.5)",
+    "cmd._l624_rig = _l624_preset('three_point', haze=0.35, dust=0.6)"
+   ]
+  },
+  {
+   "tag": "haze683_e05_knee_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.show('sticks', 'm and organic and not hydro')",
+    "util.cbag('m and organic')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('metal_exposure', 0.5)",
+    "cmd._l624_rig = _l624_preset('three_point', haze=0.35, dust=0.6)"
+   ]
+  },
+  {
+   "tag": "haze683_noair_rt0",
+   "from": "cartoon_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.show('sticks', 'm and organic and not hydro')",
+    "util.cbag('m and organic')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('metal_exposure', 1.0)",
+    "cmd._l624_rig = _l624_preset('three_point')"
+   ]
+  },
+  {
+   "tag": "aces_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('metal_tonemap', 1)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_spot, 3.5)])"
+   ]
+  },
+  {
+   "tag": "aces_knee_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('metal_tonemap', 1)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_spot, 3.5)])"
+   ]
+  }
+ ]
+}

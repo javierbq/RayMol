@@ -394,16 +394,25 @@ class TestLightResponse(MaterialMSLCase):
         self.assertNotIn('light_response', helpers)
         for name in helpers:
             sig, body = self.material[name]
-            self.assertEqual((digest(sig), digest(body)),
+            # #624's edits (light_finish's exposure and HDR arm, the glints'
+            # HDR arm) put back: with kLightHdr false they are #613's
+            self.assertEqual((digest(_shadow.without_hdr(sig)),
+                              digest(_shadow.without_hdr(body))),
                              _shadow.MASTER_613[('kMaterialSrc', name)], name)
         knee_sig, knee_body = self.material['mat_soft_knee']
         self.assertEqual((digest(knee_sig), digest(knee_body)), MASTER_SOFT_KNEE)
 
     def testTheRayTracerIsUntouched(self):
         """kRTSrc keeps its #613 copies (and the neutral response) byte for
-        byte: master's whole-literal digest."""
-        self.assertEqual(digest(strip_comments(self.msl['kRTSrc'])),
-                         _air.MASTER_LITERALS['kRTSrc'])
+        byte: master's whole-literal digest, once #624's tone field in its
+        LightRigU mirror is taken out (lighting_air_msl.py TONE_FIELD_624) and
+        #624's HDR edits put back (without_hdr_624: kLightHdr, the tone
+        helpers' copies, light_finish's exposure and HDR arm)."""
+        rt_code = strip_comments(self.msl['kRTSrc'])
+        self.assertEqual(len(_air.TONE_FIELD_624.findall(rt_code)), 1)
+        rt_code, _ = _air.without_hdr_624(
+            _air.TONE_FIELD_624.sub('', rt_code, count=1))
+        self.assertEqual(digest(rt_code), _air.MASTER_LITERALS['kRTSrc'])
         rt = msl_functions(self.msl['kRTSrc'])
         self.assertNotIn('light_response', rt)
         self.assertNotRegex(strip_comments(self.msl['kRTSrc']), r'\bMaterialU\b')

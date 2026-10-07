@@ -28,6 +28,7 @@
 #include "LightRigBlock.h"
 #include "LightShading.h"
 #include "LightShadows.h"
+#include "LightTone.h"
 #include "Result.h"
 
 struct PyMOLGlobals;
@@ -174,6 +175,16 @@ struct SceneLightFrame {
  */
 SceneLightFrame SceneLightsFrame(PyMOLGlobals* G, const glm::dmat4& worldToEye,
     const pymol::LightShadowGridOverride* grid = nullptr);
+
+/**
+ * HDR (#624): fill `block.tone` for a frame whose rig is on: x the exposure
+ * (LightToneExposure of metal_exposure), y 1 for HDR else 0 (LightHdrOn of
+ * metal_light_hdr, with the platform's default), z and w 0. Reads those two
+ * settings and nothing else. SceneLightsFrame calls it only when the rig is
+ * on (frame.rig), so with no rig, or a rig that is off, neither setting is
+ * read.
+ */
+void SceneLightsToneFill(PyMOLGlobals* G, pymol::LightRigBlock& block);
 
 /* ---- The air (#618) ------------------------------------------------------
  * Haze and dust, drawn by the Metal renderer's air pass. SceneRenderMetal
