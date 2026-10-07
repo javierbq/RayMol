@@ -3122,9 +3122,10 @@ final class PyMOLEngine: ObservableObject {
     /// The one Lights model: the rig mirror, the shared light selection, the
     /// identity colours, the entry snapshot and the bar's actions. Built on first
     /// use, like ``predictController``. Continuous edits go through the bridge
-    /// setters only (no Python per drag tick, #610); button presses run a `lights`
-    /// console command, and Revert or Revert this light one Python call
-    /// (pymol.appkit_lights.restore / restore_light).
+    /// setters only (no Python per drag tick, #610), the Atmosphere card's air
+    /// too (index -1, #726); button presses run a `lights` console command (the
+    /// card's switch an `atmosphere` one), and Revert or Revert this light one
+    /// Python call (pymol.appkit_lights.restore / restore_light).
     lazy var lightsController: LightsController = {
         // LightsController is @MainActor; lazy vars run in a nonisolated context.
         // assumeIsolated is safe: it is first reached from setInteractionMode or a
@@ -3140,6 +3141,9 @@ final class PyMOLEngine: ObservableObject {
                 },
                 perform: { [weak self] action in self?.performLightsAction(action) },
                 loadPresets: { [weak self] in self?.loadLightPresets() ?? [] },
+                // Read in the presets' Python call (loadLightTables), so the
+                // first entry makes one Python call for both.
+                loadAirFields: { [weak self] in self?.loadAirFields() ?? [] },
                 isReady: { [weak self] in self?.isReady ?? false },
                 // A movie export reads the rig off the main thread; bridge light
                 // calls are main-thread only, so the controller keeps off it.
@@ -3268,15 +3272,20 @@ final class PyMOLEngine: ObservableObject {
 
     /// The preset menu, read once per process (empty until a read succeeds).
     private var cachedLightPresets: [LightPreset] = []
+    /// The air rows of the rig's field table (the Atmosphere card's ranges and
+    /// defaults, #726), read once per process (empty until a read succeeds).
+    private var cachedAirFields: [AirField] = []
 
-    /// Run one Lights bar button press: its `lights` console command (echoed in the
-    /// console like a typed one, so the bar teaches the command) or, for Revert,
-    /// one Python call. Never called per drag tick.
+    /// Run one Lights button press: its `lights` or `atmosphere` console command
+    /// (echoed in the console like a typed one, so the bar and the Atmosphere
+    /// card teach the command) or, for Revert, one Python call. Never called
+    /// per drag tick.
     func performLightsAction(_ action: LightsAction) {
         guard let invocation = action.invocation else {
-            // Names come from the core (which enforces the same rule) and presets
-            // from #612's table, so this is defence in depth: run nothing.
-            logLine(" lights: not a light or preset name; nothing was run")
+            // Names come from the core (which enforces the same rule), presets
+            // from #612's table and air values from the rig and the field
+            // table, so this is defence in depth: run nothing.
+            logLine(action.rejectionLine)
             return
         }
         switch invocation {
@@ -3286,22 +3295,51 @@ final class PyMOLEngine: ObservableObject {
         requestViewportRedraw()
     }
 
-    /// The `lights` presets for the bar's menu, in display order: one Python call
-    /// (pymol.appkit_lights.write_presets into a temp file, the noteResidues
-    /// pattern), then cached for the process. Empty when the read failed, so the
-    /// next entry into the mode tries again.
+    /// The `lights` presets for the bar's menu, in display order, cached for the
+    /// process. Read by `loadLightTables()` (one Python call, which also reads
+    /// the air fields) only while the cache is empty, so a failed read is
+    /// retried at the next entry into the mode.
     func loadLightPresets() -> [LightPreset] {
-        if !cachedLightPresets.isEmpty { return cachedLightPresets }
-        guard isReady else { return [] }
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("raymol-light-presets-\(UUID().uuidString).json")
-        defer { try? FileManager.default.removeItem(at: url) }
-        let encodedPath = Data(url.path.utf8).base64EncodedString()
-        runPython("from pymol import appkit_lights as _al\n_al.write_presets('\(encodedPath)')")
-        guard let data = try? Data(contentsOf: url),
-              let presets = try? LightPreset.decodeList(data) else { return [] }
-        cachedLightPresets = presets
-        return presets
+        if cachedLightPresets.isEmpty { loadLightTables() }
+        return cachedLightPresets
+    }
+
+    /// The air rows of the rig's field table for the Atmosphere card (#726),
+    /// cached for the process. Read by `loadLightTables()` only while the cache
+    /// is empty: on a first entry the presets' read has already filled it.
+    func loadAirFields() -> [AirField] {
+        if cachedAirFields.isEmpty { loadLightTables() }
+        return cachedAirFields
+    }
+
+    /// Read the preset menu and the air field table in ONE Python call
+    /// (pymol.appkit_lights.write_presets and write_air_fields into two temp
+    /// files, the noteResidues pattern). Each cache is filled only by a read
+    /// that decodes and is not empty; a failed one stays empty (the helper
+    /// prints one console line).
+    private func loadLightTables() {
+        guard isReady else { return }
+        let directory = FileManager.default.temporaryDirectory
+        let token = UUID().uuidString
+        let presetsURL = directory.appendingPathComponent("raymol-light-presets-\(token).json")
+        let airURL = directory.appendingPathComponent("raymol-light-air-\(token).json")
+        defer {
+            try? FileManager.default.removeItem(at: presetsURL)
+            try? FileManager.default.removeItem(at: airURL)
+        }
+        let presetsPath = Data(presetsURL.path.utf8).base64EncodedString()
+        let airPath = Data(airURL.path.utf8).base64EncodedString()
+        runPython("from pymol import appkit_lights as _al\n"
+                  + "_al.write_presets('\(presetsPath)')\n"
+                  + "_al.write_air_fields('\(airPath)')")
+        if let data = try? Data(contentsOf: presetsURL),
+           let presets = try? LightPreset.decodeList(data), !presets.isEmpty {
+            cachedLightPresets = presets
+        }
+        if let data = try? Data(contentsOf: airURL),
+           let fields = try? AirField.decodeList(data), !fields.isEmpty {
+            cachedAirFields = fields
+        }
     }
 
     /// A command that replaces the whole document ends Lights mode the way Done
@@ -4794,11 +4832,13 @@ extension LightsAction {
     }
 
     /// The command or Python for this action; nil when a name is not a light or
-    /// preset name, so nothing is run (no quoting is ever needed). The command
-    /// strings are pinned by LightsActionInvocationTests and, run through the
-    /// core, by testing/tests/raymol/lighting_mode.py TestBarCommands (the
-    /// highlight strings by lighting_gizmo.py TestHighlightCommand): change
-    /// them together.
+    /// preset name, or an air value is not one the `atmosphere` command takes,
+    /// so nothing is run (no quoting is ever needed). The command strings are
+    /// pinned by LightsActionInvocationTests and, run through the core, by
+    /// testing/tests/raymol/lighting_mode.py TestBarCommands (the highlight
+    /// strings by lighting_gizmo.py TestHighlightCommand, the Atmosphere
+    /// card's by lighting_atmosphere.py TestCardCommands): change them
+    /// together.
     var invocation: Invocation? {
         switch self {
         case .add:
@@ -4835,6 +4875,24 @@ extension LightsAction {
             }
             if pin { command += ", pin=1" }
             return .command(command)
+        case .atmosphereOff:
+            return .command("atmosphere off")
+        case .setAir(let values):
+            // The Atmosphere card's On (#726): known fields, finite values,
+            // a whole seed; numbers in Swift's shortest round-trip form.
+            guard !values.isEmpty, values.allSatisfy(\.isValid) else { return nil }
+            return .command("atmosphere "
+                            + values.map { "\($0.field)=\($0.text)" }.joined(separator: ", "))
+        }
+    }
+
+    /// The console line when `invocation` is nil and nothing was run.
+    var rejectionLine: String {
+        switch self {
+        case .atmosphereOff, .setAir:
+            return " atmosphere: not a valid air value; nothing was run"
+        default:
+            return " lights: not a light or preset name; nothing was run"
         }
     }
 

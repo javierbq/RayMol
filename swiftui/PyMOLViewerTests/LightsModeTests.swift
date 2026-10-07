@@ -101,6 +101,59 @@ final class LightsActionInvocationTests: XCTestCase {
         }
     }
 
+    /// The Atmosphere card's switch (#726). lighting_atmosphere.py
+    /// TestCardCommands runs these exact strings through the core.
+    func testAtmosphereStrings() {
+        XCTAssertEqual(LightsAction.atmosphereOff.invocation, .command("atmosphere off"))
+        XCTAssertEqual(LightsAction.setAir([AirValue("haze", 0.2), AirValue("dust", 0.5)]).invocation,
+                       .command("atmosphere haze=0.2, dust=0.5"))
+        // A remembered air away from every default, in Swift's shortest
+        // round-trip form (1e-05 is a typed value, which passes unrounded).
+        XCTAssertEqual(LightsAction.setAir([
+            AirValue("haze", 0.00001), AirValue("dust", 0.3), AirValue("dust_size", 0.6),
+            AirValue("dust_speed", 2.5), AirValue("scatter", -0.25), AirValue("seed", 7),
+        ]).invocation,
+            .command("atmosphere haze=1e-05, dust=0.3, dust_size=0.6, dust_speed=2.5, scatter=-0.25, seed=7"))
+        XCTAssertEqual(LightsAction.setAir([AirValue("dust_speed", 1), AirValue("scatter", 0.55)]).invocation,
+                       .command("atmosphere dust_speed=1.0, scatter=0.55"))
+        // A slider value on the grid prints its two decimals at most.
+        XCTAssertEqual(LightsAction.setAir([AirValue("haze", AirParameter.haze.rounded(0.1 + 0.25))]).invocation,
+                       .command("atmosphere haze=0.35"))
+    }
+
+    func testAtmosphereRefusalsRunNothing() {
+        let bad: [[AirValue]] = [
+            [],
+            [AirValue("fog", 0.2)],
+            [AirValue("Haze", 0.2)],
+            [AirValue("haze;reinitialize", 0.2)],
+            [AirValue("enabled", 1)],
+            [AirValue("haze", .nan)],
+            [AirValue("dust", .infinity)],
+            [AirValue("scatter", -.infinity)],
+            [AirValue("seed", 1.5)],
+            [AirValue("seed", -1)],
+            [AirValue("seed", 1e20)],
+            [AirValue("haze", 0.2), AirValue("dust", .nan)],
+        ]
+        for values in bad {
+            XCTAssertNil(LightsAction.setAir(values).invocation, "\(values)")
+        }
+        XCTAssertEqual(AirValue("seed", 0).text, "0")
+        XCTAssertEqual(AirValue("seed", 1_000_000).text, "1000000")
+    }
+
+    func testRejectionLines() {
+        XCTAssertEqual(LightsAction.atmosphereOff.rejectionLine,
+                       " atmosphere: not a valid air value; nothing was run")
+        XCTAssertEqual(LightsAction.setAir([]).rejectionLine,
+                       " atmosphere: not a valid air value; nothing was run")
+        for action in [LightsAction.add, .remove("x y"), .preset("1"), .restoreLight(name: "", json: "null"),
+                       .highlight(name: "", x: 0, y: 0, rim: nil, pin: false)] {
+            XCTAssertEqual(action.rejectionLine, " lights: not a light or preset name; nothing was run")
+        }
+    }
+
     func testGoodNames() {
         for name in ["key", "_x", "Light4", "a_b_9", String(repeating: "a", count: 32)] {
             XCTAssertTrue(LightsAction.isValidName(name), name)
