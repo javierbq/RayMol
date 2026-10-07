@@ -1,0 +1,278 @@
+{
+  "comment": "#627 docs gallery (L2): the lighting sections of scripts/lighting/gallery.py, which also renders the exposure section from lighting_624.json and the materials section from lighting_615_gallery.json. The composition is the prototype's (scripts/studio_lights/placement.py, shadows.py and atmosphere.py on proto/studio-lights): 1rx1 at 960x540, inorganic removed, a grey90 surface on m and polymer with the NADPH as sticks (util.cbay), depth_cue 0, metal_shadows 1, async_builds 0, metal_light_air_time pinned at 2.0 s, the harness's L1 view turned y -25 (no orient), on the harness's black background; rt0 unless the tag ends in _rt1. Every lit scene builds its rig with the real commands (cmd.lights, cmd.atmosphere) inside cmd._lg_rig, a function the cmd.set_lights wrapper calls instead of installing the harness's rig: the frozen harness calls cmd.set_lights after the scene's lines, then asserts the rig is on. The wrapper is installed once per process (hasattr guard: the app runs each script twice); lights and atmosphere never call cmd.set_lights, so it cannot recurse. Python calls, not cmd.do, so a bad argument raises and the image fails. Sections, by tag prefix: rig_ (PyMOL's own lights, then each preset in presets() order), light_ (one field at a time on the prototype's sweep spot: beam, softness, warmth, colour with a coloured rim), place_ (target=, highlight= and rim=, a camera light vs a pinned one after the molecule turns), shadow_ (the prototype's red/blue pair: none, red, both, four lights with three shadowed, both traced), air_ (haze, dust, rt0 vs rt1, backlit, crossing beams, and the dust at metal_light_air_time 0, 1 and 2). place_highlight and place_highlight_rim use highlight=m and polymer and resi 124 (His124), picked headless: its centroid projects within 0.1 of the view centre at any window aspect (the off-screen test uses the live aspect) and the pick through it lands on its own atoms (0.13 A outside CG's vdW sphere); the NADPH was refused because the pick through its centroid hits Gly43's surface in front of it. highlight= needs a sized viewport, and the app runs PYMOL_AUTOCMD's first pass at launch, before the window has one (get_viewport 0x1: 'the viewport has no size'); that pass adds a dark key instead (_lg_sized, intensity 0), and the pass before the export, the one the image shows, places the light with highlight=. Were the export pass ever unsized, both place_highlight images would be the same dark key, which the gallery's rim check and the eye catch. gallery.py's SECTIONS lists each section's order, captions and difference checks; testing/tests/raymol/lighting_gallery.py runs every scene in-process.",
+  "base": null,
+  "rig": "on",
+  "size": [
+    960,
+    540
+  ],
+  "extra": [
+    "cmd.remove('inorganic')",
+    "cmd.show('surface', 'm and polymer')",
+    "cmd.color('grey90', 'm and polymer')",
+    "cmd.show('sticks', 'm and resn NAP')",
+    "util.cbay('m and resn NAP')",
+    "cmd.set('depth_cue', 0)",
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('async_builds', 0)",
+    "cmd.set('metal_light_air_time', 2.0)",
+    "cmd.turn('y', -25)",
+    "cmd._lg_rig = None",
+    "if not hasattr(cmd, '_lg_set'): cmd._lg_set = cmd.set_lights",
+    "cmd.set_lights = lambda rig, _c=cmd: _c._lg_set(rig) if getattr(_c, '_lg_rig', None) is None else _c._lg_rig()",
+    "_lg_spot = lambda **kw: dict({'orbit': -25, 'pitch': 35, 'radius': 3, 'beam': 45, 'softness': 0.4, 'warmth': 6500, 'intensity': 1.5, 'highlight': 0.7, 'shadow': 1}, **kw)",
+    "_lg_fill = lambda **kw: dict({'orbit': 40, 'pitch': -10, 'beam': 100, 'softness': 1, 'warmth': 8000, 'intensity': 0.12, 'highlight': 0}, **kw)",
+    "_lg_red = {'orbit': -90, 'pitch': 0, 'radius': 4, 'beam': 70, 'softness': 0.6, 'rgb': [1, 0.12, 0.06], 'intensity': 1.3, 'highlight': 0.8}",
+    "_lg_blue = {'orbit': 90, 'pitch': 0, 'radius': 4, 'beam': 70, 'softness': 0.6, 'rgb': [0.15, 0.35, 1], 'intensity': 1.6, 'highlight': 0.8}",
+    "_lg_air = {'orbit': -50, 'pitch': 45, 'radius': 3, 'beam': 30, 'softness': 0.45, 'warmth': 5200, 'intensity': 2.0, 'highlight': 0.9, 'shadow': 1}",
+    "_lg_mote = {'orbit': -30, 'pitch': 35, 'radius': 3, 'beam': 22, 'softness': 0.35, 'warmth': 4800, 'intensity': 2.0, 'highlight': 0.9, 'shadow': 1}",
+    "_lg_sized = lambda: min(cmd.get_viewport()) > 1",
+    "_lg_cam = {'orbit': -45, 'pitch': 35, 'radius': 3, 'beam': 40, 'softness': 0.4, 'warmth': 5200, 'intensity': 1.8, 'highlight': 0.8, 'shadow': 1, 'outline': 1}"
+  ],
+  "scenes": [
+    {
+      "tag": "rig_none",
+      "rig": "none",
+      "comment": "PyMOL's own lights: no rig"
+    },
+    {
+      "tag": "rig_three_point",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('three_point'),)"
+      ]
+    },
+    {
+      "tag": "rig_softbox",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('softbox'),)"
+      ]
+    },
+    {
+      "tag": "rig_spotlight",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('spotlight'),)"
+      ]
+    },
+    {
+      "tag": "rig_rembrandt",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('rembrandt'),)"
+      ]
+    },
+    {
+      "tag": "rig_neon",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('neon'),)"
+      ]
+    },
+    {
+      "tag": "rig_sunset",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('sunset'),)"
+      ]
+    },
+    {
+      "tag": "rig_underlight",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('underlight'),)"
+      ]
+    },
+    {
+      "tag": "light_beam_8",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'key', **_lg_spot(beam=8, softness=0.3)), cmd.lights(ambient=0.06))"
+      ]
+    },
+    {
+      "tag": "light_beam_15",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'key', **_lg_spot(beam=15, softness=0.3)), cmd.lights(ambient=0.06))"
+      ]
+    },
+    {
+      "tag": "light_beam_28",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'key', **_lg_spot(beam=28, softness=0.3)), cmd.lights(ambient=0.06))"
+      ]
+    },
+    {
+      "tag": "light_soft_0",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'key', **_lg_spot(beam=15, softness=0)), cmd.lights(ambient=0.06))"
+      ]
+    },
+    {
+      "tag": "light_soft_0p5",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'key', **_lg_spot(beam=15, softness=0.5)), cmd.lights(ambient=0.06))"
+      ]
+    },
+    {
+      "tag": "light_soft_1",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'key', **_lg_spot(beam=15, softness=1)), cmd.lights(ambient=0.06))"
+      ]
+    },
+    {
+      "tag": "light_warm_2200",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'key', **_lg_spot(warmth=2200)), cmd.lights(ambient=0.06))"
+      ]
+    },
+    {
+      "tag": "light_warm_6500",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'key', **_lg_spot(warmth=6500)), cmd.lights(ambient=0.06))"
+      ]
+    },
+    {
+      "tag": "light_warm_12000",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'key', **_lg_spot(warmth=12000)), cmd.lights(ambient=0.06))"
+      ]
+    },
+    {
+      "tag": "light_colour_white",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'key', **_lg_spot(color='white')), cmd.lights('add', 'rim', orbit=160, pitch=25, beam=40, softness=0.4, intensity=1.8, highlight=1, color='white'), cmd.lights(ambient=0.06))"
+      ]
+    },
+    {
+      "tag": "light_colour_orange",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'key', **_lg_spot(color='orange')), cmd.lights('add', 'rim', orbit=160, pitch=25, beam=40, softness=0.4, intensity=1.8, highlight=1, color='skyblue'), cmd.lights(ambient=0.06))"
+      ]
+    },
+    {
+      "tag": "light_colour_hotpink",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'key', **_lg_spot(color='hotpink')), cmd.lights('add', 'rim', orbit=160, pitch=25, beam=40, softness=0.4, intensity=1.8, highlight=1, color='cyan'), cmd.lights(ambient=0.06))"
+      ]
+    },
+    {
+      "tag": "place_target",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'key', target='m and resn NAP', orbit=-35, pitch=40, radius=3, warmth=4300, intensity=1.9, highlight=0.8, softness=0.45, outline=1, shadow=1), cmd.lights('add', 'fill', **_lg_fill(orbit=45, pitch=10, warmth=9000, intensity=0.22, highlight=0.1)), cmd.lights(ambient=0.05))"
+      ]
+    },
+    {
+      "tag": "place_target_final",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'key', target='m and resn NAP', orbit=-35, pitch=40, radius=3, warmth=4300, intensity=1.9, highlight=0.8, softness=0.45, outline=0, shadow=1), cmd.lights('add', 'fill', **_lg_fill(orbit=45, pitch=10, warmth=9000, intensity=0.22, highlight=0.1)), cmd.lights(ambient=0.05))"
+      ]
+    },
+    {
+      "tag": "place_highlight",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'key', highlight='m and polymer and resi 124', radius=3, warmth=5600, intensity=2.0, softness=0.5, outline=1, shadow=1) if _lg_sized() else cmd.lights('add', 'key', intensity=0), cmd.lights('add', 'fill', **_lg_fill(intensity=0.2)), cmd.lights(ambient=0.05))"
+      ]
+    },
+    {
+      "tag": "place_highlight_rim",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'key', highlight='m and polymer and resi 124', rim=145, radius=3, warmth=5600, intensity=2.0, softness=0.5, outline=1, shadow=1) if _lg_sized() else cmd.lights('add', 'key', intensity=0), cmd.lights('add', 'fill', **_lg_fill(intensity=0.2)), cmd.lights(ambient=0.05))"
+      ]
+    },
+    {
+      "tag": "place_camera_turned",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'key', **_lg_cam), cmd.lights('add', 'fill', **_lg_fill(intensity=0.2)), cmd.lights(ambient=0.05), cmd.turn('y', 90))"
+      ]
+    },
+    {
+      "tag": "place_pinned_turned",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'key', pin=1, **_lg_cam), cmd.lights('add', 'fill', **_lg_fill(intensity=0.2)), cmd.lights(ambient=0.05), cmd.turn('y', 90))"
+      ]
+    },
+    {
+      "tag": "shadow_none",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'red', shadow=0, **_lg_red), cmd.lights('add', 'blue', shadow=0, **_lg_blue), cmd.lights(ambient=0.04))"
+      ]
+    },
+    {
+      "tag": "shadow_red",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'red', shadow=1, **_lg_red), cmd.lights('add', 'blue', shadow=0, **_lg_blue), cmd.lights(ambient=0.04))"
+      ]
+    },
+    {
+      "tag": "shadow_both",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'red', shadow=1, **_lg_red), cmd.lights('add', 'blue', shadow=1, **_lg_blue), cmd.lights(ambient=0.04))"
+      ]
+    },
+    {
+      "tag": "shadow_cap",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'red', shadow=1, **_lg_red), cmd.lights('add', 'blue', shadow=1, **_lg_blue), cmd.lights('add', 'top', orbit=0, pitch=80, radius=3, beam=25, softness=0.4, intensity=1.2, highlight=0.6, shadow=1), cmd.lights('add', 'front', orbit=0, pitch=0, beam=90, softness=1, intensity=0.15, highlight=0), cmd.lights(ambient=0.04))"
+      ]
+    },
+    {
+      "tag": "shadow_both_rt1",
+      "rt": 1,
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'red', shadow=1, **_lg_red), cmd.lights('add', 'blue', shadow=1, **_lg_blue), cmd.lights(ambient=0.04))"
+      ]
+    },
+    {
+      "tag": "air_none",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'spot', **_lg_air), cmd.lights('add', 'fill', **_lg_fill()), cmd.lights(ambient=0.04))"
+      ]
+    },
+    {
+      "tag": "air_haze",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'spot', **_lg_air), cmd.lights('add', 'fill', **_lg_fill()), cmd.lights(ambient=0.04), cmd.atmosphere(haze=0.6))"
+      ]
+    },
+    {
+      "tag": "air_dust",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'spot', **_lg_air), cmd.lights('add', 'fill', **_lg_fill()), cmd.lights(ambient=0.04), cmd.atmosphere(haze=0.6, dust=0.6))"
+      ]
+    },
+    {
+      "tag": "air_dust_rt1",
+      "rt": 1,
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'spot', **_lg_air), cmd.lights('add', 'fill', **_lg_fill()), cmd.lights(ambient=0.04), cmd.atmosphere(haze=0.6, dust=0.6))"
+      ]
+    },
+    {
+      "tag": "air_backlit",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'back', orbit=165, pitch=18, radius=3, beam=50, softness=0.5, warmth=6500, intensity=2.2, highlight=1, shadow=1), cmd.lights('add', 'front', **_lg_fill(orbit=0, pitch=0, warmth=4000)), cmd.lights(ambient=0.03), cmd.atmosphere(haze=0.18, dust=0.5, scatter=0.55))"
+      ]
+    },
+    {
+      "tag": "air_crossing",
+      "lines": [
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'red', orbit=-80, pitch=25, radius=3, beam=28, softness=0.4, rgb=[1, 0.15, 0.08], intensity=2.2, highlight=0.7, shadow=1), cmd.lights('add', 'blue', orbit=100, pitch=-25, radius=3, beam=28, softness=0.4, rgb=[0.15, 0.4, 1], intensity=2.4, highlight=0.7), cmd.lights(ambient=0.03), cmd.atmosphere(haze=0.35, dust=0.8))"
+      ]
+    },
+    {
+      "tag": "air_dust_t0",
+      "lines": [
+        "cmd.set('metal_light_air_time', 0.0)",
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'spot', **_lg_mote), cmd.lights(ambient=0.04), cmd.atmosphere(dust=1, dust_size=0.45))"
+      ]
+    },
+    {
+      "tag": "air_dust_t1",
+      "lines": [
+        "cmd.set('metal_light_air_time', 1.0)",
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'spot', **_lg_mote), cmd.lights(ambient=0.04), cmd.atmosphere(dust=1, dust_size=0.45))"
+      ]
+    },
+    {
+      "tag": "air_dust_t2",
+      "lines": [
+        "cmd.set('metal_light_air_time', 2.0)",
+        "cmd._lg_rig = lambda: (cmd.lights('add', 'spot', **_lg_mote), cmd.lights(ambient=0.04), cmd.atmosphere(dust=1, dust_size=0.45))"
+      ]
+    }
+  ]
+}

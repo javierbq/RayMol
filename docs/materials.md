@@ -388,6 +388,10 @@ material's own parameters, so the Custom knobs move it too. `default` takes
 the lights exactly as it did before materials had a response, and with no
 rig, or the rig off, nothing here applies.
 
+The lights themselves (the `lights` and `atmosphere` commands, Lights mode,
+per-light shadows, haze and dust, exposure and HDR) are documented in
+[Studio lights](lighting.md).
+
 **The principle.** A studio light reaches a material the way that material's
 own shader takes PyMOL's key light. Strengths are relative to a light at its
 default `highlight` of 0.5: a white light at intensity 1 and highlight 0.5
