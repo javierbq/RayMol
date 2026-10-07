@@ -81,6 +81,7 @@ jobs:
               testing/tests/raymol/lighting_air.py \
               testing/tests/raymol/lighting_air_check.py \
               testing/tests/raymol/lighting_air_msl.py \
+              testing/tests/raymol/lighting_atmosphere.py \
               testing/tests/raymol/lighting_bridge.py \
               testing/tests/raymol/lighting_check.py \
               testing/tests/raymol/lighting_commands.py \
