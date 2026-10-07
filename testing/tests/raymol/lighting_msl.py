@@ -70,15 +70,24 @@ _sources = _load_shader_sources()
 shader_literals = _sources.shader_literals
 strip_comments = _sources._strip_comments
 
+# HDR colour's tone helpers (#624), in kMaterialSrc and copied into kRTSrc.
+TONE_HELPERS = ('light_tone_scalar', 'light_tone_scalar_inverse', 'light_tone',
+                'light_tone_inverse')
 # Every helper of the light block, in kMaterialSrc.
 HELPERS = ('light_response_neutral', 'light_response', 'light_visibility',
-           'light_terms_view', 'light_terms', 'light_finish', 'light_outline',
-           'light_apply', 'light_glass_glints')
+           'light_terms_view', 'light_terms') + TONE_HELPERS + (
+           'light_finish', 'light_outline', 'light_apply', 'light_glass_glints',
+           'light_glass_cover')
 # The ray tracer's copies (kRTSrc cannot take kMaterialSrc): the structs, and
 # the helpers its reflection hits need. No light_outline (overlays never
 # enter ray tracing), no light_apply, no light_response (needs MaterialU).
 RT_COPIES = ('light_response_neutral', 'light_visibility', 'light_terms_view',
-             'mat_soft_knee', 'light_finish')
+             'mat_soft_knee') + TONE_HELPERS + ('light_finish',)
+# The function constants a light helper may read (#624): kLightHdr alone,
+# through light_finish, light_glass_glints and light_glass_cover's helpers.
+# Every library function that reaches it comes from a specialiser that sets
+# its index (lighting_hdr_msl.py TestSpecialisers).
+HDR_CONSTANT = re.compile(r'\bkLightHdr\b')
 RT_RIG_ARGUMENT = re.compile(
     r'constant\s+LightRigU\s*&\s*rig\s*\[\[\s*buffer\(13\)\s*,\s*'
     r'function_constant\(kRTLightRig\)\s*\]\]')
@@ -115,8 +124,9 @@ RIG_ARGUMENT = re.compile(
     r'constant\s+LightRigU\s*&\s*rig\s*\[\[\s*buffer\(9\)\s*,\s*'
     r'function_constant\(kLightRig\)\s*\]\]')
 # `if (kLightRig && kLightShadow)` (#616) implies the rig, so it guards rig
-# statements too: the classic specialisation removes it with the rest.
-RIG_GUARD = re.compile(r'if\s*\(\s*kLightRig(?:\s*&&\s*kLightShadow)?\s*\)')
+# statements too: the classic specialisation removes it with the rest. So does
+# `if (kLightRig && kLightHdr)` (#624's rig glass covers).
+RIG_GUARD = re.compile(r'if\s*\(\s*kLightRig(?:\s*&&\s*(?:kLightShadow|kLightHdr))?\s*\)')
 # What a rig statement can mention; none of it may survive outside the guard.
 # The studio shadow maps' (#616) constant, arguments and _shadowed copies
 # included.
@@ -355,10 +365,15 @@ class TestLightBlock(LightMSLCase):
 
     def testLightHelpersReadNoFunctionConstant(self):
         """Every helper (but light_response, whose body #615 owns) reaches
-        only code that reads no function constant, so a library can call it
-        unspecialised (the tube's rig library does)."""
+        only code that reads no function constant but #624's kLightHdr (HDR
+        colour), and kLightHdr only in the two-arm helpers. Every library
+        function that reaches it is specialised with its index set
+        (lighting_hdr_msl.py TestSpecialisers: materialFragmentFunction,
+        bezierTubeRigFunction, airFunction)."""
         functions = msl_functions(self.msl['kMaterialSrc'])
-        constant = re.compile(r'\bkLightRig\b|\bkMat[A-Z]\w*|function_constant')
+        constant = re.compile(r'\bk(?:LightRig|LightShadow|LightHdr|Mat[A-Z]\w*)\b'
+                              r'|function_constant')
+        readers = set()
         for helper in HELPERS:
             if helper == 'light_response':
                 continue
@@ -370,13 +385,16 @@ class TestLightBlock(LightMSLCase):
                     continue
                 seen.add(name)
                 body = functions[name][1]
-                self.assertNotRegex(body, constant,
+                if HDR_CONSTANT.search(body):
+                    readers.add(name)
+                self.assertNotRegex(HDR_CONSTANT.sub('', body), constant,
                                     '%s (reached from %s) reads a function '
                                     'constant' % (name, helper))
                 for callee in re.findall(r'\b((?:light|mat)_\w+)\s*\(', body):
                     if callee in functions:
                         todo.append(callee)
             self.assertNotIn('light_response', seen, helper)
+        self.assertEqual(readers, {'light_finish', 'light_glass_glints'})
 
     def testNaNGuards(self):
         """No NaN may reach the OIT accumulation, where it spoils the whole
@@ -466,6 +484,12 @@ class TestRemoveRigStatements(LightMSLCase):
                 '{ if (kLightRig && kLightShadow) r = g_shadowed(rig, m, s); '
                 'else if (kLightRig) r = g(rig); z(); }')),
             '{z();}')
+        # #624's rig glass cover: the classic arm is kept
+        self.assertEqual(
+            squash(remove_rig_statements(
+                '{ if (kLightRig && kLightHdr)\n  c = light_glass_cover(b, h, a, '
+                'rig.tone.x);\nelse\n  c = mat_glass_cover(b, h, a); }')),
+            '{c=mat_glass_cover(b,h,a);}')
 
 
 class TestLitFragments(LightMSLCase):
@@ -630,7 +654,9 @@ class TestLitFragments(LightMSLCase):
                      'body+=base*kMatGlassBaseAttenuation*rigLight.diffuse;',
                      'hi+=light_glass_glints(rigLight.specular)*'
                      '(kMatGlassReflection*saturate(mat.p[0]));',
-                     'returnlight_outline(mat_soft_knee(body+hi),pt,rig);'):
+                     # #624: through the rig's seam at the frame's exposure
+                     # (mat_soft_knee, as before, with kLightHdr false)
+                     'returnlight_outline(light_finish(body+hi,rig.tone.x),pt,rig);'):
             self.assertGreater(helper.index(expr), jelly, expr)
         # drift guard: the glass shading is mat_impostor_composite's glass
         # branch with the fragment's arguments (m -> mat, N -> n, the key
@@ -1069,15 +1095,22 @@ class TestBezierTube(LightMSLCase):
         self.assertEqual(squash(stripped), squash(classic_body))
 
     def testTubeRigReadsNoFunctionConstant(self):
-        """The builder takes the rig functions unspecialised, so neither they
-        nor any helper they reach may read a function constant. The neutral
-        response, not light_response (whose body #615 owns), keeps it so."""
+        """Neither tube rig function nor any helper they reach reads a
+        function constant but #624's kLightHdr, which the fragment reaches
+        through light_apply's light_finish: Metal lists it, and
+        bezierTubeRigFunction specialises the fragment with it set (false
+        until the HDR variants; lighting_hdr_msl.py TestSpecialisers). The
+        vertex function still comes back plain. The neutral response, not
+        light_response (whose body #615 owns), keeps every other constant
+        out."""
         material = msl_functions(self.msl['kMaterialSrc'])
-        constant = re.compile(r'\bkLightRig\b|\bkMat[A-Z]\w*|function_constant')
+        constant = re.compile(r'\bkLightRig\b|\bkLightShadow\b|\bkMat[A-Z]\w*'
+                              r'|function_constant')
         for name in ('bezier_tube_vertex_rig', 'bezier_tube_fragment_rig'):
             sig, body = self.rig[name]
             self.assertNotRegex(sig + body, constant, name)
         seen = set()
+        readers = set()
         todo = re.findall(r'\b((?:light|mat)_\w+)\s*\(',
                           self.rig['bezier_tube_fragment_rig'][1])
         self.assertIn('light_apply', todo)
@@ -1089,10 +1122,13 @@ class TestBezierTube(LightMSLCase):
             self.assertIn(name, material, name)
             body = material[name][1]
             self.assertNotRegex(body, constant, '%s reads a function constant' % name)
+            if HDR_CONSTANT.search(body):
+                readers.add(name)
             todo += [c for c in re.findall(r'\b((?:light|mat)_\w+)\s*\(', body)
                      if c in material]
         self.assertNotIn('light_response', seen)
         self.assertIn('light_response_neutral', seen)
+        self.assertEqual(readers, {'light_finish'})
         # plain first; specialised (family default, rig off) only if Metal
         # lists a constant against the function
         fn = cpp_function(self.mm, 'bezierTubeRigFunction')
@@ -1111,6 +1147,10 @@ class TestBezierTube(LightMSLCase):
         self.assertRegex(fn, r'setConstantValue:&shadow type:MTLDataTypeBool '
                              r'atIndex:kLightShadowConstantIndex\]')
         self.assertLess(fn.index('bool shadow = false;'), fn.index('constantValues:'))
+        # #624's kLightHdr, which the fragment reads: set, false (the knee)
+        self.assertRegex(fn, r'bool hdr = false;\s*\[cv setConstantValue:&hdr '
+                             r'type:MTLDataTypeBool atIndex:kLightHdrConstantIndex\]')
+        self.assertLess(fn.index('bool hdr = false;'), fn.index('constantValues:'))
         self.assertIn('[cv release];', fn)
 
     def testTubeRigPipeline(self):
@@ -1294,7 +1334,7 @@ class TestRayTracedReflections(LightMSLCase):
             self.assertEqual(squash(body), squash(mbody), name)
         # and nothing that paints or needs the material table
         for name in ('light_outline', 'light_apply', 'light_response',
-                     'light_terms', 'light_glass_glints'):
+                     'light_terms', 'light_glass_glints', 'light_glass_cover'):
             self.assertNotIn(name, self.rt_functions, name)
             self.assertNotRegex(self.rt_code, r'\b%s\s*\(' % name, name)
 
@@ -1341,8 +1381,9 @@ class TestRayTracedReflections(LightMSLCase):
     def testRigHitShading(self):
         """A hit: model to eye by the inverse modelview's transposed rotation
         (as the environment lookup does), the reflected ray's own view
-        vector, the neutral response (#615 needs MaterialU), then the knee;
-        and nothing reads a function constant."""
+        vector, the neutral response (#615 needs MaterialU), then light_finish
+        at the frame's exposure (the knee, or T under #624's kLightHdr); and
+        nothing reads a function constant but light_finish's kLightHdr."""
         self.assertIn('rt_rig_hit', self.rt_functions)
         sig, body = self.rt_functions['rt_rig_hit']
         code = squash(body)
@@ -1353,21 +1394,29 @@ class TestRayTracedReflections(LightMSLCase):
                      'constfloat3V=-normalize(toEye*R);',
                      'constLightTermst=light_terms_view(rig,base,nEye,pEye,V,'
                      'light_response_neutral());',
-                     'returnlight_finish(shaded+base*t.diffuse+t.specular);'):
+                     'returnlight_finish(shaded+base*t.diffuse+t.specular,rig.tone.x);'):
             self.assertIn(expr, code, expr)
-        constant = re.compile(r'\bkRT\w+|\bkLightRig\b|function_constant')
+        constant = re.compile(r'\bkRT\w+|\bkLight\w+|function_constant')
         seen, todo = set(), ['rt_rig_hit']
         while todo:
             name = todo.pop()
             if name in seen:
                 continue
             seen.add(name)
-            self.assertNotRegex(self.rt_functions[name][1], constant, name)
+            body = self.rt_functions[name][1]
+            if name == 'light_finish':
+                # its one constant, kLightHdr (#624), set by both RT builders
+                self.assertEqual(len(HDR_CONSTANT.findall(body)), 1)
+                body = HDR_CONSTANT.sub('', body)
+            # (the tone constants are plain constants, not function ones)
+            body = re.sub(r'\bkLightTone(?:Knee|White)\b', '', body)
+            self.assertNotRegex(body, constant, name)
             todo += [c for c in re.findall(r'\b((?:light|mat|rt)_\w+)\s*\(',
                                            self.rt_functions[name][1])
                      if c in self.rt_functions]
         self.assertLessEqual({'light_terms_view', 'light_finish', 'mat_soft_knee',
-                              'light_response_neutral', 'light_visibility'}, seen)
+                              'light_response_neutral', 'light_visibility',
+                              'light_tone', 'light_tone_scalar'}, seen)
 
     def testRTPipelines(self):
         code = strip_comments(self.mm)

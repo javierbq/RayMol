@@ -51,11 +51,20 @@ constexpr NSUInteger kLightShadowConstantIndex = 2;
 constexpr NSUInteger kLightShadowTextureIndex = 7;
 constexpr NSUInteger kLightShadowSamplerIndex = 7;
 
+// HDR colour (#624): the MSL kLightHdr (kMaterialSrc), set on every
+// specialisation of a function that can reach the light_ helpers
+// (materialFragmentFunction, bezierTubeRigFunction, airFunction), true only
+// for the rig variants of an HDR frame.
+constexpr NSUInteger kLightHdrConstantIndex = 3;
+
 // The ray tracer's light rig (#613): kRTSrc's kRTLightRig and the composite's
 // LightRigU argument. The RT library has its own indices (kRTTrans is 0, and
 // buffers 0-12 are taken by the RT pass), so these are not the ones above.
 constexpr NSUInteger kRTLightRigConstantIndex = 1;
 constexpr NSUInteger kRTLightRigBufferIndex = 13;
+// kRTSrc's own kLightHdr (#624): set on every RT specialisation, as
+// kRTLightRig is.
+constexpr NSUInteger kRTLightHdrConstantIndex = 2;
 
 // The air pass (#618; kAirSrc): its own library and its own index space. The
 // air block (pymol::LightAirBlock, MSL LightAirU) and a copy of the rig block
@@ -2127,9 +2136,11 @@ fragment float4 post_ao_accum(PostVOut in [[stage_in]],
 // beams and shadowed by every shadowed light. Its own library, compiled as
 // kEyeReconSrc + kMaterialSrc + kAirSrc (RendererMetal::ensureAirPipelines) on
 // the first frame that draws air, so it calls the shared helpers (post_eye_pos,
-// post_linear_depth, LightRigU, light_shadow_lookup, light_finish, mat_hash,
-// mat_noise) and carries no copy of them. It declares no function constant
-// and every function in it is a post_air_ one.
+// post_linear_depth, LightRigU, light_shadow_lookup, light_tone,
+// light_tone_inverse, mat_soft_knee, mat_hash, mat_noise) and carries no copy
+// of them. It declares no function constant (its composite reads kMaterialSrc's
+// kLightHdr, #624, so airFunction sets it) and every function in it is a
+// post_air_ one.
 static NSString* const kAirSrc = @R"(
 // The air block. Mirrors pymol::LightAirBlock (layer1/LightAirBlock.h):
 // change them together.
@@ -2396,14 +2407,24 @@ static float4 post_air_term(float2 uv, float2 frag, float d,
   return float4(max(add, float3(0.0)), zHi);
 }
 
-// The composite: the air only ADDS light. The colour through the rig's knee
-// with the air, minus the colour through it without, never negative, added to
-// the colour as it was. With no air (a = 0) that is c exactly, so a pixel the
-// air does not reach round-trips the 8-bit target unchanged, white included;
-// a bright pixel takes little extra and nothing is dimmed. light_finish is
-// the rig's only knee, so #624's HDR replaces this with it.
-static float3 post_air_finish(float3 c, float3 a) {
-  return c + max(light_finish(c + a) - light_finish(c), float3(0.0));
+// The composite: the air only ADDS light. Under kLightHdr (#624) it adds in
+// scene units: the colour back through T's inverse, plus the air at the
+// frame's exposure `e` (tone.x), through T again. White stays white
+// (Tinv(1) = W, and T is 1 at and beyond W), a pixel the air misses
+// round-trips within one 8-bit level (exactly at or below the knee), and the
+// air rolls off with the light instead of saturating. A non-finite air term
+// adds nothing (the NaN rule). Otherwise the rig's 8-bit knee as before #624:
+// the colour through mat_soft_knee with the air, minus the colour through it
+// without, never negative, added to the colour as it was. With no air (a = 0)
+// that is c exactly, so a pixel the air does not reach round-trips the 8-bit
+// target unchanged, white included; a bright pixel takes little extra and
+// nothing is dimmed.
+static float3 post_air_finish(float3 c, float3 a, float e) {
+  if (kLightHdr) {
+    const float3 add = all(isfinite(a)) ? max(a, float3(0.0)) * e : float3(0.0);
+    return light_tone(light_tone_inverse(saturate(c)) + add);
+  }
+  return c + max(mat_soft_knee(c + a) - mat_soft_knee(c), float3(0.0));
 }
 
 // The air at full resolution: colour and depth read at this pixel (never
@@ -2419,7 +2440,7 @@ fragment float4 post_air_full(AirVOut in [[stage_in]],
   const float4 c = colorTex.read(px);
   const float d = depthTex.read(px);
   const float4 t = post_air_term(in.uv, in.position.xy, d, air, rig, maps, smp);
-  return float4(post_air_finish(c.rgb, t.rgb), c.a);
+  return float4(post_air_finish(c.rgb, t.rgb, rig.tone.x), c.a);
 }
 
 // Half resolution (metal_light_air_resolution 2, the default on both) is two
@@ -2482,7 +2503,8 @@ fragment float4 post_air_upsample(AirVOut in [[stage_in]],
     texture2d<float> colorTex [[texture(0)]],
     depth2d<float> depthTex [[texture(1)]],
     texture2d<float> termTex [[texture(3)]],
-    constant LightAirU& air [[buffer(0)]]) {
+    constant LightAirU& air [[buffer(0)]],
+    constant LightRigU& rig [[buffer(1)]]) {
   const uint2 px = uint2(in.position.xy);
   const float4 c = colorTex.read(px);
   const float z = post_air_stop(depthTex.read(px), air);
@@ -2510,7 +2532,7 @@ fragment float4 post_air_upsample(AirVOut in [[stage_in]],
     }
   }
   const float3 a = wsum > 1e-4 ? sum / wsum : nearest;
-  return float4(post_air_finish(c.rgb, a), c.a);
+  return float4(post_air_finish(c.rgb, a, rig.tone.x), c.a);
 }
 )";
 
@@ -3157,6 +3179,14 @@ constant bool kRTTrans [[function_constant(0)]];
 // #615's light_response needs MaterialU, which this library has no copy of.
 constant bool kRTLightRig [[function_constant(1)]];
 
+// HDR colour (#624): kMaterialSrc's kLightHdr, under the same name so the
+// copies of the tone helpers and light_finish below stay verbatim, at this
+// library's own index. Set on every RT specialisation as kRTLightRig is:
+// false on every classic pipeline (buildRTPipelines), and on the rig
+// composite of a frame without HDR, so a reflection hit then takes the knee
+// as before #624.
+constant bool kLightHdr [[function_constant(2)]];
+
 struct LightRigLight {
   float4 pos;       // xyz eye-space position (A); w shadow slot (#616)
   float4 axis;      // xyz unit beam direction; w cos(outer cone)
@@ -3245,7 +3275,48 @@ __attribute__((unused)) static float3 mat_soft_knee(float3 c) {
   return min(c, float3(knee)) + over / (float3(1.0) + over) * (1.0 - knee);
 }
 
-__attribute__((unused)) static float3 light_finish(float3 c) {
+constant float kLightToneKnee = 0.6;
+constant float kLightToneWhite = 8.0;
+
+__attribute__((unused)) static float light_tone_scalar(float m) {
+  m = (isfinite(m) && m > 0.0) ? m : 0.0;
+  if (m <= kLightToneKnee) return m;
+  if (m >= kLightToneWhite) return 1.0;
+  const float s = 1.0 - kLightToneKnee;
+  const float w = (kLightToneWhite - kLightToneKnee) / s;
+  const float t = (m - kLightToneKnee) / s;
+  return kLightToneKnee + s * t * (1.0 + t / (w * w)) / (1.0 + t);
+}
+
+__attribute__((unused)) static float light_tone_scalar_inverse(float y) {
+  y = (isfinite(y) && y > 0.0) ? y : 0.0;
+  if (y <= kLightToneKnee) return y;
+  if (y >= 1.0) return kLightToneWhite;
+  const float s = 1.0 - kLightToneKnee;
+  const float w = (kLightToneWhite - kLightToneKnee) / s;
+  const float u = (y - kLightToneKnee) / s;
+  const float t = 2.0 * u / ((1.0 - u) + sqrt((1.0 - u) * (1.0 - u) + 4.0 * u / (w * w)));
+  return kLightToneKnee + s * t;
+}
+
+__attribute__((unused)) static float3 light_tone(float3 c) {
+  if (!all(isfinite(c))) return float3(0.0);
+  c = max(c, float3(0.0));
+  const float m = max(c.r, max(c.g, c.b));
+  if (m <= kLightToneKnee) return c;
+  return c * light_tone_scalar(m) / m;
+}
+
+__attribute__((unused)) static float3 light_tone_inverse(float3 c) {
+  if (!all(isfinite(c))) return float3(0.0);
+  c = clamp(c, float3(0.0), float3(1.0));
+  const float m = max(c.r, max(c.g, c.b));
+  if (m <= kLightToneKnee) return c;
+  return c * light_tone_scalar_inverse(m) / m;
+}
+
+__attribute__((unused)) static float3 light_finish(float3 c, float exposure) {
+  if (kLightHdr) return light_tone(c * exposure);
   return mat_soft_knee(c);
 }
 
@@ -3255,7 +3326,8 @@ __attribute__((unused)) static float3 light_finish(float3 c) {
 // The rig is in eye space: the inverse modelview is a rotation plus a
 // translation, so model -> eye is its transposed rotation (as Re is below).
 // The view vector is the way the ray came, -R, as for the classic highlight
-// of a hit. Called only under `if (kRTLightRig)`.
+// of a hit. Called only under `if (kRTLightRig)`. Through light_finish at the
+// frame's exposure, as every raster rig path is (#624: T under kLightHdr).
 static float3 rt_rig_hit(constant LightRigU& rig, constant RTU& u,
     float3 shaded, float3 base, float3 pModel, float3 nModel, float3 R) {
   const float3x3 toEye = transpose(float3x3(u.invModelview[0].xyz,
@@ -3266,7 +3338,7 @@ static float3 rt_rig_hit(constant LightRigU& rig, constant RTU& u,
   const float3 V = -normalize(toEye * R);
   const LightTerms t = light_terms_view(rig, base, nEye, pEye, V,
                                         light_response_neutral());
-  return light_finish(shaded + base * t.diffuse + t.specular);
+  return light_finish(shaded + base * t.diffuse + t.specular, rig.tone.x);
 }
 
 // Transmittance along a ray through the transparent structure: the product of
@@ -4728,7 +4800,7 @@ void RendererMetal::ensureRayTracingAS()
 // The RT pass pipelines, specialised on kRTTrans (function constant 0). The
 // light rig's constant (kRTLightRig) is always set, false: these are the
 // pipelines every frame without a rig runs. Its variants come from
-// buildRTRigComposite.
+// buildRTRigComposite. So is HDR's (#624, kLightHdr), false with the rig.
 void RendererMetal::buildRTPipelines(bool transparent,
     id<MTLRenderPipelineState>* ao, id<MTLRenderPipelineState>* composite)
 {
@@ -4738,6 +4810,8 @@ void RendererMetal::buildRTPipelines(bool transparent,
   [fc setConstantValue:&t type:MTLDataTypeBool atIndex:0];
   bool rig = false;
   [fc setConstantValue:&rig type:MTLDataTypeBool atIndex:kRTLightRigConstantIndex];
+  bool hdr = false;
+  [fc setConstantValue:&hdr type:MTLDataTypeBool atIndex:kRTLightHdrConstantIndex];
   id<MTLFunction> vtx = [_rtLib newFunctionWithName:@"rt_vertex"];
   id<MTLFunction> fao = [_rtLib newFunctionWithName:@"rt_ao" constantValues:fc error:&err];
   id<MTLFunction> fco = fao ? [_rtLib newFunctionWithName:@"rt_composite" constantValues:fc error:&err] : nil;
@@ -4768,7 +4842,8 @@ void RendererMetal::buildRTPipelines(bool transparent,
 
 // The light rig's composite (#613): rt_composite specialised with kRTLightRig
 // true (and kRTTrans as asked), with the default composite's descriptor. The
-// AO pass never sees the rig, so it has no variant. Returns +1, or nil after
+// AO pass never sees the rig, so it has no variant. HDR's constant (#624,
+// kLightHdr) is set false: a hit takes the knee as before #624. Returns +1, or nil after
 // logging; the caller tries once and draws the classic composite otherwise.
 id<MTLRenderPipelineState> RendererMetal::buildRTRigComposite(bool transparent)
 {
@@ -4780,6 +4855,8 @@ id<MTLRenderPipelineState> RendererMetal::buildRTRigComposite(bool transparent)
   [fc setConstantValue:&t type:MTLDataTypeBool atIndex:0];
   bool rig = true;
   [fc setConstantValue:&rig type:MTLDataTypeBool atIndex:kRTLightRigConstantIndex];
+  bool hdr = false;
+  [fc setConstantValue:&hdr type:MTLDataTypeBool atIndex:kRTLightHdrConstantIndex];
   id<MTLFunction> vtx = [_rtLib newFunctionWithName:@"rt_vertex"];
   id<MTLFunction> fco = [_rtLib newFunctionWithName:@"rt_composite" constantValues:fc error:&err];
   [fc release];
@@ -8071,11 +8148,88 @@ __attribute__((unused)) static LightTerms light_terms(constant LightRigU& rig,
   return light_terms_view(rig, base, nEye, pEye, V, r);
 }
 
-// The ONLY knee on the rig path: mat_soft_knee (#494), so several bright
-// lights compress toward white instead of clipping flat. #624 replaces it
-// with HDR. (Clear and frosted glass knee their body in mat_glass_cover
-// instead, which #624 replaces too.)
-__attribute__((unused)) static float3 light_finish(float3 c) {
+// --- HDR colour (#624) ---------------------------------------------------------
+// While the rig is on with HDR (metal_light_hdr, carried in tone.y), a rig
+// fragment keeps its light in scene units (above 1 where the rig is bright),
+// multiplies it by the exposure (tone.x, metal_exposure) and maps it ONCE
+// through the tone curve T below before the 8-bit store. Specialised per
+// PIPELINE, as kLightRig and kLightShadow are: true only on the rig variants
+// of an HDR frame. False (every classic pipeline, and every rig pipeline at
+// metal_light_hdr 2) leaves each two-arm helper below with its #613 statement,
+// so the knee fallback compiles to what it was. Every specialiser that can
+// reach these helpers sets it: RendererMetal::materialFragmentFunction,
+// bezierTubeRigFunction and airFunction (kRTSrc has its own copy, at its own
+// index). It is the ONLY function constant the light_ helpers read.
+constant bool kLightHdr [[function_constant(3)]];
+
+// T's knee k and white point W (pymol::kLightToneKnee, kLightToneWhite in
+// layer1/LightTone.h, which mirrors these functions operation for operation;
+// lighting_hdr_msl.py pins them equal).
+constant float kLightToneKnee = 0.6;
+constant float kLightToneWhite = 8.0;
+
+// T1(m): the identity up to the knee, then an extended-Reinhard shoulder, C1
+// at the knee (slope 1), exactly 1 at the white point and 1 beyond. With
+// s = 1 - k, w = (W - k) / s and t = (m - k) / s:
+// T1 = k + s t (1 + t / w^2) / (1 + t). Non-finite and negative input reads
+// as 0 (the NaN rule: a NaN would not stay local under OIT).
+__attribute__((unused)) static float light_tone_scalar(float m) {
+  m = (isfinite(m) && m > 0.0) ? m : 0.0;
+  if (m <= kLightToneKnee) return m;
+  if (m >= kLightToneWhite) return 1.0;
+  const float s = 1.0 - kLightToneKnee;
+  const float w = (kLightToneWhite - kLightToneKnee) / s;
+  const float t = (m - kLightToneKnee) / s;
+  return kLightToneKnee + s * t * (1.0 + t / (w * w)) / (1.0 + t);
+}
+
+// T1's inverse on 0..1, closed form and rationalised so it stays stable near
+// the knee: u = (y - k) / s, t = 2u / ((1 - u) + sqrt((1 - u)^2 + 4u / w^2)).
+// The identity to the knee, W at 1 (and above). NaN rule as above.
+__attribute__((unused)) static float light_tone_scalar_inverse(float y) {
+  y = (isfinite(y) && y > 0.0) ? y : 0.0;
+  if (y <= kLightToneKnee) return y;
+  if (y >= 1.0) return kLightToneWhite;
+  const float s = 1.0 - kLightToneKnee;
+  const float w = (kLightToneWhite - kLightToneKnee) / s;
+  const float u = (y - kLightToneKnee) / s;
+  const float t = 2.0 * u / ((1.0 - u) + sqrt((1.0 - u) * (1.0 - u) + 4.0 * u / (w * w)));
+  return kLightToneKnee + s * t;
+}
+
+// T(c), hue-preserving: the largest channel goes through T1 and the others
+// follow it (c * T1(m) / m), so a coloured light keeps its hue and chroma
+// however bright it is, where a per-channel curve whitens it. Exactly the
+// identity at or below the knee; every channel at most 1, the largest
+// exactly 1 at or beyond W. A colour with any non-finite channel is black;
+// negative channels read as 0.
+__attribute__((unused)) static float3 light_tone(float3 c) {
+  if (!all(isfinite(c))) return float3(0.0);
+  c = max(c, float3(0.0));
+  const float m = max(c.r, max(c.g, c.b));
+  if (m <= kLightToneKnee) return c;
+  return c * light_tone_scalar(m) / m;
+}
+
+// T's inverse on a display colour (clipped to 0..1 first): the air adds its
+// light in scene units over a colour already through T. Tinv(1) = W, so
+// white stays white. NaN rule as light_tone.
+__attribute__((unused)) static float3 light_tone_inverse(float3 c) {
+  if (!all(isfinite(c))) return float3(0.0);
+  c = clamp(c, float3(0.0), float3(1.0));
+  const float m = max(c.r, max(c.g, c.b));
+  if (m <= kLightToneKnee) return c;
+  return c * light_tone_scalar_inverse(m) / m;
+}
+
+// The rig path's one seam: a rig fragment's whole colour (decision 15's
+// scaled classic terms plus the rig) goes through here once. Under kLightHdr,
+// the exposure in scene units and T (HDR, #624); otherwise mat_soft_knee
+// (#494), the 8-bit soft knee the rig had before #624, so several bright
+// lights compress toward white instead of clipping flat. (Clear and frosted
+// glass take light_glass_cover instead, or mat_glass_cover's knee.)
+__attribute__((unused)) static float3 light_finish(float3 c, float exposure) {
+  if (kLightHdr) return light_tone(c * exposure);
   return mat_soft_knee(c);
 }
 
@@ -8123,19 +8277,43 @@ __attribute__((unused)) static float3 light_outline(float3 rgb, float3 pEye,
 }
 
 // The rig added to an already-shaded colour `rgb`: the lights' diffuse on the
-// base colour plus their highlights, through the knee, then the outlines.
+// base colour plus their highlights, through light_finish at the frame's
+// exposure (tone.x), then the outlines (painted after T, in display space).
 __attribute__((unused)) static float3 light_apply(float3 rgb, float3 base,
     float3 nEye, float3 pEye, constant LightRigU& rig, LightResponse r) {
   const LightTerms t = light_terms(rig, base, nEye, pEye, r);
-  return light_outline(light_finish(rgb + base * t.diffuse + t.specular),
+  return light_outline(light_finish(rgb + base * t.diffuse + t.specular,
+                                    rig.tone.x),
                        pEye, rig);
 }
 
-// Glass's glints from the rig: its specular through the same soft saturation
-// as the classic glints, 1 - exp(-2 s) (mat_glass_shade), per channel. The
-// caller scales it by the Reflection knob as mat_glass_shade does.
+// Glass's glints from the rig. Under kLightHdr (#624) they stay linear in
+// scene units, 2 s: the slope of the knee arm's curve at 0, so a faint glint
+// keeps its strength and T rolls the peaks off where the colour is composed
+// (light_glass_cover). Otherwise the same soft saturation as the classic
+// glints, 1 - exp(-2 s) (mat_glass_shade), per channel. The caller scales it
+// by the Reflection knob as mat_glass_shade does.
 __attribute__((unused)) static float3 light_glass_glints(float3 s) {
+  if (kLightHdr) return 2.0 * s;
   return float3(1.0) - exp(-2.0 * s);
+}
+
+// mat_glass_cover for the rig under kLightHdr (#624): ONE coverage per
+// fragment, the glints buying it as there, but the colour composed in scene
+// units and mapped through T once, at the exposure e, so bright glints over a
+// lit body roll off together instead of each being squeezed and the sum
+// clipping. The straight colour is at most 1 by construction (no saturate);
+// at e = 1 it is mat_glass_cover's wherever the body, the glints and the
+// composed colour all stay at or below the knee (the same operations, in the
+// same order, on T's identity branch). Callers choose it only under
+// `kLightRig && kLightHdr` and mat_glass_cover otherwise. The divide is by at
+// least 1e-4, and T zeroes anything non-finite (the NaN rule).
+__attribute__((unused)) static float4 light_glass_cover(float3 body, float3 hi,
+    float a, float e) {
+  const float h = light_tone_scalar(e * max(hi.r, max(hi.g, hi.b)));
+  const float cover = saturate(a + (1.0 - a) * h);
+  const float3 S = (body * a + hi) / max(cover, 1e-4);
+  return float4(light_tone(e * S), cover);
 }
 
 // --- Studio shadow maps (#616) -------------------------------------------------
@@ -8147,7 +8325,8 @@ __attribute__((unused)) static float3 light_glass_glints(float3 s) {
 // so the classic and #613 rig specialisations (kLightShadow false) compile to
 // what they were. RendererMetal::materialFragmentFunction always sets it.
 //
-// The helpers below read no function constant, as the light_ helpers above.
+// The helpers below read no function constant but kLightHdr, through
+// light_finish, as the light_ helpers above (#624).
 // The _shadowed functions are #613's light_terms_view, light_terms and
 // light_apply with (maps, smp) after `rig` and light_visibility replaced by
 // light_visibility_shadowed, and nothing else (lighting_shadow_msl.py strips
@@ -8256,7 +8435,8 @@ __attribute__((unused)) static float3 light_apply_shadowed(float3 rgb,
     float3 base, float3 nEye, float3 pEye, constant LightRigU& rig,
     depth2d_array<float> maps, sampler smp, LightResponse r) {
   const LightTerms t = light_terms_shadowed(rig, maps, smp, base, nEye, pEye, r);
-  return light_outline(light_finish(rgb + base * t.diffuse + t.specular),
+  return light_outline(light_finish(rgb + base * t.diffuse + t.specular,
+                                    rig.tone.x),
                        pEye, rig);
 }
 
@@ -8727,7 +8907,12 @@ fragment OITFragOut vbo_fragment_oit(VBOVertexOut in [[stage_in]],
       hi += light_glass_glints(rigLight.specular) *
             (kMatGlassReflection * saturate(mat.p[0]));
     }
-    c = mat_glass_cover(body, hi, in.color.a);
+    // HDR (#624): body and glints composed in scene units, one tone curve at
+    // the frame's exposure; mat_glass_cover's knee otherwise, as before.
+    if (kLightRig && kLightHdr)
+      c = light_glass_cover(body, hi, in.color.a, rig.tone.x);
+    else
+      c = mat_glass_cover(body, hi, in.color.a);
     if (kLightRig) c.rgb = light_outline(c.rgb, in.posEye, rig);
     // The far wall is not recorded. Flipped to face the viewer, its slope is
     // the exact opposite of the near wall's, and averaged with it the bend
@@ -8839,9 +9024,15 @@ fragment float4 line_aa_fragment(LineAAOut in [[stage_in]],
 // shadow variants of the rig pipelines. False (every classic and #613 rig
 // caller) removes the map arguments and every shadow statement, leaving
 // #613's statements.
+//
+// `lightHdr` is HDR colour's constant (#624, kLightHdr), set on EVERY
+// specialisation too, to `lightRig && lightHdr`: true only for the rig
+// variants of an HDR frame. False (every classic caller, and every rig
+// caller at metal_light_hdr 2) leaves the light_ helpers with their 8-bit
+// knee, as before #624.
 id<MTLFunction> RendererMetal::materialFragmentFunction(
     id<MTLLibrary> lib, NSString* name, int family, bool lightRig,
-    bool lightShadow)
+    bool lightShadow, bool lightHdr)
 {
   if (!lib || !MaterialFamilyIsImplemented(family)) {
     return nil;
@@ -8853,6 +9044,8 @@ id<MTLFunction> RendererMetal::materialFragmentFunction(
   [cv setConstantValue:&rig type:MTLDataTypeBool atIndex:kLightRigConstantIndex];
   bool shadow = lightRig && lightShadow;
   [cv setConstantValue:&shadow type:MTLDataTypeBool atIndex:kLightShadowConstantIndex];
+  bool hdr = lightRig && lightHdr;
+  [cv setConstantValue:&hdr type:MTLDataTypeBool atIndex:kLightHdrConstantIndex];
   NSError* err = nil;
   id<MTLFunction> fn = [lib newFunctionWithName:name constantValues:cv error:&err];
   [cv release];   // MRC: MTLFunctionConstantValues alloc/init is +1
@@ -10607,7 +10800,9 @@ fragment SphereFOut sphere_impostor_fragment(SphereVOut in [[stage_in]],
 // classic glint curve, scaled by the Reflection knob. This path folds its
 // glints into the colour (it has no mat_glass_cover), so the rig's are folded
 // the same way: mat_impostor_composite's glass branch is redone with the rig's
-// light inside it, then the outlines. Called only under `if (kLightRig)`.
+// light inside it, through the rig's seam (light_finish at the frame's
+// exposure: T under HDR, #624; mat_soft_knee, as before, otherwise), then the
+// outlines. Called only under `if (kLightRig)`.
 static float3 sphere_glass_rig(float3 rgb, float3 base, float3 n, float3 pt,
     constant SphereU& u, constant MaterialU& mat, texturecube<float> envMap,
     sampler envSmp, constant LightRigU& rig) {
@@ -10622,7 +10817,7 @@ static float3 sphere_glass_rig(float3 rgb, float3 base, float3 n, float3 pt,
   body += base * kMatGlassBaseAttenuation * rigLight.diffuse;
   hi += light_glass_glints(rigLight.specular) *
         (kMatGlassReflection * saturate(mat.p[0]));
-  return light_outline(mat_soft_knee(body + hi), pt, rig);
+  return light_outline(light_finish(body + hi, rig.tone.x), pt, rig);
 }
 
 // sphere_glass_rig with the studio shadow maps (#616): the maps after `rig`
@@ -10645,7 +10840,7 @@ static float3 sphere_glass_rig_shadowed(float3 rgb, float3 base, float3 n,
   body += base * kMatGlassBaseAttenuation * rigLight.diffuse;
   hi += light_glass_glints(rigLight.specular) *
         (kMatGlassReflection * saturate(mat.p[0]));
-  return light_outline(mat_soft_knee(body + hi), pt, rig);
+  return light_outline(light_finish(body + hi, rig.tone.x), pt, rig);
 }
 
 fragment SphereOITOut sphere_impostor_fragment_oit(SphereVOut in [[stage_in]],
@@ -11499,7 +11694,12 @@ fragment CylOITOut cyl_impostor_fragment_oit(CylVOut in [[stage_in]],
         hi += light_glass_glints(rigLight.specular) *
               (kMatGlassReflection * saturate(mat.p[0]));
       }
-      float4 g = mat_glass_cover(body, hi, a);
+      // HDR (#624): as on the VBO glass (vbo_fragment_oit).
+      float4 g;
+      if (kLightRig && kLightHdr)
+        g = light_glass_cover(body, hi, a, rig.tone.x);
+      else
+        g = mat_glass_cover(body, hi, a);
       rgb = g.rgb;
       if (kLightRig) rgb = light_outline(rgb, pt, rig);
       a = g.a;
@@ -12155,12 +12355,13 @@ void RendererMetal::buildBezierTubePipeline()
     NSLog(@"RendererMetal: bezier tube pipeline failed: %@", err);
 }
 
-// One of the tube rig library's functions (#613). They read no function
-// constant, so plain newFunctionWithName: is enough. The library still
-// DECLARES kMaterialSrc's constants; should Metal ever list one against a
-// function that does not read it, the function specialised with
-// kMatFamily = default, kLightRig = false and kLightShadow = false (#616) is
-// the same code, so take that.
+// One of the tube rig library's functions (#613). The vertex function reads
+// no function constant, so plain newFunctionWithName: is enough for it. The
+// fragment reads one, kLightHdr (#624), through light_apply's light_finish,
+// so Metal lists it and the function is specialised: with kLightHdr false
+// here (the 8-bit knee, as before #624), kMatFamily = default, kLightRig =
+// false and kLightShadow = false (#616), which it does not read, so every
+// constant the library declares is set.
 // +1, caller owns; nil (logged) on failure.
 static id<MTLFunction> bezierTubeRigFunction(id<MTLLibrary> lib, NSString* name)
 {
@@ -12178,6 +12379,9 @@ static id<MTLFunction> bezierTubeRigFunction(id<MTLLibrary> lib, NSString* name)
   // nor receive studio shadows.
   bool shadow = false;
   [cv setConstantValue:&shadow type:MTLDataTypeBool atIndex:kLightShadowConstantIndex];
+  // HDR colour's constant (#624), read by light_finish: false, the knee.
+  bool hdr = false;
+  [cv setConstantValue:&hdr type:MTLDataTypeBool atIndex:kLightHdrConstantIndex];
   NSError* err = nil;
   fn = [lib newFunctionWithName:name constantValues:cv error:&err];
   [cv release];   // MRC: alloc/init is +1
@@ -12237,11 +12441,13 @@ void RendererMetal::buildBezierTubeRigPipeline()
 }
 
 // One of the air library's functions (#618), with bezierTubeRigFunction's
-// logic: they read no function constant, so plain newFunctionWithName: is
-// enough. The library still DECLARES kMaterialSrc's constants; should Metal
-// ever list one against a function that does not read it, the function
-// specialised with kMatFamily = default, kLightRig = false and kLightShadow =
-// false is the same code, so take that.
+// logic: the vertex and march functions read no function constant, so plain
+// newFunctionWithName: is enough for them. The composites (post_air_full,
+// post_air_upsample) read one, kLightHdr (#624), through post_air_finish, so
+// Metal lists it and they are specialised: with kLightHdr false here (the
+// 8-bit knee, as before #624), kMatFamily = default, kLightRig = false and
+// kLightShadow = false, which they do not read, so every constant the
+// library declares is set.
 // +1, caller owns; nil (logged) on failure.
 static id<MTLFunction> airFunction(id<MTLLibrary> lib, NSString* name)
 {
@@ -12256,6 +12462,9 @@ static id<MTLFunction> airFunction(id<MTLLibrary> lib, NSString* name)
   [cv setConstantValue:&rig type:MTLDataTypeBool atIndex:kLightRigConstantIndex];
   bool shadow = false;
   [cv setConstantValue:&shadow type:MTLDataTypeBool atIndex:kLightShadowConstantIndex];
+  // HDR colour's constant (#624), read by light_finish: false, the knee.
+  bool hdr = false;
+  [cv setConstantValue:&hdr type:MTLDataTypeBool atIndex:kLightHdrConstantIndex];
   NSError* err = nil;
   fn = [lib newFunctionWithName:name constantValues:cv error:&err];
   [cv release];   // MRC: alloc/init is +1

@@ -81,7 +81,17 @@ def _load_lighting_msl():
     return module
 
 
+def _load_lighting_air_msl():
+    """lighting_air_msl.py, for #624's without_hdr_624, loaded the same way."""
+    spec = importlib.util.spec_from_file_location(
+        '_lighting_shadow_msl_air', os.path.join(HERE, 'lighting_air_msl.py'))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 _msl = _load_lighting_msl()
+_air = _load_lighting_air_msl()
 shader_literals = _msl.shader_literals
 strip_comments = _msl.strip_comments
 msl_functions = _msl.msl_functions
@@ -185,6 +195,14 @@ CLASSIC_LIGHT_ARGUMENT = re.compile(r',\s*mat_classic_light\(\s*\w+\s*\)')
 def without_classic_light(text):
     """`text` with #615's mat_classic_light arguments taken out."""
     return CLASSIC_LIGHT_ARGUMENT.sub('', text)
+
+
+def without_hdr(text):
+    """`text` with #624's shader edits put back (lighting_air_msl.py
+    without_hdr_624: light_finish's exposure and HDR arm, the glints' HDR arm,
+    the rig glass covers, the sphere glass helpers' seam). The pins below are
+    #613's code; with kLightHdr false #624 compiles to it."""
+    return _air.without_hdr_624(text)[0]
 
 
 def read(path):
@@ -339,9 +357,10 @@ class TestShadowBlock(ShadowMSLCase):
             if name in [f for fs in RIG_FRAGMENTS.values() for f in fs]:
                 continue
             got_sig, got_body = msl_functions(self.msl[lib])[name]
-            # #615's classic-scale argument (sphere_glass_rig) taken out
-            self.assertEqual((digest(got_sig),
-                              digest(without_classic_light(got_body))),
+            # #615's classic-scale argument (sphere_glass_rig) taken out, and
+            # #624's edits put back
+            self.assertEqual((digest(without_hdr(got_sig)),
+                              digest(without_classic_light(without_hdr(got_body)))),
                              (sig, body), '%s.%s' % (lib, name))
 
 
@@ -481,8 +500,10 @@ class TestFragments(ShadowMSLCase):
                 self.assertEqual(
                     (digest(squash(sig).replace(SHADOW_ARGUMENTS_SQUASHED, '')),
                      # #615's classic-scale argument taken out (the glass
-                     # calls of vbo_fragment_oit, cyl_impostor_fragment_oit)
-                     digest(without_classic_light(without_shadow(body)))),
+                     # calls of vbo_fragment_oit, cyl_impostor_fragment_oit),
+                     # and #624's rig glass covers put back
+                     digest(without_classic_light(
+                         without_hdr(without_shadow(body))))),
                     MASTER_613[(lib, name)], '%s.%s' % (lib, name))
 
     def testShadowArmsAreThe613ArmsShadowed(self):
@@ -576,7 +597,9 @@ class TestPipelines(ShadowMSLCase):
         self.assertLess(m.start(), body.index('constantValues:'))
         self.assertRegex(self.header, r'materialFragmentFunction\(\s*id<MTLLibrary> lib,'
                                       r'\s*NSString\* name,\s*int family,\s*'
-                                      r'bool lightRig = false,\s*bool lightShadow = false\);')
+                                      r'bool lightRig = false,\s*bool lightShadow = false,'
+                                      # #624's kLightHdr after it
+                                      r'\s*bool lightHdr = false\);')
         # the classic builds pass three arguments, #613's rig builds four
         for fn, count in (('RendererMetal::buildVBOPipelines', 3),
                           ('RendererMetal::buildImpostorPipelines', 3),

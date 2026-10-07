@@ -383,9 +383,11 @@ private:
   // classic pipeline.
   // `lightShadow` is the studio shadow maps' constant (#616), always set too:
   // true only with `lightRig`, for the shadow variants.
+  // `lightHdr` is HDR colour's constant (#624, kLightHdr), always set too:
+  // true only with `lightRig`, for the rig variants of an HDR frame.
   id<MTLFunction> materialFragmentFunction(
       id<MTLLibrary> lib, NSString* name, int family, bool lightRig = false,
-      bool lightShadow = false);
+      bool lightShadow = false, bool lightHdr = false);
   // The light rig (#613): the VBO library is kept so the rig variants of
   // vbo_fragment and vbo_fragment_oit are specialised only when a rig is
   // first turned on (vboRigFragmentFunction, one attempt per family). The

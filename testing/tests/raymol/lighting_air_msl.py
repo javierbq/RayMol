@@ -18,7 +18,8 @@ the regression renders against master, L2 and L3 prove on a Mac:
   kAirSrc, inside ensureAirPipelines (one attempt, every failure logged in
   the L4 console's words, everything but the pipeline released), which only
   runPostChain's air statement reaches; its functions come from airFunction,
-  the tube rig library's fallback (constant indices 0, 1 and 2); it defines
+  the tube rig library's fallback (constant indices 0 to 3; #624's kLightHdr,
+  read by the composite, is the fourth); it defines
   only post_air_ functions, LightAirU and AirVOut, and declares no function
   constant, no rig or shadow token and nothing at the lit libraries' rig and
   map indices;
@@ -170,6 +171,78 @@ STATEMENTS_624 = {
 TONE_FIELD_624 = re.compile(r'(?<=float4 shadowTile;)\s*float4\s+tone\s*;')
 TONE_FIELD_LITERALS = ('kMaterialSrc', 'kRTSrc')
 
+# #624's shader edits (HDR colour, Part 3 on), each put back by
+# without_hdr_624, so a pin on the code before #624 still holds once they are
+# taken out. Whitespace-free text (squash). The new functions (the tone
+# helpers, in kMaterialSrc and their copies in kRTSrc, and light_glass_cover)
+# and declarations (kLightHdr, the tone constants) are removed; every other
+# edit is (name, new, old). lighting_hdr_msl.py pins how many times each
+# applies in each literal (an explicit allowlist) and the new text itself.
+HDR_NEW_FUNCTIONS_624 = ('light_tone_scalar', 'light_tone_scalar_inverse',
+                         'light_tone', 'light_tone_inverse', 'light_glass_cover')
+HDR_DECLARATIONS_624 = re.compile(
+    r'constantboolkLightHdr\[\[function_constant\(\d\)\]\];'
+    r'|constantfloatkLightTone(?:Knee|White)=[0-9.]+;')
+HDR_EDITS_624 = (
+    # light_finish takes the frame's exposure and gains the HDR arm
+    ('finish_signature', 'float3light_finish(float3c,floatexposure)',
+     'float3light_finish(float3c)'),
+    ('finish_body', '{if(kLightHdr)returnlight_tone(c*exposure);'
+                    'returnmat_soft_knee(c);}',
+     '{returnmat_soft_knee(c);}'),
+    # ...which light_apply, light_apply_shadowed and rt_rig_hit hand it
+    ('apply_exposure', 'light_finish(rgb+base*t.diffuse+t.specular,rig.tone.x)',
+     'light_finish(rgb+base*t.diffuse+t.specular)'),
+    ('hit_exposure', 'light_finish(shaded+base*t.diffuse+t.specular,rig.tone.x)',
+     'light_finish(shaded+base*t.diffuse+t.specular)'),
+    # glass's rig glints: linear under HDR
+    ('glints_body', '{if(kLightHdr)return2.0*s;returnfloat3(1.0)-exp(-2.0*s);}',
+     '{returnfloat3(1.0)-exp(-2.0*s);}'),
+    # the rig glass covers (vbo_fragment_oit, cyl_impostor_fragment_oit)
+    ('vbo_cover', 'if(kLightRig&&kLightHdr)c=light_glass_cover(body,hi,in.color.a,'
+                  'rig.tone.x);elsec=mat_glass_cover(body,hi,in.color.a);',
+     'c=mat_glass_cover(body,hi,in.color.a);'),
+    ('cyl_cover', 'float4g;if(kLightRig&&kLightHdr)g=light_glass_cover(body,hi,a,'
+                  'rig.tone.x);elseg=mat_glass_cover(body,hi,a);',
+     'float4g=mat_glass_cover(body,hi,a);'),
+    # the sphere glass helpers through the rig's seam
+    ('sphere_glass', 'returnlight_outline(light_finish(body+hi,rig.tone.x),pt,rig);',
+     'returnlight_outline(mat_soft_knee(body+hi),pt,rig);'),
+    # the air composite: two arms, the exposure, the upsample's rig
+    ('air_signature', 'float3post_air_finish(float3c,float3a,floate)',
+     'float3post_air_finish(float3c,float3a)'),
+    ('air_body', '{if(kLightHdr){constfloat3add=all(isfinite(a))?max(a,float3(0.0))'
+                 '*e:float3(0.0);returnlight_tone(light_tone_inverse(saturate(c))'
+                 '+add);}returnc+max(mat_soft_knee(c+a)-mat_soft_knee(c),float3(0.0));}',
+     '{returnc+max(light_finish(c+a)-light_finish(c),float3(0.0));}'),
+    ('air_full', 'post_air_finish(c.rgb,t.rgb,rig.tone.x)',
+     'post_air_finish(c.rgb,t.rgb)'),
+    ('air_upsample', 'post_air_finish(c.rgb,a,rig.tone.x)',
+     'post_air_finish(c.rgb,a)'),
+    ('air_upsample_rig', 'texture2d<float>termTex[[texture(3)]],constantLightAirU&'
+                         'air[[buffer(0)]],constantLightRigU&rig[[buffer(1)]])',
+     'texture2d<float>termTex[[texture(3)]],constantLightAirU&air[[buffer(0)]])'),
+)
+
+
+def without_hdr_624(code):
+    """`code` (comments stripped: a literal, or one function's signature or
+    body) without whitespace and with #624's shader edits put back. Returns
+    (text, counts): counts[name] is how many times each edit applied, the new
+    functions and declarations under 'functions' and 'declarations'."""
+    text = squash(code)
+    counts = {}
+    for name, (sig, body) in msl_functions(code).items():
+        if name in HDR_NEW_FUNCTIONS_624:
+            whole = squash(sig + body)
+            counts['functions'] = counts.get('functions', 0) + text.count(whole)
+            text = text.replace(whole, '')
+    text, counts['declarations'] = HDR_DECLARATIONS_624.subn('', text)
+    for name, new, old in HDR_EDITS_624:
+        counts[name] = text.count(new)
+        text = text.replace(new, old)
+    return text, counts
+
 # #616's shadow tokens (lighting_shadow_msl.py): never in another library.
 SHADOW_TOKENS = re.compile(r'\bkLightShadow\b|\blightShadow\w*|\w+_shadowed\b')
 # The structs the rig owns (lighting_msl.py STRUCTS).
@@ -252,6 +325,9 @@ class TestMasterUnchanged(AirMSLCase):
             if name in TONE_FIELD_LITERALS:
                 self.assertEqual(len(TONE_FIELD_624.findall(code)), 1, name)
                 code = TONE_FIELD_624.sub('', code, count=1)
+            # #624: its shader edits put back (lighting_hdr_msl.py pins
+            # which apply where)
+            code, _ = without_hdr_624(code)
             # #615: the classic-scale argument of the glass calls taken out
             if name in CLASSIC_LIGHT_LITERALS:
                 self.assertTrue(CLASSIC_LIGHT_ARGUMENT.search(code), name)
@@ -354,11 +430,14 @@ class TestLibrary(AirMSLCase):
             return squash(re.sub(r'NSLog\(@"[^"]*"', 'NSLog(@""', body))
         self.assertEqual(normal(air), normal(tube))
         for index in ('atIndex:0]', 'atIndex:kLightRigConstantIndex]',
-                      'atIndex:kLightShadowConstantIndex]'):
+                      'atIndex:kLightShadowConstantIndex]',
+                      'atIndex:kLightHdrConstantIndex]'):
             self.assertIn(index, air)
         self.assertIn('int fam = cMaterialFamily_default;', air)
         self.assertIn('bool rig = false;', air)
         self.assertIn('bool shadow = false;', air)
+        # #624: the composites read kLightHdr (post_air_finish); false here
+        self.assertIn('bool hdr = false;', air)
 
     def testDefinesOnlyAirFunctionsAndStructs(self):
         self.assertTrue(self.functions)
@@ -382,11 +461,14 @@ class TestLibrary(AirMSLCase):
         self.assertNotIn('/*', self.air)
 
     def testCallsTheSharedHelpers(self):
+        # (#624: the composite's two arms call T, its inverse and the knee
+        # where they called light_finish)
         for helper in ('post_eye_pos(', 'post_linear_depth(', 'light_shadow_lookup(',
-                       'light_finish(', 'mat_hash(', 'mat_noise('):
+                       'light_tone(', 'light_tone_inverse(', 'mat_soft_knee(',
+                       'mat_hash(', 'mat_noise('):
             self.assertIn(helper, self.air_code, helper)
         for copy in ('float mat_hash(', 'float mat_noise(', 'float3 post_eye_pos(',
-                     'LightRigU {'):
+                     'LightRigU {', 'float3 light_tone(', 'float3 mat_soft_knee('):
             self.assertNotIn(copy, self.air_code, copy)
 
     def testTheFragmentAndItsArguments(self):
@@ -403,7 +485,9 @@ class TestLibrary(AirMSLCase):
         self.assertIn('colorTex.read(px)', body)
         self.assertIn('depthTex.read(px)', body)
         self.assertNotIn('.sample(', body)
-        self.assertIn('returnfloat4(post_air_finish(c.rgb,t.rgb),c.a);', squash(body))
+        # (#624: at the frame's exposure, the rig block's tone.x)
+        self.assertIn('returnfloat4(post_air_finish(c.rgb,t.rgb,rig.tone.x),c.a);',
+                      squash(body))
 
 
 class TestLayout(AirMSLCase):
@@ -548,9 +632,17 @@ class TestModel(AirMSLCase):
         self.assertIn('if (z >= zHi) break;', dust)
 
     def testCompositeOnlyAddsLight(self):
-        _, finish = self.fn('post_air_finish')
+        # #624: under kLightHdr the air is added in scene units, T(Tinv(c) +
+        # e a), never negative and nothing non-finite; otherwise #618's
+        # composite through the rig's 8-bit knee, light_finish's false arm
+        # written out (lighting_hdr_msl.py pins both arms)
+        sig, finish = self.fn('post_air_finish')
+        self.assertIn('float3post_air_finish(float3c,float3a,floate)', squash(sig))
         self.assertEqual(squash(finish),
-                         '{returnc+max(light_finish(c+a)-light_finish(c),float3(0.0));}')
+                         '{if(kLightHdr){constfloat3add=all(isfinite(a))?'
+                         'max(a,float3(0.0))*e:float3(0.0);returnlight_tone('
+                         'light_tone_inverse(saturate(c))+add);}'
+                         'returnc+max(mat_soft_knee(c+a)-mat_soft_knee(c),float3(0.0));}')
         _, full = self.fn('post_air_full')
         self.assertIn('post_air_finish(', full)
 
@@ -778,7 +870,10 @@ class TestHalf(AirMSLCase):
         for arg in (r'texture2d<float>\s+colorTex\s*\[\[\s*texture\(0\)\s*\]\]',
                     r'depth2d<float>\s+depthTex\s*\[\[\s*texture\(1\)\s*\]\]',
                     r'texture2d<float>\s+termTex\s*\[\[\s*texture\(3\)\s*\]\]',
-                    r'constant\s+LightAirU\s*&\s*air\s*\[\[\s*buffer\(0\)\s*\]\]'):
+                    r'constant\s+LightAirU\s*&\s*air\s*\[\[\s*buffer\(0\)\s*\]\]',
+                    # #624: the rig block, for its tone (bindAir binds it to
+                    # every air pass)
+                    r'constant\s+LightRigU\s*&\s*rig\s*\[\[\s*buffer\(1\)\s*\]\]'):
             self.assertRegex(sig, arg)
         self.assertIn('colorTex.read(px)', body)
         self.assertIn('const float z = post_air_stop(depthTex.read(px), air);', body)
@@ -795,7 +890,7 @@ class TestHalf(AirMSLCase):
         # the nearest-depth fallback, then the composite, alpha kept
         self.assertIn('if (dz < best)', body)
         self.assertIn('const float3 a = wsum > 1e-4 ? sum / wsum : nearest;', body)
-        self.assertIn('return float4(post_air_finish(c.rgb, a), c.a);', body)
+        self.assertIn('return float4(post_air_finish(c.rgb, a, rig.tone.x), c.a);', body)
 
     def testStopIsTheTermsRange(self):
         _, stop = self.fn('post_air_stop')
