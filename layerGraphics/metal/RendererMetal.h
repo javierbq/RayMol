@@ -543,15 +543,19 @@ private:
   // frame and re-made on a size change; _airTermW/_airTermH the half size it
   // was made, or tried, for) with _airMarchPipeline, then upsamples and
   // composites with _airUpsamplePipeline. Without those pipelines or the term
-  // the frame draws the air at full resolution.
-  id<MTLRenderPipelineState> _airFullPipeline = nil;
+  // the frame draws the air at full resolution. The two composites (full and
+  // upsample) come in both kLightHdr variants (#624; [1] for an HDR frame, [0]
+  // for the 8-bit knee), all made in the one attempt from the one compile;
+  // the march reads no constant and stays single.
+  id<MTLRenderPipelineState> _airFullPipeline[2] = {};
   id<MTLRenderPipelineState> _airMarchPipeline = nil;
-  id<MTLRenderPipelineState> _airUpsamplePipeline = nil;
+  id<MTLRenderPipelineState> _airUpsamplePipeline[2] = {};
   bool _airPipelinesTried = false;
   id<MTLTexture> _airNoMaps = nil;
   id<MTLTexture> _airTerm = nil;
   NSUInteger _airTermW = 0;
   NSUInteger _airTermH = 0;
+  // True when this frame's composite (_airFullPipeline[_lightHdrOn]) exists.
   bool ensureAirPipelines();
   id<MTLTexture> ensureAirNoMaps();
   bool ensureAirTerm(NSUInteger w, NSUInteger h);
@@ -1193,14 +1197,14 @@ private:
       id<MTLRenderPipelineState>* composite);
   void releaseRayTracingTransAS();
   // The light rig on traced reflection hits (#613): rt_composite specialised
-  // with kRTLightRig, default and transparent, each built the first time a
-  // rig-on frame has something reflective (one attempt each). Used only then;
-  // every other frame keeps _rtResolvePipeline / _rtResolvePipelineT.
-  id<MTLRenderPipelineState> _rtResolvePipelineRig = nil;
-  id<MTLRenderPipelineState> _rtResolvePipelineTRig = nil;
-  bool _rtRigTried = false;
-  bool _rtRigTTried = false;
-  id<MTLRenderPipelineState> buildRTRigComposite(bool transparent);
+  // with kRTLightRig, [transparent][hdr] (kRTTrans; kLightHdr, #624: 1 for an
+  // HDR frame, 0 for the 8-bit knee), each built from the retained _rtLib the
+  // first time a rig-on frame of that kind has something reflective (one
+  // attempt each, _rtRigTried). Used only then; every other frame keeps
+  // _rtResolvePipeline / _rtResolvePipelineT.
+  id<MTLRenderPipelineState> _rtResolvePipelineRig[2][2] = {};
+  bool _rtRigTried[2][2] = {};
+  id<MTLRenderPipelineState> buildRTRigComposite(bool transparent, bool hdr);
 
   // Drop the cached RT geometry derived from a CPU buffer that is about to be
   // freed (or whose contents changed). Handles both primary and alias keys.

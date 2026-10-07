@@ -606,8 +606,10 @@ RendererMetal::~RendererMetal()
   [_vboLinePipeline release];         [_bezierTubePipeline release];
   // the tube's light-rig pipelines (#613; both hdr variants, #624)
   [_bezierTubeRigPipeline[0] release]; [_bezierTubeRigPipeline[1] release];
-  [_airFullPipeline release];         [_airNoMaps release];  // the air (#618)
-  [_airMarchPipeline release];        [_airUpsamplePipeline release];
+  [_airNoMaps release];  // the air (#618); both hdr composites (#624)
+  [_airFullPipeline[0] release];      [_airFullPipeline[1] release];
+  [_airUpsamplePipeline[0] release];  [_airUpsamplePipeline[1] release];
+  [_airMarchPipeline release];
   [_airTerm release];
   [_blitPipeline release];            [_ssaoPipeline release];
   [_fxaaPipeline release];            [_outlinePipeline release];
@@ -616,7 +618,10 @@ RendererMetal::~RendererMetal()
   [_exportAlphaPipeline release];
   [_rtAOPipeline release];            [_rtResolvePipeline release];
   [_rtAOPipelineT release];           [_rtResolvePipelineT release];
-  [_rtResolvePipelineRig release];    [_rtResolvePipelineTRig release];  // #613
+  // the rig composites (#613), [transparent][hdr] (#624)
+  for (int t = 0; t < 2; ++t)
+    for (int h = 0; h < 2; ++h)
+      [_rtResolvePipelineRig[t][h] release];
   [_rtLib release];
   releaseRayTracingTransAS();
   [_rtAOAccumPipeline release];       [_labelPipeline release];
@@ -4809,7 +4814,7 @@ void RendererMetal::ensureRayTracingAS()
 // The RT pass pipelines, specialised on kRTTrans (function constant 0). The
 // light rig's constant (kRTLightRig) is always set, false: these are the
 // pipelines every frame without a rig runs. Its variants come from
-// buildRTRigComposite. So is HDR's (#624, kLightHdr), false with the rig.
+// buildRTRigComposite. So is HDR's (#624, kLightHdr), always false here.
 void RendererMetal::buildRTPipelines(bool transparent,
     id<MTLRenderPipelineState>* ao, id<MTLRenderPipelineState>* composite)
 {
@@ -4852,9 +4857,12 @@ void RendererMetal::buildRTPipelines(bool transparent,
 // The light rig's composite (#613): rt_composite specialised with kRTLightRig
 // true (and kRTTrans as asked), with the default composite's descriptor. The
 // AO pass never sees the rig, so it has no variant. HDR's constant (#624,
-// kLightHdr) is set false: a hit takes the knee as before #624. Returns +1, or nil after
-// logging; the caller tries once and draws the classic composite otherwise.
-id<MTLRenderPipelineState> RendererMetal::buildRTRigComposite(bool transparent)
+// kLightHdr) as asked: true for an HDR frame (a traced hit goes through the
+// tone curve at the frame's exposure), false for the 8-bit knee as before
+// #624. Both come from the retained _rtLib, so neither compiles the library
+// again. Returns +1, or nil after logging; the caller tries each once and
+// draws the classic composite otherwise.
+id<MTLRenderPipelineState> RendererMetal::buildRTRigComposite(bool transparent, bool hdr)
 {
   if (!_rtLib)
     return nil;
@@ -4864,8 +4872,8 @@ id<MTLRenderPipelineState> RendererMetal::buildRTRigComposite(bool transparent)
   [fc setConstantValue:&t type:MTLDataTypeBool atIndex:0];
   bool rig = true;
   [fc setConstantValue:&rig type:MTLDataTypeBool atIndex:kRTLightRigConstantIndex];
-  bool hdr = false;
-  [fc setConstantValue:&hdr type:MTLDataTypeBool atIndex:kRTLightHdrConstantIndex];
+  bool h = hdr;
+  [fc setConstantValue:&h type:MTLDataTypeBool atIndex:kRTLightHdrConstantIndex];
   id<MTLFunction> vtx = [_rtLib newFunctionWithName:@"rt_vertex"];
   id<MTLFunction> fco = [_rtLib newFunctionWithName:@"rt_composite" constantValues:fc error:&err];
   [fc release];
@@ -4879,8 +4887,8 @@ id<MTLRenderPipelineState> RendererMetal::buildRTRigComposite(bool transparent)
     [pd release];
   }
   if (!pipeline)
-    NSLog(@"RendererMetal RT: light-rig %s composite failed: %@",
-          transparent ? "transparent" : "default", err);
+    NSLog(@"RendererMetal RT: light-rig %s%s composite failed: %@",
+          transparent ? "transparent" : "default", hdr ? " HDR" : "", err);
   [vtx release]; [fco release];
   return pipeline;
 }
@@ -5121,17 +5129,19 @@ void RendererMetal::runPostChain()
     // The light rig on the reflection hits (#613): its composite only while a
     // rig is on AND something reflects (the rig code lives in the reflection
     // block, which matCount 0 skips). Otherwise, or if the variant cannot be
-    // built, today's composite.
+    // built, today's composite. The variant follows the frame: transparent or
+    // not, and HDR colour or the knee (#624, _lightHdrOn).
     id<MTLRenderPipelineState> composite =
         doRTTrans ? _rtResolvePipelineT : _rtResolvePipeline;
     bool rtRig = false;
     if (_lightRigOn && u.matCount > 0.5f) {
-      id<MTLRenderPipelineState>* rigComposite =
-          doRTTrans ? &_rtResolvePipelineTRig : &_rtResolvePipelineRig;
-      bool* tried = doRTTrans ? &_rtRigTTried : &_rtRigTried;
+      const int rigT = doRTTrans ? 1 : 0;
+      const int rigH = _lightHdrOn ? 1 : 0;
+      id<MTLRenderPipelineState>* rigComposite = &_rtResolvePipelineRig[rigT][rigH];
+      bool* tried = &_rtRigTried[rigT][rigH];
       if (!*rigComposite && !*tried) {
         *tried = true;
-        *rigComposite = buildRTRigComposite(doRTTrans);
+        *rigComposite = buildRTRigComposite(doRTTrans, _lightHdrOn);
       }
       if (*rigComposite) {
         composite = *rigComposite;
@@ -12512,14 +12522,16 @@ void RendererMetal::buildBezierTubeRigPipeline()
 
 // One of the air library's functions (#618), with bezierTubeRigFunction's
 // logic: the vertex and march functions read no function constant, so plain
-// newFunctionWithName: is enough for them. The composites (post_air_full,
-// post_air_upsample) read one, kLightHdr (#624), through post_air_finish, so
-// Metal lists it and they are specialised: with kLightHdr false here (the
-// 8-bit knee, as before #624), kMatFamily = default, kLightRig = false and
+// newFunctionWithName: is enough for them (lightHdr is then unused). The
+// composites (post_air_full, post_air_upsample) read one, kLightHdr (#624),
+// through post_air_finish, so Metal lists it and they are specialised: with
+// kLightHdr = lightHdr (true for an HDR frame's variant, false for the 8-bit
+// knee as before #624), kMatFamily = default, kLightRig = false and
 // kLightShadow = false, which they do not read, so every constant the
 // library declares is set.
 // +1, caller owns; nil (logged) on failure.
-static id<MTLFunction> airFunction(id<MTLLibrary> lib, NSString* name)
+static id<MTLFunction> airFunction(id<MTLLibrary> lib, NSString* name,
+                                   bool lightHdr)
 {
   id<MTLFunction> fn = [lib newFunctionWithName:name];
   if (fn && fn.functionConstantsDictionary.count == 0)
@@ -12532,8 +12544,9 @@ static id<MTLFunction> airFunction(id<MTLLibrary> lib, NSString* name)
   [cv setConstantValue:&rig type:MTLDataTypeBool atIndex:kLightRigConstantIndex];
   bool shadow = false;
   [cv setConstantValue:&shadow type:MTLDataTypeBool atIndex:kLightShadowConstantIndex];
-  // HDR colour's constant (#624), read by light_finish: false, the knee.
-  bool hdr = false;
+  // HDR colour's constant (#624), read by post_air_finish: true for an HDR
+  // frame's variant, false for the 8-bit knee.
+  bool hdr = lightHdr;
   [cv setConstantValue:&hdr type:MTLDataTypeBool atIndex:kLightHdrConstantIndex];
   NSError* err = nil;
   fn = [lib newFunctionWithName:name constantValues:cv error:&err];
@@ -12544,12 +12557,14 @@ static id<MTLFunction> airFunction(id<MTLLibrary> lib, NSString* name)
 }
 
 // One of the air's pipelines (#618): post_air_vertex with the fragment `name`
-// (from airFunction), single-sample, no depth attachment, colour `format`.
+// (from airFunction, its kLightHdr variant `hdr`, #624), single-sample, no
+// depth attachment, colour `format`.
 // +1, caller owns; nil (logged) on failure. The function is released here.
 static id<MTLRenderPipelineState> newAirPipeline(id<MTLDevice> device,
-    id<MTLLibrary> lib, id<MTLFunction> vfn, NSString* name, MTLPixelFormat format)
+    id<MTLLibrary> lib, id<MTLFunction> vfn, NSString* name, MTLPixelFormat format,
+    bool hdr)
 {
-  id<MTLFunction> ffn = airFunction(lib, name);
+  id<MTLFunction> ffn = airFunction(lib, name, hdr);
   if (!ffn) {
     NSLog(@"RendererMetal: air function %@ missing", name);
     return nil;
@@ -12574,15 +12589,20 @@ static id<MTLRenderPipelineState> newAirPipeline(id<MTLDevice> device,
 // then on; the rest of the frame is unchanged. Full resolution needs
 // post_air_full and the maps' stand-in; half resolution also needs the march
 // (into RGBA16Float) and the upsample, and without them it draws at full.
+// The composites come in both kLightHdr variants (#624), [0] the 8-bit knee
+// and [1] HDR colour, both specialised from the one compile in the one
+// attempt, so a later flip of metal_light_hdr compiles nothing; each variant
+// stands alone (a knee frame keeps its air whatever happens to the HDR one).
+// The march reads no constant: one pipeline serves both.
 // Single-sample post pipelines (no depth attachment), so a sample-count
 // change does not touch them. Only the pipeline states are kept: the library
-// and functions are released here.
+// and functions are released here. True when this frame's variant
+// (_lightHdrOn) can draw.
 bool RendererMetal::ensureAirPipelines()
 {
-  if (_airFullPipeline)
-    return true;
+  const int h = _lightHdrOn ? 1 : 0;
   if (_airPipelinesTried)
-    return false;
+    return _airFullPipeline[h] != nil;
   _airPipelinesTried = true;
   NSError* err = nil;
   id<MTLLibrary> lib = [_device newLibraryWithSource:[[kEyeReconSrc stringByAppendingString:kMaterialSrc]
@@ -12592,39 +12612,44 @@ bool RendererMetal::ensureAirPipelines()
     NSLog(@"RendererMetal: air compile failed: %@", err);
     return false;
   }
-  id<MTLFunction> vfn = airFunction(lib, @"post_air_vertex");
+  id<MTLFunction> vfn = airFunction(lib, @"post_air_vertex", false);
   if (!vfn) {
     NSLog(@"RendererMetal: air functions missing");
     [lib release];
     return false;
   }
-  _airFullPipeline = newAirPipeline(_device, lib, vfn, @"post_air_full",
-                                    MTLPixelFormatBGRA8Unorm);
-  if (_airFullPipeline) {
+  for (int v = 0; v < 2; ++v)
+    _airFullPipeline[v] = newAirPipeline(_device, lib, vfn, @"post_air_full",
+                                         MTLPixelFormatBGRA8Unorm, v == 1);
+  if (_airFullPipeline[0] || _airFullPipeline[1]) {
     _airMarchPipeline = newAirPipeline(_device, lib, vfn, @"post_air_march",
-                                       MTLPixelFormatRGBA16Float);
-    _airUpsamplePipeline = newAirPipeline(_device, lib, vfn, @"post_air_upsample",
-                                          MTLPixelFormatBGRA8Unorm);
-    if (!_airMarchPipeline || !_airUpsamplePipeline) {
-      // logged by newAirPipeline; half resolution draws at full
-      [_airMarchPipeline release];
-      [_airUpsamplePipeline release];
-      _airMarchPipeline = nil;
-      _airUpsamplePipeline = nil;
+                                       MTLPixelFormatRGBA16Float, false);
+    for (int v = 0; v < 2; ++v)
+      _airUpsamplePipeline[v] = newAirPipeline(_device, lib, vfn, @"post_air_upsample",
+                                               MTLPixelFormatBGRA8Unorm, v == 1);
+    if (!_airMarchPipeline) {
+      // logged by newAirPipeline; half resolution draws at full (a missing
+      // upsample variant does the same for its own frames: encodeAirPass)
+      for (int v = 0; v < 2; ++v) {
+        [_airUpsamplePipeline[v] release];
+        _airUpsamplePipeline[v] = nil;
+      }
     }
   }
   // MRC: the pipeline states keep what they need.
   [vfn release]; [lib release];
   // The maps' stand-in, in the same single attempt.
-  if (_airFullPipeline && !ensureAirNoMaps()) {
-    [_airFullPipeline release];
-    _airFullPipeline = nil;
+  if ((_airFullPipeline[0] || _airFullPipeline[1]) && !ensureAirNoMaps()) {
+    for (int v = 0; v < 2; ++v) {
+      [_airFullPipeline[v] release];
+      _airFullPipeline[v] = nil;
+      [_airUpsamplePipeline[v] release];
+      _airUpsamplePipeline[v] = nil;
+    }
     [_airMarchPipeline release];
-    [_airUpsamplePipeline release];
     _airMarchPipeline = nil;
-    _airUpsamplePipeline = nil;
   }
-  return _airFullPipeline != nil;
+  return _airFullPipeline[h] != nil;
 }
 
 // The stand-in for the studio maps on a frame without them (#618): 1x1, one
@@ -12689,7 +12714,9 @@ bool RendererMetal::ensureAirTerm(NSUInteger w, NSUInteger h)
 //   read; _airNoMaps is bound in their place then.
 // At full resolution (view.x 1) one pass, post_air_full. At half (view.x 0.5)
 // post_air_march into _airTerm, then post_air_upsample; without the half
-// pipelines or the term it falls back to full (view.x set to 1).
+// pipelines or the term it falls back to full (view.x set to 1). The
+// composite is this frame's kLightHdr variant (#624, _lightHdrOn), which
+// ensureAirPipelines made before the call.
 // Encoded on _cmdBuffer, so metal_gpu_timing's frame time includes it.
 id<MTLTexture> RendererMetal::encodeAirPass(id<MTLTexture> sceneSrc)
 {
@@ -12711,7 +12738,8 @@ id<MTLTexture> RendererMetal::encodeAirPass(id<MTLTexture> sceneSrc)
   if (!mapsTex || !_postSampler || !_shadowSampler)
     return sceneSrc;
   id<MTLTexture> dst = (sceneSrc == _sceneColor) ? _postColor : _sceneColor;
-  const bool half = air.view[0] < 0.75f && _airMarchPipeline && _airUpsamplePipeline &&
+  const int h = _lightHdrOn ? 1 : 0;
+  const bool half = air.view[0] < 0.75f && _airMarchPipeline && _airUpsamplePipeline[h] &&
                     ensureAirTerm(dst.width, dst.height);
   if (!half)
     air.view[0] = 1.0f;
@@ -12740,7 +12768,7 @@ id<MTLTexture> RendererMetal::encodeAirPass(id<MTLTexture> sceneSrc)
   pd.colorAttachments[0].loadAction = MTLLoadActionDontCare;
   pd.colorAttachments[0].storeAction = MTLStoreActionStore;
   id<MTLRenderCommandEncoder> ea = [_cmdBuffer renderCommandEncoderWithDescriptor:pd];
-  [ea setRenderPipelineState:(half ? _airUpsamplePipeline : _airFullPipeline)];
+  [ea setRenderPipelineState:(half ? _airUpsamplePipeline[h] : _airFullPipeline[h])];
   bindAir(ea);
   [ea setFragmentTexture:sceneSrc atIndex:kAirColorTextureIndex];
   if (half)
