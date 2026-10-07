@@ -987,7 +987,10 @@ struct LightsInspector: View {
         .menuStyle(.button)
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
-        .fixedSize()
+        // Its own height, but a long name truncates rather than pushing the
+        // chips (and the phone sheet's Atmosphere and More buttons) off the
+        // row (#726).
+        .fixedSize(horizontal: false, vertical: true)
         .help(LightsInspectorState.menuHint)
         .accessibilityLabel(LightsInspectorState.menuLabel)
         .accessibilityValue(state.name)
