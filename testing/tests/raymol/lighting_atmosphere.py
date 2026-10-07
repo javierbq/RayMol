@@ -553,6 +553,7 @@ ENGINE = os.path.join(SHARED, 'PyMOLEngine.swift')
 CARD = os.path.join(SHARED, 'LightsAtmosphereCard.swift')
 SIDE_COLUMN = os.path.join(SHARED, 'LightsSideColumn.swift')
 FLOAT = os.path.join(SHARED, 'LightsFloatingTools.swift')
+SHEET = os.path.join(SHARED, 'LightsSheet.swift')
 CONTENT_VIEW = os.path.join(SHARED, 'ContentView.swift')
 # The card's new Swift files.
 CARD_SOURCES = [MODEL, CARD]
@@ -766,6 +767,74 @@ class TestAtmosphereSource(testing.PyMOLTestCase):
         self.assertIn('.lightsNumberKeyboard()', row)
         self.assertIn('controller.setAirIfChanged(p, p.sliderValue(position, field))', row)
         self.assertIn('editor.sliderMoved(', row)
+
+    def testThePhoneSheetPlacesTheSectionAndTheAirOnlySheet(self):
+        """iPhone: the Atmosphere section follows the inspector rows inside
+        the measured rows (so the expanded height counts it), and the
+        header's button reveals it. With no light the sheet shows the air
+        alone (header and rows) instead of nothing: at the compact height
+        whatever the detent, with no grabber drag, More or Atmosphere
+        button; and the DEBUG LightsLayout line reports that height and the
+        sheet:air / side:air tools."""
+        sheet = self.read(SHEET)
+        expanded = self.body(SHEET, 'private func expandedBody(')
+        rows = expanded.find('presentation: .rows')
+        section = expanded.find('LightsAtmosphereCard(controller: controller, style: style, presentation: .section)')
+        measured = expanded.find('LightsSheetRowsHeightKey')
+        self.assertGreaterEqual(rows, 0)
+        self.assertGreater(section, rows, 'the section follows the inspector rows')
+        self.assertGreater(measured, section, 'the rows height measures the section too')
+        self.assertIn('proxy.scrollTo(LightsSheetState.atmosphereAnchor, anchor: .top)',
+                      self.body(SHEET, 'private func scrollToAtmosphereIfAsked('))
+        card = self.body(CARD, 'private func section(')
+        self.assertIn('.id(LightsSheetState.atmosphereAnchor)', card)
+        view = self.body(SHEET, 'var body: some View {\n        if LightsOrbitState(controller) != nil')
+        full = view.find('bottomSheet')
+        air = view.find('else if Self.showsAirOnly(controller)')
+        self.assertGreater(air, full, 'the air alone only without a light')
+        self.assertIn('case .bottom: airOnlySheet', view[air:])
+        self.assertIn('case .side: airOnlyPanel', view[air:])
+        shows = self.body(SHEET, 'static func showsAirOnly(')
+        self.assertIn('controller.isActive && LightsOrbitState(controller) == nil', shows)
+        only = self.body(SHEET, 'private var airOnlySheet: some View')
+        self.assertIn('LightsSheetModel.airOnlyFrame(heights: heights)', only)
+        for name in ('dragRegion', 'DragGesture', 'dragTranslation', 'moreButton',
+                     'LightsSheetAtmosphereButton', 'detent'):
+            with self.subTest(name):
+                self.assertNotIn(name, only)
+        self.assertIn('dragFrame(detent: .compact, translation: 0, heights: heights)',
+                      self.body(SHEET, 'static func airOnlyFrame('))
+        self.assertIn('presentation: .header', self.body(SHEET, 'private var airHeaderRow: some View'))
+        air_rows = self.body(SHEET, 'private var airRows: some View')
+        self.assertIn('presentation: .rows', air_rows)
+        self.assertNotIn('LightsSheetRowsHeightKey', air_rows, "the air rows are not the light's rows")
+        self.assertIn('LightsAtmosphereCard(', sheet)
+        summary = self.body(SHEET, 'static func toolsSummary(')
+        self.assertIn('airOnly ? "sheet:air"', summary)
+        self.assertIn('airOnly ? "side:air"', summary)
+        key = self.body(CONTENT_VIEW, 'private var lightsLayoutLogKey: LightsLayoutLogKey?')
+        self.assertIn('LightsSheet.showsAirOnly(engine.lightsController)', key)
+        self.assertIn('airOnly: airOnly', key)
+        self.assertIn('LightsSheetModel.airOnlyFrame(heights: heights).slot', key)
+
+    def testThePhoneSheetScrollsToTheFocusedRow(self):
+        """A focused Atmosphere field reports its row
+        (LightsSheetScrollTargetKey); while the keyboard covers the sheet the
+        rows scroll to that row, else to the rows' top (the inspector's
+        fields), in the full sheet and the air-only one."""
+        sheet = self.read(SHEET)
+        scroll = self.body(SHEET, 'private struct LightsSheetKeyboardScroll')
+        self.assertIn('.onPreferenceChange(LightsSheetScrollTargetKey.self)', scroll)
+        self.assertIn('LightsSheetState.scrollTarget(focusedRow: focusedRow, covered: covered)', scroll)
+        self.assertIn('proxy.scrollTo(target, anchor: .top)', scroll)
+        target = self.body(SHEET, 'static func scrollTarget(')
+        self.assertIn('return focusedRow ?? rowsAnchor', target)
+        # No fixed scroll to the rows' top is left.
+        self.assertNotIn('proxy.scrollTo(LightsSheetState.rowsAnchor', sheet)
+        for signature in ('private func expandedBody(', 'private var airRows: some View'):
+            with self.subTest(signature):
+                self.assertIn('.modifier(LightsSheetKeyboardScroll(proxy: proxy, covered: fieldFocused && overlap > 0))',
+                              self.body(SHEET, signature))
 
     def testNoUndo(self):
         """Light edits register no undo (the bar's Revert is the way back);

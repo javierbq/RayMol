@@ -578,6 +578,19 @@ class TestTouchSource(testing.PyMOLTestCase):
         self.assertIsNotNone(grabber, 'grabber not found')
         self.assertIn('.accessibilityAdjustableAction', grabber)
         self.assertIn('.accessibilityIdentifier(LightsSheetState.grabberIdentifier)', grabber)
+        # The header's Atmosphere button (#726; a 44 pt target, checked in
+        # testInspectorControlsAndSwatches): it expands a compact sheet, then
+        # asks the rows to scroll to the Atmosphere section.
+        header = body(text, 'private var headerRow: some View')
+        self.assertIsNotNone(header, 'headerRow not found')
+        self.assertIn('LightsSheetAtmosphereButton(controller: controller, style: style) { revealAtmosphere() }',
+                      header)
+        self.assertLess(header.find('LightsSheetAtmosphereButton('), header.find('moreButton'),
+                        'the Atmosphere button sits before More')
+        reveal = body(text, 'private func revealAtmosphere()')
+        self.assertIsNotNone(reveal, 'revealAtmosphere not found')
+        self.assertIn('if placement == .bottom, detent == .compact { setDetent(.expanded) }', reveal)
+        self.assertIn('atmosphereRequest += 1', reveal)
 
     def testTheKeyboardReaderIsIOSOnly(self):
         """The keyboard's frame notifications are read under #if os(iOS)
