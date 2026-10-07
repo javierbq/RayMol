@@ -89,11 +89,43 @@ enum RenderGate {
 /// plain C++) only on a tick this allows. A due tick then goes through the
 /// unchanged `RenderGate.decide`, so the in-flight cap, the first frame and
 /// wake behave as for any other redisplay.
+///
+/// Two launch switches support #623's device calibration, in any build and
+/// read once per launch; neither changes a default:
+/// - `RAYMOL_AIR_FPS=<1...120>` replaces the cap (`fps(environment:)`);
+/// - `RAYMOL_AIR_LOG=1` logs each change of why the dust holds still, with
+///   Low Power Mode and the thermal state (`holdLine`), so a device run can
+///   see the hold policy act.
 enum AirRedrawGate {
 
     /// Air ticks a second while the app is active and visible. Provisional:
-    /// #623 sets the iOS rate from device runs.
-    static let activeFPS: Double = 30
+    /// #623's device runs (appendix A) decide whether it stays.
+    static let defaultFPS: Double = 30
+
+    /// The caps `RAYMOL_AIR_FPS` may set, in air ticks a second.
+    static let fpsRange: ClosedRange<Double> = 1...120
+
+    /// The cap for this launch: `RAYMOL_AIR_FPS` when set to a number in
+    /// `fpsRange`, else `defaultFPS`.
+    static let activeFPS: Double = fps(environment: ProcessInfo.processInfo.environment)
+
+    /// Whether this launch logs the hold reason's changes (`RAYMOL_AIR_LOG=1`).
+    static let logsHolds: Bool = logEnabled(environment: ProcessInfo.processInfo.environment)
+
+    /// The dust cap an environment asks for: `RAYMOL_AIR_FPS` as a finite
+    /// number in `fpsRange`; anything else (unset, empty, out of range, not a
+    /// number) is `defaultFPS`.
+    static func fps(environment: [String: String]) -> Double {
+        guard let raw = environment["RAYMOL_AIR_FPS"],
+              let value = Double(raw.trimmingCharacters(in: .whitespaces)),
+              value.isFinite, fpsRange.contains(value) else { return defaultFPS }
+        return value
+    }
+
+    /// Whether an environment turns the hold log on: `RAYMOL_AIR_LOG=1` only.
+    static func logEnabled(environment: [String: String]) -> Bool {
+        environment["RAYMOL_AIR_LOG"]?.trimmingCharacters(in: .whitespaces) == "1"
+    }
 
     /// A tick counts as due at this share of the interval, so display-link
     /// jitter (a tick landing a hair early) does not drop the dust to half
@@ -128,6 +160,57 @@ enum AirRedrawGate {
     /// (both in seconds on the same clock).
     static func due(interval: TimeInterval, now: TimeInterval, lastFrame: TimeInterval) -> Bool {
         now - lastFrame >= dueShare * interval
+    }
+
+    // MARK: Hold log (#623's calibration)
+
+    /// Why the dust holds still. The raw values are the log's words.
+    enum HoldReason: String {
+        /// The app is not the active one (another app, Control Centre or the
+        /// app switcher in front).
+        case inactive
+        /// The viewport's window is not on screen.
+        case hidden
+        /// Low Power Mode, or a serious or critical thermal state.
+        case lowPower = "low_power"
+    }
+
+    /// Why `interval` holds the dust still for `activity`, or nil when it
+    /// may tick. The first failing condition of `interval`'s guard wins.
+    static func holdReason(_ activity: Activity) -> HoldReason? {
+        if !activity.active { return .inactive }
+        if !activity.visible { return .hidden }
+        if activity.lowPower { return .lowPower }
+        return nil
+    }
+
+    /// What one hold log line reports. A new line is logged only when this
+    /// changes, so a thermal step inside a hold (serious to critical) is
+    /// logged too.
+    struct HoldState: Equatable {
+        var reason: HoldReason?
+        var lowPowerMode: Bool
+        var thermalState: ProcessInfo.ThermalState
+    }
+
+    /// The thermal state's word in the hold log.
+    static func thermalName(_ state: ProcessInfo.ThermalState) -> String {
+        switch state {
+        case .nominal: return "nominal"
+        case .fair: return "fair"
+        case .serious: return "serious"
+        case .critical: return "critical"
+        @unknown default: return "unknown"
+        }
+    }
+
+    /// The hold log line: `AirRedrawGate: hold=<reason|none>
+    /// low_power_mode=<0|1> thermal=<state> fps=<cap>`.
+    static func holdLine(_ state: HoldState, fps: Double) -> String {
+        let cap = fps == fps.rounded() ? String(Int(fps)) : String(fps)
+        return "AirRedrawGate: hold=\(state.reason?.rawValue ?? "none")"
+            + " low_power_mode=\(state.lowPowerMode ? 1 : 0)"
+            + " thermal=\(thermalName(state.thermalState)) fps=\(cap)"
     }
 }
 
@@ -653,6 +736,9 @@ extension MetalViewport {
         // a second, not on every display tick). CACurrentMediaTime seconds.
         private var lastFrameTime: CFTimeInterval = 0
         private var lastAirCheckTime: CFTimeInterval = 0
+        // The last hold state logged under RAYMOL_AIR_LOG=1 (#623), nil
+        // before the first line.
+        private var lastAirHold: AirRedrawGate.HoldState?
 
         // Keep the tick rate matched to how expensive frames currently are
         // (#396). On macOS the view owns the display link we drive; on iOS
@@ -694,7 +780,9 @@ extension MetalViewport {
         /// The core is asked only when AirRedrawGate allows a tick and one is
         /// due; otherwise this costs a few platform reads and no bridge call.
         private func airTickDue(view: MTKView, engine: PyMOLEngine) -> Bool {
-            guard let interval = AirRedrawGate.interval(airActivity(of: view)) else { return false }
+            let activity = airActivity(of: view)
+            if AirRedrawGate.logsHolds { noteAirHold(activity) }
+            guard let interval = AirRedrawGate.interval(activity) else { return false }
             let now = CACurrentMediaTime()
             guard AirRedrawGate.due(interval: interval, now: now,
                                     lastFrame: max(lastFrameTime, lastAirCheckTime)) else {
@@ -702,6 +790,19 @@ extension MetalViewport {
             }
             lastAirCheckTime = now
             return engine.lightAirAnimating
+        }
+
+        /// Logs the hold state when it changed since the last line
+        /// (RAYMOL_AIR_LOG=1 only, any build; #623's calibration). Runs on
+        /// the idle ticks airTickDue sees, so it never asks the core.
+        private func noteAirHold(_ activity: AirRedrawGate.Activity) {
+            let info = ProcessInfo.processInfo
+            let state = AirRedrawGate.HoldState(reason: AirRedrawGate.holdReason(activity),
+                                                lowPowerMode: info.isLowPowerModeEnabled,
+                                                thermalState: info.thermalState)
+            guard state != lastAirHold else { return }
+            lastAirHold = state
+            NSLog("%@", AirRedrawGate.holdLine(state, fps: AirRedrawGate.activeFPS))
         }
 
         func draw(in view: MTKView) {
