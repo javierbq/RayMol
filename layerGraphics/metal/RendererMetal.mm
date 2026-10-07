@@ -3391,6 +3391,77 @@ static float rt_trans_T(ray r, primitive_acceleration_structure tas,
   return T;
 }
 
+// SPIKE #625 (scratch): lighting after ray tracing, in its cheapest form.
+// Per rig light, K shadow rays toward points on a disc of radius
+// u.pad5 * (light's aim distance) around the light (a sphere light seen from
+// the surface), giving a soft visibility v_i. The result is the RATIO
+//   (ambient + sum_i v_i w_i) / (ambient + sum_i w_i)
+// with w_i the light's unshadowed diffuse luminance at the pixel (cone,
+// falloff, N.L), which the composite multiplies into the raster-lit colour:
+// exact for the diffuse part whatever the base colour, approximate for the
+// highlight. Lights 0..u.pad6-1 are traced; u.pad4 = K.
+static float rt_spike_light_ratio(constant LightRigU& rig, constant RTU& u,
+    float3 pEye, float3 nEye, float3 pModel, float3 nSelf, float2 uv,
+    instance_acceleration_structure accel, uint mask) {
+  const int n = int(rig.head.x);
+  const int K = max(int(u.pad4), 1);
+  const int nTrace = int(u.pad6);
+  const float pl = length(pEye);
+  const float3 V = (rig.head.z > 0.5 || pl <= 1e-6) ? float3(0.0, 0.0, 1.0) : -pEye / pl;
+  const float nl = length(nEye);
+  float3 N = nl > 1e-8 ? nEye / nl : V;
+  if (dot(N, V) < 0.0) N = -N;
+  float total = max(u.lAmbient, 0.0);
+  float lit = total;
+  intersector<instancing> it;
+  it.assume_geometry_type(geometry_type::triangle);
+  it.accept_any_intersection(true);
+  const float rot = rt_hash(uv * 1024.0 + 17.0);
+  for (int i = 0; i < 6; ++i) {
+    if (i >= n) break;
+    const float3 Lv = rig.L[i].pos.xyz - pEye;
+    const float d = max(length(Lv), 1e-3);
+    const float3 Ld = Lv / d;
+    const float band = max(rig.L[i].radiance.w - rig.L[i].axis.w, 1e-7);
+    const float s = saturate((dot(-Ld, rig.L[i].axis.xyz) - rig.L[i].axis.w) / band);
+    const float spot = s * s * (3.0 - 2.0 * s);
+    const float wd = saturate(dot(N, Ld));
+    if (spot <= 0.0 || wd <= 0.0) continue;
+    const float fall = rig.L[i].misc.y > 0.0
+        ? min(pow(rig.L[i].misc.z / d, rig.L[i].misc.y), 1e4) : 1.0;
+    const float w = dot(rig.L[i].radiance.rgb, float3(0.2126, 0.7152, 0.0722)) *
+                    spot * fall * wd;
+    total += w;
+    if (i >= nTrace) { lit += w; continue; }
+    const float3 Lm = (u.invModelview * float4(rig.L[i].pos.xyz, 1.0)).xyz;
+    const float3 toL = normalize(Lm - pModel);
+    const float3 upv = abs(toL.z) < 0.9 ? float3(0, 0, 1) : float3(1, 0, 0);
+    const float3 tx = normalize(cross(upv, toL));
+    const float3 ty = cross(toL, tx);
+    const float R = u.pad5 * rig.L[i].misc.z;
+    float hits = 0.0;
+    for (int k = 0; k < K; ++k) {
+      const float2 h = rt_hammersley(uint(k), uint(K));
+      const float r = R * sqrt(h.x);
+      const float phi = 6.2831853 * fract(h.y + rot);
+      const float3 target = Lm + tx * (r * cos(phi)) + ty * (r * sin(phi));
+      const float3 o = pModel + nSelf * 0.02;
+      float3 dir = target - o;
+      const float len = length(dir);
+      dir /= max(len, 1e-4);
+      ray sr;
+      sr.origin = o;
+      sr.direction = dir;
+      sr.min_distance = 0.3 / max(abs(dot(nSelf, dir)), 0.15);
+      sr.max_distance = len;
+      auto res = it.intersect(sr, accel, mask);
+      if (res.type != intersection_type::none) hits += 1.0;
+    }
+    lit += w * (1.0 - hits / float(K));
+  }
+  return total > 1e-6 ? saturate(lit / total) : 1.0;
+}
+
 // Pass A: trace ambient-occlusion rays, write the raw AO term to an R16Float
 // target. Deterministic Hammersley directions (frame-stable -> no shimmer) with
 // a cheap per-pixel rotation so residual error is a fine pattern the composite
@@ -3404,7 +3475,8 @@ fragment float4 rt_ao(PostVOut in [[stage_in]],
     constant RTGridU& g [[buffer(3)]],
     primitive_acceleration_structure tas [[buffer(9), function_constant(kRTTrans)]],
     device const float4* tcols [[buffer(10), function_constant(kRTTrans)]],
-    device const uint* tocc [[buffer(12), function_constant(kRTTrans)]]) {
+    device const uint* tocc [[buffer(12), function_constant(kRTTrans)]],
+    constant LightRigU& rig [[buffer(13), function_constant(kRTLightRig)]]) {
   float d = depthTex.sample(s, in.uv);
   if (d >= 0.99999 || d <= 0.0015) return float4(1.0, 1.0, 1.0, 1.0);  // no occlusion
 
@@ -3618,7 +3690,11 @@ fragment float4 rt_ao(PostVOut in [[stage_in]],
       vis *= rt_trans_T(tr, tas, tcols, tocc);
     }
   }
-  return float4(ao, vis, selfSphere, 1.0);
+  float spikeRatio = 1.0;
+  if (kRTLightRig && u.pad6 > 0.5)
+    spikeRatio = rt_spike_light_ratio(rig, u, pEye, nEye, pModel, nSelf, in.uv,
+                                      accel, mask);
+  return float4(ao, vis, selfSphere, spikeRatio);
 }
 
 // Pass B: composite. Read scene color, DEPTH-AWARE-BLUR the raw AO term (5x5,
@@ -3668,7 +3744,7 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
   // closeness so AO doesn't bleed across object silhouettes.
   float2 texel = 1.0 / float2(aoTex.get_width(), aoTex.get_height());
   float ztol = max(0.5 * u.aoRadius, 0.5);
-  float aoSum = 0.0, visSum = 0.0, wSum = 0.0;
+  float aoSum = 0.0, visSum = 0.0, wSum = 0.0, spikeSum = 0.0;
   for (int j = -2; j <= 2; ++j)
     for (int i = -2; i <= 2; ++i) {
       float2 uv = in.uv + float2(i, j) * texel;
@@ -3687,13 +3763,18 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
       // helper's ortho/perspective select).
       float ezn = -post_linear_depth(dn, u.projA, u.projB, u.projOrtho);
       float w = exp(-abs(ezn - pEye.z) / ztol);
-      float2 rg = aoTex.sample(s, uv).rg;
+      float4 rga = aoTex.sample(s, uv);
+      float2 rg = rga.rg;
       aoSum += rg.r * w;
       visSum += rg.g * w;
+      spikeSum += rga.a * w;
       wSum += w;
     }
   float ao = wSum > 0.0 ? (aoSum / wSum) : aoTex.sample(s, in.uv).r;
   float vis = wSum > 0.0 ? (visSum / wSum) : aoTex.sample(s, in.uv).g;
+  // SPIKE #625: the per-light traced soft-shadow ratio (rt_spike_light_ratio).
+  if (u.pad6 > 0.5)
+    col *= wSum > 0.0 ? (spikeSum / wSum) : aoTex.sample(s, in.uv).a;
 
   // Screen-space crease term (metal_ssao), kept ON under ray tracing (#436).
   // The traced hemisphere AO is physically right but SMOOTH: on packed spheres
@@ -5045,6 +5126,52 @@ void RendererMetal::runPostChain()
     u.lAmbient = _lightAmbient; u.lDirect = _lightDirect; u.lReflect = _lightReflect;
     u.lSpec = _lightSpecular; u.lShin = _lightShininess;
     u.pad4 = u.pad5 = u.pad6 = 0.0f;
+    // SPIKE #625 (scratch): RAYMOL_SPIKE625_RT="K,F,N" traces K soft shadow
+    // rays per light for rig lights 0..N-1, from a disc of radius F x the
+    // light's aim distance, in rt_ao (the rig variant), and switches the
+    // classic traced key-light shadow off.
+    id<MTLRenderPipelineState> spikeAO = nil;
+    {
+      static float sK = 0.0f, sF = 0.0f, sN = 0.0f;
+      static bool parsed = false;
+      if (!parsed) {
+        parsed = true;
+        if (const char* e = getenv("RAYMOL_SPIKE625_RT")) {
+          if (sscanf(e, "%f,%f,%f", &sK, &sF, &sN) != 3) sK = sF = sN = 0.0f;
+          NSLog(@"SPIKE625 RT K=%g F=%g N=%g", sK, sF, sN);
+        }
+      }
+      if (sN > 0.5f && _lightRigOn && _rtLib) {
+        const int t = doRTTrans ? 1 : 0;
+        if (!_spikeAOPipelineRig[t] && !_spikeAOTried[t]) {
+          _spikeAOTried[t] = true;
+          NSError* err = nil;
+          MTLFunctionConstantValues* fc = [[MTLFunctionConstantValues alloc] init];
+          bool tb = doRTTrans, rig = true, hdr = false;
+          [fc setConstantValue:&tb type:MTLDataTypeBool atIndex:0];
+          [fc setConstantValue:&rig type:MTLDataTypeBool atIndex:kRTLightRigConstantIndex];
+          [fc setConstantValue:&hdr type:MTLDataTypeBool atIndex:kRTLightHdrConstantIndex];
+          id<MTLFunction> vtx = [_rtLib newFunctionWithName:@"rt_vertex"];
+          id<MTLFunction> fao = [_rtLib newFunctionWithName:@"rt_ao" constantValues:fc error:&err];
+          [fc release];
+          if (vtx && fao) {
+            MTLRenderPipelineDescriptor* pa = [[MTLRenderPipelineDescriptor alloc] init];
+            pa.vertexFunction = vtx;
+            pa.fragmentFunction = fao;
+            pa.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
+            _spikeAOPipelineRig[t] = [_device newRenderPipelineStateWithDescriptor:pa error:&err];
+            [pa release];
+          }
+          if (!_spikeAOPipelineRig[t]) NSLog(@"SPIKE625 rt_ao rig variant failed: %@", err);
+          [vtx release]; [fao release];
+        }
+        spikeAO = _spikeAOPipelineRig[t];
+        if (spikeAO) {
+          u.pad4 = sK; u.pad5 = sF; u.pad6 = sN;
+          u.rtShadow = 0.0f;
+        }
+      }
+    }
 
     // Pass A: trace AO -> _rtAO (R16Float).
     // MRC: all per-frame render-pass descriptors in runPostChain use the
@@ -5058,7 +5185,12 @@ void RendererMetal::runPostChain()
     pa.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> ea =
         [_cmdBuffer renderCommandEncoderWithDescriptor:pa];
-    [ea setRenderPipelineState:doRTTrans ? _rtAOPipelineT : _rtAOPipeline];
+    [ea setRenderPipelineState:spikeAO ? spikeAO : (doRTTrans ? _rtAOPipelineT : _rtAOPipeline)];
+    if (spikeAO) {
+      LightRigBlock block = _lightRigBlock;
+      block.head[2] = _projOrtho > 0.5f ? 1.0f : 0.0f;
+      [ea setFragmentBytes:&block length:sizeof(block) atIndex:kRTLightRigBufferIndex];
+    }
     if (doRTTrans) {
       [ea useResource:_rtTransAS usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
       [ea setFragmentAccelerationStructure:_rtTransAS atBufferIndex:9];
@@ -8402,6 +8534,75 @@ __attribute__((unused)) static float light_shadow_lookup(constant LightRigU& rig
   return lit / 9.0;
 }
 
+#ifdef SPIKE625_PCSS
+// SPIKE #625 (scratch): light_shadow_lookup with a PCSS kernel. The light is a
+// disc of radius lightR (eye units) at the map's centre of projection. A
+// blocker search (SPIKE625_TAPS point taps on a Vogel disc) averages the
+// blockers' distance zb; the penumbra at the receiver (distance zr) is
+// lightR (zr - zb) / zb, and a variable-radius PCF of SPIKE625_TAPS hardware
+// 2x2 compares covers it. No blocker: lit, after the search alone.
+static float light_shadow_lookup_pcss(constant LightRigU& rig,
+    depth2d_array<float> maps, sampler smp, int slot, float3 p, float3 n,
+    float3 ld, float d, float lightR) {
+  const float4 tile = rig.shadowTile;
+  if (!(tile.z > 0.0 && tile.w > 0.0)) return 1.0;
+  const float4 info = rig.S[slot].info;
+  const float size = max(info.y, 1.0);
+  const float tilePx = max(info.y * tile.z, 1.0);
+  const float texel = 2.0 * d * info.x / tilePx;
+  const float3 q = p + n * (info.z * texel / max(dot(n, ld), 0.25)) + ld * texel;
+  const float4x4 M = rig.S[slot].viewProj;
+  const float4 lc = M * float4(q, 1.0);
+  if (!(lc.w > 1e-6)) return 1.0;
+  const float3 ndc = lc.xyz / lc.w;
+  if (!(abs(ndc.x) <= 1.0 && abs(ndc.y) <= 1.0 && abs(ndc.z) <= 1.0)) return 1.0;
+  const float2 uv = tile.xy + float2(0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y) * tile.zw;
+  const float fd = 0.5 + 0.5 * ndc.z - info.w;
+  const float2 halfTexel = float2(0.5 / size);
+  const float2 lo = tile.xy + halfTexel;
+  const float2 hi = max(tile.xy + tile.zw - halfTexel, lo);
+  // The light's clip transform is a GL perspective after a rigid view: its
+  // z row is -a times its w row plus (0,0,0,b), so a window depth z is the
+  // axial distance b / (2z - 1 + a); the receiver's is lc.w.
+  const float4 r2 = float4(M[0][2], M[1][2], M[2][2], M[3][2]);
+  const float4 r3 = float4(M[0][3], M[1][3], M[2][3], M[3][3]);
+  const float a = -dot(r2.xyz, r3.xyz) / max(dot(r3.xyz, r3.xyz), 1e-12);
+  const float b = r2.w + a * r3.w;
+  const float zr = lc.w;
+  // texels per eye unit at axial distance z: tilePx / (2 z info.x)
+  const float k = tilePx / (2.0 * max(info.x, 1e-6));
+  const int N = SPIKE625_TAPS;
+  const float rot = 6.2831853 * fract(52.9829189 * fract(dot(uv * size, float2(0.06711056, 0.00583715))));
+  // Blocker search: the light disc seen from the receiver, through the half
+  // of the light-to-receiver distance nearest the receiver, capped.
+  const float searchTex = clamp(lightR * k / zr, 1.0, SPIKE625_MAXTEX);
+  constexpr sampler pointSmp(coord::normalized, filter::nearest, address::clamp_to_edge);
+  float zsum = 0.0, nb = 0.0;
+  for (int i = 0; i < N; ++i) {
+    const float rr = sqrt((float(i) + 0.5) / float(N));
+    const float th = float(i) * 2.39996323 + rot;
+    const float2 o = float2(cos(th), sin(th)) * (rr * searchTex / size);
+    const float z = maps.sample(pointSmp, clamp(uv + o, lo, hi), uint(slot));
+    if (z < fd) {
+      zsum += b / (2.0 * z - 1.0 + a);
+      nb += 1.0;
+    }
+  }
+  if (!(nb > 0.0)) return 1.0;
+  const float zb = max(zsum / nb, 1e-3);
+  const float pen = lightR * max(zr - zb, 0.0) / zb;     // eye units at the receiver
+  const float filterTex = clamp(pen * k / zr, 1.2, SPIKE625_MAXTEX);
+  float lit = 0.0;
+  for (int i = 0; i < N; ++i) {
+    const float rr = sqrt((float(i) + 0.5) / float(N));
+    const float th = float(i) * 2.39996323 + rot;
+    const float2 o = float2(cos(th), sin(th)) * (rr * filterTex / size);
+    lit += maps.sample_compare(smp, clamp(uv + o, lo, hi), uint(slot), fd);
+  }
+  return lit / float(N);
+}
+#endif
+
 // light_visibility with the maps: light i's own map (its slot is pos.w, -1 =
 // none), 1 for a light without one or a slot past this frame's maps (head.w).
 __attribute__((unused)) static float light_visibility_shadowed(
@@ -8409,7 +8610,12 @@ __attribute__((unused)) static float light_visibility_shadowed(
     float3 p, float3 n, float3 ld, float d) {
   const int slot = int(rig.L[i].pos.w);
   if (slot < 0 || slot >= 3 || slot >= int(rig.head.w)) return 1.0;
+#ifdef SPIKE625_PCSS
+  return light_shadow_lookup_pcss(rig, maps, smp, slot, p, n, ld, d,
+                                  SPIKE625_PCSS * rig.L[i].misc.z);
+#else
   return light_shadow_lookup(rig, maps, smp, slot, p, n, ld, d);
+#endif
 }
 
 __attribute__((unused)) static LightTerms light_terms_view_shadowed(
@@ -8468,6 +8674,26 @@ __attribute__((unused)) static float3 light_apply_shadowed(float3 rgb,
 }
 
 )";
+
+// SPIKE #625 (scratch): kMaterialSrc, with RAYMOL_SPIKE625_PCSS="F[,TAPS[,MAXTEX]]"
+// defining SPIKE625_PCSS (light radius as a fraction of each light's aim
+// distance) so light_visibility_shadowed takes the PCSS kernel.
+static NSString* spike625MaterialSrc()
+{
+  static NSString* src = nil;
+  if (!src) {
+    const char* e = getenv("RAYMOL_SPIKE625_PCSS");
+    float f = 0.0f, taps = 16.0f, maxTex = 32.0f;
+    if (e && sscanf(e, "%f,%f,%f", &f, &taps, &maxTex) >= 1 && f > 0.0f) {
+      NSLog(@"SPIKE625 PCSS F=%g taps=%g maxTex=%g", f, taps, maxTex);
+      src = [[NSString stringWithFormat:@"\n#define SPIKE625_PCSS %f\n#define SPIKE625_TAPS %d\n#define SPIKE625_MAXTEX %f\n%@",
+              f, (int)taps, maxTex, kMaterialSrc] retain];
+    } else {
+      src = [kMaterialSrc retain];
+    }
+  }
+  return src;
+}
 
 // The impostor half of the shared material block: prepended to the sphere and
 // cylinder libraries only, because the lit VBO path gets its model-space
@@ -9198,7 +9424,7 @@ void RendererMetal::buildVBOPipelines()
   [_vboLibrary release];              _vboLibrary = nil;
 
   NSError* error = nil;
-  id<MTLLibrary> lib = [_device newLibraryWithSource:[kMaterialSrc stringByAppendingString:kVBOSrc]
+  id<MTLLibrary> lib = [_device newLibraryWithSource:[spike625MaterialSrc() stringByAppendingString:kVBOSrc]
                                              options:nil
                                                error:&error];
   if (!lib) {
@@ -10969,7 +11195,7 @@ void RendererMetal::buildImpostorPipelines()
   [_sphereOpaqueDesc release];  _sphereOpaqueDesc = nil;
   [_sphereOitDesc release];     _sphereOitDesc = nil;
   NSError* err = nil;
-  id<MTLLibrary> lib = [_device newLibraryWithSource:[[kMaterialSrc stringByAppendingString:kMaterialImpostorSrc]
+  id<MTLLibrary> lib = [_device newLibraryWithSource:[[spike625MaterialSrc() stringByAppendingString:kMaterialImpostorSrc]
                                                    stringByAppendingString:kSphereImpostorSrc]
                                              options:nil error:&err];
   if (!lib) { NSLog(@"RendererMetal: sphere impostor compile failed: %@", err); return; }
@@ -11864,7 +12090,7 @@ void RendererMetal::buildCylinderImpostorPipeline(
   _cylinderPeelPipeline = nil;
 
   NSError* err = nil;
-  id<MTLLibrary> lib = [_device newLibraryWithSource:[[kMaterialSrc stringByAppendingString:kMaterialImpostorSrc]
+  id<MTLLibrary> lib = [_device newLibraryWithSource:[[spike625MaterialSrc() stringByAppendingString:kMaterialImpostorSrc]
                                                    stringByAppendingString:kCylinderImpostorSrc]
                                              options:nil error:&err];
   if (!lib) {
@@ -12474,7 +12700,7 @@ void RendererMetal::buildBezierTubeRigPipeline()
   if (_bezierTubeRigTried) return;
   _bezierTubeRigTried = true;
   NSError* err = nil;
-  id<MTLLibrary> lib = [_device newLibraryWithSource:[[kMaterialSrc stringByAppendingString:kBezierTubeSrc]
+  id<MTLLibrary> lib = [_device newLibraryWithSource:[[spike625MaterialSrc() stringByAppendingString:kBezierTubeSrc]
                                                    stringByAppendingString:kBezierTubeRigSrc]
                                              options:nil error:&err];
   if (!lib) { NSLog(@"RendererMetal: bezier tube rig compile failed: %@", err); return; }
@@ -12608,7 +12834,7 @@ bool RendererMetal::ensureAirPipelines()
     return _airFullPipeline[h] != nil;
   _airPipelinesTried = true;
   NSError* err = nil;
-  id<MTLLibrary> lib = [_device newLibraryWithSource:[[kEyeReconSrc stringByAppendingString:kMaterialSrc]
+  id<MTLLibrary> lib = [_device newLibraryWithSource:[[kEyeReconSrc stringByAppendingString:spike625MaterialSrc()]
                                                    stringByAppendingString:kAirSrc]
                                              options:nil error:&err];
   if (!lib) {

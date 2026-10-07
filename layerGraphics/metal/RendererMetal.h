@@ -1205,6 +1205,10 @@ private:
   id<MTLRenderPipelineState> _rtResolvePipelineRig[2][2] = {};
   bool _rtRigTried[2][2] = {};
   id<MTLRenderPipelineState> buildRTRigComposite(bool transparent, bool hdr);
+  // SPIKE #625 (scratch, never merged): rt_ao with kRTLightRig, [transparent],
+  // traces per-light soft shadow rays when RAYMOL_SPIKE625_RT is set.
+  id<MTLRenderPipelineState> _spikeAOPipelineRig[2] = {};
+  bool _spikeAOTried[2] = {};
 
   // Drop the cached RT geometry derived from a CPU buffer that is about to be
   // freed (or whose contents changed). Handles both primary and alias keys.
