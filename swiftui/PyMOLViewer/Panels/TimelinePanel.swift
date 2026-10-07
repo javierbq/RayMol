@@ -817,7 +817,7 @@ struct TimelinePanel: View {
                 } label: { composerChip(composerAxis.uppercased(), "arrow.triangle.2.circlepath") }
                 .help("Rotation axis")
                 Menu {
-                    ForEach([4, 8, 16], id: \.self) { s in Button("\(s) s") { composerDuration = Double(s) } }
+                    ForEach([4, 8, 16, 32], id: \.self) { s in Button("\(s) s") { composerDuration = Double(s) } }
                 } label: { composerChip("\(Int(composerDuration))s", "clock") }
                 .help("Duration of the motion")
                 if composerKind == "rock" {
