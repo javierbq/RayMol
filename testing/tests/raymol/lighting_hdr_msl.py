@@ -36,6 +36,19 @@ regression renders against master) and L3 prove on a Mac:
   airFunction, buildRTPipelines and buildRTRigComposite false until Part 5),
   no function fetched unspecialised reaches kLightHdr, and only the rig
   builders ask for it, each with the frame's hdr choice;
+* TestCaches (Part 4, the raster rig): every raster rig cache keys on hdr
+  (the VBO rig functions and tried flags [hdr][family], the cachedVBOPipeline
+  key with an hdr bit mixed only when true, the sphere rig and rig-shadow
+  sets [hdr][family] with a flag per set, the cylinder tuple's 6th bool, the
+  tube's two pipelines from one library compile under one tried flag), each
+  draw asks for this frame's variant (_lightHdrOn), and each release frees
+  both variants. Part 4's documented transitional state: the RT rig
+  composite and the air still build only their knee variants (Part 5);
+* TestFrame (Part 4): setLightRig derives _lightHdrOn from the block's
+  tone[1] while the rig is on, beginFrame clears it, nothing else writes it,
+  and only the raster rig draws and runPostChain read it; runPostChain is
+  master's once postExposure is put back (exposure 1 in an HDR rig frame);
+  SceneLightsFrame is master's once the one tone statement is taken out;
 * TestBlock: pymol::LightRigBlock is 688 bytes with the tone last, and both
   MSL LightRigU copies end with it.
 
@@ -571,6 +584,240 @@ class TestSpecialisers(HdrMSLCase):
         for name in ('bezierTubeRigFunction', 'airFunction'):
             fn = cpp_function(self.mm, name)
             self.assertRegex(fn, r'fn\.functionConstantsDictionary\.count\s*==\s*0')
+
+
+class TestCaches(HdrMSLCase):
+    """Part 4 (the raster rig): every raster rig cache has an hdr dimension,
+    and each draw asks for this frame's variant."""
+
+    def testHeaderDimensions(self):
+        h = self.header
+        for member in ('_vboFragmentRigFunc', '_vboFragmentOitRigFunc',
+                       '_vboFragmentRigShadowFunc', '_vboFragmentOitRigShadowFunc'):
+            self.assertRegex(h, r'id<MTLFunction> %s\[2\]\[cMaterialFamily_count\] = \{\};'
+                             % member, member)
+        for member in ('_vboRigFuncTried', '_vboRigShadowFuncTried'):
+            self.assertRegex(h, r'bool %s\[2\]\[cMaterialFamily_count\]\[2\] = \{\};'
+                             % member, member)
+        for member in ('_sphereRigPipeline', '_sphereRigOitPipeline',
+                       '_sphereRigShadowPipeline', '_sphereRigShadowOitPipeline'):
+            self.assertRegex(h, r'id<MTLRenderPipelineState> %s\[2\]'
+                                r'\[cMaterialFamily_count\] = \{\};' % member, member)
+        for member in ('_sphereRigBuilt', '_sphereRigShadowBuilt'):
+            self.assertRegex(h, r'bool %s\[2\] = \{\};' % member, member)
+        self.assertRegex(h, r'std::map<std::tuple<NSUInteger,\s*int,\s*int,\s*bool,'
+                            r'\s*bool,\s*bool>,\s*CylinderPipelines>')
+        self.assertRegex(h, r'id<MTLRenderPipelineState> _bezierTubeRigPipeline\[2\]'
+                            r' = \{\};')
+        # one tried flag for both tube variants
+        self.assertRegex(h, r'bool _bezierTubeRigTried = false;')
+        for sig in (r'id<MTLFunction> vboRigFragmentFunction\(int family, bool oit, '
+                    r'bool hdr\);',
+                    r'id<MTLFunction> vboRigShadowFragmentFunction\(int family, bool oit, '
+                    r'bool hdr\);',
+                    r'void ensureSphereRigPipelines\(bool hdr\);',
+                    r'void ensureSphereRigShadowPipelines\(bool hdr\);',
+                    r'MTLVertexDescriptor\* vd, int family, bool lightRig = false,'
+                    r'\s*bool lightHdr = false\);',
+                    r'MTLVertexDescriptor\* vd, bool lightRig = false,'
+                    r'\s*bool lightHdr = false\);',
+                    r'bool lightShadow = false,\s*bool lightHdr = false\);\s*'
+                    r'void buildLabelPipeline'):
+            self.assertRegex(h, sig)
+
+    def testVBORigFunctions(self):
+        for name, slots, tried in (
+                ('RendererMetal::vboRigFragmentFunction',
+                 r'oit \? &_vboFragmentOitRigFunc\[h\]\[family\] : '
+                 r'&_vboFragmentRigFunc\[h\]\[family\];',
+                 'bool& tried = _vboRigFuncTried[h][family][oit ? 1 : 0];'),
+                ('RendererMetal::vboRigShadowFragmentFunction',
+                 r'oit \? &_vboFragmentOitRigShadowFunc\[h\]\[family\]\s*'
+                 r': &_vboFragmentRigShadowFunc\[h\]\[family\];',
+                 'bool& tried = _vboRigShadowFuncTried[h][family][oit ? 1 : 0];')):
+            body = cpp_function(self.mm, name)
+            self.assertIn('const int h = hdr ? 1 : 0;', body, name)
+            self.assertRegex(body, slots, name)
+            self.assertIn(tried, body, name)
+        release = cpp_function(self.mm, 'RendererMetal::releaseVBORigFunctions')
+        self.assertIn('for (int h = 0; h < 2; ++h)', release)
+        for member in ('_vboFragmentRigFunc', '_vboFragmentOitRigFunc',
+                       '_vboFragmentRigShadowFunc', '_vboFragmentOitRigShadowFunc'):
+            self.assertIn('[%s[h][f] release];' % member, release)
+            self.assertIn('%s[h][f] = nil;' % member, release)
+
+    def testVBOPipelineKey(self):
+        body = cpp_function(self.mm, 'RendererMetal::cachedVBOPipeline')
+        shadow_mix = body.index('if (lightShadow) mix(0x4C53);')
+        hdr_rule = body.index('lightHdr = lightHdr && lightRig;')
+        hdr_mix = body.index('if (lightHdr) mix(0x4C48);')
+        # mixed only when true, after every other bit, before the lookup:
+        # every classic and knee rig key is what it was
+        self.assertLess(shadow_mix, hdr_rule)
+        self.assertLess(hdr_rule, hdr_mix)
+        self.assertLess(hdr_mix, body.index('_vboPipelineCache.find(key)'))
+        self.assertEqual(body.count('mix(0x4C48)'), 1)
+        self.assertEqual(len(set(re.findall(r'mix\((0x[0-9A-F]+)\)', body))), 3)
+        # every rig function or pipeline it asks for is that variant
+        for call in ('oitPipelineForVD(vd, family, lightRig, lightHdr)',
+                     'oitPipelineForVD(vd, cMaterialFamily_default, lightRig, lightHdr)',
+                     'vboRigShadowFragmentFunction(family, false, lightHdr)',
+                     'vboRigFragmentFunction(family, false, lightHdr)',
+                     'vboRigFragmentFunction(cMaterialFamily_default, false, lightHdr)'):
+            self.assertIn(call, body)
+        self.assertRegex(body, r'vboRigShadowFragmentFunction\(cMaterialFamily_default, '
+                               r'false,\s*lightHdr\)')
+        oit = cpp_function(self.mm, 'RendererMetal::oitPipelineForVD')
+        self.assertRegex(oit, r'^\{[^;]*;\s*lightHdr = lightHdr && lightRig;')
+        self.assertIn('vboRigShadowFragmentFunction(family, true, lightHdr)', oit)
+        self.assertIn('vboRigFragmentFunction(family, true, lightHdr)', oit)
+        # the draws: the rig request carries the frame's choice, the classic
+        # requests none
+        for fn in ('RendererMetal::drawVBO', 'RendererMetal::drawVBOIndexed'):
+            draw = re.sub(r'/\*.*?\*/', '', cpp_function(self.mm, fn), flags=re.S)
+            calls = [squash(c).split(',')
+                     for c in re.findall(r'cachedVBOPipeline\(([^;]*)\);', draw)]
+            rig = [c for c in calls if len(c) == 9]
+            self.assertEqual(len(rig), 1, fn)
+            self.assertEqual(rig[0][-2:], ['true', '_lightHdrOn'], fn)
+            for c in calls:
+                self.assertIn(len(c), (7, 9), (fn, c))
+
+    def testSpherePipelines(self):
+        for name, built, sets in (
+                ('RendererMetal::ensureSphereRigPipelines', '_sphereRigBuilt',
+                 ('_sphereRigPipeline', '_sphereRigOitPipeline')),
+                ('RendererMetal::ensureSphereRigShadowPipelines', '_sphereRigShadowBuilt',
+                 ('_sphereRigShadowPipeline', '_sphereRigShadowOitPipeline'))):
+            body = cpp_function(self.mm, name)
+            self.assertRegex(body, r'^\{\s*const int h = hdr \? 1 : 0;\s*if \(%s\[h\]\) '
+                                   r'return;\s*%s\[h\] = true;' % (built, built), name)
+            for member in sets:
+                self.assertRegex(body, r'%s\[h\]\[f\] =\s*\[_device ' % member, name)
+                self.assertNotRegex(body, r'%s\[f\]' % member, name)
+        release = cpp_function(self.mm, 'RendererMetal::releaseSphereRigPipelines')
+        self.assertIn('for (int h = 0; h < 2; ++h)', release)
+        for member in ('_sphereRigPipeline', '_sphereRigOitPipeline',
+                       '_sphereRigShadowPipeline', '_sphereRigShadowOitPipeline'):
+            self.assertIn('[%s[h][f] release];' % member, release)
+        for flag in ('_sphereRigBuilt', '_sphereRigShadowBuilt'):
+            self.assertIn('%s[h] = false;' % flag, release)
+        draw = cpp_function(self.mm, 'RendererMetal::drawSphereImpostors')
+        self.assertIn('const int sphereHdr = _lightHdrOn ? 1 : 0;', draw)
+        self.assertIn('ensureSphereRigPipelines(_lightHdrOn);', draw)
+        self.assertIn('ensureSphereRigShadowPipelines(_lightHdrOn);', draw)
+        for member in ('_sphereRigPipeline', '_sphereRigOitPipeline',
+                       '_sphereRigShadowPipeline', '_sphereRigShadowOitPipeline'):
+            self.assertRegex(draw, r'%s\[sphereHdr\]' % member)
+            self.assertNotRegex(draw, r'%s(?!\[sphereHdr\])\b' % member)
+
+    def testCylinderPipelines(self):
+        build = cpp_function(self.mm, 'RendererMetal::buildCylinderImpostorPipeline')
+        self.assertRegex(build, r'lightHdr = lightHdr && lightRig;')
+        self.assertRegex(build, r'std::make_tuple\([^;]*lightRig,\s*lightShadow,\s*lightHdr\)')
+        draw = re.sub(r'/\*.*?\*/', '', cpp_function(
+            self.mm, 'RendererMetal::drawCylinderImpostors'), flags=re.S)
+        self.assertRegex(draw, r'const bool cylHdr = cylRig && _lightHdrOn;')
+        calls = [squash(c) for c in
+                 re.findall(r'buildCylinderImpostorPipeline\(([^;]*)\);', draw)]
+        # every rig entry is this frame's variant; the classic one is not
+        self.assertEqual(sorted(calls), sorted(['call,cylRig,false,cylHdr', 'call,false',
+                                                'call,true,true,cylHdr',
+                                                'call,true,false,cylHdr']))
+
+    def testTubeFromOneCompile(self):
+        build = cpp_function(self.mm, 'RendererMetal::buildBezierTubeRigPipeline')
+        self.assertRegex(build, r'^\{\s*if \(_bezierTubeRigTried\) return;\s*'
+                                r'_bezierTubeRigTried = true;')
+        self.assertEqual(build.count('newLibraryWithSource:'), 1)
+        loop = re.search(r'for \(int h = 0; h < 2; \+\+h\) \{', build)
+        self.assertIsNotNone(loop)
+        inside = build[loop.end():_msl.match_brace(build, loop.end() - 1)]
+        self.assertRegex(re.sub(r'/\*.*?\*/', '', inside),
+                         r'bezierTubeRigFunction\(\s*lib, @"bezier_tube_fragment_rig",'
+                         r'\s*h == 1\)')
+        self.assertIn('_bezierTubeRigPipeline[h] =', inside)
+        self.assertIn('[ffn release];', inside)
+        # one vertex function for both, outside the loop
+        self.assertLess(build.index('bezier_tube_vertex_rig'), loop.start())
+        self.assertIn('[lib release];', build[_msl.match_brace(build, loop.end() - 1):])
+        draw = cpp_function(self.mm, 'RendererMetal::drawBezierTubes')
+        self.assertIn('_bezierTubeRigPipeline[_lightHdrOn ? 1 : 0]', draw)
+        rebuild = cpp_function(self.mm, 'RendererMetal::rebuildDrawPipelines')
+        self.assertIn('[_bezierTubeRigPipeline[h] release];', rebuild)
+        dtor = cpp_function(self.mm, 'RendererMetal::~RendererMetal')
+        self.assertIn('[_bezierTubeRigPipeline[0] release];', dtor)
+        self.assertIn('[_bezierTubeRigPipeline[1] release];', dtor)
+
+    def testPostCachesStillSingle(self):
+        """Part 4's documented transitional state, ended by Part 5: the RT
+        rig composites and the air are built only with kLightHdr false, so an
+        HDR frame's traced rig hits and air take the knee arm for now."""
+        self.assertRegex(self.header, r'id<MTLRenderPipelineState> _airFullPipeline = nil;')
+        self.assertRegex(self.header, r'id<MTLRenderPipelineState> _airUpsamplePipeline = nil;')
+        for name in ('airFunction', 'RendererMetal::buildRTRigComposite'):
+            self.assertRegex(cpp_function(self.mm, name),
+                             r'bool \w+ = false;\s*\[(?:cv|fc) setConstantValue:&\w+ '
+                             r'type:MTLDataTypeBool atIndex:k(?:RT)?LightHdrConstantIndex\]',
+                             name)
+
+
+class TestFrame(HdrMSLCase):
+    """Part 4: the frame's HDR colour (_lightHdrOn) and the exposure
+    hand-off."""
+
+    def testDerivedFromTheBlock(self):
+        self.assertRegex(self.header, r'bool _lightHdrOn = false;')
+        set_rig = cpp_function(self.mm, 'RendererMetal::setLightRig')
+        on = set_rig.index('_lightRigOn = rig && rig->head[0] >= 1.0f;')
+        hdr = set_rig.index('_lightHdrOn = _lightRigOn && rig->tone[1] > 0.5f;')
+        self.assertLess(on, hdr)
+        self.assertEqual(depth_at(set_rig, hdr), 1)
+        begin = cpp_function(self.mm, 'RendererMetal::beginFrame')
+        self.assertRegex(begin, r'_lightRigOn = false;\s*_lightHdrOn = false;')
+        # written nowhere else
+        writers = set()
+        for m in re.finditer(r'\b_lightHdrOn\s*=(?!=)', self.code):
+            writers.add(re.findall(r'^[\w<>:\*\s]*RendererMetal::(\w+)\s*\(',
+                                   self.code[:m.start()], re.M)[-1])
+        self.assertEqual(writers, {'setLightRig', 'beginFrame'})
+        # read by the raster rig draws and runPostChain only (Part 5 adds
+        # the RT composite and the air)
+        readers = set()
+        for m in re.finditer(r'\b_lightHdrOn\b(?!\s*=(?!=))', self.code):
+            readers.add(re.findall(r'^[\w<>:\*\s]*RendererMetal::(\w+)\s*\(',
+                                   self.code[:m.start()], re.M)[-1])
+        self.assertEqual(readers, {'runPostChain', 'drawVBO', 'drawVBOIndexed',
+                                   'drawSphereImpostors', 'drawCylinderImpostors',
+                                   'drawBezierTubes'})
+
+    def testPostChainIsMastersWithoutTheHandOff(self):
+        post = cpp_function(self.mm, 'RendererMetal::runPostChain')
+        decl = _air.POST_EXPOSURE_624.search(post)
+        self.assertIsNotNone(decl)
+        self.assertEqual(depth_at(post, decl.start()), 1)
+        # declared just before #13's pass, used only by it
+        self.assertLess(decl.end(), post.index('bool exposureActive ='))
+        self.assertRegex(post, r'bool exposureActive = \(postExposure < 0\.999f \|\| '
+                               r'postExposure > 1\.001f\);')
+        self.assertIn('u.exposure = postExposure;', post)
+        self.assertNotRegex(post, r'\b_exposure\b(?!\s*;)')
+        body = _air.AIR_STATEMENTS['RendererMetal::runPostChain'].sub('', post, count=1)
+        body, declarations, uses = _air.without_post_exposure_624(body)
+        self.assertEqual((declarations, uses), (1, _air.POST_EXPOSURE_USES_624))
+        self.assertEqual(digest(body),
+                         _air.MASTER_FUNCTIONS[('RendererMetal.mm',
+                                                'RendererMetal::runPostChain')])
+
+    def testSceneLightsFrameOnlyGainsTheTone(self):
+        source = read(os.path.join(ROOT, 'layer1', 'SceneLights.cpp'))
+        body = cpp_function(source, 'SceneLightsFrame')
+        for table in (_air.AIR_STATEMENTS, _air.STATEMENTS_624):
+            statement = table['SceneLightsFrame']
+            self.assertEqual(len(statement.findall(body)), 1)
+            body = statement.sub('', body, count=1)
+        self.assertEqual(digest(body),
+                         _air.MASTER_FUNCTIONS[('SceneLights.cpp', 'SceneLightsFrame')])
 
 
 class TestBlock(HdrMSLCase):
