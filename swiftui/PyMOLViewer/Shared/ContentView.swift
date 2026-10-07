@@ -2946,6 +2946,9 @@ struct ContentView: View {
 
     private var viewportView: some View {
         MetalViewport()
+            // Test-only (PYMOL_UITEST=1, #623): the element the Lights UI
+            // tests pinch and twist on; nothing otherwise.
+            .modifier(LightsUITestViewportIdentifier())
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             // Attached here (not the giant body chain) to keep that expression
             // under the Swift type-checker's complexity limit.
@@ -3071,10 +3074,19 @@ struct ContentView: View {
             // and non-interactive; absent in normal runs.
             .overlay(alignment: .topLeading) {
                 if ProcessInfo.processInfo.environment["PYMOL_UITEST"] == "1" {
-                    Text(verbatim: "\(engine.selectedResidueKeys.count)")
-                        .accessibilityIdentifier("selectionCount")
-                        .opacity(0.02)
-                        .allowsHitTesting(false)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(verbatim: "\(engine.selectedResidueKeys.count)")
+                            .accessibilityIdentifier("selectionCount")
+                            .opacity(0.02)
+                            .allowsHitTesting(false)
+                        // The Lights state and a camera hash (#623's
+                        // LightsGestureUITests); only in Lights mode.
+                        if LightsUITestProbe.enabled && engine.interactionMode == .lights {
+                            LightsUITestProbe(controller: engine.lightsController,
+                                              view: { [weak engine = engine] in engine?.captureView() })
+                        }
+                    }
+                    .allowsHitTesting(false)
                 }
             }
             .overlay { busyOverlay }
@@ -4742,6 +4754,110 @@ struct ContentView: View {
         Text("RayMol found an existing ~/.pymolrc and can copy it to ~/.raymolrc, RayMol's own startup script, so your customizations still run here.")
     }
     #endif
+}
+
+// MARK: - UI-test probe (#623)
+
+/// Test-only (PYMOL_UITEST=1): the Lights state and the camera as one line of
+/// text, identifier `lightsProbe`, for the iOS UI tests (LightsGestureUITests)
+/// to tell a light edit from a camera move under real recognizers. Nearly
+/// transparent and never hit-testable; ContentView builds it only under
+/// PYMOL_UITEST=1, so a normal launch never runs it. It reads the rig mirror
+/// and the camera (PyMOLBridge_GetView, a C++ read) four times a second:
+/// no Python, no write.
+struct LightsUITestProbe: View {
+    static let identifier = "lightsProbe"
+    /// The Metal viewport's identifier under PYMOL_UITEST=1.
+    static let viewportIdentifier = "raymol.viewport"
+    /// PYMOL_UITEST=1, read once per launch.
+    static let enabled = ProcessInfo.processInfo.environment["PYMOL_UITEST"] == "1"
+
+    @ObservedObject var controller: LightsController
+    /// The live camera's 25-float view (PyMOLEngine.captureView).
+    let view: () -> [Float]?
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.25)) { _ in
+            let line = Self.line(rig: controller.rig, selected: controller.selectedLight?.name,
+                                 projection: controller.eye.projection, view: view())
+            Text(verbatim: line)
+                .font(.system(size: 4))
+                .lineLimit(1)
+                .accessibilityLabel(line)
+                .accessibilityIdentifier(Self.identifier)
+                .opacity(0.02)
+                .allowsHitTesting(false)
+        }
+    }
+
+    /// `sel=<name> radius=<r> orbit=<o> pitch=<p> beam=<b> cam=<hash>
+    /// rig=<name>:<o>/<p>/<r>/<b>,...`: the selected light's placement and
+    /// beam, a hash of the camera, and every light in rig order. Without a
+    /// selected light the light fields are left out; `cam=none` without a
+    /// camera. Pure.
+    static func line(rig: LightRigSnapshot?, selected: String?,
+                     projection: LightCameraProjection?, view: [Float]?) -> String {
+        var fields: [String] = []
+        let lights = rig?.lights ?? []
+        if let selected, let light = lights.first(where: { $0.name == selected }) {
+            fields.append("sel=\(light.name)")
+            fields.append("radius=" + String(format: "%.2f", light.radius))
+            fields.append("orbit=" + String(format: "%.1f", light.orbit))
+            fields.append("pitch=" + String(format: "%.1f", light.pitch))
+            fields.append("beam=" + String(format: "%.1f", light.beam))
+        } else {
+            fields.append("sel=none")
+        }
+        fields.append("cam=" + cameraHash(projection: projection, view: view))
+        let summary = lights.map { light in
+            light.name + ":" + String(format: "%.1f/%.1f/%.2f/%.1f",
+                                      light.orbit, light.pitch, light.radius, light.beam)
+        }
+        fields.append("rig=" + (summary.isEmpty ? "none" : summary.joined(separator: ",")))
+        return fields.joined(separator: " ")
+    }
+
+    /// FNV-1a (32 bit, hex) over the published LightCameraProjection and the
+    /// 25-float view, each value rounded to 1e-3. The projection alone
+    /// carries no rotation (a one-finger rotate or a twist leaves it as it
+    /// was), so the view's rotation and position are hashed with it. "none"
+    /// without a view. Deterministic across launches. Pure.
+    static func cameraHash(projection: LightCameraProjection?, view: [Float]?) -> String {
+        guard let view, !view.isEmpty else { return "none" }
+        var values: [Double] = []
+        if let projection {
+            values += [projection.orthoscopic ? 1 : 0, projection.fovDegrees,
+                       projection.cameraDistance, projection.letterboxAspect]
+        }
+        values += view.map(Double.init)
+        var hash: UInt32 = 2_166_136_261
+        for value in values {
+            let rounded = value.isFinite ? Int64((value * 1000).rounded()) : Int64.min
+            withUnsafeBytes(of: rounded.littleEndian) { bytes in
+                for byte in bytes {
+                    hash ^= UInt32(byte)
+                    hash = hash &* 16_777_619
+                }
+            }
+        }
+        return String(format: "%08x", hash)
+    }
+}
+
+/// The viewport's identifier under PYMOL_UITEST=1 (#623), as one accessibility
+/// element; a normal launch leaves the viewport untouched.
+struct LightsUITestViewportIdentifier: ViewModifier {
+    var enabled: Bool = LightsUITestProbe.enabled
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content
+                .accessibilityElement(children: .ignore)
+                .accessibilityIdentifier(LightsUITestProbe.viewportIdentifier)
+        } else {
+            content
+        }
+    }
 }
 
 #if RAYMOL_MPNN

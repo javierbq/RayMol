@@ -692,3 +692,66 @@ final class LightsTouchRoutingTests: XCTestCase {
         XCTAssertEqual(picker.picks, 1)
     }
 }
+
+// MARK: - The UI-test probe (#623 Part 7)
+
+/// LightsUITestProbe's line, which LightsGestureUITests parses: the selected
+/// light's fields, the camera hash and every light in rig order.
+@MainActor
+final class LightsUITestProbeTests: XCTestCase {
+
+    private let view: [Float] = (0..<25).map { Float($0) * 0.5 - 3 }
+    private let camera = LightCameraProjection(orthoscopic: false, fovDegrees: 20, cameraDistance: 200,
+                                               letterboxAspect: 0)
+
+    func testTheLineNamesTheSelectedLightAndTheRig() throws {
+        let (_, controller) = orbitRig()
+        let rig = try XCTUnwrap(controller.rig)
+        let beams = rig.lights.map { String(format: "%.1f", $0.beam) }
+        let line = LightsUITestProbe.line(rig: rig, selected: "key", projection: camera, view: view)
+        let hash = LightsUITestProbe.cameraHash(projection: camera, view: view)
+        XCTAssertEqual(line, "sel=key radius=3.00 orbit=-45.0 pitch=35.0 beam=\(beams[0]) cam=\(hash) "
+                       + "rig=key:-45.0/35.0/3.00/\(beams[0]),fill:60.0/10.0/2.00/\(beams[1]),"
+                       + "rim:150.0/-15.0/4.00/\(beams[2])")
+        let fill = LightsUITestProbe.line(rig: rig, selected: "fill", projection: camera, view: view)
+        XCTAssertTrue(fill.hasPrefix("sel=fill radius=2.00 orbit=60.0 pitch=10.0 "), fill)
+    }
+
+    func testWithoutASelectionOrARigTheLineSaysSo() throws {
+        let (_, controller) = orbitRig()
+        let none = LightsUITestProbe.line(rig: controller.rig, selected: nil, projection: nil, view: nil)
+        XCTAssertTrue(none.hasPrefix("sel=none cam=none rig=key:"), none)
+        XCTAssertFalse(none.contains("radius="))
+        XCTAssertEqual(LightsUITestProbe.line(rig: nil, selected: "key", projection: nil, view: nil),
+                       "sel=none cam=none rig=none")
+    }
+
+    func testTheCameraHashFollowsTheCameraToAThousandth() {
+        let base = LightsUITestProbe.cameraHash(projection: camera, view: view)
+        XCTAssertEqual(base.count, 8)
+        // Deterministic (FNV-1a, not Swift's per-launch Hasher).
+        XCTAssertEqual(base, LightsUITestProbe.cameraHash(projection: camera, view: view))
+        // A rotation the projection does not carry (the view's matrix).
+        var rotated = view
+        rotated[1] += 0.01
+        XCTAssertNotEqual(base, LightsUITestProbe.cameraHash(projection: camera, view: rotated))
+        // A zoom (the projection's distance alone).
+        var zoomed = camera
+        zoomed.cameraDistance = 180
+        XCTAssertNotEqual(base, LightsUITestProbe.cameraHash(projection: zoomed, view: view))
+        // Float noise under a thousandth is no change.
+        var noise = view
+        noise[1] += 0.0001
+        XCTAssertEqual(base, LightsUITestProbe.cameraHash(projection: camera, view: noise))
+        XCTAssertEqual(LightsUITestProbe.cameraHash(projection: camera, view: nil), "none")
+        XCTAssertEqual(LightsUITestProbe.cameraHash(projection: camera, view: []), "none")
+    }
+
+    func testTheHooksAreOffWithoutTheSwitch() {
+        // Unit-test runs never set PYMOL_UITEST: the probe and the viewport
+        // identifier exist only for the UI tests.
+        XCTAssertFalse(LightsUITestProbe.enabled)
+        XCTAssertEqual(LightsUITestProbe.identifier, "lightsProbe")
+        XCTAssertEqual(LightsUITestProbe.viewportIdentifier, "raymol.viewport")
+    }
+}
