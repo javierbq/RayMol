@@ -375,7 +375,8 @@ NO_PYTHON_SOURCES = [os.path.join(SHARED, 'LightsController.swift'),
                      os.path.join(SHARED, 'LightsTouch.swift'),
                      os.path.join(SHARED, 'LightsSheet.swift'),
                      os.path.join(SHARED, 'LightsFloatingTools.swift'),
-                     os.path.join(SHARED, 'LightsAtmosphere.swift')]
+                     os.path.join(SHARED, 'LightsAtmosphere.swift'),
+                     os.path.join(SHARED, 'LightsAtmosphereCard.swift')]
 NO_PYTHON = re.compile(
     r'\brunPython\w*|\bRunPython\w*|\brunCommand\w*|\bRunCommand\w*'
     r'|appkit_lights|\bPyMOLBridge_\w+\s*\(')

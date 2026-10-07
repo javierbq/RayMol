@@ -4232,7 +4232,8 @@ struct ContentView: View {
                          style: lightsStyle,
                          inspectorStartsCollapsed: lightsInspectorStartsCollapsed,
                          sceneShadowsOn: engine.sceneShadowsOn,
-                         onEnableSceneShadows: { engine.enableSceneShadows() })
+                         onEnableSceneShadows: { engine.enableSceneShadows() },
+                         atmosphereStart: lightsAtmosphereStart)
     }
     #endif
 
@@ -4264,6 +4265,19 @@ struct ContentView: View {
         return lightsPlacement == .floating && !lightsInspectorExpandOverride
         #else
         return false
+        #endif
+    }
+
+    // How the Atmosphere card (#726) starts, seeded each time the mode opens:
+    // on macOS expanded only when the air is on at entry (a short window
+    // keeps its inspector room otherwise); in the iPad float collapsed to
+    // its 44 pt header, so the default knobs stay free. Phones show it as a
+    // section of the sheet instead (no card).
+    private var lightsAtmosphereStart: LightsAtmosphereStart {
+        #if os(iOS)
+        return .collapsed
+        #else
+        return .expandedIfOn
         #endif
     }
 
@@ -4332,6 +4346,7 @@ struct ContentView: View {
         LightsFloatingTools(controller: engine.lightsController, style: lightsStyle,
                             corner: lightsOrbitCornerBinding, chrome: viewportChrome,
                             inspectorStartsCollapsed: lightsInspectorStartsCollapsed,
+                            atmosphereStart: lightsAtmosphereStart,
                             sceneShadowsOn: engine.sceneShadowsOn,
                             onEnableSceneShadows: { engine.enableSceneShadows() },
                             onFrames: { frames in
@@ -4479,7 +4494,9 @@ struct ContentView: View {
     // 0.22 s snap): the scene is the viewport's size as the gizmo overlay
     // measured it, `sheet` the committed slot, and `covered` the lights whose
     // knob (with its whole touch target) lies under a floating card
-    // (LightsFloatLayout.coveredKnobs; docked tools cover nothing).
+    // (LightsFloatLayout.coveredKnobs; docked tools cover nothing). The
+    // float adds its cards' frames: `card=`, `inspector=` and `atmosphere=`
+    // (x,y,wxh; 0,0,0x0 for a card not drawn).
     private func logLightsLayout(_ key: LightsLayoutLogKey?) {
         guard let key else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
@@ -4494,6 +4511,7 @@ struct ContentView: View {
                 let cards = (lightsFloatFrames ?? key.float).map { f in
                     " card=\(Int(f.card.minX)),\(Int(f.card.minY)),\(Int(f.card.width))x\(Int(f.card.height))"
                         + " inspector=\(Int(f.inspector.minX)),\(Int(f.inspector.minY)),\(Int(f.inspector.width))x\(Int(f.inspector.height))"
+                        + " atmosphere=\(Int(f.atmosphere.minX)),\(Int(f.atmosphere.minY)),\(Int(f.atmosphere.width))x\(Int(f.atmosphere.height))"
                 } ?? ""
                 NSLog("LightsLayout: tools=\(key.tools) scene=\(Int(scene.width.rounded()))x\(Int(scene.height.rounded())) sheet=\(sheet) panes=\(key.panes) covered=\(LightsFloatLayout.coveredSummary(covered))\(cards) touch=\(Int(LightsTouch.minimumTarget))")
             }

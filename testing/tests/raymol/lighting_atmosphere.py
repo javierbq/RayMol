@@ -550,8 +550,12 @@ ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir,
 SHARED = os.path.join('swiftui', 'PyMOLViewer', 'Shared')
 MODEL = os.path.join(SHARED, 'LightsAtmosphere.swift')
 ENGINE = os.path.join(SHARED, 'PyMOLEngine.swift')
-# The card's new Swift files (the view joins in a later part of #726).
-CARD_SOURCES = [MODEL, os.path.join(SHARED, 'LightsAtmosphereCard.swift')]
+CARD = os.path.join(SHARED, 'LightsAtmosphereCard.swift')
+SIDE_COLUMN = os.path.join(SHARED, 'LightsSideColumn.swift')
+FLOAT = os.path.join(SHARED, 'LightsFloatingTools.swift')
+CONTENT_VIEW = os.path.join(SHARED, 'ContentView.swift')
+# The card's new Swift files.
+CARD_SOURCES = [MODEL, CARD]
 
 # A number beside a range operator: `0...1`, `0.05..<2`, `lo...-0.9`.
 RANGE_LITERAL = re.compile(r'(?<![\w.])-?\d+(?:\.\d+)?\s*\.\.[.<]'
@@ -700,6 +704,68 @@ class TestAtmosphereSource(testing.PyMOLTestCase):
                 loader = self.body(ENGINE, signature)
                 self.assertIsNone(re.search(r'\brunPython\w*\(', loader))
                 self.assertIn('loadLightTables()', loader)
+
+    def testTheCardSitsUnderTheInspectorOnMacAndIPad(self):
+        """macOS: the side column builds the card under the inspector, with
+        layoutPriority(1) (it keeps its height; the inspector scrolls
+        first) and its frame reported. iPad: the float builds it under the
+        inspector in the trailing stack, the same way, and reports its
+        frames with no orbit card too. ContentView seeds the start states
+        (macOS expanded only when the air is on, iPad collapsed) and the
+        DEBUG LightsLayout line names the card's frame."""
+        for rel in (SIDE_COLUMN, FLOAT):
+            with self.subTest(rel):
+                view = self.body(rel, 'var body: some View')
+                inspector = view.find('LightsInspector(')
+                card = view.find('LightsAtmosphereCard(')
+                self.assertGreaterEqual(inspector, 0)
+                self.assertGreater(card, inspector, 'the card goes under the inspector')
+                chain = view[card:card + 400]
+                self.assertIn('presentation: .card', chain)
+                self.assertIn('start: atmosphereStart', chain)
+                self.assertIn('framesReader("atmosphere")', chain)
+                self.assertIn('.layoutPriority(1)', chain)
+        self.assertIn('LightsColumnFramesKey', self.read(SIDE_COLUMN))
+        report = self.body(FLOAT, '.onPreferenceChange(LightsFloatFramesKey.self)')
+        self.assertIn('guard card != nil || inspector != nil || atmosphere != nil', report)
+        self.assertNotIn('guard let card = frames["card"]', report)
+        content = self.read(CONTENT_VIEW)
+        self.assertEqual(content.count('atmosphereStart: lightsAtmosphereStart'), 2)
+        start = self.body(CONTENT_VIEW, 'private var lightsAtmosphereStart: LightsAtmosphereStart')
+        ios, _, mac = start.partition('#else')
+        self.assertIn('return .collapsed', ios)
+        self.assertIn('return .expandedIfOn', mac)
+        log = self.body(CONTENT_VIEW, 'private func logLightsLayout(')
+        self.assertIn(' atmosphere=', log)
+
+    def testTheCollapsedCardIsOneHeaderRow(self):
+        """A collapsed card shows its hint as a header glyph (never the hint
+        text), so it is the 44 pt header the float's frames assume."""
+        card = self.body(CARD, 'private func card(')
+        self.assertIn('if !collapsed {', card)
+        self.assertNotIn('hintRow(', card)
+        header = self.body(CARD, 'private func header(')
+        self.assertIn('if showsChevron, collapsed, let glyph = state.collapsedGlyph', header)
+        metrics = self.body(FLOAT, 'enum LightsFloatMetrics')
+        self.assertRegex(metrics, r'static let atmosphereHeaderHeight: CGFloat = 44\b')
+
+    def testTheCardWritesThroughTheTypedAirAPI(self):
+        """Every write of the card goes through the typed air API (bridge
+        setters per tick, one command for the switch): no seam, action or
+        light setter, and the rows report the focus keys the phone sheet
+        reads."""
+        text = self.read(CARD)
+        calls = set(re.findall(r'controller\.(\w+)\(', text))
+        self.assertEqual(calls, {'setAirIfChanged', 'setAir', 'setAtmosphere', 'airField', 'airValue'})
+        for name in ('seams', 'perform(', 'writeRigNumbers', 'beginGesture('):
+            with self.subTest(name):
+                self.assertNotIn(name, text)
+        row = self.body(CARD, 'struct AtmosphereSliderRow')
+        self.assertIn('.preference(key: LightsFieldFocusKey.self, value: focused)', row)
+        self.assertIn('.preference(key: LightsSheetScrollTargetKey.self', row)
+        self.assertIn('.lightsNumberKeyboard()', row)
+        self.assertIn('controller.setAirIfChanged(p, p.sliderValue(position, field))', row)
+        self.assertIn('editor.sliderMoved(', row)
 
     def testNoUndo(self):
         """Light edits register no undo (the bar's Revert is the way back);

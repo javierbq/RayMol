@@ -354,6 +354,9 @@ enum LightsSheetState {
     static let customColourName = "Custom"
     /// The rows' top, scrolled into view when a field takes the keyboard.
     static let rowsAnchor = "lights.sheet.rows.top"
+    /// The Atmosphere section (#726): what the header's Atmosphere button
+    /// scrolls to.
+    static let atmosphereAnchor = "lights.sheet.atmosphere.section"
 
     static func grabberValue(_ detent: LightsSheetDetent) -> String {
         detent == .compact ? "Compact" : "Expanded"

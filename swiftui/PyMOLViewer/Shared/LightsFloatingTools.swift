@@ -16,6 +16,11 @@
 //   measured, ViewportChromeHeightsKey) and an open CameraDock (both).
 // - A card sharing the trailing edge with the inspector stacks with it; the
 //   inspector's content scrolls in what is left.
+// - #726's Atmosphere card sits under the inspector, collapsed to its 44 pt
+//   header by default (a hint is a header glyph then, so it stays 44 pt and
+//   the default knobs stay free). It keeps its height (layoutPriority 1): the
+//   inspector scrolls first. It draws in Lights mode with no light too, alone
+//   at the top inset (no orbit card, no inspector).
 // - VoiceOver: the grip is an element with the corner as its value and one
 //   `Move to <corner>` action per other corner.
 // Empty space passes touches through to the viewport (the camera's).
@@ -95,6 +100,9 @@ enum LightsFloatMetrics {
     /// The inspector card collapsed to its header on iOS (44 pt targets): a
     /// test pins it to the rendered card.
     static let inspectorHeaderHeight: CGFloat = 44
+    /// The Atmosphere card collapsed to its header on iOS, whatever its hint
+    /// (a header glyph): a test pins it to the rendered card.
+    static let atmosphereHeaderHeight: CGFloat = 44
     /// The grip's capsule, drawn in the orbit card's top padding.
     static let gripSize = CGSize(width: 36, height: 4)
     /// A drag moves the card only past this distance (a tap stays a tap).
@@ -142,12 +150,14 @@ extension View {
 // MARK: - Layout (pure)
 
 enum LightsFloatLayout {
-    /// The orbit card's and the inspector's frames in the viewport.
+    /// The orbit card's, the inspector's and the Atmosphere card's frames
+    /// in the viewport (`.zero` for a card that is not drawn).
     struct Frames: Equatable {
         var card: CGRect
         var inspector: CGRect
+        var atmosphere: CGRect = .zero
 
-        var all: [CGRect] { [card, inspector] }
+        var all: [CGRect] { [card, inspector, atmosphere] }
     }
 
     /// The room a column on that side leaves under it, beyond its inset:
@@ -183,13 +193,20 @@ enum LightsFloatLayout {
     /// Where the cards sit for `corner` in a viewport of `container`: the
     /// card in its corner, clear of the bottom chrome; the inspector at the
     /// top-trailing corner, under the card when it is top-trailing and
-    /// above it when it is bottom-trailing. A collapsed inspector is its
-    /// header; an expanded one takes `inspectorHeight` (its content) up to
-    /// the room it has (nil: all of it).
+    /// above it when it is bottom-trailing; the Atmosphere card under the
+    /// inspector, `atmosphereHeight` tall (its header when collapsed). The
+    /// Atmosphere card keeps its height: a collapsed inspector is its
+    /// header, an expanded one takes `inspectorHeight` (its content) up to
+    /// the room left above the Atmosphere card (nil: all of it). A card that
+    /// is not drawn (`showsCard`: no light; `showsInspector`: no selected
+    /// light) is `.zero` and leaves no room behind: the Atmosphere card then
+    /// moves up to the top inset.
     static func frames(corner: LightsFloatCorner, container: CGSize, inspectorCollapsed: Bool,
                        chrome: ViewportChromeHeights = ViewportChromeHeights(),
                        cardSize: CGSize = LightsFloatMetrics.orbitCardSize,
-                       inspectorHeight: CGFloat? = nil) -> Frames {
+                       inspectorHeight: CGFloat? = nil,
+                       atmosphereHeight: CGFloat = LightsFloatMetrics.atmosphereHeaderHeight,
+                       showsCard: Bool = true, showsInspector: Bool = true) -> Frames {
         let inset = LightsFloatMetrics.inset, gap = LightsFloatMetrics.gap
         let width = LightsInspector.width
         let trailingBottom = container.height - inset - bottomClearance(trailing: true, chrome: chrome)
@@ -198,15 +215,23 @@ enum LightsFloatLayout {
         let cardY = corner.isBottom
             ? (corner.isTrailing ? trailingBottom : leadingBottom) - cardSize.height
             : inset
-        let card = CGRect(x: cardX, y: cardY, width: cardSize.width, height: cardSize.height)
-        let top = corner == .topTrailing ? card.maxY + gap : inset
-        let limit = corner == .bottomTrailing ? card.minY - gap : trailingBottom
-        let room = max(0, limit - top)
-        let height = inspectorCollapsed
-            ? min(LightsFloatMetrics.inspectorHeaderHeight, room)
-            : min(inspectorHeight ?? room, room)
-        let inspector = CGRect(x: container.width - inset - width, y: top, width: width, height: height)
-        return Frames(card: card, inspector: inspector)
+        let card = showsCard ? CGRect(x: cardX, y: cardY, width: cardSize.width, height: cardSize.height) : .zero
+        let top = showsCard && corner == .topTrailing ? card.maxY + gap : inset
+        let limit = showsCard && corner == .bottomTrailing ? card.minY - gap : trailingBottom
+        let x = container.width - inset - width
+        var inspector = CGRect.zero
+        var atmosphereTop = top
+        if showsInspector {
+            let room = max(0, limit - top - atmosphereHeight - gap)
+            let height = inspectorCollapsed
+                ? min(LightsFloatMetrics.inspectorHeaderHeight, room)
+                : min(inspectorHeight ?? room, room)
+            inspector = CGRect(x: x, y: top, width: width, height: height)
+            atmosphereTop = inspector.maxY + gap
+        }
+        let atmosphere = CGRect(x: x, y: atmosphereTop, width: width,
+                                height: min(atmosphereHeight, max(0, limit - atmosphereTop)))
+        return Frames(card: card, inspector: inspector, atmosphere: atmosphere)
     }
 
     /// The lights whose knob, with its whole touch target, lies under any
@@ -253,7 +278,8 @@ enum LightsFloatState {
 }
 
 /// The cards' frames as the float laid them out (before any drag offset),
-/// in the viewport's coordinates: `card` and `inspector`.
+/// in the viewport's coordinates: `card`, `inspector` and `atmosphere` (a
+/// card that draws nothing reports nothing).
 struct LightsFloatFramesKey: PreferenceKey {
     static var defaultValue: [String: CGRect] = [:]
     static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
@@ -278,9 +304,11 @@ extension View {
 
 // MARK: - The view
 
-/// The floating orbit card and the top-trailing inspector, over the
-/// viewport (ContentView places it after the gizmo, so the cards sit above
-/// it). Draws nothing unless Lights mode is active with a selected light.
+/// The floating orbit card, the top-trailing inspector and the Atmosphere
+/// card under it, over the viewport (ContentView places it after the gizmo,
+/// so the cards sit above it). In Lights mode the Atmosphere card draws
+/// with no light too (alone at the top inset); the orbit card and the
+/// inspector draw only with a light.
 struct LightsFloatingTools: View {
     let controller: LightsController
     var style: LightsBarStyle
@@ -289,10 +317,13 @@ struct LightsFloatingTools: View {
     var chrome: ViewportChromeHeights
     /// The inspector starts collapsed to its header (the iPad default).
     var inspectorStartsCollapsed: Bool
+    /// How the Atmosphere card starts (the iPad default: collapsed).
+    var atmosphereStart: LightsAtmosphereStart = .collapsed
     var sceneShadowsOn: Bool? = nil
     var onEnableSceneShadows: () -> Void = {}
-    /// The cards' frames (card, inspector) in the viewport's coordinates
-    /// when they change, never per drag tick (the drag only offsets).
+    /// The cards' frames (card, inspector, atmosphere) in the viewport's
+    /// coordinates when they change, never per drag tick (the drag only
+    /// offsets); reported with no orbit card too (`card` is `.zero` then).
     var onFrames: (LightsFloatLayout.Frames) -> Void = { _ in }
 
     /// The grip drag's translation; reset (animated) on release and on a
@@ -304,6 +335,10 @@ struct LightsFloatingTools: View {
     /// The card's laid-out frame and the viewport's size, for the drop.
     @State private var cardFrame: CGRect = .zero
     @State private var containerSize: CGSize = .zero
+    /// The orbit card and the inspector draw (a light, a selected light):
+    /// without them their room and gaps go (the Atmosphere card moves up).
+    @State private var cardShown = true
+    @State private var inspectorShown = true
 
     static let space = "lights.float"
     static let snap = Animation.spring(response: 0.3, dampingFraction: 0.86)
@@ -316,14 +351,20 @@ struct LightsFloatingTools: View {
             // The inspector, top-trailing; stacked under or over a trailing
             // card (non-hit-testable spacers hold the card's room).
             VStack(alignment: .trailing, spacing: 0) {
-                if corner == .topTrailing { Spacer().frame(height: cardHeight + gap) }
+                if corner == .topTrailing && cardShown { Spacer().frame(height: cardHeight + gap) }
                 LightsInspector(controller: controller, style: style,
                                 initiallyCollapsed: inspectorStartsCollapsed,
                                 sceneShadowsOn: sceneShadowsOn,
                                 onEnableSceneShadows: onEnableSceneShadows)
                     .background(framesReader("inspector"))
+                // It keeps its height: the inspector scrolls first.
+                LightsAtmosphereCard(controller: controller, style: style, presentation: .card,
+                                     start: atmosphereStart)
+                    .background(framesReader("atmosphere"))
+                    .padding(.top, inspectorShown ? gap : 0)
+                    .layoutPriority(1)
                 Spacer(minLength: 0)
-                if corner == .bottomTrailing { Spacer().frame(height: cardHeight + gap) }
+                if corner == .bottomTrailing && cardShown { Spacer().frame(height: cardHeight + gap) }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             .padding(inset)
@@ -346,10 +387,19 @@ struct LightsFloatingTools: View {
         })
         .coordinateSpace(name: Self.space)
         .onPreferenceChange(LightsFloatFramesKey.self) { frames in
-            guard let card = frames["card"] else { return }
-            if abs(card.height - cardHeight) > 0.5 { cardHeight = card.height }
-            cardFrame = card
-            onFrames(LightsFloatLayout.Frames(card: card, inspector: frames["inspector"] ?? .zero))
+            // A card that draws nothing reports nothing (or an empty frame).
+            let card = frames["card"].flatMap { $0.isEmpty ? nil : $0 }
+            let inspector = frames["inspector"].flatMap { $0.isEmpty ? nil : $0 }
+            let atmosphere = frames["atmosphere"].flatMap { $0.isEmpty ? nil : $0 }
+            if (card != nil) != cardShown { cardShown = card != nil }
+            if (inspector != nil) != inspectorShown { inspectorShown = inspector != nil }
+            guard card != nil || inspector != nil || atmosphere != nil else { return }
+            if let card {
+                if abs(card.height - cardHeight) > 0.5 { cardHeight = card.height }
+                cardFrame = card
+            }
+            onFrames(LightsFloatLayout.Frames(card: card ?? .zero, inspector: inspector ?? .zero,
+                                              atmosphere: atmosphere ?? .zero))
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(LightsFloatState.identifier)
