@@ -1,9 +1,9 @@
-"""HDR colour and exposure's evidence (#624): pixel checks and scene files.
+"""HDR colour and exposure's evidence (#624): pixel checks, scene files, timing.
 
 L2 for #624 renders scripts/lighting/scenes/lighting_624.json with the frozen
 harness and decides with scripts/lighting/check_hdr.py (l2, and negative: the
 knee twins fail every proof); L1b compares lighting_624_regress.json with
-master's renders (max 0). CI has no GPU,
+master's renders (max 0); L6 runs scripts/lighting/time_hdr.py. CI has no GPU,
 so this pins what it can:
 
 * check_hdr.py's twin of D2 (the identity under the knee, the white point,
@@ -20,6 +20,12 @@ so this pins what it can:
   _l624_opt; recover pairs differ only in intensity x exposure (the same light
   in scene units); the regression file runs on master; every scene script runs
   in-process twice and installs what its tag says, framed on m;
+* time_hdr.py: the matrices, the generated scripts (time_shadows' run-2
+  export guard, the switch and air lines, the toggle's frame commands after
+  util.mroll's), the export queued once per process, the AUTOCMD refusals, the
+  per-frame parsing (2 lines per ray=1 frame), the spike summary, the tables
+  and flags, --dry-run.
+
 Source-reading, so skipped (not passed) outside a repo checkout, decided by
 one file every checkout has; in a checkout the ticket's own files are
 required, so renaming one fails instead of skipping. The pixel checks are
@@ -832,6 +838,250 @@ class TestSceneFiles(testing.PyMOLTestCase):
             self.assertAlmostEqual(cmd.get_setting_float('metal_exposure'),
                                    0.7 if tonemap else 1.0, places=6, msg=job.tag)
             restore_shims()
+
+
+# --- time_hdr.py ------------------------------------------------------------------------------
+
+@unittest.skipUnless(HAVE_CHECKOUT, 'needs a RayMol checkout (scripts/lighting)')
+class TestTimeHdr(testing.PyMOLTestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        assert_present(os.path.join(LIGHTING, 'time_hdr.py'),
+                       os.path.join(LIGHTING, 'time_air.py'),
+                       os.path.join(LIGHTING, 'time_shadows.py'), PDB)
+        cls.t = load_module('lighting_time_hdr', 'time_hdr.py')
+        cls.render = cls.t.ts.load_render()
+
+    def setUp(self):
+        super(TestTimeHdr, self).setUp()
+        self.tmp = tempfile.mkdtemp(prefix='l624t')
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def tearDown(self):
+        vars(cmd).pop('_ts_runs', None)
+        cmd.set_lights(None)
+        super(TestTimeHdr, self).tearDown()
+
+    def write(self, name, text):
+        path = os.path.join(self.tmp, name)
+        with open(path, 'w') as fh:
+            fh.write(text)
+        return path
+
+    def testReusesTimeShadowsAndTimeAir(self):
+        t = self.t
+        self.assertIs(t.ts, t.ta.ts)
+        self.assertEqual(t.LINES_PER_FRAME, 2)
+        self.assertEqual(t.PROBE, (64, 64, 0))
+        self.assertIs(t.Refusal, t.ts.Refusal)
+        with open(os.path.join(LIGHTING, 'time_hdr.py')) as fh:
+            src = fh.read()
+        for name in ('class Tailer', 'def launch_env', 'def check_autocmd', 'def run_once',
+                     'def structure_path', 'def summarise_run', 'def frame_times',
+                     'def air_lines', 'def parse_gpu_ms'):
+            self.assertNotIn(name, src)
+
+    def testConfigMatrix(self):
+        t = self.t
+        self.assertEqual([c.tag for c in t.configs()],
+                         ['%s_%s' % (s, v) for s in ('1rx1', '1ao6', '7k00')
+                          for v in ('s3', 's3_knee', 's3_air', 's3_air_knee')])
+        self.assertEqual(t.VARIANTS, {'s3': (False, False), 's3_knee': (True, False),
+                                      's3_air': (False, True), 's3_air_knee': (True, True)})
+        self.assertEqual(t.PAIRS, (('s3', 's3_knee'), ('s3_air', 's3_air_knee')))
+        self.assertEqual((t.HDR_EXPECT, t.HDR_FLAG), (0.02, 0.05))
+        self.assertEqual([c.tag for c in t.toggle_configs()],
+                         ['1rx1_on_hdr', '1rx1_on_knee', '1rx1_flip', '1rx1_steady'])
+        with self.assertRaises(t.Refusal):
+            t.HdrConfig('1rx1', 'bogus')
+        with self.assertRaises(t.Refusal):
+            t.ToggleConfig('1rx1', 'bogus')
+
+    def testExportScripts(self):
+        t = self.t
+        mp4 = os.path.join(self.tmp, 'x.mp4')
+        start = os.path.join(self.tmp, 'x.start.json')
+        base = t.ts.script_text(self.render, t.ts.Config('1rx1', 's3'), PDB, mp4, start, 4)
+        same = t.script_text(self.render, t.HdrConfig('1rx1', 's3'), PDB, mp4, start, 4)
+        # s3 is time_shadows' own script (the header and the tag stamp aside)
+        self.assertEqual([l for l in base.split('\n')[1:] if "'tag'" not in l],
+                         [l for l in same.split('\n')[1:] if "'tag'" not in l])
+        for variant, (knee, air) in t.VARIANTS.items():
+            text = t.script_text(self.render, t.HdrConfig('1rx1', variant), PDB, mp4, start, 4)
+            compile(text, variant, 'exec')
+            self.assertEqual(t.KNEE_LINE in text, knee, variant)
+            self.assertEqual("rig['air'] = %r" % (t.ta.AIR,) in text, air, variant)
+            self.assertEqual("cmd.set('metal_light_air_resolution', 1)" in text, air, variant)
+            if knee:
+                self.assertLess(text.index(t.KNEE_LINE), text.index('cmd.set_lights(rig)'))
+            self.assertIn('if cmd._ts_runs == 2:', text)
+            self.assertEqual(text.count('cmd.movie_export('), 1)
+            self.assertIn("'tag': '1rx1_%s'" % variant, text)
+            self.assertIn('ray=1', text)
+
+    def testExportQueuedOncePerProcess(self):
+        t = self.t
+        mp4 = os.path.join(self.tmp, 'x.mp4')
+        start = os.path.join(self.tmp, 'x.start.json')
+        script = self.write('x.py', t.script_text(self.render, t.HdrConfig('1rx1', 's3_air_knee'),
+                                                  PDB, mp4, start, 4))
+        calls = []
+        original = cmd.movie_export
+        cmd.movie_export = lambda *a, **k: calls.append((a, k))
+        try:
+            cmd.run(script)                   # at launch: nothing
+            self.assertEqual(calls, [])
+            cmd.run(script)                   # PYMOL_AUTOEXPORT's run: the export
+            cmd.run(script)                   # later runs: nothing
+        finally:
+            cmd.movie_export = original
+        self.assertEqual(calls, [((mp4, 1920, 1080), {'quality': 'standard', 'ray': 1})])
+        with open(start) as fh:
+            self.assertEqual(json.load(fh)['tag'], '1rx1_s3_air_knee')
+        rig = cmd.get_lights()
+        self.assertEqual([l['shadow'] for l in rig['lights']], [True, True, True])
+        self.assertAlmostEqual(rig['air']['haze'], 0.3, places=6)
+        if 'metal_light_hdr' in cmd.setting.get_name_list():
+            self.assertEqual(cmd.get_setting_int('metal_light_hdr'), 2)
+
+    def testToggleScripts(self):
+        t = self.t
+        mp4 = os.path.join(self.tmp, 'x.mp4')
+        start = os.path.join(self.tmp, 'x.start.json')
+        texts = {g: t.toggle_script_text(self.render, t.ToggleConfig('1rx1', g), PDB, mp4,
+                                         start, 24, 12) for g in t.TOGGLES}
+        for g, text in texts.items():
+            compile(text, g, 'exec')
+            self.assertIn('if cmd._ts_runs == 2:', text)
+            self.assertIn("cmd.movie_export(%r, 1920, 1080, quality='standard', ray=1)" % mp4,
+                          text)
+            self.assertIn("'tag': '1rx1_%s'" % g, text)
+        on = texts['on_hdr']
+        self.assertIn("    rig['enabled'] = False\n", on)
+        self.assertNotIn(t.KNEE_LINE, on)
+        self.assertGreater(on.index("cmd.mappend(12, 'lights on')"), on.index('cmd.frame(1)'))
+        self.assertIn(t.KNEE_LINE, texts['on_knee'])
+        flip = texts['flip']
+        self.assertIn("cmd.mappend(12, 'set metal_light_hdr, 2')", flip)
+        self.assertIn("cmd.mappend(18, 'set metal_light_hdr, 1')", flip)
+        self.assertIn(t.HDR_SET, flip)
+        self.assertNotIn('mappend', texts['steady'])
+        # the change back is dropped when it falls outside the movie
+        short = t.toggle_script_text(self.render, t.ToggleConfig('1rx1', 'flip'), PDB, mp4,
+                                     start, 14, 12)
+        self.assertNotIn('set metal_light_hdr, 1', short)
+        with self.assertRaises(t.Refusal):
+            t.toggle_script_text(self.render, t.ToggleConfig('1rx1', 'flip'), PDB, mp4, start,
+                                 24, 1)
+        self.assertEqual((t.default_at(24), t.default_at(2), t.default_at(3)), (12, 2, 2))
+
+    def testToggleScriptInProcess(self):
+        t = self.t
+        mp4 = os.path.join(self.tmp, 'x.mp4')
+        start = os.path.join(self.tmp, 'x.start.json')
+        script = self.write('on.py', t.toggle_script_text(
+            self.render, t.ToggleConfig('1rx1', 'on_knee'), PDB, mp4, start, 6, 3))
+        calls, appended = [], []
+        original, mappend = cmd.movie_export, cmd.mappend
+        cmd.movie_export = lambda *a, **k: calls.append((a, k))
+
+        def record(frame, command, *a, **k):
+            appended.append((int(frame), command))
+            return mappend(frame, command, *a, **k)
+        cmd.mappend = record
+        try:
+            for _ in range(3):
+                cmd.run(script)
+        finally:
+            cmd.movie_export, cmd.mappend = original, mappend
+        self.assertEqual(calls, [((mp4, 1920, 1080), {'quality': 'standard', 'ray': 1})])
+        self.assertEqual(appended, [(3, 'lights on')])
+        self.assertEqual(cmd.count_frames(), 6)
+        self.assertIs(cmd.get_lights()['enabled'], False)       # until frame 3
+        if 'metal_light_hdr' in cmd.setting.get_name_list():
+            self.assertEqual(cmd.get_setting_int('metal_light_hdr'), 2)
+
+    def testAutocmdRefusals(self):
+        t = self.t
+        for bad in ('run a.py; run b.py', 'run /x/orient/a.py', 'run /x/reset.py'):
+            with self.assertRaises(t.Refusal):
+                t.ts.check_autocmd(bad)
+        self.assertEqual(t.main(['--mode', 'toggle', '--dry-run', '--out',
+                                 os.path.join(self.tmp, 'orient')]), 2)
+
+    def testTogglePerFrame(self):
+        t = self.t
+        line = 'offscreen 1920x1080 gpu_ms=%.1f'
+        stamped = [(0.0, 'probe line'), (0.5, 'offscreen 64x64 gpu_ms=1.0')]
+        clock, frames, at = 10.0, 8, 4
+        for k in range(1, frames + 1):
+            step = 3.0 if k == at else 1.0
+            clock += step / 2
+            stamped.append((clock, line % 5.0))
+            clock += step / 2
+            stamped.append((clock, line % 6.0))
+        done = t.toggle_frames(stamped, frames)
+        self.assertEqual(len(done), frames)
+        self.assertEqual([ms for _, ms in done], [11.0] * frames)      # 2 lines a frame
+        s = t.toggle_summary(done, at, frames)
+        self.assertIsNone(s['wall'][0])
+        self.assertAlmostEqual(s['median'], 1.0)
+        self.assertAlmostEqual(s['wall_at'], 3.0)
+        self.assertAlmostEqual(s['spike'], 3.0)
+        self.assertIsNone(s['back'])                       # 4 + 6 > 8
+        s = t.toggle_summary(done, 2, frames)
+        self.assertEqual(s['back'], 8)
+        text = t.toggle_table({'1rx1_flip': s})
+        self.assertIn('| 1rx1_flip | 8 |', text)
+        self.assertIn('spike back', text)
+        # too few lines: fewer frames, never a made-up one
+        self.assertEqual(len(t.toggle_frames(stamped[:7], frames)), 2)
+
+    def testSummaryTableAndFlags(self):
+        t = self.t
+        C = t.HdrConfig
+
+        def runs(*s):
+            return [{'s_per_frame': v, 's_per_frame_mp4': v,
+                     'gpu_ms_median': None if v is None else 10.0 * v} for v in s]
+        results = {
+            '1rx1_s3': {'config': C('1rx1', 's3'), 'runs': runs(1.06, 1.07), 'atoms': 10},
+            '1rx1_s3_knee': {'config': C('1rx1', 's3_knee'), 'runs': runs(1.0), 'atoms': 10},
+            '1rx1_s3_air': {'config': C('1rx1', 's3_air'), 'runs': runs(1.01), 'atoms': 10},
+            '1rx1_s3_air_knee': {'config': C('1rx1', 's3_air_knee'), 'runs': runs(1.0),
+                                 'atoms': 10},
+        }
+        s = t.summarise(results)
+        self.assertAlmostEqual(s['1rx1_s3']['delta_vs_knee'], 0.065)
+        self.assertAlmostEqual(s['1rx1_s3_air']['delta_vs_knee'], 0.01)
+        self.assertIsNone(s['1rx1_s3_knee']['delta_vs_knee'])
+        notes = t.flags(s)
+        self.assertEqual(len(notes), 1)
+        self.assertIn('FLAG 1rx1_s3:', notes[0])
+        text = t.table(s, ['1rx1_s3', '1rx1_s3_knee'])
+        self.assertIn('| vs knee |', text)
+        self.assertIn('+6.5%', text)
+
+    def testDryRuns(self):
+        t = self.t
+        out = os.path.join(self.tmp, 'e')
+        self.assertEqual(t.main(['--mode', 'export', '--out', out, '--dry-run', '--runs', '1',
+                                 '--only', '1rx1_s3,1rx1_s3_air_knee']), 0)
+        self.assertEqual(sorted(os.listdir(os.path.join(out, '_work'))),
+                         ['1rx1_s3_air_knee_r1.py', '1rx1_s3_r1.py'])
+        self.assertEqual(t.main(['--mode', 'export', '--out', out, '--dry-run',
+                                 '--only', '1rx1_s0']), 2)                # not in the matrix
+        self.assertEqual(t.main(['--mode', 'export', '--out', out]), 2)   # no --app
+        out = os.path.join(self.tmp, 'g')
+        self.assertEqual(t.main(['--mode', 'toggle', '--out', out, '--dry-run']), 0)
+        self.assertEqual(sorted(os.listdir(os.path.join(out, '_work'))),
+                         sorted('1rx1_%s_r1.py' % g for g in t.TOGGLES))
+        self.assertEqual(t.main(['--mode', 'toggle', '--out', out, '--dry-run', '--frames', '2',
+                                 '--only', '1rx1_flip']), 0)
+        self.assertEqual(t.main(['--mode', 'toggle', '--out', out, '--dry-run', '--at', '1']), 2)
+        self.assertEqual(t.main(['--mode', 'toggle', '--out', out, '--dry-run', '--only',
+                                 'x']), 2)
 
 
 if __name__ == '__main__':
