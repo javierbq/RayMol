@@ -261,6 +261,21 @@ struct LightsFloatFramesKey: PreferenceKey {
     }
 }
 
+extension View {
+    /// The orbit card moved by the grip's drag `offset`, reporting its
+    /// laid-out frame (before the offset) in `space` as `card`. The reader
+    /// sits outside the offset: a GeometryReader inside it would report the
+    /// dragged frame, so the drop would count the drag twice (the moved
+    /// centre plus the translation again) and the frames would change on
+    /// every drag tick.
+    func lightsFloatCard(offset: CGSize, space: String) -> some View {
+        self.offset(offset)
+            .background(GeometryReader { g in
+                Color.clear.preference(key: LightsFloatFramesKey.self, value: ["card": g.frame(in: .named(space))])
+            })
+    }
+}
+
 // MARK: - The view
 
 /// The floating orbit card and the top-trailing inspector, over the
@@ -318,11 +333,7 @@ struct LightsFloatingTools: View {
             // survives a move), offset while its grip is dragged.
             LightsOrbitView(controller: controller, style: style, initiallyCollapsed: false,
                             grip: grip)
-                .background(GeometryReader { g in
-                    Color.clear
-                        .preference(key: LightsFloatFramesKey.self, value: ["card": g.frame(in: .named(Self.space))])
-                })
-                .offset(dragOffset)
+                .lightsFloatCard(offset: dragOffset, space: Self.space)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: corner.alignment)
                 .padding(inset)
                 .padding(.bottom, corner.isBottom ? cardClearance : 0)

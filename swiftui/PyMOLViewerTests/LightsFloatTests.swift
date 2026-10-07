@@ -267,6 +267,70 @@ final class LightsFloatLayoutTests: XCTestCase {
     }
 }
 
+// MARK: - The card's frame during a drag
+
+/// The card's reported frame is its laid-out frame while the grip's drag
+/// offsets it (`lightsFloatCard(offset:space:)`), so the drop adds the drag
+/// once: a GeometryReader inside `.offset` reports the moved frame, and the
+/// drop then counted the drag twice (a card dragged a quarter of the way up
+/// snapped to the top) while the frames changed on every drag tick.
+@MainActor
+final class LightsFloatCardFrameTests: XCTestCase {
+    final class Reported {
+        var frames: [String: CGRect] = [:]
+    }
+
+    private struct Host: View {
+        let offset: CGSize
+        let reported: Reported
+
+        var body: some View {
+            ZStack {
+                Color.gray.frame(width: 284, height: 252)
+                    .lightsFloatCard(offset: offset, space: "float")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                    .padding(8)
+            }
+            .frame(width: 834, height: 560)
+            .coordinateSpace(name: "float")
+            .onPreferenceChange(LightsFloatFramesKey.self) { reported.frames = $0 }
+        }
+    }
+
+    private func reportedCard(offset: CGSize) throws -> CGRect {
+        let reported = Reported()
+        let host = NSHostingView(rootView: Host(offset: offset, reported: reported))
+        let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: 834, height: 560),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.orderOut(nil) }
+        host.layoutSubtreeIfNeeded()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        host.layoutSubtreeIfNeeded()
+        return try XCTUnwrap(reported.frames["card"], "no card frame reported")
+    }
+
+    func testTheReportedFrameIgnoresTheDragOffset() throws {
+        let rest = try reportedCard(offset: .zero)
+        XCTAssertEqual(rest.minX, 8, accuracy: 0.5)
+        XCTAssertEqual(rest.maxY, 552, accuracy: 0.5)
+        let dragged = try reportedCard(offset: CGSize(width: 120, height: -150))
+        XCTAssertEqual(dragged.minX, rest.minX, accuracy: 0.5, "the frame followed the drag")
+        XCTAssertEqual(dragged.minY, rest.minY, accuracy: 0.5, "the frame followed the drag")
+    }
+
+    func testAQuarterDragUpStaysInItsCorner() throws {
+        // The card's centre is at y 426 of 560; 100 pt up leaves it below
+        // the middle (280), so the drop keeps bottom-leading.
+        let drag = CGSize(width: 0, height: -100)
+        let card = try reportedCard(offset: drag)
+        XCTAssertEqual(LightsFloatLayout.dropCorner(cardFrame: card, translation: drag, predicted: drag,
+                                                    container: CGSize(width: 834, height: 560)),
+                       .bottomLeading)
+    }
+}
+
 // MARK: - Strings
 
 final class LightsFloatStateTests: XCTestCase {

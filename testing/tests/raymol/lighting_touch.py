@@ -794,9 +794,16 @@ class TestTouchSource(testing.PyMOLTestCase):
                       ended[:400])
         self.assertIn('predicted: value.predictedEndTranslation', ended[:400])
         self.assertNotIn('onChanged', view, 'no drag state outside @GestureState')
-        # The frames are reported before the drag's offset (never per tick).
+        # The card's frame is read outside the drag's offset, so it is the
+        # laid-out frame (never per tick) and the drop counts the drag once.
+        # A reader applied before `.offset` sits inside it and reports the
+        # dragged frame (LightsFloatCardFrameTests pins the behaviour).
         card = view[view.find('LightsOrbitView(controller: controller'):]
-        self.assertLess(card.find('LightsFloatFramesKey'), card.find('.offset(dragOffset)'))
+        self.assertIn('.lightsFloatCard(offset: dragOffset, space: Self.space)', card[:300])
+        self.assertNotIn('.offset(dragOffset)', view)
+        modifier = body(text, 'func lightsFloatCard(offset: CGSize, space: String) -> some View')
+        self.assertIsNotNone(modifier, 'lightsFloatCard(offset:space:) not found')
+        self.assertLess(modifier.find('self.offset(offset)'), modifier.find('LightsFloatFramesKey'))
         orbit = self.read(ORBIT_VIEW)
         region = body(orbit, 'private struct OrbitGripRegion: ViewModifier')
         self.assertIsNotNone(region, 'OrbitGripRegion not found')
