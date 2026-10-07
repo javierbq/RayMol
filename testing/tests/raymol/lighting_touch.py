@@ -39,6 +39,11 @@ from the help button, the measured bottom-leading chrome and an open
 CameraDock, the float after the gizmo site replacing the iOS side column,
 and the covered= field of the DEBUG LightsLayout line.
 
+The calibration support (Part 6, MetalViewport.swift): the 30 Hz dust cap
+stays the default; RAYMOL_AIR_FPS (1-120) and RAYMOL_AIR_LOG=1 are launch
+switches read once in AirRedrawGate, and draw(in:) names none of it (the
+hold log runs inside airTickDue; lighting_air_msl.py pins the gate itself).
+
 The behaviour itself is unit-tested in Swift (LightsTouchTargetTests and
 LightsTouchRoutingTests, run by UnitTests_macOS with the iOS profile as a
 parameter); this file pins, on the sources, that the hit tests use the floor,
@@ -899,3 +904,27 @@ class TestTouchSource(testing.PyMOLTestCase):
         summary = body(sheet, 'static func toolsSummary(placement: LightsToolsPlacement')
         self.assertIn('case .floating: return "float:\\(corner.rawValue)"', summary)
 
+    # --- calibration support (Part 6) --------------------------------------
+
+    def testTheCalibrationSwitchesStayOutOfDraw(self):
+        """AirRedrawGate keeps defaultFPS 30 (no default change); the two
+        launch switches are read only through fps(environment:) and
+        logEnabled(environment:); draw(in:) and the viewport's other code
+        never name them, the hold reason or the hold log."""
+        text = self.read(VIEWPORT)
+        gate = body(text, 'enum AirRedrawGate')
+        self.assertIsNotNone(gate, 'AirRedrawGate not found')
+        self.assertEqual(self.number(gate, r'static let defaultFPS: Double = ([0-9.]+)',
+                                     'defaultFPS'), 30.0)
+        for switch, reader in (('"RAYMOL_AIR_FPS"', 'static func fps(environment:'),
+                               ('"RAYMOL_AIR_LOG"', 'static func logEnabled(environment:')):
+            with self.subTest(switch):
+                self.assertEqual(text.count(switch), 1, 'one read of ' + switch)
+                self.assertIn(switch, body(gate, reader))
+        draw = body(text, 'func draw(in view: MTKView)')
+        self.assertIsNotNone(draw, 'draw(in:) not found')
+        for name in ('RAYMOL_AIR', 'activeFPS', 'logsHolds', 'holdReason', 'noteAirHold',
+                     'holdLine', 'lastAirHold', 'ProcessInfo'):
+            with self.subTest(name):
+                self.assertNotIn(name, draw)
+        self.assertEqual(text.count('noteAirHold('), 2, 'declared once and called once')
