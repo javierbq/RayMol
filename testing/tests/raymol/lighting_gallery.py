@@ -17,8 +17,19 @@ cannot run (no GPU, no app). These tests pin what CI can check:
   placement helper's result, the shadowed lights, the air and the pinned dust
   clock. highlight= refuses in the app's launch pass (no viewport size
   yet), so those two scenes add a dark key there; testHighlightUnsizedPass
-  runs that pass with get_viewport reporting 0x1. tearDown puts cmd.set_lights back and removes every cmd._lg_*
-  attribute, since CI runs every test file in one process.
+  runs that pass with get_viewport reporting 0x1. tearDown puts
+  cmd.set_lights back and removes every cmd._lg_* attribute, since CI runs
+  every test file in one process.
+* TestDriver: gallery.py's one command, on synthetic images (it never
+  launches an app). --dry-run writes every scene script; a refusal (an
+  unknown section, the canonical bundle id, a 'preset' path, no --app)
+  exits 2 and deletes nothing; --skip-render writes the seven sheets with
+  their caption row and their cells in SECTIONS order, index.html and
+  gallery.json; the difference checks pass and fail either side of the
+  threshold and honour a per-pair override; a missing image, an empty
+  section and a tag render.py reported failed exit 1 without a traceback;
+  sections not asked for and not on disk are 'not rendered'; clear_section
+  deletes only its section; an app sha that is not HEAD is flagged.
 
 Source-reading, so skipped (not passed) outside a repo checkout, decided by
 one file every checkout has; in a checkout the gallery's own files are
@@ -28,11 +39,16 @@ an app.
 Runs on a RayMol build:
     pymol -ckqy testing/testing.py --run testing/tests/raymol/lighting_gallery.py
 """
+import contextlib
 import importlib.util
+import io
 import json
 import math
 import os
+import plistlib
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -487,6 +503,388 @@ class TestScenesRun(testing.PyMOLTestCase):
                       'air_dust_rt1', 'air_backlit', 'air_crossing', 'air_dust_t0',
                       'air_dust_t1', 'air_dust_t2'])
         self.assertEqual(sorted(covered), sorted(self.jobs))
+
+
+def colour(i):
+    """Distinct per index: any two differ by 32 levels in R or G."""
+    return ((i % 8) * 32 + 16, ((i // 8) % 8) * 32 + 16, 128)
+
+
+@unittest.skipUnless(HAVE_CHECKOUT, 'needs a RayMol checkout (scripts/lighting)')
+class TestDriver(testing.PyMOLTestCase):
+    """gallery.py's driver on synthetic images; nothing is launched."""
+
+    @classmethod
+    def setUpClass(cls):
+        assert_present(os.path.join(LIGHTING, 'render.py'),
+                       os.path.join(LIGHTING, 'gallery.py'))
+        cls.gallery = load_module('lighting_gallery_driver', 'gallery.py')
+        cls.render = cls.gallery.load_render()
+        cls.sections = {s.name: s for s in cls.gallery.SECTIONS}
+        cls.sizes, cls.colours = {}, {}
+        for s in cls.gallery.SECTIONS:
+            for tag, job in cls.gallery.section_jobs(cls.render, s).items():
+                cls.sizes[tag] = job.size
+                cls.colours[tag] = colour(len(cls.colours))
+        # one synthetic set, copied per test: a solid colour per tag with a
+        # white corner (render.check_image refuses a single colour)
+        from PIL import Image
+        cls.template = tempfile.mkdtemp(prefix='l627t')
+        for s in cls.gallery.SECTIONS:
+            os.makedirs(cls.gallery.section_dir(cls.template, s), exist_ok=True)
+            for tag in s.tags:
+                image = Image.new('RGB', cls.sizes[tag], cls.colours[tag])
+                image.paste((255, 255, 255), (0, 0, 8, 8))
+                image.save(cls.gallery.image_path(cls.template, s, tag))
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.template, True)
+
+    def setUp(self):
+        super(TestDriver, self).setUp()
+        self.tmp = tempfile.mkdtemp(prefix='l627d')
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.saved_sections = list(self.gallery.SECTIONS)
+        self.saved_head = self.gallery.head_sha
+
+    def tearDown(self):
+        self.gallery.SECTIONS[:] = self.saved_sections
+        self.gallery.head_sha = self.saved_head
+        super(TestDriver, self).tearDown()
+
+    # --- helpers --------------------------------------------------------------
+
+    def main(self, *argv):
+        """gallery.main, quietly. Returns (exit code, stdout + stderr)."""
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            code = self.gallery.main(list(argv))
+        return code, buf.getvalue()
+
+    def out_with(self, sections=None, name='out'):
+        """An output directory holding the synthetic images of `sections`
+        (default: all)."""
+        out = os.path.join(self.tmp, name)
+        for s in self.gallery.SECTIONS:
+            if sections is not None and s.name not in sections:
+                continue
+            src = self.gallery.section_dir(self.template, s)
+            dst = self.gallery.section_dir(out, s)
+            os.makedirs(dst, exist_ok=True)
+            for tag in s.tags:
+                shutil.copy(os.path.join(src, tag + '.png'), dst)
+        return out
+
+    def report(self, out):
+        with open(os.path.join(out, 'gallery.json')) as handle:
+            report = json.load(handle)
+        return report, {r['name']: r for r in report['sections']}
+
+    def snapshot(self, out):
+        files = {}
+        for base, _, names in os.walk(out):
+            for n in names:
+                path = os.path.join(base, n)
+                with open(path, 'rb') as handle:
+                    files[os.path.relpath(path, out)] = handle.read()
+        return files
+
+    def fake_app(self, ident):
+        app = os.path.join(self.tmp, 'Fake.app')
+        os.makedirs(os.path.join(app, 'Contents', 'MacOS'))
+        with open(os.path.join(app, 'Contents', 'Info.plist'), 'wb') as handle:
+            plistlib.dump({'CFBundleIdentifier': ident, 'CFBundleExecutable': 'Fake'},
+                          handle)
+        return app
+
+    def replace_section(self, name, **fields):
+        i = [s.name for s in self.gallery.SECTIONS].index(name)
+        self.gallery.SECTIONS[i] = self.gallery.SECTIONS[i]._replace(**fields)
+
+    # --- dry run and refusals ----------------------------------------------------
+
+    def testDryRun(self):
+        out = os.path.join(self.tmp, 'dry')
+        code, text = self.main('--dry-run', '--out', out)
+        self.assertEqual(code, 0, text)
+        for s in self.gallery.SECTIONS:
+            for tag in s.tags:
+                self.assertTrue(os.path.isfile(self.render.script_path(
+                    self.gallery.section_dir(out, s), tag)), tag)
+        # nothing rendered or assembled; three scene files, three calls
+        pngs = [n for _, _, names in os.walk(out) for n in names if n.endswith('.png')]
+        self.assertEqual(pngs, [])
+        self.assertFalse(os.path.exists(os.path.join(out, 'gallery.json')))
+        self.assertEqual(sorted(os.listdir(out)),
+                         ['gallery', 'lighting_615_gallery', 'lighting_624'])
+        self.assertEqual(text.count('gate.sh render '), 3, text)
+        self.assertIn('--scenes scripts/lighting/scenes/gallery.json', text)
+        # --sections narrows the scripts to its scene file
+        out = os.path.join(self.tmp, 'dry_air')
+        code, text = self.main('--dry-run', '--out', out, '--sections', 'air')
+        self.assertEqual(code, 0, text)
+        self.assertEqual(sorted(n[:-3] for n in os.listdir(os.path.join(out, 'gallery', '_work'))),
+                         sorted(self.sections['air'].tags))
+        self.assertEqual(os.listdir(out), ['gallery'])
+
+    def testUsageErrors(self):
+        out = os.path.join(self.tmp, 'u')
+        for argv in (['--skip-render', '--out', out, '--sections', 'rigs,bogus'],
+                     ['--skip-render', '--out', out, '--sections', ','],
+                     ['--dry-run', '--skip-render', '--out', out],
+                     ['--skip-render'],
+                     ['--bogus-flag', '--out', out],
+                     ['--out', out]):                       # rendering needs --app
+            code, text = self.main(*argv)
+            self.assertEqual(code, 2, (argv, text))
+            self.assertNotIn('Traceback', text)
+            self.assertFalse(os.path.exists(out), argv)
+
+    def testRefusalKeepsOldFiles(self):
+        """Validation comes before any deletion: the canonical bundle id, a
+        path holding 'preset' (it contains 'reset') and a missing --app all
+        exit 2 with every old image and sheet in place."""
+        out = self.out_with()
+        self.assertEqual(self.main('--skip-render', '--out', out)[0], 0)
+        before = self.snapshot(out)
+        self.assertIn('rigs.png', before)
+        app = self.fake_app('io.raymol.RayMol')
+        for argv in (['--app', app, '--out', out],
+                     ['--app', app, '--out', out, '--sections', 'rigs'],
+                     ['--out', out, '--sections', 'light']):
+            code, text = self.main(*argv)
+            self.assertEqual(code, 2, (argv, text))
+            self.assertEqual(self.snapshot(out), before, argv)
+        self.assertIn('io.raymol.RayMol', self.main('--app', app, '--out', out)[1])
+        # an --out the app would act on
+        bad = self.out_with(name='my_presets')
+        before = self.snapshot(bad)
+        # (the canonical-id app again, so that nothing could ever launch: the
+        # path is refused first, and the message says so)
+        for argv in (['--app', app, '--out', bad], ['--skip-render', '--out', bad],
+                     ['--dry-run', '--out', bad]):
+            code, text = self.main(*argv)
+            self.assertEqual(code, 2, (argv, text))
+            self.assertIn('reset', text)
+            self.assertEqual(self.snapshot(bad), before, argv)
+
+    # --- assembly ---------------------------------------------------------------
+
+    def testSkipRenderAssembles(self):
+        out = self.out_with()
+        code, text = self.main('--skip-render', '--out', out)
+        self.assertEqual(code, 0, text)
+        report, by_name = self.report(out)
+        self.assertEqual([r['name'] for r in report['sections']], list(SECTION_ORDER))
+        self.assertEqual(report['exit'], 0)
+        self.assertEqual(report['requested'], list(SECTION_ORDER))
+        for name, r in by_name.items():
+            self.assertEqual(r['status'], 'ok', (name, r['errors']))
+            self.assertEqual(r['sheet'], name + '.png')
+            self.assertTrue(os.path.isfile(os.path.join(out, name + '.png')))
+            self.assertEqual([i['tag'] for i in r['images']], list(self.sections[name].tags))
+            self.assertEqual([(c['tag'], c['ref']) for c in r['checks']],
+                             list(self.sections[name].refs))
+            self.assertTrue(all(c['pass'] for c in r['checks']), name)
+        with open(os.path.join(out, 'index.html')) as handle:
+            index = handle.read()
+        for s in self.gallery.SECTIONS:
+            self.assertIn('src="%s.png"' % s.name, index)
+            self.assertIn(s.title, index)
+        self.assertEqual(sorted(report['scene_files']),
+                         ['gallery', 'lighting_615_gallery', 'lighting_624'])
+
+    def testSheetOrderAndCaption(self):
+        """Each sheet: a caption row on top, then one cell per tag in SECTIONS
+        order (render.py's own sheets are alphabetical), `cols` wide."""
+        from PIL import Image
+        import numpy
+        out = self.out_with()
+        self.assertEqual(self.main('--skip-render', '--out', out)[0], 0)
+        for s in self.gallery.SECTIONS:
+            with Image.open(os.path.join(out, s.name + '.png')) as image:
+                sheet = numpy.asarray(image.convert('RGB')).astype(int)
+            w, h = self.sizes[s.tags[0]]
+            thumb_h = round(h * self.gallery.CELL_WIDTH / float(w))
+            cell_h = thumb_h + self.gallery.LABEL
+            rows = (len(s.tags) + s.cols - 1) // s.cols
+            self.assertEqual(sheet.shape[1], s.cols * self.gallery.CELL_WIDTH, s.name)
+            header = sheet.shape[0] - rows * cell_h
+            self.assertGreater(header, 30, '%s: no caption row' % s.name)
+            # the caption row holds text (dark pixels) on its grey band
+            self.assertLess(sheet[:header].min(), 80, s.name)
+            for i, tag in enumerate(s.tags):
+                x = (i % s.cols) * self.gallery.CELL_WIDTH + self.gallery.CELL_WIDTH // 2
+                y = header + (i // s.cols) * cell_h + self.gallery.LABEL + thumb_h // 2
+                got = tuple(int(v) for v in sheet[y, x])
+                self.assertTrue(all(abs(a - b) <= 3 for a, b in zip(got, self.colours[tag])),
+                                '%s: cell %d shows %r, %s is %r' % (
+                                    s.name, i, got, tag, self.colours[tag]))
+
+    def testDiffers(self):
+        import numpy
+        a = numpy.zeros((100, 100, 3), numpy.uint8)
+        def changed(n, by):
+            b = a.copy()
+            b.reshape(-1, 3)[:n, 1] = by
+            return b
+        differs = self.gallery.differs
+        self.assertTrue(differs(a, changed(60, 20))['pass'])          # 0.6 %
+        self.assertFalse(differs(a, changed(40, 20))['pass'])         # 0.4 %
+        self.assertFalse(differs(a, changed(10000, 8))['pass'])       # not beyond 8
+        self.assertTrue(differs(a, changed(10000, 9))['pass'])
+        self.assertAlmostEqual(differs(a, changed(40, 20))['measured'], 0.004)
+        self.assertTrue(differs(a, changed(40, 20), share=0.003)['pass'])
+        self.assertTrue(differs(a, changed(60, 5), level=4)['pass'])
+        got = differs(a, numpy.zeros((50, 100, 3), numpy.uint8))
+        self.assertFalse(got['pass'])
+        self.assertIn('size', got['error'])
+
+    def testOverride(self):
+        """A pair that differs in only 0.2 % of its pixels fails the default
+        check and passes with a per-pair override (which records its reason)."""
+        from PIL import Image
+        out = self.out_with(['light'])
+        s = self.sections['light']
+        src = self.gallery.image_path(out, s, 'light_beam_8')
+        with Image.open(src) as image:
+            image = image.copy()
+        w, h = image.size
+        image.paste((250, 250, 250), (w // 2, h // 2, w // 2 + 32, h // 2 + 32))   # 0.2 %
+        image.save(self.gallery.image_path(out, s, 'light_beam_15'))
+        code, text = self.main('--skip-render', '--out', out, '--sections', 'light')
+        self.assertEqual(code, 1, text)
+        _, by_name = self.report(out)
+        check = [c for c in by_name['light']['checks']
+                 if (c['tag'], c['ref']) == ('light_beam_15', 'light_beam_8')][0]
+        self.assertFalse(check['pass'])
+        self.assertAlmostEqual(check['measured'], 32 * 32 / float(w * h), places=5)
+        self.replace_section('light', overrides={('light_beam_15', 'light_beam_8'): {
+            'share': 0.001, 'reason': 'a test pair that differs in a small patch'}})
+        code, text = self.main('--skip-render', '--out', out, '--sections', 'light')
+        self.assertEqual(code, 0, text)
+        _, by_name = self.report(out)
+        check = [c for c in by_name['light']['checks']
+                 if (c['tag'], c['ref']) == ('light_beam_15', 'light_beam_8')][0]
+        self.assertTrue(check['pass'])
+        self.assertEqual(check['share'], 0.001)
+        self.assertEqual(check['reason'], 'a test pair that differs in a small patch')
+
+    def testMissingImage(self):
+        out = self.out_with()
+        os.remove(self.gallery.image_path(out, self.sections['air'], 'air_dust_t1'))
+        code, text = self.main('--skip-render', '--out', out)
+        self.assertEqual(code, 1, text)
+        report, by_name = self.report(out)
+        self.assertEqual(report['exit'], 1)
+        self.assertEqual(by_name['air']['status'], 'failed')
+        self.assertIn('air_dust_t1: missing', by_name['air']['errors'])
+        self.assertEqual(by_name['air']['sheet'], 'air.png')     # with a grey cell
+        self.assertEqual([n for n, r in by_name.items() if r['status'] != 'ok'], ['air'])
+
+    def testEmptySection(self):
+        """A requested section with no image on disk fails (exit 1, from the
+        command line too) without a traceback, and its old sheet goes."""
+        out = self.out_with()
+        self.assertEqual(self.main('--skip-render', '--out', out)[0], 0)
+        shutil.rmtree(self.gallery.section_dir(out, self.sections['materials']))
+        res = subprocess.run([sys.executable, os.path.join(LIGHTING, 'gallery.py'),
+                              '--skip-render', '--out', out],
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             universal_newlines=True, timeout=300)
+        self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
+        self.assertNotIn('Traceback', res.stdout + res.stderr)
+        _, by_name = self.report(out)
+        self.assertEqual(by_name['materials']['status'], 'failed')
+        self.assertIn('no images in lighting_615_gallery', by_name['materials']['errors'])
+        self.assertIsNone(by_name['materials']['sheet'])
+        self.assertFalse(os.path.exists(os.path.join(out, 'materials.png')))
+        # asked for alone, too
+        code, text = self.main('--skip-render', '--out', out, '--sections', 'materials')
+        self.assertEqual(code, 1, text)
+        # an --out that does not exist yet: every section fails, nothing raises
+        fresh = os.path.join(self.tmp, 'fresh')
+        code, text = self.main('--skip-render', '--out', fresh)
+        self.assertEqual(code, 1, text)
+        _, by_name = self.report(fresh)
+        self.assertEqual({r['status'] for r in by_name.values()}, {'failed'})
+
+    def testRenderReportedFailure(self):
+        """A tag render.json lists as failed fails its section even though a
+        PNG was left behind (render.py keeps the image of a failed marker)."""
+        out = self.out_with()
+        with open(os.path.join(out, 'gallery', 'render.json'), 'w') as handle:
+            json.dump({'app_sha': None, 'tags': ['rig_neon'], 'failed': ['rig_neon']}, handle)
+        code, text = self.main('--skip-render', '--out', out)
+        self.assertEqual(code, 1, text)
+        _, by_name = self.report(out)
+        self.assertEqual(by_name['rigs']['status'], 'failed')
+        self.assertIn('rig_neon: render.py reported it failed', by_name['rigs']['errors'])
+
+    def testSectionsNotRendered(self):
+        out = self.out_with(['light'])
+        code, text = self.main('--skip-render', '--out', out, '--sections', 'light')
+        self.assertEqual(code, 0, text)
+        report, by_name = self.report(out)
+        self.assertEqual(report['requested'], ['light'])
+        self.assertEqual(by_name['light']['status'], 'ok')
+        for name in SECTION_ORDER:
+            if name != 'light':
+                self.assertEqual(by_name[name]['status'], 'not rendered', name)
+                self.assertIsNone(by_name[name]['sheet'], name)
+        self.assertEqual(sorted(n for n in os.listdir(out) if n.endswith('.png')),
+                         ['light.png'])
+        with open(os.path.join(out, 'index.html')) as handle:
+            self.assertEqual(handle.read().count('Status: not rendered'), 6)
+        # a section not asked for but on disk is assembled and checked
+        out = self.out_with(name='all')
+        code, text = self.main('--skip-render', '--out', out, '--sections', 'light')
+        self.assertEqual(code, 0, text)
+        _, by_name = self.report(out)
+        self.assertEqual({r['status'] for r in by_name.values()}, {'ok'})
+        self.assertFalse(by_name['rigs']['requested'])
+        os.remove(self.gallery.image_path(out, self.sections['rigs'], 'rig_none'))
+        code, text = self.main('--skip-render', '--out', out, '--sections', 'light')
+        self.assertEqual(code, 1, text)
+
+    def testClearSection(self):
+        out = self.out_with()
+        self.assertEqual(self.main('--skip-render', '--out', out)[0], 0)
+        before = set(self.snapshot(out))
+        removed = self.gallery.clear_section(out, self.sections['air'])
+        gone = {os.path.relpath(p, out) for p in removed}
+        self.assertEqual(gone, {'air.png'} | {os.path.join('gallery', t + '.png')
+                                              for t in self.sections['air'].tags})
+        self.assertEqual(set(self.snapshot(out)), before - gone)
+        self.assertEqual(self.gallery.clear_section(out, self.sections['air']), [])
+
+    def testShaFlag(self):
+        out = self.out_with()
+        head = 'c0ffee' + '0' * 34
+        self.gallery.head_sha = lambda root: head
+        for stem_name in ('gallery', 'lighting_624', 'lighting_615_gallery'):
+            with open(os.path.join(out, stem_name, 'render.json'), 'w') as handle:
+                json.dump({'app_sha': head if stem_name != 'lighting_624' else 'deadbeef' * 5,
+                           'render_py_sha256': 'ab' * 32, 'tags': [], 'failed': []}, handle)
+        code, text = self.main('--skip-render', '--out', out)
+        self.assertEqual(code, 0, text)                # flagged, not failed
+        report, _ = self.report(out)
+        files = report['scene_files']
+        self.assertEqual(report['head'], head)
+        self.assertIs(files['gallery']['app_sha_matches_head'], True)
+        self.assertIsNone(files['gallery']['flag'])
+        self.assertIs(files['lighting_624']['app_sha_matches_head'], False)
+        self.assertIn('is not HEAD', files['lighting_624']['flag'])
+        self.assertEqual(files['lighting_624']['render_py_sha256'], 'ab' * 32)
+        self.assertIn('WARNING', text)
+        with open(os.path.join(out, 'index.html')) as handle:
+            self.assertIn('deadbeef' * 5 + ' is not HEAD', handle.read())
+        # no render.json at all: flagged as unknown
+        os.remove(os.path.join(out, 'gallery', 'render.json'))
+        self.main('--skip-render', '--out', out)
+        report, _ = self.report(out)
+        self.assertIn('no render.json', report['scene_files']['gallery']['flag'])
 
 
 if __name__ == '__main__':
