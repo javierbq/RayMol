@@ -166,7 +166,7 @@ TONE_INVERSE_BODY = ('{if(!all(isfinite(c)))returnfloat3(0.0);'
 AIR_FINISH = (
     'staticfloat3post_air_finish(float3c,float3a,floate)',
     '{if(kLightHdr){constfloat3add=all(isfinite(a))?max(a,float3(0.0))*e:float3(0.0);'
-    'returnlight_tone(light_tone_inverse(saturate(c))+add);}'
+    'returnmax(saturate(c),light_tone(light_tone_inverse(saturate(c))+add));}'
     'returnc+max(mat_soft_knee(c+a)-mat_soft_knee(c),float3(0.0));}')
 
 # The specialisers that set kMaterialSrc's constants, and the RT builders.

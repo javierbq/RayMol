@@ -2419,11 +2419,14 @@ static float4 post_air_term(float2 uv, float2 frag, float d,
 
 // The composite: the air only ADDS light. Under kLightHdr (#624) it adds in
 // scene units: the colour back through T's inverse, plus the air at the
-// frame's exposure `e` (tone.x), through T again. White stays white
-// (Tinv(1) = W, and T is 1 at and beyond W), a pixel the air misses
-// round-trips within one 8-bit level (exactly at or below the knee), and the
-// air rolls off with the light instead of saturating. A non-finite air term
-// adds nothing (the NaN rule). Otherwise the rig's 8-bit knee as before #624:
+// frame's exposure `e` (tone.x), through T again, and never under the colour
+// in any channel. T scales a colour by its largest channel, so coloured air
+// over a bright pixel would otherwise LOWER the others (white under red haze
+// lost green and blue: #618's guard that the air never dims a pixel); with
+// the max, white stays white, a pixel the air misses round-trips within one
+// 8-bit level (exactly at or below the knee), and the air rolls off with the
+// light instead of saturating. A non-finite air term adds nothing (the NaN
+// rule). Otherwise the rig's 8-bit knee as before #624:
 // the colour through mat_soft_knee with the air, minus the colour through it
 // without, never negative, added to the colour as it was. With no air (a = 0)
 // that is c exactly, so a pixel the air does not reach round-trips the 8-bit
@@ -2432,7 +2435,7 @@ static float4 post_air_term(float2 uv, float2 frag, float d,
 static float3 post_air_finish(float3 c, float3 a, float e) {
   if (kLightHdr) {
     const float3 add = all(isfinite(a)) ? max(a, float3(0.0)) * e : float3(0.0);
-    return light_tone(light_tone_inverse(saturate(c)) + add);
+    return max(saturate(c), light_tone(light_tone_inverse(saturate(c)) + add));
   }
   return c + max(mat_soft_knee(c + a) - mat_soft_knee(c), float3(0.0));
 }

@@ -256,8 +256,9 @@ HDR_EDITS_624 = (
     ('air_signature', 'float3post_air_finish(float3c,float3a,floate)',
      'float3post_air_finish(float3c,float3a)'),
     ('air_body', '{if(kLightHdr){constfloat3add=all(isfinite(a))?max(a,float3(0.0))'
-                 '*e:float3(0.0);returnlight_tone(light_tone_inverse(saturate(c))'
-                 '+add);}returnc+max(mat_soft_knee(c+a)-mat_soft_knee(c),float3(0.0));}',
+                 '*e:float3(0.0);returnmax(saturate(c),light_tone(light_tone_inverse('
+                 'saturate(c))+add));}returnc+max(mat_soft_knee(c+a)-mat_soft_knee(c),'
+                 'float3(0.0));}',
      '{returnc+max(light_finish(c+a)-light_finish(c),float3(0.0));}'),
     ('air_full', 'post_air_finish(c.rgb,t.rgb,rig.tone.x)',
      'post_air_finish(c.rgb,t.rgb)'),

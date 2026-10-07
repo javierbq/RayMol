@@ -227,6 +227,14 @@ class TestTwin(testing.PyMOLTestCase):
         self.assertTrue(numpy.allclose(c.air_hdr(numpy.ones(3), numpy.full(3, 0.5)), 1.0))
         more = c.air_hdr(rgb, numpy.full_like(rgb, 0.2))
         self.assertTrue((more >= rgb - 1e-12).all())
+        # coloured air never lowers a channel: white under red haze stays
+        # white, and a bright orange pixel keeps its green and blue (T alone
+        # rescales by the largest channel and would lower them)
+        red = numpy.array([2.0, 0.0, 0.0])
+        self.assertTrue((c.air_hdr(numpy.ones(3), red) == 1.0).all())
+        orange = numpy.array([0.95, 0.6, 0.3])
+        self.assertLess(float(c.tone(c.tone_inverse(orange) + red)[1]), 0.6)
+        self.assertTrue((c.air_hdr(orange, red) >= orange).all())
         # the knee's composite, as post_air_finish was
         self.assertTrue(numpy.allclose(c.air_knee(rgb, numpy.zeros_like(rgb)), rgb))
         # an 8-bit store costs the HDR air at most one level

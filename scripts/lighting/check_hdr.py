@@ -587,9 +587,11 @@ def air_knee(c, a):
 
 
 def air_hdr(c, a, exposure=1.0):
-    """D8: T(Tinv(c) + e a)."""
+    """D8: T(Tinv(c) + e a), never under c in any channel (T scales a colour
+    by its largest channel: coloured air must not lower the others)."""
     np = _np()
-    return tone(tone_inverse(np.clip(c, 0.0, 1.0)) + np.maximum(a, 0.0) * exposure)
+    b = np.clip(c, 0.0, 1.0)
+    return np.maximum(b, tone(tone_inverse(b) + np.maximum(a, 0.0) * exposure))
 
 
 def warmth_rgb(kelvin):
