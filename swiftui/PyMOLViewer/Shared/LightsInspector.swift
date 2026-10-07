@@ -475,7 +475,8 @@ struct LightAngleDial: View {
 
 // MARK: - Rows
 
-private enum InspectorMetrics {
+/// The inspector's row metrics, shared with the Atmosphere card (#726).
+enum InspectorMetrics {
     static let labelWidth: CGFloat = 58
     static let valueWidth: CGFloat = 78
     static let fieldWidth: CGFloat = 60
@@ -661,6 +662,44 @@ extension LightsController {
     func setIfChanged(_ parameter: LightParameter, _ value: Double) -> LightSetResult {
         if let current = self.value(parameter), abs(current - value) < 1e-9 { return .ok }
         return set(parameter, value)
+    }
+}
+
+// MARK: - Chip
+
+/// A toggle drawn as the bar's chips are, so On reads at a glance (the system
+/// button-style toggle barely changes on macOS): the inspector's Shadow and
+/// Pin, and the Atmosphere card's switch (#726). A 44 pt target on iOS.
+struct LightsChip: View {
+    var title: String
+    var systemImage: String?
+    var on: Bool
+    var enabled: Bool
+    var style: LightsBarStyle
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 3) {
+                if let systemImage {
+                    Image(systemName: systemImage).font(.system(size: 10))
+                }
+                Text(title).font(.system(size: 12, weight: .medium))
+            }
+            .lineLimit(1)
+            .fixedSize()
+            .foregroundColor(on ? style.accent : style.text.opacity(0.85))
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(Capsule().fill(on ? style.accent.opacity(0.15) : Color.clear))
+            .overlay(Capsule().stroke(on ? style.accent : style.text.opacity(0.25),
+                                      lineWidth: on ? 1.5 : 1))
+            .contentShape(Capsule())
+            .lightsTouchTarget()
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.5)
+        .accessibilityAddTraits(.isToggle)
     }
 }
 
@@ -873,31 +912,12 @@ struct LightsInspector: View {
             .accessibilityIdentifier("lights.inspector.pin")
     }
 
-    // A toggle drawn as the bar's chips are, so On reads at a glance (the
-    // system button-style toggle barely changes on macOS).
+    // A toggle drawn as the bar's chips are (LightsChip, shared with the
+    // Atmosphere card's switch).
     private func chip(_ title: String, systemImage: String?, on: Bool, enabled: Bool,
                       action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 3) {
-                if let systemImage {
-                    Image(systemName: systemImage).font(.system(size: 10))
-                }
-                Text(title).font(.system(size: 12, weight: .medium))
-            }
-            .lineLimit(1)
-            .fixedSize()
-            .foregroundColor(on ? style.accent : style.text.opacity(0.85))
-            .padding(.horizontal, 8).padding(.vertical, 3)
-            .background(Capsule().fill(on ? style.accent.opacity(0.15) : Color.clear))
-            .overlay(Capsule().stroke(on ? style.accent : style.text.opacity(0.25),
-                                      lineWidth: on ? 1.5 : 1))
-            .contentShape(Capsule())
-            .lightsTouchTarget()
-        }
-        .buttonStyle(.plain)
-        .disabled(!enabled)
-        .opacity(enabled ? 1 : 0.5)
-        .accessibilityAddTraits(.isToggle)
+        LightsChip(title: title, systemImage: systemImage, on: on, enabled: enabled, style: style,
+                   action: action)
     }
 
     // MARK: notice and hint

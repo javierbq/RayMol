@@ -305,13 +305,18 @@ class TestTouchSource(testing.PyMOLTestCase):
         """The header's menu, Shadow and Pin chips and chevron are 44 pt
         targets; on iOS the swatches are 44 pt targets in
         LightsTouch.swatchColumns columns and the custom picker has a 44 pt
-        frame; macOS keeps its one-row 15 pt swatches."""
+        frame; macOS keeps its one-row 15 pt swatches. The chips are drawn
+        by LightsChip (shared with the Atmosphere card's switch, #726); the
+        inspector's chip() forwards to it."""
         text = self.read(INSPECTOR)
-        for signature in ('private func lightMenu(', 'private func chip(', 'private func header('):
+        for signature in ('private func lightMenu(', 'struct LightsChip', 'private func header('):
             with self.subTest(signature):
                 block = body(text, signature)
                 self.assertIsNotNone(block, signature + ' not found')
                 self.assertIn('.lightsTouchTarget()', block)
+        forwarder = body(text, 'private func chip(')
+        self.assertIsNotNone(forwarder, 'the inspector\'s chip() not found')
+        self.assertIn('LightsChip(', forwarder)
         row = body(text, 'private func touchColourRow(')
         self.assertIsNotNone(row, 'touchColourRow not found')
         self.assertIn('LightsTouch.swatchColumns(width: colourWidth)', row)
