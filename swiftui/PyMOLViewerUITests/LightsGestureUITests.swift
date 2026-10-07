@@ -91,31 +91,42 @@ final class LightsGestureUITests: XCTestCase {
 
     func testKnobPinchChangesOnlyTheRadius() throws {
         let before = try launchInLights()
-        let knob = try knobElement("fill")
+        // The knob farthest from the screen's edges: XCUITest spreads the
+        // fingers around the element, and a finger clamped at an edge (the
+        // iPhone's fill knob sits 47 pt from it) distorts the scale.
+        let name = try knobFarthestFromTheEdges()
+        let knob = try knobElement(name)
         guard knob.isHittable else {
-            throw XCTSkip("the fill knob's element (\(knob.frame)) is not hittable: XCUITest cannot pinch "
+            throw XCTSkip("the \(name) knob's element (\(knob.frame)) is not hittable: XCUITest cannot pinch "
                           + "on it, so the knob pinch stays on the #610 manual list")
         }
-        let fill = try XCTUnwrap(before.rig["fill"], "no fill light in \(before.line)")
+        let light = try XCTUnwrap(before.rig[name], "no \(name) light in \(before.line)")
         // Pinch out under 5x, in above it, so the radius never sits at a clamp.
-        let (scale, velocity): (CGFloat, CGFloat) = fill.radius < 5 ? (1.6, 1.0) : (0.6, -1.0)
+        let grows = light.radius < 5
+        let (scale, velocity): (CGFloat, CGFloat) = grows ? (1.6, 1.0) : (0.6, -1.0)
+        print("LIGHTS_UITEST_KNOB \(name) frame=\(knob.frame) scale=\(scale)")
         mark("knob-pinch")
         knob.pinch(withScale: scale, velocity: velocity)
-        let after = try waitForProbe("the fill radius to change") {
-            ($0.rig["fill"]?.radius ?? fill.radius) != fill.radius
+        let after = try waitForProbe("the \(name) radius to change") {
+            ($0.rig[name]?.radius ?? light.radius) != light.radius
         }
         report(before, after)
         attach("knob-pinch")
-        let edited = try XCTUnwrap(after.rig["fill"])
-        XCTAssertEqual(after.sel, "fill", "the pinch selects the knob's light")
+        let edited = try XCTUnwrap(after.rig[name])
+        XCTAssertEqual(after.sel, name, "the pinch selects the knob's light")
+        if grows {
+            XCTAssertGreaterThan(edited.radius, light.radius, "a pinch out shrank the radius")
+        } else {
+            XCTAssertLessThan(edited.radius, light.radius, "a pinch in grew the radius")
+        }
         XCTAssertEqual(edited.radius * 2, (edited.radius * 2).rounded(), accuracy: 0.011,
                        "the radius is off the 0.5x grid: \(edited.radius)")
-        XCTAssertEqual(edited.beam, fill.beam, "the pinch changed the beam")
-        XCTAssertEqual(edited.orbit, fill.orbit, "the pinch moved the light")
-        XCTAssertEqual(edited.pitch, fill.pitch, "the pinch moved the light")
+        XCTAssertEqual(edited.beam, light.beam, "the pinch changed the beam")
+        XCTAssertEqual(edited.orbit, light.orbit, "the pinch moved the light")
+        XCTAssertEqual(edited.pitch, light.pitch, "the pinch moved the light")
         XCTAssertEqual(after.cam, before.cam, "the knob pinch moved the camera")
-        for name in ["key", "rim"] {
-            XCTAssertEqual(after.rig[name], before.rig[name], "the pinch changed \(name)")
+        for other in ["key", "fill", "rim"] where other != name {
+            XCTAssertEqual(after.rig[other], before.rig[other], "the pinch changed \(other)")
         }
     }
 
@@ -285,6 +296,23 @@ final class LightsGestureUITests: XCTestCase {
                           + "stay on the #610 manual list")
         }
         return knob
+    }
+
+    /// The light whose knob centre lies farthest from the screen's edges.
+    private func knobFarthestFromTheEdges() throws -> String {
+        let screen = app.frame
+        var best: (name: String, margin: CGFloat)?
+        for name in ["key", "fill", "rim"] {
+            let knob = element(Self.knobIdentifier(name))
+            guard knob.exists, !knob.frame.isEmpty else { continue }
+            let c = CGPoint(x: knob.frame.midX, y: knob.frame.midY)
+            let margin = min(c.x - screen.minX, screen.maxX - c.x, c.y - screen.minY, screen.maxY - c.y)
+            if margin > (best?.margin ?? -.infinity) { best = (name, margin) }
+        }
+        guard let best else {
+            throw XCTSkip("no knob element is reachable to XCUITest, so the knob pinch stays on the #610 manual list")
+        }
+        return best.name
     }
 
     /// A point in screen coordinates (points), independent of hittability.
