@@ -711,7 +711,9 @@ class TestTouchSource(testing.PyMOLTestCase):
         self.assertIn('lightsShowsSequence = false', reset)
         self.assertIn("lightsSheetDetent = mode == .lights ? lightsSheetSeed : .compact", reset)
         seed = body(content, 'private var lightsSheetSeed: LightsSheetDetent')
-        self.assertIn('lightsInspectorExpandOverride ? .expanded : .compact', seed)
+        # The DEBUG `expand` and (#726) `air` tokens seed it expanded.
+        self.assertIn('lightsInspectorExpandOverride || lightsAtmosphereExpandOverride ? .expanded : .compact',
+                      seed)
         rule = body(self.read(SHEET), 'static func shows(stored: Bool, override: Bool, docked: Bool)')
         self.assertIsNotNone(rule, 'LightsPaneRule.shows not found')
         self.assertIn('stored && (!docked || override)', rule)
