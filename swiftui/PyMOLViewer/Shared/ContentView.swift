@@ -178,6 +178,11 @@ struct ContentView: View {
     @State private var lightsSheetRows: CGFloat = 0
     @State private var lightsRoom: CGSize = .zero
     @State private var lightsSideSize: CGSize = .zero
+    // The placement as last laid out, for code that runs outside body (the
+    // PYMOL_AUTOLIGHTS hook's delayed closures): a copy of the view captured
+    // there keeps the size classes of the moment it was made, while State
+    // reads stay live.
+    @State private var lightsPlacementSeen: LightsToolsPlacement = .column
     @State private var showThemeStudio = false   // inline Theme studio (replaces a panel region)
 
     @AppStorage("mouseLegendCollapsed") private var mouseLegendCollapsed = false
@@ -4345,11 +4350,21 @@ struct ContentView: View {
         lightsInspectorExpandOverride ? .expanded : .compact
     }
 
+    // The placement as last laid out (lightsPlacementSeen on iOS), for the
+    // hook's closures.
+    private var lightsLivePlacement: LightsToolsPlacement {
+        #if os(iOS)
+        return lightsPlacementSeen
+        #else
+        return .column
+        #endif
+    }
+
     // The orbit canvases' sizes where the tools are now, for the DEBUG orbit
     // tokens (LightsSheetModel.activeCanvases).
     private var lightsOrbitSizes: (plan: CGSize, arc: CGSize) {
         #if os(iOS)
-        return LightsSheetModel.activeCanvases(placement: lightsPlacement, detent: lightsSheetDetent,
+        return LightsSheetModel.activeCanvases(placement: lightsLivePlacement, detent: lightsSheetDetent,
                                                heights: lightsSheetHeights(room: lightsRoom), room: lightsRoom,
                                                header: lightsSheetHeader, bottomInset: windowBottomInset,
                                                sideSize: lightsSideSize)
@@ -4360,7 +4375,7 @@ struct ContentView: View {
 
     // The tools= and touch= fields of the PYMOL_AUTOLIGHTS log lines.
     private func lightsToolsFields(detent: LightsSheetDetent) -> String {
-        "tools=\(LightsSheetState.toolsSummary(placement: lightsPlacement, detent: detent)) "
+        "tools=\(LightsSheetState.toolsSummary(placement: lightsLivePlacement, detent: detent)) "
             + "touch=\(Int(LightsTouch.minimumTarget))"
     }
 
@@ -4371,7 +4386,10 @@ struct ContentView: View {
     private func observingLightsLayout<Content: View>(_ content: Content) -> some View {
         let observed = content
             .onChange(of: engine.interactionMode) { _, mode in lightsModeChanged(mode) }
-            .onChange(of: lightsPlacement) { _, _ in endLightsSheetMotion() }
+            .onChange(of: lightsPlacement, initial: true) { old, placement in
+                lightsPlacementSeen = placement
+                if old != placement { endLightsSheetMotion() }
+            }
         #if DEBUG
         observed.onChange(of: lightsLayoutLogKey) { _, key in logLightsLayout(key) }
         #else
@@ -4400,8 +4418,12 @@ struct ContentView: View {
                                                sequence: sequenceBinding.wrappedValue)
             return LightsLayoutLogKey(tools: tools, sheet: Int(sheet.rounded()), panes: panes, room: lightsRoom)
         }
-        return LightsLayoutLogKey(tools: tools, sheet: nil, panes: "n/a",
-                                  room: lightsPlacement == .sidePanel ? lightsSideSize : .zero)
+        if lightsPlacement == .sidePanel {
+            // Not before the side panel has reported its size.
+            guard lightsSideSize.height > 0 else { return nil }
+            return LightsLayoutLogKey(tools: tools, sheet: nil, panes: "n/a", room: lightsSideSize)
+        }
+        return LightsLayoutLogKey(tools: tools, sheet: nil, panes: "n/a", room: .zero)
     }
 
     // `LightsLayout: tools=sheet:compact scene=393x377 sheet=286 panes=hidden

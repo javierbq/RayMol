@@ -870,7 +870,7 @@ class TestGizmoSource(testing.PyMOLTestCase):
         self.assertIsNotNone(fields, 'lightsToolsFields not found')
         self.assertIn('tools=', fields)
         self.assertIn('touch=', fields)
-        self.assertIn('LightsSheetState.toolsSummary(placement: lightsPlacement, detent: detent)', fields)
+        self.assertIn('LightsSheetState.toolsSummary(placement: lightsLivePlacement, detent: detent)', fields)
         self.assertEqual(len(re.findall(r'LightGizmoState\(lights, sceneShadowsOn: '
                                         r'engine\.sceneShadowsOn\)\?\.summary', hook)), 2)
         self.assertIn('GizmoAutoContext(viewSize: engine.lightGizmoUI.viewSize', hook)

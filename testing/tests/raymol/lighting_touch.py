@@ -698,7 +698,10 @@ class TestTouchSource(testing.PyMOLTestCase):
         self.assertIn('endLightsSheetMotion()', body(content, 'private func lightsModeChanged('))
         observers = body(content, 'private func observingLightsLayout<')
         self.assertIn('.onChange(of: engine.interactionMode) { _, mode in lightsModeChanged(mode) }', observers)
-        self.assertIn('.onChange(of: lightsPlacement) { _, _ in endLightsSheetMotion() }', observers)
+        placement = observers[observers.find('.onChange(of: lightsPlacement, initial: true)'):]
+        self.assertGreater(len(placement), 0, 'the placement observer is missing')
+        self.assertIn('lightsPlacementSeen = placement', placement[:300])
+        self.assertIn('if old != placement { endLightsSheetMotion() }', placement[:300])
         self.assertIn('observingLightsLayout(Group {', content)
         gizmo = body(content, 'private var lightGizmoOverlay: some View')
         self.assertIn('.opacity(lightsSheetMoving ? 0 : 1)', gizmo)
@@ -738,5 +741,10 @@ class TestTouchSource(testing.PyMOLTestCase):
         self.assertIn('observed.onChange(of: lightsLayoutLogKey)', content)
         sizes = body(content, 'private var lightsOrbitSizes: (plan: CGSize, arc: CGSize)')
         self.assertIsNotNone(sizes, 'lightsOrbitSizes not found')
-        self.assertIn('LightsSheetModel.activeCanvases(placement: lightsPlacement', sizes)
+        self.assertIn('LightsSheetModel.activeCanvases(placement: lightsLivePlacement', sizes)
+        # The hook's delayed closures read the placement from State (a
+        # captured copy keeps stale size classes).
+        live = body(content, 'private var lightsLivePlacement: LightsToolsPlacement')
+        self.assertIsNotNone(live, 'lightsLivePlacement not found')
+        self.assertIn('return lightsPlacementSeen', live)
 
