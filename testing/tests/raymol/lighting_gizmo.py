@@ -824,8 +824,9 @@ class TestGizmoSource(testing.PyMOLTestCase):
     def testContentViewPlacesTheOverlay(self):
         """ContentView puts the overlay on MetalViewport in Lights mode on
         both platforms: in macViewport before the overlay that holds the bar
-        and the side column, in viewportView before the side column overlay
-        (one site for the four iOS layouts, full screen included), each naming
+        and the side column, in viewportView before the iPad float's overlay
+        (#623; one site for the four iOS layouts, full screen included), so
+        the cards draw above the gizmo, each naming
         only lightGizmoOverlay, which passes the engine's UI state, grid mode,
         Shadows switch and Turn On."""
         content = self.read(CONTENT_VIEW)
@@ -838,7 +839,8 @@ class TestGizmoSource(testing.PyMOLTestCase):
         ios = body(content, 'private var viewportView')
         self.assertIsNotNone(ios, 'viewportView not found')
         self.assertGreaterEqual(ios.find(GIZMO_SITE), 0)
-        self.assertLess(ios.find(GIZMO_SITE), ios.find('lightsSideColumn.padding(8)'))
+        self.assertGreaterEqual(ios.find('lightsFloatingTools'), 0, 'viewportView places no float')
+        self.assertLess(ios.find(GIZMO_SITE), ios.find('lightsFloatingTools'))
         self.assertLess(ios.find('MetalViewport()'), ios.find(GIZMO_SITE))
         site = body(content, 'private var lightGizmoOverlay: some View')
         self.assertIsNotNone(site, 'lightGizmoOverlay not found')
@@ -870,7 +872,8 @@ class TestGizmoSource(testing.PyMOLTestCase):
         self.assertIsNotNone(fields, 'lightsToolsFields not found')
         self.assertIn('tools=', fields)
         self.assertIn('touch=', fields)
-        self.assertIn('LightsSheetState.toolsSummary(placement: lightsLivePlacement, detent: detent)', fields)
+        self.assertIn('LightsSheetState.toolsSummary(placement: lightsLivePlacement, detent: detent, '
+                      'corner: lightsOrbitCorner)', fields)
         self.assertEqual(len(re.findall(r'LightGizmoState\(lights, sceneShadowsOn: '
                                         r'engine\.sceneShadowsOn\)\?\.summary', hook)), 2)
         self.assertIn('GizmoAutoContext(viewSize: engine.lightGizmoUI.viewSize', hook)

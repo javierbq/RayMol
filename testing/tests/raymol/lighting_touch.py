@@ -32,6 +32,13 @@ side panel in both landscape slots, the drawable frozen only for a snap
 with the safety resets, the focused-field keyboard rule and the DEBUG log
 lines.
 
+The iPad float (Part 5, LightsFloatingTools.swift and ContentView): the
+orbit card's header as a 44 pt grip on a cancel-safe @GestureState drag that
+snaps once on release, the corner remembered in PanelLayout, the clearances
+from the help button, the measured bottom-leading chrome and an open
+CameraDock, the float after the gizmo site replacing the iOS side column,
+and the covered= field of the DEBUG LightsLayout line.
+
 The behaviour itself is unit-tested in Swift (LightsTouchTargetTests and
 LightsTouchRoutingTests, run by UnitTests_macOS with the iOS profile as a
 parameter); this file pins, on the sources, that the hit tests use the floor,
@@ -63,6 +70,8 @@ INSPECTOR = os.path.join(SHARED, 'LightsInspector.swift')
 VIEWPORT = os.path.join(SHARED, 'MetalViewport.swift')
 SHEET = os.path.join(SHARED, 'LightsSheet.swift')
 CONTENT_VIEW = os.path.join(SHARED, 'ContentView.swift')
+FLOAT = os.path.join(SHARED, 'LightsFloatingTools.swift')
+PANEL_LAYOUT = os.path.join(SHARED, 'PanelLayout.swift')
 
 # Apple's minimum touch target, and the iOS and macOS slops
 # (LightsOrbitMetrics.defaultSlop).
@@ -747,4 +756,146 @@ class TestTouchSource(testing.PyMOLTestCase):
         live = body(content, 'private var lightsLivePlacement: LightsToolsPlacement')
         self.assertIsNotNone(live, 'lightsLivePlacement not found')
         self.assertIn('return lightsPlacementSeen', live)
+
+    # --- the iPad float (Part 5) ----------------------------------------------
+
+    def testTheGripIsACancelSafeTarget(self):
+        """The orbit card's header row (up to its chevron) is the grip: a
+        44 pt target carrying the float's drag. The drag's offset is
+        @GestureState with an animated reset (a cancel leaves nothing
+        behind), measured in the float's own space, and only onEnded picks
+        the corner (one snap, LightsFloatLayout.dropCorner on the predicted
+        end). The grip's capsule is the VoiceOver element with the move
+        actions."""
+        text = self.read(FLOAT)
+        view = body(text, 'struct LightsFloatingTools: View')
+        self.assertIsNotNone(view, 'LightsFloatingTools not found')
+        self.assertRegex(view, r'@GestureState\(resetTransaction:[^@]*private var dragOffset: CGSize = \.zero')
+        self.assertIn('.updating($dragOffset)', view)
+        self.assertIn('coordinateSpace: .named(Self.space)', view)
+        self.assertIn('.coordinateSpace(name: Self.space)', view)
+        self.assertIn('minimumDistance: LightsFloatMetrics.gripMinimumDistance', view)
+        self.assertEqual(self.number(text, r'static let gripMinimumDistance:\s*CGFloat\s*=\s*([0-9.]+)',
+                                     'gripMinimumDistance'), 6)
+        ended = view[view.find('.onEnded'):]
+        self.assertIn('LightsFloatLayout.dropCorner(cardFrame: cardFrame, translation: value.translation,',
+                      ended[:400])
+        self.assertIn('predicted: value.predictedEndTranslation', ended[:400])
+        self.assertNotIn('onChanged', view, 'no drag state outside @GestureState')
+        # The frames are reported before the drag's offset (never per tick).
+        card = view[view.find('LightsOrbitView(controller: controller'):]
+        self.assertLess(card.find('LightsFloatFramesKey'), card.find('.offset(dragOffset)'))
+        orbit = self.read(ORBIT_VIEW)
+        region = body(orbit, 'private struct OrbitGripRegion: ViewModifier')
+        self.assertIsNotNone(region, 'OrbitGripRegion not found')
+        self.assertIn('.lightsTouchTarget(width: false)', region)
+        self.assertIn('.gesture(grip.gesture)', region)
+        header = body(orbit, 'private func header(_ state: LightsOrbitState)')
+        self.assertLess(header.find('.modifier(OrbitGripRegion(grip: grip))'), header.find('collapseButton'),
+                        'the chevron keeps its tap, outside the grip')
+        handle = body(orbit, 'private func gripHandle(_ grip: LightsOrbitGrip)')
+        self.assertIsNotNone(handle, 'gripHandle not found')
+        for needle in ('.accessibilityIdentifier(grip.identifier)', '.accessibilityValue(grip.value)',
+                       '.accessibilityActions', '.allowsHitTesting(false)'):
+            with self.subTest(needle):
+                self.assertIn(needle, handle)
+
+    def testTheFloatWritesOnlyThroughTheCards(self):
+        """The float file writes nothing itself: no controller call, raw set,
+        gesture session, Python or bridge function; the cards' own paths
+        (LightsOrbitInteraction, the inspector's typed API) do the edits."""
+        text = self.read(FLOAT)
+        self.assertEqual(set(re.findall(r'controller\.(\w+)\(', text)), set())
+        for name in ('beginGesture(', 'runPython', 'runCommand', 'PyMOLBridge_', 'UserDefaults'):
+            with self.subTest(name):
+                self.assertNotIn(name, text)
+
+    def testTheCornerIsRemembered(self):
+        """PanelLayout.lightsOrbitCornerKey is in allKeys; ContentView keeps
+        the corner in @AppStorage (bottom-leading by default), and the DEBUG
+        `corner:` token overrides it for one run without storing it."""
+        panels = self.read(PANEL_LAYOUT)
+        self.assertIn('static let lightsOrbitCornerKey = ns + "lightsOrbitCorner"', panels)
+        start = panels.find('static let allKeys: [String] = [')
+        self.assertGreaterEqual(start, 0, 'allKeys not found')
+        all_keys = panels[start + len('static let allKeys: [String] = ['):panels.find(']', start + 40)]
+        self.assertIn('lightsOrbitCornerKey', all_keys)
+        text = self.read(FLOAT)
+        self.assertIn('static let `default`: LightsFloatCorner = .bottomLeading', text)
+        for raw in ('"tl"', '"tr"', '"bl"', '"br"'):
+            with self.subTest(raw):
+                self.assertIn(raw, text)
+        content = self.read(CONTENT_VIEW)
+        self.assertRegex(content, r'@AppStorage\(PanelLayout\.lightsOrbitCornerKey\)\s+private var '
+                                  r'lightsOrbitCornerStored\s*=\s*LightsFloatCorner\.default\.rawValue')
+        binding = body(content, 'private var lightsOrbitCornerBinding: Binding<LightsFloatCorner>')
+        self.assertIsNotNone(binding, 'lightsOrbitCornerBinding not found')
+        self.assertIn('lightsOrbitCornerOverride = corner', binding)
+        self.assertIn('lightsOrbitCornerStored = corner.rawValue', binding)
+        hook = body(content, 'private func autoEnterLightsModeFromEnv()')
+        self.assertIn('if let corner = edits.corner { lightsOrbitCornerOverride = corner }', hook)
+
+    def testTheFloatClearsTheBottomChrome(self):
+        """The bottom-leading chrome and the CameraDock report their heights
+        (ViewportChromeHeightsKey) at the viewport's overlay sites; the
+        viewport reads them into the float's clearances; the trailing side
+        clears the help button or the dock, the leading side the chrome
+        plus a gap or the dock."""
+        content = self.read(CONTENT_VIEW)
+        viewport = body(content, 'private var viewportView')
+        self.assertIsNotNone(viewport, 'viewportView not found')
+        chrome = viewport.find('bottomLeadingViewportChrome')
+        self.assertGreaterEqual(chrome, 0)
+        self.assertIn('.reportsViewportChrome(\\.bottomLeading, shown: bottomLeadingChromeShown)',
+                      viewport[chrome:chrome + 500])
+        dock = viewport.find('CameraDock(engine: engine')
+        self.assertGreaterEqual(dock, 0)
+        self.assertIn('.reportsViewportChrome(\\.dock)', viewport[dock:dock + 500])
+        self.assertIn('.onPreferenceChange(ViewportChromeHeightsKey.self)', viewport)
+        self.assertLess(viewport.find('.onPreferenceChange(ViewportChromeHeightsKey.self)'),
+                        viewport.find('lightsFloatingTools'))
+        site = body(content, 'private var lightsFloatingTools: some View')
+        self.assertIsNotNone(site, 'lightsFloatingTools not found')
+        self.assertIn('chrome: viewportChrome', site)
+        self.assertIn('corner: lightsOrbitCornerBinding', site)
+        text = self.read(FLOAT)
+        rule = body(text, 'static func bottomClearance(trailing: Bool, chrome: ViewportChromeHeights)')
+        self.assertIsNotNone(rule, 'bottomClearance not found')
+        self.assertIn('max(LightsFloatMetrics.helpButtonClearance, chrome.dock)', rule)
+        self.assertIn('chrome.bottomLeading + LightsFloatMetrics.chromeGap', rule)
+        self.assertIn('max(leading, chrome.dock)', rule)
+
+    def testTheFloatReplacesTheIOSColumn(self):
+        """viewportView shows the float, for the float placement only, after
+        the gizmo site (the cards draw above the gizmo); the side column is
+        macOS-only; the iPad inspector starts collapsed; the old iPhone
+        seeds and the column's inset are gone."""
+        content = self.read(CONTENT_VIEW)
+        viewport = body(content, 'private var viewportView')
+        gizmo = viewport.find('.overlay { if engine.interactionMode == .lights { lightGizmoOverlay } }')
+        self.assertGreaterEqual(gizmo, 0)
+        self.assertRegex(viewport, r'lightsPlacement\s*==\s*\.floating\s*\{\s*lightsFloatingTools\s*\}')
+        self.assertGreater(viewport.find('lightsFloatingTools'), gizmo)
+        self.assertNotIn('lightsSideColumn', viewport)
+        for gone in ('lightsOrbitStartsCollapsed', 'lightsSideColumnBottomInset',
+                     'LightsSideColumn.helpButtonClearance'):
+            with self.subTest(gone):
+                self.assertNotIn(gone, content)
+        seed = body(content, 'private var lightsInspectorStartsCollapsed: Bool')
+        self.assertIn('lightsPlacement == .floating && !lightsInspectorExpandOverride', seed)
+
+    def testTheFloatLogLines(self):
+        """The DEBUG LightsLayout line names the knobs under the float's
+        cards (covered=, LightsFloatLayout.coveredKnobs at the gizmo's
+        layout) and tools= names the float's corner (float:<corner>)."""
+        content = self.read(CONTENT_VIEW)
+        log = body(content, 'private func logLightsLayout(')
+        self.assertIn(' covered=\\(LightsFloatLayout.coveredSummary(covered))', log)
+        self.assertIn('LightsFloatLayout.coveredKnobs(layout: engine.lightGizmoLayout(viewSize: scene)', log)
+        key = body(content, 'private var lightsLayoutLogKey: LightsLayoutLogKey?')
+        self.assertIn('corner: lightsOrbitCorner', key)
+        self.assertIn('if lightsPlacement == .floating {', key)
+        sheet = self.read(SHEET)
+        summary = body(sheet, 'static func toolsSummary(placement: LightsToolsPlacement')
+        self.assertIn('case .floating: return "float:\\(corner.rawValue)"', summary)
 

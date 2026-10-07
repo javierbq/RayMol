@@ -233,6 +233,7 @@ CONTROLLER = os.path.join(SHARED, 'LightsController.swift')
 MODEL = os.path.join(SHARED, 'LightsOrbitModel.swift')
 VIEW = os.path.join(SHARED, 'LightsOrbitView.swift')
 SIDE_COLUMN = os.path.join(SHARED, 'LightsSideColumn.swift')
+FLOAT = os.path.join(SHARED, 'LightsFloatingTools.swift')
 CONTENT_VIEW = os.path.join(SHARED, 'ContentView.swift')
 
 # What the orbit model must not name: it writes only through the controller's
@@ -427,8 +428,9 @@ class TestOrbitSource(testing.PyMOLTestCase):
         placement is by size class (LightsToolsPlacement.resolve on iOS,
         the column on macOS); phone portrait docks the bottom sheet under
         the viewport and compact height the side panel in the trailing
-        slot; the viewport's iOS side column overlay shows only for the
-        iPad float placement, and macOS keeps its column."""
+        slot; the viewport's float overlay shows only for the iPad float
+        placement (it replaced the iOS side column), and macOS keeps its
+        column."""
         content = self.read(CONTENT_VIEW)
         placement = body(content, 'private var lightsPlacement: LightsToolsPlacement')
         self.assertIsNotNone(placement, 'lightsPlacement not found')
@@ -448,41 +450,49 @@ class TestOrbitSource(testing.PyMOLTestCase):
         viewport = body(content, 'private var viewportView')
         self.assertIsNotNone(viewport, 'viewportView not found')
         self.assertRegex(viewport, r'if\s+engine\.interactionMode\s*==\s*\.lights\s*&&\s*!iosFullScreen'
-                                   r'\s*&&\s*lightsPlacement\s*==\s*\.floating\s*\{\s*lightsSideColumn\b')
+                                   r'\s*&&\s*lightsPlacement\s*==\s*\.floating\s*\{\s*lightsFloatingTools\b')
+        self.assertNotIn('lightsSideColumn', viewport, 'the side column is macOS-only')
         for name in ('lightsSheet(', 'lightsSidePanel', 'LightsSheet('):
             with self.subTest(name):
                 self.assertNotIn(name, viewport, 'no docked tool sits over the viewport')
         mac_overlay = body(content, 'private var macLightsOverlay')
         self.assertIsNotNone(mac_overlay, 'macLightsOverlay not found')
         self.assertIn('lightsSideColumn', mac_overlay)
-        # The orbit card's iPhone seed is kept for the column (now iPad only).
-        seed = body(content, 'private var lightsOrbitStartsCollapsed')
-        self.assertIsNotNone(seed, 'lightsOrbitStartsCollapsed not found')
-        self.assertIn('return false', seed.partition('#else')[2])
+        # The old iPhone seeds are gone: phones show no card, and the float
+        # starts the orbit card expanded.
+        self.assertNotIn('lightsOrbitStartsCollapsed', content)
+        self.assertNotIn('lightsSideColumnBottomInset', content)
+        float_tools = self.read(FLOAT)
+        self.assertIn('LightsOrbitView(controller: controller, style: style, initiallyCollapsed: false',
+                      float_tools)
 
-    def testTheIPadColumnClearsTheHelpButton(self):
-        """On iPad the column (orbit card above the inspector) reaches the
-        viewport's bottom, so the iOS overlay stops it above the
+    def testTheIPadFloatClearsTheHelpButton(self):
+        """On iPad (#623) a trailing card of the float stops above the
         bottom-trailing Gesture help button (a 26 pt glyph with 12 pt
-        padding); on iPhone and macOS the inset is 0."""
+        padding): LightsFloatMetrics.helpButtonClearance (moved from
+        LightsSideColumn) beyond the 8 pt inset, or an open CameraDock's
+        height when larger; the inspector's column uses the same
+        clearance."""
         content = self.read(CONTENT_VIEW)
-        inset = body(content, 'private var lightsSideColumnBottomInset')
-        self.assertIsNotNone(inset, 'lightsSideColumnBottomInset not found')
-        ios, _, mac = inset.partition('#else')
-        self.assertIn('hSize == .compact || vSize == .compact', ios)
-        self.assertIn('? 0 : LightsSideColumn.helpButtonClearance', ios)
-        self.assertIn('return 0', mac)
-        self.assertRegex(content, r'lightsSideColumn\.padding\(8\)\s*'
-                                  r'\.padding\(\.bottom,\s*lightsSideColumnBottomInset\)')
-        column = self.read(SIDE_COLUMN)
-        clearance = re.search(r'static let helpButtonClearance:\s*CGFloat\s*=\s*([0-9.]+)', column)
+        float_tools = self.read(FLOAT)
+        self.assertNotIn('helpButtonClearance', self.read(SIDE_COLUMN))
+        clearance = re.search(r'static let helpButtonClearance:\s*CGFloat\s*=\s*([0-9.]+)', float_tools)
         self.assertIsNotNone(clearance, 'helpButtonClearance not found')
+        inset = re.search(r'static let inset:\s*CGFloat\s*=\s*([0-9.]+)', float_tools)
+        self.assertIsNotNone(inset, 'LightsFloatMetrics.inset not found')
+        rule = body(float_tools, 'static func bottomClearance(trailing: Bool, chrome: ViewportChromeHeights)')
+        self.assertIsNotNone(rule, 'bottomClearance not found')
+        self.assertIn('max(LightsFloatMetrics.helpButtonClearance, chrome.dock)', rule)
+        view = body(float_tools, 'struct LightsFloatingTools: View')
+        self.assertIsNotNone(view, 'LightsFloatingTools not found')
+        self.assertIn('LightsFloatLayout.bottomClearance(trailing: true, chrome: chrome)', view)
+        self.assertIn('.padding(.bottom, trailingClearance)', view)
         help_button = re.search(r'questionmark\.circle\.fill"\)\s*'
                                 r'\.font\(\.system\(size:\s*([0-9.]+)\)\)\s*'
                                 r'\.foregroundStyle\([^\n]*\)\s*\.padding\(([0-9.]+)\)', content)
         self.assertIsNotNone(help_button, 'the Gesture help button was not found')
         glyph, padding = float(help_button.group(1)), float(help_button.group(2))
-        self.assertGreaterEqual(8 + float(clearance.group(1)), glyph + 2 * padding)
+        self.assertGreaterEqual(float(inset.group(1)) + float(clearance.group(1)), glyph + 2 * padding)
 
     def testBothLogLinesCarryThePlan(self):
         """Both PYMOL_AUTOLIGHTS log lines carry plan=<LightsOrbitState

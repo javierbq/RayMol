@@ -352,7 +352,8 @@ SHARED = os.path.join('swiftui', 'PyMOLViewer', 'Shared')
 
 # The Lights model, the bar, the shared edit path, the inspector, the side
 # column (#620), the orbit view's model (#621), the gizmo's geometry and
-# model (#622) and the touch targets (#623): every button press goes through LightsSeams.perform and every
+# model (#622), the touch targets, the phone sheet and the iPad float (#623):
+# every button press goes through LightsSeams.perform and every
 # drag tick through the bridge setter seams the engine wires, so these files
 # name no Python or console entry point, no helper and no bridge function.
 NO_PYTHON_SOURCES = [os.path.join(SHARED, 'LightsController.swift'),
@@ -366,7 +367,8 @@ NO_PYTHON_SOURCES = [os.path.join(SHARED, 'LightsController.swift'),
                      os.path.join(SHARED, 'LightGizmoModel.swift'),
                      os.path.join(SHARED, 'LightGizmoOverlay.swift'),
                      os.path.join(SHARED, 'LightsTouch.swift'),
-                     os.path.join(SHARED, 'LightsSheet.swift')]
+                     os.path.join(SHARED, 'LightsSheet.swift'),
+                     os.path.join(SHARED, 'LightsFloatingTools.swift')]
 NO_PYTHON = re.compile(
     r'\brunPython\w*|\bRunPython\w*|\brunCommand\w*|\bRunCommand\w*'
     r'|appkit_lights|\bPyMOLBridge_\w+\s*\(')
