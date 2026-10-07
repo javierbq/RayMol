@@ -65,21 +65,32 @@ reclassified, plans/624.md 3.3):
   peak         a white key (highlight 0.7, material_env 2) on gold metallic and
                orange plastic spheres and surface at intensity 1, 2, 3.
                metallic_tint: the brightest PEAK_TOP of the geometry keeps the
-               base's hue within PEAK_HUE and PEAK_CHROMA of its chroma at i2,
-               i3 and i3 traced (rt1). metallic_recover: i3 at exposure 2/3
+               base's hue within PEAK_HUE and PEAK_CHROMA of its chroma at i2
+               and i3. metallic_tint_rt1 (traced, i3): the reflections (rt1's
+               pixels brighter than rt0's by cm.CHANGE, on PEAK_TRACED_MIN of
+               the geometry) keep it in their brightest PEAK_TRACED_TOP
+               (PEAK_TRACED_CHROMA): rt_composite's own classic terms (the
+               hit's white specular, the saturated metallic tint) stay
+               display-referred (D11) and pale the frame's 2% core with HDR as
+               on master, so that core is reported (metallic_core_rt1).
+               metallic_recover: i3 at exposure 2/3
                against i2 on i2's highlight (its brightest PEAK_HL_SHARE):
                max REC_MAX, mean REC_MEAN. *_steps (guards): the highlight's
                p99 rises from i1 to i2 by PEAK_STEP and never falls to i3.
   glints       clear glass, every light's highlight 1 (hl1) or 0 (hl0): the
-               glint is hl1 - hl0. glass_recover: i3 at exposure 1/3 against
-               i1 (hl1), REC bounds: the glint curve is linear in scene units
-               under HDR (D7). glass_growth: the glint's p99 grows by
+               glint is hl1 - hl0. glass_recover: black glass (glass_dark: no
+               body, so only the rig's glints; a coloured body carries its
+               unlit base, which exposure scales and intensity does not) at
+               i3 x exposure 1/3 against i1, REC bounds: the glint curve is
+               linear in scene units under HDR (D7). glass_growth: the glint's p99 grows by
                GLINT_GROW from i1 to i3 (the knee's is saturated at i1).
                Guards: glass_rules_i1/_i3 (check_materials'
                glint rules: sparse, peaked, positive, white), glass_clip (at
                most GLINT_CLIP of the glint pixels clip at i3), glass_body
-               (coloured glass whose glint overlaps its lit body: at most
-               GLINT_CLIP of those pixels clip, and the glint adds light there).
+               (coloured glass whose glint overlaps its lit body, hl0's largest
+               channel at BODY_LEVEL: at most GLINT_CLIP of those pixels clip,
+               and the glint adds light there). The glass_i* rigs have ambient
+               0 and material_env 2, so every light is the rig's.
 
 GUARDS (must pass with HDR; the knee is their reference where they read one):
 
@@ -94,19 +105,30 @@ GUARDS (must pass with HDR; the knee is their reference where they read one):
                display_nocartoon, dilated DISPLAY_DILATE px). The knee pair is
                reported (#13's exposure scales the whole frame).
   unlit        white, navy and magenta lines reps and a label over a bright lit
-               cartoon (rt1): every pixel that is exactly an overlay colour in
-               the knee render is exactly it with HDR (each colour on
-               UNLIT_SHARE of the frame); the background stays. (Round 0:
+               cartoon (rt1): the pixels that are exactly an overlay colour in
+               the knee render are exactly it with HDR (each colour on
+               UNLIT_SHARE of the frame, kept on UNLIT_KEEP of its pixels: an
+               anti-aliased line pixel over the bright cartoon may blend to
+               white in the knee render only); the background stays. (Round 0:
                measurement dashes are lit geometry, drawn at the lit cartoon's
                levels, and labels ignored their colour settings, drawn
                magenta, or were not drawn at all; so the overlay colours are
                the lines', and the label counts with the magenta lines.)
-  below_knee   a rig at intensity 0.4: HDR equals the knee exactly on the
-               pixels whose knee max channel is at most BELOW_LEVEL
-               (round(255 k) - 2), which are BELOW_SHARE of the geometry.
-  continuity   the three_point, softbox, rembrandt and neon presets: pixels
-               whose knee max channel is under CONT_LEVEL differ by at most
-               CONT_TOL; the mean change elsewhere is reported.
+  below_knee   a rig at intensity 0.4: the pixels whose knee max channel is
+               at most BELOW_LEVEL (round(255 k) - 2) are BELOW_SHARE of the
+               geometry, and HDR equals the knee exactly on the interior ones
+               (every pixel within INTERIOR_R is geometry and that dim in both
+               renders) but for AO_SHARE of them. The silhouettes and the
+               pixels beside brighter ones are left out: 4x MSAA averages
+               tone-mapped samples (D1), so a dim resolved pixel there holds
+               samples above the knee, where T and the knee differ. SSAO
+               darkens a crease after the tone (D11), so a dim displayed
+               pixel inside can still hold a lit fragment above the knee (the
+               share). With metal_msaa 0 and metal_ssao 0 both are exact.
+  continuity   the three_point, softbox, rembrandt and neon presets: the
+               interior pixels (as below_knee) whose knee max channel is under
+               CONT_LEVEL differ by at most CONT_TOL, but for AO_SHARE of
+               them; the mean change elsewhere is reported.
   edges        a rim light at 3.5 behind the molecule, metal_msaa 1: on the
                silhouette (geometry pixels touching the background: the partly
                covered ones), the partial pixels (EDGE_LO..EDGE_HI of the
@@ -188,37 +210,52 @@ TONE_WHITE = 10.0
 SOFT_KNEE = 0.8                  # mat_soft_knee's knee (the 8-bit knee before #624)
 
 # --- thresholds --------------------------------------------------------------------
-# PROVISIONAL (#624 part 1): modelled with `check_hdr.py model` (the numbers
-# quoted are the model's: 'hdr' the twin, 'knee' a build before #624) and
-# checked against the round-0 renders of a build before #624 (every proof
-# fails there). Part 6 freezes them from round 1's measured extremes by the
-# half-margin rule (#613, #615); lighting_hdr_check.py pins them.
+# FROZEN (#624 part 6) on round 1: the 122 renders of lighting_624.json made by
+# the tuned curve (k 0.55, W 10), app built from the part 6 tuning; never
+# re-tuned to make a later round pass. Part 1 modelled them ('model': the
+# twin and the knee on synthetic renders, `check_hdr.py model`).
+#
+# The half-margin rule (#613, #615): a floor a proof's HDR value must reach
+# sits about halfway between round 1's HDR extreme and the knee twins' value
+# (the negative control); a floor a guard must reach is about half the
+# smallest value measured; a cap sits about halfway between the largest value
+# measured and what the failure it guards against gives. Definitions (what
+# counts as clipped, lit, a footprint), sign checks, the plan's exactness
+# bounds (recover) and bands the measurements sit deep inside keep their
+# values. "r1" quotes round 1 (HDR), "knee" its knee twins.
 
 CLIP_LEVEL = 254          # a channel this high counts as clipped
 KNEE_LEVEL = 204          # round(255 x 0.8): where mat_soft_knee starts
 SWEEP_FOOT = 8            # sweep footprint: sweep_1p2 brighter than sweep_0 by this
                           #   (luminance levels)
-SWEEP_MIN_SHARE = 0.02    # ... covering at least this share of the frame
-SWEEP_STEP = 8            # sweep: the footprint's mean rises by this at each step
-                          #   (model: hdr +45/+38/+34, knee +47/+44/+38: a guard
-                          #   inside the proof, the knee never clips either)
+SWEEP_MIN_SHARE = 0.02    # ... covering at least this share of the frame (r1 21%)
+SWEEP_STEP = 10           # sweep: the footprint's mean rises by this at each step
+                          #   (r1 +47.0/+27.7/+21.6: half the smallest; knee
+                          #   +57.6/+31.6/+22.2: a guard inside the proof, the knee
+                          #   never clips either; model hdr +45/+38/+34)
 SWEEP_CLIP = 0.01         # sweep: at most this share of the footprint clips at 3.5
-                          #   (model: hdr 0, knee 0)
+                          #   (D2's constraint; r1 0.000%, at W 6 0.2%)
 SWEEP_CHROMA = 0.7        # sweep: chroma at 3.5 over chroma at 1.2 at least this
-                          #   (model: hdr 1.10, knee 0.49)
-SWEEP_SPREAD = 1.0        # sweep: spread ratio at least the knee's x this
-                          #   (model: hdr 1.066 against the knee's 1.028)
-SWEEP_E05_MARGIN = 2.0    # sweep_e05: the mean sits this far inside (1.2, 2.0)
-                          #   (model: hdr +24 / +14, knee -12: #13 halves the knee)
+                          #   (r1 1.06 rt0 and rt1, knee 0.35: the midpoint; model
+                          #   hdr 1.10, knee 0.49)
+SWEEP_SPREAD = 1.0        # sweep: spread ratio at least the knee's x this (the
+                          #   plan's criterion; r1 0.830 against the knee's 0.820)
+SWEEP_E05_MARGIN = 4.0    # sweep_e05: the mean sits this far inside (1.2, 2.0)
+                          #   (r1 +18.9 / +8.9: half the smaller; knee -46.0: #13
+                          #   halves the knee)
 REC_MAX = 3               # recover: largest channel difference at most this
 REC_P99 = 2               # ... its 99th percentile at most this
-REC_MEAN = 0.5            # ... its mean at most this (model: hdr max 0, mean 0.00;
-                          #   knee max 95, mean 49; the real pair adds float rounding
-                          #   of e x I, at most a level: lighting_hdr.py TestCommute)
-REC_BRIGHT = 0.02         # recover: b has at least this share of the geometry at
-                          #   KNEE_LEVEL or more (the pair reaches the shoulder)
+REC_MEAN = 0.5            # ... its mean at most this (the plan's exactness bounds:
+                          #   r1 max 1, p99 0, mean <= 0.17 on every pair, the
+                          #   metallic highlight and black glass included; knee max
+                          #   82-101, mean 15-78; the float rounding of e x I is at
+                          #   most a level: lighting_hdr.py TestCommute)
+REC_BRIGHT = 0.10         # recover: b has at least this share of the geometry at
+                          #   KNEE_LEVEL or more (the pair reaches the shoulder;
+                          #   r1 20.7% (surface rt1) to 33.1%: half the smallest)
 REC_MIN_SHARE = 0.01      # recover: the geometry covers at least this of the frame
 AIR_SHARE = 0.02          # air_recover: background pixels lit by the air in b
+                          #   (r1 75% of the frame)
 BG_MARGIN = 3             # background: at least this far (px) from the geometry
 HUE_CHROMA_MIN = 0.15     # hue: x1 pixels at least this chromatic ...
 HUE_LUM_MIN = 16.0        # ... and this bright are in a light's footprint
@@ -226,53 +263,85 @@ HUE_CLASS_DEG = 40.0      # ... the light's, when within this of its hue
 HUE_LEVEL = 128           # ... and where x1's largest channel is at least this (at
                           #   x2.5 the light is on the shoulder: the knee whitens it)
 HUE_SHARE = 0.002         # ... each light's footprint covers this share of the frame
-HUE_DEG = 15.0            # hue: mean hue shift x1 -> x2.5 at most this (degrees)
-                          #   (model: hdr 0.2 / 0.2, knee 21.6 / 8.7: key / rim)
-HUE_CHROMA = 0.7          # hue: chroma at x2.5 over x1 at least this
-                          #   (model: hdr 1.04 / 1.04, knee 0.73 / 0.73)
+HUE_DEG = 7.5             # hue: mean hue shift x1 -> x2.5 at most this (degrees)
+                          #   (r1 0.2 / 0.3, knee 15.2 / 4.9: key / rim; halfway to
+                          #   the knee's key; the knee's rim fails on chroma)
+HUE_CHROMA = 0.8          # hue: chroma at x2.5 over x1 at least this
+                          #   (r1 1.03 / 1.03, knee 0.58 / 0.49: the midpoint)
 PEAK_TOP = 0.02           # peak tint: the brightest share of the geometry
 PEAK_HUE = 25.0           # ... its mean colour's hue within this of the base's
-                          #   (check_materials' TINT_HUE)
-PEAK_CHROMA = 0.5         # ... and its chroma at least this x the base's
-                          #   (model: hdr 0.93, knee 0.13-0.18)
+                          #   (check_materials' TINT_HUE, kept: a definition shared
+                          #   with #615; r1 +0.1 rt0, +5.7 traced; knee +10.6/+16.1)
+PEAK_CHROMA = 0.45        # ... and its chroma at least this x the base's
+                          #   (r1 0.85 / 0.86, knee 0.08 / 0.06: the midpoint)
 PEAK_HL_SHARE = 0.05      # peak recover: i2's brightest share of the geometry
+PEAK_TRACED_MIN = 0.10    # peak traced (rt1): the reflections change at least this
+                          #   share of the geometry (rt1 over rt0 by cm.CHANGE;
+                          #   r1 53.6%, knee 41.6%; model 18%)
+PEAK_TRACED_TOP = 0.25    # ... the brightest share of those pixels (the traced hits'
+                          #   highlights) ...
+PEAK_TRACED_CHROMA = 0.48  # ... keeps at least this x the base's chroma (and its hue
+                          #   within PEAK_HUE) (r1 0.57, knee 0.39: the midpoint)
 PEAK_STEP = 4             # peak steps: the highlight's p99 rises i1 -> i2 by this
-                          #   (model: hdr +15 metallic / +14 plastic, knee +23 / +17:
-                          #   a guard, the knee never clips)
-GLINT_GROW = 4            # glints: the glint's p99 grows i1 -> i3 by this
-                          #   (round 0, the knee: 111 -> 112: its glints are
-                          #   saturated already at i1, so growth is a proof, not
-                          #   the guard plans/624.md 3.3 feared; model: hdr +6,
-                          #   knee -9. glass_recover: model hdr max 0, knee max 99;
-                          #   round 0 max 98, mean 24)
-GLINT_CLIP = 0.02         # glints: at most this share of glint pixels clips
-BODY_LUM = 24.0           # glass_body: the lit body (hl0 luminance at least this)
+                          #   (r1 +9.3 metallic / +11.3 plastic: half the smallest;
+                          #   knee +11.0 / +10.9: a guard, the knee never clips)
+GLINT_GROW = 15           # glints: the glint's p99 grows i1 -> i3 by this
+                          #   (r1 180 -> 210, +30; knee 111 -> 112, +1, its glints
+                          #   saturated already at i1: the midpoint. glass_recover:
+                          #   r1 max 1, mean 0.00, knee max 84, mean 21.7)
+GLINT_CLIP = 0.015        # glints: at most this share of glint pixels clips
+                          #   (r1 0.26% clear, 0.32% on the lit body; the curve
+                          #   tried at W 8, 2.83%: about halfway)
+BODY_LEVEL = 24           # glass_body: the lit body (hl0's largest channel at least this:
+                          #   HDR keeps the orange body's hue, so its luminance stays
+                          #   low where the knee's olive body was brighter)
 SHADOW_HUE_MIN = cs.HUE_MIN          # shadows: a channel leads the other by this
 SHADOW_COLOURED_MIN = cs.COLOURED_MIN  # ... on this share of the geometry, each light
+                          #   (r1 26.9% red-led, 13.8% blue-led: deep inside)
 DISPLAY_DILATE = 3        # display: the cartoon footprint dilated by this (px)
 UNLIT_SHARE = 0.0002      # unlit: each overlay colour on this share of the frame
+UNLIT_KEEP = 0.99         # ... and kept on at least this share of its pixels (an
+                          #   anti-aliased line pixel over the bright cartoon can
+                          #   blend to exact white in the knee render and not with
+                          #   HDR, whose cartoon is darker there; r1 1523/1525
+                          #   white, every magenta and navy pixel; a rig that lit
+                          #   an overlay would keep none)
 UNLIT_COLOURS = {         # the scene's overlay colours (8-bit, exact)
     'white lines': (255, 255, 255),
     'navy lines': (0, 0, 89),
     'magenta lines and label': (255, 0, 255),
 }
 BELOW_LEVEL = int(round(255 * TONE_KNEE)) - 2   # below_knee: knee max channel at most this
-BELOW_SHARE = 0.80        # ... on at least this share of the geometry
+BELOW_SHARE = 0.80        # ... on at least this share of the geometry (r1 98.3%)
 CONT_LEVEL = 0.55 * 255   # continuity: knee max channel under this
 CONT_TOL = 2              # ... differs by at most this
+INTERIOR_R = 1            # below_knee, continuity: a dim pixel counts when every pixel
+                          #   within this (px) is geometry and dim in both renders: a
+                          #   silhouette, or a pixel beside a brighter one, resolves
+                          #   4x MSAA samples on both sides of the knee (the samples
+                          #   are tone-mapped, then averaged: D1)
+AO_SHARE = 0.01           # ... and at most this share of those may still differ:
+                          #   SSAO (and RT AO) darkens a crease AFTER the tone (D11),
+                          #   so a dim displayed pixel can hold a fragment that was
+                          #   above the knee. r1 0.023-0.155% (neon); with metal_msaa
+                          #   0 and metal_ssao 0 both guards are exact (max 0) on
+                          #   below_i04 and rembrandt. A curve that is not the
+                          #   identity under the knee moves nearly all of them.
 EDGE_BAND = 2             # edges: the fully covered pixels within this of the silhouette
 EDGE_LO, EDGE_HI = 0.10, 0.90   # edges: a partial pixel's share of the interior maximum
-EDGE_COUNT_TOL = 0.15     # edges: counts within this of the knee's
+EDGE_COUNT_TOL = 0.15     # edges: counts within this of the knee's (r1 2615 / 2615)
 EDGE_OVER = 2.0           # edges: a fringe pixel is brighter than its 3x3 interior
                           #   maximum by more than this (luminance levels)
-EDGE_SLACK = 0.002        # edges: fringe pixels allowed over the knee's (band share)
+EDGE_SLACK = 0.002        # edges: fringe pixels allowed over the knee's (band share;
+                          #   r1 606 against the knee's 607)
 FOG_NEAR = 16             # fog: pixels within this of the background in the knee
-                          #   (round 0: 3434 px; none within 3)
+                          #   (round 0 and r1: 3434 px; none within 3)
 FOG_RATIO = 1.5           # ... stay within this x their knee distance + FOG_TOL with
 FOG_TOL = 3               #   HDR (the shoulder is at most 1.33x the knee's distance
-                          #   from white, at x = 0.8: the fog still blends to white)
+                          #   from white, at x = 0.8: the fog still blends to white;
+                          #   r1 3434/3434)
 OIT_LUM = 20.0            # oit: where the knee is brighter than this ...
-OIT_RATIO = 0.5           # ... HDR keeps at least this of it
+OIT_RATIO = 0.5           # ... HDR keeps at least this of it (r1: every pixel)
 SATURATED = 250           # reports: a pixel is saturated with a channel this high
 
 RTS = (0, 1)
@@ -298,7 +367,7 @@ GUARDS = ('shadows', 'display', 'unlit', 'below_knee', 'continuity', 'edges', 'f
           'export', 'oit')
 REPORTS = ('haze683', 'aces')
 # Subjects reported inside a guard check (never fail).
-REPORT_SUBJECTS = (('display', 'display_knee_rt1'),)
+REPORT_SUBJECTS = (('display', 'display_knee_rt1'), ('peak', 'metallic_core_rt1'))
 
 # The proofs' subjects that must FAIL on the knee twins (the negative control)
 # and on the round-0 renders of a build before #624.
@@ -313,7 +382,12 @@ NEGATIVE = {
 
 # Tags of lighting_624.json no check reads: for the eye (the contact sheet).
 INFORMATIONAL = ('frosted_i3_rt0', 'frosted_i3_knee_rt0', 'jelly_i3_rt0',
-                 'jelly_i3_knee_rt0')
+                 'jelly_i3_knee_rt0',
+                 # the sheets' third row, HDR at exposure 0.5 (HDR only)
+                 'sweep_0p6_e05_rt0', 'sweep_1p2_e05_rt0', 'sweep_2p0_e05_rt0',
+                 'peak_metallic_i1_e05_rt0', 'peak_metallic_i2_e05_rt0',
+                 'peak_metallic_i3_e05_rt0', 'peak_plastic_i1_e05_rt0',
+                 'peak_plastic_i2_e05_rt0', 'peak_plastic_i3_e05_rt0')
 
 
 def knee_twin(tag):
@@ -719,6 +793,41 @@ def check_peak_tint(*images, subject='', base=GOLD):
     return Result('peak', subject, ok, '; '.join(parts))
 
 
+def check_peak_traced(rt1, rt0, subject='', base=GOLD):
+    """The traced reflections (rt1's pixels over rt0's) keep the base's tint.
+
+    rt_rig_hit maps each hit's rig light through T (D1); rt_composite then
+    blends the hit by its classic terms, which stay display-referred (D11): the
+    hit's white classic specular and the metallic tint saturate(colRaw x 1.6),
+    which pales near a highlight on master and with HDR alike. So the 2% core
+    of the whole frame (metallic_core_rt1, a report) is that composite's, and
+    this proof reads what the reflections add."""
+    bad = _same_size('peak', subject, rt1, rt0)
+    if bad:
+        return bad
+    np = _np()
+    geo = geometry(rt1)
+    n = int(geo.sum())
+    if not n:
+        return Result('peak', subject, False, 'no geometry')
+    foot = geo & ((_f(rt1) - _f(rt0)).max(axis=-1) >= cm.CHANGE)
+    nf = int(foot.sum())
+    if nf < PEAK_TRACED_MIN * n:
+        return Result('peak', subject, False, 'reflections on %d px (< %s of the geometry)' % (
+            nf, _pct(PEAK_TRACED_MIN)))
+    lum = luminance(rt1)
+    core = foot & (lum >= np.percentile(lum[foot], 100.0 * (1.0 - PEAK_TRACED_TOP)))
+    col = _f(rt1)[core].mean(axis=0) / 255.0
+    dh = float(hue_diff(hue_of(col), hue_of(base)))
+    cr = chroma_of(col) / chroma_of(base)
+    return Result('peak', subject, dh <= PEAK_HUE and cr >= PEAK_TRACED_CHROMA,
+                  'reflections on %s of the geometry; their brightest %s %s: hue %+.1f deg '
+                  '(<= %.0f), chroma x%.2f (>= %.2f)' % (
+                      _pct(nf / float(n)), _pct(PEAK_TRACED_TOP),
+                      '/'.join('%.2f' % v for v in col), dh, PEAK_HUE, cr,
+                      PEAK_TRACED_CHROMA))
+
+
 def check_peak_steps(i1, i2, i3, subject=''):
     """The highlight brightens from i1 to i2 and never dims to i3."""
     bad = _same_size('peak', subject, i1, i2, i3)
@@ -804,7 +913,7 @@ def check_glass_body(h1, h0, subject=''):
     if bad:
         return bad
     d, geo = _glint(h1, h0)
-    lit = geo & (luminance(h0) >= BODY_LUM) & (d >= cm.CHANGE)
+    lit = geo & (_f(h0).max(axis=-1) >= BODY_LEVEL) & (d >= cm.CHANGE)
     n = int(lit.sum())
     if not n:
         return Result('glints', subject, False, 'no glint on the lit body')
@@ -881,19 +990,32 @@ def check_unlit(knee, hdr, subject=''):
         m = (k == np.array(colour, dtype='float64')).all(axis=-1)
         n = int(m.sum())
         kept = int((h[m] == np.array(colour, dtype='float64')).all(axis=-1).sum())
-        good = n >= UNLIT_SHARE * m.size and kept == n
+        good = n >= UNLIT_SHARE * m.size and kept >= UNLIT_KEEP * n
         ok = ok and good
         parts.append('%s %d/%d' % (name, kept, n))
     bg = (k == 0).all(axis=-1)
     bgk = int(((h[bg] == 0).all(axis=-1)).sum())
     ok = ok and bgk == int(bg.sum())
     return Result('unlit', subject, ok,
-                  'kept/exact: %s (each >= %s of the frame); background %d/%d' % (
-                      ', '.join(parts), _pct(UNLIT_SHARE), bgk, int(bg.sum())))
+                  'kept/exact: %s (each >= %s of the frame, kept on >= %s); background '
+                  '%d/%d' % (', '.join(parts), _pct(UNLIT_SHARE), _pct(UNLIT_KEEP), bgk,
+                             int(bg.sum())))
+
+
+def _interior(knee, hdr, low, level, inclusive):
+    """The pixels of `low` whose neighbourhood (INTERIOR_R) is geometry in the
+    knee render and dim (under `level`, or at it when `inclusive`) in both."""
+    np = _np()
+    geo = geometry(knee)
+    near_bg = max_filter((~geo).astype('float64'), INTERIOR_R) > 0
+    top = np.maximum(max_filter(_f(knee).max(axis=-1), INTERIOR_R),
+                     max_filter(_f(hdr).max(axis=-1), INTERIOR_R))
+    dim = top <= level if inclusive else top < level
+    return low & ~near_bg & dim
 
 
 def check_below_knee(knee, hdr, subject=''):
-    """Under both knees HDR is the knee exactly."""
+    """Under both knees HDR is the knee exactly (but for creases SSAO darkened)."""
     bad = _same_size('below_knee', subject, knee, hdr)
     if bad:
         return bad
@@ -904,10 +1026,20 @@ def check_below_knee(knee, hdr, subject=''):
         return Result('below_knee', subject, False, 'no geometry')
     low = geo & (_f(knee).max(axis=-1) <= BELOW_LEVEL)
     share = low.sum() / float(n)
-    top = int(np.abs(_f(knee) - _f(hdr)).max(axis=-1)[low].max()) if low.any() else 0
-    return Result('below_knee', subject, share >= BELOW_SHARE and top == 0,
-                  'pixels at or under %d: %s of the geometry (>= %s), max |hdr - knee| %d '
-                  '(== 0)' % (BELOW_LEVEL, _pct(share), _pct(BELOW_SHARE), top))
+    d = np.abs(_f(knee) - _f(hdr)).max(axis=-1)
+    inner = _interior(knee, hdr, low, BELOW_LEVEL, True)
+    ni = int(inner.sum())
+    moved = int((d[inner] > 0).sum())
+    moved_share = moved / float(ni) if ni else 1.0
+    top = int(d[inner].max()) if ni else 0
+    top_all = int(d[low].max()) if low.any() else 0
+    return Result('below_knee', subject,
+                  share >= BELOW_SHARE and ni > 0 and moved_share <= AO_SHARE,
+                  'pixels at or under %d: %s of the geometry (>= %s); interior %d px: %d '
+                  'differ (%s, <= %s), max |hdr - knee| %d (silhouettes and neighbours of '
+                  'brighter pixels included: max %d)' % (
+                      BELOW_LEVEL, _pct(share), _pct(BELOW_SHARE), ni, moved, _pct(moved_share),
+                      _pct(AO_SHARE), top, top_all))
 
 
 def check_continuity(knee, hdr, subject=''):
@@ -921,12 +1053,18 @@ def check_continuity(knee, hdr, subject=''):
     low = geo & (km < CONT_LEVEL)
     hi = geo & ~low
     d = np.abs(_f(knee) - _f(hdr)).max(axis=-1)
-    top = int(d[low].max()) if low.any() else 0
+    inner = _interior(knee, hdr, low, CONT_LEVEL, False)
+    ni = int(inner.sum())
+    moved = int((d[inner] > CONT_TOL).sum())
+    moved_share = moved / float(ni) if ni else 1.0
+    top = int(d[inner].max()) if ni else 0
+    top_all = int(d[low].max()) if low.any() else 0
     elsewhere = float((luminance(hdr) - luminance(knee))[hi].mean()) if hi.any() else 0.0
-    return Result('continuity', subject, low.any() and top <= CONT_TOL,
-                  'under %.0f (%d px): max |d| %d (<= %d); elsewhere (%d px) mean %+.1f '
-                  'levels (reported)' % (CONT_LEVEL, int(low.sum()), top, CONT_TOL,
-                                         int(hi.sum()), elsewhere))
+    return Result('continuity', subject, ni > 0 and moved_share <= AO_SHARE,
+                  'under %.0f: interior %d of %d px, %d differ by more than %d (%s, <= %s), '
+                  'max |d| %d (all %d); elsewhere (%d px) mean %+.1f levels (reported)' % (
+                      CONT_LEVEL, ni, int(low.sum()), moved, CONT_TOL, _pct(moved_share),
+                      _pct(AO_SHARE), top, top_all, int(hi.sum()), elsewhere))
 
 
 def _edge_counts(img, rim, inner):
@@ -1077,7 +1215,9 @@ def l2_plan():
     plan += [
         ('peak', 'metallic_tint_rt0', check_peak_tint,
          ['peak_metallic_i2_rt0', 'peak_metallic_i3_rt0'], {'base': GOLD}),
-        ('peak', 'metallic_tint_rt1', check_peak_tint, ['peak_metallic_i3_rt1'],
+        ('peak', 'metallic_tint_rt1', check_peak_traced,
+         ['peak_metallic_i3_rt1', 'peak_metallic_i3_rt0'], {'base': GOLD}),
+        ('peak', 'metallic_core_rt1', check_peak_tint, ['peak_metallic_i3_rt1'],
          {'base': GOLD}),
         ('peak', 'metallic_recover_rt0', check_peak_recover,
          ['peak_metallic_i3_e067_rt0', 'peak_metallic_i2_rt0'], {}),
@@ -1086,7 +1226,7 @@ def l2_plan():
         ('peak', 'plastic_steps_rt0', check_peak_steps,
          ['peak_plastic_i%d_rt0' % i for i in (1, 2, 3)], {}),
         ('glints', 'glass_recover_rt0', check_glass_recover,
-         ['glass_i3_e033_hl1_rt0', 'glass_i1_hl1_rt0'], {}),
+         ['glass_dark_i3_e033_hl1_rt0', 'glass_dark_i1_hl1_rt0'], {}),
         ('glints', 'glass_growth_rt0', check_glint_growth,
          ['glass_i1_hl1_rt0', 'glass_i1_hl0_rt0', 'glass_i3_hl1_rt0', 'glass_i3_hl0_rt0'], {}),
         ('glints', 'glass_rules_i1_rt0', check_glint_rules,
@@ -1169,7 +1309,8 @@ TWINNED = (
     'peak_metallic_i1_rt0', 'peak_metallic_i2_rt0', 'peak_metallic_i3_rt0',
     'peak_metallic_i3_e067_rt0', 'peak_metallic_i3_rt1', 'peak_plastic_i1_rt0',
     'peak_plastic_i2_rt0', 'peak_plastic_i3_rt0', 'glass_i1_hl0_rt0', 'glass_i1_hl1_rt0',
-    'glass_i3_hl0_rt0', 'glass_i3_hl1_rt0', 'glass_i3_e033_hl1_rt0', 'glass_body_i3_hl0_rt0',
+    'glass_i3_hl0_rt0', 'glass_i3_hl1_rt0', 'glass_dark_i1_hl1_rt0',
+    'glass_dark_i3_e033_hl1_rt0', 'glass_body_i3_hl0_rt0',
     'glass_body_i3_hl1_rt0', 'frosted_i3_rt0', 'jelly_i3_rt0', 'shadow_cross_rt0',
     'shadow_cross_rt1', 'display_e06_rt1', 'display_e1_rt1', 'unlit_rt1', 'below_i04_rt0',
     'cont_three_point_rt0', 'cont_softbox_rt0', 'cont_rembrandt_rt0', 'cont_neon_rt0',
@@ -1292,8 +1433,8 @@ def _checks(text, plan):
 # MSAA resolve, the air, OIT, #13's exposure pass) as the renderer does.
 
 MODEL_SHAPE = (180, 320)
-GLASS_KNOB = 1.6
-GLASS_OIT = 0.58
+GLASS_KNOB = 0.44
+GLASS_OIT = 1.0
 
 
 class _Grid(object):
@@ -1392,7 +1533,7 @@ def _m_hue(g, curve, scale):
     return quantise(_over(_store(x, curve), cov, 0.0))
 
 
-def _m_peak(g, curve, material, intensity, exposure=1.0):
+def _m_peak(g, curve, material, intensity, exposure=1.0, rt=0):
     np = _np()
     base = GOLD if material == 'metallic' else ORANGE
     tint = (0.15 * _col((1, 1, 1)) + 0.85 * _col(base)) if material == 'metallic' else _col(
@@ -1407,29 +1548,37 @@ def _m_peak(g, curve, material, intensity, exposure=1.0):
         hl = np.exp(-(((g.u - cx + 0.04) / 0.035) ** 2 + ((g.v - cy + 0.07) / 0.06) ** 2))
         x = (_col(base) * (0.06 + intensity * diffuse * nl[..., None])
              + intensity * strength * hl[..., None] * tint)
+        if rt:
+            # traced reflections (rt1): a band of the neighbours' lit gold,
+            # added in scene units before the build's curve (rt_rig_hit)
+            band = np.clip(1.0 - np.abs(g.v - cy - 0.08) / 0.05, 0.0, 1.0) * nl
+            x = x + intensity * 0.6 * band[..., None] * tint
         out_x = np.where(cov[..., None] > covs[..., None], x, out_x)
         covs = np.maximum(covs, cov)
     d = _store(out_x, curve, exposure)
     return quantise(_post(_over(d, covs, 0.0), curve, exposure))
 
 
-def _m_glass(g, curve, intensity, hl, exposure=1.0, body=False):
+def _m_glass(g, curve, intensity, hl, exposure=1.0, body=False, dark=False):
     np = _np()
     cov, dd = g.ellipse(0.5, 0.5, 0.40, 0.38)
     f = g.spot(0.45, 0.45, 0.45, 0.7)[..., None]
-    base = _col(ORANGE if body else (0.8, 0.8, 0.8))
+    base = _col(ORANGE if body else ((0.0, 0.0, 0.0) if dark else (0.8, 0.8, 0.8)))
     lit = intensity * f * base * (0.9 if body else 0.25)
     peaks = np.zeros((g.h, g.w))
     for cx, cy in ((0.42, 0.40), (0.58, 0.55), (0.36, 0.62), (0.62, 0.34)):
         peaks += np.exp(-(((g.u - cx) / 0.02) ** 2 + ((g.v - cy) / 0.035) ** 2))
     if body:
         peaks = np.exp(-(((g.u - 0.45) / 0.05) ** 2 + ((g.v - 0.45) / 0.08) ** 2))
-    s = hl * intensity * 0.8 * peaks[..., None] * _col((1, 1, 1))
+    s = hl * intensity * 1.6 * peaks[..., None] * _col((1, 1, 1))
     a = 0.35
-    # The Reflection knob scales the glints (GLASS_KNOB) before the cover, so
-    # the knee's cover saturates at i1 already; the weighted OIT over black
-    # shows the straight colour at about GLASS_OIT of its value (round 0: the
-    # knee's glint cores sit at 147 at i1 and i3).
+    # The Reflection knob and kMatGlassReflection scale the glints (GLASS_KNOB)
+    # before the cover. Calibrated on round 1 (#624 part 6): the knee's glint
+    # cores plateau at about 112 levels at i1 and i3 (its glints saturate),
+    # while HDR's p99 grows 180 -> 210 (the model: 100 -> 112 and 167 -> 197);
+    # over black the weighted OIT shows the straight colour at its cover
+    # (GLASS_OIT 1). Part 1's model (knob 1.6, OIT 0.58) capped HDR's glints
+    # at the knee's plateau, so its growth was +6 against round 1's +30.
     if curve == 'hdr':
         rgb, cover = glass_cover_hdr(lit, GLASS_KNOB * glints_hdr(s), a, exposure)
     else:
@@ -1562,14 +1711,15 @@ def model_image(tag, curve):
     m = re.match(r'^hue_x(1|2p5)$', base)
     if m:
         return _m_hue(g, curve, float(m.group(1).replace('p', '.')))
-    m = re.match(r'^peak_(metallic|plastic)_i([123])(_e067)?$', base)
+    m = re.match(r'^peak_(metallic|plastic)_i([123])(_e067|_e05)?$', base)
     if m:
         return _m_peak(g, curve, m.group(1), float(m.group(2)),
-                       2.0 / 3.0 if m.group(3) else 1.0)
-    m = re.match(r'^glass_i([13])(_e033)?_hl([01])$', base)
+                       {None: 1.0, '_e067': 2.0 / 3.0, '_e05': 0.5}[m.group(3)],
+                       rt=int(tag[-1]))
+    m = re.match(r'^glass(_dark)?_i([13])(_e033)?_hl([01])$', base)
     if m:
-        return _m_glass(g, curve, float(m.group(1)), float(m.group(3)),
-                        1.0 / 3.0 if m.group(2) else 1.0)
+        return _m_glass(g, curve, float(m.group(2)), float(m.group(4)),
+                        1.0 / 3.0 if m.group(3) else 1.0, dark=bool(m.group(1)))
     m = re.match(r'^glass_body_i3_hl([01])$', base)
     if m:
         return _m_glass(g, curve, 3.0, float(m.group(1)), body=True)

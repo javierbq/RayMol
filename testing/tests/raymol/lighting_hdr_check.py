@@ -282,19 +282,21 @@ class TestChecks(testing.PyMOLTestCase):
             self.assertNotIn('def %s(' % name, src)
 
     def testThresholdsPinned(self):
-        # PROVISIONAL (part 1, modelled; checked on the round-0 renders);
-        # part 6 freezes them from round 1 by the half-margin rule.
+        # FROZEN by part 6 from round 1 (the half-margin rule); part 1
+        # modelled them and checked them on the round-0 renders.
         pinned = {
             'CLIP_LEVEL': 254, 'KNEE_LEVEL': 204, 'SWEEP_FOOT': 8, 'SWEEP_MIN_SHARE': 0.02,
-            'SWEEP_STEP': 8, 'SWEEP_CLIP': 0.01, 'SWEEP_CHROMA': 0.7, 'SWEEP_SPREAD': 1.0,
-            'SWEEP_E05_MARGIN': 2.0, 'REC_MAX': 3, 'REC_P99': 2, 'REC_MEAN': 0.5,
-            'REC_BRIGHT': 0.02, 'REC_MIN_SHARE': 0.01, 'AIR_SHARE': 0.02, 'BG_MARGIN': 3,
+            'SWEEP_STEP': 10, 'SWEEP_CLIP': 0.01, 'SWEEP_CHROMA': 0.7, 'SWEEP_SPREAD': 1.0,
+            'SWEEP_E05_MARGIN': 4.0, 'REC_MAX': 3, 'REC_P99': 2, 'REC_MEAN': 0.5,
+            'REC_BRIGHT': 0.10, 'REC_MIN_SHARE': 0.01, 'AIR_SHARE': 0.02, 'BG_MARGIN': 3,
             'HUE_CHROMA_MIN': 0.15, 'HUE_LUM_MIN': 16.0, 'HUE_CLASS_DEG': 40.0,
-            'HUE_LEVEL': 128, 'HUE_SHARE': 0.002, 'HUE_DEG': 15.0, 'HUE_CHROMA': 0.7,
-            'PEAK_TOP': 0.02, 'PEAK_HUE': 25.0, 'PEAK_CHROMA': 0.5, 'PEAK_HL_SHARE': 0.05,
-            'PEAK_STEP': 4, 'GLINT_GROW': 4, 'GLINT_CLIP': 0.02, 'BODY_LUM': 24.0,
-            'DISPLAY_DILATE': 3, 'UNLIT_SHARE': 0.0002, 'BELOW_LEVEL': 138,
-            'BELOW_SHARE': 0.80, 'CONT_LEVEL': 0.55 * 255, 'CONT_TOL': 2, 'EDGE_BAND': 2,
+            'HUE_LEVEL': 128, 'HUE_SHARE': 0.002, 'HUE_DEG': 7.5, 'HUE_CHROMA': 0.8,
+            'PEAK_TOP': 0.02, 'PEAK_HUE': 25.0, 'PEAK_CHROMA': 0.45, 'PEAK_HL_SHARE': 0.05,
+            'PEAK_TRACED_MIN': 0.10, 'PEAK_TRACED_TOP': 0.25, 'PEAK_TRACED_CHROMA': 0.48,
+            'PEAK_STEP': 4, 'GLINT_GROW': 15, 'GLINT_CLIP': 0.015, 'BODY_LEVEL': 24,
+            'DISPLAY_DILATE': 3, 'UNLIT_SHARE': 0.0002, 'UNLIT_KEEP': 0.99,
+            'BELOW_LEVEL': 138, 'BELOW_SHARE': 0.80, 'CONT_LEVEL': 0.55 * 255, 'CONT_TOL': 2,
+            'INTERIOR_R': 1, 'AO_SHARE': 0.01, 'EDGE_BAND': 2,
             'EDGE_LO': 0.10, 'EDGE_HI': 0.90, 'EDGE_COUNT_TOL': 0.15, 'EDGE_OVER': 2.0,
             'EDGE_SLACK': 0.002, 'FOG_NEAR': 16, 'FOG_RATIO': 1.5, 'FOG_TOL': 3, 'OIT_LUM': 20.0,
             'OIT_RATIO': 0.5, 'SATURATED': 250,
@@ -322,6 +324,11 @@ class TestChecks(testing.PyMOLTestCase):
             self.assertTrue(c.NEGATIVE.get(check), check)       # every proof has a subject
         self.assertEqual(c.kind('haze683', 'haze683_rt0'), 'report')
         self.assertEqual(c.kind('display', 'display_knee_rt1'), 'report')
+        self.assertEqual(c.kind('peak', 'metallic_core_rt1'), 'report')
+        self.assertEqual(c.kind('peak', 'metallic_tint_rt1'), 'proof')
+        traced = [p for p in plan if p[1] == 'metallic_tint_rt1'][0]
+        self.assertIs(traced[2], c.check_peak_traced)
+        self.assertEqual(traced[3], ['peak_metallic_i3_rt1', 'peak_metallic_i3_rt0'])
         self.assertEqual(c.kind('display', 'display_rt1'), 'guard')
         self.assertEqual(c.kind('peak', 'metallic_steps_rt0'), 'guard')
         # recover reads the six reps: a then b
@@ -448,22 +455,43 @@ class TestChecks(testing.PyMOLTestCase):
 
         # display: the background moves with exposure (#13's semantics)
         self.assertBreaks('display_rt1', 0, lambda img: img.__setitem__((0, 0), (150, 150, 150)))
-        # unlit: an overlay pixel changes
+        # unlit: an overlay colour changes (one pixel is an anti-aliasing
+        # allowance, UNLIT_KEEP; every pixel of the colour is not)
         def overlay(img):
             m = (img == numpy.array([255, 0, 255])).all(axis=-1)
-            img[first(m)] = (250, 0, 250)
+            img[m] = (250, 0, 250)
         self.assertBreaks('unlit_rt1', 1, overlay)
+        def one_overlay(img):
+            m = (img == numpy.array([255, 0, 255])).all(axis=-1)
+            img[first(m)] = (250, 0, 250)
+        images, func, kwargs = self.args('unlit_rt1')
+        broken = images[1].copy()
+        one_overlay(broken)
+        self.assertTrue(func(images[0], broken, **kwargs).ok)
         self.assertBreaks('unlit_rt1', 1, bump_bg)
-        # below_knee: one dim pixel off by one level
+        # below_knee: the dim pixels off by one level (a curve that is not
+        # the identity under the knee); one pixel is allowed (AO_SHARE)
         def dim(img):
-            m = (img.max(axis=-1) > 20) & (img.max(axis=-1) < 140)
-            img[first(m)] += 1
+            m = (img.max(axis=-1) > 20) & (img.max(axis=-1) < 120)
+            img[m] += 1
         self.assertBreaks('below_i04_rt0', 1, dim)
-        # continuity: a dim pixel off by three
+        def one_dim(img):
+            m = (img.max(axis=-1) > 20) & (img.max(axis=-1) < 120)
+            img[first(m)] += 1
+        images, func, kwargs = self.args('below_i04_rt0')
+        broken = images[1].copy()
+        one_dim(broken)
+        self.assertTrue(func(images[0], broken, **kwargs).ok)
+        # continuity: the dim pixels off by three
         def dim3(img):
-            m = (img.max(axis=-1) > 20) & (img.max(axis=-1) < 130)
-            img[first(m)] += 3
+            m = (img.max(axis=-1) > 20) & (img.max(axis=-1) < 120)
+            img[m] += 3
         self.assertBreaks('cont_softbox_rt0', 1, dim3)
+        # peak traced: the reflections go white
+        def white(img):
+            geo = img.max(axis=-1) > 0
+            img[geo] = img[geo].max(axis=-1, keepdims=True)
+        self.assertBreaks('metallic_tint_rt1', 0, white)
         # edges: tone after the resolve brightens the partial pixels
         def fringe(img):
             geo = img.max(axis=-1) > 0
@@ -530,16 +558,16 @@ def l2_expected(tag):
     if m:
         x = float(m.group(1).replace('p', '.'))
         e['lights'] = {'key': 1.6 * x, 'rim': 1.6 * x}
-    m = re.match(r'^peak_(metallic|plastic)_i([123])(_e067)?$', base)
+    m = re.match(r'^peak_(metallic|plastic)_i([123])(_e067|_e05)?$', base)
     if m:
         e['lights'] = {'key': float(m.group(2))}
         if m.group(3):
-            e['exposure'] = 2.0 / 3.0
-    m = re.match(r'^glass_i([13])(_e033)?_hl([01])$', base)
+            e['exposure'] = 2.0 / 3.0 if m.group(3) == '_e067' else 0.5
+    m = re.match(r'^glass(_dark)?_i([13])(_e033)?_hl([01])$', base)
     if m:
-        i = float(m.group(1))
+        i = float(m.group(2))
         e['lights'] = {'key': i, 'rim': 0.8 * i}
-        if m.group(2):
+        if m.group(3):
             e['exposure'] = 1.0 / 3.0
     if base.startswith('glass_body_i3'):
         e['lights'] = {'key': 3.0}
@@ -647,7 +675,7 @@ class TestSceneFiles(testing.PyMOLTestCase):
         return cmd.get_setting_int('metal_light_hdr')
 
     def testSceneFilesLoad(self):
-        self.assertEqual(len(self.jobs['l2']), 111)
+        self.assertEqual(len(self.jobs['l2']), 122)
         self.assertEqual(len(self.jobs['regress']), 31)
         for which, spec in self.specs.items():
             self.assertEqual(spec['rig'], 'on', which)
@@ -784,10 +812,12 @@ class TestSceneFiles(testing.PyMOLTestCase):
                                    places=6)
             self.assertEqual(cmd.get_setting_int('metal_light_air_resolution'), 1)
             base, _ = tag_parts(job.tag)
-            if base.startswith('peak_'):
+            if base.startswith('peak_') or re.match(r'^glass(_dark)?_i[13]_', base):
                 self.assertEqual(cmd.get_setting_int('material_env'), 2, job.tag)
+            if re.match(r'^glass(_dark)?_i[13]_', base):
+                self.assertEqual(rig['ambient'], 0.0, job.tag)     # the recover pair
             restore_shims()
-        self.assertEqual(ran, 111)
+        self.assertEqual(ran, 122)
 
     def testEveryRegressionScriptRunsInProcess(self):
         import tempfile as tf

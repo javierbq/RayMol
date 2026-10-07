@@ -1,5 +1,5 @@
 {
- "comment": "#624 L2: HDR colour and exposure under a light rig, checked with scripts/lighting/check_hdr.py l2 and negative (its docstring names what every check reads). 1rx1 at 1280x720 on black, depth_cue 0, subjects grey80 unless named. A tag <base>_knee_rt<n> is the knee twin of <base>_rt<n>: the same lines after _l624_opt('metal_light_hdr', 2) (the 8-bit soft knee; the setting exists from #624 part 2, so a build without it renders the twin as the knee anyway, which is what the round-0 renders are). Every rig is the scene's own (cmd._l624_rig, the cmd.set_lights shim of lighting_616/618.json: the frozen harness calls cmd.set_lights after the scene's lines and the shim installs cmd._l624_rig instead; hasattr guard, the app runs the script twice), classic 0, with an explicit centre and size (the extent of m) and its own air (none unless named). metal_light_air_time 2.0 and metal_light_air_resolution 1 are pinned. sweep_<i>: the prototype spot (orbit -25, pitch 35, radius 3, beam 40, softness 0.4, warmth 5600, highlight 0.7, shadowed, ambient 0.06) at intensity i (0 = the ambient-only footprint reference) on a grey80 surface, metal_shadows 1; _e05: metal_exposure 0.5. rec_<rep>_a/b: the spot widened (beam 60, softness 0.5), ambient 0: a = intensity 3.5 at metal_exposure 4/7, b = 2.0 at 1 (the same light in scene units); surface and cartoon shadowed (metal_shadows 1), sticks, spheres and the bezier tube (lighting_613's CGO) not; rec_air: rec_surface plus haze 0.3. hue_x1/x2p5: lighting_613's orange key and cyan rim, both at intensity 1.6, at x1 and x2.5 (4, the field's top). peak_<mat>_i<n>: a white key (orbit -40, pitch 30, beam 55, highlight 0.7) at intensity n on surface (residues 1-60) and spheres (the rest), gold metallic (l624_gold) or orange plastic (l624_orange), material_env 2 (no environment: every highlight is the rig's); _e067: metal_exposure 2/3. glass_i<n>_hl<h>: clear glass, the white key and a white rim at x n, every highlight h; _e033: metal_exposure 1/3. glass_body_i3: orange glass under the key alone at 3, its highlight over the lit body. frosted_i3 and jelly_i3 are for the eye. shadow_cross: #618's red and blue lights, both shadowed, at intensity 3, over organic sticks. display_e06/e1: white background, rt1, a yellow lines rep (object ln) and a black label (lb) beside a cartoon under a bright white rig, metal_exposure 0.6 or 1; nocartoon: the cartoon hidden (the cartoon's footprint). unlit (rt1): a bright cartoon with magenta, white and navy lines reps (objects ln, lw, ld; line_width 4) and a label (lb; round 0 drew it magenta). below_i04: the key and rim at intensity 0.4. cont_<preset>: the lights preset over cartoon and organic sticks. edges: a back rim at 3.5 and a dim front light. fog: depth_cue 1, white background, rt1. export: ray_opaque_background 0. oit: a 50% transparent surface over the cartoon plus a glass surface (object g) at 3.5. haze683_e1/e05/noair: #618's L4 rig (three_point, its key shadowed) with haze 0.35 and dust 0.6 (noair: none) at metal_exposure 1 and 0.5, for #683. aces: sweep_3p5 at metal_tonemap 1. Checked in CI by testing/tests/raymol/lighting_hdr_check.py.",
+ "comment": "#624 L2: HDR colour and exposure under a light rig, checked with scripts/lighting/check_hdr.py l2 and negative (its docstring names what every check reads). 1rx1 at 1280x720 on black, depth_cue 0, subjects grey80 unless named. A tag <base>_knee_rt<n> is the knee twin of <base>_rt<n>: the same lines after _l624_opt('metal_light_hdr', 2) (the 8-bit soft knee; the setting exists from #624 part 2, so a build without it renders the twin as the knee anyway, which is what the round-0 renders are). Every rig is the scene's own (cmd._l624_rig, the cmd.set_lights shim of lighting_616/618.json: the frozen harness calls cmd.set_lights after the scene's lines and the shim installs cmd._l624_rig instead; hasattr guard, the app runs the script twice), classic 0, with an explicit centre and size (the extent of m) and its own air (none unless named). metal_light_air_time 2.0 and metal_light_air_resolution 1 are pinned. sweep_<i>: the prototype spot (orbit -25, pitch 35, radius 3, beam 40, softness 0.4, warmth 5600, highlight 0.7, shadowed, ambient 0.06) at intensity i (0 = the ambient-only footprint reference) on a grey80 surface, metal_shadows 1; _e05: metal_exposure 0.5. rec_<rep>_a/b: the spot widened (beam 60, softness 0.5), ambient 0: a = intensity 3.5 at metal_exposure 4/7, b = 2.0 at 1 (the same light in scene units); surface and cartoon shadowed (metal_shadows 1), sticks, spheres and the bezier tube (lighting_613's CGO) not; rec_air: rec_surface plus haze 0.3. hue_x1/x2p5: lighting_613's orange key and cyan rim, both at intensity 1.6, at x1 and x2.5 (4, the field's top). peak_<mat>_i<n>: a white key (orbit -40, pitch 30, beam 55, highlight 0.7) at intensity n on surface (residues 1-60) and spheres (the rest), gold metallic (l624_gold) or orange plastic (l624_orange), material_env 2 (no environment: every highlight is the rig's); _e067: metal_exposure 2/3; _e05: metal_exposure 0.5 (HDR only, no knee twin: the contact sheets' third row, as are sweep_0p6/1p2/2p0_e05). glass_i<n>_hl<h>: clear glass, the white key and a white rim at x n, every highlight h, rig ambient 0 and material_env 2 (every light the rig's). glass_dark_i<n>: the same glass coloured black, so its body adds nothing (glass's body carries its unlit base, which exposure scales and intensity does not) and glass_dark_i3_e033 (metal_exposure 1/3) is glass_dark_i1 in scene units. glass_body_i3: orange glass under the key alone at 3, its highlight over the lit body. frosted_i3 and jelly_i3 are for the eye. shadow_cross: #618's red and blue lights, both shadowed, at intensity 3, over organic sticks. display_e06/e1: white background, rt1, a yellow lines rep (object ln) and a black label (lb) beside a cartoon under a bright white rig, metal_exposure 0.6 or 1; nocartoon: the cartoon hidden (the cartoon's footprint). unlit (rt1): a bright cartoon with magenta, white and navy lines reps (objects ln, lw, ld; line_width 4) and a label (lb; round 0 drew it magenta). below_i04: the key and rim at intensity 0.4. cont_<preset>: the lights preset over cartoon and organic sticks. edges: a back rim at 3.5 and a dim front light. fog: depth_cue 1, white background, rt1. export: ray_opaque_background 0. oit: a 50% transparent surface over the cartoon plus a glass surface (object g) at 3.5. haze683_e1/e05/noair: #618's L4 rig (three_point, its key shadowed) with haze 0.35 and dust 0.6 (noair: none) at metal_exposure 1 and 0.5, for #683. aces: sweep_3p5 at metal_tonemap 1. Checked in CI by testing/tests/raymol/lighting_hdr_check.py.",
  "base": null,
  "rig": "on",
  "size": [
@@ -67,6 +67,16 @@
    ]
   },
   {
+   "tag": "sweep_0p6_e05_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('metal_exposure', 0.5)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_spot, 0.6)])"
+   ]
+  },
+  {
    "tag": "sweep_1p2_rt0",
    "from": "surface_rt0",
    "lines": [
@@ -86,6 +96,16 @@
    ]
   },
   {
+   "tag": "sweep_1p2_e05_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('metal_exposure', 0.5)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_spot, 1.2)])"
+   ]
+  },
+  {
    "tag": "sweep_2p0_rt0",
    "from": "surface_rt0",
    "lines": [
@@ -101,6 +121,16 @@
     "_l624_opt('metal_light_hdr', 2)",
     "cmd.color('grey80', 'm')",
     "cmd.set('metal_shadows', 1)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_spot, 2.0)])"
+   ]
+  },
+  {
+   "tag": "sweep_2p0_e05_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('grey80', 'm')",
+    "cmd.set('metal_shadows', 1)",
+    "cmd.set('metal_exposure', 0.5)",
     "cmd._l624_rig = _l624_make([_l624_I(_l624_spot, 2.0)])"
    ]
   },
@@ -431,6 +461,20 @@
    ]
   },
   {
+   "tag": "peak_metallic_i1_e05_rt0",
+   "rt": 0,
+   "lines": [
+    "cmd.show('surface', 'm and polymer and resi 1-60')",
+    "cmd.show('spheres', 'm and not hydro and not resi 1-60')",
+    "cmd.color('l624_gold', 'm')",
+    "cmd.set('surface_material', 'metallic', 'm')",
+    "cmd.set('sphere_material', 'metallic', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd.set('metal_exposure', 0.5)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 1.0)])"
+   ]
+  },
+  {
    "tag": "peak_metallic_i2_rt0",
    "rt": 0,
    "lines": [
@@ -454,6 +498,20 @@
     "cmd.set('surface_material', 'metallic', 'm')",
     "cmd.set('sphere_material', 'metallic', 'm')",
     "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 2.0)])"
+   ]
+  },
+  {
+   "tag": "peak_metallic_i2_e05_rt0",
+   "rt": 0,
+   "lines": [
+    "cmd.show('surface', 'm and polymer and resi 1-60')",
+    "cmd.show('spheres', 'm and not hydro and not resi 1-60')",
+    "cmd.color('l624_gold', 'm')",
+    "cmd.set('surface_material', 'metallic', 'm')",
+    "cmd.set('sphere_material', 'metallic', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd.set('metal_exposure', 0.5)",
     "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 2.0)])"
    ]
   },
@@ -485,6 +543,20 @@
    ]
   },
   {
+   "tag": "peak_metallic_i3_e05_rt0",
+   "rt": 0,
+   "lines": [
+    "cmd.show('surface', 'm and polymer and resi 1-60')",
+    "cmd.show('spheres', 'm and not hydro and not resi 1-60')",
+    "cmd.color('l624_gold', 'm')",
+    "cmd.set('surface_material', 'metallic', 'm')",
+    "cmd.set('sphere_material', 'metallic', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd.set('metal_exposure', 0.5)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 3.0)])"
+   ]
+  },
+  {
    "tag": "peak_plastic_i1_rt0",
    "rt": 0,
    "lines": [
@@ -508,6 +580,20 @@
     "cmd.set('surface_material', 'plastic', 'm')",
     "cmd.set('sphere_material', 'plastic', 'm')",
     "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 1.0)])"
+   ]
+  },
+  {
+   "tag": "peak_plastic_i1_e05_rt0",
+   "rt": 0,
+   "lines": [
+    "cmd.show('surface', 'm and polymer and resi 1-60')",
+    "cmd.show('spheres', 'm and not hydro and not resi 1-60')",
+    "cmd.color('l624_orange', 'm')",
+    "cmd.set('surface_material', 'plastic', 'm')",
+    "cmd.set('sphere_material', 'plastic', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd.set('metal_exposure', 0.5)",
     "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 1.0)])"
    ]
   },
@@ -539,6 +625,20 @@
    ]
   },
   {
+   "tag": "peak_plastic_i2_e05_rt0",
+   "rt": 0,
+   "lines": [
+    "cmd.show('surface', 'm and polymer and resi 1-60')",
+    "cmd.show('spheres', 'm and not hydro and not resi 1-60')",
+    "cmd.color('l624_orange', 'm')",
+    "cmd.set('surface_material', 'plastic', 'm')",
+    "cmd.set('sphere_material', 'plastic', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd.set('metal_exposure', 0.5)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 2.0)])"
+   ]
+  },
+  {
    "tag": "peak_plastic_i3_rt0",
    "rt": 0,
    "lines": [
@@ -562,6 +662,20 @@
     "cmd.set('surface_material', 'plastic', 'm')",
     "cmd.set('sphere_material', 'plastic', 'm')",
     "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 3.0)])"
+   ]
+  },
+  {
+   "tag": "peak_plastic_i3_e05_rt0",
+   "rt": 0,
+   "lines": [
+    "cmd.show('surface', 'm and polymer and resi 1-60')",
+    "cmd.show('spheres', 'm and not hydro and not resi 1-60')",
+    "cmd.color('l624_orange', 'm')",
+    "cmd.set('surface_material', 'plastic', 'm')",
+    "cmd.set('sphere_material', 'plastic', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd.set('metal_exposure', 0.5)",
     "cmd._l624_rig = _l624_make([_l624_I(_l624_white, 3.0)])"
    ]
   },
@@ -627,7 +741,8 @@
    "lines": [
     "cmd.color('grey80', 'm')",
     "cmd.set('surface_material', 'glass', 'm')",
-    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 1.0), highlight=0.0), dict(_l624_x(_l624_wrim, 1.0), highlight=0.0)])"
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 1.0), highlight=0.0), dict(_l624_x(_l624_wrim, 1.0), highlight=0.0)], ambient=0.0)"
    ]
   },
   {
@@ -637,7 +752,8 @@
     "_l624_opt('metal_light_hdr', 2)",
     "cmd.color('grey80', 'm')",
     "cmd.set('surface_material', 'glass', 'm')",
-    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 1.0), highlight=0.0), dict(_l624_x(_l624_wrim, 1.0), highlight=0.0)])"
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 1.0), highlight=0.0), dict(_l624_x(_l624_wrim, 1.0), highlight=0.0)], ambient=0.0)"
    ]
   },
   {
@@ -646,7 +762,8 @@
    "lines": [
     "cmd.color('grey80', 'm')",
     "cmd.set('surface_material', 'glass', 'm')",
-    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 1.0), highlight=1.0), dict(_l624_x(_l624_wrim, 1.0), highlight=1.0)])"
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 1.0), highlight=1.0), dict(_l624_x(_l624_wrim, 1.0), highlight=1.0)], ambient=0.0)"
    ]
   },
   {
@@ -656,7 +773,8 @@
     "_l624_opt('metal_light_hdr', 2)",
     "cmd.color('grey80', 'm')",
     "cmd.set('surface_material', 'glass', 'm')",
-    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 1.0), highlight=1.0), dict(_l624_x(_l624_wrim, 1.0), highlight=1.0)])"
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 1.0), highlight=1.0), dict(_l624_x(_l624_wrim, 1.0), highlight=1.0)], ambient=0.0)"
    ]
   },
   {
@@ -665,7 +783,8 @@
    "lines": [
     "cmd.color('grey80', 'm')",
     "cmd.set('surface_material', 'glass', 'm')",
-    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 3.0), highlight=0.0), dict(_l624_x(_l624_wrim, 3.0), highlight=0.0)])"
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 3.0), highlight=0.0), dict(_l624_x(_l624_wrim, 3.0), highlight=0.0)], ambient=0.0)"
    ]
   },
   {
@@ -675,7 +794,8 @@
     "_l624_opt('metal_light_hdr', 2)",
     "cmd.color('grey80', 'm')",
     "cmd.set('surface_material', 'glass', 'm')",
-    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 3.0), highlight=0.0), dict(_l624_x(_l624_wrim, 3.0), highlight=0.0)])"
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 3.0), highlight=0.0), dict(_l624_x(_l624_wrim, 3.0), highlight=0.0)], ambient=0.0)"
    ]
   },
   {
@@ -684,7 +804,8 @@
    "lines": [
     "cmd.color('grey80', 'm')",
     "cmd.set('surface_material', 'glass', 'm')",
-    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 3.0), highlight=1.0), dict(_l624_x(_l624_wrim, 3.0), highlight=1.0)])"
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 3.0), highlight=1.0), dict(_l624_x(_l624_wrim, 3.0), highlight=1.0)], ambient=0.0)"
    ]
   },
   {
@@ -694,28 +815,52 @@
     "_l624_opt('metal_light_hdr', 2)",
     "cmd.color('grey80', 'm')",
     "cmd.set('surface_material', 'glass', 'm')",
-    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 3.0), highlight=1.0), dict(_l624_x(_l624_wrim, 3.0), highlight=1.0)])"
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 3.0), highlight=1.0), dict(_l624_x(_l624_wrim, 3.0), highlight=1.0)], ambient=0.0)"
    ]
   },
   {
-   "tag": "glass_i3_e033_hl1_rt0",
+   "tag": "glass_dark_i1_hl1_rt0",
    "from": "surface_rt0",
    "lines": [
-    "cmd.color('grey80', 'm')",
+    "cmd.color('black', 'm')",
     "cmd.set('surface_material', 'glass', 'm')",
-    "cmd.set('metal_exposure', 1.0 / 3.0)",
-    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 3.0), highlight=1.0), dict(_l624_x(_l624_wrim, 3.0), highlight=1.0)])"
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 1.0), highlight=1.0), dict(_l624_x(_l624_wrim, 1.0), highlight=1.0)], ambient=0.0)"
    ]
   },
   {
-   "tag": "glass_i3_e033_hl1_knee_rt0",
+   "tag": "glass_dark_i3_e033_hl1_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "cmd.color('black', 'm')",
+    "cmd.set('surface_material', 'glass', 'm')",
+    "cmd.set('metal_exposure', 1.0 / 3.0)",
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 3.0), highlight=1.0), dict(_l624_x(_l624_wrim, 3.0), highlight=1.0)], ambient=0.0)"
+   ]
+  },
+  {
+   "tag": "glass_dark_i1_hl1_knee_rt0",
    "from": "surface_rt0",
    "lines": [
     "_l624_opt('metal_light_hdr', 2)",
-    "cmd.color('grey80', 'm')",
+    "cmd.color('black', 'm')",
+    "cmd.set('surface_material', 'glass', 'm')",
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 1.0), highlight=1.0), dict(_l624_x(_l624_wrim, 1.0), highlight=1.0)], ambient=0.0)"
+   ]
+  },
+  {
+   "tag": "glass_dark_i3_e033_hl1_knee_rt0",
+   "from": "surface_rt0",
+   "lines": [
+    "_l624_opt('metal_light_hdr', 2)",
+    "cmd.color('black', 'm')",
     "cmd.set('surface_material', 'glass', 'm')",
     "cmd.set('metal_exposure', 1.0 / 3.0)",
-    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 3.0), highlight=1.0), dict(_l624_x(_l624_wrim, 3.0), highlight=1.0)])"
+    "cmd.set('material_env', 2)",
+    "cmd._l624_rig = _l624_make([dict(_l624_I(_l624_white, 3.0), highlight=1.0), dict(_l624_x(_l624_wrim, 3.0), highlight=1.0)], ambient=0.0)"
    ]
   },
   {
