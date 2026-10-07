@@ -485,6 +485,94 @@ final class LightsAutoEditTests: XCTestCase {
         XCTAssertEqual(store.lights[0], FakeRigStore.Light(name: "key"), "key untouched")
         XCTAssertTrue(store.performed.isEmpty, "no button press, no Python")
     }
+
+    // The Atmosphere card's tokens (#726).
+
+    func testParsesTheAirTokens() {
+        let parsed = LightsAutoEdit.parse("air;airon:1;haze:0.28;DUST:0.6;dust_size:0.5;dust_speed:0.5;"
+                                          + "scatter:-0.6;airon:0")
+        XCTAssertEqual(parsed.tokens, [.revealAir, .airOn(true), .air(.haze, 0.28), .air(.dust, 0.6),
+                                       .air(.dustSize, 0.5), .air(.dustSpeed, 0.5), .air(.scatter, -0.6),
+                                       .airOn(false)])
+        XCTAssertEqual(parsed.rejected, [])
+        XCTAssertTrue(parsed.revealsAir)
+        XCTAssertFalse(parsed.expands, "air reveals the Atmosphere card only")
+        XCTAssertFalse(LightsAutoEdit.parse("expand").revealsAir)
+        XCTAssertFalse(LightsAutoEdit.parse("haze:0.2").revealsAir)
+        for p in AirParameter.allCases {
+            XCTAssertEqual(LightsAutoEdit.parse("\(p.rawValue):0.5").tokens, [.air(p, 0.5)], "\(p)")
+        }
+        XCTAssertEqual(LightsAutoEdit.parse(" airon:1 ; orbit:20").tokens, [.airOn(true), .set(.orbit, 20)])
+    }
+
+    func testRejectsBadAirTokens() {
+        // Seed is command-only (Q5); a token is never passed on half-read.
+        let parsed = LightsAutoEdit.parse("air:1;airon:2;airon;airon:0.5;haze:x;dust;seed:3;haze:nan;"
+                                          + "scatter:1:2;dust_speed:inf;atmosphere:1")
+        XCTAssertEqual(parsed.tokens, [])
+        XCTAssertEqual(parsed.rejected, ["air:1", "airon:2", "airon", "airon:0.5", "haze:x", "dust", "seed:3",
+                                         "haze:nan", "scatter:1:2", "dust_speed:inf", "atmosphere:1"])
+        XCTAssertFalse(parsed.revealsAir)
+    }
+
+    func testAppliesTheAirTokensThroughTheCardsCalls() {
+        let store = FakeRigStore()
+        store.setRig(["key", "fill"])
+        let controller = LightsController(seams: store.seams)
+        controller.begin()
+        // The switch runs one command; the fields write through the bridge
+        // setter at index -1 (no Python); `air` is a layout choice.
+        var entries = LightsAutoEdit.apply(
+            LightsAutoEdit.parse("air;airon:1;haze:0.28;dust_speed:2.5;scatter:-0.25;airon:1").tokens,
+            to: controller)
+        XCTAssertEqual(entries, ["airon=1 -> ran", "haze=0.28 -> ok", "dust_speed=2.5 -> ok",
+                                 "scatter=-0.25 -> ok", "airon=1 -> skipped"])
+        XCTAssertEqual(store.performed, [.setAir([AirValue("haze", 0.2), AirValue("dust", 0.5)])])
+        XCTAssertEqual(store.air.haze, 0.28)
+        XCTAssertEqual(store.air.dust, 0.5)
+        XCTAssertEqual(store.air.dustSpeed, 2.5)
+        XCTAssertEqual(store.air.scatter, -0.25)
+        XCTAssertEqual(AtmosphereCardState(controller)?.summary,
+                       "on=1 haze=0.28 dust=0.50 dust_size=0.35 dust_speed=2.50 scatter=-0.25 rig=1"
+                       + " hint=none edit=1 memory=0")
+
+        entries = LightsAutoEdit.apply(LightsAutoEdit.parse("airon:0;airon:0;dust:0.4").tokens, to: controller)
+        XCTAssertEqual(entries, ["airon=0 -> ran", "airon=0 -> skipped", "dust=0.4 -> ok"])
+        XCTAssertEqual(store.performed.last, .atmosphereOff)
+        XCTAssertEqual(store.air.haze, 0, "Off: every field back to its table default")
+        XCTAssertEqual(store.air.dust, 0.4)
+        XCTAssertEqual(store.lights.map(\.name), ["key", "fill"], "lights untouched")
+        XCTAssertEqual(store.lights[0], FakeRigStore.Light(name: "key"))
+    }
+
+    func testAirTokensWithNoRig() {
+        let store = FakeRigStore()
+        let controller = LightsController(seams: store.seams)
+        controller.begin()
+        XCTAssertEqual(LightsAutoEdit.apply(LightsAutoEdit.parse("haze:0.3;airon:0").tokens, to: controller),
+                       ["haze=0.3 -> noRig", "airon=0 -> skipped"])
+        XCTAssertTrue(store.performed.isEmpty)
+        XCTAssertFalse(store.exists, "nothing created")
+        // The air-only sheet's run: the switch makes the off, empty rig the
+        // command makes, then the fields edit it.
+        XCTAssertEqual(LightsAutoEdit.apply(LightsAutoEdit.parse("airon:1;haze:0.3").tokens, to: controller),
+                       ["airon=1 -> ran", "haze=0.3 -> ok"])
+        XCTAssertTrue(store.exists)
+        XCTAssertTrue(store.lights.isEmpty)
+        XCTAssertEqual(controller.rig?.enabled, false)
+        XCTAssertEqual(store.air.haze, 0.3)
+        XCTAssertEqual(AtmosphereCardState(controller)?.hint, .noLights)
+    }
+
+    func testAirTokensWhileInactiveDoNothing() {
+        let store = FakeRigStore()
+        store.setRig(["key"])
+        let controller = LightsController(seams: store.seams)
+        XCTAssertEqual(LightsAutoEdit.apply(LightsAutoEdit.parse("airon:1;haze:0.3").tokens, to: controller),
+                       ["airon=1 -> skipped", "haze=0.3 -> badIndex"])
+        XCTAssertTrue(store.performed.isEmpty)
+        XCTAssertEqual(store.air, FakeRigStore.defaultAir)
+    }
 }
 #endif
 

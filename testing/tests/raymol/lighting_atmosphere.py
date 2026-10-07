@@ -836,6 +836,23 @@ class TestAtmosphereSource(testing.PyMOLTestCase):
                 self.assertIn('.modifier(LightsSheetKeyboardScroll(proxy: proxy, covered: fieldFocused && overlap > 0))',
                               self.body(SHEET, signature))
 
+    def testTheDebugHookUsesTheCardsCalls(self):
+        """The simulator hook's air tokens (DEBUG LightsAutoEdit) run the
+        card's own calls (the bridge setter for a field, one command for the
+        switch), `air` drives the sheet's reveal path and the card's start
+        state, and both PYMOL_AUTOLIGHTS lines log the card's summary."""
+        inspector = os.path.join(SHARED, 'LightsInspector.swift')
+        apply = self.body(inspector, 'static func apply(')
+        self.assertIn('controller.setAir(parameter, value)', apply)
+        self.assertIn('controller.setAtmosphere(on: on)', apply)
+        self.assertNotIn('perform', apply)
+        content = self.read(CONTENT_VIEW)
+        self.assertEqual(content.count('air=\\(air)'), 2)
+        self.assertEqual(content.count('let air = AtmosphereCardState(lights)?.summary ?? "none"'), 2)
+        self.assertEqual(content.count('atmosphereRevealRequest: lightsAtmosphereRevealRequest'), 2)
+        start = self.body(CONTENT_VIEW, 'private var lightsAtmosphereStart: LightsAtmosphereStart')
+        self.assertIn('if lightsAtmosphereExpandOverride { return .expanded }', start)
+
     def testNoUndo(self):
         """Light edits register no undo (the bar's Revert is the way back);
         the card registers none either."""
