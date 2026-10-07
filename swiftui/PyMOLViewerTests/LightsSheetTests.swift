@@ -185,6 +185,21 @@ final class LightsSheetModelTests: XCTestCase {
                        24 + 44 + 8 + 160 + 8 + 300 + 12)
     }
 
+    func testTheAirOnlySheetIsCompact() {
+        // No light (#726): the air alone at the compact height in every room,
+        // with either header; the slot and the drawn sheet agree (never
+        // dragged), and it is never taller than the expanded sheet.
+        for r in Self.rooms {
+            for header in Self.headers {
+                let h = heights(r, header: header)
+                let frame = LightsSheetModel.airOnlyFrame(heights: h)
+                XCTAssertEqual(frame, LightsSheetFrame(slot: h.compact, sheet: h.compact), "\(r.name) \(header)")
+                XCTAssertLessThanOrEqual(frame.slot, h.expanded)
+                XCTAssertGreaterThanOrEqual(r.room - frame.slot, M.minimumScene, "\(r.name) \(header)")
+            }
+        }
+    }
+
     func testDetentSnapping() {
         func d(_ from: LightsSheetDetent, _ t: CGFloat, _ p: CGFloat) -> LightsSheetDetent {
             LightsSheetModel.detent(from: from, translation: t, predicted: p)
@@ -302,6 +317,52 @@ final class LightsSheetStateTests: XCTestCase {
         XCTAssertEqual(LightsSheetState.sideIdentifier, "lights.side")
         XCTAssertEqual(LightsSheetState.colourIdentifier, "lights.sheet.colour")
         XCTAssertEqual(LightsSheetState.swatchIdentifier("Warm"), "lights.sheet.swatch.warm")
+        XCTAssertEqual(LightsSheetState.airIdentifier, "lights.sheet.air")
+        XCTAssertEqual(LightsSheetState.sideAirIdentifier, "lights.side.air")
+        XCTAssertEqual(LightsSheetState.atmosphereAnchor, "lights.sheet.atmosphere.section")
+    }
+
+    func testTheKeyboardScrollsToTheFocusedRow() {
+        // Uncovered: no scroll, whatever is focused.
+        XCTAssertNil(LightsSheetState.scrollTarget(focusedRow: nil, covered: false))
+        XCTAssertNil(LightsSheetState.scrollTarget(focusedRow: AtmosphereCardIDs.row(.dustSpeed), covered: false))
+        // Covered with an Atmosphere field focused: that row, not the rows'
+        // top (a field at the bottom of the rows would stay under the
+        // keyboard).
+        for p in AirParameter.allCases {
+            XCTAssertEqual(LightsSheetState.scrollTarget(focusedRow: AtmosphereCardIDs.row(p), covered: true),
+                           AtmosphereCardIDs.row(p))
+        }
+        // Covered with an inspector field focused (it reports no row): the
+        // rows' top, as before.
+        XCTAssertEqual(LightsSheetState.scrollTarget(focusedRow: nil, covered: true), LightsSheetState.rowsAnchor)
+    }
+
+    @MainActor
+    func testTheAirOnlySheetShowsWithNoLight() {
+        let store = FakeRigStore()
+        let controller = LightsController(seams: store.seams)
+        // Outside Lights mode: nothing.
+        XCTAssertFalse(LightsSheet.showsAirOnly(controller))
+        // No rig: the air alone.
+        controller.begin()
+        XCTAssertTrue(LightsSheet.showsAirOnly(controller))
+        XCTAssertNil(LightsOrbitState(controller))
+        controller.end()
+        // A rig with no light (as the switch makes with no rig): the air
+        // alone.
+        store.setRig([], enabled: false)
+        store.air = atmosphereOnAir
+        controller.begin()
+        XCTAssertTrue(LightsSheet.showsAirOnly(controller))
+        controller.end()
+        // A light: the full sheet.
+        store.setRig(["key", "fill", "rim"])
+        controller.begin()
+        XCTAssertFalse(LightsSheet.showsAirOnly(controller))
+        XCTAssertNotNil(LightsOrbitState(controller))
+        controller.end()
+        XCTAssertFalse(LightsSheet.showsAirOnly(controller))
     }
 
     func testVoiceOverAdjustments() {
@@ -377,6 +438,16 @@ final class LightsPhoneWiringTests: XCTestCase {
                                "float:\(corner.rawValue)")
             }
             XCTAssertEqual(LightsSheetState.toolsSummary(placement: .column, detent: detent), "column")
+            // The phone's air-only sheet (no light, #726), whatever the
+            // detent; the float and the column have no air-only form.
+            XCTAssertEqual(LightsSheetState.toolsSummary(placement: .bottomSheet, detent: detent, airOnly: true),
+                           "sheet:air")
+            XCTAssertEqual(LightsSheetState.toolsSummary(placement: .sidePanel, detent: detent, airOnly: true),
+                           "side:air")
+            XCTAssertEqual(LightsSheetState.toolsSummary(placement: .floating, detent: detent, airOnly: true),
+                           "float:bl")
+            XCTAssertEqual(LightsSheetState.toolsSummary(placement: .column, detent: detent, airOnly: true),
+                           "column")
         }
     }
 
@@ -447,6 +518,8 @@ final class LightsSheetSnapshotTests: XCTestCase {
         var bottomInset: CGFloat = 0
         var sceneShadowsOn: Bool? = true
         var touch: CGFloat = 44
+        /// The owner's Atmosphere reveal request (the header button's path).
+        var reveal = 0
         var setUp: (FakeRigStore) -> Void = LightsSheetSnapshotTests.sketchKey
         var check: (Measured) -> Void = { _ in }
     }
@@ -455,6 +528,18 @@ final class LightsSheetSnapshotTests: XCTestCase {
     final class Measured {
         var header: CGFloat = 0
         var rows: CGFloat = 0
+        /// The sheet's slot as laid out, and its detent after the shot.
+        var sheet: CGFloat = 0
+        var detent: LightsSheetDetent?
+        /// How far the rows are scrolled (the largest vertical offset of the
+        /// NSScrollViews behind SwiftUI's ScrollViews; only the rows scroll
+        /// in the expanded sheet).
+        var scrolled: CGFloat = 0
+    }
+
+    /// The sheet's compact height in `room` with the measured header.
+    private static func compact(_ m: Measured, room: CGFloat, bottomInset: CGFloat) -> CGFloat {
+        LightsSheetModel.layout(room: room, header: m.header, bottomInset: bottomInset, expandedContent: 0).compact
     }
 
     private static var outputDirectory: URL {
@@ -523,6 +608,13 @@ final class LightsSheetSnapshotTests: XCTestCase {
             Shot(name: "expanded_852_light", kind: .bottom(.expanded), width: 393, room: 663, bottomInset: 34,
                  check: { m in
                      XCTAssertGreaterThan(m.rows, 300, "the rows are measured once shown")
+                     // The first expanded layout uses the estimate: it stays
+                     // near the measured three_point rows plus the
+                     // Atmosphere section in the 44 pt profile.
+                     XCTAssertEqual(m.rows, LightsSheetMetrics.estimatedRows, accuracy: 40, "estimatedRows vs measured \(m.rows)")
+                     // Not revealed: the rows are not scrolled (the control
+                     // for the revealed shot's check).
+                     XCTAssertLessThan(m.scrolled, 1, "no scroll without a reveal")
                  }),
             Shot(name: "expanded_852_dark", kind: .bottom(.expanded), dark: true, width: 393, room: 663,
                  bottomInset: 34),
@@ -533,6 +625,56 @@ final class LightsSheetSnapshotTests: XCTestCase {
             Shot(name: "colour_palette_light", kind: .palette, width: 220, room: 230),
             // The macOS profile (no 44 pt frames) for comparison.
             Shot(name: "compact_375_mac_profile_light", touch: 0),
+            // The Atmosphere section (#726). The header's Atmosphere button
+            // path from compact: the sheet expands and the rows scroll to
+            // the section (the air on, so the button is lit).
+            Shot(name: "atmosphere_revealed_852_light", width: 393, room: 663, bottomInset: 34, reveal: 1,
+                 setUp: { store in
+                     Self.sketchKey(store)
+                     store.air = atmosphereOnAir
+                 }, check: { m in
+                     XCTAssertEqual(m.detent, .expanded, "the reveal expands a compact sheet")
+                     // Scrolled past the inspector rows (about 430 pt) to
+                     // the section.
+                     XCTAssertGreaterThan(m.scrolled, 300, "the rows scroll to the Atmosphere section")
+                 }),
+            Shot(name: "atmosphere_revealed_667_dark", dark: true, reveal: 1, setUp: { store in
+                Self.sketchKey(store)
+                store.air = atmosphereOnAir
+            }, check: { m in
+                XCTAssertEqual(m.detent, .expanded)
+                XCTAssertGreaterThan(m.scrolled, 300, "the rows scroll to the Atmosphere section")
+            }),
+            // The header at 375 pt with a long light name: the menu label
+            // truncates; the Atmosphere button, Shadow, Pin and More keep
+            // their 44 pt targets on one 44 pt row.
+            Shot(name: "header_375_long_name_light", setUp: { store in
+                Self.sketchKey(store)
+                store.lights[0].name = "key_light_over_the_left_shoulder"
+                store.air = atmosphereOnAir
+            }, check: { m in
+                XCTAssertGreaterThanOrEqual(m.header, 44)
+                XCTAssertLessThan(m.header, 60, "one header row with a long name")
+            }),
+            // No light: the air alone at the compact height, even with the
+            // expanded detent; no rows height reported (that is the light's).
+            Shot(name: "air_only_no_rig_852_light", kind: .bottom(.expanded), width: 393, room: 663,
+                 bottomInset: 34, setUp: { _ in }, check: { m in
+                     XCTAssertEqual(m.sheet, Self.compact(m, room: 663, bottomInset: 34), accuracy: 0.5)
+                     XCTAssertEqual(m.rows, 0, "the air rows are not the light's rows")
+                     XCTAssertGreaterThanOrEqual(m.header, 44)
+                     XCTAssertLessThan(m.header, 60, "the Atmosphere header is one row")
+                     XCTAssertEqual(m.detent, .expanded, "the detent is left for when a light returns")
+                 }),
+            // The empty rig the switch makes with no rig, the air on.
+            Shot(name: "air_only_empty_rig_375_dark", dark: true, setUp: { store in
+                store.setRig([], enabled: false)
+                store.air = atmosphereOnAir
+            }, check: { m in
+                XCTAssertEqual(m.sheet, Self.compact(m, room: 517, bottomInset: 0), accuracy: 0.5)
+            }),
+            // iPhone landscape's trailing panel with no light.
+            Shot(name: "air_only_side_panel_light", kind: .side, width: 360, room: 393, setUp: { _ in }),
         ]
         let dir = Self.outputDirectory
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -558,7 +700,7 @@ final class LightsSheetSnapshotTests: XCTestCase {
             content = AnyView(SheetHost(controller: controller, style: style, detent: detent,
                                         room: shot.room, width: shot.width, bottomInset: shot.bottomInset,
                                         sceneShadowsOn: shot.sceneShadowsOn, viewport: viewport,
-                                        measured: measured))
+                                        reveal: shot.reveal, measured: measured))
         case .side:
             content = AnyView(
                 HStack(spacing: 0) {
@@ -566,7 +708,7 @@ final class LightsSheetSnapshotTests: XCTestCase {
                     LightsSheet(controller: controller, style: style, placement: .side,
                                 detent: .constant(.expanded),
                                 heights: LightsSheetHeights(compact: 0, expanded: 0, compactContent: 0),
-                                sceneShadowsOn: shot.sceneShadowsOn)
+                                sceneShadowsOn: shot.sceneShadowsOn, atmosphereRevealRequest: shot.reveal)
                         .frame(width: shot.width)
                 }
                 .frame(width: shot.width + 200, height: shot.room))
@@ -606,6 +748,7 @@ final class LightsSheetSnapshotTests: XCTestCase {
         let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
         try png.write(to: url)
         NSLog("LIGHTSSHEET_SNAPSHOT: \(url.path)")
+        measured.scrolled = Self.scrollOffset(in: host)
         window.orderOut(nil)
         shot.check(measured)
 
@@ -628,6 +771,7 @@ final class LightsSheetSnapshotTests: XCTestCase {
         let bottomInset: CGFloat
         let sceneShadowsOn: Bool?
         let viewport: Color
+        let reveal: Int
         let measured: Measured
         @State private var header: CGFloat = 0
         @State private var rows: CGFloat = 0
@@ -640,9 +784,18 @@ final class LightsSheetSnapshotTests: XCTestCase {
             VStack(spacing: 0) {
                 viewport
                 LightsSheet(controller: controller, style: style, placement: .bottom, detent: $detent,
-                            heights: heights, bottomInset: bottomInset, sceneShadowsOn: sceneShadowsOn)
+                            heights: heights, bottomInset: bottomInset, sceneShadowsOn: sceneShadowsOn,
+                            atmosphereRevealRequest: reveal)
+                    .background(GeometryReader { g in
+                        Color.clear
+                            .onAppear { measured.sheet = g.size.height }
+                            .onChange(of: g.size.height) { _, height in measured.sheet = height }
+                    })
             }
             .frame(width: width, height: room)
+            .onAppear { measured.detent = detent }
+            .onChange(of: detent) { _, now in measured.detent = now }
+
             .onPreferenceChange(LightsSheetHeaderHeightKey.self) { value in
                 header = value
                 measured.header = value
@@ -662,6 +815,17 @@ final class LightsSheetSnapshotTests: XCTestCase {
         guard let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { return nil }
         host.cacheDisplay(in: host.bounds, to: rep)
         return rep
+    }
+
+    /// The largest vertical scroll offset among the NSScrollViews under
+    /// `view` (SwiftUI's ScrollView on macOS).
+    private static func scrollOffset(in view: NSView) -> CGFloat {
+        var offset: CGFloat = 0
+        if let scroll = view as? NSScrollView {
+            offset = abs(scroll.contentView.bounds.origin.y)
+        }
+        for sub in view.subviews { offset = max(offset, scrollOffset(in: sub)) }
+        return offset
     }
 
     /// At most two colours among the sampled pixels: blank, or a bare fill.

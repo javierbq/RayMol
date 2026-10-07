@@ -24,17 +24,32 @@
 // The side panel (`.side`): the header row and the expanded body filling the
 // panel's height, no grabber.
 //
-// While an Orbit or Pitch field has the keyboard (LightsFieldFocusKey) the
+// The Atmosphere section (#726): the rig's haze and dust
+// (LightsAtmosphereCard, `.section`) follow the inspector rows in the
+// expanded body. An Atmosphere button in the header expands a compact sheet
+// and scrolls to it (`revealAtmosphere()`).
+//
+// With no light (no rig, or a rig with no light) the sheet shows the air
+// alone (`showsAirOnly`): at `.bottom` the compact height whatever the
+// detent, with the Atmosphere header (title and switch) and its rows
+// scrolling below it, no grabber drag and no More; at `.side` the same header
+// and rows filling the panel. So the no-lights hint and the switch are
+// reachable on a phone too.
+//
+// While a field in the rows has the keyboard (LightsFieldFocusKey) the
 // owner keeps the viewport's size; the sheet reads the keyboard's overlap
-// itself (iOS only), hides the pinned canvases, pads and scrolls the rows,
-// and rises over the scene when fewer than 96 pt of rows would show.
+// itself (iOS only), hides the pinned canvases, pads the rows, scrolls the
+// focused row into view (an Atmosphere row reports itself through
+// LightsSheetScrollTargetKey; otherwise the rows' top), and rises over the
+// scene when fewer than 96 pt of rows would show.
 //
 // Every edit goes through the controller's typed API (setIfChanged,
-// setColour) and LightsOrbitInteraction (inside OrbitCanvases): the bridge
-// setters, no Python per tick (#610). This file names no Python, console
-// command or bridge function (testing/tests/raymol/lighting_mode.py and
-// lighting_touch.py check that). The pure parts (placement, metrics, the
-// height model, the strings) are unit-tested in LightsSheetTests.swift.
+// setColour), LightsOrbitInteraction (inside OrbitCanvases) and the
+// Atmosphere card's typed air API: the bridge setters, no Python per tick
+// (#610). This file names no Python, console command or bridge function
+// (testing/tests/raymol/lighting_mode.py and lighting_touch.py check that).
+// The pure parts (placement, metrics, the height model, the strings) are
+// unit-tested in LightsSheetTests.swift.
 
 import SwiftUI
 #if os(iOS)
@@ -84,6 +99,8 @@ enum LightsSheetMetrics {
     static let minimumHeader: CGFloat = 44
     /// Between the header and the body.
     static let headerGap: CGFloat = 8
+    /// Above the Atmosphere section, under the inspector rows.
+    static let sectionGap: CGFloat = 8
     /// The compact body: the plan (164 x 164) beside two 48 pt two-line
     /// sliders and a 44 pt Colour button with 8 pt gaps (156).
     static let compactBody: CGFloat = 164
@@ -107,8 +124,10 @@ enum LightsSheetMetrics {
     static let flingDistance: CGFloat = 120
     /// The rows a keyboard always leaves showing above it.
     static let keyboardRows: CGFloat = 96
-    /// The rows' height before they are first measured.
-    static let estimatedRows: CGFloat = 420
+    /// The rows' height before they are first measured: the three_point
+    /// key's inspector rows plus the Atmosphere section in the 44 pt profile
+    /// (measured 603; LightsSheetSnapshotTests keeps it within 40 pt).
+    static let estimatedRows: CGFloat = 600
     /// The top corners' radius.
     static let cornerRadius: CGFloat = 12
     /// Above the side panel's header.
@@ -261,6 +280,14 @@ enum LightsSheetModel {
         return LightsSheetFrame(slot: slot, sheet: sheet)
     }
 
+    /// The air-only sheet (no light): the compact height whatever the
+    /// detent, never dragged (the detent is left for when a light returns).
+    /// Compact, so it never breaks the expanded sheet's "no taller than its
+    /// content" rule; its rows scroll in the compact body.
+    static func airOnlyFrame(heights: LightsSheetHeights) -> LightsSheetFrame {
+        dragFrame(detent: .compact, translation: 0, heights: heights)
+    }
+
     /// The expanded body shows once the drawn sheet is past halfway to the
     /// expanded height (during a drag), else for the expanded detent.
     static func showsExpandedBody(detent: LightsSheetDetent, sheet: CGFloat, heights: LightsSheetHeights,
@@ -352,8 +379,25 @@ enum LightsSheetState {
     static let colourLabel = "Colour"
     static let colourHint = "Shows the colour swatches"
     static let customColourName = "Custom"
-    /// The rows' top, scrolled into view when a field takes the keyboard.
+    /// The air-only sheet and side panel (no light, #726).
+    static let airIdentifier = "lights.sheet.air"
+    static let sideAirIdentifier = "lights.side.air"
+    /// The rows' top, scrolled into view when a field with no row of its own
+    /// (the inspector's) takes the keyboard.
     static let rowsAnchor = "lights.sheet.rows.top"
+    /// The Atmosphere section (#726): what the header's Atmosphere button
+    /// scrolls to.
+    static let atmosphereAnchor = "lights.sheet.atmosphere.section"
+
+    /// What the rows scroll to while a keyboard covers the sheet with a
+    /// field focused (`covered`): the focused row an Atmosphere field reports
+    /// (LightsSheetScrollTargetKey), else the rows' top; nil (no scroll)
+    /// while uncovered. A focused row near the bottom of the rows would
+    /// otherwise stay under the keyboard.
+    static func scrollTarget(focusedRow: String?, covered: Bool) -> String? {
+        guard covered else { return nil }
+        return focusedRow ?? rowsAnchor
+    }
 
     static func grabberValue(_ detent: LightsSheetDetent) -> String {
         detent == .compact ? "Compact" : "Expanded"
@@ -384,12 +428,13 @@ enum LightsSheetState {
 
     /// Where the tools are, for the `tools=` field of the PYMOL_AUTOLIGHTS
     /// and LightsLayout log lines: `sheet:compact`, `sheet:expanded`,
-    /// `side`, `float:<corner>` (`float:bl`) or `column`.
+    /// `side`, `float:<corner>` (`float:bl`) or `column`; with no light on a
+    /// phone (`airOnly`, LightsSheet.showsAirOnly) `sheet:air` or `side:air`.
     static func toolsSummary(placement: LightsToolsPlacement, detent: LightsSheetDetent,
-                             corner: LightsFloatCorner = .default) -> String {
+                             corner: LightsFloatCorner = .default, airOnly: Bool = false) -> String {
         switch placement {
-        case .bottomSheet: return "sheet:\(detent.rawValue)"
-        case .sidePanel: return "side"
+        case .bottomSheet: return airOnly ? "sheet:air" : "sheet:\(detent.rawValue)"
+        case .sidePanel: return airOnly ? "side:air" : "side"
         case .floating: return "float:\(corner.rawValue)"
         case .column: return "column"
         }
@@ -423,8 +468,9 @@ private struct LightsSheetBottomKey: PreferenceKey {
 
 // MARK: - The sheet
 
-/// The docked light tools. Draws nothing unless Lights mode is active with a
-/// selected light.
+/// The docked light tools. With a selected light, the full sheet (or side
+/// panel); with no light while Lights mode is active, the air alone
+/// (`showsAirOnly`). Draws nothing outside Lights mode.
 struct LightsSheet: View {
     enum Placement: Equatable {
         /// The two-height bottom sheet.
@@ -446,8 +492,14 @@ struct LightsSheet: View {
     /// True for the snap after a release, a tap or a VoiceOver adjustment,
     /// false when it completes (the owner freezes the drawable meanwhile).
     var onMoving: (Bool) -> Void
-    /// An Orbit or Pitch field took or lost the keyboard.
+    /// A field in the rows (Orbit, Pitch, an Atmosphere value) took or lost
+    /// the keyboard.
     var onFieldFocus: (Bool) -> Void
+    /// Asks the full sheet to reveal the Atmosphere section, as the header's
+    /// Atmosphere button does (`revealAtmosphere()`): each change asks once,
+    /// and a non-zero value when the full sheet appears asks once too (an
+    /// owner resets it to 0 for each mode entry). 0: nothing asked.
+    var atmosphereRevealRequest: Int
 
     /// The grabber drag's live translation. SwiftUI resets it when the drag
     /// ends or is cancelled (no `onEnded` then), so a cancelled drag leaves
@@ -458,11 +510,19 @@ struct LightsSheet: View {
     @State private var fieldFocused = false
     @State private var keyboardTop: CGFloat?
     @State private var bottom: CGFloat = 0
+    /// Bumped by `revealAtmosphere()`; the expanded body scrolls to the
+    /// Atmosphere section while it differs from `atmosphereShown` (also when
+    /// the body only appears with the expansion the request started).
+    @State private var atmosphereRequest = 0
+    @State private var atmosphereShown = 0
+    /// The owner's last `atmosphereRevealRequest` acted on.
+    @State private var revealSeen = 0
 
     init(controller: LightsController, style: LightsBarStyle, placement: Placement,
          detent: Binding<LightsSheetDetent>, heights: LightsSheetHeights, bottomInset: CGFloat = 0,
          sceneShadowsOn: Bool? = nil, onEnableSceneShadows: @escaping () -> Void = {},
-         onMoving: @escaping (Bool) -> Void = { _ in }, onFieldFocus: @escaping (Bool) -> Void = { _ in }) {
+         onMoving: @escaping (Bool) -> Void = { _ in }, onFieldFocus: @escaping (Bool) -> Void = { _ in },
+         atmosphereRevealRequest: Int = 0) {
         self.controller = controller
         self.style = style
         self.placement = placement
@@ -473,18 +533,42 @@ struct LightsSheet: View {
         self.onEnableSceneShadows = onEnableSceneShadows
         self.onMoving = onMoving
         self.onFieldFocus = onFieldFocus
+        self.atmosphereRevealRequest = atmosphereRevealRequest
     }
 
     private typealias M = LightsSheetMetrics
 
+    /// The air-only sheet shows: Lights mode is active with no selected
+    /// light (no rig, or a rig with no light), where the full sheet (which
+    /// needs LightsOrbitState) has nothing to show.
+    static func showsAirOnly(_ controller: LightsController) -> Bool {
+        controller.isActive && LightsOrbitState(controller) == nil
+    }
+
     var body: some View {
         if LightsOrbitState(controller) != nil {
-            Group {
+            observingMeasurements(Group {
                 switch placement {
                 case .bottom: bottomSheet
                 case .side: sidePanel
                 }
-            }
+            })
+            .onAppear { noteRevealRequest(atmosphereRevealRequest) }
+            .onChange(of: atmosphereRevealRequest) { _, request in noteRevealRequest(request) }
+        } else if Self.showsAirOnly(controller) {
+            observingMeasurements(Group {
+                switch placement {
+                case .bottom: airOnlySheet
+                case .side: airOnlyPanel
+                }
+            })
+        }
+    }
+
+    /// The header's height, the keyboard rule and the safety net, for the
+    /// full sheet and the air-only one alike.
+    private func observingMeasurements<Content: View>(_ content: Content) -> some View {
+        content
             .onPreferenceChange(LightsSheetHeaderHeightKey.self) { measured in
                 if measured > 0, abs(measured - header) > 0.5 { header = measured }
             }
@@ -497,11 +581,28 @@ struct LightsSheet: View {
             .modifier(LightsKeyboardTopReader(top: $keyboardTop))
             .onDisappear {
                 // Safety net: never leave the drawable frozen or the
-                // keyboard rule on.
+                // keyboard rule on (also when the air-only sheet gives way
+                // to the full one, or back).
                 onMoving(false)
-                if fieldFocused { onFieldFocus(false) }
+                if fieldFocused {
+                    fieldFocused = false
+                    onFieldFocus(false)
+                }
             }
-        }
+    }
+
+    private func noteRevealRequest(_ request: Int) {
+        guard request != 0, request != revealSeen else { return }
+        revealSeen = request
+        revealAtmosphere()
+    }
+
+    /// The header's Atmosphere button: a compact sheet expands, then the
+    /// rows scroll to the Atmosphere section (the side panel, always
+    /// expanded, only scrolls).
+    private func revealAtmosphere() {
+        if placement == .bottom, detent == .compact { setDetent(.expanded) }
+        atmosphereRequest += 1
     }
 
     private var overlap: CGFloat {
@@ -615,10 +716,13 @@ struct LightsSheet: View {
 
     // MARK: header
 
+    /// The inspector's header, the Atmosphere button (expands a compact
+    /// sheet and scrolls to the section) and, on the bottom sheet, More/Less.
     private var headerRow: some View {
         HStack(alignment: .top, spacing: 4) {
             LightsInspector(controller: controller, style: style, sceneShadowsOn: sceneShadowsOn,
                             onEnableSceneShadows: onEnableSceneShadows, presentation: .header)
+            LightsSheetAtmosphereButton(controller: controller, style: style) { revealAtmosphere() }
             if placement == .bottom {
                 moreButton
             }
@@ -667,7 +771,8 @@ struct LightsSheet: View {
     }
 
     /// The plan and the arc pinned at the top (hidden under a keyboard), and
-    /// the inspector's rows scrolling below: only the rows scroll.
+    /// the inspector's rows then the Atmosphere section scrolling below: only
+    /// the rows scroll.
     private func expandedBody(_ canvases: LightsSheetCanvases, showsPlan: Bool) -> some View {
         VStack(alignment: .leading, spacing: M.gap) {
             if showsPlan {
@@ -680,6 +785,10 @@ struct LightsSheet: View {
                         Color.clear.frame(height: 0).id(LightsSheetState.rowsAnchor)
                         LightsInspector(controller: controller, style: style, sceneShadowsOn: sceneShadowsOn,
                                         onEnableSceneShadows: onEnableSceneShadows, presentation: .rows)
+                        // The rig's haze and dust (#726), after the light's
+                        // rows; it carries LightsSheetState.atmosphereAnchor.
+                        LightsAtmosphereCard(controller: controller, style: style, presentation: .section)
+                            .padding(.top, M.sectionGap)
                     }
                     .background(GeometryReader { g in
                         Color.clear.preference(key: LightsSheetRowsHeightKey.self, value: g.size.height)
@@ -687,12 +796,23 @@ struct LightsSheet: View {
                 }
                 .scrollBounceBehavior(.basedOnSize)
                 .contentMargins(.bottom, overlap, for: .scrollContent)
-                .onChange(of: fieldFocused && overlap > 0) { _, covered in
-                    guard covered else { return }
-                    withAnimation(.easeOut(duration: M.snapDuration)) {
-                        proxy.scrollTo(LightsSheetState.rowsAnchor, anchor: .top)
-                    }
-                }
+                .modifier(LightsSheetKeyboardScroll(proxy: proxy, covered: fieldFocused && overlap > 0))
+                // Appearing with the expansion a reveal started: jump (the
+                // sheet's own expansion animates); already shown: glide.
+                .onAppear { scrollToAtmosphereIfAsked(proxy, animated: false) }
+                .onChange(of: atmosphereRequest) { scrollToAtmosphereIfAsked(proxy, animated: true) }
+            }
+        }
+    }
+
+    /// One scroll to the Atmosphere section per `revealAtmosphere()`, after
+    /// the layout pass (a body that has just appeared has its rows then).
+    private func scrollToAtmosphereIfAsked(_ proxy: ScrollViewProxy, animated: Bool) {
+        guard atmosphereRequest != atmosphereShown else { return }
+        atmosphereShown = atmosphereRequest
+        DispatchQueue.main.async {
+            withAnimation(animated ? .easeOut(duration: M.snapDuration) : nil) {
+                proxy.scrollTo(LightsSheetState.atmosphereAnchor, anchor: .top)
             }
         }
     }
@@ -723,6 +843,109 @@ struct LightsSheet: View {
         .tint(style.accent)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(LightsSheetState.sideIdentifier)
+    }
+
+    // MARK: air only (no light)
+
+    /// The air alone at the compact height whatever the detent: the
+    /// Atmosphere header (title and switch) under an empty grabber strip
+    /// (there is no other height to drag to), and the air rows scrolling in
+    /// the compact body. No More and no Atmosphere button. The keyboard rule
+    /// holds as in the full sheet.
+    private var airOnlySheet: some View {
+        let frame = LightsSheetModel.airOnlyFrame(heights: heights)
+        let keyboard = LightsSheetModel.keyboardLayout(sheet: frame.sheet, header: header, overlap: overlap)
+        let drawn = frame.sheet + keyboard.rise
+        return VStack(spacing: 0) {
+            Color.clear.frame(height: M.grabberStrip)
+            airHeaderRow
+                .padding(.horizontal, M.inset)
+            airRows
+                .padding(.horizontal, M.inset)
+                .padding(.top, M.headerGap)
+                .padding(.bottom, M.bottomGap)
+        }
+        .padding(.bottom, bottomInset)
+        .frame(height: drawn, alignment: .top)
+        .background(sheetChrome)
+        .background(GeometryReader { g in
+            Color.clear.preference(key: LightsSheetBottomKey.self, value: g.frame(in: .global).maxY)
+        })
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(LightsSheetState.airIdentifier)
+        .frame(height: frame.slot, alignment: .bottom)
+        .tint(style.accent)
+    }
+
+    /// The air alone in the side panel: the Atmosphere header, then its rows
+    /// filling the panel.
+    private var airOnlyPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            airHeaderRow
+                .padding(.horizontal, M.inset)
+                .padding(.top, M.sideTopInset)
+            airRows
+                .padding(.horizontal, M.inset)
+                .padding(.top, M.headerGap)
+                .padding(.bottom, M.bottomGap)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(style.background)
+        .overlay(alignment: .leading) {
+            Rectangle().fill(style.text.opacity(0.18)).frame(width: 0.5)
+        }
+        .background(GeometryReader { g in
+            Color.clear.preference(key: LightsSheetBottomKey.self, value: g.frame(in: .global).maxY)
+        })
+        .tint(style.accent)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(LightsSheetState.sideAirIdentifier)
+    }
+
+    /// The Atmosphere header as the sheet's header row (measured, as the
+    /// light's header is, so the heights follow it).
+    private var airHeaderRow: some View {
+        LightsAtmosphereCard(controller: controller, style: style, presentation: .header)
+            .frame(minHeight: M.minimumHeader)
+            .background(GeometryReader { g in
+                Color.clear.preference(key: LightsSheetHeaderHeightKey.self, value: g.size.height)
+            })
+    }
+
+    /// The hint and the air rows. Not reported as the sheet's rows height:
+    /// that measures the light's expanded rows.
+    private var airRows: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Color.clear.frame(height: 0).id(LightsSheetState.rowsAnchor)
+                    LightsAtmosphereCard(controller: controller, style: style, presentation: .rows)
+                }
+            }
+            .scrollBounceBehavior(.basedOnSize)
+            .contentMargins(.bottom, overlap, for: .scrollContent)
+            .modifier(LightsSheetKeyboardScroll(proxy: proxy, covered: fieldFocused && overlap > 0))
+        }
+    }
+}
+
+/// While a keyboard covers the sheet with a field focused (`covered`), the
+/// rows scroll to LightsSheetState.scrollTarget: the focused Atmosphere row
+/// (LightsSheetScrollTargetKey), else the rows' top.
+private struct LightsSheetKeyboardScroll: ViewModifier {
+    var proxy: ScrollViewProxy
+    var covered: Bool
+    @State private var focusedRow: String?
+
+    func body(content: Content) -> some View {
+        content
+            .onPreferenceChange(LightsSheetScrollTargetKey.self) { focusedRow = $0 }
+            .onChange(of: LightsSheetState.scrollTarget(focusedRow: focusedRow, covered: covered)) { _, target in
+                guard let target else { return }
+                withAnimation(.easeOut(duration: LightsSheetMetrics.snapDuration)) {
+                    proxy.scrollTo(target, anchor: .top)
+                }
+            }
     }
 }
 

@@ -1,9 +1,11 @@
 '''
 The app's Lights mode helpers (#619, #620, lighting epic #610).
 
-The Lights bar runs the `lights` command (#612) for its buttons, through the
-app's command line, so the console echoes each one. Python is used for only
-three things, all here, each on a button press:
+The Lights bar runs the `lights` command (#612) for its buttons, and the
+Atmosphere card (#726) the `atmosphere` command for its On/Off switch,
+through the app's command line, so the console echoes each one. Python is
+used for only four things, all here, each on a button press or once per
+process:
 
 * ``restore(json_b64)``: the bar's *Revert*. Puts back the rig the app read
   through PyMOLBridge_LightsJSON when the mode was entered ('null' when
@@ -23,15 +25,21 @@ three things, all here, each on a button press:
 * ``write_presets(path_b64)``: writes the preset list for the bar's menu,
   once per process, as [{"name": n, "description": d}, ...] (the format the
   Swift side decodes).
+* ``write_air_fields(path_b64)``: writes the air rows of the rig's field
+  table (lighting._light_fields(), from C++) for the Atmosphere card, once
+  per process, as [{"name", "kind", "default", "min", "max"}, ...]. The
+  card's slider ranges and defaults come from here, so the app holds no
+  copy of them.
 
 They take base64 text, so the app never quotes JSON or a path into Python
 source (the light name is checked to be a plain name on the Swift side).
 Each prints at most one line, returns a bool and never raises: a Revert or a
 menu load must not throw into the app.
 
-Continuous edits (drags in the gizmo, orbit view and inspector, and the
-inspector's steppers and typed values) never come here: they go through the
-bridge setters, without Python.
+Continuous edits (drags in the gizmo, orbit view, inspector and Atmosphere
+card, and the steppers and typed values) never come here: they go through
+the bridge setters, without Python (the air through the rig's setter,
+index -1).
 
 Only the module functions of pymol.lighting are called, with `_self`, never
 cmd.set_lights (as lighting_commands asks). Nothing runs at import.
@@ -169,5 +177,31 @@ def write_presets(path_b64, *, _self=cmd):
             json.dump(presets, handle, ensure_ascii=False)
     except Exception as exc:
         print(' lights: presets failed: %s' % _reason(exc))
+        return False
+    return True
+
+
+def write_air_fields(path_b64, *, _self=cmd):
+    '''
+    Write the air rows of the rig's field table (the 'air' scope of
+    lighting._light_fields(), in table order) as UTF-8 JSON
+    [{"name": n, "kind": k, "default": d, "min": lo, "max": hi}, ...] to
+    the path in base64: the ranges and defaults of the Atmosphere card
+    (#726). Reads the table only; the rig is never touched. Returns True on
+    success; on any error prints one ' lights: air fields failed: <reason>'
+    line and returns False. Never raises.
+    '''
+    try:
+        path = _decode(path_b64)
+        rows = [{'name': name, 'kind': kind, 'default': default,
+                 'min': lo, 'max': hi}
+                for scope, name, kind, default, lo, hi
+                in lighting._light_fields(_self=_self) if scope == 'air']
+        if not rows:
+            raise ValueError('the field table has no air fields')
+        with open(path, 'w', encoding='utf-8') as handle:
+            json.dump(rows, handle, ensure_ascii=False, allow_nan=False)
+    except Exception as exc:
+        print(' lights: air fields failed: %s' % _reason(exc))
         return False
     return True

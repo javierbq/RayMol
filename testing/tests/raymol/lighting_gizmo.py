@@ -872,8 +872,9 @@ class TestGizmoSource(testing.PyMOLTestCase):
         self.assertIsNotNone(fields, 'lightsToolsFields not found')
         self.assertIn('tools=', fields)
         self.assertIn('touch=', fields)
+        # #726 adds airOnly: (sheet:air / side:air with no light).
         self.assertIn('LightsSheetState.toolsSummary(placement: lightsLivePlacement, detent: detent, '
-                      'corner: lightsOrbitCorner)', fields)
+                      'corner: lightsOrbitCorner, airOnly: airOnly)', fields)
         self.assertEqual(len(re.findall(r'LightGizmoState\(lights, sceneShadowsOn: '
                                         r'engine\.sceneShadowsOn\)\?\.summary', hook)), 2)
         self.assertIn('GizmoAutoContext(viewSize: engine.lightGizmoUI.viewSize', hook)

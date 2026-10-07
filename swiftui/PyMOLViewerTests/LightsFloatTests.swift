@@ -129,10 +129,14 @@ final class LightsFloatLayoutTests: XCTestCase {
         let card = M.orbitCardSize
         let w = LightsInspector.width
         let chrome = lightsFloatCameraChrome
-        // bl: the card above the camera button; the inspector's header top-trailing.
+        // bl: the card above the camera button; the inspector's header
+        // top-trailing, the Atmosphere card's header under it (#726).
         var f = L.frames(corner: .bottomLeading, container: size, inspectorCollapsed: true, chrome: chrome)
         XCTAssertEqual(f.card, CGRect(x: 8, y: 560 - 8 - 66 - card.height, width: card.width, height: card.height))
         XCTAssertEqual(f.inspector, CGRect(x: 834 - 8 - w, y: 8, width: w, height: M.inspectorHeaderHeight))
+        XCTAssertEqual(f.atmosphere, CGRect(x: 834 - 8 - w, y: 8 + M.inspectorHeaderHeight + M.gap, width: w,
+                                            height: M.atmosphereHeaderHeight))
+        XCTAssertEqual(f.all, [f.card, f.inspector, f.atmosphere])
         // tl: top-leading, beside the inspector.
         f = L.frames(corner: .topLeading, container: size, inspectorCollapsed: true, chrome: chrome)
         XCTAssertEqual(f.card.origin, CGPoint(x: 8, y: 8))
@@ -141,13 +145,18 @@ final class LightsFloatLayoutTests: XCTestCase {
         f = L.frames(corner: .topTrailing, container: size, inspectorCollapsed: false, chrome: chrome)
         XCTAssertEqual(f.card.origin, CGPoint(x: 834 - 8 - card.width, y: 8))
         XCTAssertEqual(f.inspector.minY, f.card.maxY + M.gap)
-        XCTAssertEqual(f.inspector.maxY, 560 - 8 - M.helpButtonClearance, accuracy: 1e-9,
-                       "expanded: it scrolls in the rest, above the help button")
-        // br: the inspector on top, the card above the help button.
+        XCTAssertEqual(f.inspector.maxY, 560 - 8 - M.helpButtonClearance - M.atmosphereHeaderHeight - M.gap,
+                       accuracy: 1e-9, "expanded: it scrolls in the rest, above the Atmosphere card")
+        XCTAssertEqual(f.atmosphere.minY, f.inspector.maxY + M.gap, accuracy: 1e-9)
+        XCTAssertEqual(f.atmosphere.maxY, 560 - 8 - M.helpButtonClearance, accuracy: 1e-9,
+                       "the Atmosphere card above the help button")
+        // br: the inspector on top, the Atmosphere card under it, the card
+        // above the help button.
         f = L.frames(corner: .bottomTrailing, container: size, inspectorCollapsed: false, chrome: chrome)
         XCTAssertEqual(f.card.maxY, 560 - 8 - M.helpButtonClearance)
         XCTAssertEqual(f.inspector.minY, 8)
-        XCTAssertEqual(f.inspector.maxY, f.card.minY - M.gap, accuracy: 1e-9)
+        XCTAssertEqual(f.atmosphere.minY, f.inspector.maxY + M.gap, accuracy: 1e-9)
+        XCTAssertEqual(f.atmosphere.maxY, f.card.minY - M.gap, accuracy: 1e-9)
         // A short inspector keeps its content height.
         f = L.frames(corner: .bottomLeading, container: size, inspectorCollapsed: false, chrome: chrome,
                      inspectorHeight: 200)
@@ -159,9 +168,64 @@ final class LightsFloatLayoutTests: XCTestCase {
                 let bounds = CGRect(origin: .zero, size: size).insetBy(dx: 8, dy: 8)
                 XCTAssertTrue(bounds.contains(f.card), "\(corner)")
                 XCTAssertTrue(bounds.contains(f.inspector), "\(corner)")
+                XCTAssertTrue(bounds.contains(f.atmosphere), "\(corner)")
+                XCTAssertEqual(f.atmosphere.height, M.atmosphereHeaderHeight, "\(corner): it keeps its height")
                 XCTAssertFalse(f.card.intersects(f.inspector), "\(corner) collapsed=\(collapsed)")
+                XCTAssertFalse(f.card.intersects(f.atmosphere), "\(corner) collapsed=\(collapsed)")
+                XCTAssertFalse(f.inspector.intersects(f.atmosphere), "\(corner) collapsed=\(collapsed)")
             }
         }
+    }
+
+    /// #726: the Atmosphere card keeps its height and the expanded
+    /// inspector's room shrinks by it plus the gap.
+    func testTheInspectorRoomShrinksByTheAtmosphereCard() {
+        let size = CGSize(width: 834, height: 560)
+        let chrome = lightsFloatCameraChrome
+        let limit: CGFloat = 560 - 8 - M.helpButtonClearance
+        for height: CGFloat in [44, 120, 260] {
+            let f = L.frames(corner: .bottomLeading, container: size, inspectorCollapsed: false, chrome: chrome,
+                             atmosphereHeight: height)
+            XCTAssertEqual(f.inspector.minY, 8)
+            XCTAssertEqual(f.inspector.maxY, limit - height - M.gap, accuracy: 1e-9, "atmosphere \(height)")
+            XCTAssertEqual(f.atmosphere.height, height, "atmosphere \(height)")
+            XCTAssertEqual(f.atmosphere.maxY, limit, accuracy: 1e-9)
+        }
+        // A short inspector keeps its content height; the Atmosphere card
+        // follows it.
+        let f = L.frames(corner: .bottomLeading, container: size, inspectorCollapsed: false, chrome: chrome,
+                         inspectorHeight: 200, atmosphereHeight: 150)
+        XCTAssertEqual(f.inspector.height, 200)
+        XCTAssertEqual(f.atmosphere.minY, 8 + 200 + M.gap)
+        XCTAssertEqual(f.atmosphere.height, 150)
+    }
+
+    /// #726, no light: no orbit card and no inspector (both `.zero`, no room
+    /// or gap left for them); the Atmosphere card at the top inset in every
+    /// corner (no spacer for a top-trailing card).
+    func testFramesWithoutTheOrbitCard() {
+        let size = CGSize(width: 834, height: 560)
+        let w = LightsInspector.width
+        for corner in LightsFloatCorner.allCases {
+            let f = L.frames(corner: corner, container: size, inspectorCollapsed: true,
+                             chrome: lightsFloatCameraChrome, showsCard: false, showsInspector: false)
+            XCTAssertEqual(f.card, .zero, "\(corner)")
+            XCTAssertEqual(f.inspector, .zero, "\(corner)")
+            XCTAssertEqual(f.atmosphere, CGRect(x: 834 - 8 - w, y: 8, width: w, height: M.atmosphereHeaderHeight),
+                           "\(corner)")
+        }
+        // A card without an inspector (no selected light): the Atmosphere
+        // card takes the inspector's place.
+        let f = L.frames(corner: .topTrailing, container: size, inspectorCollapsed: true,
+                         chrome: lightsFloatCameraChrome, showsInspector: false)
+        XCTAssertEqual(f.inspector, .zero)
+        XCTAssertEqual(f.atmosphere.minY, f.card.maxY + M.gap)
+        // An expanded card with no light gets its whole height up to the
+        // help button.
+        let tall = L.frames(corner: .bottomLeading, container: size, inspectorCollapsed: true,
+                            atmosphereHeight: 900, showsCard: false, showsInspector: false)
+        XCTAssertEqual(tall.atmosphere.minY, 8)
+        XCTAssertEqual(tall.atmosphere.maxY, 560 - 8 - M.helpButtonClearance, accuracy: 1e-9)
     }
 
     func testAnOpenDockLiftsTheCard() {
@@ -218,7 +282,15 @@ final class LightsFloatLayoutTests: XCTestCase {
             XCTAssertEqual(layout.knobs.map(\.name), ["key", "fill", "rim"])
             let defaults = L.frames(corner: .default, container: size, inspectorCollapsed: true,
                                     chrome: lightsFloatCameraChrome)
+            // #726: the Atmosphere card's 44 pt header is in `all`.
+            XCTAssertEqual(defaults.all.count, 3)
+            XCTAssertEqual(defaults.atmosphere.height, M.atmosphereHeaderHeight, name)
             XCTAssertEqual(L.coveredKnobs(layout: layout, frames: defaults.all), [], name)
+            // Without a light the card moves up to the top inset (nothing
+            // to cover then, but the frame stays clear of the corner chrome).
+            let alone = L.frames(corner: .default, container: size, inspectorCollapsed: true,
+                                 chrome: lightsFloatCameraChrome, showsCard: false, showsInspector: false)
+            XCTAssertEqual(alone.atmosphere.minY, M.inset, name)
             // (An open CameraDock lifts the card by its height; on the
             // smaller viewports the card then reaches the key knob, which
             // the default rule does not promise to keep free: the dock is
@@ -264,6 +336,42 @@ final class LightsFloatLayoutTests: XCTestCase {
                                   hint: "", identifier: "", actions: []))
             .environment(\.lightsTouchMinimum, 44))
         XCTAssertEqual(gripped.fittingSize.height, M.orbitCardSize.height, accuracy: 0.5)
+    }
+
+    /// #726: the Atmosphere card collapsed is its 44 pt header, 284 wide, in
+    /// every hint state (a hint is a header glyph while collapsed), so the
+    /// frames the knob check uses are the drawn ones.
+    func testAtmosphereMetricsMatchTheRenderedCardInEveryHintState() throws {
+        let setUps: [(AtmosphereHint?, (FakeRigStore) -> Void)] = [
+            (nil, { lightsFloatThreePoint($0) }),
+            (.noLights, { _ in }),
+            (.noLights, { store in store.setRig([]) }),
+            (.lightsOff, { store in
+                lightsFloatThreePoint(store)
+                store.enabled = false
+                store.air.haze = 0.2
+            }),
+            (.backlitHaze, { store in
+                lightsFloatThreePoint(store)
+                store.air.haze = 0.35
+            }),
+        ]
+        let style = LightsInspectorSnapshotTests.style(dark: false)
+        for (i, (hint, setUp)) in setUps.enumerated() {
+            let store = FakeRigStore()
+            setUp(store)
+            let controller = LightsController(seams: store.seams)
+            controller.begin()
+            XCTAssertEqual(AtmosphereCardState(controller)?.hint, hint, "case \(i)")
+            for start in [LightsAtmosphereStart.collapsed, .expandedIfOn] where !(start == .expandedIfOn
+                                                                                 && controller.airIsOn) {
+                let card = NSHostingView(rootView: LightsAtmosphereCard(controller: controller, style: style,
+                                                                        start: start)
+                    .environment(\.lightsTouchMinimum, 44))
+                XCTAssertEqual(card.fittingSize.width, LightsInspector.width, accuracy: 0.5, "case \(i)")
+                XCTAssertEqual(card.fittingSize.height, M.atmosphereHeaderHeight, accuracy: 0.5, "case \(i)")
+            }
+        }
     }
 }
 
@@ -399,6 +507,10 @@ final class LightsFloatSnapshotTests: XCTestCase {
         var inspectorCollapsed = true
         var dark = false
         var chrome = lightsFloatCameraChrome
+        /// #726: no rig (the Atmosphere card alone), and its start state.
+        var noLights = false
+        var atmosphereStart: LightsAtmosphereStart = .collapsed
+        var air = FakeRigStore.defaultAir
     }
 
     /// What the view reported.
@@ -433,6 +545,16 @@ final class LightsFloatSnapshotTests: XCTestCase {
             Shot(name: "corner_tr_inspector_expanded_834x560", corner: .topTrailing, inspectorCollapsed: false),
             Shot(name: "default_bl_dock_open_834x560",
                  chrome: ViewportChromeHeights(bottomLeading: 58, dock: 132)),
+            // #726: the Atmosphere card expanded under the collapsed
+            // inspector, alone with no light (collapsed and expanded), and
+            // backlit with its warning glyph in the collapsed header.
+            Shot(name: "atmosphere_expanded_834x560", atmosphereStart: .expanded, air: atmosphereOnAir),
+            Shot(name: "atmosphere_no_lights_834x560", noLights: true),
+            Shot(name: "atmosphere_no_lights_expanded_tr_834x560", corner: .topTrailing, noLights: true,
+                 atmosphereStart: .expanded),
+            Shot(name: "atmosphere_backlit_1032x602_ipad13", size: CGSize(width: 1032, height: 602),
+                 air: LightRigSnapshot.Air(haze: 0.35, dust: 0.5, dustSize: 0.35, dustSpeed: 1,
+                                           scatter: 0.55, seed: 0)),
         ]
         let dir = Self.outputDirectory
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -444,7 +566,10 @@ final class LightsFloatSnapshotTests: XCTestCase {
 
     private func render(_ shot: Shot, to url: URL) throws {
         let store = FakeRigStore()
-        lightsFloatThreePoint(store)
+        if !shot.noLights {
+            lightsFloatThreePoint(store)
+            store.air = shot.air
+        }
         lightsFloatCloseCamera(store)
         let controller = LightsController(seams: store.seams)
         controller.eyeDemand = .everyFrame
@@ -454,7 +579,7 @@ final class LightsFloatSnapshotTests: XCTestCase {
         let reported = Reported()
         let root = FloatHost(controller: controller, style: style, corner: shot.corner,
                              inspectorCollapsed: shot.inspectorCollapsed, chrome: shot.chrome,
-                             reported: reported)
+                             atmosphereStart: shot.atmosphereStart, reported: reported)
             .frame(width: shot.size.width, height: shot.size.height)
             .environment(\.lightsTouchMinimum, 44)
         let size = NSSize(width: shot.size.width, height: shot.size.height)
@@ -481,8 +606,29 @@ final class LightsFloatSnapshotTests: XCTestCase {
 
         // The view lays the card out where the pure layout says.
         let frames = try XCTUnwrap(reported.frames, "\(shot.name): no frames reported")
+        let atmosphereCollapsed = !shot.atmosphereStart.startsExpanded(airIsOn: controller.airIsOn)
         let want = LightsFloatLayout.frames(corner: shot.corner, container: shot.size,
-                                            inspectorCollapsed: shot.inspectorCollapsed, chrome: shot.chrome)
+                                            inspectorCollapsed: shot.inspectorCollapsed, chrome: shot.chrome,
+                                            atmosphereHeight: atmosphereCollapsed
+                                                ? LightsFloatMetrics.atmosphereHeaderHeight : frames.atmosphere.height,
+                                            showsCard: !shot.noLights, showsInspector: !shot.noLights)
+        // #726: the Atmosphere card under the inspector (or alone at the
+        // top inset), its header 44 pt while collapsed, in every hint state.
+        XCTAssertEqual(frames.atmosphere.minX, want.atmosphere.minX, accuracy: 0.5, "\(shot.name) atmosphere")
+        XCTAssertEqual(frames.atmosphere.minY, want.atmosphere.minY, accuracy: 0.5, "\(shot.name) atmosphere")
+        XCTAssertEqual(frames.atmosphere.width, want.atmosphere.width, accuracy: 0.5, "\(shot.name) atmosphere")
+        if atmosphereCollapsed {
+            XCTAssertEqual(frames.atmosphere.height, LightsFloatMetrics.atmosphereHeaderHeight, accuracy: 0.5,
+                           "\(shot.name) atmosphere")
+        } else {
+            XCTAssertGreaterThan(frames.atmosphere.height, 150, "\(shot.name): expanded")
+        }
+        XCTAssertFalse(frames.card.intersects(frames.atmosphere), "\(shot.name): the cards overlap")
+        XCTAssertFalse(frames.inspector.intersects(frames.atmosphere), "\(shot.name): the cards overlap")
+        if shot.noLights {
+            XCTAssertEqual(frames.card, .zero, "\(shot.name): no orbit card")
+            XCTAssertEqual(frames.inspector, .zero, "\(shot.name): no inspector")
+        }
         for (got, expected, what) in [(frames.card, want.card, "card")] {
             XCTAssertEqual(got.minX, expected.minX, accuracy: 0.5, "\(shot.name) \(what)")
             XCTAssertEqual(got.minY, expected.minY, accuracy: 0.5, "\(shot.name) \(what)")
@@ -495,7 +641,9 @@ final class LightsFloatSnapshotTests: XCTestCase {
         if shot.inspectorCollapsed {
             XCTAssertEqual(frames.inspector.height, want.inspector.height, accuracy: 0.5, "\(shot.name)")
         }
-        XCTAssertFalse(frames.card.intersects(frames.inspector), "\(shot.name): the cards overlap")
+        if !shot.noLights {
+            XCTAssertFalse(frames.card.intersects(frames.inspector), "\(shot.name): the cards overlap")
+        }
 
         XCTAssertEqual(store.numberWrites.count, writesBefore.0,
                        "\(shot.name): drawing wrote \(store.numberWrites.dropFirst(writesBefore.0))")
@@ -512,6 +660,7 @@ final class LightsFloatSnapshotTests: XCTestCase {
         @State var corner: LightsFloatCorner
         let inspectorCollapsed: Bool
         let chrome: ViewportChromeHeights
+        let atmosphereStart: LightsAtmosphereStart
         let reported: Reported
         @StateObject private var ui = LightGizmoUIState()
 
@@ -540,7 +689,8 @@ final class LightsFloatSnapshotTests: XCTestCase {
                 }
                 .overlay {
                     LightsFloatingTools(controller: controller, style: style, corner: $corner, chrome: chrome,
-                                        inspectorStartsCollapsed: inspectorCollapsed, sceneShadowsOn: true,
+                                        inspectorStartsCollapsed: inspectorCollapsed,
+                                        atmosphereStart: atmosphereStart, sceneShadowsOn: true,
                                         onFrames: { reported.frames = $0 })
                 }
         }

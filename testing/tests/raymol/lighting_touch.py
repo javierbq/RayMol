@@ -82,6 +82,7 @@ VIEWPORT = os.path.join(SHARED, 'MetalViewport.swift')
 SHEET = os.path.join(SHARED, 'LightsSheet.swift')
 CONTENT_VIEW = os.path.join(SHARED, 'ContentView.swift')
 FLOAT = os.path.join(SHARED, 'LightsFloatingTools.swift')
+ATMOSPHERE_CARD = os.path.join(SHARED, 'LightsAtmosphereCard.swift')
 PANEL_LAYOUT = os.path.join(SHARED, 'PanelLayout.swift')
 UI_TESTS = os.path.join('swiftui', 'PyMOLViewerUITests', 'LightsGestureUITests.swift')
 
@@ -305,13 +306,34 @@ class TestTouchSource(testing.PyMOLTestCase):
         """The header's menu, Shadow and Pin chips and chevron are 44 pt
         targets; on iOS the swatches are 44 pt targets in
         LightsTouch.swatchColumns columns and the custom picker has a 44 pt
-        frame; macOS keeps its one-row 15 pt swatches."""
+        frame; macOS keeps its one-row 15 pt swatches. The chips are drawn
+        by LightsChip (shared with the Atmosphere card's switch, #726); the
+        inspector's chip() forwards to it. The Atmosphere card's chevron
+        and Scatter disclosure are 44 pt targets and its rows at least
+        44 pt tall."""
         text = self.read(INSPECTOR)
-        for signature in ('private func lightMenu(', 'private func chip(', 'private func header('):
+        for signature in ('private func lightMenu(', 'struct LightsChip', 'private func header('):
             with self.subTest(signature):
                 block = body(text, signature)
                 self.assertIsNotNone(block, signature + ' not found')
                 self.assertIn('.lightsTouchTarget()', block)
+        forwarder = body(text, 'private func chip(')
+        self.assertIsNotNone(forwarder, 'the inspector\'s chip() not found')
+        self.assertIn('LightsChip(', forwarder)
+        card = self.read(ATMOSPHERE_CARD)
+        header = body(card, 'private func header(')
+        self.assertIsNotNone(header, 'the Atmosphere header not found')
+        self.assertIn('LightsChip(', header)
+        self.assertIn('.lightsTouchTarget()', header, 'the chevron')
+        disclosure = body(card, 'private func scatterDisclosure(')
+        self.assertIsNotNone(disclosure, 'the Scatter disclosure not found')
+        self.assertIn('.lightsTouchTarget(width: false)', disclosure)
+        row = body(card, 'struct AtmosphereSliderRow')
+        self.assertIsNotNone(row, 'AtmosphereSliderRow not found')
+        self.assertIn('.frame(minHeight: touchMinimum)', row)
+        button = body(card, 'struct LightsSheetAtmosphereButton')
+        self.assertIsNotNone(button, 'LightsSheetAtmosphereButton not found')
+        self.assertIn('.lightsTouchTarget()', button)
         row = body(text, 'private func touchColourRow(')
         self.assertIsNotNone(row, 'touchColourRow not found')
         self.assertIn('LightsTouch.swatchColumns(width: colourWidth)', row)
@@ -556,6 +578,19 @@ class TestTouchSource(testing.PyMOLTestCase):
         self.assertIsNotNone(grabber, 'grabber not found')
         self.assertIn('.accessibilityAdjustableAction', grabber)
         self.assertIn('.accessibilityIdentifier(LightsSheetState.grabberIdentifier)', grabber)
+        # The header's Atmosphere button (#726; a 44 pt target, checked in
+        # testInspectorControlsAndSwatches): it expands a compact sheet, then
+        # asks the rows to scroll to the Atmosphere section.
+        header = body(text, 'private var headerRow: some View')
+        self.assertIsNotNone(header, 'headerRow not found')
+        self.assertIn('LightsSheetAtmosphereButton(controller: controller, style: style) { revealAtmosphere() }',
+                      header)
+        self.assertLess(header.find('LightsSheetAtmosphereButton('), header.find('moreButton'),
+                        'the Atmosphere button sits before More')
+        reveal = body(text, 'private func revealAtmosphere()')
+        self.assertIsNotNone(reveal, 'revealAtmosphere not found')
+        self.assertIn('if placement == .bottom, detent == .compact { setDetent(.expanded) }', reveal)
+        self.assertIn('atmosphereRequest += 1', reveal)
 
     def testTheKeyboardReaderIsIOSOnly(self):
         """The keyboard's frame notifications are read under #if os(iOS)
@@ -676,7 +711,9 @@ class TestTouchSource(testing.PyMOLTestCase):
         self.assertIn('lightsShowsSequence = false', reset)
         self.assertIn("lightsSheetDetent = mode == .lights ? lightsSheetSeed : .compact", reset)
         seed = body(content, 'private var lightsSheetSeed: LightsSheetDetent')
-        self.assertIn('lightsInspectorExpandOverride ? .expanded : .compact', seed)
+        # The DEBUG `expand` and (#726) `air` tokens seed it expanded.
+        self.assertIn('lightsInspectorExpandOverride || lightsAtmosphereExpandOverride ? .expanded : .compact',
+                      seed)
         rule = body(self.read(SHEET), 'static func shows(stored: Bool, override: Bool, docked: Bool)')
         self.assertIsNotNone(rule, 'LightsPaneRule.shows not found')
         self.assertIn('stored && (!docked || override)', rule)

@@ -14,6 +14,7 @@
 		04798DF552010A1889F8FFDD /* RFD3Runtime.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECB1F4D491FA24E65DD3B011 /* RFD3Runtime.swift */; };
 		047FD10B437F95938AB4B3B0 /* WeightsFetchStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C4E3216DAFC42C515FD0C3E /* WeightsFetchStateTests.swift */; };
 		057F3C59DACA26AAC603702E /* AppBuildInfoTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AE160C6EB58F631604002E6 /* AppBuildInfoTests.swift */; };
+		06A3F742AC33F306E7D46CA0 /* LightsAtmosphereTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 962CC678973A06C3CE3C08B3 /* LightsAtmosphereTests.swift */; };
 		07107979C9C3FB3967B754E5 /* LightGizmoOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 854A92930838D84391F46022 /* LightGizmoOverlay.swift */; };
 		079B071AB492B995CF57638D /* ConsoleLogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2525A88C5285B866035F9B8C /* ConsoleLogTests.swift */; };
 		08A70D51DF9F99AD0951EB6D /* RFD3SizeGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6D700AB27FB3AB04471A2C4 /* RFD3SizeGuard.swift */; };
@@ -49,11 +50,13 @@
 		217461B479C6F851A9A6C4C7 /* WhatsNewModal.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4D170B35BCCF683A6B3D655 /* WhatsNewModal.swift */; };
 		2271B125CA7B637F85F2FA65 /* whatsnew-1100-predict.png in Resources */ = {isa = PBXBuildFile; fileRef = C84C7665566A983E2AAE8FB9 /* whatsnew-1100-predict.png */; };
 		238B6F24D467D70AE012E2CB /* BoltzJobManagerMSATests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A75842F74BFC453CE7BA777 /* BoltzJobManagerMSATests.swift */; };
+		23DD20D11994BE14AFAFEA75 /* LightsAtmosphereCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6743F01EAFCBFE01B6ADD02 /* LightsAtmosphereCard.swift */; };
 		24169A74B9EBFD202258A5E4 /* PyMOLBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = 356FC561FA1515B3D15A26E2 /* PyMOLBridge.mm */; };
 		25B6234DE09C8513458832EB /* ProtenixMLX in Frameworks */ = {isa = PBXBuildFile; productRef = 6A6ADC55CC1EDE5686605DCB /* ProtenixMLX */; };
 		272C379DFEE54E979E9A15D2 /* whatsnew-190-scenes.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 6A0950CBB18F3934DDA02CBE /* whatsnew-190-scenes.mp4 */; };
 		2B6E59F50398ACB89A0BB029 /* DesignModeStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E47D8905CF71AF7BDF4BE074 /* DesignModeStateTests.swift */; };
 		2C2D4B24DF4807FA1407582D /* KeyRouting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3697F74BD2283492B5A7790C /* KeyRouting.swift */; };
+		2D0EBBB9F215BBEDBEE17B50 /* LightsAtmosphereLiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 820DDE65C644725B4A6D48BE /* LightsAtmosphereLiveTests.swift */; };
 		2D3D69F7B73F3F499AD0894F /* PredictAvailability.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E5AA1A4BFA5787E1B83D100 /* PredictAvailability.swift */; };
 		2D81E4A3FB5DCDD98FC189FB /* RFD3ResultWriter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3FC150B0707033AB3B186189 /* RFD3ResultWriter.swift */; };
 		2DC9A8E75AD8C22CB27DEC05 /* LightsSideColumn.swift in Sources */ = {isa = PBXBuildFile; fileRef = 179EC622F2CD7579EBC857BB /* LightsSideColumn.swift */; };
@@ -86,6 +89,7 @@
 		42D3395698D37E4BF7055EEA /* MCPBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A18D8A6B0FB56FCD3C31211 /* MCPBridge.swift */; };
 		42F2467DC338FA8435632918 /* WhatsNew.json in Resources */ = {isa = PBXBuildFile; fileRef = 689CDE512811C244D4BA931B /* WhatsNew.json */; };
 		4328A7D903B06B6115075B3B /* PredictController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B0D207800BE2DDAF04598C1 /* PredictController.swift */; };
+		456DECCC2554044FEC17F470 /* LightsAtmosphere.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE0C0F45AA673C4AB9B2BDE4 /* LightsAtmosphere.swift */; };
 		45817B402639546111EFD5B7 /* AppVersionFooter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3F3410F7C0D3C85783B985F /* AppVersionFooter.swift */; };
 		4679E36960C9AE8AAE3B1F7D /* ObjectPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A73267D4D7B506E647B7A995 /* ObjectPanel.swift */; };
 		47B1F26F883A94F63F224ABF /* RFD3Kit in Frameworks */ = {isa = PBXBuildFile; productRef = ECF57E98CF8A1CF759ED2219 /* RFD3Kit */; };
@@ -239,6 +243,7 @@
 		B84291E694521C66BCB749CD /* whatsnew-161-hover.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 6E2FC2AD1A8FEE912986DF9D /* whatsnew-161-hover.mp4 */; };
 		B88942D786AB0D1CDC354C1F /* DesignAvailabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2345D7E2703CF29D4A2AA277 /* DesignAvailabilityTests.swift */; };
 		B8F3D19B819EC1F1CDD6C36D /* LightsInspector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 051212FB14CE38F9CAFC3546 /* LightsInspector.swift */; };
+		B936D1EEC4FAB31339D4CB2E /* LightsAtmosphereCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6743F01EAFCBFE01B6ADD02 /* LightsAtmosphereCard.swift */; };
 		BA5F8346B75009D86D7C7815 /* LightsFloatingTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8090F993FEBF06819166C82 /* LightsFloatingTools.swift */; };
 		BA6C9B288CFD5EB53D0E0057 /* RayMolMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9371B6FFB30D6166234C678B /* RayMolMain.swift */; };
 		BAAE4478A0C2B308D407E7C1 /* LightGizmoModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DE5E23E8AA19BB9D3F2C227 /* LightGizmoModel.swift */; };
@@ -276,6 +281,7 @@
 		D48D80E395852871CAC65FCA /* DesignColor.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5F2DF248B756BF6CA3CBE92 /* DesignColor.swift */; };
 		D50987A4819C8D752F68443F /* whatsnew-190-design.png in Resources */ = {isa = PBXBuildFile; fileRef = 2B749BA43350521D047F2CE4 /* whatsnew-190-design.png */; };
 		D70F90009D4B06C4EC31C5F0 /* LightsOrbitView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 142BDBF375FA246776AB2CD1 /* LightsOrbitView.swift */; };
+		D755890977A4E8D8351D767E /* LightsAtmosphere.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE0C0F45AA673C4AB9B2BDE4 /* LightsAtmosphere.swift */; };
 		DA6EB8C81B26582A4F3AB478 /* TimelinePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B820FE9080BF73526A54CD66 /* TimelinePanel.swift */; };
 		DB3B352985BA33D0583519E6 /* ObjectActionMenuUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45BCB83A35EA5E97D5BBD172 /* ObjectActionMenuUITests.swift */; };
 		DC5CF59CDC22D0FCB6A58BE5 /* whatsnew-190-design.png in Resources */ = {isa = PBXBuildFile; fileRef = 2B749BA43350521D047F2CE4 /* whatsnew-190-design.png */; };
@@ -293,6 +299,7 @@
 		E71A74DE36694D8CDEAA9AE0 /* LightsSheetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA477E87A3CFBE90788E6805 /* LightsSheetTests.swift */; };
 		E777A44381A854B382874738 /* MCPConnectSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE692F1547C53D28B5F9A9AD /* MCPConnectSheet.swift */; };
 		E7A7CA409C1DB4D1A78AD5B9 /* DesignController.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF4FB7F151982A2927D612F0 /* DesignController.swift */; };
+		E85017CFE7DE0AB9A3FF9062 /* LightsAtmosphereCardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67DB9F0C201E1A872487F6D4 /* LightsAtmosphereCardTests.swift */; };
 		E8A73DC4C73D2E65901E1832 /* RFD3SizeGuardTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC1923D25B33DEE015052221 /* RFD3SizeGuardTests.swift */; };
 		E9B0CF8BC5F291107F7C872B /* NotesInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35DC456EDC3E55F84506C8B7 /* NotesInspectorView.swift */; };
 		EA0FAFFFCE641B7D2FF718F5 /* LightsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C675D41EFF244D46FCD0F46 /* LightsSheet.swift */; };
@@ -427,6 +434,8 @@
 		5C6065F04ABD8B4DF7A370E9 /* LightGizmoGeometryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightGizmoGeometryTests.swift; sourceTree = "<group>"; };
 		5E9F8D36908E3216D1C8F893 /* MetalViewport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalViewport.swift; sourceTree = "<group>"; };
 		6316D26C663083E0E595CE15 /* whatsnew-1110-boxselect.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-1110-boxselect.png"; sourceTree = "<group>"; };
+		65C2D9BB6DF8C2F9E29AE8E8 /* RayMolMac.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RayMolMac.entitlements; sourceTree = "<group>"; };
+		67DB9F0C201E1A872487F6D4 /* LightsAtmosphereCardTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsAtmosphereCardTests.swift; sourceTree = "<group>"; };
 		689CDE512811C244D4BA931B /* WhatsNew.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = WhatsNew.json; sourceTree = "<group>"; };
 		6A0950CBB18F3934DDA02CBE /* whatsnew-190-scenes.mp4 */ = {isa = PBXFileReference; path = "whatsnew-190-scenes.mp4"; sourceTree = "<group>"; };
 		6A4B03344972863CC1362ECB /* BinderDesignBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BinderDesignBar.swift; sourceTree = "<group>"; };
@@ -448,6 +457,7 @@
 		7DEAB18A89F026148528C71E /* PendingJobTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PendingJobTests.swift; sourceTree = "<group>"; };
 		7E9067EC240F21BA7F691088 /* ObjectPanelCopyExtractTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObjectPanelCopyExtractTests.swift; sourceTree = "<group>"; };
 		80137B4E6E0FA24F011D7E87 /* HoverReadout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HoverReadout.swift; sourceTree = "<group>"; };
+		820DDE65C644725B4A6D48BE /* LightsAtmosphereLiveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsAtmosphereLiveTests.swift; sourceTree = "<group>"; };
 		82497826B2E619BC2235983B /* SurfacePickTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SurfacePickTests.swift; sourceTree = "<group>"; };
 		82BCB731F0C74F642D78D450 /* PyMOLBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = PyMOLBridge.h; sourceTree = "<group>"; };
 		8342C6A3FDF28A858D7E1AA4 /* whatsnew-1120-materials.mp4 */ = {isa = PBXFileReference; path = "whatsnew-1120-materials.mp4"; sourceTree = "<group>"; };
@@ -462,6 +472,7 @@
 		8FE79EC8844C681A41A1E54A /* MovieExportSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MovieExportSheet.swift; sourceTree = "<group>"; };
 		9371B6FFB30D6166234C678B /* RayMolMain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RayMolMain.swift; sourceTree = "<group>"; };
 		93CEC93CCE7C9CEE0AEBC310 /* LightsOrbitViewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsOrbitViewTests.swift; sourceTree = "<group>"; };
+		962CC678973A06C3CE3C08B3 /* LightsAtmosphereTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsAtmosphereTests.swift; sourceTree = "<group>"; };
 		99E8403E056CB6DA5DD9A3CA /* PyMOLViewerUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = PyMOLViewerUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		9A2CE99D9A3C57ACBBDBF3B5 /* DesignRegionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignRegionTests.swift; sourceTree = "<group>"; };
 		9B2D0B8DEF98F905922AE2FD /* ProtenixJobManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProtenixJobManager.swift; sourceTree = "<group>"; };
@@ -476,6 +487,7 @@
 		A75B6DCB76EF7B2E69DA0BFE /* RFD3TrajectoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RFD3TrajectoryTests.swift; sourceTree = "<group>"; };
 		AA4C108E3D04FD75288859DA /* GizmoOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GizmoOverlay.swift; sourceTree = "<group>"; };
 		AD3E224EA1BE94147B322332 /* InferenceRouterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InferenceRouterTests.swift; sourceTree = "<group>"; };
+		AE0C0F45AA673C4AB9B2BDE4 /* LightsAtmosphere.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsAtmosphere.swift; sourceTree = "<group>"; };
 		B049A83EEE87CC41BA09889D /* RFD3ResultWriterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RFD3ResultWriterTests.swift; sourceTree = "<group>"; };
 		B158150C93613716ED3CE572 /* KeyboardDismissUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardDismissUITests.swift; sourceTree = "<group>"; };
 		B402EB5834127D4E6B217EFE /* whatsnew-1110-raytrace.mp4 */ = {isa = PBXFileReference; path = "whatsnew-1110-raytrace.mp4"; sourceTree = "<group>"; };
@@ -537,13 +549,14 @@
 		F43E4051E6410834AAAA4047 /* InteractionModeExitTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InteractionModeExitTests.swift; sourceTree = "<group>"; };
 		F607D204A410CA38B84223BE /* RayMolUpdater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RayMolUpdater.swift; sourceTree = "<group>"; };
 		F61B9A042E88CAE1E21BC506 /* KeyRoutingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyRoutingTests.swift; sourceTree = "<group>"; };
+		F6743F01EAFCBFE01B6ADD02 /* LightsAtmosphereCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsAtmosphereCard.swift; sourceTree = "<group>"; };
 		F7E41DCBB427678A8F018B0E /* DesignControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignControllerTests.swift; sourceTree = "<group>"; };
 		FA477E87A3CFBE90788E6805 /* LightsSheetTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsSheetTests.swift; sourceTree = "<group>"; };
 		FB1304C662D9011F7C4505FC /* MCPStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MCPStatusView.swift; sourceTree = "<group>"; };
 		FEE394EC8EC4DF566360104C /* LightGizmoGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightGizmoGeometry.swift; sourceTree = "<group>"; };
 		FF4FB7F151982A2927D612F0 /* DesignController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignController.swift; sourceTree = "<group>"; };
 		FFD9E3092D310E443F7CD546 /* DesignTargetSelectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTargetSelectionTests.swift; sourceTree = "<group>"; };
-		"TEMP_6BAE0BEE-2B5E-49F8-A266-92924D4B7DEB" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
+		"TEMP_AB7551C0-B01C-44D2-9EAA-89B73F9E45B3" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -672,6 +685,7 @@
 				10CCAA289EA2934B267C337A /* PrivacyInfo.xcprivacy */,
 				F2078076B68D28457409F7A5 /* RayMol.entitlements */,
 				02F1DF5E9689EFF422BE279A /* RayMolIOS.entitlements */,
+				65C2D9BB6DF8C2F9E29AE8E8 /* RayMolMac.entitlements */,
 				A63406B360384F3C62E511E1 /* RayMolPython.entitlements */,
 				F5456D006DB0002CB809CACF /* Bridge */,
 				1A65998EE1F4B509B9B62F00 /* Panels */,
@@ -708,6 +722,8 @@
 				1DE5E23E8AA19BB9D3F2C227 /* LightGizmoModel.swift */,
 				854A92930838D84391F46022 /* LightGizmoOverlay.swift */,
 				ED82B93C6739F52D7124AE90 /* LightRigBridge.swift */,
+				AE0C0F45AA673C4AB9B2BDE4 /* LightsAtmosphere.swift */,
+				F6743F01EAFCBFE01B6ADD02 /* LightsAtmosphereCard.swift */,
 				35444C782524F25C4DDD4F9F /* LightsBar.swift */,
 				40FC41A2798A30FE8E223CEC /* LightsController.swift */,
 				79E014A631DA05BA1F8C7E8A /* LightsEditing.swift */,
@@ -791,6 +807,9 @@
 				3EB45A8394E0FB4ED7803CA9 /* LightGizmoTests.swift */,
 				0A5D5BE41117078CE35E951B /* LightGizmoViewTests.swift */,
 				B6A770F5FB9E51200305DDAF /* LightRigBridgeTests.swift */,
+				67DB9F0C201E1A872487F6D4 /* LightsAtmosphereCardTests.swift */,
+				820DDE65C644725B4A6D48BE /* LightsAtmosphereLiveTests.swift */,
+				962CC678973A06C3CE3C08B3 /* LightsAtmosphereTests.swift */,
 				755441AFAB067D11B52B6066 /* LightsBarTests.swift */,
 				43806DC3D1AEE6532E3F262D /* LightsControllerTests.swift */,
 				C14BA8BC49311C1D073B8E10 /* LightsEditingTests.swift */,
@@ -853,10 +872,10 @@
 			path = Bridge;
 			sourceTree = "<group>";
 		};
-		"TEMP_90DF0C1D-1D9D-4016-98E6-B804EDA2367D" /* swiftui */ = {
+		"TEMP_A4F98062-C024-4B18-AB49-72EB93B4BAB2" /* swiftui */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_6BAE0BEE-2B5E-49F8-A266-92924D4B7DEB" /* PyMOLBridge.xcconfig */,
+				"TEMP_AB7551C0-B01C-44D2-9EAA-89B73F9E45B3" /* PyMOLBridge.xcconfig */,
 			);
 			path = swiftui;
 			sourceTree = "<group>";
@@ -1577,6 +1596,9 @@
 				6A492515B0CED4F1DA5FE472 /* LightGizmoTests.swift in Sources */,
 				35FF1D943E7BF166B2DC5E98 /* LightGizmoViewTests.swift in Sources */,
 				E3E4D527F2D9B262BA530D00 /* LightRigBridgeTests.swift in Sources */,
+				E85017CFE7DE0AB9A3FF9062 /* LightsAtmosphereCardTests.swift in Sources */,
+				2D0EBBB9F215BBEDBEE17B50 /* LightsAtmosphereLiveTests.swift in Sources */,
+				06A3F742AC33F306E7D46CA0 /* LightsAtmosphereTests.swift in Sources */,
 				4B44C7F76ACF711C57EC68E2 /* LightsBarTests.swift in Sources */,
 				5FC43853E90D1328E52B67B1 /* LightsControllerTests.swift in Sources */,
 				4C754E670F4EB9FDE0000E74 /* LightsEditingTests.swift in Sources */,
@@ -1646,6 +1668,8 @@
 				BAAE4478A0C2B308D407E7C1 /* LightGizmoModel.swift in Sources */,
 				07107979C9C3FB3967B754E5 /* LightGizmoOverlay.swift in Sources */,
 				B4FDB90D6B4940BF353A4001 /* LightRigBridge.swift in Sources */,
+				456DECCC2554044FEC17F470 /* LightsAtmosphere.swift in Sources */,
+				23DD20D11994BE14AFAFEA75 /* LightsAtmosphereCard.swift in Sources */,
 				814595565760E06BD42E682E /* LightsBar.swift in Sources */,
 				15630C292DBEE7FBA8DA1D44 /* LightsController.swift in Sources */,
 				A192423AE56E195D87474E57 /* LightsEditing.swift in Sources */,
@@ -1736,6 +1760,8 @@
 				1691ECBD7CEDBFFB64B1D690 /* LightGizmoModel.swift in Sources */,
 				9BD84B3C3B24F43CAEB5CB8E /* LightGizmoOverlay.swift in Sources */,
 				0289EAA2F61546F2DD2430BA /* LightRigBridge.swift in Sources */,
+				D755890977A4E8D8351D767E /* LightsAtmosphere.swift in Sources */,
+				B936D1EEC4FAB31339D4CB2E /* LightsAtmosphereCard.swift in Sources */,
 				B5C4C6AA1972C0CED1527FB1 /* LightsBar.swift in Sources */,
 				E2F5A088F804B59B38054C81 /* LightsController.swift in Sources */,
 				C55DDA064774EC13D91649B2 /* LightsEditing.swift in Sources */,
@@ -1886,6 +1912,7 @@
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = RayMol;
 				CODE_SIGN_ENTITLEMENTS = PyMOLViewer/RayMol.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = PyMOLViewer/RayMolMac.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 32;
@@ -1943,6 +1970,7 @@
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = RayMol;
 				CODE_SIGN_ENTITLEMENTS = PyMOLViewer/RayMol.entitlements;
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = PyMOLViewer/RayMolMac.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 32;
@@ -1977,7 +2005,7 @@
 		};
 		76B7E9DB75E073D1E60928FA /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_6BAE0BEE-2B5E-49F8-A266-92924D4B7DEB" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_AB7551C0-B01C-44D2-9EAA-89B73F9E45B3" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -2084,7 +2112,7 @@
 		};
 		D8F44FDFF036013D2F03BA83 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_6BAE0BEE-2B5E-49F8-A266-92924D4B7DEB" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_AB7551C0-B01C-44D2-9EAA-89B73F9E45B3" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;

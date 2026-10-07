@@ -475,7 +475,8 @@ struct LightAngleDial: View {
 
 // MARK: - Rows
 
-private enum InspectorMetrics {
+/// The inspector's row metrics, shared with the Atmosphere card (#726).
+enum InspectorMetrics {
     static let labelWidth: CGFloat = 58
     static let valueWidth: CGFloat = 78
     static let fieldWidth: CGFloat = 60
@@ -661,6 +662,44 @@ extension LightsController {
     func setIfChanged(_ parameter: LightParameter, _ value: Double) -> LightSetResult {
         if let current = self.value(parameter), abs(current - value) < 1e-9 { return .ok }
         return set(parameter, value)
+    }
+}
+
+// MARK: - Chip
+
+/// A toggle drawn as the bar's chips are, so On reads at a glance (the system
+/// button-style toggle barely changes on macOS): the inspector's Shadow and
+/// Pin, and the Atmosphere card's switch (#726). A 44 pt target on iOS.
+struct LightsChip: View {
+    var title: String
+    var systemImage: String?
+    var on: Bool
+    var enabled: Bool
+    var style: LightsBarStyle
+    var action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 3) {
+                if let systemImage {
+                    Image(systemName: systemImage).font(.system(size: 10))
+                }
+                Text(title).font(.system(size: 12, weight: .medium))
+            }
+            .lineLimit(1)
+            .fixedSize()
+            .foregroundColor(on ? style.accent : style.text.opacity(0.85))
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(Capsule().fill(on ? style.accent.opacity(0.15) : Color.clear))
+            .overlay(Capsule().stroke(on ? style.accent : style.text.opacity(0.25),
+                                      lineWidth: on ? 1.5 : 1))
+            .contentShape(Capsule())
+            .lightsTouchTarget()
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.5)
+        .accessibilityAddTraits(.isToggle)
     }
 }
 
@@ -873,31 +912,12 @@ struct LightsInspector: View {
             .accessibilityIdentifier("lights.inspector.pin")
     }
 
-    // A toggle drawn as the bar's chips are, so On reads at a glance (the
-    // system button-style toggle barely changes on macOS).
+    // A toggle drawn as the bar's chips are (LightsChip, shared with the
+    // Atmosphere card's switch).
     private func chip(_ title: String, systemImage: String?, on: Bool, enabled: Bool,
                       action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 3) {
-                if let systemImage {
-                    Image(systemName: systemImage).font(.system(size: 10))
-                }
-                Text(title).font(.system(size: 12, weight: .medium))
-            }
-            .lineLimit(1)
-            .fixedSize()
-            .foregroundColor(on ? style.accent : style.text.opacity(0.85))
-            .padding(.horizontal, 8).padding(.vertical, 3)
-            .background(Capsule().fill(on ? style.accent.opacity(0.15) : Color.clear))
-            .overlay(Capsule().stroke(on ? style.accent : style.text.opacity(0.25),
-                                      lineWidth: on ? 1.5 : 1))
-            .contentShape(Capsule())
-            .lightsTouchTarget()
-        }
-        .buttonStyle(.plain)
-        .disabled(!enabled)
-        .opacity(enabled ? 1 : 0.5)
-        .accessibilityAddTraits(.isToggle)
+        LightsChip(title: title, systemImage: systemImage, on: on, enabled: enabled, style: style,
+                   action: action)
     }
 
     // MARK: notice and hint
@@ -967,7 +987,10 @@ struct LightsInspector: View {
         .menuStyle(.button)
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
-        .fixedSize()
+        // Its own height, but a long name truncates rather than pushing the
+        // chips (and the phone sheet's Atmosphere and More buttons) off the
+        // row (#726).
+        .fixedSize(horizontal: false, vertical: true)
         .help(LightsInspectorState.menuHint)
         .accessibilityLabel(LightsInspectorState.menuLabel)
         .accessibilityValue(state.name)
@@ -1160,6 +1183,13 @@ extension View {
 /// them through LightsOrbitInteraction) and the gizmo's (`knob:`, `flip:`,
 /// `outer:`, `inner:`, `aimat:`, `wheel:`, `kpinch:`, `hl:`, `gshadow:`;
 /// GizmoAutoGesture parses and runs them through LightGizmoInteraction).
+/// The Atmosphere card's (#726): `<air field>:<value>` for haze, dust,
+/// dust_size, dust_speed and scatter (the card's `setAir`, the bridge
+/// setter at index -1), `airon:0|1` (the card's switch, `setAtmosphere(on:)`,
+/// one echoed `atmosphere` command) and `air` (the macOS and iPad card
+/// starts expanded; the phone sheet starts expanded and reveals the
+/// Atmosphere section as its header button does; with no light the
+/// air-only sheet already shows it).
 enum LightsAutoEdit {
     enum Token: Equatable {
         case set(LightParameter, Double)
@@ -1170,6 +1200,9 @@ enum LightsAutoEdit {
         case corner(LightsFloatCorner)
         case gesture(OrbitAutoGesture)
         case gizmo(GizmoAutoGesture)
+        case air(AirParameter, Double)
+        case airOn(Bool)
+        case revealAir
     }
 
     struct Parsed: Equatable {
@@ -1178,6 +1211,9 @@ enum LightsAutoEdit {
         var rejected: [String] = []
 
         var expands: Bool { tokens.contains(.expand) }
+        /// The `air` token: the Atmosphere card starts expanded and the
+        /// phone sheet reveals its Atmosphere section.
+        var revealsAir: Bool { tokens.contains(.revealAir) }
         /// The last `corner:` token's corner (nil: the stored one).
         var corner: LightsFloatCorner? {
             tokens.reduce(nil) { found, token in
@@ -1217,6 +1253,12 @@ enum LightsAutoEdit {
             let allNumbers = finite.count == numbers.count
             if key == "expand", parts.count == 1 {
                 parsed.tokens.append(.expand)
+            } else if key == "air", parts.count == 1 {
+                parsed.tokens.append(.revealAir)
+            } else if key == "airon", parts.count == 2, allNumbers, finite[0] == 0 || finite[0] == 1 {
+                parsed.tokens.append(.airOn(finite[0] == 1))
+            } else if let parameter = AirParameter(rawValue: key), parts.count == 2, allNumbers {
+                parsed.tokens.append(.air(parameter, finite[0]))
             } else if key == "corner", parts.count == 2,
                       let corner = LightsFloatCorner(rawValue: parts[1].trimmingCharacters(in: .whitespaces)
                         .lowercased()) {
@@ -1236,8 +1278,11 @@ enum LightsAutoEdit {
     }
 
     /// Apply `tokens` to the selected light; one `<edit> -> <result>` entry
-    /// per edit (`expand` and `corner:` are layout choices, applied before
-    /// the mode opens).
+    /// per edit (`expand`, `corner:` and `air` are layout choices, applied
+    /// before the mode opens). An air field's entry is
+    /// `haze=0.3 -> ok` (the rig's air, whatever is selected); the switch's
+    /// `airon=1 -> ran` (a command ran) or `-> skipped` (already in that
+    /// state, or the switch cannot be pressed).
     /// A gesture's entry is `<token> -> <result> <field>=<value>`. Gizmo
     /// gestures run with `gizmo` (the overlay's size and the engine's
     /// picker); without it each logs `<token> -> noview`.
@@ -1258,7 +1303,11 @@ enum LightsAutoEdit {
                 return "shadow=\(on ? 1 : 0) -> \(controller.setShadow(on))"
             case .color(let rgb):
                 return "color=\(fmt(rgb.x)):\(fmt(rgb.y)):\(fmt(rgb.z)) -> \(controller.setColour(rgb))"
-            case .expand, .corner:
+            case .air(let parameter, let value):
+                return "\(parameter.field)=\(fmt(value)) -> \(controller.setAir(parameter, value))"
+            case .airOn(let on):
+                return "airon=\(on ? 1 : 0) -> \(controller.setAtmosphere(on: on) ? "ran" : "skipped")"
+            case .expand, .corner, .revealAir:
                 return nil
             case .gesture(let gesture):
                 return OrbitAutoGesture.apply(gesture, to: controller, planSize: orbitPlanSize,

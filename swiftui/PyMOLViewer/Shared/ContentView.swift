@@ -160,6 +160,14 @@ struct ContentView: View {
     // starts expanded (and the iPad inspector expanded). Always false in
     // normal runs.
     @State private var lightsInspectorExpandOverride = false
+    // Debug hook only (PYMOL_AUTOLIGHTS_EDIT `air`, #726): the Atmosphere
+    // card starts expanded (macOS, iPad), and the phone sheet starts
+    // expanded and reveals its Atmosphere section through the header
+    // button's path: the request is 1 for each mode entry under the token,
+    // else 0 (LightsSheet's atmosphereRevealRequest). Always false and 0 in
+    // normal runs.
+    @State private var lightsAtmosphereExpandOverride = false
+    @State private var lightsAtmosphereRevealRequest = 0
     // The phone light tools (#623). The sheet's height is seeded compact each
     // time Lights mode opens (expanded under the DEBUG `expand`), never
     // persisted. `lightsSheetMoving` is true only for the one snap after a
@@ -4232,7 +4240,8 @@ struct ContentView: View {
                          style: lightsStyle,
                          inspectorStartsCollapsed: lightsInspectorStartsCollapsed,
                          sceneShadowsOn: engine.sceneShadowsOn,
-                         onEnableSceneShadows: { engine.enableSceneShadows() })
+                         onEnableSceneShadows: { engine.enableSceneShadows() },
+                         atmosphereStart: lightsAtmosphereStart)
     }
     #endif
 
@@ -4267,6 +4276,20 @@ struct ContentView: View {
         #endif
     }
 
+    // How the Atmosphere card (#726) starts, seeded each time the mode opens:
+    // on macOS expanded only when the air is on at entry (a short window
+    // keeps its inspector room otherwise); in the iPad float collapsed to
+    // its 44 pt header, so the default knobs stay free. Phones show it as a
+    // section of the sheet instead (no card).
+    private var lightsAtmosphereStart: LightsAtmosphereStart {
+        if lightsAtmosphereExpandOverride { return .expanded }
+        #if os(iOS)
+        return .collapsed
+        #else
+        return .expandedIfOn
+        #endif
+    }
+
     // MARK: Phone light tools (#623)
 
     #if os(iOS)
@@ -4290,7 +4313,8 @@ struct ContentView: View {
                     bottomInset: windowBottomInset, sceneShadowsOn: engine.sceneShadowsOn,
                     onEnableSceneShadows: { engine.enableSceneShadows() },
                     onMoving: { setLightsSheetMoving($0) },
-                    onFieldFocus: { lightsFieldFocused = $0 })
+                    onFieldFocus: { lightsFieldFocused = $0 },
+                    atmosphereRevealRequest: lightsAtmosphereRevealRequest)
             .onPreferenceChange(LightsSheetHeaderHeightKey.self) { noteLightsSheetHeader($0) }
             .onPreferenceChange(LightsSheetRowsHeightKey.self) { measured in
                 if measured > 0, abs(measured - lightsSheetRows) > 0.5 { lightsSheetRows = measured }
@@ -4308,7 +4332,8 @@ struct ContentView: View {
                     heights: LightsSheetHeights(compact: 0, expanded: 0, compactContent: 0),
                     sceneShadowsOn: engine.sceneShadowsOn,
                     onEnableSceneShadows: { engine.enableSceneShadows() },
-                    onFieldFocus: { lightsFieldFocused = $0 })
+                    onFieldFocus: { lightsFieldFocused = $0 },
+                    atmosphereRevealRequest: lightsAtmosphereRevealRequest)
             .background(GeometryReader { g in
                 Color.clear
                     .onAppear { lightsSideSize = g.size }
@@ -4332,6 +4357,7 @@ struct ContentView: View {
         LightsFloatingTools(controller: engine.lightsController, style: lightsStyle,
                             corner: lightsOrbitCornerBinding, chrome: viewportChrome,
                             inspectorStartsCollapsed: lightsInspectorStartsCollapsed,
+                            atmosphereStart: lightsAtmosphereStart,
                             sceneShadowsOn: engine.sceneShadowsOn,
                             onEnableSceneShadows: { engine.enableSceneShadows() },
                             onFrames: { frames in
@@ -4384,10 +4410,12 @@ struct ContentView: View {
         lightsShowsSequence = false
         endLightsSheetMotion()
         lightsSheetDetent = mode == .lights ? lightsSheetSeed : .compact
+        // One reveal per entry under the DEBUG `air` token (0 otherwise).
+        lightsAtmosphereRevealRequest = mode == .lights && lightsAtmosphereExpandOverride ? 1 : 0
     }
 
     private var lightsSheetSeed: LightsSheetDetent {
-        lightsInspectorExpandOverride ? .expanded : .compact
+        lightsInspectorExpandOverride || lightsAtmosphereExpandOverride ? .expanded : .compact
     }
 
     // The placement as last laid out (lightsPlacementSeen on iOS), for the
@@ -4413,9 +4441,11 @@ struct ContentView: View {
         #endif
     }
 
-    // The tools= and touch= fields of the PYMOL_AUTOLIGHTS log lines.
+    // The tools= and touch= fields of the PYMOL_AUTOLIGHTS log lines
+    // (`sheet:air` / `side:air` while the phone shows the air alone).
     private func lightsToolsFields(detent: LightsSheetDetent) -> String {
-        "tools=\(LightsSheetState.toolsSummary(placement: lightsLivePlacement, detent: detent, corner: lightsOrbitCorner)) "
+        let airOnly = LightsSheet.showsAirOnly(engine.lightsController)
+        return "tools=\(LightsSheetState.toolsSummary(placement: lightsLivePlacement, detent: detent, corner: lightsOrbitCorner, airOnly: airOnly)) "
             + "touch=\(Int(LightsTouch.minimumTarget))"
     }
 
@@ -4451,12 +4481,17 @@ struct ContentView: View {
 
     private var lightsLayoutLogKey: LightsLayoutLogKey? {
         guard engine.interactionMode == .lights, !iosFullScreen else { return nil }
+        // With no light the phone shows the air alone (#726), at the compact
+        // height whatever the detent.
+        let airOnly = LightsSheet.showsAirOnly(engine.lightsController)
         let tools = LightsSheetState.toolsSummary(placement: lightsPlacement, detent: lightsSheetDetent,
-                                                  corner: lightsOrbitCorner)
+                                                  corner: lightsOrbitCorner, airOnly: airOnly)
         if phoneLightsDocked {
             // Not before the sheet has reported its room.
             guard lightsRoom.height > 0 else { return nil }
-            let sheet = lightsSheetHeights(room: lightsRoom).height(lightsSheetDetent)
+            let heights = lightsSheetHeights(room: lightsRoom)
+            let sheet = airOnly ? LightsSheetModel.airOnlyFrame(heights: heights).slot
+                : heights.height(lightsSheetDetent)
             let panes = LightsPaneRule.summary(console: consoleBinding.wrappedValue,
                                                sequence: sequenceBinding.wrappedValue)
             return LightsLayoutLogKey(tools: tools, sheet: Int(sheet.rounded()), panes: panes, room: lightsRoom)
@@ -4477,9 +4512,12 @@ struct ContentView: View {
     // `LightsLayout: tools=sheet:compact scene=393x377 sheet=286 panes=hidden
     // covered=none touch=44`, logged after the layout settles (past the
     // 0.22 s snap): the scene is the viewport's size as the gizmo overlay
-    // measured it, `sheet` the committed slot, and `covered` the lights whose
+    // measured it, `sheet` the committed slot (the compact height for the
+    // air-only `sheet:air`), and `covered` the lights whose
     // knob (with its whole touch target) lies under a floating card
-    // (LightsFloatLayout.coveredKnobs; docked tools cover nothing).
+    // (LightsFloatLayout.coveredKnobs; docked tools cover nothing). The
+    // float adds its cards' frames: `card=`, `inspector=` and `atmosphere=`
+    // (x,y,wxh; 0,0,0x0 for a card not drawn).
     private func logLightsLayout(_ key: LightsLayoutLogKey?) {
         guard let key else { return }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
@@ -4494,6 +4532,7 @@ struct ContentView: View {
                 let cards = (lightsFloatFrames ?? key.float).map { f in
                     " card=\(Int(f.card.minX)),\(Int(f.card.minY)),\(Int(f.card.width))x\(Int(f.card.height))"
                         + " inspector=\(Int(f.inspector.minX)),\(Int(f.inspector.minY)),\(Int(f.inspector.width))x\(Int(f.inspector.height))"
+                        + " atmosphere=\(Int(f.atmosphere.minX)),\(Int(f.atmosphere.minY)),\(Int(f.atmosphere.width))x\(Int(f.atmosphere.height))"
                 } ?? ""
                 NSLog("LightsLayout: tools=\(key.tools) scene=\(Int(scene.width.rounded()))x\(Int(scene.height.rounded())) sheet=\(sheet) panes=\(key.panes) covered=\(LightsFloatLayout.coveredSummary(covered))\(cards) touch=\(Int(LightsTouch.minimumTarget))")
             }
@@ -4506,22 +4545,28 @@ struct ContentView: View {
     /// during engine init, before it) and, unless the value is 1, selects that
     /// light, so the bar can be screenshotted without a tap. The NSLog line lets
     /// a simulator console prove the state: `inspector=` is the inspector's
-    /// summary, `plan=` the orbit view's (LightsOrbitState.summary) and
+    /// summary, `plan=` the orbit view's (LightsOrbitState.summary),
     /// `gizmo=` the gizmo's (LightGizmoState.summary), so one run shows the
-    /// three tools agree.
+    /// three tools agree, and `air=` the Atmosphere card's
+    /// (AtmosphereCardState.summary, #726; `none` outside Lights mode).
     ///
-    /// Both lines end with `tools=<sheet:compact|sheet:expanded|side|
-    /// float:<tl|tr|bl|br>|column> touch=<minimum target>` (#623): where the
-    /// tools are.
+    /// Both lines end with `tools=<sheet:compact|sheet:expanded|sheet:air|
+    /// side|side:air|float:<tl|tr|bl|br>|column> touch=<minimum target>`
+    /// (#623, #726): where the tools are (`:air`: the phone's air-only sheet,
+    /// no light).
     ///
     /// Debug builds also read PYMOL_AUTOLIGHTS_EDIT='<token>;...' (see
     /// LightsAutoEdit): `expand` opens the phone sheet expanded (the iPad
-    /// inspector expanded), `corner:<tl|tr|bl|br>` puts the iPad float in
+    /// inspector expanded), `air` expands the Atmosphere card (macOS, iPad)
+    /// or opens the phone sheet expanded and revealed at its Atmosphere
+    /// section, `corner:<tl|tr|bl|br>` puts the iPad float in
     /// that corner for this run (nothing stored), and 0.5 s after entry the edits run through the
     /// inspector's controller calls and the orbit view's gestures (`tap:`,
     /// `plan:`, `square:`, `arc:`, `pinch:`, at the canvases on screen) and the gizmo's (`knob:`, `flip:`,
     /// `outer:`, `inner:`, `aimat:`, `wheel:`, `kpinch:`, `hl:`, `gshadow:`,
-    /// with the overlay's size and the engine's picker), logged as
+    /// with the overlay's size and the engine's picker) and the Atmosphere
+    /// card's (`haze:`, `dust:`, `dust_size:`, `dust_speed:`, `scatter:`,
+    /// `airon:`), logged as
     /// `PYMOL_AUTOLIGHTS_EDIT: orbit=120 -> ok; ...` with the inspector's, the
     /// orbit view's and the gizmo's state after them.
     private func autoEnterLightsModeFromEnv() {
@@ -4531,8 +4576,9 @@ struct ContentView: View {
             #if DEBUG
             let edits = LightsAutoEdit.parse(env["PYMOL_AUTOLIGHTS_EDIT"] ?? "")
             if edits.expands { lightsInspectorExpandOverride = true }
+            if edits.revealsAir { lightsAtmosphereExpandOverride = true }
             if let corner = edits.corner { lightsOrbitCornerOverride = corner }
-            let seed: LightsSheetDetent = edits.expands ? .expanded : .compact
+            let seed: LightsSheetDetent = edits.expands || edits.revealsAir ? .expanded : .compact
             #else
             let seed = LightsSheetDetent.compact
             #endif
@@ -4548,7 +4594,8 @@ struct ContentView: View {
                     .summary ?? "none"
                 let plan = LightsOrbitState(lights)?.summary ?? "none"
                 let gizmo = LightGizmoState(lights, sceneShadowsOn: engine.sceneShadowsOn)?.summary ?? "none"
-                NSLog("PYMOL_AUTOLIGHTS: active=\(lights.isActive) lights=\(names) selected=\(lights.selection.name ?? "none") inspector=\(inspector) plan=\(plan) gizmo=\(gizmo) \(tools)")
+                let air = AtmosphereCardState(lights)?.summary ?? "none"
+                NSLog("PYMOL_AUTOLIGHTS: active=\(lights.isActive) lights=\(names) selected=\(lights.selection.name ?? "none") inspector=\(inspector) plan=\(plan) gizmo=\(gizmo) air=\(air) \(tools)")
             }
             #if DEBUG
             guard !edits.tokens.isEmpty || !edits.rejected.isEmpty else { return }
@@ -4571,8 +4618,9 @@ struct ContentView: View {
                         .summary ?? "none"
                     let plan = LightsOrbitState(lights)?.summary ?? "none"
                     let gizmo = LightGizmoState(lights, sceneShadowsOn: engine.sceneShadowsOn)?.summary ?? "none"
+                    let air = AtmosphereCardState(lights)?.summary ?? "none"
                     let tools = lightsToolsFields(detent: lightsSheetDetent)
-                    NSLog("PYMOL_AUTOLIGHTS_EDIT: \(entries.joined(separator: "; ")) inspector=\(inspector) plan=\(plan) gizmo=\(gizmo) \(tools)")
+                    NSLog("PYMOL_AUTOLIGHTS_EDIT: \(entries.joined(separator: "; ")) inspector=\(inspector) plan=\(plan) gizmo=\(gizmo) air=\(air) \(tools)")
                 }
             }
             #endif
