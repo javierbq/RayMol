@@ -32,9 +32,10 @@ regression renders against master) and L3 prove on a Mac:
   mat_env_specular, mat_jelly_shade) are master's;
 * TestSpecialisers: every specialiser of a function that can reach the light
   helpers sets kLightHdr's index (materialFragmentFunction to
-  `lightRig && lightHdr`; bezierTubeRigFunction, airFunction, buildRTPipelines
-  and buildRTRigComposite false), no function fetched unspecialised reaches
-  kLightHdr, and (Part 3, dormant) nothing asks for it true yet;
+  `lightRig && lightHdr`; bezierTubeRigFunction to its builder's choice;
+  airFunction, buildRTPipelines and buildRTRigComposite false until Part 5),
+  no function fetched unspecialised reaches kLightHdr, and only the rig
+  builders ask for it, each with the frame's hdr choice;
 * TestBlock: pymol::LightRigBlock is 688 bytes with the tone last, and both
   MSL LightRigU copies end with it.
 
@@ -489,11 +490,15 @@ class TestSpecialisers(HdrMSLCase):
         self.assertRegex(self.code, r'RendererMetal::materialFragmentFunction\(\s*'
                                     r'id<MTLLibrary> lib, NSString\* name, int family, '
                                     r'bool lightRig,\s*bool lightShadow, bool lightHdr\)')
-        for name in ('bezierTubeRigFunction', 'airFunction'):
+        # Part 4: the tube's builder chooses per variant; the air keeps the
+        # knee until Part 5
+        for name, value in (('bezierTubeRigFunction', 'lightHdr'),
+                            ('airFunction', 'false')):
             fn = cpp_function(self.mm, name)
-            # Part 3: the knee everywhere (Parts 4-5 choose per variant)
-            self.assertEqual(self.setting(fn, 'kLightHdrConstantIndex'), 'false', name)
+            self.assertEqual(self.setting(fn, 'kLightHdrConstantIndex'), value, name)
             self.assertEqual(self.setting(fn, 'kLightShadowConstantIndex'), 'false', name)
+        self.assertRegex(self.code, r'static id<MTLFunction> bezierTubeRigFunction\('
+                                    r'id<MTLLibrary> lib, NSString\* name,\s*bool lightHdr\)')
         for name in RT_SPECIALISERS:
             fn = cpp_function(self.mm, name)
             self.assertEqual(self.setting(fn, 'kRTLightHdrConstantIndex'), 'false', name)
@@ -508,13 +513,35 @@ class TestSpecialisers(HdrMSLCase):
         self.assertEqual(self.code.count('atIndex:kRTLightHdrConstantIndex]'),
                          len(RT_SPECIALISERS))
 
-    def testDormant(self):
-        """Part 3: every kLightHdr is false. No caller hands
-        materialFragmentFunction a sixth argument, so the default false
-        holds for every pipeline, and every rig render is master's (L1b)."""
-        for m in re.finditer(r'(?<![\w:])materialFragmentFunction\(([^;]*)\);',
-                             re.sub(r'/\*.*?\*/', '', self.code, flags=re.S)):
-            self.assertLessEqual(len(m.group(1).split(',')), 5, m.group(0))
+    def testOnlyRigBuildersAskForIt(self):
+        """Part 4: a materialFragmentFunction call with a sixth argument
+        (kLightHdr) is a rig build (its fourth argument true), and hands on
+        its builder's hdr choice; every classic build passes three
+        arguments, so the default false holds for it."""
+        code = re.sub(r'/\*.*?\*/', '', self.code, flags=re.S)
+        owners = {}
+        for m in re.finditer(r'(?<![\w:])materialFragmentFunction\(([^;]*)\);', code):
+            args = squash(m.group(1)).split(',')
+            owner = re.findall(r'^[\w<>:\*\s]*RendererMetal::(\w+)\s*\(',
+                               code[:m.start()], re.M)[-1]
+            if len(args) <= 3:
+                self.assertIn(owner, ('buildVBOPipelines', 'buildImpostorPipelines'),
+                              m.group(0))
+                continue
+            self.assertEqual(len(args), 6, m.group(0))
+            owners.setdefault(owner, set()).add(args[5])
+            self.assertIn(args[3], ('true', 'lightRig'), m.group(0))
+        self.assertEqual(owners, {
+            'vboRigFragmentFunction': {'hdr'},
+            'vboRigShadowFragmentFunction': {'hdr'},
+            'ensureSphereRigPipelines': {'hdr'},
+            'ensureSphereRigShadowPipelines': {'hdr'},
+            'buildCylinderImpostorPipeline': {'lightHdr'},
+        })
+        # the tube's two variants, from its one builder
+        tube = re.findall(r'bezierTubeRigFunction\(([^;]*)\);', code)
+        self.assertEqual(sorted(squash(t).split(',')[-1] for t in tube),
+                         ['false', 'h==1'])
 
     def testNothingUnspecialisedReachesIt(self):
         """A function fetched with plain newFunctionWithName: never reads

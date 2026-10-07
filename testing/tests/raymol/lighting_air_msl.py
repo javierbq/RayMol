@@ -164,7 +164,26 @@ STATEMENTS_615 = {
 STATEMENTS_624 = {
     'SceneLightsFrame': re.compile(
         r'if\s*\(\s*frame\.rig\s*\)\s*SceneLightsToneFill\(G,\s*\*frame\.rig\);'),
+    # beginFrame clears the frame's HDR colour with the rig (Part 4)
+    'RendererMetal::beginFrame': re.compile(r'_lightHdrOn\s*=\s*false\s*;'),
 }
+# #624's exposure hand-off in runPostChain (Part 4): #13's pass exposes at
+# postExposure, 1 in an HDR rig frame (the rig shaders apply the exposure)
+# and metal_exposure otherwise. With the declaration taken out (exactly one
+# match) and its three uses written back as _exposure, the function is what
+# it was.
+POST_EXPOSURE_624 = re.compile(
+    r'const\s+float\s+postExposure\s*=\s*_lightHdrOn\s*\?\s*1\.0f\s*:\s*'
+    r'_exposure\s*;')
+POST_EXPOSURE_USES_624 = 3
+
+
+def without_post_exposure_624(body):
+    """runPostChain's `body` with #624's postExposure put back. Returns
+    (text, declarations, uses)."""
+    body, declarations = POST_EXPOSURE_624.subn('', body)
+    body, uses = re.subn(r'\bpostExposure\b', '_exposure', body)
+    return body, declarations, uses
 # #624 appends `float4 tone;` to the rig block's MSL mirror (LightRigU) in
 # kMaterialSrc and kRTSrc (layer1/LightRigBlock.h, 688 bytes). With the field
 # taken out (exactly one match each) the literals are what they were.
@@ -353,6 +372,10 @@ class TestMasterUnchanged(AirMSLCase):
             if name in STATEMENTS_624:
                 self.assertEqual(len(STATEMENTS_624[name].findall(body)), 1, name)
                 body = STATEMENTS_624[name].sub('', body, count=1)
+            # #624's exposure hand-off, put back
+            if name == 'RendererMetal::runPostChain':
+                body, declarations, uses = without_post_exposure_624(body)
+                self.assertEqual((declarations, uses), (1, POST_EXPOSURE_USES_624))
             self.assertEqual(digest(body), want, name)
 
 
@@ -427,6 +450,10 @@ class TestLibrary(AirMSLCase):
         tube = cpp_function(self.mm, 'bezierTubeRigFunction')
 
         def normal(body):
+            # #624: the tube's builder makes both kLightHdr variants and
+            # hands the function its choice (`bool hdr = lightHdr;`); the air
+            # sets false until its HDR composites are built
+            body = re.sub(r'bool hdr = lightHdr;', 'bool hdr = false;', body)
             return squash(re.sub(r'NSLog\(@"[^"]*"', 'NSLog(@""', body))
         self.assertEqual(normal(air), normal(tube))
         for index in ('atIndex:0]', 'atIndex:kLightRigConstantIndex]',

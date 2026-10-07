@@ -477,9 +477,11 @@ void RendererMetal::rebuildDrawPipelines()
   [_sphereShadowPipeline release];     _sphereShadowPipeline = nil;
   [_spherePeelPipeline release];       _spherePeelPipeline = nil;
   [_bezierTubePipeline release];       _bezierTubePipeline = nil;
-  // The tube's light-rig pipeline (#613): lazy, rebuilt at the new sample
-  // count the next time a rig-on frame draws a tube.
-  [_bezierTubeRigPipeline release];    _bezierTubeRigPipeline = nil;
+  // The tube's light-rig pipelines (#613; both hdr variants, #624): lazy,
+  // rebuilt at the new sample count the next time a rig-on frame draws a tube.
+  for (int h = 0; h < 2; ++h) {
+    [_bezierTubeRigPipeline[h] release];  _bezierTubeRigPipeline[h] = nil;
+  }
   _bezierTubeRigTried = false;
   [_labelPipeline release];            _labelPipeline = nil;
   [_connectorPipeline release];        _connectorPipeline = nil;
@@ -602,7 +604,8 @@ RendererMetal::~RendererMetal()
   [_aoExemptMaskTex release];         [_aoMaskPipeline release];
   [_aoMaskDepthState release];
   [_vboLinePipeline release];         [_bezierTubePipeline release];
-  [_bezierTubeRigPipeline release];   // the tube's light-rig pipeline (#613)
+  // the tube's light-rig pipelines (#613; both hdr variants, #624)
+  [_bezierTubeRigPipeline[0] release]; [_bezierTubeRigPipeline[1] release];
   [_airFullPipeline release];         [_airNoMaps release];  // the air (#618)
   [_airMarchPipeline release];        [_airUpsamplePipeline release];
   [_airTerm release];
@@ -1138,6 +1141,8 @@ void RendererMetal::beginFrame()
   // The light rig (#613) is per frame: SceneRenderMetal sets it again before
   // any draw, so a frame that never reaches it draws without the rig.
   _lightRigOn = false;
+  // So is its HDR colour (#624), derived from it by setLightRig.
+  _lightHdrOn = false;
   // So are its studio shadow maps (#616): no frame reads another's.
   _lightShadowMapsReady = false;
   _lightStudioShadows = false;
@@ -2931,6 +2936,10 @@ void RendererMetal::setLightRig(const LightRigBlock* rig)
   _lightRigOn = rig && rig->head[0] >= 1.0f;
   if (_lightRigOn)
     _lightRigBlock = *rig;
+  // HDR colour (#624): the block's tone[1] (SceneLightsToneFill, from
+  // metal_light_hdr) is 1 for an HDR frame and 0 at the 8-bit knee. Read
+  // only with the rig on.
+  _lightHdrOn = _lightRigOn && rig->tone[1] > 0.5f;
 }
 
 void RendererMetal::setLightClassicScale(float scale)
@@ -5492,11 +5501,16 @@ void RendererMetal::runPostChain()
   // ahead of the !_offscreen block so the offscreen PNG capture (which reads
   // sceneSrc directly) is processed identically to the live view. Exposure is
   // independent of the tone-map toggle, so the pass also runs when exposure != 1.
-  bool exposureActive = (_exposure < 0.999f || _exposure > 1.001f);
+  // HDR colour (#624): in an HDR rig frame the rig shaders apply the exposure
+  // in scene units (the block's tone.x), so this pass exposes at 1 (ACES
+  // only, when metal_tonemap is on). Without a rig, or at the 8-bit knee,
+  // postExposure is metal_exposure, as before #624.
+  const float postExposure = _lightHdrOn ? 1.0f : _exposure;
+  bool exposureActive = (postExposure < 0.999f || postExposure > 1.001f);
   if ((_tonemapEnabled || exposureActive) && _tonemapPipeline) {
     id<MTLTexture> dst = (sceneSrc == _sceneColor) ? _postColor : _sceneColor;
     struct { float exposure; float tonemap; float _p0, _p1; } u;
-    u.exposure = _exposure;
+    u.exposure = postExposure;
     u.tonemap = _tonemapEnabled ? 1.0f : 0.0f;
     u._p0 = u._p1 = 0.0f;
     MTLRenderPassDescriptor* pd = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -9064,18 +9078,22 @@ id<MTLFunction> RendererMetal::materialFragmentFunction(
 // rig-on frame needs it, so a session without lights never compiles one.
 // One attempt per family: a failed specialisation is not retried every draw.
 // Borrowed; released with the library in buildVBOPipelines and the dtor.
-id<MTLFunction> RendererMetal::vboRigFragmentFunction(int family, bool oit)
+// `hdr` (#624) asks for HDR colour's variant (kLightHdr true), kept and
+// tried apart from the 8-bit knee's.
+id<MTLFunction> RendererMetal::vboRigFragmentFunction(int family, bool oit,
+                                                      bool hdr)
 {
   if (family < 0 || family >= cMaterialFamily_count)
     family = cMaterialFamily_default;
+  const int h = hdr ? 1 : 0;
   id<MTLFunction>* slot =
-      oit ? &_vboFragmentOitRigFunc[family] : &_vboFragmentRigFunc[family];
-  bool& tried = _vboRigFuncTried[family][oit ? 1 : 0];
+      oit ? &_vboFragmentOitRigFunc[h][family] : &_vboFragmentRigFunc[h][family];
+  bool& tried = _vboRigFuncTried[h][family][oit ? 1 : 0];
   if (!*slot && !tried) {
     tried = true;
     *slot = materialFragmentFunction(
         _vboLibrary, oit ? @"vbo_fragment_oit" : @"vbo_fragment", family,
-        /*lightRig*/ true);
+        /*lightRig*/ true, /*lightShadow*/ false, /*lightHdr*/ hdr);
   }
   return *slot;
 }
@@ -9084,33 +9102,38 @@ id<MTLFunction> RendererMetal::vboRigFragmentFunction(int family, bool oit)
 // one material family (#616): kLightRig and kLightShadow both true. Lazy and
 // tried once per family exactly as vboRigFragmentFunction, so a session that
 // never shadows a light never compiles one. Borrowed; released with the rig
-// functions (releaseVBORigFunctions).
-id<MTLFunction> RendererMetal::vboRigShadowFragmentFunction(int family, bool oit)
+// functions (releaseVBORigFunctions). `hdr` as vboRigFragmentFunction (#624).
+id<MTLFunction> RendererMetal::vboRigShadowFragmentFunction(int family, bool oit,
+                                                            bool hdr)
 {
   if (family < 0 || family >= cMaterialFamily_count)
     family = cMaterialFamily_default;
-  id<MTLFunction>* slot = oit ? &_vboFragmentOitRigShadowFunc[family]
-                              : &_vboFragmentRigShadowFunc[family];
-  bool& tried = _vboRigShadowFuncTried[family][oit ? 1 : 0];
+  const int h = hdr ? 1 : 0;
+  id<MTLFunction>* slot = oit ? &_vboFragmentOitRigShadowFunc[h][family]
+                              : &_vboFragmentRigShadowFunc[h][family];
+  bool& tried = _vboRigShadowFuncTried[h][family][oit ? 1 : 0];
   if (!*slot && !tried) {
     tried = true;
     *slot = materialFragmentFunction(
         _vboLibrary, oit ? @"vbo_fragment_oit" : @"vbo_fragment", family,
-        /*lightRig*/ true, /*lightShadow*/ true);
+        /*lightRig*/ true, /*lightShadow*/ true, /*lightHdr*/ hdr);
   }
   return *slot;
 }
 
 void RendererMetal::releaseVBORigFunctions()
 {
-  for (int f = 0; f < cMaterialFamily_count; ++f) {
-    [_vboFragmentRigFunc[f] release];     _vboFragmentRigFunc[f] = nil;
-    [_vboFragmentOitRigFunc[f] release];  _vboFragmentOitRigFunc[f] = nil;
-    _vboRigFuncTried[f][0] = _vboRigFuncTried[f][1] = false;
-    // The studio shadow maps' variants (#616), from the same library.
-    [_vboFragmentRigShadowFunc[f] release];     _vboFragmentRigShadowFunc[f] = nil;
-    [_vboFragmentOitRigShadowFunc[f] release];  _vboFragmentOitRigShadowFunc[f] = nil;
-    _vboRigShadowFuncTried[f][0] = _vboRigShadowFuncTried[f][1] = false;
+  // Both hdr variants (#624): [0] the 8-bit knee, [1] HDR colour.
+  for (int h = 0; h < 2; ++h) {
+    for (int f = 0; f < cMaterialFamily_count; ++f) {
+      [_vboFragmentRigFunc[h][f] release];     _vboFragmentRigFunc[h][f] = nil;
+      [_vboFragmentOitRigFunc[h][f] release];  _vboFragmentOitRigFunc[h][f] = nil;
+      _vboRigFuncTried[h][f][0] = _vboRigFuncTried[h][f][1] = false;
+      // The studio shadow maps' variants (#616), from the same library.
+      [_vboFragmentRigShadowFunc[h][f] release];     _vboFragmentRigShadowFunc[h][f] = nil;
+      [_vboFragmentOitRigShadowFunc[h][f] release];  _vboFragmentOitRigShadowFunc[h][f] = nil;
+      _vboRigShadowFuncTried[h][f][0] = _vboRigShadowFuncTried[h][f][1] = false;
+    }
   }
 }
 
@@ -9655,15 +9678,17 @@ static void setOitRefractAttachment(
 }
 
 id<MTLRenderPipelineState> RendererMetal::oitPipelineForVD(
-    MTLVertexDescriptor* vd, int family, bool lightRig)
+    MTLVertexDescriptor* vd, int family, bool lightRig, bool lightHdr)
 {
   if (family < 0 || family >= cMaterialFamily_count) family = cMaterialFamily_default;
+  // HDR colour's variants (#624) are variants of the rig's.
+  lightHdr = lightHdr && lightRig;
   // The studio shadow maps' variant (#616), while this frame's maps are
   // ready (cachedVBOPipeline keys it apart under the same predicate); the
   // rig's own function if it cannot be specialised (logged once).
   id<MTLFunction> ffn = nil;
   if (lightRig && lightShadowsReady()) {
-    ffn = vboRigShadowFragmentFunction(family, true);
+    ffn = vboRigShadowFragmentFunction(family, true, lightHdr);
     if (!ffn && !_lightShadowWarned) {
       NSLog(@"RendererMetal: studio-shadow VBO OIT function failed; drawing the rig without its shadow maps");
       _lightShadowWarned = true;
@@ -9671,7 +9696,7 @@ id<MTLRenderPipelineState> RendererMetal::oitPipelineForVD(
   }
   // The light rig's variant (#613) differs only in its fragment function.
   if (!ffn)
-    ffn = lightRig ? vboRigFragmentFunction(family, true)
+    ffn = lightRig ? vboRigFragmentFunction(family, true, lightHdr)
                    : _vboFragmentOitFunc[family];
   if (!_vboVertexFunc || !ffn) return nil;
   MTLRenderPipelineDescriptor* p = [[MTLRenderPipelineDescriptor alloc] init];
@@ -9711,7 +9736,8 @@ id<MTLRenderPipelineState> RendererMetal::oitPipelineForVD(
 // +1 pipeline every frame (and paid full pipeline compilation each time).
 id<MTLRenderPipelineState> RendererMetal::cachedVBOPipeline(
     VBOPipelineVariant variant, size_t stride, int posOffset, int normalOffset,
-    int colorOffset, int colorType, MTLVertexDescriptor* vd, bool lightRig)
+    int colorOffset, int colorType, MTLVertexDescriptor* vd, bool lightRig,
+    bool lightHdr)
 {
   // Stable FNV-1a key over the layout + variant + sample count.
   uint64_t key = 1469598103934665603ULL;
@@ -9743,14 +9769,19 @@ id<MTLRenderPipelineState> RendererMetal::cachedVBOPipeline(
   // rig key is exactly what it was.
   const bool lightShadow = lightRig && lightShadowsReady();
   if (lightShadow) mix(0x4C53);
+  // HDR colour's variant of a rig pipeline (#624), in an HDR frame: mixed in
+  // only then, so every classic key and every rig key at the 8-bit knee is
+  // exactly what it was.
+  lightHdr = lightHdr && lightRig;
+  if (lightHdr) mix(0x4C48);
   auto it = _vboPipelineCache.find(key);
   if (it != _vboPipelineCache.end()) return it->second;  // borrowed (cache-owned)
 
   id<MTLRenderPipelineState> ps = nil;
   if (variant == VBOPipelineVariant::Oit) {
-    ps = oitPipelineForVD(vd, family, lightRig);   // +1
+    ps = oitPipelineForVD(vd, family, lightRig, lightHdr);   // +1
     if (!ps && family != cMaterialFamily_default)
-      ps = oitPipelineForVD(vd, cMaterialFamily_default, lightRig);   // draw default, not nothing
+      ps = oitPipelineForVD(vd, cMaterialFamily_default, lightRig, lightHdr);   // draw default, not nothing
   } else if (variant == VBOPipelineVariant::Shadow) {
     ps = shadowPipelineForVD(vd);    // +1
   } else if (variant == VBOPipelineVariant::Peel) {
@@ -9770,9 +9801,10 @@ id<MTLRenderPipelineState> RendererMetal::cachedVBOPipeline(
     // default family's, else the rig's own function below (logged once).
     id<MTLFunction> shadowFn = nil;
     if (variant == VBOPipelineVariant::Lit && lightShadow) {
-      shadowFn = vboRigShadowFragmentFunction(family, false);
+      shadowFn = vboRigShadowFragmentFunction(family, false, lightHdr);
       if (!shadowFn)
-        shadowFn = vboRigShadowFragmentFunction(cMaterialFamily_default, false);
+        shadowFn = vboRigShadowFragmentFunction(cMaterialFamily_default, false,
+                                                lightHdr);
       if (!shadowFn && !_lightShadowWarned) {
         NSLog(@"RendererMetal: studio-shadow VBO function failed; drawing the rig without its shadow maps");
         _lightShadowWarned = true;
@@ -9781,8 +9813,8 @@ id<MTLRenderPipelineState> RendererMetal::cachedVBOPipeline(
     if (shadowFn) {
       ffn = shadowFn;
     } else if (variant == VBOPipelineVariant::Lit && lightRig) {
-      ffn = vboRigFragmentFunction(family, false);
-      if (!ffn) ffn = vboRigFragmentFunction(cMaterialFamily_default, false);
+      ffn = vboRigFragmentFunction(family, false, lightHdr);
+      if (!ffn) ffn = vboRigFragmentFunction(cMaterialFamily_default, false, lightHdr);
     } else if (variant == VBOPipelineVariant::Lit) {
       ffn = _vboFragmentFunc[family] ? _vboFragmentFunc[family]
                                      : _vboFragmentFunc[cMaterialFamily_default];
@@ -9967,7 +9999,8 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
   if (_lightRigOn && !_shadowMode && !_peelMode && !unlit) {
     pipeline = cachedVBOPipeline(
         _oitActive ? VBOPipelineVariant::Oit : VBOPipelineVariant::Lit, stride,
-        posOffset, normalOffset, colorOffset, colorType, vd, /*lightRig*/ true);
+        posOffset, normalOffset, colorOffset, colorType, vd, /*lightRig*/ true,
+        /*lightHdr*/ _lightHdrOn);
     if (!pipeline && !_lightRigWarned) {
       NSLog(@"RendererMetal: light-rig VBO pipeline failed; drawing without the rig");
       _lightRigWarned = true;
@@ -10285,7 +10318,8 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
   if (_lightRigOn && !_shadowMode && !_peelMode && !unlit) {
     pipeline = cachedVBOPipeline(
         _oitActive ? VBOPipelineVariant::Oit : VBOPipelineVariant::Lit, stride,
-        posOffset, normalOffset, colorOffset, colorType, vd, /*lightRig*/ true);
+        posOffset, normalOffset, colorOffset, colorType, vd, /*lightRig*/ true,
+        /*lightHdr*/ _lightHdrOn);
     if (!pipeline && !_lightRigWarned) {
       NSLog(@"RendererMetal: light-rig VBO pipeline failed; drawing without the rig");
       _lightRigWarned = true;
@@ -11045,13 +11079,16 @@ void RendererMetal::buildImpostorPipelines()
   [vfn release];
 }
 
-void RendererMetal::ensureSphereRigPipelines()
+// `hdr` (#624) builds HDR colour's set (kLightHdr true) into [1], the 8-bit
+// knee's into [0]; each set is built, and tried, on its own.
+void RendererMetal::ensureSphereRigPipelines(bool hdr)
 {
-  if (_sphereRigBuilt) return;
+  const int h = hdr ? 1 : 0;
+  if (_sphereRigBuilt[h]) return;
   // One attempt per build: a failed specialisation is logged once by
   // materialFragmentFunction, and the draw falls back, rather than
   // recompiling every frame.
-  _sphereRigBuilt = true;
+  _sphereRigBuilt[h] = true;
   if (!_sphereLib || !_sphereOpaqueDesc || !_sphereOitDesc) return;
   // The classic builds' own descriptors, so a rig pipeline has the same
   // vertex function, vertex descriptor, blending, formats and sample count
@@ -11059,26 +11096,28 @@ void RendererMetal::ensureSphereRigPipelines()
   NSError* err = nil;
   for (int f = 0; f < cMaterialFamily_count; ++f) {
     id<MTLFunction> fn = materialFragmentFunction(
-        _sphereLib, @"sphere_impostor_fragment", f, /*lightRig*/ true);
+        _sphereLib, @"sphere_impostor_fragment", f, /*lightRig*/ true,
+        /*lightShadow*/ false, /*lightHdr*/ hdr);
     if (fn) {
       _sphereOpaqueDesc.fragmentFunction = fn;
-      _sphereRigPipeline[f] =
+      _sphereRigPipeline[h][f] =
           [_device newRenderPipelineStateWithDescriptor:_sphereOpaqueDesc error:&err];
       [fn release];   // MRC: the pipeline and the descriptor hold their own
-      if (!_sphereRigPipeline[f])
+      if (!_sphereRigPipeline[h][f])
         NSLog(@"RendererMetal: light-rig sphere pipeline failed (family %d): %@", f, err);
     }
     id<MTLFunction> ofn = materialFragmentFunction(
-        _sphereLib, @"sphere_impostor_fragment_oit", f, /*lightRig*/ true);
+        _sphereLib, @"sphere_impostor_fragment_oit", f, /*lightRig*/ true,
+        /*lightShadow*/ false, /*lightHdr*/ hdr);
     if (ofn) {
       _sphereOitDesc.fragmentFunction = ofn;
       // The same refraction-target rule as the classic OIT loop.
       setOitRefractAttachment(_sphereOitDesc.colorAttachments[2],
                               _oitRefractEnabled, f == cMaterialFamily_glass);
-      _sphereRigOitPipeline[f] =
+      _sphereRigOitPipeline[h][f] =
           [_device newRenderPipelineStateWithDescriptor:_sphereOitDesc error:&err];
       [ofn release];
-      if (!_sphereRigOitPipeline[f])
+      if (!_sphereRigOitPipeline[h][f])
         NSLog(@"RendererMetal: light-rig sphere OIT pipeline failed (family %d): %@", f, err);
     }
   }
@@ -11087,36 +11126,38 @@ void RendererMetal::ensureSphereRigPipelines()
 // The studio shadow maps' sphere pipelines (#616): ensureSphereRigPipelines
 // with kLightShadow true as well, from the same retained library and classic
 // descriptors. Built the first time a frame with maps draws spheres; one
-// attempt per build (_sphereRigShadowBuilt).
-void RendererMetal::ensureSphereRigShadowPipelines()
+// attempt per build (_sphereRigShadowBuilt). `hdr` as
+// ensureSphereRigPipelines (#624).
+void RendererMetal::ensureSphereRigShadowPipelines(bool hdr)
 {
-  if (_sphereRigShadowBuilt) return;
-  _sphereRigShadowBuilt = true;
+  const int h = hdr ? 1 : 0;
+  if (_sphereRigShadowBuilt[h]) return;
+  _sphereRigShadowBuilt[h] = true;
   if (!_sphereLib || !_sphereOpaqueDesc || !_sphereOitDesc) return;
   NSError* err = nil;
   for (int f = 0; f < cMaterialFamily_count; ++f) {
     id<MTLFunction> fn = materialFragmentFunction(
         _sphereLib, @"sphere_impostor_fragment", f, /*lightRig*/ true,
-        /*lightShadow*/ true);
+        /*lightShadow*/ true, /*lightHdr*/ hdr);
     if (fn) {
       _sphereOpaqueDesc.fragmentFunction = fn;
-      _sphereRigShadowPipeline[f] =
+      _sphereRigShadowPipeline[h][f] =
           [_device newRenderPipelineStateWithDescriptor:_sphereOpaqueDesc error:&err];
       [fn release];   // MRC: the pipeline and the descriptor hold their own
-      if (!_sphereRigShadowPipeline[f])
+      if (!_sphereRigShadowPipeline[h][f])
         NSLog(@"RendererMetal: studio-shadow sphere pipeline failed (family %d): %@", f, err);
     }
     id<MTLFunction> ofn = materialFragmentFunction(
         _sphereLib, @"sphere_impostor_fragment_oit", f, /*lightRig*/ true,
-        /*lightShadow*/ true);
+        /*lightShadow*/ true, /*lightHdr*/ hdr);
     if (ofn) {
       _sphereOitDesc.fragmentFunction = ofn;
       setOitRefractAttachment(_sphereOitDesc.colorAttachments[2],
                               _oitRefractEnabled, f == cMaterialFamily_glass);
-      _sphereRigShadowOitPipeline[f] =
+      _sphereRigShadowOitPipeline[h][f] =
           [_device newRenderPipelineStateWithDescriptor:_sphereOitDesc error:&err];
       [ofn release];
-      if (!_sphereRigShadowOitPipeline[f])
+      if (!_sphereRigShadowOitPipeline[h][f])
         NSLog(@"RendererMetal: studio-shadow sphere OIT pipeline failed (family %d): %@", f, err);
     }
   }
@@ -11124,15 +11165,18 @@ void RendererMetal::ensureSphereRigShadowPipelines()
 
 void RendererMetal::releaseSphereRigPipelines()
 {
-  for (int f = 0; f < cMaterialFamily_count; ++f) {
-    [_sphereRigPipeline[f] release];     _sphereRigPipeline[f] = nil;
-    [_sphereRigOitPipeline[f] release];  _sphereRigOitPipeline[f] = nil;
-    // The studio shadow maps' variants (#616), built from the same library.
-    [_sphereRigShadowPipeline[f] release];     _sphereRigShadowPipeline[f] = nil;
-    [_sphereRigShadowOitPipeline[f] release];  _sphereRigShadowOitPipeline[f] = nil;
+  // Both hdr variants (#624): [0] the 8-bit knee, [1] HDR colour.
+  for (int h = 0; h < 2; ++h) {
+    for (int f = 0; f < cMaterialFamily_count; ++f) {
+      [_sphereRigPipeline[h][f] release];     _sphereRigPipeline[h][f] = nil;
+      [_sphereRigOitPipeline[h][f] release];  _sphereRigOitPipeline[h][f] = nil;
+      // The studio shadow maps' variants (#616), built from the same library.
+      [_sphereRigShadowPipeline[h][f] release];     _sphereRigShadowPipeline[h][f] = nil;
+      [_sphereRigShadowOitPipeline[h][f] release];  _sphereRigShadowOitPipeline[h][f] = nil;
+    }
+    _sphereRigBuilt[h] = false;
+    _sphereRigShadowBuilt[h] = false;
   }
-  _sphereRigBuilt = false;
-  _sphereRigShadowBuilt = false;
 }
 
 void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
@@ -11161,11 +11205,13 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
   // variant of its family's pipeline, else the rig's `default` one, else
   // the classic pipeline chosen above (logged once). With the rig off
   // `rigPipeline` stays nil and the selection below is today's.
+  // HDR colour (#624): an HDR frame's set ([1]), else the 8-bit knee's.
+  const int sphereHdr = _lightHdrOn ? 1 : 0;
   id<MTLRenderPipelineState> rigPipeline = nil;
   if (_lightRigOn && !_shadowMode && !_peelMode) {
-    ensureSphereRigPipelines();
+    ensureSphereRigPipelines(_lightHdrOn);
     id<MTLRenderPipelineState>* rigSet =
-        _oitActive ? _sphereRigOitPipeline : _sphereRigPipeline;
+        _oitActive ? _sphereRigOitPipeline[sphereHdr] : _sphereRigPipeline[sphereHdr];
     rigPipeline = rigSet[sphereFam] ? rigSet[sphereFam]
                                     : rigSet[cMaterialFamily_default];
     if (!rigPipeline && !_lightRigWarned) {
@@ -11178,9 +11224,10 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
   // default family's); the rig pipeline itself if neither was built (logged
   // once).
   if (rigPipeline && lightShadowsReady()) {
-    ensureSphereRigShadowPipelines();
+    ensureSphereRigShadowPipelines(_lightHdrOn);
     id<MTLRenderPipelineState>* shadowSet =
-        _oitActive ? _sphereRigShadowOitPipeline : _sphereRigShadowPipeline;
+        _oitActive ? _sphereRigShadowOitPipeline[sphereHdr]
+                   : _sphereRigShadowPipeline[sphereHdr];
     id<MTLRenderPipelineState> shadowPipeline =
         shadowSet[sphereFam] ? shadowSet[sphereFam]
                              : shadowSet[cMaterialFamily_default];
@@ -11761,10 +11808,13 @@ fragment CylShadowOut cyl_impostor_fragment_shadow(CylVOut in [[stage_in]],
 )";
 
 void RendererMetal::buildCylinderImpostorPipeline(
-    const CylinderImpostorDrawCall& call, bool lightRig, bool lightShadow)
+    const CylinderImpostorDrawCall& call, bool lightRig, bool lightShadow,
+    bool lightHdr)
 {
   // The studio shadow maps' variant (#616) is a variant of the rig's.
   lightShadow = lightShadow && lightRig;
+  // So is HDR colour's (#624).
+  lightHdr = lightHdr && lightRig;
   // Cache per vertex layout. a_cap's offset is part of the descriptor, so a
   // stick VBO (per-vertex a_cap) and a CGO VBO (constant a_cap) need different
   // pipelines even at the same stride — and Move mode draws both every frame, so
@@ -11780,10 +11830,11 @@ void RendererMetal::buildCylinderImpostorPipeline(
   // pipeline here and is not recompiled on every later frame. The light rig's
   // variant (#613) is keyed apart, so the classic entry is today's; so is the
   // studio shadow maps' variant (#616), whose element is false for every
-  // classic and #613 rig entry.
+  // classic and #613 rig entry, and HDR colour's (#624), whose element is
+  // false for every classic entry and every rig entry at the 8-bit knee.
   const auto layout = std::make_tuple(
       static_cast<NSUInteger>(call.stride), call.capOff, cylFam, lightRig,
-      lightShadow);
+      lightShadow, lightHdr);
   {
     auto it = _cylinderPipelines.find(layout);
     if (it != _cylinderPipelines.end()) {
@@ -11816,14 +11867,14 @@ void RendererMetal::buildCylinderImpostorPipeline(
   // with an unset constant, and sticks would silently stop drawing.
   id<MTLFunction> ffn =
       materialFragmentFunction(lib, @"cyl_impostor_fragment", cylFam, lightRig,
-                               lightShadow);
+                               lightShadow, lightHdr);
   if (!ffn && cylFam != cMaterialFamily_default) {
     // Draw as `default` rather than not at all. Returning here would also leave
     // the layout UNCACHED, so the MSL library would be recompiled on every
     // frame that tried this material.
     cylFam = cMaterialFamily_default;
     ffn = materialFragmentFunction(lib, @"cyl_impostor_fragment", cylFam,
-                                   lightRig, lightShadow);
+                                   lightRig, lightShadow, lightHdr);
   }
   if (!vfn || !ffn) {
     NSLog(@"RendererMetal: cyl impostor funcs missing");
@@ -11881,11 +11932,12 @@ void RendererMetal::buildCylinderImpostorPipeline(
   // and transparent sticks disappeared permanently for that layout.
   int cylOitFam = cylFam;
   id<MTLFunction> offn = materialFragmentFunction(
-      lib, @"cyl_impostor_fragment_oit", cylOitFam, lightRig, lightShadow);
+      lib, @"cyl_impostor_fragment_oit", cylOitFam, lightRig, lightShadow,
+      lightHdr);
   if (!offn && cylOitFam != cMaterialFamily_default) {
     cylOitFam = cMaterialFamily_default;
     offn = materialFragmentFunction(lib, @"cyl_impostor_fragment_oit",
-                                    cylOitFam, lightRig, lightShadow);
+                                    cylOitFam, lightRig, lightShadow, lightHdr);
   }
   if (offn) {
     MTLRenderPipelineDescriptor* op = [[MTLRenderPipelineDescriptor alloc] init];
@@ -12001,9 +12053,11 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
   // The light rig (#613): while it is on, a colour draw takes the rig's
   // entry for this layout and family; if that could not be built, the
   // classic one (logged once). Shadow and peel always take the classic entry.
-  // With the rig off this is today's call.
+  // With the rig off this is today's call. HDR colour (#624): an HDR frame's
+  // rig entries are its own (cylHdr), the 8-bit knee's otherwise.
   const bool cylRig = _lightRigOn && !_shadowMode && !_peelMode;
-  buildCylinderImpostorPipeline(call, cylRig);
+  const bool cylHdr = cylRig && _lightHdrOn;
+  buildCylinderImpostorPipeline(call, cylRig, /*lightShadow*/ false, cylHdr);
   if (cylRig && (!_cylinderImpostorPipeline ||
                  (_oitActive && !_cylinderOitPipeline))) {
     if (!_lightRigWarned) {
@@ -12015,14 +12069,14 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
     // The studio shadow maps (#616): while this frame's maps are ready, the
     // shadow variant of the rig entry just chosen; back to that rig entry (a
     // cache hit) if it could not be built (logged once).
-    buildCylinderImpostorPipeline(call, true, /*lightShadow*/ true);
+    buildCylinderImpostorPipeline(call, true, /*lightShadow*/ true, cylHdr);
     if (!_cylinderImpostorPipeline ||
         (_oitActive && !_cylinderOitPipeline)) {
       if (!_lightShadowWarned) {
         NSLog(@"RendererMetal: studio-shadow cylinder pipeline failed; drawing the rig without its shadow maps");
         _lightShadowWarned = true;
       }
-      buildCylinderImpostorPipeline(call, true);
+      buildCylinderImpostorPipeline(call, true, /*lightShadow*/ false, cylHdr);
     }
   }
   if (!_cylinderImpostorPipeline) return;
@@ -12358,12 +12412,14 @@ void RendererMetal::buildBezierTubePipeline()
 // One of the tube rig library's functions (#613). The vertex function reads
 // no function constant, so plain newFunctionWithName: is enough for it. The
 // fragment reads one, kLightHdr (#624), through light_apply's light_finish,
-// so Metal lists it and the function is specialised: with kLightHdr false
-// here (the 8-bit knee, as before #624), kMatFamily = default, kLightRig =
-// false and kLightShadow = false (#616), which it does not read, so every
-// constant the library declares is set.
+// so Metal lists it and the function is specialised: with kLightHdr =
+// `lightHdr` (true for an HDR frame's variant, false for the 8-bit knee, as
+// before #624), kMatFamily = default, kLightRig = false and kLightShadow =
+// false (#616), which it does not read, so every constant the library
+// declares is set.
 // +1, caller owns; nil (logged) on failure.
-static id<MTLFunction> bezierTubeRigFunction(id<MTLLibrary> lib, NSString* name)
+static id<MTLFunction> bezierTubeRigFunction(id<MTLLibrary> lib, NSString* name,
+                                             bool lightHdr)
 {
   id<MTLFunction> fn = [lib newFunctionWithName:name];
   if (fn && fn.functionConstantsDictionary.count == 0)
@@ -12379,8 +12435,9 @@ static id<MTLFunction> bezierTubeRigFunction(id<MTLLibrary> lib, NSString* name)
   // nor receive studio shadows.
   bool shadow = false;
   [cv setConstantValue:&shadow type:MTLDataTypeBool atIndex:kLightShadowConstantIndex];
-  // HDR colour's constant (#624), read by light_finish: false, the knee.
-  bool hdr = false;
+  // HDR colour's constant (#624), read by light_finish: true for an HDR
+  // frame's variant, false for the 8-bit knee.
+  bool hdr = lightHdr;
   [cv setConstantValue:&hdr type:MTLDataTypeBool atIndex:kLightHdrConstantIndex];
   NSError* err = nil;
   fn = [lib newFunctionWithName:name constantValues:cv error:&err];
@@ -12390,26 +12447,29 @@ static id<MTLFunction> bezierTubeRigFunction(id<MTLLibrary> lib, NSString* name)
   return fn;
 }
 
-// The bezier tube's light-rig pipeline (#613): the classic tube's descriptor
+// The bezier tube's light-rig pipelines (#613): the classic tube's descriptor
 // (lighting_msl.py keeps the two equal) with the rig library's functions.
 // Built the first time a rig-on frame draws a tube, so a session without
-// lights never compiles it; one attempt per build (_bezierTubeRigTried), so a
-// failure is not recompiled every draw. Unlike the classic builder it
-// releases what it creates: only the pipeline state is kept.
+// lights never compiles them; one attempt per build (_bezierTubeRigTried), so
+// a failure is not recompiled every draw. Unlike the classic builder it
+// releases what it creates: only the pipeline states are kept.
+// HDR colour (#624): both variants come from the one library compile, [0]
+// with kLightHdr false (the 8-bit knee) and [1] with it true (an HDR frame);
+// they share the vertex function, which reads no constant.
 void RendererMetal::buildBezierTubeRigPipeline()
 {
-  if (_bezierTubeRigPipeline || _bezierTubeRigTried) return;
+  if (_bezierTubeRigTried) return;
   _bezierTubeRigTried = true;
   NSError* err = nil;
   id<MTLLibrary> lib = [_device newLibraryWithSource:[[kMaterialSrc stringByAppendingString:kBezierTubeSrc]
                                                    stringByAppendingString:kBezierTubeRigSrc]
                                              options:nil error:&err];
   if (!lib) { NSLog(@"RendererMetal: bezier tube rig compile failed: %@", err); return; }
-  id<MTLFunction> vfn = bezierTubeRigFunction(lib, @"bezier_tube_vertex_rig");
-  id<MTLFunction> ffn = bezierTubeRigFunction(lib, @"bezier_tube_fragment_rig");
-  if (!vfn || !ffn) {
+  id<MTLFunction> vfn =
+      bezierTubeRigFunction(lib, @"bezier_tube_vertex_rig", /*lightHdr*/ false);
+  if (!vfn) {
     NSLog(@"RendererMetal: bezier tube rig funcs missing");
-    [vfn release]; [ffn release]; [lib release];
+    [lib release];
     return;
   }
 
@@ -12422,7 +12482,6 @@ void RendererMetal::buildBezierTubeRigPipeline()
 
   MTLRenderPipelineDescriptor* psd = [[MTLRenderPipelineDescriptor alloc] init];
   psd.vertexFunction = vfn;
-  psd.fragmentFunction = ffn;
   psd.vertexDescriptor = vd;
   psd.colorAttachments[0].pixelFormat = MTLPixelFormatBGRA8Unorm;
   psd.rasterSampleCount = _sampleCount;
@@ -12433,11 +12492,22 @@ void RendererMetal::buildBezierTubeRigPipeline()
   psd.tessellationFactorFormat = MTLTessellationFactorFormatHalf;
   psd.tessellationOutputWindingOrder = MTLWindingClockwise;
   psd.tessellationPartitionMode = MTLTessellationPartitionModeInteger;
-  _bezierTubeRigPipeline = [_device newRenderPipelineStateWithDescriptor:psd error:&err];
-  if (!_bezierTubeRigPipeline)
-    NSLog(@"RendererMetal: bezier tube rig pipeline failed: %@", err);
-  // MRC: the pipeline state keeps what it needs; vd is autoreleased.
-  [psd release]; [vfn release]; [ffn release]; [lib release];
+  for (int h = 0; h < 2; ++h) {
+    id<MTLFunction> ffn = bezierTubeRigFunction(
+        lib, @"bezier_tube_fragment_rig", /*lightHdr*/ h == 1);
+    if (!ffn) {
+      NSLog(@"RendererMetal: bezier tube rig funcs missing");
+      continue;
+    }
+    psd.fragmentFunction = ffn;
+    _bezierTubeRigPipeline[h] =
+        [_device newRenderPipelineStateWithDescriptor:psd error:&err];
+    if (!_bezierTubeRigPipeline[h])
+      NSLog(@"RendererMetal: bezier tube rig pipeline failed: %@", err);
+    [ffn release];   // MRC: the pipeline state keeps what it needs
+  }
+  // MRC: the pipeline states keep what they need; vd is autoreleased.
+  [psd release]; [vfn release]; [lib release];
 }
 
 // One of the air library's functions (#618), with bezierTubeRigFunction's
@@ -12709,8 +12779,10 @@ void RendererMetal::drawBezierTubes(const void* cp, size_t dataSize,
   bool tubeRig = false;
   if (_lightRigOn) {
     buildBezierTubeRigPipeline();
-    if (_bezierTubeRigPipeline) {
-      tubePipeline = _bezierTubeRigPipeline;
+    // HDR colour (#624): an HDR frame's variant, else the 8-bit knee's.
+    id<MTLRenderPipelineState> rigTube = _bezierTubeRigPipeline[_lightHdrOn ? 1 : 0];
+    if (rigTube) {
+      tubePipeline = rigTube;
       tubeRig = true;
     } else if (!_lightRigWarned) {
       NSLog(@"RendererMetal: light-rig bezier tube pipeline failed; drawing without the rig");
