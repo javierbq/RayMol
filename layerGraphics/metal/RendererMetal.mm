@@ -3394,13 +3394,14 @@ static float rt_trans_T(ray r, primitive_acceleration_structure tas,
 // SPIKE #625 (scratch): lighting after ray tracing, in its cheapest form.
 // Per rig light, K shadow rays toward points on a disc of radius
 // u.pad5 * (light's aim distance) around the light (a sphere light seen from
-// the surface), giving a soft visibility v_i. The result is the RATIO
+// the surface), giving a soft visibility v_i. The result is the per-channel
+// RATIO
 //   (ambient + sum_i v_i w_i) / (ambient + sum_i w_i)
-// with w_i the light's unshadowed diffuse luminance at the pixel (cone,
+// with w_i the light's unshadowed diffuse radiance at the pixel (colour, cone,
 // falloff, N.L), which the composite multiplies into the raster-lit colour:
 // exact for the diffuse part whatever the base colour, approximate for the
 // highlight. Lights 0..u.pad6-1 are traced; u.pad4 = K.
-static float rt_spike_light_ratio(constant LightRigU& rig, constant RTU& u,
+static float3 rt_spike_light_ratio(constant LightRigU& rig, constant RTU& u,
     float3 pEye, float3 nEye, float3 pModel, float3 nSelf, float2 uv,
     instance_acceleration_structure accel, uint mask) {
   const int n = int(rig.head.x);
@@ -3411,8 +3412,8 @@ static float rt_spike_light_ratio(constant LightRigU& rig, constant RTU& u,
   const float nl = length(nEye);
   float3 N = nl > 1e-8 ? nEye / nl : V;
   if (dot(N, V) < 0.0) N = -N;
-  float total = max(u.lAmbient, 0.0);
-  float lit = total;
+  float3 total = float3(max(u.lAmbient, 0.0));
+  float3 lit = total;
   intersector<instancing> it;
   it.assume_geometry_type(geometry_type::triangle);
   it.accept_any_intersection(true);
@@ -3429,8 +3430,7 @@ static float rt_spike_light_ratio(constant LightRigU& rig, constant RTU& u,
     if (spot <= 0.0 || wd <= 0.0) continue;
     const float fall = rig.L[i].misc.y > 0.0
         ? min(pow(rig.L[i].misc.z / d, rig.L[i].misc.y), 1e4) : 1.0;
-    const float w = dot(rig.L[i].radiance.rgb, float3(0.2126, 0.7152, 0.0722)) *
-                    spot * fall * wd;
+    const float3 w = rig.L[i].radiance.rgb * (spot * fall * wd);
     total += w;
     if (i >= nTrace) { lit += w; continue; }
     const float3 Lm = (u.invModelview * float4(rig.L[i].pos.xyz, 1.0)).xyz;
@@ -3459,7 +3459,7 @@ static float rt_spike_light_ratio(constant LightRigU& rig, constant RTU& u,
     }
     lit += w * (1.0 - hits / float(K));
   }
-  return total > 1e-6 ? saturate(lit / total) : 1.0;
+  return saturate(lit / max(total, float3(1e-6)));
 }
 
 // Pass A: trace ambient-occlusion rays, write the raw AO term to an R16Float
@@ -3690,11 +3690,12 @@ fragment float4 rt_ao(PostVOut in [[stage_in]],
       vis *= rt_trans_T(tr, tas, tcols, tocc);
     }
   }
-  float spikeRatio = 1.0;
+  // SPIKE #625: the traced key-light shadow is off (u.rtShadow 0), so .gba
+  // carry the per-channel ratio instead of (vis, selfSphere, 1).
   if (kRTLightRig && u.pad6 > 0.5)
-    spikeRatio = rt_spike_light_ratio(rig, u, pEye, nEye, pModel, nSelf, in.uv,
-                                      accel, mask);
-  return float4(ao, vis, selfSphere, spikeRatio);
+    return float4(ao, rt_spike_light_ratio(rig, u, pEye, nEye, pModel, nSelf,
+                                           in.uv, accel, mask));
+  return float4(ao, vis, selfSphere, 1.0);
 }
 
 // Pass B: composite. Read scene color, DEPTH-AWARE-BLUR the raw AO term (5x5,
@@ -3744,7 +3745,8 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
   // closeness so AO doesn't bleed across object silhouettes.
   float2 texel = 1.0 / float2(aoTex.get_width(), aoTex.get_height());
   float ztol = max(0.5 * u.aoRadius, 0.5);
-  float aoSum = 0.0, visSum = 0.0, wSum = 0.0, spikeSum = 0.0;
+  float aoSum = 0.0, visSum = 0.0, wSum = 0.0;
+  float2 spikeSum = float2(0.0);
   for (int j = -2; j <= 2; ++j)
     for (int i = -2; i <= 2; ++i) {
       float2 uv = in.uv + float2(i, j) * texel;
@@ -3767,14 +3769,14 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
       float2 rg = rga.rg;
       aoSum += rg.r * w;
       visSum += rg.g * w;
-      spikeSum += rga.a * w;
+      spikeSum += rga.ba * w;
       wSum += w;
     }
   float ao = wSum > 0.0 ? (aoSum / wSum) : aoTex.sample(s, in.uv).r;
   float vis = wSum > 0.0 ? (visSum / wSum) : aoTex.sample(s, in.uv).g;
   // SPIKE #625: the per-light traced soft-shadow ratio (rt_spike_light_ratio).
   if (u.pad6 > 0.5)
-    col *= wSum > 0.0 ? (spikeSum / wSum) : aoTex.sample(s, in.uv).a;
+    col *= wSum > 0.0 ? float3(vis, spikeSum / wSum) : aoTex.sample(s, in.uv).gba;
 
   // Screen-space crease term (metal_ssao), kept ON under ray tracing (#436).
   // The traced hemisphere AO is physically right but SMOOTH: on packed spheres
@@ -5169,6 +5171,7 @@ void RendererMetal::runPostChain()
         if (spikeAO) {
           u.pad4 = sK; u.pad5 = sF; u.pad6 = sN;
           u.rtShadow = 0.0f;
+          u.shadowIntensity = 0.0f;
         }
       }
     }
