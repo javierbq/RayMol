@@ -286,11 +286,12 @@ struct LightGizmoOverlay: View {
     }
 
     /// The VoiceOver elements: LightGizmoState's per-knob strings at each
-    /// knob's hit area (radius plus slop), rig order. Empty without a state.
+    /// knob's hit area (its reach: radius plus slop, at least 22 pt on iOS),
+    /// rig order. Empty without a state.
     static func knobElements(_ layout: LightGizmoLayout, state: LightGizmoState?) -> [KnobElement] {
         (state?.knobs ?? []).compactMap { element in
             guard let knob = layout.knob(named: element.name) else { return nil }
-            let r = knob.radius + layout.metrics.slop
+            let r = layout.metrics.reach(knob.radius)
             return KnobElement(knob: element,
                                frame: CGRect(x: knob.centre.x - r, y: knob.centre.y - r, width: 2 * r, height: 2 * r))
         }
@@ -315,6 +316,7 @@ struct LightGizmoOverlay: View {
             .background(Capsule().fill(on ? style.accent.opacity(0.15) : Color.clear))
             .overlay(Capsule().stroke(on ? style.accent : style.text.opacity(0.3), lineWidth: on ? 1.5 : 1))
             .contentShape(Capsule())
+            .lightsTouchTarget()
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
@@ -405,7 +407,7 @@ struct LightGizmoOverlay: View {
         let u = knob.labelDirection
         let label = LightGizmoPainter.labelSize(knob.label, selected: true)
         let extent = abs(u.dx) * label.width + abs(u.dy) * label.height
-        let reach = knob.radius + max(layout.metrics.labelGap + extent + chipGap, layout.metrics.slop + chipGap)
+        let reach = max(knob.radius + layout.metrics.labelGap + extent, layout.metrics.reach(knob.radius)) + chipGap
         return ChipPlacement(point: CGPoint(x: knob.centre.x + u.dx * reach, y: knob.centre.y + u.dy * reach),
                              anchor: LightGizmoPainter.labelAnchor(u),
                              calloutAbove: u.dy < -0.3)

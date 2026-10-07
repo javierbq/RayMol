@@ -1363,6 +1363,77 @@ final class GizmoAutoGestureTests: XCTestCase {
         XCTAssertFalse(controller.isBehind("key"))
     }
 
+    // MARK: #623's touch tokens
+
+    func testParseTheTouchTokens() {
+        XCTAssertEqual(GizmoAutoGesture.parse("tpinch:key:1.5"), .touchPinch("key", 1.5, nil))
+        XCTAssertEqual(GizmoAutoGesture.parse("TPINCH:key:1.5:200"), .touchPinch("key", 1.5, 200))
+        XCTAssertEqual(GizmoAutoGesture.parse("lpress:0.2:-0.1"), .longPress(0.2, -0.1))
+        XCTAssertEqual(GizmoAutoGesture.parse("lpress:key"), .longPressKnob("key"))
+        XCTAssertEqual(GizmoAutoGesture.parse("gprobe:fill:21.9:0"), .probe("fill", 21.9, 0))
+        for bad in ["tpinch:key", "tpinch:key:0", "tpinch::1.5", "tpinch:key:1.5:0", "tpinch:key:1.5:x",
+                    "tpinch:key:1.5:200:1", "lpress", "lpress:", "lpress:1:x", "lpress:1:2:3",
+                    "gprobe:fill:1", "gprobe::1:2", "gprobe:fill:x:0"] {
+            XCTAssertNil(GizmoAutoGesture.parse(bad), bad)
+        }
+        for g: GizmoAutoGesture in [.touchPinch("key", 1.5, nil), .touchPinch("key", 2, 200),
+                                    .longPress(0.2, -0.1), .longPressKnob("rim"), .probe("fill", 21.9, -3)] {
+            XCTAssertEqual(GizmoAutoGesture.parse(g.token), g, g.token)
+            XCTAssertTrue(GizmoAutoGesture.claims(g.token), g.token)
+        }
+        XCTAssertEqual(GizmoAutoGesture.touchPinch("key", 1.5, 200).token, "tpinch:key:1.5:200")
+    }
+
+    /// `tpinch`: the pan decides on the knob, the pinch opens by name off it,
+    /// the radius moves on the 0.5× grid and nothing else; a wide span is
+    /// the camera's and writes nothing.
+    func testTouchPinchThroughTheSequence() throws {
+        let (store, controller) = gizmoRig()
+        func run(_ token: String) -> String {
+            GizmoAutoGesture.apply(GizmoAutoGesture.parse(token)!, to: controller, context: context())
+        }
+        XCTAssertEqual(run("tpinch:key:1.5:200"),
+                       "tpinch:key:1.5:200 -> none owner=camera radius=3.00 beam=45.0 pan=camera twist=camera reset=1")
+        XCTAssertTrue(store.numberWrites.isEmpty)
+        XCTAssertEqual(run("tpinch:key:1.5"),
+                       "tpinch:key:1.5 -> ok owner=gizmo(key) radius=4.50 beam=45.0 pan=ignored twist=ignored reset=1")
+        XCTAssertEqual(store.numberWrites.map(\.field), ["radius", "radius", "radius"],
+                       "one write per 0.5× step (3.5, 4, 4.5), radius only")
+        XCTAssertEqual(run("tpinch:fill:2:120"),
+                       "tpinch:fill:2:120 -> ok owner=gizmo(fill) radius=4.00 beam=45.0 pan=ignored twist=ignored reset=1")
+        XCTAssertEqual(controller.selection.name, "fill")
+        XCTAssertEqual(store.lights[1].orbit, 60)
+        XCTAssertTrue(store.performed.isEmpty)
+        XCTAssertEqual(run("tpinch:nobody:2"), "tpinch:nobody:2 -> miss")
+    }
+
+    /// `lpress` declines on a knob and places a highlight off the targets;
+    /// `gprobe` names the target at an offset from a knob, with the iOS
+    /// 44 pt floor (21.9 pt hits, 22.1 pt is the camera's).
+    func testLongPressAndProbeTokens() throws {
+        let (store, controller) = gizmoRig()
+        let picker = FakePicker()
+        XCTAssertEqual(GizmoAutoGesture.apply(.longPressKnob("fill"), to: controller, context: context(picker)),
+                       "lpress:fill -> route=declined")
+        XCTAssertTrue(store.performed.isEmpty)
+        let line = GizmoAutoGesture.apply(.longPress(0.25, 0.1), to: controller, context: context(picker))
+        XCTAssertTrue(line.hasPrefix("lpress:0.25:0.1 -> route=highlight -> placed rim=none"), line)
+        XCTAssertEqual(store.performed.count, 1)
+        XCTAssertEqual(GizmoAutoGesture.apply(.longPressKnob("nobody"), to: controller, context: context(picker)),
+                       "lpress:nobody -> miss")
+
+        var ios = context()
+        ios.metrics = LightGizmoMetrics(slop: 14, minimumTarget: 44)
+        XCTAssertEqual(GizmoAutoGesture.apply(.probe("fill", 21.9, 0), to: controller, context: ios),
+                       "gprobe:fill:21.9:0 -> knob:fill touch=44")
+        XCTAssertEqual(GizmoAutoGesture.apply(.probe("fill", 22.1, 0), to: controller, context: ios),
+                       "gprobe:fill:22.1:0 -> camera touch=44")
+        XCTAssertEqual(GizmoAutoGesture.apply(.probe("fill", 21.9, 0), to: controller, context: context()),
+                       "gprobe:fill:21.9:0 -> camera touch=0", "macOS: 7 + 6")
+        XCTAssertEqual(GizmoAutoGesture.apply(.probe("nobody", 0, 0), to: controller, context: ios),
+                       "gprobe:nobody:0:0 -> miss")
+    }
+
     func testWithoutAViewOrALayout() {
         let (_, controller) = gizmoRig()
         XCTAssertEqual(GizmoAutoGesture.apply(.outer(30), to: controller, context: nil), "outer:30 -> noview")

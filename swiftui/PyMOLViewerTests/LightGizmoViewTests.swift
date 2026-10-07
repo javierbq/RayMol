@@ -741,6 +741,38 @@ final class LightGizmoSnapshotTests: XCTestCase {
         }
     }
 
+    /// #623: the gizmo with LightGizmoHitTest's regions over it in the iOS
+    /// profile (slop 14, every target hit within at least 22 pt; handles 44
+    /// pt apart): knobs in their identity colours, the aim dot white, the
+    /// handles yellow, the ring lines cyan (both rings pink). At the test
+    /// size and at a phone size.
+    func testRenderIOSHitRegions() throws {
+        let metrics = LightGizmoMetrics(slop: 14, minimumTarget: 44)
+        let dir = Self.outputDirectory
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        for (name, size) in [("hit_regions_ios44_gizmo", viewTestSize),
+                             ("hit_regions_ios44_gizmo_390x640", CGSize(width: 390, height: 640))] {
+            let (store, controller) = viewController()
+            let layout = try XCTUnwrap(LightGizmoLayout.make(
+                LightGizmoInputs(controller: controller, viewSize: size, gridMode: false, sceneShadowsOn: true),
+                metrics: metrics))
+            let writes = (store.numberWrites.count, store.vectorWrites.count, store.performed.count)
+            let h = OffscreenHost(GizmoHitRegions(layout: layout).frame(width: size.width, height: size.height),
+                                  size: size)
+            hosts.append(h)
+            let rep = try XCTUnwrap(h.bitmap(), "\(name): no bitmap")
+            XCTAssertFalse(OffscreenHost.isFlat(rep), "\(name): the picture is one flat colour")
+            let png = try XCTUnwrap(rep.representation(using: .png, properties: [:]))
+            let url = dir.appendingPathComponent("gizmo_\(name).png")
+            try png.write(to: url)
+            NSLog("LIGHTGIZMO_SNAPSHOT: \(url.path)")
+            h.close()
+            XCTAssertEqual(store.numberWrites.count, writes.0, "\(name): drawing wrote a number")
+            XCTAssertEqual(store.vectorWrites.count, writes.1, "\(name): drawing wrote a vector")
+            XCTAssertEqual(store.performed.count, writes.2, "\(name): drawing ran an action")
+        }
+    }
+
     /// The key's knob pressed and dragged out past the band to the left, the
     /// session kept open (mid-drag), the UI state tracking it.
     private static func dragKeyOut(_ controller: LightsController, ui: LightGizmoUIState, size: CGSize) throws {
@@ -792,6 +824,35 @@ final class LightGizmoSnapshotTests: XCTestCase {
                        "\(shot.name): drawing wrote \(store.numberWrites.dropFirst(writes.0))")
         XCTAssertEqual(store.vectorWrites.count, writes.1, "\(shot.name): drawing wrote a vector")
         XCTAssertEqual(store.performed.count, writes.2, "\(shot.name): drawing ran an action")
+    }
+}
+
+/// The gizmo as the overlay draws it, over a dark backdrop, with what
+/// LightGizmoHitTest returns at every other point tinted over it.
+private struct GizmoHitRegions: View {
+    var layout: LightGizmoLayout
+
+    var body: some View {
+        let layout = layout
+        Canvas { context, size in
+            context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(Color(white: 0.08)))
+            LightGizmoPainter(layout: layout, ui: LightGizmoUIState.Values()).draw(in: &context)
+            for y in stride(from: CGFloat(0), to: size.height, by: 2) {
+                for x in stride(from: CGFloat(0), to: size.width, by: 2) {
+                    let colour: Color
+                    switch LightGizmoHitTest.target(at: CGPoint(x: x + 1, y: y + 1), layout: layout) {
+                    case .knob(let name)?:
+                        colour = LightPalette.color(layout.knob(named: name)?.slot ?? 0)
+                    case .aimDot?: colour = .white
+                    case .outerHandle?, .innerHandle?: colour = .yellow
+                    case .outerRing?, .innerRing?: colour = .cyan
+                    case .rings?: colour = .pink
+                    case nil: continue
+                    }
+                    context.fill(Path(CGRect(x: x, y: y, width: 2, height: 2)), with: .color(colour.opacity(0.35)))
+                }
+            }
+        }
     }
 }
 

@@ -156,9 +156,43 @@ struct ContentView: View {
     // "What's New" splash: auto-shows once after a version bump; also opened on
     // demand via the app menu / Settings (see WhatsNewModel / WhatsNewModal).
     @StateObject private var whatsNew = WhatsNewModel()
-    // Debug hook only (PYMOL_AUTOLIGHTS_EDIT `expand`): the Lights inspector
-    // and the orbit view start expanded on iPhone. Always false in normal runs.
+    // Debug hook only (PYMOL_AUTOLIGHTS_EDIT `expand`): the phone light sheet
+    // starts expanded (and the iPad inspector expanded). Always false in
+    // normal runs.
     @State private var lightsInspectorExpandOverride = false
+    // The phone light tools (#623). The sheet's height is seeded compact each
+    // time Lights mode opens (expanded under the DEBUG `expand`), never
+    // persisted. `lightsSheetMoving` is true only for the one snap after a
+    // release (the drawable is frozen meanwhile and the gizmo fades);
+    // `lightsFieldFocused` while an Orbit or Pitch field of the sheet or the
+    // side panel has the keyboard (the viewport then keeps its size). The
+    // pane overrides bring the console or the sequence strip back beside the
+    // portrait sheet for the rest of the mode (LightsPaneRule). The header,
+    // rows, room and side sizes are what the tools measured.
+    @State private var lightsSheetDetent: LightsSheetDetent = .compact
+    @State private var lightsSheetMoving = false
+    @State private var lightsFieldFocused = false
+    @State private var lightsShowsConsole = false
+    @State private var lightsShowsSequence = false
+    @State private var lightsSheetHeader: CGFloat = LightsSheetMetrics.minimumHeader
+    @State private var lightsSheetRows: CGFloat = 0
+    @State private var lightsRoom: CGSize = .zero
+    @State private var lightsSideSize: CGSize = .zero
+    // The placement as last laid out, for code that runs outside body (the
+    // PYMOL_AUTOLIGHTS hook's delayed closures): a copy of the view captured
+    // there keeps the size classes of the moment it was made, while State
+    // reads stay live.
+    @State private var lightsPlacementSeen: LightsToolsPlacement = .column
+    // The iPad's floating orbit view (#623): its corner is remembered across
+    // launches (bottom-leading when absent); the DEBUG `corner:` token
+    // overrides it for one run without storing anything. The viewport's
+    // bottom chrome reports its heights (the float keeps clear of them), and
+    // the float its cards' frames (the DEBUG covered= field).
+    @AppStorage(PanelLayout.lightsOrbitCornerKey) private var lightsOrbitCornerStored =
+        LightsFloatCorner.default.rawValue
+    @State private var lightsOrbitCornerOverride: LightsFloatCorner?
+    @State private var viewportChrome = ViewportChromeHeights()
+    @State private var lightsFloatFrames: LightsFloatLayout.Frames?
     @State private var showThemeStudio = false   // inline Theme studio (replaces a panel region)
 
     @AppStorage("mouseLegendCollapsed") private var mouseLegendCollapsed = false
@@ -1442,11 +1476,64 @@ struct ContentView: View {
     // Effective pane bindings: iPhone landscape uses its own minimal-default state;
     // everywhere else (iPad, macOS) the shared show* bools. Also outside
     // #if os(iOS) — since #325 the macOS layout drives the same rail and tongue.
+    // Phone portrait Lights mode (#623) adds one case: the console gives way
+    // to the docked sheet (LightsPaneRule) and its pill shows it off; tapping
+    // it writes the override and the stored flag, so once touched it behaves
+    // as usual. The mode itself never writes the stored flag.
     private var consoleBinding: Binding<Bool> {
         #if os(iOS)
-        return isPhoneLandscape ? $landConsole : $showCommandPanel
+        if isPhoneLandscape { return $landConsole }
+        if phoneLightsDocked {
+            return Binding(get: { LightsPaneRule.shows(stored: showCommandPanel, override: lightsShowsConsole,
+                                                       docked: true) },
+                           set: { lightsShowsConsole = $0; showCommandPanel = $0 })
+        }
+        return $showCommandPanel
         #else
         return $showCommandPanel
+        #endif
+    }
+    // The sequence strip's effective binding: the shared engine flag, with the
+    // same phone portrait Lights case as the console.
+    private var sequenceBinding: Binding<Bool> {
+        #if os(iOS)
+        if phoneLightsDocked {
+            return Binding(get: { LightsPaneRule.shows(stored: engine.sequenceVisible,
+                                                       override: lightsShowsSequence, docked: true) },
+                           set: { lightsShowsSequence = $0; engine.sequenceVisible = $0 })
+        }
+        return $engine.sequenceVisible
+        #else
+        return $engine.sequenceVisible
+        #endif
+    }
+
+    // Where the Lights tools go (#623, LightsToolsPlacement): by size class
+    // on iOS (the bottom sheet in phone portrait, the side panel on compact
+    // height, the float on iPad), the side column on macOS.
+    private var lightsPlacement: LightsToolsPlacement {
+        #if os(iOS)
+        return LightsToolsPlacement.resolve(compactWidth: hSize == .compact, compactHeight: vSize == .compact)
+        #else
+        return .column
+        #endif
+    }
+    // Phone portrait (the iPhoneLayout) in Lights mode: the tools dock in the
+    // bottom sheet and the console and sequence strip give way.
+    private var phoneLightsDocked: Bool {
+        #if os(iOS)
+        return hSize == .compact && vSize == .regular && engine.interactionMode == .lights && !iosFullScreen
+        #else
+        return false
+        #endif
+    }
+    // Compact height (every iPhone in landscape) in Lights mode: the tools
+    // take the trailing panel slot, whatever the Objects toggle says.
+    private var lightsSidePanelShown: Bool {
+        #if os(iOS)
+        return lightsPlacement == .sidePanel && engine.interactionMode == .lights && !iosFullScreen
+        #else
+        return false
         #endif
     }
     private var objectsBinding: Binding<Bool> {
@@ -1596,8 +1683,10 @@ struct ContentView: View {
 
     // True when that horizontal pill is parked at the bottom edge. Landscape parks
     // the tongue on the trailing edge instead, where it can't reach the dock.
+    // The phone light sheet (#623) takes the bottom edge in Lights mode, and
+    // the parked tongue is hidden meanwhile.
     private var bottomTongueShown: Bool {
-        guard !showThemeStudio, !iosFullScreen, !objectsBinding.wrappedValue else { return false }
+        guard !showThemeStudio, !iosFullScreen, !objectsBinding.wrappedValue, !phoneLightsDocked else { return false }
         return isPadPortrait || (hSize == .compact && vSize == .regular)
     }
     // How far the parked tongue is lifted off the bottom edge: the iPhone viewport
@@ -1644,7 +1733,9 @@ struct ContentView: View {
                 // The Movie tab (tag 2) IS the timeline on iPhone: enter it directly
                 // from the tab selection (not just after onChange sets timelineMode),
                 // so there's no 1-frame flash of the old builder pane.
-                Group {
+                // The Lights tools' resets and DEBUG layout line (#623) observe
+                // the one layout site.
+                observingLightsLayout(Group {
                     // iPhone: the Movie tab hosts the timeline (the tab bar stays).
                     // iPad: the timeline lives in the right inspector's Movie tab and
                     // optionally docks full-width at the bottom (iPadMacStyleLayout) —
@@ -1658,7 +1749,7 @@ struct ContentView: View {
                     } else {
                         iPadMacStyleLayout(geo: geo)
                     }
-                }
+                })
                 .overlay(alignment: .center) {
                     if !gestureCoachSeen && !skipGestureHelp && !engine.objects.isEmpty { gestureCoachOverlay }
                 }
@@ -2095,8 +2186,13 @@ struct ContentView: View {
         // (Console·Seq·Move·Measure), panes open UNDER it (Console → Seq →
         // Move/Measure bar), and the inspector docks along the bottom headed by the
         // RayMol title. Collapsed → the rail floats over the full-bleed viewport.
-        let cTerm = showCommandPanel && !iosFullScreen
-        let anyTop = !iosFullScreen && (cTerm || engine.sequenceVisible
+        // In Lights mode the console and the sequence strip give way to the
+        // docked light sheet unless brought back from the rail (#623,
+        // consoleBinding / sequenceBinding); otherwise these are the stored
+        // flags.
+        let cTerm = consoleBinding.wrappedValue && !iosFullScreen
+        let showSequence = sequenceBinding.wrappedValue
+        let anyTop = !iosFullScreen && (cTerm || showSequence
             || engine.interactionMode == .move || engine.measureMode != nil
             || engine.designMode || engine.predictMode
             || engine.interactionMode == .lights)
@@ -2122,7 +2218,7 @@ struct ContentView: View {
                     CommandPanel(showInput: !RayMolBuild.iosRestricted).frame(height: clampedTermH)
                     termResizeDivider(maxTerm: maxTerm, current: clampedTermH, total: geo.size.height)
                 }
-                if engine.sequenceVisible {
+                if showSequence {
                     SequencePanel().frame(height: ipadSequenceHeight)
                     Rectangle().fill(hairlineColor).frame(height: 1)
                 }
@@ -2132,39 +2228,57 @@ struct ContentView: View {
                 else if engine.designMode { designModeBar }
                 else if engine.predictMode { predictModeBar }
             }
-            viewportView
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .overlay(alignment: .top) { if !anyTop { topPaneRail(floating: true) } }
-                // Closed → the tongue rides the viewport's bottom edge (tap to
-                // reopen). Open → it straddles the seam via the inspector overlay
-                // below (which paints on top of both viewport and panel).
-                .overlay(alignment: .bottom) {
-                    if !showThemeStudio && !iosFullScreen && !showObjectPanel {
-                        // Lift the tongue above the home indicator — the viewport is
-                        // full-bleed under the bottom safe area, so without this the
-                        // tappable pill sits on the system gesture bar.
-                        panelTongue(shown: objectsBinding, axis: .horizontal)
-                            .padding(.bottom, bottomTongueInset)
+            // The viewport and the bottom region sit in one UNCONDITIONAL
+            // GeometryReader (#623), so MetalViewport keeps one structural
+            // position whatever the mode (a conditional wrapper would rebuild
+            // the MTKView) and the light sheet reads its room: the viewport
+            // plus the sheet's slot. While an Orbit or Pitch field of the
+            // sheet has the keyboard, this container ignores it, so the
+            // viewport never resizes for it (the console keeps its own
+            // keyboard avoidance).
+            GeometryReader { lower in
+                VStack(spacing: 0) {
+                    viewportView
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .overlay(alignment: .top) { if !anyTop { topPaneRail(floating: true) } }
+                        // Closed → the tongue rides the viewport's bottom edge (tap to
+                        // reopen). Open → it straddles the seam via the inspector overlay
+                        // below (which paints on top of both viewport and panel). Hidden
+                        // while the light sheet docks there.
+                        .overlay(alignment: .bottom) {
+                            if !showThemeStudio && !iosFullScreen && !showObjectPanel && !phoneLightsDocked {
+                                // Lift the tongue above the home indicator — the viewport is
+                                // full-bleed under the bottom safe area, so without this the
+                                // tappable pill sits on the system gesture bar.
+                                panelTongue(shown: objectsBinding, axis: .horizontal)
+                                    .padding(.bottom, bottomTongueInset)
+                            }
+                        }
+                    if !iosFullScreen {
+                        // Lights mode: the docked light sheet first; Theme Studio
+                        // and the inspector come back on exit.
+                        if phoneLightsDocked {
+                            lightsSheet(room: lower.size)
+                        } else if showThemeStudio {
+                            ThemeStudioPanel(onClose: { withAnimation(.easeInOut(duration: 0.2)) { showThemeStudio = false } })
+                                .environmentObject(engine)
+                                .environmentObject(themeManager)
+                                .frame(height: portraitPanelHeight(total: total))
+                        } else if showObjectPanel {
+                            Rectangle().fill(hairlineColor).frame(height: 1)
+                            inspectorSwitcher(hugContent: true)
+                                .frame(height: inspectorPortraitHeight(total: total))
+                                .background(themeChromeBg)
+                                .overlay(alignment: .top) {
+                                    panelTongue(shown: objectsBinding, axis: .horizontal, seam: true)
+                                }
+                                .onPreferenceChange(PaneHeightKey.self) { paneHeights = $0 }
+                                .animation(.easeInOut(duration: 0.25), value: inspectorTab)
+                        }
                     }
                 }
-            if !iosFullScreen {
-                if showThemeStudio {
-                    ThemeStudioPanel(onClose: { withAnimation(.easeInOut(duration: 0.2)) { showThemeStudio = false } })
-                        .environmentObject(engine)
-                        .environmentObject(themeManager)
-                        .frame(height: portraitPanelHeight(total: total))
-                } else if showObjectPanel {
-                    Rectangle().fill(hairlineColor).frame(height: 1)
-                    inspectorSwitcher(hugContent: true)
-                        .frame(height: inspectorPortraitHeight(total: total))
-                        .background(themeChromeBg)
-                        .overlay(alignment: .top) {
-                            panelTongue(shown: objectsBinding, axis: .horizontal, seam: true)
-                        }
-                        .onPreferenceChange(PaneHeightKey.self) { paneHeights = $0 }
-                        .animation(.easeInOut(duration: 0.25), value: inspectorTab)
-                }
             }
+            .ignoresSafeArea(lightsFieldFocused ? .keyboard : [], edges: .bottom)
         }
         .animation(.easeInOut(duration: 0.25), value: showObjectPanel)
     }
@@ -2233,20 +2347,27 @@ struct ContentView: View {
                 // tongue straddles the seam from the panel side (below). Nudge it in
                 // past the Dynamic Island when the island is on the RIGHT, so the
                 // full-bleed viewport doesn't hide the tongue behind the cutout.
-                if !showThemeStudio && !objectsBinding.wrappedValue {
+                // Hidden while the light tools take the slot (#623).
+                if !showThemeStudio && !objectsBinding.wrappedValue && !lightsSidePanelShown {
                     panelTongue(shown: objectsBinding, axis: .vertical)
                         .padding(.trailing, islandOnRight ? notch : 0)
                 }
             }
 
-            if !iosFullScreen && (showThemeStudio || objectsBinding.wrappedValue) {
+            if !iosFullScreen && (lightsSidePanelShown || showThemeStudio || objectsBinding.wrappedValue) {
                 // Hairline seam between viewport and inspector; the vertical tongue
                 // (above) rides on it.
                 Rectangle().fill(hairlineColor).frame(width: 1)
                 // The panel column is narrowed by the notch on the island-on-RIGHT
                 // side so it ends at the black stripe's left edge; .clipped()
                 // guarantees nothing paints past it.
-                if showThemeStudio {
+                // Lights mode (#623): the docked light tools take the slot
+                // first, whatever the Objects toggle says.
+                if lightsSidePanelShown {
+                    lightsSidePanel
+                        .frame(width: panelW - (islandOnRight ? notch : 0), alignment: .leading)
+                        .clipped()
+                } else if showThemeStudio {
                     ThemeStudioPanel(onClose: { withAnimation(.easeInOut(duration: 0.2)) { showThemeStudio = false } })
                         .environmentObject(engine)
                         .environmentObject(themeManager)
@@ -2274,6 +2395,9 @@ struct ContentView: View {
                 }
             }
         }
+        // A light field with the keyboard (#623): the viewport and the side
+        // panel keep their size; the panel reads the overlap itself.
+        .ignoresSafeArea(lightsFieldFocused ? .keyboard : [], edges: .bottom)
     }
 
     // Floating tool pills for iPhone (nav bar hidden): Open · Save · Export. Used in
@@ -2382,11 +2506,19 @@ struct ContentView: View {
                 .overlay(alignment: .trailing) {
                     // Closed → tongue on the viewport's trailing edge (tap to
                     // reopen); open → it straddles the seam via the inspector overlay.
-                    if !showThemeStudio && !showRight {
+                    if !showThemeStudio && !showRight && !lightsSidePanelShown {
                         panelTongue(shown: objectsBinding, axis: .vertical)
                     }
                 }
-                if showThemeStudio {
+                // Lights mode on a large phone in landscape (compact height,
+                // regular width; #623): the docked light tools take the right
+                // column first, whatever the Objects toggle says.
+                if lightsSidePanelShown {
+                    Rectangle().fill(hairlineColor).frame(width: 1)
+                    lightsSidePanel
+                        .frame(width: rightW)
+                        .clipped()
+                } else if showThemeStudio {
                     Divider()
                     ThemeStudioPanel(onClose: { withAnimation(.easeInOut(duration: 0.2)) { showThemeStudio = false } })
                         .environmentObject(engine)
@@ -2403,6 +2535,9 @@ struct ContentView: View {
                         }
                 }
             }
+            // A light field with the keyboard (#623): the viewport and the
+            // side panel keep their size (only the side panel sets it).
+            .ignoresSafeArea(lightsFieldFocused ? .keyboard : [], edges: .bottom)
         } else {
             // PORTRAIT (iPad): console + sequence ABOVE the viewer; Objects +
             // Raymond panel BELOW it (side-by-side, resizable).
@@ -2625,8 +2760,9 @@ struct ContentView: View {
             railTongue(icon: "terminal", label: "Console", shown: consoleBinding,
                        shortcut: AppShortcuts.consolePane)
             // No icon — the word "Seq" IS the label. The old `textformat.abc` glyph
-            // rendered as a literal "Abc", so the pill read "Abc Seq".
-            railTongue(icon: nil, label: "Seq", shown: $engine.sequenceVisible,
+            // rendered as a literal "Abc", so the pill read "Abc Seq". Both pills
+            // bind the effective flags (the phone Lights case, #623).
+            railTongue(icon: nil, label: "Seq", shown: sequenceBinding,
                        shortcut: AppShortcuts.sequencePane)
             // Move / Measure / Design are mutually-exclusive interaction modes, so
             // they share ONE Tools pill that opens a menu (#304) instead of three
@@ -2810,6 +2946,9 @@ struct ContentView: View {
 
     private var viewportView: some View {
         MetalViewport()
+            // Test-only (PYMOL_UITEST=1, #623): the element the Lights UI
+            // tests pinch and twist on; nothing otherwise.
+            .modifier(LightsUITestViewportIdentifier())
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             // Attached here (not the giant body chain) to keep that expression
             // under the Swift type-checker's complexity limit.
@@ -2872,6 +3011,8 @@ struct ContentView: View {
                     // Sit clear ABOVE the floating transport (only present when a
                     // movie exists and we're NOT in timeline mode).
                     .padding(.bottom, 12)
+                    // Its height, for the Lights float to keep clear (#623).
+                    .reportsViewportChrome(\.bottomLeading, shown: bottomLeadingChromeShown)
             }
             // Camera control dock: a bottom-docked icon strip (one control open at
             // a time). Same component on iPhone / iPad. Drag down or tap the chip
@@ -2882,6 +3023,8 @@ struct ContentView: View {
                     CameraDock(engine: engine, onClose: { withAnimation(.easeOut(duration: 0.22)) { showCameraPanel = false } })
                         .padding(.horizontal, 10)
                         .padding(.bottom, cameraDockBottomPad)
+                        // Its height while open, for the Lights float (#623).
+                        .reportsViewportChrome(\.dock)
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                         .gesture(DragGesture().onEnded { v in
                             if v.translation.height > 40 {
@@ -2909,14 +3052,21 @@ struct ContentView: View {
             .overlay(alignment: .topTrailing) {
                 hoverReadoutOverlay.padding(.top, 44)
             }
-            // Lights mode (#620): the Lights side column (the selected light's
-            // inspector) in the top-trailing corner. One site covers the four iOS
-            // layouts; the bar docks in the top stack above the viewport, and the
-            // hover readout above never fills in Lights mode.
-            .overlay(alignment: .topTrailing) {
-                if engine.interactionMode == .lights && !iosFullScreen {
-                    lightsSideColumn.padding(8)
-                        .padding(.bottom, lightsSideColumnBottomInset)
+            // The bottom chrome's heights (the camera button, an open dock),
+            // which the Lights float keeps clear of.
+            .onPreferenceChange(ViewportChromeHeightsKey.self) { heights in
+                if heights != viewportChrome { viewportChrome = heights }
+            }
+            // Lights mode on iPad (#623): the floating orbit card in its corner
+            // and the inspector at the top-trailing corner, after the gizmo
+            // site so the cards sit above the gizmo. One site covers the iOS
+            // layouts; the bar docks in the top stack above the viewport, and
+            // the hover readout above never fills in Lights mode. Phones dock
+            // the tools beside the viewport instead (the sheet, the side
+            // panel), so this shows only for the float placement.
+            .overlay {
+                if engine.interactionMode == .lights && !iosFullScreen && lightsPlacement == .floating {
+                    lightsFloatingTools
                 }
             }
             // Test-only hook (PYMOL_UITEST=1): surface the live selection size
@@ -2924,10 +3074,19 @@ struct ContentView: View {
             // and non-interactive; absent in normal runs.
             .overlay(alignment: .topLeading) {
                 if ProcessInfo.processInfo.environment["PYMOL_UITEST"] == "1" {
-                    Text(verbatim: "\(engine.selectedResidueKeys.count)")
-                        .accessibilityIdentifier("selectionCount")
-                        .opacity(0.02)
-                        .allowsHitTesting(false)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(verbatim: "\(engine.selectedResidueKeys.count)")
+                            .accessibilityIdentifier("selectionCount")
+                            .opacity(0.02)
+                            .allowsHitTesting(false)
+                        // The Lights state and a camera hash (#623's
+                        // LightsGestureUITests); only in Lights mode.
+                        if LightsUITestProbe.enabled && engine.interactionMode == .lights {
+                            LightsUITestProbe(controller: engine.lightsController,
+                                              view: { [weak engine = engine] in engine?.captureView() })
+                        }
+                    }
+                    .allowsHitTesting(false)
                 }
             }
             .overlay { busyOverlay }
@@ -4062,25 +4221,29 @@ struct ContentView: View {
                        background: themeManager.active.panelBackground.color)
     }
 
+    #if os(macOS)
     // The Lights side column (#620, #621): the orbit view above the selected
-    // light's inspector. Placed by macLightsOverlay (macOS) and the
-    // viewportView top-trailing overlay (iOS), each naming only this property.
-    // The inspector's Shadows hint reads the scene's Shadows switch from the
-    // scene poll (~500 ms, also in Lights mode) and its Turn On button sets it.
+    // light's inspector, placed by macLightsOverlay (iOS places the cards by
+    // size class instead, #623). The inspector's Shadows hint reads the
+    // scene's Shadows switch from the scene poll (~500 ms, also in Lights
+    // mode) and its Turn On button sets it.
     private var lightsSideColumn: some View {
         LightsSideColumn(controller: engine.lightsController,
                          style: lightsStyle,
                          inspectorStartsCollapsed: lightsInspectorStartsCollapsed,
-                         orbitStartsCollapsed: lightsOrbitStartsCollapsed,
                          sceneShadowsOn: engine.sceneShadowsOn,
                          onEnableSceneShadows: { engine.enableSceneShadows() })
     }
+    #endif
 
     // The in-scene light gizmo (#622): a Canvas over the viewport (never scene
     // geometry), with the selected light's Shadow chip. Placed on MetalViewport
     // by macViewport and viewportView, each naming only this property. The
     // chip's Shadows hint reads the scene poll's Shadows switch and its Turn On
     // sets it, as the inspector's do; grid_mode (the poll's) hides the gizmo.
+    // While the phone sheet snaps (#623) the viewport reshapes once at the
+    // end with its drawable frozen meanwhile, so the gizmo fades out for that
+    // snap and returns after the one reshape.
     private var lightGizmoOverlay: some View {
         LightGizmoOverlay(controller: engine.lightsController,
                           ui: engine.lightGizmoUI,
@@ -4088,46 +4251,255 @@ struct ContentView: View {
                           gridMode: engine.lightGizmoGridMode,
                           sceneShadowsOn: engine.sceneShadowsOn,
                           onEnableSceneShadows: { engine.enableSceneShadows() })
+            .opacity(lightsSheetMoving ? 0 : 1)
     }
 
-    // The inspector starts collapsed to its header on compact width (iPhone),
-    // where it would cover most of the scene being lit; expanded on iPad and
-    // macOS. Seeded each time the mode opens, never persisted (#623 replaces
-    // the iPhone card with a sheet).
+    // The inspector card starts collapsed to its header in the iPad float
+    // (#623), so the default three_point knobs stay free (the DEBUG `expand`
+    // token expands it); expanded on macOS. Phones show no card (the sheet
+    // and the side panel show its header and rows). Seeded each time the
+    // mode opens, never persisted.
     private var lightsInspectorStartsCollapsed: Bool {
         #if os(iOS)
-        return hSize == .compact && !lightsInspectorExpandOverride
+        return lightsPlacement == .floating && !lightsInspectorExpandOverride
         #else
         return false
         #endif
     }
 
-    // The orbit view (#621) starts collapsed on every iPhone: compact width
-    // (portrait) or compact height (landscape, including the large phones
-    // whose landscape width is regular), where the expanded card would cover
-    // the scene; expanded on iPad and macOS. Seeded each time the mode opens,
-    // never persisted; the DEBUG `expand` token expands it (#623 replaces the
-    // iPhone card with a sheet).
-    private var lightsOrbitStartsCollapsed: Bool {
+    // MARK: Phone light tools (#623)
+
+    #if os(iOS)
+    // The phone sheet's two heights for its room (the viewport plus the
+    // sheet's slot under the Lights bar, the keyboard ignored), from the
+    // measured header and rows (LightsSheetModel: the scene keeps 180 pt).
+    private func lightsSheetHeights(room: CGSize) -> LightsSheetHeights {
+        let content = LightsSheetModel.expandedContent(header: lightsSheetHeader, rows: lightsSheetRows,
+                                                       bottomInset: windowBottomInset, width: room.width)
+        return LightsSheetModel.layout(room: room.height, header: lightsSheetHeader,
+                                       bottomInset: windowBottomInset, expandedContent: content)
+    }
+
+    // The two-height bottom sheet docked under the phone portrait viewport.
+    // Its edits go through the controller's typed API (no Python per tick);
+    // a grabber drag moves it over the viewport without resizing it, and the
+    // release snaps once with the drawable frozen (setLightsSheetMoving).
+    private func lightsSheet(room: CGSize) -> some View {
+        LightsSheet(controller: engine.lightsController, style: lightsStyle, placement: .bottom,
+                    detent: $lightsSheetDetent, heights: lightsSheetHeights(room: room),
+                    bottomInset: windowBottomInset, sceneShadowsOn: engine.sceneShadowsOn,
+                    onEnableSceneShadows: { engine.enableSceneShadows() },
+                    onMoving: { setLightsSheetMoving($0) },
+                    onFieldFocus: { lightsFieldFocused = $0 })
+            .onPreferenceChange(LightsSheetHeaderHeightKey.self) { noteLightsSheetHeader($0) }
+            .onPreferenceChange(LightsSheetRowsHeightKey.self) { measured in
+                if measured > 0, abs(measured - lightsSheetRows) > 0.5 { lightsSheetRows = measured }
+            }
+            .onAppear { lightsRoom = room }
+            .onChange(of: room) { _, newRoom in lightsRoom = newRoom }
+    }
+
+    // The same tools in the trailing panel slot on compact height (every
+    // iPhone in landscape): the header and the pinned canvases above the
+    // scrolling rows, clear of the home indicator.
+    private var lightsSidePanel: some View {
+        LightsSheet(controller: engine.lightsController, style: lightsStyle, placement: .side,
+                    detent: .constant(.expanded),
+                    heights: LightsSheetHeights(compact: 0, expanded: 0, compactContent: 0),
+                    sceneShadowsOn: engine.sceneShadowsOn,
+                    onEnableSceneShadows: { engine.enableSceneShadows() },
+                    onFieldFocus: { lightsFieldFocused = $0 })
+            .background(GeometryReader { g in
+                Color.clear
+                    .onAppear { lightsSideSize = g.size }
+                    .onChange(of: g.size) { _, size in lightsSideSize = size }
+            })
+            .onPreferenceChange(LightsSheetHeaderHeightKey.self) { noteLightsSheetHeader($0) }
+            .padding(.bottom, windowBottomInset)
+            .background(lightsStyle.background)
+    }
+
+    private func noteLightsSheetHeader(_ measured: CGFloat) {
+        if measured > 0, abs(measured - lightsSheetHeader) > 0.5 { lightsSheetHeader = measured }
+    }
+
+    // The iPad float (#623): the orbit card in its corner, its header the
+    // grip (a release snaps it to the nearest corner, which is remembered),
+    // and the inspector at the top-trailing corner, clear of the help
+    // button, the camera button and an open CameraDock. Its edits go through
+    // the cards' own paths (no Python per tick).
+    private var lightsFloatingTools: some View {
+        LightsFloatingTools(controller: engine.lightsController, style: lightsStyle,
+                            corner: lightsOrbitCornerBinding, chrome: viewportChrome,
+                            inspectorStartsCollapsed: lightsInspectorStartsCollapsed,
+                            sceneShadowsOn: engine.sceneShadowsOn,
+                            onEnableSceneShadows: { engine.enableSceneShadows() },
+                            onFrames: { frames in
+                                if frames != lightsFloatFrames { lightsFloatFrames = frames }
+                            })
+            .onDisappear { lightsFloatFrames = nil }
+    }
+    #endif
+
+    // The float's corner: the DEBUG override for this run, else the stored
+    // one. A move during an overridden run stays in the override (nothing
+    // stored); otherwise it is remembered.
+    private var lightsOrbitCorner: LightsFloatCorner {
+        lightsOrbitCornerOverride ?? LightsFloatCorner.stored(lightsOrbitCornerStored)
+    }
+
+    private var lightsOrbitCornerBinding: Binding<LightsFloatCorner> {
+        Binding(get: { lightsOrbitCorner }, set: { corner in
+            if lightsOrbitCornerOverride != nil {
+                lightsOrbitCornerOverride = corner
+            } else {
+                lightsOrbitCornerStored = corner.rawValue
+            }
+        })
+    }
+
+    // The sheet's snap (true before, false in its completion): the drawable
+    // is frozen for the snap's one reshape and the gizmo fades. Only a change
+    // is written, so a sheet's safety reset never clears another freeze (the
+    // resize dividers').
+    private func setLightsSheetMoving(_ moving: Bool) {
+        guard moving != lightsSheetMoving else { return }
+        lightsSheetMoving = moving
+        engine.suppressDrawableResize = moving
+    }
+
+    // Safety net beside the sheet's own onDisappear: leaving the mode or a
+    // placement change never leaves the drawable frozen, the gizmo faded or
+    // the keyboard rule on.
+    private func endLightsSheetMotion() {
+        setLightsSheetMoving(false)
+        if lightsFieldFocused { lightsFieldFocused = false }
+    }
+
+    // Each mode change (entry and exit) reseeds the phone tools' view state:
+    // the panes give way again, the sheet starts compact (expanded under the
+    // DEBUG `expand`), and no motion or keyboard rule outlives the mode.
+    private func lightsModeChanged(_ mode: InteractionMode) {
+        lightsShowsConsole = false
+        lightsShowsSequence = false
+        endLightsSheetMotion()
+        lightsSheetDetent = mode == .lights ? lightsSheetSeed : .compact
+    }
+
+    private var lightsSheetSeed: LightsSheetDetent {
+        lightsInspectorExpandOverride ? .expanded : .compact
+    }
+
+    // The placement as last laid out (lightsPlacementSeen on iOS), for the
+    // hook's closures.
+    private var lightsLivePlacement: LightsToolsPlacement {
         #if os(iOS)
-        return (hSize == .compact || vSize == .compact) && !lightsInspectorExpandOverride
+        return lightsPlacementSeen
         #else
-        return false
+        return .column
         #endif
     }
 
-    // The iOS column's extra bottom inset. On iPad (regular width and height)
-    // the expanded orbit card and inspector reach the viewport's bottom, so
-    // the column stops above the bottom-trailing Gesture help button. On
-    // iPhone the cards start collapsed and the viewport has no room to give
-    // up (#623's sheet replaces them there); macOS places the column itself.
-    private var lightsSideColumnBottomInset: CGFloat {
+    // The orbit canvases' sizes where the tools are now, for the DEBUG orbit
+    // tokens (LightsSheetModel.activeCanvases).
+    private var lightsOrbitSizes: (plan: CGSize, arc: CGSize) {
         #if os(iOS)
-        return (hSize == .compact || vSize == .compact) ? 0 : LightsSideColumn.helpButtonClearance
+        return LightsSheetModel.activeCanvases(placement: lightsLivePlacement, detent: lightsSheetDetent,
+                                               heights: lightsSheetHeights(room: lightsRoom), room: lightsRoom,
+                                               header: lightsSheetHeader, bottomInset: windowBottomInset,
+                                               sideSize: lightsSideSize)
         #else
-        return 0
+        return (LightsOrbitMetrics.planSize, LightsOrbitMetrics.arcSize)
         #endif
     }
+
+    // The tools= and touch= fields of the PYMOL_AUTOLIGHTS log lines.
+    private func lightsToolsFields(detent: LightsSheetDetent) -> String {
+        "tools=\(LightsSheetState.toolsSummary(placement: lightsLivePlacement, detent: detent, corner: lightsOrbitCorner)) "
+            + "touch=\(Int(LightsTouch.minimumTarget))"
+    }
+
+    #if os(iOS)
+    // The resets above, and the DEBUG LightsLayout line, observing the one
+    // iOS layout site.
+    @ViewBuilder
+    private func observingLightsLayout<Content: View>(_ content: Content) -> some View {
+        let observed = content
+            .onChange(of: engine.interactionMode) { _, mode in lightsModeChanged(mode) }
+            .onChange(of: lightsPlacement, initial: true) { old, placement in
+                lightsPlacementSeen = placement
+                if old != placement { endLightsSheetMotion() }
+            }
+        #if DEBUG
+        observed.onChange(of: lightsLayoutLogKey) { _, key in logLightsLayout(key) }
+        #else
+        observed
+        #endif
+    }
+    #endif
+
+    #if os(iOS) && DEBUG
+    // What the DEBUG LightsLayout line reports, so it logs on each change.
+    private struct LightsLayoutLogKey: Equatable {
+        var tools: String
+        var sheet: Int?
+        var panes: String
+        var room: CGSize
+        /// The float's cards (iPad): what covered= checks the knobs against.
+        var float: LightsFloatLayout.Frames? = nil
+    }
+
+    private var lightsLayoutLogKey: LightsLayoutLogKey? {
+        guard engine.interactionMode == .lights, !iosFullScreen else { return nil }
+        let tools = LightsSheetState.toolsSummary(placement: lightsPlacement, detent: lightsSheetDetent,
+                                                  corner: lightsOrbitCorner)
+        if phoneLightsDocked {
+            // Not before the sheet has reported its room.
+            guard lightsRoom.height > 0 else { return nil }
+            let sheet = lightsSheetHeights(room: lightsRoom).height(lightsSheetDetent)
+            let panes = LightsPaneRule.summary(console: consoleBinding.wrappedValue,
+                                               sequence: sequenceBinding.wrappedValue)
+            return LightsLayoutLogKey(tools: tools, sheet: Int(sheet.rounded()), panes: panes, room: lightsRoom)
+        }
+        if lightsPlacement == .sidePanel {
+            // Not before the side panel has reported its size.
+            guard lightsSideSize.height > 0 else { return nil }
+            return LightsLayoutLogKey(tools: tools, sheet: nil, panes: "n/a", room: lightsSideSize)
+        }
+        if lightsPlacement == .floating {
+            // Not before the float has laid its cards out.
+            guard let frames = lightsFloatFrames else { return nil }
+            return LightsLayoutLogKey(tools: tools, sheet: nil, panes: "n/a", room: .zero, float: frames)
+        }
+        return LightsLayoutLogKey(tools: tools, sheet: nil, panes: "n/a", room: .zero)
+    }
+
+    // `LightsLayout: tools=sheet:compact scene=393x377 sheet=286 panes=hidden
+    // covered=none touch=44`, logged after the layout settles (past the
+    // 0.22 s snap): the scene is the viewport's size as the gizmo overlay
+    // measured it, `sheet` the committed slot, and `covered` the lights whose
+    // knob (with its whole touch target) lies under a floating card
+    // (LightsFloatLayout.coveredKnobs; docked tools cover nothing).
+    private func logLightsLayout(_ key: LightsLayoutLogKey?) {
+        guard let key else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            MainActor.assumeIsolated {
+                let scene = engine.lightGizmoUI.viewSize ?? .zero
+                let sheet = key.sheet.map { String($0) } ?? "n/a"
+                var covered: [String] = []
+                if let frames = lightsFloatFrames ?? key.float {
+                    covered = LightsFloatLayout.coveredKnobs(layout: engine.lightGizmoLayout(viewSize: scene),
+                                                             frames: frames.all)
+                }
+                let cards = (lightsFloatFrames ?? key.float).map { f in
+                    " card=\(Int(f.card.minX)),\(Int(f.card.minY)),\(Int(f.card.width))x\(Int(f.card.height))"
+                        + " inspector=\(Int(f.inspector.minX)),\(Int(f.inspector.minY)),\(Int(f.inspector.width))x\(Int(f.inspector.height))"
+                } ?? ""
+                NSLog("LightsLayout: tools=\(key.tools) scene=\(Int(scene.width.rounded()))x\(Int(scene.height.rounded())) sheet=\(sheet) panes=\(key.panes) covered=\(LightsFloatLayout.coveredSummary(covered))\(cards) touch=\(Int(LightsTouch.minimumTarget))")
+            }
+        }
+    }
+    #endif
 
     /// Test affordance: PYMOL_AUTOLIGHTS=<1|light name> enters Lights mode after
     /// 4.0 s (after PYMOL_AUTOMOVE's 3.8 s; PYMOL_AUTOLOAD and PYMOL_AUTOCMD run
@@ -4138,11 +4510,16 @@ struct ContentView: View {
     /// `gizmo=` the gizmo's (LightGizmoState.summary), so one run shows the
     /// three tools agree.
     ///
+    /// Both lines end with `tools=<sheet:compact|sheet:expanded|side|
+    /// float:<tl|tr|bl|br>|column> touch=<minimum target>` (#623): where the
+    /// tools are.
+    ///
     /// Debug builds also read PYMOL_AUTOLIGHTS_EDIT='<token>;...' (see
-    /// LightsAutoEdit): `expand` opens the inspector and the orbit view
-    /// expanded on iPhone, and 0.5 s after entry the edits run through the
+    /// LightsAutoEdit): `expand` opens the phone sheet expanded (the iPad
+    /// inspector expanded), `corner:<tl|tr|bl|br>` puts the iPad float in
+    /// that corner for this run (nothing stored), and 0.5 s after entry the edits run through the
     /// inspector's controller calls and the orbit view's gestures (`tap:`,
-    /// `plan:`, `square:`, `arc:`, `pinch:`) and the gizmo's (`knob:`, `flip:`,
+    /// `plan:`, `square:`, `arc:`, `pinch:`, at the canvases on screen) and the gizmo's (`knob:`, `flip:`,
     /// `outer:`, `inner:`, `aimat:`, `wheel:`, `kpinch:`, `hl:`, `gshadow:`,
     /// with the overlay's size and the engine's picker), logged as
     /// `PYMOL_AUTOLIGHTS_EDIT: orbit=120 -> ok; ...` with the inspector's, the
@@ -4154,9 +4531,16 @@ struct ContentView: View {
             #if DEBUG
             let edits = LightsAutoEdit.parse(env["PYMOL_AUTOLIGHTS_EDIT"] ?? "")
             if edits.expands { lightsInspectorExpandOverride = true }
+            if let corner = edits.corner { lightsOrbitCornerOverride = corner }
+            let seed: LightsSheetDetent = edits.expands ? .expanded : .compact
+            #else
+            let seed = LightsSheetDetent.compact
             #endif
             engine.setInteractionMode(.lights)
             MainActor.assumeIsolated {
+                // The sheet is seeded on entry (lightsModeChanged); this line
+                // runs before that change lands, so it names the seed.
+                let tools = lightsToolsFields(detent: seed)
                 let lights = engine.lightsController
                 if !value.isEmpty && value != "1" { lights.select(name: value) }
                 let names = (lights.rig?.lights ?? []).map(\.name).joined(separator: ",")
@@ -4164,7 +4548,7 @@ struct ContentView: View {
                     .summary ?? "none"
                 let plan = LightsOrbitState(lights)?.summary ?? "none"
                 let gizmo = LightGizmoState(lights, sceneShadowsOn: engine.sceneShadowsOn)?.summary ?? "none"
-                NSLog("PYMOL_AUTOLIGHTS: active=\(lights.isActive) lights=\(names) selected=\(lights.selection.name ?? "none") inspector=\(inspector) plan=\(plan) gizmo=\(gizmo)")
+                NSLog("PYMOL_AUTOLIGHTS: active=\(lights.isActive) lights=\(names) selected=\(lights.selection.name ?? "none") inspector=\(inspector) plan=\(plan) gizmo=\(gizmo) \(tools)")
             }
             #if DEBUG
             guard !edits.tokens.isEmpty || !edits.rejected.isEmpty else { return }
@@ -4177,13 +4561,18 @@ struct ContentView: View {
                                                    picker: engine.lightGizmoPicker,
                                                    gridMode: engine.lightGizmoGridMode,
                                                    sceneShadowsOn: engine.sceneShadowsOn)
-                    var entries = LightsAutoEdit.apply(edits.tokens, to: lights, gizmo: context)
+                    // The orbit tokens lay out at the canvases on screen
+                    // (the sheet's, the side panel's or the card's).
+                    let sizes = lightsOrbitSizes
+                    var entries = LightsAutoEdit.apply(edits.tokens, to: lights, gizmo: context,
+                                                       orbitPlanSize: sizes.plan, orbitArcSize: sizes.arc)
                     entries += edits.rejected.map { "\($0) -> rejected" }
                     let inspector = LightsInspectorState(lights, sceneShadowsOn: engine.sceneShadowsOn)?
                         .summary ?? "none"
                     let plan = LightsOrbitState(lights)?.summary ?? "none"
                     let gizmo = LightGizmoState(lights, sceneShadowsOn: engine.sceneShadowsOn)?.summary ?? "none"
-                    NSLog("PYMOL_AUTOLIGHTS_EDIT: \(entries.joined(separator: "; ")) inspector=\(inspector) plan=\(plan) gizmo=\(gizmo)")
+                    let tools = lightsToolsFields(detent: lightsSheetDetent)
+                    NSLog("PYMOL_AUTOLIGHTS_EDIT: \(entries.joined(separator: "; ")) inspector=\(inspector) plan=\(plan) gizmo=\(gizmo) \(tools)")
                 }
             }
             #endif
@@ -4208,6 +4597,12 @@ struct ContentView: View {
         .buttonStyle(.plain)
         .accessibilityLabel("Camera settings")
         .accessibilityIdentifier("camera")
+    }
+
+    // The bottom-left chrome draws something (scene buttons or the camera
+    // button); empty, it reports no height to the Lights float (#623).
+    private var bottomLeadingChromeShown: Bool {
+        (showSceneButtons && !engine.sceneNames.isEmpty) || !engine.objects.isEmpty
     }
 
     // Bottom-left viewport chrome: optional scene buttons stacked above the camera
@@ -4359,6 +4754,110 @@ struct ContentView: View {
         Text("RayMol found an existing ~/.pymolrc and can copy it to ~/.raymolrc, RayMol's own startup script, so your customizations still run here.")
     }
     #endif
+}
+
+// MARK: - UI-test probe (#623)
+
+/// Test-only (PYMOL_UITEST=1): the Lights state and the camera as one line of
+/// text, identifier `lightsProbe`, for the iOS UI tests (LightsGestureUITests)
+/// to tell a light edit from a camera move under real recognizers. Nearly
+/// transparent and never hit-testable; ContentView builds it only under
+/// PYMOL_UITEST=1, so a normal launch never runs it. It reads the rig mirror
+/// and the camera (PyMOLBridge_GetView, a C++ read) four times a second:
+/// no Python, no write.
+struct LightsUITestProbe: View {
+    static let identifier = "lightsProbe"
+    /// The Metal viewport's identifier under PYMOL_UITEST=1.
+    static let viewportIdentifier = "raymol.viewport"
+    /// PYMOL_UITEST=1, read once per launch.
+    static let enabled = ProcessInfo.processInfo.environment["PYMOL_UITEST"] == "1"
+
+    @ObservedObject var controller: LightsController
+    /// The live camera's 25-float view (PyMOLEngine.captureView).
+    let view: () -> [Float]?
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.25)) { _ in
+            let line = Self.line(rig: controller.rig, selected: controller.selectedLight?.name,
+                                 projection: controller.eye.projection, view: view())
+            Text(verbatim: line)
+                .font(.system(size: 4))
+                .lineLimit(1)
+                .accessibilityLabel(line)
+                .accessibilityIdentifier(Self.identifier)
+                .opacity(0.02)
+                .allowsHitTesting(false)
+        }
+    }
+
+    /// `sel=<name> radius=<r> orbit=<o> pitch=<p> beam=<b> cam=<hash>
+    /// rig=<name>:<o>/<p>/<r>/<b>,...`: the selected light's placement and
+    /// beam, a hash of the camera, and every light in rig order. Without a
+    /// selected light the light fields are left out; `cam=none` without a
+    /// camera. Pure.
+    static func line(rig: LightRigSnapshot?, selected: String?,
+                     projection: LightCameraProjection?, view: [Float]?) -> String {
+        var fields: [String] = []
+        let lights = rig?.lights ?? []
+        if let selected, let light = lights.first(where: { $0.name == selected }) {
+            fields.append("sel=\(light.name)")
+            fields.append("radius=" + String(format: "%.2f", light.radius))
+            fields.append("orbit=" + String(format: "%.1f", light.orbit))
+            fields.append("pitch=" + String(format: "%.1f", light.pitch))
+            fields.append("beam=" + String(format: "%.1f", light.beam))
+        } else {
+            fields.append("sel=none")
+        }
+        fields.append("cam=" + cameraHash(projection: projection, view: view))
+        let summary = lights.map { light in
+            light.name + ":" + String(format: "%.1f/%.1f/%.2f/%.1f",
+                                      light.orbit, light.pitch, light.radius, light.beam)
+        }
+        fields.append("rig=" + (summary.isEmpty ? "none" : summary.joined(separator: ",")))
+        return fields.joined(separator: " ")
+    }
+
+    /// FNV-1a (32 bit, hex) over the published LightCameraProjection and the
+    /// 25-float view, each value rounded to 1e-3. The projection alone
+    /// carries no rotation (a one-finger rotate or a twist leaves it as it
+    /// was), so the view's rotation and position are hashed with it. "none"
+    /// without a view. Deterministic across launches. Pure.
+    static func cameraHash(projection: LightCameraProjection?, view: [Float]?) -> String {
+        guard let view, !view.isEmpty else { return "none" }
+        var values: [Double] = []
+        if let projection {
+            values += [projection.orthoscopic ? 1 : 0, projection.fovDegrees,
+                       projection.cameraDistance, projection.letterboxAspect]
+        }
+        values += view.map(Double.init)
+        var hash: UInt32 = 2_166_136_261
+        for value in values {
+            let rounded = value.isFinite ? Int64((value * 1000).rounded()) : Int64.min
+            withUnsafeBytes(of: rounded.littleEndian) { bytes in
+                for byte in bytes {
+                    hash ^= UInt32(byte)
+                    hash = hash &* 16_777_619
+                }
+            }
+        }
+        return String(format: "%08x", hash)
+    }
+}
+
+/// The viewport's identifier under PYMOL_UITEST=1 (#623), as one accessibility
+/// element; a normal launch leaves the viewport untouched.
+struct LightsUITestViewportIdentifier: ViewModifier {
+    var enabled: Bool = LightsUITestProbe.enabled
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content
+                .accessibilityElement(children: .ignore)
+                .accessibilityIdentifier(LightsUITestProbe.viewportIdentifier)
+        } else {
+            content
+        }
+    }
 }
 
 #if RAYMOL_MPNN

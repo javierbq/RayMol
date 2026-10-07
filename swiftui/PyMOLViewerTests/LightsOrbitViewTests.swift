@@ -300,8 +300,9 @@ final class LightsOrbitSnapshotTests: XCTestCase {
         case column(orbitCollapsed: Bool)
         /// The bar above the column, as macLightsOverlay places them.
         case withBar
-        /// The plan and the arc with OrbitHitTest's regions over them.
-        case hitRegions(slop: CGFloat)
+        /// The plan and the arc with OrbitHitTest's regions over them, for a
+        /// slop and a minimum target (the iOS 44 pt floor, #623).
+        case hitRegions(slop: CGFloat, minimumTarget: CGFloat = 0)
     }
 
     private struct Shot {
@@ -396,6 +397,9 @@ final class LightsOrbitSnapshotTests: XCTestCase {
                      XCTAssertEqual(LightsInspectorState(controller)?.row(.orbit)?.value, 105)
                      XCTAssertEqual(LightsBarState(controller).chips.first(where: \.isSelected)?.name, "fill")
                  }),
+            // #623: the iOS profile, every target hit within at least 22 pt.
+            Shot(name: "hit_regions_ios44_plan", kind: .hitRegions(slop: 14, minimumTarget: 44), width: tall,
+                 height: 230),
         ]
         let dir = Self.outputDirectory
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -473,10 +477,10 @@ final class LightsOrbitSnapshotTests: XCTestCase {
                 }
                 .frame(width: shot.width, height: shot.height, alignment: .top)
                 .background(viewport))
-        case .hitRegions(let slop):
+        case .hitRegions(let slop, let minimumTarget):
             let state = try XCTUnwrap(LightsOrbitState(controller))
             root = AnyView(
-                OrbitHitRegions(state: state, slop: slop, style: style)
+                OrbitHitRegions(state: state, slop: slop, minimumTarget: minimumTarget, style: style)
                     .padding(12)
                     .frame(width: shot.width, height: shot.height, alignment: .top)
                     .background(viewport))
@@ -541,11 +545,12 @@ final class LightsOrbitSnapshotTests: XCTestCase {
 private struct OrbitHitRegions: View {
     var state: LightsOrbitState
     var slop: CGFloat
+    var minimumTarget: CGFloat = 0
     var style: LightsBarStyle
 
     var body: some View {
-        let plan = OrbitPlanLayout(extent: state.extent, slop: slop)
-        let arc = PitchArcLayout(slop: slop)
+        let plan = OrbitPlanLayout(extent: state.extent, slop: slop, minimumTarget: minimumTarget)
+        let arc = PitchArcLayout(slop: slop, minimumTarget: minimumTarget)
         let state = state
         let style = style
         HStack(alignment: .top, spacing: LightsOrbitView.gap) {

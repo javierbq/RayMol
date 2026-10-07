@@ -9,6 +9,8 @@
 // it is on), with a Turn On button the owner (ContentView) wires.
 // It sits in the Lights side column (LightsSideColumn.swift): under the bar on
 // macOS, at the viewport's top-trailing corner on iOS (ContentView places it).
+// The iPhone sheet and the side panel (#623, LightsSheet.swift) draw its
+// header and its rows apart (LightsInspectorPresentation), from the same code.
 //
 // It observes LightsController, the one Lights model the bar (#619), the orbit
 // view (#621) and the gizmo (#622) share, so a chip tap selects here and an
@@ -589,6 +591,9 @@ struct LightAngleFieldRow: View {
         .onChange(of: focused) { _, now in
             if now { editor.begin(light: lightName) } else { commit() }
         }
+        // The iPhone sheet and the side panel keep the scene's size while a
+        // field has the keyboard (#623): they read this.
+        .preference(key: LightsFieldFocusKey.self, value: focused)
     }
 
     private var textBinding: Binding<String> {
@@ -661,6 +666,27 @@ extension LightsController {
 
 // MARK: - The card
 
+/// True while an Orbit or Pitch field has the keyboard focus. The iPhone
+/// sheet and the side panel (#623) forward it, so the viewport does not
+/// resize for the keyboard while a Lights field is edited.
+struct LightsFieldFocusKey: PreferenceKey {
+    static var defaultValue = false
+    static func reduce(value: inout Bool, nextValue: () -> Bool) {
+        value = value || nextValue()
+    }
+}
+
+/// What part of the inspector a view draws:
+/// - `card`: the whole card (#620: the side column, the iPad float);
+/// - `header`: the identity dot, the light menu, the status line, Shadow and
+///   Pin, then the cap notice and the Shadows hint (with Turn On); no
+///   chevron, fixed width or card chrome (the iPhone sheet's header row);
+/// - `rows`: the content rows and the footer only; no header, inner
+///   ScrollView or chrome (the sheet and the side panel scroll them).
+enum LightsInspectorPresentation: Equatable {
+    case card, header, rows
+}
+
 private struct LightsInspectorHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
@@ -678,6 +704,8 @@ struct LightsInspector: View {
     var sceneShadowsOn: Bool?
     /// Turn the scene's Shadows switch on (the hint's Turn On button).
     var onEnableSceneShadows: () -> Void
+    /// The whole card, or only its header or rows (#623's sheet).
+    var presentation: LightsInspectorPresentation
 
     /// Collapsed to its header row. Plain view state, seeded per mode entry and
     /// never persisted (the test host shares the installed app's defaults).
@@ -686,29 +714,66 @@ struct LightsInspector: View {
     /// scrolls only when the space is shorter. One content tree (no
     /// ViewThatFits), so a resize never resets a field's text or focus.
     @State private var contentHeight: CGFloat = LightsInspector.estimatedHeight
+    /// The colour row's measured width: how many columns of 44 pt swatches
+    /// it lays out on iOS (`LightsTouch.swatchColumns`).
+    @State private var colourWidth: CGFloat = LightsInspector.width - 24
+    /// 44 on iOS (every control a 44 pt target, #623), 0 on macOS.
+    @Environment(\.lightsTouchMinimum) private var touchMinimum
 
     static let width: CGFloat = 284
     static let estimatedHeight: CGFloat = 480
 
-    init(controller: LightsController, style: LightsBarStyle, initiallyCollapsed: Bool,
-         sceneShadowsOn: Bool? = nil, onEnableSceneShadows: @escaping () -> Void = {}) {
+    init(controller: LightsController, style: LightsBarStyle, initiallyCollapsed: Bool = false,
+         sceneShadowsOn: Bool? = nil, onEnableSceneShadows: @escaping () -> Void = {},
+         presentation: LightsInspectorPresentation = .card) {
         self.controller = controller
         self.style = style
         self.sceneShadowsOn = sceneShadowsOn
         self.onEnableSceneShadows = onEnableSceneShadows
+        self.presentation = presentation
         _collapsed = State(initialValue: initiallyCollapsed)
     }
 
     var body: some View {
         if let state = LightsInspectorState(controller, sceneShadowsOn: sceneShadowsOn) {
-            card(state)
+            switch presentation {
+            case .card:
+                card(state)
+            case .header:
+                headerBlock(state)
+            case .rows:
+                content(state)
+                    .tint(style.accent)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityIdentifier("lights.inspector.rows")
+            }
         }
+    }
+
+    /// The `header` presentation: the header row without its chevron, then
+    /// the notice and the Shadows hint, which answer the header's Shadow chip.
+    private func headerBlock(_ state: LightsInspectorState) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header(state, showsChevron: false)
+                .padding(.vertical, touchMinimum > 0 ? 0 : 8)
+            if let notice = state.notice {
+                noticeRow(notice).padding(.bottom, 8)
+            }
+            if state.showsShadowsHint {
+                shadowsHintRow(state).padding(.bottom, 8)
+            }
+        }
+        .tint(style.accent)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(state.containerLabel)
+        .accessibilityIdentifier("lights.inspector.header")
     }
 
     private func card(_ state: LightsInspectorState) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            header(state)
-                .padding(.horizontal, 12).padding(.vertical, 8)
+            header(state, showsChevron: true)
+                // The 44 pt targets carry the header's height on iOS.
+                .padding(.horizontal, 12).padding(.vertical, touchMinimum > 0 ? 0 : 8)
             // Shown even while collapsed: both answer the header's Shadow chip.
             if let notice = state.notice {
                 noticeRow(notice)
@@ -747,7 +812,7 @@ struct LightsInspector: View {
 
     // MARK: header
 
-    private func header(_ state: LightsInspectorState) -> some View {
+    private func header(_ state: LightsInspectorState, showsChevron: Bool) -> some View {
         HStack(spacing: 6) {
             // The status goes under the name, so the Shadow and Pin chips
             // leave room for any light name and `Lights off`.
@@ -771,17 +836,20 @@ struct LightsInspector: View {
             Spacer(minLength: 2)
             shadowToggle(state)
             pinToggle(state)
-            Button { withAnimation(.easeOut(duration: 0.15)) { collapsed.toggle() } } label: {
-                Image(systemName: collapsed ? "chevron.down" : "chevron.up")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(style.text.opacity(0.7))
-                    .frame(width: 18, height: 18)
-                    .contentShape(Rectangle())
+            if showsChevron {
+                Button { withAnimation(.easeOut(duration: 0.15)) { collapsed.toggle() } } label: {
+                    Image(systemName: collapsed ? "chevron.down" : "chevron.up")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(style.text.opacity(0.7))
+                        .frame(width: 18, height: 18)
+                        .contentShape(Rectangle())
+                        .lightsTouchTarget()
+                }
+                .buttonStyle(.plain)
+                .help(LightsInspectorState.collapseLabel(collapsed: collapsed))
+                .accessibilityLabel(LightsInspectorState.collapseLabel(collapsed: collapsed))
+                .accessibilityIdentifier("lights.inspector.collapse")
             }
-            .buttonStyle(.plain)
-            .help(LightsInspectorState.collapseLabel(collapsed: collapsed))
-            .accessibilityLabel(LightsInspectorState.collapseLabel(collapsed: collapsed))
-            .accessibilityIdentifier("lights.inspector.collapse")
         }
     }
 
@@ -824,6 +892,7 @@ struct LightsInspector: View {
             .overlay(Capsule().stroke(on ? style.accent : style.text.opacity(0.25),
                                       lineWidth: on ? 1.5 : 1))
             .contentShape(Capsule())
+            .lightsTouchTarget()
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
@@ -893,6 +962,7 @@ struct LightsInspector: View {
                 Image(systemName: "chevron.down").font(.system(size: 9))
             }
             .foregroundColor(style.text)
+            .lightsTouchTarget()
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
@@ -930,45 +1000,111 @@ struct LightsInspector: View {
         }
     }
 
+    @ViewBuilder
     private func colourRow(_ state: LightsInspectorState) -> some View {
-        HStack(spacing: 5) {
-            Text("Colour")
-                .font(InspectorMetrics.font)
-                .foregroundColor(style.text.opacity(0.8))
-                .frame(width: InspectorMetrics.labelWidth - 1, alignment: .leading)
-                .accessibilityHidden(true)
-            ForEach(state.swatches) { swatch in
-                Button { controller.setColour(swatch.rgb) } label: {
-                    Circle()
-                        .fill(Color(.sRGB, red: swatch.rgb.x, green: swatch.rgb.y,
-                                    blue: swatch.rgb.z, opacity: 1))
-                        .overlay(Circle().stroke(style.text.opacity(0.3), lineWidth: 0.5))
-                        .frame(width: 15, height: 15)
-                        .padding(2)
-                        .overlay(Circle().stroke(swatch.isSelected ? style.accent : Color.clear,
-                                                 lineWidth: 1.5))
-                        .contentShape(Circle())
+        if touchMinimum > 0 {
+            touchColourRow(state)
+        } else {
+            HStack(spacing: 5) {
+                colourLabel
+                ForEach(state.swatches) { swatch in
+                    swatchButton(swatch, dot: 15, padding: 2)
                 }
-                .buttonStyle(.plain)
-                .help(swatch.name)
-                .accessibilityLabel(swatch.name)
-                .accessibilityAddTraits(swatch.isSelected ? .isSelected : [])
-                .accessibilityIdentifier("lights.inspector.swatch.\(swatch.name.lowercased())")
+                Spacer(minLength: 2)
+                colourPicker(state)
             }
-            Spacer(minLength: 2)
-            ColorPicker(LightsInspectorState.customColourLabel,
-                        selection: Binding(get: { LightColour.cgColor(state.color) },
-                                           set: { picked in
-                                               if let rgb = LightColour.srgb(from: picked) {
-                                                   controller.setColour(rgb)
-                                               }
-                                           }),
-                        supportsOpacity: false)
-                .labelsHidden()
-                .help(LightsInspectorState.customColourLabel)
-                .accessibilityLabel(LightsInspectorState.customColourLabel)
-                .accessibilityIdentifier("lights.inspector.custom")
         }
+    }
+
+    /// iOS: the label and the custom picker (a 44 pt target) on one line, the
+    /// six swatches below as 44 pt targets, all six in a row when the width
+    /// fits them (a phone sheet) or three per row (the 284 pt card).
+    private func touchColourRow(_ state: LightsInspectorState) -> some View {
+        let columns = LightsTouch.swatchColumns(width: colourWidth)
+        let swatches = state.swatches
+        let rows = stride(from: 0, to: swatches.count, by: columns).map {
+            Array(swatches[$0..<min($0 + columns, swatches.count)])
+        }
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 5) {
+                colourLabel
+                Spacer(minLength: 2)
+                colourPicker(state)
+                    .frame(minWidth: touchMinimum, minHeight: touchMinimum)
+                    .contentShape(Rectangle())
+            }
+            ForEach(rows.indices, id: \.self) { r in
+                HStack(spacing: 0) {
+                    ForEach(rows[r]) { swatch in
+                        swatchButton(swatch, dot: 24, padding: 3, target: LightsTouch.swatchTarget)
+                    }
+                    // A short last row keeps the columns of the rows above.
+                    ForEach(0..<(columns - rows[r].count), id: \.self) { _ in
+                        Color.clear.frame(maxWidth: .infinity, minHeight: LightsTouch.swatchTarget)
+                    }
+                }
+            }
+        }
+        .background(GeometryReader { g in
+            Color.clear
+                .onAppear { colourWidth = g.size.width }
+                .onChange(of: g.size.width) { _, width in colourWidth = width }
+        })
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("lights.inspector.colour")
+    }
+
+    private var colourLabel: some View {
+        Text("Colour")
+            .font(InspectorMetrics.font)
+            .foregroundColor(style.text.opacity(0.8))
+            .frame(width: InspectorMetrics.labelWidth - 1, alignment: .leading)
+            .accessibilityHidden(true)
+    }
+
+    /// One swatch: a dot of `dot` points ringed in the accent when selected;
+    /// with a `target`, the label is that tall and shares the row's width
+    /// with the other swatches (iOS), so the whole cell is hit.
+    @ViewBuilder
+    private func swatchButton(_ swatch: LightsInspectorState.Swatch, dot: CGFloat, padding: CGFloat,
+                              target: CGFloat? = nil) -> some View {
+        Button { controller.setColour(swatch.rgb) } label: {
+            let ring = Circle()
+                .fill(Color(.sRGB, red: swatch.rgb.x, green: swatch.rgb.y,
+                            blue: swatch.rgb.z, opacity: 1))
+                .overlay(Circle().stroke(style.text.opacity(0.3), lineWidth: 0.5))
+                .frame(width: dot, height: dot)
+                .padding(padding)
+                .overlay(Circle().stroke(swatch.isSelected ? style.accent : Color.clear,
+                                         lineWidth: 1.5))
+            if let target {
+                ring
+                    .frame(maxWidth: .infinity, minHeight: target)
+                    .contentShape(Rectangle())
+            } else {
+                ring.contentShape(Circle())
+            }
+        }
+        .buttonStyle(.plain)
+        .help(swatch.name)
+        .accessibilityLabel(swatch.name)
+        .accessibilityAddTraits(swatch.isSelected ? .isSelected : [])
+        .accessibilityIdentifier("lights.inspector.swatch.\(swatch.name.lowercased())")
+    }
+
+    private func colourPicker(_ state: LightsInspectorState) -> some View {
+        ColorPicker(LightsInspectorState.customColourLabel,
+                    selection: Binding(get: { LightColour.cgColor(state.color) },
+                                       set: { picked in
+                                           if let rgb = LightColour.srgb(from: picked) {
+                                               controller.setColour(rgb)
+                                           }
+                                       }),
+                    supportsOpacity: false)
+            .labelsHidden()
+            .help(LightsInspectorState.customColourLabel)
+            .accessibilityLabel(LightsInspectorState.customColourLabel)
+            .accessibilityIdentifier("lights.inspector.custom")
     }
 
     private func footer(_ state: LightsInspectorState) -> some View {
@@ -1016,8 +1152,10 @@ extension View {
 /// PYMOL_AUTOLIGHTS_EDIT='<token>;<token>…' (debug builds only): inspector
 /// edits a simulator run applies through the same controller calls the card
 /// makes. Tokens: `<parameter>:<value>` for every LightParameter, `pin:0|1`,
-/// `shadow:0|1`, `color:r:g:b` (0...1), `expand` (the inspector and the orbit
-/// view start expanded on iPhone), the orbit view's gestures (`tap:`,
+/// `shadow:0|1`, `color:r:g:b` (0...1), `expand` (the phone light sheet
+/// starts expanded; the iPad inspector expanded), `corner:tl|tr|bl|br` (the
+/// iPad's floating orbit view starts there, for this run only: nothing is
+/// stored), the orbit view's gestures (`tap:`,
 /// `plan:`, `square:`, `arc:`, `pinch:`; OrbitAutoGesture parses and runs
 /// them through LightsOrbitInteraction) and the gizmo's (`knob:`, `flip:`,
 /// `outer:`, `inner:`, `aimat:`, `wheel:`, `kpinch:`, `hl:`, `gshadow:`;
@@ -1029,6 +1167,7 @@ enum LightsAutoEdit {
         case shadow(Bool)
         case color(SIMD3<Double>)
         case expand
+        case corner(LightsFloatCorner)
         case gesture(OrbitAutoGesture)
         case gizmo(GizmoAutoGesture)
     }
@@ -1039,6 +1178,13 @@ enum LightsAutoEdit {
         var rejected: [String] = []
 
         var expands: Bool { tokens.contains(.expand) }
+        /// The last `corner:` token's corner (nil: the stored one).
+        var corner: LightsFloatCorner? {
+            tokens.reduce(nil) { found, token in
+                if case .corner(let corner) = token { return corner }
+                return found
+            }
+        }
     }
 
     static func parse(_ text: String) -> Parsed {
@@ -1071,6 +1217,10 @@ enum LightsAutoEdit {
             let allNumbers = finite.count == numbers.count
             if key == "expand", parts.count == 1 {
                 parsed.tokens.append(.expand)
+            } else if key == "corner", parts.count == 2,
+                      let corner = LightsFloatCorner(rawValue: parts[1].trimmingCharacters(in: .whitespaces)
+                        .lowercased()) {
+                parsed.tokens.append(.corner(corner))
             } else if key == "pin" || key == "shadow", parts.count == 2, allNumbers,
                       finite[0] == 0 || finite[0] == 1 {
                 parsed.tokens.append(key == "pin" ? .pin(finite[0] == 1) : .shadow(finite[0] == 1))
@@ -1086,13 +1236,18 @@ enum LightsAutoEdit {
     }
 
     /// Apply `tokens` to the selected light; one `<edit> -> <result>` entry
-    /// per edit (`expand` is a layout choice, applied before the mode opens).
+    /// per edit (`expand` and `corner:` are layout choices, applied before
+    /// the mode opens).
     /// A gesture's entry is `<token> -> <result> <field>=<value>`. Gizmo
     /// gestures run with `gizmo` (the overlay's size and the engine's
     /// picker); without it each logs `<token> -> noview`.
+    /// `orbitPlanSize` and `orbitArcSize`: the orbit canvases' sizes in the
+    /// active placement (OrbitAutoGesture.apply), the card's by default.
     @MainActor
     static func apply(_ tokens: [Token], to controller: LightsController,
-                      gizmo: GizmoAutoContext? = nil) -> [String] {
+                      gizmo: GizmoAutoContext? = nil,
+                      orbitPlanSize: CGSize = LightsOrbitMetrics.planSize,
+                      orbitArcSize: CGSize = LightsOrbitMetrics.arcSize) -> [String] {
         tokens.compactMap { token in
             switch token {
             case .set(let parameter, let value):
@@ -1103,10 +1258,11 @@ enum LightsAutoEdit {
                 return "shadow=\(on ? 1 : 0) -> \(controller.setShadow(on))"
             case .color(let rgb):
                 return "color=\(fmt(rgb.x)):\(fmt(rgb.y)):\(fmt(rgb.z)) -> \(controller.setColour(rgb))"
-            case .expand:
+            case .expand, .corner:
                 return nil
             case .gesture(let gesture):
-                return OrbitAutoGesture.apply(gesture, to: controller)
+                return OrbitAutoGesture.apply(gesture, to: controller, planSize: orbitPlanSize,
+                                              arcSize: orbitArcSize)
             case .gizmo(let gesture):
                 return GizmoAutoGesture.apply(gesture, to: controller, context: gizmo)
             }

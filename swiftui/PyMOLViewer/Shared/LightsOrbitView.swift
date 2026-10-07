@@ -37,15 +37,25 @@ struct LightsOrbitView: View {
     /// Collapsed to its header (with a one-line summary). Plain view state,
     /// seeded per mode entry and never persisted.
     @State private var collapsed: Bool
+    /// 44 on iOS (the chevron a 44 pt target, #623), 0 on macOS.
+    @Environment(\.lightsTouchMinimum) private var touchMinimum
 
     static let width: CGFloat = LightsInspector.width
+    /// The header row's height on macOS; on iOS the 44 pt chevron sets it.
+    static let headerHeight: CGFloat = 18
     /// Between the card's edge and the canvases, and between the canvases.
     static let inset: CGFloat = 12
     static let gap: CGFloat = 8
 
-    init(controller: LightsController, style: LightsBarStyle, initiallyCollapsed: Bool = false) {
+    /// The iPad float's grip (#623): the header row (not its chevron) drags
+    /// the card, with a capsule in the top padding; nil elsewhere.
+    var grip: LightsOrbitGrip?
+
+    init(controller: LightsController, style: LightsBarStyle, initiallyCollapsed: Bool = false,
+         grip: LightsOrbitGrip? = nil) {
         self.controller = controller
         self.style = style
+        self.grip = grip
         _collapsed = State(initialValue: initiallyCollapsed)
     }
 
@@ -57,10 +67,11 @@ struct LightsOrbitView: View {
 
     private func card(_ state: LightsOrbitState) -> some View {
         VStack(alignment: .leading, spacing: 0) {
+            // On iOS the 44 pt header carries the vertical padding.
             header(state)
                 .padding(.horizontal, Self.inset)
-                .padding(.top, 8)
-                .padding(.bottom, collapsed ? 8 : 2)
+                .padding(.top, touchMinimum > 0 ? 0 : 8)
+                .padding(.bottom, collapsed && touchMinimum == 0 ? 8 : 2)
             if !collapsed {
                 OrbitCanvases(controller: controller, eye: controller.eye, style: style)
                     .padding(.horizontal, Self.inset)
@@ -71,6 +82,7 @@ struct LightsOrbitView: View {
         .background(style.background)
         .clipShape(RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(style.text.opacity(0.18), lineWidth: 0.5))
+        .overlay(alignment: .top) { if let grip { gripHandle(grip) } }
         .tint(style.accent)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(state.containerLabel)
@@ -81,32 +93,59 @@ struct LightsOrbitView: View {
     // collapsed header shows the selected light's values on one line instead.
     private func header(_ state: LightsOrbitState) -> some View {
         HStack(spacing: 0) {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(LightPalette.color(state.selected.slot))
-                    .frame(width: 10, height: 10)
-                    .opacity(state.isOn ? 1 : 0.45)
-                    .accessibilityHidden(true)
-                title(LightsOrbitState.orbitTitle)
-                if collapsed {
-                    OrbitCollapsedSummary(controller: controller, eye: controller.eye, style: style)
-                } else {
-                    Text(verbatim: state.selected.name)
-                        .font(.system(size: 11))
-                        .foregroundColor(style.text.opacity(0.55))
-                        .lineLimit(1)
+            HStack(spacing: 0) {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(LightPalette.color(state.selected.slot))
+                        .frame(width: 10, height: 10)
+                        .opacity(state.isOn ? 1 : 0.45)
                         .accessibilityHidden(true)
+                    title(LightsOrbitState.orbitTitle)
+                    if collapsed {
+                        OrbitCollapsedSummary(controller: controller, eye: controller.eye, style: style)
+                    } else {
+                        Text(verbatim: state.selected.name)
+                            .font(.system(size: 11))
+                            .foregroundColor(style.text.opacity(0.55))
+                            .lineLimit(1)
+                            .accessibilityHidden(true)
+                    }
+                    Spacer(minLength: 2)
                 }
-                Spacer(minLength: 2)
+                .frame(width: collapsed ? nil : LightsOrbitMetrics.planSize.width + Self.gap, alignment: .leading)
+                if !collapsed {
+                    title(LightsOrbitState.pitchTitle)
+                    Spacer(minLength: 2)
+                }
             }
-            .frame(width: collapsed ? nil : LightsOrbitMetrics.planSize.width + Self.gap, alignment: .leading)
-            if !collapsed {
-                title(LightsOrbitState.pitchTitle)
-                Spacer(minLength: 2)
-            }
+            // The float's grip: the header row up to the chevron.
+            .modifier(OrbitGripRegion(grip: grip))
             collapseButton
         }
-        .frame(height: 18)
+        .frame(height: max(Self.headerHeight, touchMinimum))
+    }
+
+    /// The grip's capsule in the top padding, and its VoiceOver element
+    /// (the corner as its value, a move action per other corner). Touches
+    /// pass through to the header row, which carries the drag.
+    private func gripHandle(_ grip: LightsOrbitGrip) -> some View {
+        Capsule()
+            .fill(style.text.opacity(0.35))
+            .frame(width: LightsFloatMetrics.gripSize.width, height: LightsFloatMetrics.gripSize.height)
+            .padding(.top, 3)
+            .frame(width: 60, height: 14, alignment: .top)
+            .contentShape(Rectangle())
+            .allowsHitTesting(false)
+            .accessibilityElement()
+            .accessibilityLabel(grip.label)
+            .accessibilityValue(grip.value)
+            .accessibilityHint(grip.hint)
+            .accessibilityIdentifier(grip.identifier)
+            .accessibilityActions {
+                ForEach(Array(grip.actions.enumerated()), id: \.offset) { _, action in
+                    Button(action.name, action: action.perform)
+                }
+            }
     }
 
     private func title(_ text: String) -> some View {
@@ -125,11 +164,46 @@ struct LightsOrbitView: View {
                 .foregroundColor(style.text.opacity(0.7))
                 .frame(width: 18, height: 18)
                 .contentShape(Rectangle())
+                .lightsTouchTarget()
         }
         .buttonStyle(.plain)
         .help(LightsOrbitState.collapseLabel(collapsed: collapsed))
         .accessibilityLabel(LightsOrbitState.collapseLabel(collapsed: collapsed))
         .accessibilityIdentifier(LightsOrbitState.collapseIdentifier)
+    }
+}
+
+/// What the iPad float hands the orbit card (#623): the drag its header
+/// row carries, and the grip's VoiceOver element. The float owns the drag's
+/// state (LightsFloatingTools); the card only places it.
+struct LightsOrbitGrip {
+    struct Action {
+        var name: String
+        var perform: () -> Void
+    }
+
+    var gesture: AnyGesture<Void>
+    var label: String
+    var value: String
+    var hint: String
+    var identifier: String
+    var actions: [Action]
+}
+
+/// The header row as the grip: hit-testable across its width (a 44 pt
+/// target on iOS), carrying the float's drag; unchanged without a grip.
+private struct OrbitGripRegion: ViewModifier {
+    let grip: LightsOrbitGrip?
+
+    func body(content: Content) -> some View {
+        if let grip {
+            content
+                .lightsTouchTarget(width: false)
+                .contentShape(Rectangle())
+                .gesture(grip.gesture)
+        } else {
+            content
+        }
     }
 }
 
@@ -154,11 +228,34 @@ struct OrbitCollapsedSummary: View {
 /// The plan and the pitch arc, side by side, with their gestures and their
 /// VoiceOver elements. Observes the controller and `eye` (pinned lamps move
 /// with the camera) and holds the gesture sessions.
+///
+/// The card draws them at LightsOrbitMetrics' sizes; the iPhone sheet and the
+/// side panel (#623, LightsSheet.swift) pass their own: a 164 pt plan alone in
+/// the compact sheet, a pinned plan and a wider arc when pulled up. The
+/// layouts, the hit tests and the gestures all follow the sizes given.
 struct OrbitCanvases: View {
     @ObservedObject var controller: LightsController
     @ObservedObject var eye: LightsEyeState
     var style: LightsBarStyle
-    var slop: CGFloat = LightsOrbitMetrics.defaultSlop
+    var slop: CGFloat
+    /// The plan canvas's size, the arc canvas's, and whether the arc shows.
+    var planSize: CGSize
+    var arcSize: CGSize
+    var showsArc: Bool
+
+    init(controller: LightsController, eye: LightsEyeState, style: LightsBarStyle,
+         slop: CGFloat = LightsOrbitMetrics.defaultSlop,
+         planSize: CGSize = LightsOrbitMetrics.planSize,
+         arcSize: CGSize = LightsOrbitMetrics.arcSize,
+         showsArc: Bool = true) {
+        self.controller = controller
+        self.eye = eye
+        self.style = style
+        self.slop = slop
+        self.planSize = planSize
+        self.arcSize = arcSize
+        self.showsArc = showsArc
+    }
 
     // One drag on the plan, one on the arc and one pinch at a time. A
     // `…Touch` sequence marks a drag whose press was handled (hit or miss),
@@ -184,7 +281,9 @@ struct OrbitCanvases: View {
         if let state = LightsOrbitState(controller) {
             HStack(alignment: .top, spacing: LightsOrbitView.gap) {
                 plan(state)
-                arc(state)
+                if showsArc {
+                    arc(state)
+                }
             }
             .opacity(state.canEdit ? 1 : 0.5)
         }
@@ -195,8 +294,9 @@ struct OrbitCanvases: View {
     /// The plan's layout now: frozen at the press during a drag or a pinch,
     /// else fitted to the lamps.
     static func planLayout(_ state: LightsOrbitState, frozenExtent: Double?,
-                           slop: CGFloat = LightsOrbitMetrics.defaultSlop) -> OrbitPlanLayout {
-        OrbitPlanLayout(extent: frozenExtent ?? state.extent, slop: slop)
+                           slop: CGFloat = LightsOrbitMetrics.defaultSlop,
+                           size: CGSize = LightsOrbitMetrics.planSize) -> OrbitPlanLayout {
+        OrbitPlanLayout(size: size, extent: frozenExtent ?? state.extent, slop: slop)
     }
 
     private var frozenExtent: Double? { planSession?.plan?.extent ?? pinchExtent }
@@ -211,11 +311,11 @@ struct OrbitCanvases: View {
     // MARK: plan
 
     private func plan(_ state: LightsOrbitState) -> some View {
-        let layout = Self.planLayout(state, frozenExtent: frozenExtent, slop: slop)
+        let layout = Self.planLayout(state, frozenExtent: frozenExtent, slop: slop, size: planSize)
         let painter = OrbitPlanPainter(state: state, layout: layout, squareAngle: frozenSquareAngle,
                                        style: style)
         let owner = state.selected.name
-        return OrbitCanvas(size: LightsOrbitMetrics.planSize) { painter.draw(in: &$0) }
+        return OrbitCanvas(size: planSize) { painter.draw(in: &$0) }
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0, coordinateSpace: .local)
@@ -302,10 +402,10 @@ struct OrbitCanvases: View {
     // MARK: arc
 
     private func arc(_ state: LightsOrbitState) -> some View {
-        let layout = PitchArcLayout(slop: slop)
+        let layout = PitchArcLayout(size: arcSize, slop: slop)
         let painter = PitchArcPainter(state: state, layout: layout, style: style)
         let owner = state.selected.name
-        return OrbitCanvas(size: LightsOrbitMetrics.arcSize) { painter.draw(in: &$0) }
+        return OrbitCanvas(size: arcSize) { painter.draw(in: &$0) }
             .contentShape(Rectangle())
             .gesture(
                 DragGesture(minimumDistance: 0, coordinateSpace: .local)

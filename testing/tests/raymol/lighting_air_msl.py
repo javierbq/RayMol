@@ -925,7 +925,30 @@ class TestBridgeAndApp(AirMSLCase):
     def testGatePolicy(self):
         gate = swift_body(self.viewport, 'enum AirRedrawGate')
         self.assertIsNotNone(gate, 'enum AirRedrawGate not found')
-        self.assertRegex(gate, r'static let activeFPS: Double = 30\b')
+        # The 30 Hz default stays (#623 changes no default); RAYMOL_AIR_FPS
+        # (1-120, read once per launch) is the calibration's switch.
+        self.assertRegex(gate, r'static let defaultFPS: Double = 30\b')
+        self.assertRegex(gate, r'static let activeFPS: Double = '
+                               r'fps\(environment: ProcessInfo\.processInfo\.environment\)')
+        self.assertRegex(gate, r'static let fpsRange: ClosedRange<Double> = 1\.\.\.120\b')
+        fps = swift_body(gate, 'static func fps(environment: [String: String]) -> Double')
+        self.assertIsNotNone(fps, 'AirRedrawGate.fps(environment:) not found')
+        self.assertIn('environment["RAYMOL_AIR_FPS"]', fps)
+        self.assertIn('value.isFinite, fpsRange.contains(value) else { return defaultFPS }', fps)
+        log = swift_body(gate, 'static func logEnabled(environment: [String: String]) -> Bool')
+        self.assertIsNotNone(log, 'AirRedrawGate.logEnabled(environment:) not found')
+        self.assertIn('environment["RAYMOL_AIR_LOG"]', log)
+        self.assertIn('== "1"', log)
+        # The gate reads the environment once per launch, for those two only;
+        # no other viewport code reads either switch.
+        self.assertEqual(gate.count('ProcessInfo.processInfo.environment'), 2)
+        self.assertEqual(self.viewport.count('"RAYMOL_AIR_FPS"'), 1)
+        self.assertEqual(self.viewport.count('"RAYMOL_AIR_LOG"'), 1)
+        hold = swift_body(gate, 'static func holdReason(_ activity: Activity) -> HoldReason?')
+        self.assertIsNotNone(hold, 'AirRedrawGate.holdReason not found')
+        self.assertLess(hold.index('!activity.active'), hold.index('!activity.visible'))
+        self.assertLess(hold.index('!activity.visible'), hold.index('activity.lowPower'))
+        self.assertIn('case lowPower = "low_power"', gate)
         self.assertRegex(gate, r'static let dueShare: Double = 0\.95\b')
         self.assertRegex(gate, r'struct Activity: Equatable \{\s*var active: Bool\s*'
                                r'var visible: Bool\s*var lowPower: Bool\s*\}')
@@ -964,6 +987,18 @@ class TestBridgeAndApp(AirMSLCase):
         # behind the cheap terms.
         self.assertEqual(self.viewport.count('lightAirAnimating'), 1)
         self.assertEqual(len(re.findall(r'(?<!func )\bairTickDue\(view:', self.viewport)), 1)
+        # #623: the activity is read once; the hold log (RAYMOL_AIR_LOG=1
+        # only) notes it before the interval guard, and asks the core nothing.
+        self.assertEqual(due.count('airActivity(of: view)'), 1)
+        self.assertRegex(due, r'if AirRedrawGate\.logsHolds \{ noteAirHold\(activity\) \}')
+        self.assertLess(due.index('noteAirHold(activity)'),
+                        due.index('guard let interval = AirRedrawGate.interval(activity)'))
+        note = swift_body(self.viewport, 'private func noteAirHold(')
+        self.assertIsNotNone(note, 'Coordinator.noteAirHold not found')
+        self.assertIn('guard state != lastAirHold else { return }', note)
+        self.assertIn('AirRedrawGate.holdLine(state, fps: AirRedrawGate.activeFPS)', note)
+        self.assertNotIn('engine', note)
+        self.assertNotIn('#if DEBUG', note)
         draw = swift_body(self.viewport, 'func draw(in view: MTKView)')
         self.assertRegex(draw, r'let airDue = !pending && !forceRedraw && hasRenderedOnce\s*'
                                r'&& airTickDue\(view: view, engine: engine\)')
