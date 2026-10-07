@@ -32,23 +32,26 @@ regression renders against master) and L3 prove on a Mac:
   mat_env_specular, mat_jelly_shade) are master's;
 * TestSpecialisers: every specialiser of a function that can reach the light
   helpers sets kLightHdr's index (materialFragmentFunction to
-  `lightRig && lightHdr`; bezierTubeRigFunction to its builder's choice;
-  airFunction, buildRTPipelines and buildRTRigComposite false until Part 5),
-  no function fetched unspecialised reaches kLightHdr, and only the rig
-  builders ask for it, each with the frame's hdr choice;
-* TestCaches (Part 4, the raster rig): every raster rig cache keys on hdr
-  (the VBO rig functions and tried flags [hdr][family], the cachedVBOPipeline
-  key with an hdr bit mixed only when true, the sphere rig and rig-shadow
-  sets [hdr][family] with a flag per set, the cylinder tuple's 6th bool, the
-  tube's two pipelines from one library compile under one tried flag), each
-  draw asks for this frame's variant (_lightHdrOn), and each release frees
-  both variants. Part 4's documented transitional state: the RT rig
-  composite and the air still build only their knee variants (Part 5);
-* TestFrame (Part 4): setLightRig derives _lightHdrOn from the block's
+  `lightRig && lightHdr`; bezierTubeRigFunction and airFunction to their
+  builder's choice; buildRTPipelines false and buildRTRigComposite its
+  caller's choice), no function fetched unspecialised reaches kLightHdr, and
+  only the rig builders ask for it, each with the frame's hdr choice;
+* TestCaches (Parts 4-5): every rig cache keys on hdr (the VBO rig functions
+  and tried flags [hdr][family], the cachedVBOPipeline key with an hdr bit
+  mixed only when true, the sphere rig and rig-shadow sets [hdr][family]
+  with a flag per set, the cylinder tuple's 6th bool, the tube's two
+  pipelines from one library compile under one tried flag; Part 5: the RT
+  rig composites [transparent][hdr] with a tried flag each, from the
+  retained _rtLib, and the air's two composites in both variants from its
+  one compile in its one attempt, the march single), each draw or pass asks
+  for this frame's variant (_lightHdrOn), and each release frees both
+  variants;
+* TestFrame (Parts 4-5): setLightRig derives _lightHdrOn from the block's
   tone[1] while the rig is on, beginFrame clears it, nothing else writes it,
-  and only the raster rig draws and runPostChain read it; runPostChain is
-  master's once postExposure is put back (exposure 1 in an HDR rig frame);
-  SceneLightsFrame is master's once the one tone statement is taken out;
+  and only the rig draws, the air and runPostChain read it; runPostChain is
+  master's once postExposure and the RT rig composite choice are put back
+  (exposure 1 in an HDR rig frame); SceneLightsFrame is master's once the
+  one tone statement is taken out;
 * TestBlock: pymol::LightRigBlock is 688 bytes with the tone last, and both
   MSL LightRigU copies end with it.
 
@@ -503,18 +506,22 @@ class TestSpecialisers(HdrMSLCase):
         self.assertRegex(self.code, r'RendererMetal::materialFragmentFunction\(\s*'
                                     r'id<MTLLibrary> lib, NSString\* name, int family, '
                                     r'bool lightRig,\s*bool lightShadow, bool lightHdr\)')
-        # Part 4: the tube's builder chooses per variant; the air keeps the
-        # knee until Part 5
-        for name, value in (('bezierTubeRigFunction', 'lightHdr'),
-                            ('airFunction', 'false')):
+        # Parts 4-5: the tube's and the air's builders choose per variant
+        for name in ('bezierTubeRigFunction', 'airFunction'):
             fn = cpp_function(self.mm, name)
-            self.assertEqual(self.setting(fn, 'kLightHdrConstantIndex'), value, name)
+            self.assertEqual(self.setting(fn, 'kLightHdrConstantIndex'), 'lightHdr', name)
             self.assertEqual(self.setting(fn, 'kLightShadowConstantIndex'), 'false', name)
-        self.assertRegex(self.code, r'static id<MTLFunction> bezierTubeRigFunction\('
-                                    r'id<MTLLibrary> lib, NSString\* name,\s*bool lightHdr\)')
-        for name in RT_SPECIALISERS:
+            self.assertRegex(self.code, r'static id<MTLFunction> %s\('
+                                        r'id<MTLLibrary> lib, NSString\* name,\s*'
+                                        r'bool lightHdr\)' % name)
+        # the classic RT pipelines never; the rig composite as its caller asks
+        for name, value in (('RendererMetal::buildRTPipelines', 'false'),
+                            ('RendererMetal::buildRTRigComposite', 'hdr')):
             fn = cpp_function(self.mm, name)
-            self.assertEqual(self.setting(fn, 'kRTLightHdrConstantIndex'), 'false', name)
+            self.assertEqual(self.setting(fn, 'kRTLightHdrConstantIndex'), value, name)
+        self.assertRegex(self.code, r'RendererMetal::buildRTRigComposite\(bool transparent, '
+                                    r'bool hdr\)')
+        self.assertRegex(self.header, r'buildRTRigComposite\(bool transparent, bool hdr\);')
         # no other specialisation of these libraries: each site sets both
         # constants, and every one is in a function named above
         self.assertEqual(self.code.count('atIndex:kLightHdrConstantIndex]'),
@@ -555,6 +562,21 @@ class TestSpecialisers(HdrMSLCase):
         tube = re.findall(r'bezierTubeRigFunction\(([^;]*)\);', code)
         self.assertEqual(sorted(squash(t).split(',')[-1] for t in tube),
                          ['false', 'h==1'])
+        # Part 5: the air's functions come from newAirPipeline, which hands
+        # airFunction its hdr choice, and the vertex function (no constant);
+        # ensureAirPipelines asks for both composite variants and one march
+        air = [squash(a) for a in re.findall(r'(?<![\w:])airFunction\(([^;]*)\);', code)]
+        self.assertEqual(sorted(air), ['lib,@"post_air_vertex",false', 'lib,name,hdr'])
+        ensure = cpp_function(self.mm, 'RendererMetal::ensureAirPipelines')
+        self.assertEqual([(n, squash(h)) for n, h in re.findall(
+            r'newAirPipeline\(_device, lib, vfn, @"(\w+)",\s*\w+, ([^)]*)\)', ensure)],
+            [('post_air_full', 'v==1'), ('post_air_march', 'false'),
+             ('post_air_upsample', 'v==1')])
+        # Part 5: the RT rig composite is built once per call site, with the
+        # frame's choice
+        rt = [squash(r) for r in re.findall(r'(?<![\w:])buildRTRigComposite\(([^;]*)\);',
+                                            code)]
+        self.assertEqual(rt, ['doRTTrans,_lightHdrOn'])
 
     def testNothingUnspecialisedReachesIt(self):
         """A function fetched with plain newFunctionWithName: never reads
@@ -611,6 +633,17 @@ class TestCaches(HdrMSLCase):
                             r' = \{\};')
         # one tried flag for both tube variants
         self.assertRegex(h, r'bool _bezierTubeRigTried = false;')
+        # Part 5: the RT rig composites and their tried flags [transparent][hdr]
+        self.assertRegex(h, r'id<MTLRenderPipelineState> _rtResolvePipelineRig\[2\]\[2\]'
+                            r' = \{\};')
+        self.assertRegex(h, r'bool _rtRigTried\[2\]\[2\] = \{\};')
+        self.assertNotRegex(h, r'_rtResolvePipelineTRig|_rtRigTTried')
+        # Part 5: the air's composites [hdr], the march and the attempt single
+        for member in ('_airFullPipeline', '_airUpsamplePipeline'):
+            self.assertRegex(h, r'id<MTLRenderPipelineState> %s\[2\] = \{\};' % member,
+                             member)
+        self.assertRegex(h, r'id<MTLRenderPipelineState> _airMarchPipeline = nil;')
+        self.assertRegex(h, r'bool _airPipelinesTried = false;')
         for sig in (r'id<MTLFunction> vboRigFragmentFunction\(int family, bool oit, '
                     r'bool hdr\);',
                     r'id<MTLFunction> vboRigShadowFragmentFunction\(int family, bool oit, '
@@ -749,17 +782,85 @@ class TestCaches(HdrMSLCase):
         self.assertIn('[_bezierTubeRigPipeline[0] release];', dtor)
         self.assertIn('[_bezierTubeRigPipeline[1] release];', dtor)
 
-    def testPostCachesStillSingle(self):
-        """Part 4's documented transitional state, ended by Part 5: the RT
-        rig composites and the air are built only with kLightHdr false, so an
-        HDR frame's traced rig hits and air take the knee arm for now."""
-        self.assertRegex(self.header, r'id<MTLRenderPipelineState> _airFullPipeline = nil;')
-        self.assertRegex(self.header, r'id<MTLRenderPipelineState> _airUpsamplePipeline = nil;')
-        for name in ('airFunction', 'RendererMetal::buildRTRigComposite'):
-            self.assertRegex(cpp_function(self.mm, name),
-                             r'bool \w+ = false;\s*\[(?:cv|fc) setConstantValue:&\w+ '
-                             r'type:MTLDataTypeBool atIndex:k(?:RT)?LightHdrConstantIndex\]',
-                             name)
+    def testRTRigComposites(self):
+        """Part 5: the RT rig composite for the frame's kind (transparent or
+        not, HDR or knee), each slot tried once, built from the retained RT
+        library (no compile of its own), every slot released."""
+        build = cpp_function(self.mm, 'RendererMetal::buildRTRigComposite')
+        self.assertRegex(build, r'^\{\s*if \(!_rtLib\)\s*return nil;')
+        self.assertNotIn('newLibraryWithSource:', build)
+        self.assertEqual(build.count('[_rtLib newFunctionWithName:'), 2)
+        self.assertIn('hdr ? " HDR" : ""', build)
+        post = cpp_function(self.mm, 'RendererMetal::runPostChain')
+        block = re.search(r'if\s*\(\s*_lightRigOn\s*&&\s*u\.matCount\s*>\s*0\.5f\s*\)\s*\{',
+                          post)
+        self.assertIsNotNone(block)
+        inside = post[block.end():_msl.match_brace(post, block.end() - 1)]
+        self.assertRegex(inside, r'^\s*const int rigT = doRTTrans \? 1 : 0;\s*'
+                                 r'const int rigH = _lightHdrOn \? 1 : 0;\s*'
+                                 r'id<MTLRenderPipelineState>\* rigComposite = '
+                                 r'&_rtResolvePipelineRig\[rigT\]\[rigH\];\s*'
+                                 r'bool\* tried = &_rtRigTried\[rigT\]\[rigH\];\s*'
+                                 r'if \(!\*rigComposite && !\*tried\) \{\s*\*tried = true;\s*'
+                                 r'\*rigComposite = buildRTRigComposite\(doRTTrans, '
+                                 r'_lightHdrOn\);\s*\}')
+        # the slots are read nowhere else
+        for member in ('_rtResolvePipelineRig', '_rtRigTried'):
+            owners = set()
+            for m in re.finditer(r'\b%s\b' % member, self.code):
+                owners.add(re.findall(r'^[\w<>:\*\s~]*RendererMetal::(~?\w+)\s*\(',
+                                      self.code[:m.start()], re.M)[-1])
+            want = {'runPostChain', '~RendererMetal'} if member == '_rtResolvePipelineRig' \
+                else {'runPostChain'}
+            self.assertEqual(owners, want, member)
+        dtor = cpp_function(self.mm, 'RendererMetal::~RendererMetal')
+        self.assertRegex(dtor, r'for \(int t = 0; t < 2; \+\+t\)\s*'
+                               r'for \(int h = 0; h < 2; \+\+h\)\s*'
+                               r'\[_rtResolvePipelineRig\[t\]\[h\] release\];')
+
+    def testAirFromOneCompile(self):
+        """Part 5: ensureAirPipelines makes both kLightHdr variants of the two
+        composites from its one library compile, in its one attempt, and
+        answers for this frame's variant; encodeAirPass draws that variant;
+        the march stays single; both variants are released."""
+        ensure = cpp_function(self.mm, 'RendererMetal::ensureAirPipelines')
+        self.assertEqual(ensure.count('newLibraryWithSource:'), 1)
+        self.assertRegex(ensure, r'^\{\s*const int h = _lightHdrOn \? 1 : 0;\s*'
+                                 r'if \(_airPipelinesTried\)\s*return _airFullPipeline\[h\] '
+                                 r'!= nil;\s*_airPipelinesTried = true;')
+        self.assertLess(ensure.index('_airPipelinesTried = true;'),
+                        ensure.index('newLibraryWithSource:'))
+        for member, name in (('_airFullPipeline', 'post_air_full'),
+                             ('_airUpsamplePipeline', 'post_air_upsample')):
+            self.assertRegex(ensure, r'for \(int v = 0; v < 2; \+\+v\)\s*%s\[v\] = '
+                                     r'newAirPipeline\(_device, lib, vfn, @"%s",\s*'
+                                     r'MTLPixelFormatBGRA8Unorm, v == 1\);' % (member, name))
+        self.assertRegex(ensure, r'_airMarchPipeline = newAirPipeline\(_device, lib, vfn, '
+                                 r'@"post_air_march",\s*MTLPixelFormatRGBA16Float, false\);')
+        # the library is released after every variant is made
+        self.assertGreater(ensure.rindex('[lib release];'),
+                           ensure.rindex('newAirPipeline('))
+        self.assertRegex(ensure, r'return _airFullPipeline\[h\] != nil;\s*\}$')
+        enc = cpp_function(self.mm, 'RendererMetal::encodeAirPass')
+        self.assertIn('const int h = _lightHdrOn ? 1 : 0;', enc)
+        self.assertRegex(enc, r'_airMarchPipeline && _airUpsamplePipeline\[h\] &&')
+        self.assertIn('[ea setRenderPipelineState:(half ? _airUpsamplePipeline[h] : '
+                      '_airFullPipeline[h])];', enc)
+        self.assertIn('[em setRenderPipelineState:_airMarchPipeline];', enc)
+        # every other use of the composites is a release or the one attempt
+        for member in ('_airFullPipeline', '_airUpsamplePipeline'):
+            self.assertNotRegex(self.code, r'\b%s\b(?!\[)' % member, member)
+            owners = set()
+            for m in re.finditer(r'\b%s\[' % member, self.code):
+                owners.add(re.findall(r'^[\w<>:\*\s~]*RendererMetal::(~?\w+)\s*\(',
+                                      self.code[:m.start()], re.M)[-1])
+            self.assertEqual(owners, {'ensureAirPipelines', 'encodeAirPass',
+                                      '~RendererMetal'}, member)
+        dtor = cpp_function(self.mm, 'RendererMetal::~RendererMetal')
+        for member in ('_airFullPipeline', '_airUpsamplePipeline'):
+            for v in (0, 1):
+                self.assertIn('[%s[%d] release];' % (member, v), dtor)
+        self.assertIn('[_airMarchPipeline release];', dtor)
 
 
 class TestFrame(HdrMSLCase):
@@ -781,15 +882,16 @@ class TestFrame(HdrMSLCase):
             writers.add(re.findall(r'^[\w<>:\*\s]*RendererMetal::(\w+)\s*\(',
                                    self.code[:m.start()], re.M)[-1])
         self.assertEqual(writers, {'setLightRig', 'beginFrame'})
-        # read by the raster rig draws and runPostChain only (Part 5 adds
-        # the RT composite and the air)
+        # read by the rig draws, runPostChain (the exposure hand-off and the
+        # RT rig composite) and the air (Part 5) only
         readers = set()
         for m in re.finditer(r'\b_lightHdrOn\b(?!\s*=(?!=))', self.code):
             readers.add(re.findall(r'^[\w<>:\*\s]*RendererMetal::(\w+)\s*\(',
                                    self.code[:m.start()], re.M)[-1])
         self.assertEqual(readers, {'runPostChain', 'drawVBO', 'drawVBOIndexed',
                                    'drawSphereImpostors', 'drawCylinderImpostors',
-                                   'drawBezierTubes'})
+                                   'drawBezierTubes', 'ensureAirPipelines',
+                                   'encodeAirPass'})
 
     def testPostChainIsMastersWithoutTheHandOff(self):
         post = cpp_function(self.mm, 'RendererMetal::runPostChain')
@@ -805,6 +907,9 @@ class TestFrame(HdrMSLCase):
         body = _air.AIR_STATEMENTS['RendererMetal::runPostChain'].sub('', post, count=1)
         body, declarations, uses = _air.without_post_exposure_624(body)
         self.assertEqual((declarations, uses), (1, _air.POST_EXPOSURE_USES_624))
+        # Part 5: the RT rig composite choice, put back
+        body, choices, builds = _air.without_rt_rig_hdr_624(body)
+        self.assertEqual((choices, builds), (1, 1))
         self.assertEqual(digest(body),
                          _air.MASTER_FUNCTIONS[('RendererMetal.mm',
                                                 'RendererMetal::runPostChain')])

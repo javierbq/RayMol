@@ -1474,9 +1474,12 @@ class TestRayTracedReflections(LightMSLCase):
                       build)
         for released in ('[fc release];', '[pd release];', '[vtx release];', '[fco release];'):
             self.assertIn(released, variant)
+        # #624 (re-taken): the rig composites are [transparent][hdr], every
+        # slot released
         dtor = cpp_function(self.mm, 'RendererMetal::~RendererMetal')
-        self.assertIn('[_rtResolvePipelineRig release];', dtor)
-        self.assertIn('[_rtResolvePipelineTRig release];', dtor)
+        self.assertRegex(dtor, r'for \(int t = 0; t < 2; \+\+t\)\s*'
+                               r'for \(int h = 0; h < 2; \+\+h\)\s*'
+                               r'\[_rtResolvePipelineRig\[t\]\[h\] release\];')
 
     def testRigCompositeChosenAndBoundOnlyWhenOn(self):
         code = strip_comments(self.mm)
@@ -1501,11 +1504,15 @@ class TestRayTracedReflections(LightMSLCase):
         self.assertEqual(len(re.findall(r'\[er setRenderPipelineState:', post)), 1)
         self.assertIn('[er setRenderPipelineState:composite];', post)
         # which composite variant the rig path uses (613-R2-3): the transparent
-        # or default pipeline slot, flag and builder argument all follow doRTTrans
-        self.assertRegex(inside, r'rigComposite\s*=\s*doRTTrans \? &_rtResolvePipelineTRig'
-                                 r' : &_rtResolvePipelineRig;')
-        self.assertRegex(inside, r'tried\s*=\s*doRTTrans \? &_rtRigTTried : &_rtRigTried;')
-        self.assertRegex(inside, r'\*rigComposite\s*=\s*buildRTRigComposite\(doRTTrans\);')
+        # or default pipeline slot, flag and builder argument all follow
+        # doRTTrans; and (#624, re-taken) the HDR or knee slot, flag and
+        # argument all follow _lightHdrOn
+        self.assertRegex(inside, r'const int rigT = doRTTrans \? 1 : 0;\s*'
+                                 r'const int rigH = _lightHdrOn \? 1 : 0;')
+        self.assertRegex(inside, r'rigComposite\s*=\s*&_rtResolvePipelineRig\[rigT\]\[rigH\];')
+        self.assertRegex(inside, r'tried\s*=\s*&_rtRigTried\[rigT\]\[rigH\];')
+        self.assertRegex(inside, r'\*rigComposite\s*=\s*buildRTRigComposite\(doRTTrans, '
+                                 r'_lightHdrOn\);')
         builder = cpp_function(self.mm, 'RendererMetal::buildRTRigComposite')
         self.assertRegex(builder, r'bool t = transparent;\s*\[fc setConstantValue:&t '
                                   r'type:MTLDataTypeBool atIndex:0\];')

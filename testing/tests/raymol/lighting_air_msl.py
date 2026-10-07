@@ -184,6 +184,31 @@ def without_post_exposure_624(body):
     body, declarations = POST_EXPOSURE_624.subn('', body)
     body, uses = re.subn(r'\bpostExposure\b', '_exposure', body)
     return body, declarations, uses
+
+
+# #624's RT rig composite choice in runPostChain (Part 5): the rig composites
+# are [transparent][hdr] slots and tried flags, and the builder takes the
+# frame's hdr choice. With the slot choice (exactly one match) and the
+# builder call (exactly one) written back as #613's, the function is what it
+# was.
+RT_RIG_CHOICE_624 = re.compile(
+    r'const\s+int\s+rigT\s*=\s*doRTTrans\s*\?\s*1\s*:\s*0\s*;\s*'
+    r'const\s+int\s+rigH\s*=\s*_lightHdrOn\s*\?\s*1\s*:\s*0\s*;\s*'
+    r'id<MTLRenderPipelineState>\s*\*\s*rigComposite\s*=\s*'
+    r'&_rtResolvePipelineRig\[rigT\]\[rigH\]\s*;\s*'
+    r'bool\s*\*\s*tried\s*=\s*&_rtRigTried\[rigT\]\[rigH\]\s*;')
+RT_RIG_CHOICE_613 = ('id<MTLRenderPipelineState>* rigComposite = '
+                     'doRTTrans ? &_rtResolvePipelineTRig : &_rtResolvePipelineRig; '
+                     'bool* tried = doRTTrans ? &_rtRigTTried : &_rtRigTried;')
+RT_RIG_BUILD_624 = re.compile(r'buildRTRigComposite\(\s*doRTTrans\s*,\s*_lightHdrOn\s*\)')
+
+
+def without_rt_rig_hdr_624(body):
+    """runPostChain's `body` with #624's RT rig composite choice put back.
+    Returns (text, choices, builds)."""
+    body, choices = RT_RIG_CHOICE_624.subn(RT_RIG_CHOICE_613, body)
+    body, builds = RT_RIG_BUILD_624.subn('buildRTRigComposite(doRTTrans)', body)
+    return body, choices, builds
 # #624 appends `float4 tone;` to the rig block's MSL mirror (LightRigU) in
 # kMaterialSrc and kRTSrc (layer1/LightRigBlock.h, 688 bytes). With the field
 # taken out (exactly one match each) the literals are what they were.
@@ -372,10 +397,12 @@ class TestMasterUnchanged(AirMSLCase):
             if name in STATEMENTS_624:
                 self.assertEqual(len(STATEMENTS_624[name].findall(body)), 1, name)
                 body = STATEMENTS_624[name].sub('', body, count=1)
-            # #624's exposure hand-off, put back
+            # #624's exposure hand-off and RT rig composite choice, put back
             if name == 'RendererMetal::runPostChain':
                 body, declarations, uses = without_post_exposure_624(body)
                 self.assertEqual((declarations, uses), (1, POST_EXPOSURE_USES_624))
+                body, choices, builds = without_rt_rig_hdr_624(body)
+                self.assertEqual((choices, builds), (1, 1))
             self.assertEqual(digest(body), want, name)
 
 
@@ -402,8 +429,11 @@ class TestLibrary(AirMSLCase):
 
     def testOneAttemptLoggedOnce(self):
         ensure = self.body('RendererMetal::ensureAirPipelines')
-        self.assertRegex(ensure, r'^\{\s*if\s*\(\s*_airFullPipeline\s*\)\s*return true;'
-                                 r'\s*if\s*\(\s*_airPipelinesTried\s*\)\s*return false;'
+        # #624 (re-taken): after the one attempt, the answer is whether this
+        # frame's composite (its kLightHdr variant) exists
+        self.assertRegex(ensure, r'^\{\s*const int h = _lightHdrOn \? 1 : 0;'
+                                 r'\s*if\s*\(\s*_airPipelinesTried\s*\)\s*'
+                                 r'return _airFullPipeline\[h\] != nil;'
                                  r'\s*_airPipelinesTried = true;')
         self.assertLess(ensure.index('_airPipelinesTried = true;'),
                         ensure.index('newLibraryWithSource:'))
@@ -421,7 +451,9 @@ class TestLibrary(AirMSLCase):
             self.assertIn(released, pipeline)
         self.assertNotIn('newRenderPipelineStateWithDescriptor:', ensure)
         self.assertEqual(pipeline.count('newRenderPipelineStateWithDescriptor:'), 1)
-        self.assertEqual(self.code.count('newAirPipeline('), 4)   # the definition, 3 calls
+        # the definition, 3 calls (#624: the full and upsample calls each in a
+        # loop over both kLightHdr variants)
+        self.assertEqual(self.code.count('newAirPipeline('), 4)
         self.assertIn('pd.rasterSampleCount = 1;', pipeline)
         self.assertIn('pd.colorAttachments[0].pixelFormat = format;', pipeline)
         self.assertIn('pd.vertexFunction = vfn;', pipeline)
@@ -434,26 +466,31 @@ class TestLibrary(AirMSLCase):
     def testFunctionsComeFromAirFunction(self):
         ensure = self.body('RendererMetal::ensureAirPipelines')
         self.assertNotIn('newFunctionWithName', ensure)
-        self.assertEqual(re.findall(r'airFunction\(lib, @"(\w+)"\)', ensure),
+        self.assertEqual(re.findall(r'airFunction\(lib, @"(\w+)", false\)', ensure),
                          ['post_air_vertex'])
-        # the fragments, each in its own pipeline and colour format
+        # the fragments, each in its own pipeline and colour format; the two
+        # composites in both kLightHdr variants (#624; v == 1 is HDR), each
+        # in its own slot, the march once
         self.assertEqual(
-            re.findall(r'newAirPipeline\(_device, lib, vfn, @"(\w+)",\s*(\w+)\)', ensure),
-            [('post_air_full', 'MTLPixelFormatBGRA8Unorm'),
-             ('post_air_march', 'MTLPixelFormatRGBA16Float'),
-             ('post_air_upsample', 'MTLPixelFormatBGRA8Unorm')])
+            re.findall(r'(\w+(?:\[v\])?) = newAirPipeline\(_device, lib, vfn, @"(\w+)",'
+                       r'\s*(\w+), ([^)]*)\)', ensure),
+            [('_airFullPipeline[v]', 'post_air_full', 'MTLPixelFormatBGRA8Unorm', 'v == 1'),
+             ('_airMarchPipeline', 'post_air_march', 'MTLPixelFormatRGBA16Float', 'false'),
+             ('_airUpsamplePipeline[v]', 'post_air_upsample', 'MTLPixelFormatBGRA8Unorm',
+              'v == 1')])
+        self.assertEqual(len(re.findall(r'for \(int v = 0; v < 2; \+\+v\)\s*'
+                                        r'_air(?:Full|Upsample)Pipeline\[v\] = '
+                                        r'newAirPipeline\(', ensure)), 2)
         pipeline = cpp_function(self.mm, 'newAirPipeline')
-        self.assertIn('id<MTLFunction> ffn = airFunction(lib, name);', pipeline)
+        self.assertIn('id<MTLFunction> ffn = airFunction(lib, name, hdr);', pipeline)
         self.assertNotIn('newFunctionWithName', pipeline)
         # bezierTubeRigFunction's logic, its log text aside
         air = cpp_function(self.mm, 'airFunction')
         tube = cpp_function(self.mm, 'bezierTubeRigFunction')
 
         def normal(body):
-            # #624: the tube's builder makes both kLightHdr variants and
-            # hands the function its choice (`bool hdr = lightHdr;`); the air
-            # sets false until its HDR composites are built
-            body = re.sub(r'bool hdr = lightHdr;', 'bool hdr = false;', body)
+            # #624: both builders make both kLightHdr variants and hand the
+            # function its choice (`bool hdr = lightHdr;`), so they still match
             return squash(re.sub(r'NSLog\(@"[^"]*"', 'NSLog(@""', body))
         self.assertEqual(normal(air), normal(tube))
         for index in ('atIndex:0]', 'atIndex:kLightRigConstantIndex]',
@@ -463,8 +500,11 @@ class TestLibrary(AirMSLCase):
         self.assertIn('int fam = cMaterialFamily_default;', air)
         self.assertIn('bool rig = false;', air)
         self.assertIn('bool shadow = false;', air)
-        # #624: the composites read kLightHdr (post_air_finish); false here
-        self.assertIn('bool hdr = false;', air)
+        # #624: the composites read kLightHdr (post_air_finish); the
+        # builder's choice (Part 5: both variants)
+        self.assertIn('bool hdr = lightHdr;', air)
+        self.assertRegex(self.code, r'static id<MTLFunction> airFunction\(id<MTLLibrary> lib, '
+                                    r'NSString\* name,\s*bool lightHdr\)')
 
     def testDefinesOnlyAirFunctionsAndStructs(self):
         self.assertTrue(self.functions)
@@ -757,8 +797,10 @@ class TestPostChain(AirMSLCase):
         self.assertIn('id<MTLTexture> dst = (sceneSrc == _sceneColor) ? _postColor : '
                       '_sceneColor;', enc)
         self.assertIn('[ea setFragmentTexture:sceneSrc atIndex:kAirColorTextureIndex];', enc)
-        self.assertIn('[ea setRenderPipelineState:(half ? _airUpsamplePipeline : '
-                      '_airFullPipeline)];', enc)
+        # #624 (re-taken): this frame's kLightHdr variant
+        self.assertIn('const int h = _lightHdrOn ? 1 : 0;', enc)
+        self.assertIn('[ea setRenderPipelineState:(half ? _airUpsamplePipeline[h] : '
+                      '_airFullPipeline[h])];', enc)
         self.assertRegex(enc, r'return dst;\s*\}$')
 
     def testStandInMaps(self):
@@ -774,17 +816,22 @@ class TestPostChain(AirMSLCase):
 
     def testDestructorReleases(self):
         dtor = self.body('RendererMetal::~RendererMetal')
-        self.assertIn('[_airFullPipeline release];', dtor)
+        # #624 (re-taken): both kLightHdr variants of each composite
+        for name in ('_airFullPipeline', '_airUpsamplePipeline'):
+            for v in (0, 1):
+                self.assertIn('[%s[%d] release];' % (name, v), dtor)
         self.assertIn('[_airNoMaps release];', dtor)
-        for name in ('_airMarchPipeline', '_airUpsamplePipeline', '_airTerm'):
+        for name in ('_airMarchPipeline', '_airTerm'):
             self.assertIn('[%s release];' % name, dtor)
         # nothing else releases or rebuilds them (single-sample: a sample-count
         # change leaves them alone), but the attempt that cannot make the
         # stand-in maps
-        self.assertEqual(self.code.count('[_airFullPipeline release]'), 2)
+        self.assertEqual(len(re.findall(r'\[_airFullPipeline\[\w+\] release\]', self.code)),
+                         3)
         self.assertRegex(self.body('RendererMetal::ensureAirPipelines'),
-                         r'if \(_airFullPipeline && !ensureAirNoMaps\(\)\) \{\s*'
-                         r'\[_airFullPipeline release\];\s*_airFullPipeline = nil;')
+                         r'if \(\(_airFullPipeline\[0\] \|\| _airFullPipeline\[1\]\) && '
+                         r'!ensureAirNoMaps\(\)\) \{\s*for \(int v = 0; v < 2; \+\+v\) \{\s*'
+                         r'\[_airFullPipeline\[v\] release\];\s*_airFullPipeline\[v\] = nil;')
         self.assertEqual(self.code.count('[_airNoMaps release]'), 1)
         self.assertNotIn('_airFullPipeline', self.body('RendererMetal::rebuildDrawPipelines'))
 
@@ -840,7 +887,7 @@ class TestHalf(AirMSLCase):
         # half: the block asks for it (view.x 0.5) and everything exists; else
         # full, and the shaders are told so
         self.assertRegex(enc, r'const bool half = air\.view\[0\] < 0\.75f && '
-                              r'_airMarchPipeline && _airUpsamplePipeline &&\s*'
+                              r'_airMarchPipeline && _airUpsamplePipeline\[h\] &&\s*'
                               r'ensureAirTerm\(dst\.width, dst\.height\);\s*'
                               r'if \(!half\)\s*air\.view\[0\] = 1\.0f;')
         march = enc.index('[em setRenderPipelineState:_airMarchPipeline];')
@@ -859,14 +906,21 @@ class TestHalf(AirMSLCase):
 
     def testHalfFallsBackToFull(self):
         ensure = self.body('RendererMetal::ensureAirPipelines')
-        # the half pipelines are made only with the full one, and a failure
-        # of either drops both (half then draws at full); full alone is enough
-        self.assertRegex(ensure, r'if \(_airFullPipeline\) \{\s*_airMarchPipeline = ')
-        self.assertRegex(ensure, r'if \(!_airMarchPipeline \|\| !_airUpsamplePipeline\) \{'
-                                 r'[^}]*_airMarchPipeline = nil;\s*_airUpsamplePipeline = nil;')
-        self.assertRegex(ensure, r'return _airFullPipeline != nil;\s*\}$')
+        # the half pipelines are made only with a full one; without the march
+        # neither upsample is kept (half then draws at full), and a missing
+        # upsample variant draws its own frames at full (encodeAirPass asks
+        # for _airUpsamplePipeline[h]); full alone is enough. #624 (re-taken):
+        # the composites in both kLightHdr variants, the march single.
+        self.assertRegex(ensure, r'if \(_airFullPipeline\[0\] \|\| _airFullPipeline\[1\]\) '
+                                 r'\{\s*_airMarchPipeline = ')
+        self.assertRegex(ensure, r'if \(!_airMarchPipeline\) \{[^}]*'
+                                 r'for \(int v = 0; v < 2; \+\+v\) \{\s*'
+                                 r'\[_airUpsamplePipeline\[v\] release\];\s*'
+                                 r'_airUpsamplePipeline\[v\] = nil;\s*\}')
+        self.assertRegex(ensure, r'return _airFullPipeline\[h\] != nil;\s*\}$')
         self.assertRegex(self.header, r'id<MTLRenderPipelineState> _airMarchPipeline = nil;')
-        self.assertRegex(self.header, r'id<MTLRenderPipelineState> _airUpsamplePipeline = nil;')
+        self.assertRegex(self.header, r'id<MTLRenderPipelineState> _airUpsamplePipeline\[2\] '
+                                      r'= \{\};')
 
     def testCheckerboardDepth(self):
         sig, body = self.fn('post_air_march')
