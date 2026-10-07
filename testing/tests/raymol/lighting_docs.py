@@ -298,6 +298,16 @@ class TestStructure(DocCase):
                 checked += 1
         self.assertGreaterEqual(checked, 10)
 
+    def testBacklitHazeIsAnOpenLimit(self):
+        # #683 (backlit haze, no extinction) is open: HDR and exposure soften
+        # it but do not fix it, so Known limits lists it and the Backlit haze
+        # text says it is open rather than citing it as history.
+        self.assertIn('#683', flat(section(self.doc, 'Known limits')))
+        backlit = flat(subsection(self.doc, 'Backlit haze'))
+        self.assertIn('#683, open', backlit)
+        for word in ('fixed', 'resolved', 'closed'):
+            self.assertNotIn(word, backlit)
+
     def testMaterialsLinksHere(self):
         text = section(read(MATERIALS), 'Under studio lights')
         self.assertIn('](lighting.md)', text)

@@ -393,9 +393,10 @@ aimed near the camera) can wash the picture out: the air only adds light, and
 forward scattering is strongest looking into the beam. Lower the haze, move
 the light, or lower the exposure (`set metal_exposure, 0.6`): under HDR,
 exposure scales the air with the lit scene, and the molecule keeps its
-colour and contrast (#683). With the 8-bit knee (`metal_light_hdr 2`), the
-frame clips to white instead. The app's Atmosphere card shows a hint while
-this applies.
+colour and contrast. The haze itself is unchanged: it still has no
+extinction (#683, open; see [Known limits](#known-limits)). With the 8-bit
+knee (`metal_light_hdr 2`), the frame clips to white instead. The app's
+Atmosphere card shows a hint while this applies.
 
 ```pymol
 lights three_point
@@ -736,12 +737,15 @@ Open follow-ups of the lighting work (#610) that you may notice:
   ray-tracing structure (#662), and a rig created while the Move gizmo is
   shown frames it too (#669). The frame also counts enabled objects whose
   representations are all hidden (#690).
-- **The air.** No air in grid mode (#686). Transparent-background exports
-  drop the air over the empty background (#684). Animated dust redraws the
-  whole scene on every tick (#685). An offscreen still of a multi-state
-  object with no movie takes its dust time from the state (#688). The dust
-  jumps when `dust_speed` is blended across scenes (#687). The dust seed has
-  no control in the Atmosphere card (#740).
+- **The air.** The haze only adds light (it has no extinction), so haze
+  above about 0.3 with a light behind the molecule washes the picture out;
+  lower the exposure, the haze or the light (#683, see [Backlit
+  haze](#backlit-haze)). No air in grid mode (#686). Transparent-background
+  exports drop the air over the empty background (#684). Animated dust
+  redraws the whole scene on every tick (#685). An offscreen still of a
+  multi-state object with no movie takes its dust time from the state
+  (#688). The dust jumps when `dust_speed` is blended across scenes (#687).
+  The dust seed has no control in the Atmosphere card (#740).
 - **Materials and HDR.** The studio diffuse lights a material's plain base
   colour, not its procedural pattern (#710). Glass glints on sphere impostors
   do not show (#713). The materials' own classic terms pass their 8-bit knee
