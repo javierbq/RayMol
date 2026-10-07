@@ -33,6 +33,13 @@ TestSavedAfterCardEdits: air written through the card's path saves in .pse
 sessions and scenes as before (no new storage), and the bar's Revert
 (appkit_lights.restore) brings back the entry air.
 
+TestAtmosphereSource reads the Swift model (skipped outside a checkout): its
+parameters are the core's float air fields, it holds no range or default
+literal (they come from the helper at run time), its command fields and
+start look agree with the core's table, the engine builds the switch's two
+commands and reads both tables in one Python call, and the card registers no
+undo (light edits have none either).
+
 CI builds the GLUT flavour without a GPU, so this exercises _cmd and Python
 only. A small peptide (cmd.fab) gives the rig a real frame.
 
@@ -534,3 +541,178 @@ class TestSavedAfterCardEdits(AtmosphereCase):
         ok, _ = output(appkit_lights.restore, b64('null'))
         self.assertIs(ok, True)
         self.assertIsNone(lighting.get_lights())
+
+
+# --- the Swift model ------------------------------------------------------------
+
+ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir,
+                                     os.pardir, os.pardir))
+SHARED = os.path.join('swiftui', 'PyMOLViewer', 'Shared')
+MODEL = os.path.join(SHARED, 'LightsAtmosphere.swift')
+ENGINE = os.path.join(SHARED, 'PyMOLEngine.swift')
+# The card's new Swift files (the view joins in a later part of #726).
+CARD_SOURCES = [MODEL, os.path.join(SHARED, 'LightsAtmosphereCard.swift')]
+
+# A number beside a range operator: `0...1`, `0.05..<2`, `lo...-0.9`.
+RANGE_LITERAL = re.compile(r'(?<![\w.])-?\d+(?:\.\d+)?\s*\.\.[.<]'
+                           r'|\.\.[.<]\s*-?\d')
+# A number on a line that names a range or a default (a switch's `default:`
+# label is not a default value).
+NUMBER = re.compile(r'(?<![\w.])-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?(?![\w.])')
+RANGE_OR_DEFAULT = re.compile(
+    r'\b(?:range|defaultValue|min|max)\b|\bdefault\b(?!\s*:)')
+# An enum case declaration (not a `case .x:` of a switch).
+CASE_DECL = re.compile(r'^\s*case\s+([A-Za-z_]\w*)(?:\s*=\s*"([^"]*)")?\s*$',
+                       re.M)
+
+
+def strip_comments(text):
+    """Swift comments removed, so a comment can neither satisfy nor trip a
+    check (as lighting_mode.strip_comments)."""
+    text = re.sub(r'/\*.*?\*/', '', text, flags=re.S)
+    return re.sub(r'//[^\n]*', '', text)
+
+
+def type_body(text, signature):
+    """The body of the Swift type or function whose declaration starts with
+    `signature`, braces matched (None when it is not there)."""
+    start = text.find(signature)
+    if start < 0:
+        return None
+    open_at = text.find('{', start)
+    depth = 0
+    for i in range(open_at, len(text)):
+        if text[i] == '{':
+            depth += 1
+        elif text[i] == '}':
+            depth -= 1
+            if depth == 0:
+                return text[open_at + 1:i]
+    return None
+
+
+def literal_lines(body):
+    """Lines of `body` with a number beside a range operator, or a number
+    on a line that names a range or a default."""
+    found = []
+    for line in body.splitlines():
+        if RANGE_LITERAL.search(line) or (RANGE_OR_DEFAULT.search(line)
+                                          and NUMBER.search(line)):
+            found.append(line.strip())
+    return found
+
+
+class TestAtmosphereSource(testing.PyMOLTestCase):
+
+    def read(self, rel):
+        path = os.path.join(ROOT, rel)
+        if not os.path.isfile(path):
+            # Skipped, not passed: a source check that cannot find its source
+            # has checked nothing. Only reached outside a checkout.
+            self.skipTest('%s not present; not a repo checkout' % rel)
+        with open(path, encoding='utf-8') as handle:
+            return strip_comments(handle.read())
+
+    def body(self, rel, signature):
+        body = type_body(self.read(rel), signature)
+        self.assertIsNotNone(body, '%s not found in %s' % (signature, rel))
+        return body
+
+    def testParametersAreTheCoreFloatAirFields(self):
+        body = self.body(MODEL, 'enum AirParameter')
+        raw = [value or name for name, value in CASE_DECL.findall(body)]
+        floats = [row[0] for row in air_rows() if row[1] == 'float']
+        self.assertEqual(raw, floats)
+        self.assertEqual(sorted(raw), sorted(STEPS))
+
+    def testNoAirRangeOrDefaultLiterals(self):
+        """The ranges and defaults come from the core's table at run time
+        (appkit_lights.write_air_fields), never from a Swift copy."""
+        for signature in ('enum AirParameter', 'struct AirField'):
+            with self.subTest(signature):
+                self.assertEqual(literal_lines(self.body(MODEL, signature)), [])
+
+    def testTheLiteralCheckCatchesALiteral(self):
+        for text in ('var range: ClosedRange<Double> { 0...1 }',
+                     'return 0.05..<2', 'lo...-0.9',
+                     'let defaultValue = 0.35', 'static let max = 10.0',
+                     'let default = 1.0',
+                     'case .dustSize: return field.min + 0.05 // default'):
+            self.assertTrue(literal_lines(strip_comments(text)), text)
+        for text in ('var range: ClosedRange<Double> { min...max }',
+                     'case .dustSpeed: return 20', 'default: return 100',
+                     '(value * stepsPerUnit).rounded() / stepsPerUnit + 0',
+                     'usesSquareRootTrack ? unitTrack : field.range'):
+            self.assertEqual(literal_lines(text), [], text)
+
+    def testStepsAreTheSlidersGrid(self):
+        body = self.body(MODEL, 'var stepsPerUnit')
+        cases = dict(re.findall(r'case\s+\.(\w+):\s*return\s+(\d+)', body))
+        default = re.search(r'default:\s*return\s+(\d+)', body)
+        self.assertIsNotNone(default)
+        names = {'haze': 'haze', 'dust': 'dust', 'dustSize': 'dust_size',
+                 'dustSpeed': 'dust_speed', 'scatter': 'scatter'}
+        steps = {field: int(cases.get(case, default.group(1)))
+                 for case, field in names.items()}
+        self.assertEqual(steps, STEPS)
+
+    def testCommandFieldsAreTheCoreAirFields(self):
+        body = self.body(MODEL, 'struct AirValue')
+        match = re.search(r'static let commandFields\s*=\s*\[([^\]]*)\]', body)
+        self.assertIsNotNone(match)
+        self.assertEqual(re.findall(r'"(\w+)"', match.group(1)),
+                         [row[0] for row in air_rows()])
+        self.assertEqual([row[0] for row in air_rows()], AIR_FIELDS)
+
+    def testStartLookIsInsideTheTable(self):
+        body = self.body(MODEL, 'enum AtmosphereSwitch')
+        match = re.search(r'static let startLook[^=]*=\s*\[([^\]]*)\]', body)
+        self.assertIsNotNone(match)
+        look = {name: float(value) for name, value in re.findall(
+            r'AirValue\("(\w+)",\s*(-?[\d.]+)\)', match.group(1))}
+        self.assertEqual(look, START_LOOK)
+        table = air_table()
+        for name, value in look.items():
+            with self.subTest(name):
+                _kind, _default, lo, hi = table[name]
+                self.assertTrue(lo <= value <= hi, (name, value, lo, hi))
+
+    def testEngineBuildsTheSwitchCommands(self):
+        """The engine's strings for the two air actions: the same literals
+        TestCardCommands runs and LightsActionInvocationTests pins."""
+        body = self.body(ENGINE, 'var invocation: Invocation?')
+        self.assertRegex(body, r'case \.atmosphereOff:\s*return \.command\("atmosphere off"\)')
+        self.assertIn('.command("atmosphere "', body)
+        self.assertIn('allSatisfy(\\.isValid)', body)
+        body = self.body(ENGINE, 'var rejectionLine: String')
+        self.assertIn('" atmosphere: not a valid air value; nothing was run"', body)
+
+    def testEngineReadsBothTablesInOnePythonCall(self):
+        """Entering Lights mode stays at one Python call: the presets and the
+        air fields are read together, and each loader only calls the shared
+        reader while its own cache is empty."""
+        body = self.body(ENGINE, 'private func loadLightTables()')
+        self.assertEqual(len(re.findall(r'\brunPython\w*\(', body)), 1)
+        self.assertEqual(sorted(HELPER_CALL.findall(body)),
+                         ['write_air_fields', 'write_presets'])
+        for signature in ('func loadLightPresets()', 'func loadAirFields()'):
+            with self.subTest(signature):
+                loader = self.body(ENGINE, signature)
+                self.assertIsNone(re.search(r'\brunPython\w*\(', loader))
+                self.assertIn('loadLightTables()', loader)
+
+    def testNoUndo(self):
+        """Light edits register no undo (the bar's Revert is the way back);
+        the card registers none either."""
+        for rel in CARD_SOURCES:
+            if not os.path.isfile(os.path.join(ROOT, rel)):
+                continue
+            with self.subTest(rel):
+                text = self.read(rel)
+                self.assertNotIn('undoManager', text)
+                self.assertNotIn('registerUndo', text)
+
+
+# A call into the helper module as the engine writes it (lighting_mode.py's
+# pattern): `_al.<function>(`, usually right after a `\n` escape.
+HELPER_CALL = re.compile(r'(?:\\n|\b)_al\.(\w+)\(')
