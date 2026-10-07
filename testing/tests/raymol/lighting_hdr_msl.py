@@ -1,0 +1,560 @@
+"""HDR colour for the light rig (#624) in the Metal shaders and their
+specialisation, read from source.
+
+D1 (plans/624.md): HDR lives in the rig shaders. A rig fragment keeps its
+light in scene units, multiplies it by the exposure (the rig block's tone.x)
+and maps it once through the tone curve T before the 8-bit store; glass
+composes body and glints in scene units first (light_glass_cover); the air
+adds its light in scene units over T's inverse. One function constant,
+kLightHdr (kMaterialSrc index 3, kRTSrc index 2), chooses it per pipeline;
+false keeps every two-arm helper's 8-bit knee, the rig as it was before
+#624. CI has no GPU, so these checks pin from the source what L1, L1b (the
+regression renders against master) and L3 prove on a Mac:
+
+* TestConstants: kLightHdr is declared once in kMaterialSrc at index 3 and
+  once in kRTSrc at index 2, and nowhere else; the C++ indices agree; the
+  tone constants equal layer1/LightTone.h in both libraries; kRTSrc's copies
+  of the tone helpers and light_finish are kMaterialSrc's verbatim;
+* TestShaders: light_finish, light_glass_glints, light_glass_cover and the
+  tone helpers have exactly the planned bodies (the tone helpers mirror
+  LightTone.cpp operation for operation); light_apply, light_apply_shadowed,
+  the sphere glass helpers and rt_rig_hit hand light_finish the exposure;
+  the rig glass covers choose light_glass_cover only under
+  `kLightRig && kLightHdr`; post_air_finish has its two arms and both air
+  composites pass the exposure (the upsample takes the rig at buffer(1));
+  under kLightHdr no rig helper reaches the 8-bit knee (mat_soft_knee) or
+  mat_glass_cover;
+* TestMasterUnchanged: every shader literal is master 054b525e9's (sha256 of
+  the comment-stripped, whitespace-free text, taken from master with these
+  parsers) once #624's edits are put back (lighting_air_msl.py
+  without_hdr_624), and each edit applies exactly where this allowlist says;
+  the material laws (mat_soft_knee, mat_glass_cover, mat_glass_shade,
+  mat_env_specular, mat_jelly_shade) are master's;
+* TestSpecialisers: every specialiser of a function that can reach the light
+  helpers sets kLightHdr's index (materialFragmentFunction to
+  `lightRig && lightHdr`; bezierTubeRigFunction, airFunction, buildRTPipelines
+  and buildRTRigComposite false), no function fetched unspecialised reaches
+  kLightHdr, and (Part 3, dormant) nothing asks for it true yet;
+* TestBlock: pymol::LightRigBlock is 688 bytes with the tone last, and both
+  MSL LightRigU copies end with it.
+
+Pure source parsing (skipped, not passed, outside a repo checkout; in a
+checkout a missing source file fails).
+
+    pymol -ckqy testing/testing.py --run testing/tests/raymol/lighting_hdr_msl.py
+"""
+import importlib.util
+import os
+import re
+
+from pymol import testing
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.normpath(os.path.join(HERE, os.pardir, os.pardir, os.pardir))
+METAL_MM = os.path.join(ROOT, 'layerGraphics', 'metal', 'RendererMetal.mm')
+METAL_H = os.path.join(ROOT, 'layerGraphics', 'metal', 'RendererMetal.h')
+TONE_H = os.path.join(ROOT, 'layer1', 'LightTone.h')
+TONE_CPP = os.path.join(ROOT, 'layer1', 'LightTone.cpp')
+BLOCK_H = os.path.join(ROOT, 'layer1', 'LightRigBlock.h')
+
+
+def _load(name, filename):
+    """A sibling test module's helpers, loaded by path under a private name
+    so its test cases are not collected a second time."""
+    spec = importlib.util.spec_from_file_location(
+        name, os.path.join(HERE, filename))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_msl = _load('_lighting_hdr_msl_parsers', 'lighting_msl.py')
+_air = _load('_lighting_hdr_msl_air', 'lighting_air_msl.py')
+shader_literals = _msl.shader_literals
+strip_comments = _msl.strip_comments
+msl_functions = _msl.msl_functions
+fragments = _msl.fragments
+cpp_function = _msl.cpp_function
+remove_rig_statements = _msl.remove_rig_statements
+squash = _msl.squash
+depth_at = _msl.depth_at
+digest = _air.digest
+without_hdr_624 = _air.without_hdr_624
+
+TONE_HELPERS = _msl.TONE_HELPERS
+HDR_CONSTANT = re.compile(r'\bkLightHdr\b')
+
+# Master 054b525e9 (#615's merge, this branch's base): sha256 of each shader
+# literal, comments stripped and whitespace removed, the first 16 hex digits.
+# Taken from master with these parsers, never from this branch.
+MASTER_054B525 = {
+    'kAirSrc': 'bb28757fec4568af',
+    'kBezierTubeRigSrc': 'c15ddac6015e66dc',
+    'kBezierTubeSrc': '0085bdbf88964ab4',
+    'kConnectorShaderSrc': '40ef57a0e535d985',
+    'kCylinderImpostorSrc': '43f9c76b791ece1d',
+    'kEyeReconSrc': '34e775c149c8b075',
+    'kLabelShaderSrc': 'e9739e2374962609',
+    'kMaterialImpostorSrc': 'ad8142cda60dc979',
+    'kMaterialSrc': '4f4f1e7f4c703bad',
+    'kPostSrc': 'c13f90740b5420b8',
+    'kRTSrc': 'c3f2065ac121a166',
+    'kSphereImpostorSrc': 'd4db196a0bab087c',
+    'kVBOSrc': '834ce9f8e90f5832',
+}
+# The same digests (signature, body) of the material laws #624 leaves alone,
+# on master 054b525e9.
+MASTER_LAWS = {
+    'mat_soft_knee': ('74cb65ae1e37a5c5', '532407fdae17cad5'),
+    'mat_glass_cover': ('0b2202961d7fabe3', 'f267a4ccd591fb9e'),
+    'mat_glass_shade': ('3a63f86596630e16', '665872d4636070ea'),
+    'mat_env_specular': ('90db4c60a2451436', '7e5f92848d45ef5f'),
+    'mat_jelly_shade': ('9046ca7a8083ec47', '1a8176fe37f54771'),
+}
+# The allowlist: how many times each of #624's edits (lighting_air_msl.py
+# HDR_EDITS_624; the new functions and declarations) applies in each literal.
+# A literal not named here has none.
+EDIT_COUNTS = {
+    'kMaterialSrc': {'functions': 5, 'declarations': 3, 'finish_signature': 1,
+                     'finish_body': 1, 'apply_exposure': 2, 'glints_body': 1},
+    'kRTSrc': {'functions': 4, 'declarations': 3, 'finish_signature': 1,
+               'finish_body': 1, 'hit_exposure': 1},
+    'kVBOSrc': {'vbo_cover': 1},
+    'kCylinderImpostorSrc': {'cyl_cover': 1},
+    'kSphereImpostorSrc': {'sphere_glass': 2},
+    'kAirSrc': {'air_signature': 1, 'air_body': 1, 'air_full': 1,
+                'air_upsample': 1, 'air_upsample_rig': 1},
+}
+UNTOUCHED = ('kPostSrc', 'kEyeReconSrc', 'kBezierTubeSrc', 'kBezierTubeRigSrc',
+             'kLabelShaderSrc', 'kConnectorShaderSrc', 'kMaterialImpostorSrc')
+
+# The planned bodies (whitespace removed).
+LIGHT_FINISH = ('__attribute__((unused))staticfloat3light_finish(float3c,floatexposure)',
+                '{if(kLightHdr)returnlight_tone(c*exposure);returnmat_soft_knee(c);}')
+GLINTS_BODY = '{if(kLightHdr)return2.0*s;returnfloat3(1.0)-exp(-2.0*s);}'
+GLASS_COVER = (
+    '__attribute__((unused))staticfloat4light_glass_cover(float3body,float3hi,'
+    'floata,floate)',
+    '{constfloath=light_tone_scalar(e*max(hi.r,max(hi.g,hi.b)));'
+    'constfloatcover=saturate(a+(1.0-a)*h);'
+    'constfloat3S=(body*a+hi)/max(cover,1e-4);'
+    'returnfloat4(light_tone(e*S),cover);}')
+TONE_BODY = ('{if(!all(isfinite(c)))returnfloat3(0.0);c=max(c,float3(0.0));'
+             'constfloatm=max(c.r,max(c.g,c.b));if(m<=kLightToneKnee)returnc;'
+             'returnc*light_tone_scalar(m)/m;}')
+TONE_INVERSE_BODY = ('{if(!all(isfinite(c)))returnfloat3(0.0);'
+                     'c=clamp(c,float3(0.0),float3(1.0));'
+                     'constfloatm=max(c.r,max(c.g,c.b));if(m<=kLightToneKnee)returnc;'
+                     'returnc*light_tone_scalar_inverse(m)/m;}')
+AIR_FINISH = (
+    'staticfloat3post_air_finish(float3c,float3a,floate)',
+    '{if(kLightHdr){constfloat3add=all(isfinite(a))?max(a,float3(0.0))*e:float3(0.0);'
+    'returnlight_tone(light_tone_inverse(saturate(c))+add);}'
+    'returnc+max(mat_soft_knee(c+a)-mat_soft_knee(c),float3(0.0));}')
+
+# The specialisers that set kMaterialSrc's constants, and the RT builders.
+MATERIAL_SPECIALISERS = ('RendererMetal::materialFragmentFunction',
+                         'bezierTubeRigFunction', 'airFunction')
+RT_SPECIALISERS = ('RendererMetal::buildRTPipelines',
+                   'RendererMetal::buildRTRigComposite')
+# The libraries built with kMaterialSrc (and kMaterialImpostorSrc for the
+# impostors): their functions can reach the light helpers.
+MATERIAL_LIBRARIES = ('kVBOSrc', 'kSphereImpostorSrc', 'kCylinderImpostorSrc',
+                      'kBezierTubeSrc', 'kBezierTubeRigSrc', 'kAirSrc')
+
+
+def read(path):
+    with open(path, encoding='utf-8') as handle:
+        return handle.read()
+
+
+def cpp_float(text, name):
+    """`inline constexpr float <name> = <x>f;` in a header, as a float."""
+    m = re.search(r'inline\s+constexpr\s+float\s+%s\s*=\s*([0-9.]+)f\s*;' % name,
+                  strip_comments(text))
+    return float(m.group(1)) if m else None
+
+
+def msl_float(code, name):
+    m = re.search(r'constant\s+float\s+%s\s*=\s*([0-9.]+)\s*;' % name, code)
+    return float(m.group(1)) if m else None
+
+
+def cpp_like_msl(text):
+    """C++ statements written as the MSL copies write them: no std::, no f
+    suffix on float literals, no whitespace."""
+    text = re.sub(r'\bstd::', '', text)
+    text = re.sub(r'(\d+\.\d+)f\b', r'\1', text)
+    return squash(text)
+
+
+def reaches(table, start, pattern):
+    """The functions of `table` reachable from `start` (itself included)
+    whose body matches `pattern`."""
+    seen, todo, found = set(), [start], set()
+    while todo:
+        name = todo.pop()
+        if name in seen or name not in table:
+            continue
+        seen.add(name)
+        body = table[name][1]
+        if pattern.search(body):
+            found.add(name)
+        todo += re.findall(r'\b(\w+)\s*\(', body)
+    return found
+
+
+def hdr_view(body):
+    """A function body (comments stripped) as kLightHdr true compiles it:
+    `if (kLightHdr) return X;` or `if (kLightHdr) { ... }` at the top keeps
+    only that arm, and `if (kLightRig && kLightHdr) A else B` keeps A.
+    Whitespace is kept, so word boundaries still separate the calls."""
+    body = re.sub(r'^\{\s*if\s*\(\s*kLightHdr\s*\)\s*(return[^;]*;).*\}$', r'{\1}',
+                  body, flags=re.S)
+    body = re.sub(r'^\{\s*if\s*\(\s*kLightHdr\s*\)\s*(\{[^{}]*\}).*\}$', r'{\1}',
+                  body, flags=re.S)
+    body = re.sub(r'if\s*\(\s*kLightRig\s*&&\s*kLightHdr\s*\)\s*(\w+\s*=[^;]*;)'
+                  r'\s*else\s*\w+\s*=[^;]*;', r'\1', body)
+    return body
+
+
+class HdrMSLCase(testing.PyMOLTestCase):
+
+    def setUp(self):
+        # As lighting_msl.py: skipped outside a checkout (decided by
+        # RendererMetal.mm alone), and before the base setUp.
+        if not os.path.isfile(METAL_MM):
+            self.skipTest('%s not present; not a repo checkout' % METAL_MM)
+        for path in (METAL_H, TONE_H, TONE_CPP, BLOCK_H):
+            if not os.path.isfile(path):
+                self.fail('%s is missing from the checkout' % path)
+        super().setUp()
+        self.mm = read(METAL_MM)
+        self.code = strip_comments(self.mm)
+        self.header = strip_comments(read(METAL_H))
+        self.msl = shader_literals(self.mm)
+        self.material = msl_functions(self.msl['kMaterialSrc'])
+        self.rt = msl_functions(self.msl['kRTSrc'])
+        self.air = msl_functions(self.msl['kAirSrc'])
+
+    def fn(self, table, name):
+        self.assertIn(name, table, name)
+        sig, body = table[name]
+        return squash(sig), squash(body)
+
+
+class TestConstants(HdrMSLCase):
+
+    def testDeclaredOnceAtItsIndex(self):
+        material = strip_comments(self.msl['kMaterialSrc'])
+        rt = strip_comments(self.msl['kRTSrc'])
+        self.assertEqual(re.findall(r'constant\s+bool\s+kLightHdr\s*\[\[\s*'
+                                    r'function_constant\((\d+)\)\s*\]\]\s*;', material),
+                         ['3'])
+        self.assertEqual(re.findall(r'constant\s+bool\s+kLightHdr\s*\[\[\s*'
+                                    r'function_constant\((\d+)\)\s*\]\]\s*;', rt),
+                         ['2'])
+        # each index is kLightHdr's alone in its library
+        for code, index in ((material, '3'), (rt, '2')):
+            owners = re.findall(r'(\w+)\s*\[\[\s*function_constant\(%s\)' % index, code)
+            self.assertEqual(owners, ['kLightHdr'])
+        # declared after the rig's structs (the light block) and before its
+        # first reader, light_finish
+        self.assertLess(material.index('struct LightRigU {'),
+                        material.index('kLightHdr [[function_constant(3)]]'))
+        self.assertLess(material.index('kLightHdr [[function_constant(3)]]'),
+                        material.index(self.material['light_finish'][0].strip()))
+        # nowhere else: every other literal reads kMaterialSrc's (or none)
+        for name, literal in self.msl.items():
+            if name in ('kMaterialSrc', 'kRTSrc'):
+                continue
+            self.assertNotRegex(strip_comments(literal), r'\bkLightHdr\s*\[\[', name)
+        # the C++ indices
+        self.assertRegex(self.code, r'constexpr NSUInteger kLightHdrConstantIndex = 3;')
+        self.assertRegex(self.code, r'constexpr NSUInteger kRTLightHdrConstantIndex = 2;')
+        self.assertEqual(len(re.findall(r'\bkLightHdrConstantIndex\s*=', self.code)), 1)
+        self.assertEqual(len(re.findall(r'\bkRTLightHdrConstantIndex\s*=', self.code)), 1)
+
+    def testToneConstantsAreLightTones(self):
+        tone_h = read(TONE_H)
+        knee = cpp_float(tone_h, 'kLightToneKnee')
+        white = cpp_float(tone_h, 'kLightToneWhite')
+        self.assertIsNotNone(knee)
+        self.assertIsNotNone(white)
+        for lib in ('kMaterialSrc', 'kRTSrc'):
+            code = strip_comments(self.msl[lib])
+            self.assertEqual(msl_float(code, 'kLightToneKnee'), knee, lib)
+            self.assertEqual(msl_float(code, 'kLightToneWhite'), white, lib)
+            self.assertEqual(len(re.findall(r'constant\s+float\s+kLightTone\w+', code)), 2)
+        # within the tuning range D2 allows
+        self.assertTrue(0.5 <= knee <= 0.8, knee)
+        self.assertTrue(6.0 <= white <= 16.0, white)
+
+    def testRTCopiesAreVerbatim(self):
+        attribute = re.compile(r'__attribute__\(\(unused\)\)')
+        for name in TONE_HELPERS + ('light_finish',):
+            sig, body = self.fn(self.rt, name)
+            msig, mbody = self.fn(self.material, name)
+            self.assertEqual(attribute.sub('', sig), attribute.sub('', msig), name)
+            self.assertEqual(body, mbody, name)
+        # no glass helper in the ray tracer (it shades no glass with the rig)
+        self.assertNotIn('light_glass_cover', self.rt)
+        self.assertNotIn('light_glass_glints', self.rt)
+
+
+class TestShaders(HdrMSLCase):
+
+    def testLightFinish(self):
+        self.assertEqual(self.fn(self.material, 'light_finish'), LIGHT_FINISH)
+        self.assertEqual(self.fn(self.rt, 'light_finish')[1], LIGHT_FINISH[1])
+
+    def testToneHelpersMirrorLightTone(self):
+        """Operation for operation LightTone.cpp's, in float: the same
+        statements after the NaN rule, and the rescale multiplies first."""
+        cpp = read(TONE_CPP)
+        for msl_name, cpp_name, first in (
+                ('light_tone_scalar', 'LightToneScalar', 'if(m<=kLightToneKnee)'),
+                ('light_tone_scalar_inverse', 'LightToneScalarInverse',
+                 'if(y<=kLightToneKnee)')):
+            _, body = self.fn(self.material, msl_name)
+            want = cpp_like_msl(cpp_function(cpp, cpp_name))
+            self.assertIn(first, want)
+            self.assertEqual(body[body.index(first):], want[want.index(first):],
+                             msl_name)
+            # the NaN rule: non-finite and negative read as 0
+            var = first[3]
+            self.assertTrue(body.startswith('{%s=(isfinite(%s)&&%s>0.0)?%s:0.0;'
+                                            % ((var,) * 4)), msl_name)
+        self.assertEqual(self.fn(self.material, 'light_tone')[1], TONE_BODY)
+        self.assertEqual(self.fn(self.material, 'light_tone_inverse')[1],
+                         TONE_INVERSE_BODY)
+        # LightToneRescale: c * y / m, channel by channel, as the MSL's
+        # c * T1(m) / m
+        rescale = squash(cpp_function(cpp, 'LightToneRescale'))
+        self.assertIn('c[0]*y/m,c[1]*y/m,c[2]*y/m', rescale)
+        for name in TONE_HELPERS:
+            sig, _ = self.material[name]
+            self.assertRegex(sig, r'^\s*__attribute__\(\(unused\)\)\s+static\s', name)
+            # no pow (exact at the knee; no NaN from a negative base)
+            self.assertNotIn('pow(', self.material[name][1], name)
+
+    def testExposureReachesLightFinish(self):
+        for name in ('light_apply', 'light_apply_shadowed'):
+            _, body = self.fn(self.material, name)
+            self.assertIn('light_outline(light_finish(rgb+base*t.diffuse+t.specular,'
+                          'rig.tone.x),pEye,rig);', body, name)
+        _, hit = self.fn(self.rt, 'rt_rig_hit')
+        self.assertIn('returnlight_finish(shaded+base*t.diffuse+t.specular,'
+                      'rig.tone.x);', hit)
+        sphere = msl_functions(self.msl['kSphereImpostorSrc'])
+        for name in ('sphere_glass_rig', 'sphere_glass_rig_shadowed'):
+            _, body = self.fn(sphere, name)
+            self.assertTrue(body.endswith(
+                'returnlight_outline(light_finish(body+hi,rig.tone.x),pt,rig);}'), name)
+            self.assertNotIn('mat_soft_knee', body, name)
+        # every light_finish call in every library passes the exposure
+        for lib, literal in self.msl.items():
+            code = squash(strip_comments(literal))
+            for m in re.finditer(r'light_finish\(', code):
+                if code[:m.start()].endswith('float3'):
+                    continue   # the definition
+                close = _msl.match_paren(code, m.end() - 1)
+                self.assertTrue(code[:close].endswith(',rig.tone.x'),
+                                '%s: %s' % (lib, code[m.start():close + 1]))
+
+    def testGlass(self):
+        self.assertEqual(self.fn(self.material, 'light_glass_glints')[1], GLINTS_BODY)
+        self.assertEqual(self.fn(self.material, 'light_glass_cover'), GLASS_COVER)
+        # the rig glass covers: light_glass_cover only under kLightRig &&
+        # kLightHdr, at the frame's exposure; mat_glass_cover otherwise; the
+        # outline after either
+        vbo = squash(fragments(self.msl['kVBOSrc'])['vbo_fragment_oit'][1])
+        self.assertIn('if(kLightRig&&kLightHdr)c=light_glass_cover(body,hi,in.color.a,'
+                      'rig.tone.x);elsec=mat_glass_cover(body,hi,in.color.a);'
+                      'if(kLightRig)c.rgb=light_outline(c.rgb,in.posEye,rig);', vbo)
+        cyl = squash(fragments(self.msl['kCylinderImpostorSrc'])
+                     ['cyl_impostor_fragment_oit'][1])
+        self.assertIn('float4g;if(kLightRig&&kLightHdr)g=light_glass_cover(body,hi,a,'
+                      'rig.tone.x);elseg=mat_glass_cover(body,hi,a);rgb=g.rgb;'
+                      'if(kLightRig)rgb=light_outline(rgb,pt,rig);', cyl)
+        for lib in self.msl:
+            code = squash(strip_comments(self.msl[lib]))
+            calls = len(re.findall(r'(?<!static)(?<!float4)light_glass_cover\(', code))
+            self.assertEqual(calls, {'kVBOSrc': 1, 'kCylinderImpostorSrc': 1}.get(lib, 0),
+                             lib)
+        # the classic glints' own curve (mat_glass_shade) is a material law
+        _, shade = self.fn(self.material, 'mat_glass_shade')
+        self.assertIn('1.0-exp(-2.0*glint)', shade)
+
+    def testAir(self):
+        self.assertEqual(self.fn(self.air, 'post_air_finish'), AIR_FINISH)
+        sig, full = self.fn(self.air, 'post_air_full')
+        self.assertIn('returnfloat4(post_air_finish(c.rgb,t.rgb,rig.tone.x),c.a);', full)
+        sig, upsample = self.fn(self.air, 'post_air_upsample')
+        self.assertIn('constantLightAirU&air[[buffer(0)]],'
+                      'constantLightRigU&rig[[buffer(1)]])', sig)
+        self.assertIn('returnfloat4(post_air_finish(c.rgb,a,rig.tone.x),c.a);', upsample)
+        # the rig block's index in the air library, bound to every air pass
+        self.assertRegex(self.code, r'constexpr NSUInteger kAirRigBufferIndex = 1;')
+        encode = cpp_function(self.mm, 'RendererMetal::encodeAirPass')
+        self.assertIn('[e setFragmentBytes:&rig length:sizeof(rig) '
+                      'atIndex:kAirRigBufferIndex];', encode)
+        self.assertEqual(encode.count('bindAir(e'), 2)
+        # the march adds nothing and reads no constant: it stays plain
+        self.assertFalse(reaches(dict(self.material, **self.air), 'post_air_march',
+                                 HDR_CONSTANT))
+
+    def testNoKneeUnderHdr(self):
+        """kLightHdr true: no rig helper, air composite or traced hit reaches
+        the 8-bit knee or mat_glass_cover; they remain only in the false
+        arms (whose text TestMasterUnchanged proves is master's)."""
+        tables = (
+            (self.material, [n for n in self.material if n.startswith('light_')]),
+            (dict(self.material, **self.air), ['post_air_full', 'post_air_upsample',
+                                               'post_air_finish']),
+            (self.rt, ['rt_rig_hit']),
+            (dict(self.material, **msl_functions(self.msl['kSphereImpostorSrc'])),
+             ['sphere_glass_rig', 'sphere_glass_rig_shadowed']),
+        )
+        knee = re.compile(r'\bmat_soft_knee\(|\bmat_glass_cover\(')
+        for table, roots in tables:
+            for root in roots:
+                seen, todo = set(), [root]
+                while todo:
+                    name = todo.pop()
+                    if name in seen:
+                        continue
+                    seen.add(name)
+                    body = hdr_view(table[name][1])
+                    self.assertNotRegex(body, knee, '%s (from %s)' % (name, root))
+                    todo += [c for c in re.findall(r'\b((?:light|post_air|rt)_\w+)\s*\(',
+                                                   body)
+                             if c in table]
+                # the walk follows the HDR arms down to T
+                if root in ('light_apply', 'light_apply_shadowed', 'post_air_full',
+                            'post_air_upsample', 'rt_rig_hit', 'sphere_glass_rig',
+                            'sphere_glass_rig_shadowed'):
+                    self.assertIn('light_tone', seen, root)
+        # ...and the false arms do reach them
+        self.assertIn('mat_soft_knee', reaches(self.material, 'light_finish',
+                                               re.compile(r'\bknee\b')))
+        for lib, frag in (('kVBOSrc', 'vbo_fragment_oit'),
+                          ('kCylinderImpostorSrc', 'cyl_impostor_fragment_oit')):
+            body = fragments(self.msl[lib])[frag][1]
+            self.assertIn('light_glass_cover(', hdr_view(body))
+            self.assertNotIn('mat_glass_cover(', hdr_view(body))
+            self.assertIn('mat_glass_cover(', squash(remove_rig_statements(
+                fragments(self.msl[lib])[frag][1])))
+
+
+class TestMasterUnchanged(HdrMSLCase):
+
+    def testEveryLiteralIsMastersWithoutHdr(self):
+        self.assertEqual(set(self.msl), set(MASTER_054B525))
+        for name, want in sorted(MASTER_054B525.items()):
+            code = strip_comments(self.msl[name])
+            if name in _air.TONE_FIELD_LITERALS:
+                # Part 2's tone field (lighting_air_msl.py TONE_FIELD_624)
+                self.assertEqual(len(_air.TONE_FIELD_624.findall(code)), 1, name)
+                code = _air.TONE_FIELD_624.sub('', code, count=1)
+            text, counts = without_hdr_624(code)
+            self.assertEqual({k: v for k, v in counts.items() if v},
+                             EDIT_COUNTS.get(name, {}), name)
+            self.assertEqual(digest(text), want, name)
+        for name in UNTOUCHED:
+            self.assertNotIn(name, EDIT_COUNTS)
+
+    def testMaterialLawsAreMasters(self):
+        for name, want in MASTER_LAWS.items():
+            sig, body = self.material[name]
+            self.assertEqual((digest(sig), digest(body)), want, name)
+
+
+class TestSpecialisers(HdrMSLCase):
+
+    def setting(self, body, index):
+        """The variable set at `index` and its value statement."""
+        m = re.search(r'bool (\w+) = ([^;]*);\s*\[(?:cv|fc) setConstantValue:&\1 '
+                      r'type:MTLDataTypeBool atIndex:%s\];' % index, body)
+        self.assertIsNotNone(m, index)
+        self.assertEqual(depth_at(body, m.start()), 1)
+        self.assertLess(m.start(), body.index('constantValues:'))
+        return m.group(2)
+
+    def testEverySpecialiserSetsIt(self):
+        body = cpp_function(self.mm, 'RendererMetal::materialFragmentFunction')
+        self.assertEqual(self.setting(body, 'kLightHdrConstantIndex'),
+                         'lightRig && lightHdr')
+        self.assertRegex(self.header, r'bool lightShadow = false,\s*bool lightHdr = false\);')
+        self.assertRegex(self.code, r'RendererMetal::materialFragmentFunction\(\s*'
+                                    r'id<MTLLibrary> lib, NSString\* name, int family, '
+                                    r'bool lightRig,\s*bool lightShadow, bool lightHdr\)')
+        for name in ('bezierTubeRigFunction', 'airFunction'):
+            fn = cpp_function(self.mm, name)
+            # Part 3: the knee everywhere (Parts 4-5 choose per variant)
+            self.assertEqual(self.setting(fn, 'kLightHdrConstantIndex'), 'false', name)
+            self.assertEqual(self.setting(fn, 'kLightShadowConstantIndex'), 'false', name)
+        for name in RT_SPECIALISERS:
+            fn = cpp_function(self.mm, name)
+            self.assertEqual(self.setting(fn, 'kRTLightHdrConstantIndex'), 'false', name)
+        # no other specialisation of these libraries: each site sets both
+        # constants, and every one is in a function named above
+        self.assertEqual(self.code.count('atIndex:kLightHdrConstantIndex]'),
+                         self.code.count('atIndex:kLightShadowConstantIndex]'))
+        self.assertEqual(self.code.count('atIndex:kLightHdrConstantIndex]'),
+                         len(MATERIAL_SPECIALISERS))
+        self.assertEqual(self.code.count('atIndex:kRTLightHdrConstantIndex]'),
+                         self.code.count('atIndex:kRTLightRigConstantIndex]'))
+        self.assertEqual(self.code.count('atIndex:kRTLightHdrConstantIndex]'),
+                         len(RT_SPECIALISERS))
+
+    def testDormant(self):
+        """Part 3: every kLightHdr is false. No caller hands
+        materialFragmentFunction a sixth argument, so the default false
+        holds for every pipeline, and every rig render is master's (L1b)."""
+        for m in re.finditer(r'(?<![\w:])materialFragmentFunction\(([^;]*)\);',
+                             re.sub(r'/\*.*?\*/', '', self.code, flags=re.S)):
+            self.assertLessEqual(len(m.group(1).split(',')), 5, m.group(0))
+
+    def testNothingUnspecialisedReachesIt(self):
+        """A function fetched with plain newFunctionWithName: never reads
+        kLightHdr (it would fail to compile at run time). The tube and air
+        functions fetched by a name variable go through their specialisers,
+        which fall back to the specialised form when Metal lists a
+        constant."""
+        plain = set(re.findall(r'newFunctionWithName:@"(\w+)"\]', self.code))
+        self.assertTrue(plain)
+        shared = dict(self.material, **msl_functions(self.msl['kMaterialImpostorSrc']))
+        for lib in MATERIAL_LIBRARIES:
+            own = msl_functions(self.msl[lib])
+            table = dict(shared, **own)
+            for name in plain & set(own):
+                self.assertFalse(reaches(table, name, HDR_CONSTANT), '%s.%s' % (lib, name))
+        for name in plain & set(self.rt):
+            self.assertFalse(reaches(self.rt, name, HDR_CONSTANT), 'kRTSrc.%s' % name)
+        # the tube and air composites do reach it, hence the specialisers
+        tube = dict(self.material, **msl_functions(self.msl['kBezierTubeRigSrc']))
+        self.assertEqual(reaches(tube, 'bezier_tube_fragment_rig', HDR_CONSTANT),
+                         {'light_finish'})
+        self.assertFalse(reaches(tube, 'bezier_tube_vertex_rig', HDR_CONSTANT))
+        air = dict(self.material, **self.air)
+        for name in ('post_air_full', 'post_air_upsample'):
+            self.assertEqual(reaches(air, name, HDR_CONSTANT), {'post_air_finish'}, name)
+        self.assertFalse(reaches(air, 'post_air_vertex', HDR_CONSTANT))
+        for name in ('bezierTubeRigFunction', 'airFunction'):
+            fn = cpp_function(self.mm, name)
+            self.assertRegex(fn, r'fn\.functionConstantsDictionary\.count\s*==\s*0')
+
+
+class TestBlock(HdrMSLCase):
+
+    def testToneIsLast(self):
+        block = strip_comments(read(BLOCK_H))
+        self.assertRegex(block, r'static_assert\(sizeof\(LightRigBlock\) == 688,')
+        self.assertRegex(block, r'static_assert\(offsetof\(LightRigBlock, tone\) == 672,')
+        struct = re.search(r'struct\s+LightRigBlock\s*\{(.*?)\};', block, re.S).group(1)
+        self.assertTrue(squash(struct).endswith('floatshadowTile[4];floattone[4];'))
+        for lib in ('kMaterialSrc', 'kRTSrc'):
+            code = strip_comments(self.msl[lib])
+            mirror = re.search(r'struct\s+LightRigU\s*\{(.*?)\};', code, re.S).group(1)
+            self.assertTrue(squash(mirror).endswith('float4shadowTile;float4tone;'), lib)

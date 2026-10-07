@@ -89,6 +89,7 @@ jobs:
               testing/tests/raymol/lighting_harness.py \
               testing/tests/raymol/lighting_hdr.py \
               testing/tests/raymol/lighting_hdr_check.py \
+              testing/tests/raymol/lighting_hdr_msl.py \
               testing/tests/raymol/lighting_inspector.py \
               testing/tests/raymol/lighting_material_check.py \
               testing/tests/raymol/lighting_material_msl.py \
