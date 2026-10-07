@@ -3289,8 +3289,8 @@ __attribute__((unused)) static float3 mat_soft_knee(float3 c) {
   return min(c, float3(knee)) + over / (float3(1.0) + over) * (1.0 - knee);
 }
 
-constant float kLightToneKnee = 0.6;
-constant float kLightToneWhite = 8.0;
+constant float kLightToneKnee = 0.55;
+constant float kLightToneWhite = 10.0;
 
 __attribute__((unused)) static float light_tone_scalar(float m) {
   m = (isfinite(m) && m > 0.0) ? m : 0.0;
@@ -8189,8 +8189,8 @@ constant bool kLightHdr [[function_constant(3)]];
 // T's knee k and white point W (pymol::kLightToneKnee, kLightToneWhite in
 // layer1/LightTone.h, which mirrors these functions operation for operation;
 // lighting_hdr_msl.py pins them equal).
-constant float kLightToneKnee = 0.6;
-constant float kLightToneWhite = 8.0;
+constant float kLightToneKnee = 0.55;
+constant float kLightToneWhite = 10.0;
 
 // T1(m): the identity up to the knee, then an extended-Reinhard shoulder, C1
 // at the knee (slope 1), exactly 1 at the white point and 1 beyond. With

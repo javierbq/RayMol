@@ -41,9 +41,9 @@ except ImportError:
     HAVE_NUMPY = False
 
 # LightTone.h, written out (plans/624.md D2, D4, D10): every expected value is
-# derived from these. Part 6 of #624 tunes (KNEE, WHITE) once; TestSource pins
+# derived from these. Part 6 of #624 tuned (KNEE, WHITE) once; TestSource pins
 # them equal to the header.
-KNEE, WHITE, MAX_EXPOSURE = 0.6, 8.0, 16.0
+KNEE, WHITE, MAX_EXPOSURE = 0.55, 10.0, 16.0
 SETTING = (887, 'metal_light_hdr', 0)
 BLOCK_FLOATS = 172
 TONE_AT = 168            # the tone: the block's last float4 (after #616's 168)
@@ -218,8 +218,8 @@ class TestCurve(testing.PyMOLTestCase):
         self.assertEqual(scalar(xs), xs)
         self.assertEqual(scalar(xs, inverse=True), xs)
         # a colour whose largest channel is at or below the knee: exactly
-        for rgb in ([0.6, 0.3, 0.1], [0.1, 0.2, 0.3], [0.0, 0.0, 0.0],
-                    [f32(KNEE)] * 3, [0.5999, 0.0, 0.5999]):
+        for rgb in ([KNEE, 0.3, 0.1], [0.1, 0.2, 0.3], [0.0, 0.0, 0.0],
+                    [f32(KNEE)] * 3, [KNEE - 1e-4, 0.0, KNEE - 1e-4]):
             want = [f32(c) for c in rgb]
             self.assertEqual(tone1(rgb), want, rgb)
             self.assertEqual(tone1(rgb, inverse=True), want, rgb)
@@ -228,7 +228,8 @@ class TestCurve(testing.PyMOLTestCase):
         self.assertEqual(scalar([WHITE, WHITE + 1.0, 1e6, 3.0e38]), [1.0] * 4)
         self.assertEqual(scalar([1.0, 1.5], inverse=True), [WHITE, WHITE])
         # a colour at or beyond W: its largest channel exactly 1, the hue kept
-        for rgb in ([8.0, 4.0, 2.0], [1.0, 20.0, 5.0], [100.0, 100.0, 100.0]):
+        for rgb in ([WHITE, WHITE / 2.0, WHITE / 4.0], [1.0, 20.0, 5.0],
+                    [100.0, 100.0, 100.0]):
             got = tone1(rgb)
             self.assertEqual(max(got), 1.0, rgb)
             m = max(rgb)
@@ -244,9 +245,12 @@ class TestCurve(testing.PyMOLTestCase):
             want = model_inverse(f32(y))
             self.assertAlmostEqual(got, want, delta=8 * ULP1 * max(1.0, want), msg=y)
 
-    def testInitialCalibration(self):
-        # plans/624.md 2.5: T(1.0) = 0.80 at k 0.6, W 8
-        self.assertAlmostEqual(scalar([1.0])[0], 0.80, delta=0.005)
+    def testCalibration(self):
+        # D2's curve as #624 part 6 tuned it once and froze it (k 0.55, W 10):
+        # T(1.0) = 0.776, within D2's constraint T(1) >= 0.75
+        self.assertEqual((KNEE, WHITE), (0.55, 10.0))
+        self.assertAlmostEqual(scalar([1.0])[0], 0.7755, delta=0.0005)
+        self.assertGreaterEqual(scalar([1.0])[0], 0.75)
 
     def testNonDecreasing(self):
         xs = frange(0.0, 10.0, 10001)

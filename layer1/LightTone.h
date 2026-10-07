@@ -27,7 +27,9 @@
  *
  *   t = 2 u / ((1 - u) + sqrt((1 - u)^2 + 4 u / w^2)),  Tinv(y) = k + s t
  *
- * and Tinv(1) = W. NaN rule: a value (or a colour with any channel) that is
+ * and Tinv(1) = W. k 0.55 and W 10 (T(1) = 0.776) were tuned once on #624's
+ * first full L2 round (scripts/lighting/check_hdr.py, TONE_KNEE) and frozen.
+ * NaN rule: a value (or a colour with any channel) that is
  * not finite reads as 0, and negatives read as 0, so T's output is always in
  * 0..1.
  *
@@ -48,9 +50,9 @@ namespace pymol
 {
 
 /// T's knee k: the identity up to here.
-inline constexpr float kLightToneKnee = 0.6f;
+inline constexpr float kLightToneKnee = 0.55f;
 /// T's white point W: scene light this bright (largest channel) maps to 1.
-inline constexpr float kLightToneWhite = 8.0f;
+inline constexpr float kLightToneWhite = 10.0f;
 /// LightToneExposure clamps metal_exposure to 0..this.
 inline constexpr float kLightToneMaxExposure = 16.0f;
 

@@ -169,11 +169,22 @@ Usage = cs.Usage
 dilate = ca.dilate
 
 # --- the twin (D2) ---------------------------------------------------------------
-# The initial curve (plans/624.md D2): k 0.6, W 8, T(1.0) = 0.80. Part 6 tunes
-# them ONCE within k 0.5-0.8 and W 6-16 and freezes them here, in LightTone.h
-# and in both MSL copies (CI pins them equal).
-TONE_KNEE = 0.6
-TONE_WHITE = 8.0
+# The curve, tuned ONCE (plans/624.md D2, #624 part 6) within k 0.5-0.8 and
+# W 6-16 on round 1's renders (built at the initial k 0.6, W 8; each candidate
+# simulated by mapping the renders back to scene units through the built curve
+# and forward through the candidate) and FROZEN here, in LightTone.h and in
+# both MSL copies (CI pins them equal). The orchestrator's rule (open question
+# 5): keep moderate rigs closest to today's look, subject to the sweep staying
+# distinguishable to 3.5x. k 0.6 passes the sweep's spread ratio only at W 6
+# (0.824 against the knee's 0.820, inside the 0.005 the ratio moves between
+# neighbouring W, and 5% of the glass glints clip); k 0.55 is the highest knee
+# that passes at every W 6-16 with margin (W 10: 0.828, nothing clipped at
+# 3.5), and T(1) = 0.776 (>= 0.75). W 10 over 8: no glint or sweep pixel at
+# the white point. Lower knees separate more but move moderate rigs further
+# from the knee (mean |hdr - knee| on the presets and the 0.6/1.2 sweep: 5.5
+# levels at k 0.55, 6.9 at k 0.5, 4.3 at k 0.6).
+TONE_KNEE = 0.55
+TONE_WHITE = 10.0
 SOFT_KNEE = 0.8                  # mat_soft_knee's knee (the 8-bit knee before #624)
 
 # --- thresholds --------------------------------------------------------------------

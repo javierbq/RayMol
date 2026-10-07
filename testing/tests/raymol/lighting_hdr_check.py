@@ -111,10 +111,11 @@ class TestTwin(testing.PyMOLTestCase):
         cls.c = load_module('lighting_check_hdr', 'check_hdr.py')
 
     def testCurveConstants(self):
-        # D2's initial curve; Part 6 tunes it once (k 0.5-0.8, W 6-16)
-        self.assertEqual((self.c.TONE_KNEE, self.c.TONE_WHITE), (0.6, 8.0))
+        # D2's curve as part 6 tuned it once (k 0.5-0.8, W 6-16) and froze it
+        self.assertEqual((self.c.TONE_KNEE, self.c.TONE_WHITE), (0.55, 10.0))
         self.assertEqual(self.c.SOFT_KNEE, 0.8)
-        self.assertAlmostEqual(float(self.c.tone_scalar(1.0)), 0.8006, places=4)
+        self.assertAlmostEqual(float(self.c.tone_scalar(1.0)), 0.7755, places=4)
+        self.assertGreaterEqual(float(self.c.tone_scalar(1.0)), 0.75)   # D2's constraint
 
     def testIdentityBelowTheKnee(self):
         c = self.c
@@ -292,7 +293,7 @@ class TestChecks(testing.PyMOLTestCase):
             'HUE_LEVEL': 128, 'HUE_SHARE': 0.002, 'HUE_DEG': 15.0, 'HUE_CHROMA': 0.7,
             'PEAK_TOP': 0.02, 'PEAK_HUE': 25.0, 'PEAK_CHROMA': 0.5, 'PEAK_HL_SHARE': 0.05,
             'PEAK_STEP': 4, 'GLINT_GROW': 4, 'GLINT_CLIP': 0.02, 'BODY_LUM': 24.0,
-            'DISPLAY_DILATE': 3, 'UNLIT_SHARE': 0.0002, 'BELOW_LEVEL': 151,
+            'DISPLAY_DILATE': 3, 'UNLIT_SHARE': 0.0002, 'BELOW_LEVEL': 138,
             'BELOW_SHARE': 0.80, 'CONT_LEVEL': 0.55 * 255, 'CONT_TOL': 2, 'EDGE_BAND': 2,
             'EDGE_LO': 0.10, 'EDGE_HI': 0.90, 'EDGE_COUNT_TOL': 0.15, 'EDGE_OVER': 2.0,
             'EDGE_SLACK': 0.002, 'FOG_NEAR': 16, 'FOG_RATIO': 1.5, 'FOG_TOL': 3, 'OIT_LUM': 20.0,
