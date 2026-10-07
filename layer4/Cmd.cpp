@@ -5809,6 +5809,137 @@ static PyObject* CmdLightAirAnimating(PyObject* self, PyObject* args)
 
 /* ---- end the air (#618) ------------------------------------------------- */
 
+/* ---- HDR colour (#624) ----------------------------------------------------
+ * The rig's tone curve, its inverse, the exposure and the metal_light_hdr
+ * switch (layer1/LightTone.h), and what a frame carries of them
+ * (SceneLightsToneFill), exposed so CI can test the C++ from Python.
+ */
+
+namespace
+{
+/// `obj` as a list of floats (any Python number; nan and inf pass through).
+bool LightToneFloats(PyObject* obj, std::vector<float>& out)
+{
+  unique_PyObject_ptr seq(PySequence_Fast(obj, "values must be a sequence"));
+  if (!seq)
+    return false;
+  const Py_ssize_t n = PySequence_Fast_GET_SIZE(seq.get());
+  out.resize(n);
+  for (Py_ssize_t i = 0; i < n; ++i) {
+    const double v = PyFloat_AsDouble(PySequence_Fast_GET_ITEM(seq.get(), i));
+    if (v == -1.0 && PyErr_Occurred())
+      return false;
+    out[i] = float(v);
+  }
+  return true;
+}
+
+PyObject* LightToneList(const std::vector<float>& v)
+{
+  PyObject* list = PyList_New(Py_ssize_t(v.size()));
+  if (!list)
+    return nullptr;
+  for (size_t i = 0; i < v.size(); ++i) {
+    PyObject* item = PyFloat_FromDouble(v[i]);
+    if (!item) {
+      Py_DECREF(list);
+      return nullptr;
+    }
+    PyList_SET_ITEM(list, Py_ssize_t(i), item); // steals
+  }
+  return list;
+}
+} // namespace
+
+/// LightTone (or LightToneInverse when `inverse`) of each [r, g, b] in
+/// `values`: a list of [r, g, b] lists.
+static PyObject* CmdLightTone(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  PyObject* values = nullptr;
+  int inverse = 0;
+  API_SETUP_ARGS(G, self, args, "OOp", &self, &values, &inverse);
+  unique_PyObject_ptr seq(PySequence_Fast(values, "values must be a sequence"));
+  if (!seq)
+    return nullptr;
+  const Py_ssize_t n = PySequence_Fast_GET_SIZE(seq.get());
+  unique_PyObject_ptr out(PyList_New(n));
+  if (!out)
+    return nullptr;
+  std::vector<float> rgb;
+  for (Py_ssize_t i = 0; i < n; ++i) {
+    if (!LightToneFloats(PySequence_Fast_GET_ITEM(seq.get(), i), rgb))
+      return nullptr;
+    if (rgb.size() != 3) {
+      PyErr_SetString(PyExc_ValueError, "each value must be [r, g, b]");
+      return nullptr;
+    }
+    const std::array<float, 3> c{rgb[0], rgb[1], rgb[2]};
+    const std::array<float, 3> t =
+        inverse ? pymol::LightToneInverse(c) : pymol::LightTone(c);
+    PyObject* item = LightToneList({t[0], t[1], t[2]});
+    if (!item)
+      return nullptr;
+    PyList_SET_ITEM(out.get(), i, item); // steals
+  }
+  return out.release();
+}
+
+/// LightToneScalar (or LightToneScalarInverse when `inverse`) of each float
+/// in `values`.
+static PyObject* CmdLightToneScalar(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  PyObject* values = nullptr;
+  int inverse = 0;
+  API_SETUP_ARGS(G, self, args, "OOp", &self, &values, &inverse);
+  std::vector<float> v;
+  if (!LightToneFloats(values, v))
+    return nullptr;
+  for (float& x : v)
+    x = inverse ? pymol::LightToneScalarInverse(x) : pymol::LightToneScalar(x);
+  return LightToneList(v);
+}
+
+/// LightToneExposure(x): metal_exposure as a rig frame applies it.
+static PyObject* CmdLightToneExposure(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  double x = 1.0;
+  API_SETUP_ARGS(G, self, args, "Od", &self, &x);
+  return PyFloat_FromDouble(pymol::LightToneExposure(float(x)));
+}
+
+/// LightHdrOn(setting, mobile): HDR for a metal_light_hdr of `setting`.
+static PyObject* CmdLightHdr(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  int setting = 0, mobile = 0;
+  API_SETUP_ARGS(G, self, args, "Oip", &self, &setting, &mobile);
+  return PyBool_FromLong(pymol::LightHdrOn(setting, mobile != 0));
+}
+
+/// What the live camera's frame carries of the tone (SceneLightsFrame, as
+/// get_light_frame reads it): {'rig': bool, 'hdr': bool, 'exposure': float}.
+/// With no rig, or a rig that is off, {'rig': False, 'hdr': False,
+/// 'exposure': 1.0} and neither tone setting is read. Reads only.
+static PyObject* CmdGetLightHdr(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  API_SETUP_ARGS(G, self, args, "O", &self);
+  APIEnterBlocked(G);
+  ExecutiveUpdateSceneMembers(G);
+  const auto frame = SceneLightsFrame(G, SceneGetWorldToEye(G));
+  APIExitBlocked(G);
+  const bool rig = frame.rig.has_value();
+  const bool hdr = rig && frame.rig->tone[1] > 0.5f;
+  const double exposure = rig ? frame.rig->tone[0] : 1.0;
+  return Py_BuildValue("{s:O,s:O,s:d}", "rig", rig ? Py_True : Py_False,
+      "hdr", hdr ? Py_True : Py_False, "exposure", exposure);
+}
+
+/* ---- end HDR colour (#624) ------------------------------------------------ */
+
 /* ---- material light response (#615) ---------------------------------------
  * How a material takes a studio light (MaterialLightResponseFor and
  * MaterialLightSharpness, layer1/Material.h), exposed so CI can test the C++
@@ -7848,6 +7979,12 @@ static PyMethodDef Cmd_methods[] = {
   {"light_air_resolution", CmdLightAirResolution, METH_VARARGS},
   {"light_air_shadow_filter", CmdLightAirShadowFilter, METH_VARARGS},
   {"light_air_animating", CmdLightAirAnimating, METH_VARARGS},
+  /* HDR colour (#624) */
+  {"light_tone", CmdLightTone, METH_VARARGS},
+  {"light_tone_scalar", CmdLightToneScalar, METH_VARARGS},
+  {"light_tone_exposure", CmdLightToneExposure, METH_VARARGS},
+  {"light_hdr", CmdLightHdr, METH_VARARGS},
+  {"get_light_hdr", CmdGetLightHdr, METH_VARARGS},
   /* material light response (#615) */
   {"material_light_response", CmdMaterialLightResponse, METH_VARARGS},
   /* end light shading */
