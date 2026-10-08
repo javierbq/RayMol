@@ -260,6 +260,60 @@ class TestPickAtIntegration(unittest.TestCase):
         self.assertFalse(mock_cmd.get_model.called)
         mock_cmd._cmd.metal_pick.assert_called_once()
 
+    def test_pick_atom_requests_in_scene_enabled_objects(self):
+        """Issue #748: _pick_atom must request in-scene enabled objects (enabled_only=2)
+        so objects inside a disabled group are excluded."""
+        mock_cmd = self._install_mock_cmd(native=True)
+        calls = []
+        def spy_get_names(kind, **kw):
+            calls.append((kind, kw))
+            return ["protein"] if kind == "objects" else []
+        mock_cmd.get_names.side_effect = spy_get_names
+
+        mp = self._import_metal_pick()
+        mp._pick_atom(0.0, 0.0, 1.0)
+
+        # Must have requested 'objects' with enabled_only=2 (in-scene enabled)
+        obj_calls = [c for c in calls if c[0] == "objects"]
+        self.assertTrue(obj_calls, "get_names('objects') was never called")
+        self.assertEqual(obj_calls[0][1].get("enabled_only"), 2,
+                         "get_names('objects') must be called with enabled_only=2 (in-scene)")
+
+    def test_grid_cells_requests_in_scene_enabled_objects(self):
+        """Issue #748: _grid_cells must request in-scene enabled objects (enabled_only=2)
+        so grid slot calculation does not allocate slots to hidden group members."""
+        mock_cmd = self._install_mock_cmd(native=True)
+        calls = []
+        def spy_get_names(kind, **kw):
+            calls.append((kind, kw))
+            return ["protein", "protein2"] if kind == "objects" else []
+        mock_cmd.get_names.side_effect = spy_get_names
+        mock_cmd.get_setting_int.return_value = 1  # grid_mode = 1
+
+        mp = self._import_metal_pick()
+        mp._grid_cells(1.0)
+
+        obj_calls = [c for c in calls if c[0] == "objects"]
+        self.assertTrue(obj_calls, "get_names('objects') was never called in _grid_cells")
+        self.assertEqual(obj_calls[0][1].get("enabled_only"), 2,
+                         "_grid_cells must call get_names('objects') with enabled_only=2")
+
+    def test_disabled_group_member_cannot_be_picked(self):
+        """Issue #748: when an object is in a disabled group, enabled_only=2 returns
+        empty, so pick_at does not pick the hidden atom."""
+        mock_cmd = self._install_mock_cmd(native=True)
+        # enabled_only=1 would return ['protein'], but enabled_only=2 returns []
+        def mock_get_names(kind, enabled_only=0, **kw):
+            if kind == "objects":
+                return [] if enabled_only == 2 else ["protein"]
+            return []
+        mock_cmd.get_names.side_effect = mock_get_names
+
+        mp = self._import_metal_pick()
+        hit = mp._pick_atom(0.0, 0.0, 1.0)
+        self.assertIsNone(hit, "Atom in disabled group should not be picked")
+        self.assertFalse(mock_cmd._cmd.metal_pick.called)
+
 
 if __name__ == "__main__":
     unittest.main()

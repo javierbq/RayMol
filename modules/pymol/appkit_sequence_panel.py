@@ -79,7 +79,7 @@ def _get_sequences():
 
     results = []
     try:
-        names = _cmd.get_names('public_objects', enabled_only=1) or []
+        names = _cmd.get_names('public_objects', enabled_only=2) or []
     except Exception:
         return []
 

@@ -2311,11 +2311,15 @@ static PyObject *CmdMetalPick(PyObject * self, PyObject * args)
 
   API_ASSERT(APIEnterBlockedNotModal(G));
 
+  ExecutiveUpdateSceneMembers(G);
+
   std::vector<ObjectMolecule*> objects;
   objects.reserve(names.size());
   for (const auto& name : names) {
-    if (auto* obj = ExecutiveFindObjectMoleculeByName(G, name.c_str()))
-      objects.push_back(obj);
+    if (auto* obj = ExecutiveFindObjectMoleculeByName(G, name.c_str())) {
+      if (obj->Enabled)
+        objects.push_back(obj);
+    }
   }
 
   auto hit = MetalPickAtom(G, objects, state, cam, ndc_x, ndc_y, max_ndc2,
