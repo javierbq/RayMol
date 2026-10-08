@@ -67,7 +67,7 @@ MetalPickHit MetalPickAtom(PyMOLGlobals* G,
   float d2min = FLT_MAX;
 
   for (auto* obj : objects) {
-    if (!obj)
+    if (!obj || !obj->Enabled)
       continue;
     const CoordSet* cs = obj->getCoordSet(state);
     if (!cs)

@@ -9079,6 +9079,10 @@ pymol::Result<std::vector<const char*>> ExecutiveGetNames(
     assert(sele0 != cSelectionInvalid);
   }
 
+  if (enabled_only > 1) {
+    ExecutiveUpdateGroups(G, false);
+  }
+
   while (ListIterate(I->Spec, rec, next)) {
     incl_flag = 0;
     if ((rec->type == cExecObject &&
@@ -9087,7 +9091,18 @@ pymol::Result<std::vector<const char*>> ExecutiveGetNames(
                 (rec->obj->type == cObjectGroup && include_group_objects))) ||
         (rec->type == cExecSelection && include_selections)) {
       if (!public_only || rec->name[0] != '_') {
-        if ((!enabled_only) || (rec->visible)) {
+        bool is_visible = rec->visible != 0;
+        if (is_visible && enabled_only > 1 && rec->type == cExecObject) {
+          int depth = 0;
+          for (SpecRec* g = rec->group; g && is_visible && depth < 100;
+               g = g->group, ++depth) {
+            if (!g->visible) {
+              is_visible = false;
+              break;
+            }
+          }
+        }
+        if ((!enabled_only) || is_visible) {
           incl_flag = 0;
           if (sele0 < 0)
             incl_flag = 1;
