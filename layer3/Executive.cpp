@@ -9093,9 +9093,7 @@ pymol::Result<std::vector<const char*>> ExecutiveGetNames(
       if (!public_only || rec->name[0] != '_') {
         bool is_visible = rec->visible != 0;
         if (is_visible && enabled_only > 1 && rec->type == cExecObject) {
-          int depth = 0;
-          for (SpecRec* g = rec->group; g && is_visible && depth < 100;
-               g = g->group, ++depth) {
+          for (SpecRec* g = rec->group; g && is_visible; g = g->group) {
             if (!g->visible) {
               is_visible = false;
               break;

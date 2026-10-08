@@ -1203,10 +1203,7 @@ SEE ALSO
         if enabled_only in ('in_scene', 'scene'):
             enabled_only = 2
         else:
-            try:
-                enabled_only = int(enabled_only)
-            except (ValueError, TypeError):
-                enabled_only = 0
+            enabled_only = int(enabled_only)
         with _self.lockcm:
             r = _cmd.get_names(_self._COb,int(mode),int(enabled_only),str(selection))
         return r
