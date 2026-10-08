@@ -121,17 +121,23 @@ class TestRayMolGlycan(testing.PyMOLTestCase):
             target["cgo_object"] for target in raymol_glycan.get_pick_targets()
         })
 
-    def testExistingRepresentationsRemainVisible(self):
+    def testGlycanSticksHiddenWhenCartoonActive(self):
         _add_ring("visible_nag", "NAG", 1)
         cmd.show("sticks", "visible_nag")
-        before = []
-        cmd.iterate("visible_nag", "before.append(reps)", space={"before": before})
+        reps_with_sticks = []
+        cmd.iterate("visible_nag", "reps_with_sticks.append(reps)", space={"reps_with_sticks": reps_with_sticks})
 
         raymol_glycan.glycocartoon("visible_nag")
 
-        after = []
-        cmd.iterate("visible_nag", "after.append(reps)", space={"after": after})
-        self.assertEqual(after, before)
+        reps_after_cartoon = []
+        cmd.iterate("visible_nag", "reps_after_cartoon.append(reps)", space={"reps_after_cartoon": reps_after_cartoon})
+        # Sticks representation bit should be cleared on the sugar residues
+        self.assertNotEqual(reps_after_cartoon, reps_with_sticks)
+
+        raymol_glycan.glycocartoon_hide("visible_nag")
+        reps_after_hide = []
+        cmd.iterate("visible_nag", "reps_after_hide.append(reps)", space={"reps_after_hide": reps_after_hide})
+        self.assertEqual(reps_after_hide, reps_with_sticks)
 
     def testCartoonSymbolPicksUnderlyingResidue(self):
         _add_ring("pickable_man", "MAN", 7, chain="G")
