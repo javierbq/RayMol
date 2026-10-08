@@ -172,7 +172,7 @@ def _grid_cells(aspect):
             return None
     except Exception:
         return None
-    objs = [o for o in (cmd.get_names('objects', enabled_only=1) or [])
+    objs = [o for o in (cmd.get_names('objects', enabled_only=2) or [])
             if not o.startswith('_')]
     size = len(objs)
     try:
@@ -584,8 +584,11 @@ def _pick_atom(ndc_x, ndc_y, aspect, max_ndc2=None):
             pick_objs = [target_obj]
 
         if pick_objs is None:
-            pick_objs = [o for o in (cmd.get_names('objects', enabled_only=1) or [])
+            pick_objs = [o for o in (cmd.get_names('objects', enabled_only=2) or [])
                          if not o.startswith('_')]
+
+        if not pick_objs:
+            return None
 
         # The debug harness wants the projection diagnostics only the Python
         # path collects (candidate count, projected extent), and has no use for
