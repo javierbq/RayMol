@@ -34,6 +34,7 @@ export default defineConfig({
         {
           label: 'How-to Guides',
           items: [
+            { label: 'Analysis Notes', slug: 'guides/analysis-notes' },
             { label: 'Claude MCP Integration', slug: 'guides/mcp-setup' },
             { label: 'Glycobiology', slug: 'guides/glycobiology' },
             { label: 'Rendering & Export', slug: 'guides/rendering-export' },
