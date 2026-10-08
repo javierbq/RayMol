@@ -3,7 +3,7 @@ title: Installation
 description: Install RayMol on macOS, iPad, and iPhone.
 ---
 
-The direct macOS build requires macOS 13 or newer on Apple Silicon. The current App Store release requires macOS 14, iOS 17, or iPadOS 17 or newer.
+The direct macOS build requires macOS 14 or newer on Apple Silicon. The current App Store release requires macOS 14, iOS 17, or iPadOS 17 or newer.
 
 ## macOS
 
