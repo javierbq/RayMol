@@ -22,6 +22,7 @@ enum TempChannel {
         static let sequenceSelection = "pymol_seqsel"
         static let gizmo = "pymol_gizmo"
         static let hoverInfo = "pymol_hover_info"
+        static let notesPick = "pymol_notes_pick"
         static let settings = "pymol_settings"
         static let rayOverlay = "_pymol_ray_overlay"
         static let objectPanel = "pymol_objpanel"
@@ -33,7 +34,7 @@ enum TempChannel {
         /// their extension; the rest are JSON.
         static let all: [(stem: String, ext: String)] = [
             (sequence, "json"), (sequenceSelection, "json"), (gizmo, "json"),
-            (hoverInfo, "json"), (settings, "json"), (rayOverlay, "png"),
+            (hoverInfo, "json"), (notesPick, "json"), (settings, "json"), (rayOverlay, "png"),
             (objectPanel, "json"), (objectDetail, "json"),
             (predictForm, "json"), (designForm, "json"),
         ]

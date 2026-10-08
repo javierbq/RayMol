@@ -9,6 +9,43 @@ import AppKit
 import UIKit
 #endif
 
+/// Stable, complete identity used by Analysis Notes and downstream parsers.
+/// `resi` intentionally remains a string because PyMOL includes insertion
+/// codes there (for example `42A`).
+struct AnalysisResidueReference: Codable, Hashable, Equatable {
+    let object: String
+    let segi: String
+    let chain: String
+    let resn: String
+    let resi: String
+
+    var structuredText: String {
+        "[Residue: object=\"\(Self.escape(object))\" segi=\"\(Self.escape(segi))\" "
+        + "chain=\"\(Self.escape(chain))\" resn=\"\(Self.escape(resn))\" "
+        + "resi=\"\(Self.escape(resi))\"]"
+    }
+
+    static func objectReference(_ name: String) -> String {
+        "[Object: object=\"\(escape(name))\"]"
+    }
+
+    private static func escape(_ value: String) -> String {
+        value.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\r", with: "\\r")
+    }
+}
+
+/// Native editor bridge used for programmatic inserts. Keeping this weak in
+/// the store lets a viewport pick use NSTextView/UITextView's normal editing
+/// path (and therefore native undo) without coupling the engine to a view.
+private protocol AnalysisNotesTextInserting: AnyObject {
+    var pageID: UUID? { get }
+    func insert(_ value: String, replacing range: NSRange?, appendAtEnd: Bool,
+                preserveSelection: Bool)
+}
+
 /// Analysis notes associated with the current PyMOL session. The live document
 /// is staged locally while editing and embedded into the `.pse` on session save.
 /// Legacy `.raymol-notes.json` sidecars remain readable for migration.
@@ -74,6 +111,12 @@ final class AnalysisNotesStore: ObservableObject {
     @Published private(set) var screenshots: [ScreenshotAsset] = []
     @Published private(set) var notePages: [NotePage] = []
     @Published private(set) var activePageID: UUID?
+    /// Session-transient by design: reopening a session must never begin
+    /// recording clicks without the user explicitly enabling it again.
+    @Published var logbookMode = false
+
+    private weak var editorSink: AnalysisNotesTextInserting?
+    private var savedSelectionByPage: [UUID: NSRange] = [:]
 
     /// True when the note holds anything worth carrying into the session file:
     /// text on any page, a linked image, or a view link. Checks the live active
@@ -104,6 +147,66 @@ final class AnalysisNotesStore: ObservableObject {
     private var hasOpenedSession = false
     private var stageEmbeddedDocument: ((URL, URL) -> Bool)?
     private var exportEmbeddedDocument: ((URL, URL) -> Bool)?
+
+    fileprivate func attachEditor(_ sink: AnalysisNotesTextInserting) {
+        editorSink = sink
+    }
+
+    fileprivate func detachEditor(_ sink: AnalysisNotesTextInserting) {
+        if editorSink === sink { editorSink = nil }
+    }
+
+    fileprivate func rememberSelection(_ range: NSRange, for pageID: UUID?) {
+        guard let pageID else { return }
+        savedSelectionByPage[pageID] = range
+    }
+
+    /// Insert at the last caret/selection for this page. The editor retains the
+    /// range when focus moves into the Metal viewport, which is what makes an
+    /// Option-click land where the user was writing.
+    func insertAtSavedCursor(_ value: String, replacing explicitRange: NSRange? = nil) {
+        let pageID = activePageID
+        let range = explicitRange ?? pageID.flatMap { savedSelectionByPage[$0] }
+        if let editorSink, editorSink.pageID == pageID {
+            editorSink.insert(value, replacing: range, appendAtEnd: false,
+                              preserveSelection: false)
+        } else {
+            replaceText(value, range: range)
+        }
+    }
+
+    /// Append without stealing focus or disturbing the saved insertion point.
+    func appendLogbookEntry(_ value: String) {
+        let line = (text.isEmpty || text.hasSuffix("\n") ? "" : "\n") + value + "\n"
+        if let editorSink, editorSink.pageID == activePageID {
+            editorSink.insert(line, replacing: nil, appendAtEnd: true,
+                              preserveSelection: true)
+        } else {
+            text += line
+        }
+    }
+
+    func handleViewportPick(_ residue: AnalysisResidueReference,
+                            optionInsert: Bool = false) {
+        if optionInsert {
+            insertAtSavedCursor(residue.structuredText)
+        } else if logbookMode {
+            appendLogbookEntry("- **\(residue.structuredText)**: ")
+        }
+    }
+
+    private func replaceText(_ value: String, range: NSRange?) {
+        let source = text as NSString
+        let fallback = NSRange(location: source.length, length: 0)
+        let candidate = range ?? fallback
+        let safe = candidate.location <= source.length
+            && candidate.length <= source.length - candidate.location ? candidate : fallback
+        text = source.replacingCharacters(in: safe, with: value)
+        if let pageID = activePageID {
+            savedSelectionByPage[pageID] = NSRange(location: safe.location + (value as NSString).length,
+                                                   length: 0)
+        }
+    }
 
     init(fileManager: FileManager = .default,
          fallbackDirectory: URL? = nil,
@@ -1005,6 +1108,260 @@ struct AnalysisNoteBlockView: View {
     }
 }
 
+private struct AnalysisObjectAutocomplete: Equatable {
+    var query: String
+    var replacementRange: NSRange
+}
+
+private enum AnalysisAutocompleteCommand {
+    case previous, next, accept, cancel
+}
+
+private enum AnalysisNotesAutocomplete {
+    /// The active `@token` immediately before the caret. All ranges are UTF-16
+    /// because that is the native text-system currency on both Apple platforms.
+    static func context(in text: String, selection: NSRange) -> AnalysisObjectAutocomplete? {
+        let source = text as NSString
+        guard selection.length == 0, selection.location <= source.length else { return nil }
+        let prefix = source.substring(to: selection.location) as NSString
+        let separators = CharacterSet.whitespacesAndNewlines
+        var start = prefix.length
+        while start > 0 {
+            let scalar = prefix.character(at: start - 1)
+            if let unicode = UnicodeScalar(scalar), separators.contains(unicode) { break }
+            start -= 1
+        }
+        let token = prefix.substring(from: start)
+        guard token.first == "@", token.dropFirst().allSatisfy({
+            $0.isLetter || $0.isNumber || "_.-".contains($0)
+        }) else { return nil }
+        return AnalysisObjectAutocomplete(
+            query: String(token.dropFirst()),
+            replacementRange: NSRange(location: start, length: prefix.length - start)
+        )
+    }
+
+    static func matches(_ candidate: String, query: String) -> Bool {
+        let needle = query.lowercased()
+        guard !needle.isEmpty else { return true }
+        var position = needle.startIndex
+        for character in candidate.lowercased() where position < needle.endIndex {
+            if character == needle[position] { position = needle.index(after: position) }
+        }
+        return position == needle.endIndex
+    }
+}
+
+#if os(macOS)
+private struct AnalysisNotesNativeEditor: NSViewRepresentable {
+    @Binding var text: String
+    let fontSize: CGFloat
+    let store: AnalysisNotesStore
+    let pageID: UUID?
+    let onAutocomplete: (AnalysisObjectAutocomplete?) -> Void
+    let onCommand: (AnalysisAutocompleteCommand) -> Bool
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSTextView.scrollableTextView()
+        guard let view = scroll.documentView as? NSTextView else { return scroll }
+        scroll.drawsBackground = false
+        scroll.backgroundColor = .clear
+        view.delegate = context.coordinator
+        view.isRichText = false
+        view.isAutomaticQuoteSubstitutionEnabled = false
+        view.isAutomaticDashSubstitutionEnabled = false
+        view.allowsUndo = true
+        view.drawsBackground = false
+        view.textColor = .labelColor
+        view.textContainerInset = NSSize(width: 8, height: 10)
+        view.font = .systemFont(ofSize: fontSize)
+        view.string = text
+        context.coordinator.textView = view
+        store.attachEditor(context.coordinator)
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        context.coordinator.parent = self
+        guard let view = scroll.documentView as? NSTextView else { return }
+        view.font = .systemFont(ofSize: fontSize)
+        if view.string != text {
+            let selection = view.selectedRange()
+            view.string = text
+            view.setSelectedRange(NSRange(location: min(selection.location, (text as NSString).length),
+                                          length: 0))
+        }
+        store.attachEditor(context.coordinator)
+    }
+
+    static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
+        coordinator.parent.store.detachEditor(coordinator)
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate, AnalysisNotesTextInserting {
+        var parent: AnalysisNotesNativeEditor
+        weak var textView: NSTextView?
+        var pageID: UUID? { parent.pageID }
+
+        init(parent: AnalysisNotesNativeEditor) { self.parent = parent }
+
+        func textDidChange(_ notification: Notification) {
+            guard let view = textView else { return }
+            parent.text = view.string
+            updateContext(view)
+        }
+
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let view = textView else { return }
+            parent.store.rememberSelection(view.selectedRange(), for: pageID)
+            updateContext(view)
+        }
+
+        func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            switch commandSelector {
+            case #selector(NSResponder.moveUp(_:)): return parent.onCommand(.previous)
+            case #selector(NSResponder.moveDown(_:)): return parent.onCommand(.next)
+            case #selector(NSResponder.insertNewline(_:)), #selector(NSResponder.insertTab(_:)):
+                return parent.onCommand(.accept)
+            case #selector(NSResponder.cancelOperation(_:)): return parent.onCommand(.cancel)
+            default: return false
+            }
+        }
+
+        func insert(_ value: String, replacing range: NSRange?, appendAtEnd: Bool,
+                    preserveSelection: Bool) {
+            guard let view = textView else { return }
+            let original = view.selectedRange()
+            let length = (view.string as NSString).length
+            var target = appendAtEnd ? NSRange(location: length, length: 0) : (range ?? original)
+            if target.location > length || target.length > length - target.location {
+                target = NSRange(location: length, length: 0)
+            }
+            view.setSelectedRange(target)
+            view.insertText(value, replacementRange: target)
+            if preserveSelection {
+                view.setSelectedRange(NSRange(location: min(original.location, (view.string as NSString).length),
+                                              length: 0))
+            }
+            parent.text = view.string
+            parent.store.rememberSelection(view.selectedRange(), for: pageID)
+        }
+
+        private func updateContext(_ view: NSTextView) {
+            parent.onAutocomplete(AnalysisNotesAutocomplete.context(
+                in: view.string, selection: view.selectedRange()))
+        }
+    }
+}
+#else
+private final class AnalysisNotesUITextView: UITextView {
+    var autocompleteCommand: ((AnalysisAutocompleteCommand) -> Bool)?
+
+    override var keyCommands: [UIKeyCommand]? {
+        [UIKeyCommand(input: UIKeyCommand.inputUpArrow, modifierFlags: [], action: #selector(previousItem)),
+         UIKeyCommand(input: UIKeyCommand.inputDownArrow, modifierFlags: [], action: #selector(nextItem)),
+         UIKeyCommand(input: "\t", modifierFlags: [], action: #selector(acceptItem)),
+         UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(cancelItems))]
+    }
+
+    @objc private func previousItem() { _ = autocompleteCommand?(.previous) }
+    @objc private func nextItem() { _ = autocompleteCommand?(.next) }
+    @objc private func acceptItem() { _ = autocompleteCommand?(.accept) }
+    @objc private func cancelItems() { _ = autocompleteCommand?(.cancel) }
+}
+
+private struct AnalysisNotesNativeEditor: UIViewRepresentable {
+    @Binding var text: String
+    let fontSize: CGFloat
+    let store: AnalysisNotesStore
+    let pageID: UUID?
+    let onAutocomplete: (AnalysisObjectAutocomplete?) -> Void
+    let onCommand: (AnalysisAutocompleteCommand) -> Bool
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeUIView(context: Context) -> AnalysisNotesUITextView {
+        let view = AnalysisNotesUITextView()
+        view.delegate = context.coordinator
+        view.backgroundColor = .clear
+        view.textColor = .label
+        view.font = .systemFont(ofSize: fontSize)
+        view.textContainerInset = UIEdgeInsets(top: 10, left: 6, bottom: 10, right: 6)
+        view.autocorrectionType = .yes
+        view.autocompleteCommand = { context.coordinator.parent.onCommand($0) }
+        view.text = text
+        context.coordinator.textView = view
+        store.attachEditor(context.coordinator)
+        return view
+    }
+
+    func updateUIView(_ view: AnalysisNotesUITextView, context: Context) {
+        context.coordinator.parent = self
+        view.font = .systemFont(ofSize: fontSize)
+        if view.text != text {
+            let selection = view.selectedRange
+            view.text = text
+            view.selectedRange = NSRange(location: min(selection.location, (text as NSString).length), length: 0)
+        }
+        store.attachEditor(context.coordinator)
+    }
+
+    static func dismantleUIView(_ view: AnalysisNotesUITextView, coordinator: Coordinator) {
+        coordinator.parent.store.detachEditor(coordinator)
+    }
+
+    final class Coordinator: NSObject, UITextViewDelegate, AnalysisNotesTextInserting {
+        var parent: AnalysisNotesNativeEditor
+        weak var textView: UITextView?
+        var pageID: UUID? { parent.pageID }
+
+        init(parent: AnalysisNotesNativeEditor) { self.parent = parent }
+
+        func textViewDidChange(_ textView: UITextView) {
+            parent.text = textView.text
+            updateContext(textView)
+        }
+
+        func textViewDidChangeSelection(_ textView: UITextView) {
+            parent.store.rememberSelection(textView.selectedRange, for: pageID)
+            updateContext(textView)
+        }
+
+        func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange,
+                      replacementText value: String) -> Bool {
+            if value == "\n", parent.onCommand(.accept) { return false }
+            return true
+        }
+
+        func insert(_ value: String, replacing range: NSRange?, appendAtEnd: Bool,
+                    preserveSelection: Bool) {
+            guard let view = textView else { return }
+            let original = view.selectedRange
+            let length = (view.text as NSString).length
+            var target = appendAtEnd ? NSRange(location: length, length: 0) : (range ?? original)
+            if target.location > length || target.length > length - target.location {
+                target = NSRange(location: length, length: 0)
+            }
+            view.selectedRange = target
+            view.insertText(value)
+            if preserveSelection {
+                view.selectedRange = NSRange(location: min(original.location, (view.text as NSString).length),
+                                             length: 0)
+            }
+            parent.text = view.text
+            parent.store.rememberSelection(view.selectedRange, for: pageID)
+        }
+
+        private func updateContext(_ view: UITextView) {
+            parent.onAutocomplete(AnalysisNotesAutocomplete.context(
+                in: view.text, selection: view.selectedRange))
+        }
+    }
+}
+#endif
+
 struct NotesInspectorView: View {
     @EnvironmentObject private var notes: AnalysisNotesStore
     @EnvironmentObject private var engine: PyMOLEngine
@@ -1024,9 +1381,10 @@ struct NotesInspectorView: View {
     @State private var showingRenamePagePrompt = false
     @State private var insertionNotice: String?
     @State private var pageName = ""
+    @State private var objectAutocomplete: AnalysisObjectAutocomplete?
+    @State private var autocompleteIndex = 0
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    @FocusState private var noteEditorFocused: Bool
     #endif
     #if os(macOS)
     @Environment(\.openWindow) private var openWindow
@@ -1172,8 +1530,14 @@ struct NotesInspectorView: View {
                 .disabled(!engine.isReady)
                 .help("Insert an image, camera link, or full-scene link")
 
+                Button { insertCurrentSelection() } label: {
+                    Image(systemName: "scope")
+                }
+                .fixedSize()
+                .disabled(!engine.isReady)
+                .help("Insert the currently selected residues at the note cursor")
+
                 Menu {
-                    Button("Selected Residues") { insertResidueSummary(contacts: false) }
                     Button("Contacts Around Selection") { insertResidueSummary(contacts: true) }
                     Button("Current Measurements") { insertMeasurementSummary() }
                 } label: { Image(systemName: "atom") }
@@ -1181,6 +1545,15 @@ struct NotesInspectorView: View {
                 .fixedSize()
                 .disabled(!engine.isReady)
                 .help("Insert structured scientific data")
+
+                Toggle(isOn: $notes.logbookMode) {
+                    Image(systemName: notes.logbookMode ? "record.circle.fill" : "record.circle")
+                }
+                .toggleStyle(.button)
+                .fixedSize()
+                .help(notes.logbookMode
+                      ? "Logbook Mode is on: residue clicks append to this note"
+                      : "Logbook Mode: append residue clicks without leaving the viewport")
 
                 Menu {
                     Button("Export Clean Markdown…") { beginExport(.plainText) }
@@ -1244,19 +1617,27 @@ struct NotesInspectorView: View {
         .toolbar {
             ToolbarItemGroup(placement: .keyboard) {
                 Spacer()
-                Button("Done") { noteEditorFocused = false }
+                Button("Done") {
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
+                                                    to: nil, from: nil, for: nil)
+                }
             }
         }
         #endif
     }
 
     private func editor(compactLayout: Bool) -> some View {
-        TextEditor(text: $notes.text)
-            #if os(iOS)
-            .focused($noteEditorFocused)
-            #endif
-            .font(.system(size: fontSize))
-            .scrollContentBackground(.hidden)
+        AnalysisNotesNativeEditor(
+            text: $notes.text,
+            fontSize: fontSize,
+            store: notes,
+            pageID: notes.activePageID,
+            onAutocomplete: { context in
+                objectAutocomplete = context
+                autocompleteIndex = 0
+            },
+            onCommand: handleAutocompleteCommand
+        )
             .padding(compactLayout ? 1 : 6)
             .accessibilityLabel("Analysis notes")
             .overlay(alignment: .topLeading) {
@@ -1269,6 +1650,71 @@ struct NotesInspectorView: View {
                         .allowsHitTesting(false)
                 }
             }
+            .overlay(alignment: .topLeading) {
+                if objectAutocomplete != nil, !autocompleteMatches.isEmpty {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(autocompleteMatches.prefix(8).enumerated()), id: \.element) { index, name in
+                            Button { acceptAutocomplete(name) } label: {
+                                HStack(spacing: 7) {
+                                    Image(systemName: "cube")
+                                    Text(name).lineLimit(1)
+                                    Spacer(minLength: 8)
+                                }
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 6)
+                                .background(index == autocompleteIndex
+                                            ? Color.accentColor.opacity(0.18) : Color.clear)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .frame(minWidth: 180, maxWidth: 300)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(Color.primary.opacity(0.16)))
+                    .shadow(radius: 8, y: 3)
+                    .padding(.top, 12)
+                    .padding(.leading, 12)
+                }
+            }
+    }
+
+    private var autocompleteMatches: [String] {
+        let query = objectAutocomplete?.query ?? ""
+        return engine.objects
+            .filter { !$0.isSelection && !$0.isGroup && !$0.isPending }
+            .map(\.name)
+            .filter { AnalysisNotesAutocomplete.matches($0, query: query) }
+            .sorted {
+                let lhsPrefix = $0.lowercased().hasPrefix(query.lowercased())
+                let rhsPrefix = $1.lowercased().hasPrefix(query.lowercased())
+                return lhsPrefix == rhsPrefix
+                    ? $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+                    : lhsPrefix
+            }
+    }
+
+    private func handleAutocompleteCommand(_ command: AnalysisAutocompleteCommand) -> Bool {
+        guard objectAutocomplete != nil, !autocompleteMatches.isEmpty else { return false }
+        let count = min(8, autocompleteMatches.count)
+        switch command {
+        case .previous:
+            autocompleteIndex = (autocompleteIndex - 1 + count) % count
+        case .next:
+            autocompleteIndex = (autocompleteIndex + 1) % count
+        case .accept:
+            acceptAutocomplete(autocompleteMatches[min(autocompleteIndex, count - 1)])
+        case .cancel:
+            objectAutocomplete = nil
+        }
+        return true
+    }
+
+    private func acceptAutocomplete(_ name: String) {
+        guard let autocomplete = objectAutocomplete else { return }
+        notes.insertAtSavedCursor(AnalysisResidueReference.objectReference(name),
+                                  replacing: autocomplete.replacementRange)
+        objectAutocomplete = nil
     }
 
     private var preview: some View {
@@ -1495,6 +1941,16 @@ struct NotesInspectorView: View {
             return "- [\(label)](\(residueURL(object: object, chain: chain, resi: resi)))"
         }
         appendMarkdown(lines.joined(separator: "\n") + "\n")
+    }
+
+    private func insertCurrentSelection() {
+        let references = engine.noteResidueReferences()
+        guard !references.isEmpty else {
+            insertionNotice = "Create a `sele` selection in the 3D view first. The note was not changed."
+            return
+        }
+        let value = references.map(\.structuredText).joined(separator: "\n")
+        notes.insertAtSavedCursor(value)
     }
 
     private func insertMeasurementSummary() {

@@ -63,6 +63,8 @@ _PRESELECT = '_preselect'
 # HoverReadout.text); Python stays a dumb reporter so the formatting rules are
 # unit-testable without a live core.
 _HOVER_INFO_STEM = 'pymol_hover_info'
+_NOTES_PICK_STEM = 'pymol_notes_pick'
+_last_pick_payload = {"hit": False}
 
 
 def _hover_info_path():
@@ -79,6 +81,22 @@ def _write_hover_info(out):
     try:
         with open(_hover_info_path(), 'w') as f:
             json.dump(out, f)
+    except Exception:
+        pass
+
+
+def write_last_pick():
+    """Publish the identity chosen by the most recent normal pick.
+
+    Swift calls this synchronously immediately after PyMOLBridge_Pick. Keeping
+    modifier handling in Swift means Python's normal selection behavior remains
+    exactly the same for both ordinary and Option-clicks.
+    """
+    import json
+    from pymol import raymol_tmp
+    try:
+        with open(raymol_tmp.channel_path(_NOTES_PICK_STEM), 'w') as f:
+            json.dump(_last_pick_payload, f)
     except Exception:
         pass
 
@@ -721,6 +739,8 @@ def _mode_expr(best, mode):
 def pick_at(ndc_x, ndc_y, aspect):
     """Default tap: residue-level toggle into the active 'sele'."""
     from pymol import cmd
+    global _last_pick_payload
+    _last_pick_payload = {"hit": False}
     try:
         best = _pick_atom(ndc_x, ndc_y, aspect)
         if best is None:
@@ -731,6 +751,8 @@ def pick_at(ndc_x, ndc_y, aspect):
             return
 
         _, obj, chain, resi, resn, segi, name, _sx, _sy = best
+        _last_pick_payload = {"hit": True, "object": obj, "segi": segi,
+                              "chain": chain, "resn": resn, "resi": resi}
         print(' You clicked /%s/%s/%s`%s/%s' % (segi, chain, resn, resi, name))
 
         # Honor mouse_selection_mode (0 atom, 1 residue, 2 chain, 3 segment,
@@ -767,6 +789,7 @@ def pick_at(ndc_x, ndc_y, aspect):
             pass
 
     except Exception as e:
+        _last_pick_payload = {"hit": False}
         print('metal_pick error: %s' % e)
 
 

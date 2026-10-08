@@ -2524,10 +2524,10 @@ final class PyMOLEngine: ObservableObject {
         _rows, _seen = [], set()
         if 'sele' in (_c.get_names('selections') or []):
             for _a in _c.get_model(r'''\(selection)''').atom:
-                _key = (_a.model, _a.chain, _a.resi, _a.resn)
+                _key = (_a.model, _a.segi, _a.chain, _a.resi, _a.resn)
                 if _key not in _seen:
                     _seen.add(_key)
-                    _rows.append({'object': _a.model, 'chain': _a.chain,
+                    _rows.append({'object': _a.model, 'segi': _a.segi, 'chain': _a.chain,
                                   'resi': _a.resi, 'resn': _a.resn})
         with open(_b64.b64decode('\(encodedPath)').decode('utf-8'), 'w') as _f:
             _json.dump(_rows, _f)
@@ -2536,6 +2536,23 @@ final class PyMOLEngine: ObservableObject {
         guard let data = try? Data(contentsOf: url),
               let rows = try? JSONSerialization.jsonObject(with: data) as? [[String: String]] else { return [] }
         return rows
+    }
+
+    /// Complete, deduplicated selection identities for the Notes "Insert
+    /// Selection" action. Sorting makes output stable across core iteration
+    /// order and therefore suitable for downstream parsing and diffs.
+    func noteResidueReferences() -> [AnalysisResidueReference] {
+        let references = noteResidues(contacts: false).map {
+            AnalysisResidueReference(object: $0["object", default: ""],
+                                     segi: $0["segi", default: ""],
+                                     chain: $0["chain", default: ""],
+                                     resn: $0["resn", default: ""],
+                                     resi: $0["resi", default: ""])
+        }
+        return Array(Set(references)).sorted {
+            [$0.object, $0.segi, $0.chain, $0.resi, $0.resn]
+                .lexicographicallyPrecedes([$1.object, $1.segi, $1.chain, $1.resi, $1.resn])
+        }
     }
 
     func noteMeasurements() -> [[String: Any]] {
@@ -3818,7 +3835,7 @@ final class PyMOLEngine: ObservableObject {
     }
 
     // Tap-to-select via metal_pick (NDC in [-1,1], aspect = width/height).
-    func pick(ndcX: Float, ndcY: Float, aspect: Float) {
+    func pick(ndcX: Float, ndcY: Float, aspect: Float, insertIntoNotes: Bool = false) {
 #if DEBUG
         if let viewportInputTap {
             viewportInputTap(.pick(ndcX: ndcX, ndcY: ndcY))
@@ -3827,6 +3844,20 @@ final class PyMOLEngine: ObservableObject {
 #endif
         guard let inst = instance else { return }
         PyMOLBridge_Pick(inst, ndcX, ndcY, aspect)
+        runPythonQuiet("from pymol import metal_pick as _mp\n_mp.write_last_pick()")
+        let path = TempChannel.path(TempChannel.Stem.notesPick)
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              payload["hit"] as? Bool == true else { return }
+        let residue = AnalysisResidueReference(
+            object: payload["object"] as? String ?? "",
+            segi: payload["segi"] as? String ?? "",
+            chain: payload["chain"] as? String ?? "",
+            resn: payload["resn"] as? String ?? "",
+            resi: payload["resi"] as? String ?? ""
+        )
+        AnalysisNotesStore.shared.handleViewportPick(residue, optionInsert: insertIntoNotes)
     }
 
     // MARK: - Surface pick (#614)

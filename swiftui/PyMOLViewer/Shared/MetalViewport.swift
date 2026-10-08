@@ -1367,7 +1367,8 @@ extension MetalViewport {
                         // ContentView can route it to DesignController.focus.
                         engine?.longPressPick(ndcX: ndcX, ndcY: ndcY, aspect: Float(w / h))
                     } else {
-                        engine?.pick(ndcX: ndcX, ndcY: ndcY, aspect: Float(w / h))
+                        engine?.pick(ndcX: ndcX, ndcY: ndcY, aspect: Float(w / h),
+                                     insertIntoNotes: event.modifierFlags.contains(.option))
                     }
                 }
             }
