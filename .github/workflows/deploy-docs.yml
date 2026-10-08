@@ -1,8 +1,12 @@
 name: Deploy Documentation
 
 on:
+  release:
+    types: [published]
   push:
-    branches: [master]
+    tags:
+      - 'v*'
+  pull_request:
     paths:
       - 'docs/**'
       - '.github/workflows/deploy-docs.yml'
@@ -32,6 +36,7 @@ jobs:
           package-manager: pnpm@11.19.0
 
   deploy:
+    if: github.event_name != 'pull_request'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

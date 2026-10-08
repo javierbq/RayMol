@@ -21,7 +21,7 @@ export default defineConfig({
         },
       ],
       editLink: {
-        baseUrl: 'https://github.com/javierbq/RayMol/edit/master/docs/',
+        baseUrl: 'https://github.com/javierbq/RayMol/edit/master/docs/src/content/docs/',
       },
       sidebar: [
         {
