@@ -267,8 +267,6 @@ class TestDisabledGroupNotPickable(PickBase):
     picked (hover, click, grid cells)."""
 
     def testDisabledGroupAtomsNotPickable(self):
-        cmd.reinitialize()
-        self.setUp()
         self.atoms([(0.0, 0.0, 0.0)], obj='m1', rep='spheres')
         self.atoms([(5.0, 5.0, 0.0)], obj='m2', rep='spheres')
         cmd.group('grp', 'm1 m2')
