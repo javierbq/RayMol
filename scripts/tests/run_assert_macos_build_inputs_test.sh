@@ -32,8 +32,10 @@ make_fixture () {
   : > "$py/include/python3.13/Python.h"
   mkdir -p "$r/prefix/opt/libomp/lib" "$r/prefix/lib" "$r/prefix/include/glm"
   : > "$r/prefix/opt/libomp/lib/libomp.a"
-  : > "$r/prefix/lib/libfreetype.dylib"
-  : > "$r/prefix/lib/libpng16.dylib"
+  mkdir -p "$r/deps_macos/install/lib" "$r/deps_macos/install/include/freetype2"
+  : > "$r/deps_macos/install/lib/libfreetype.a"
+  : > "$r/deps_macos/install/lib/libpng16.a"
+  : > "$r/deps_macos/install/include/freetype2/ft2build.h"
   : > "$r/prefix/include/glm/glm.hpp"
   mkdir -p "$r/swiftui/PyMOLViewer.xcodeproj"
   cat > "$r/swiftui/PyMOLViewer.xcodeproj/project.pbxproj" <<'PBX'
@@ -63,8 +65,9 @@ for req in \
   "deps_macos/python-standalone/python/lib/python3.13/site-packages/numpy" \
   "deps_macos/python-standalone/python/lib/python3.13/site-packages/Bio" \
   "prefix/opt/libomp/lib/libomp.a" \
-  "prefix/lib/libfreetype.dylib" \
-  "prefix/lib/libpng16.dylib" \
+  "deps_macos/install/lib/libfreetype.a" \
+  "deps_macos/install/lib/libpng16.a" \
+  "deps_macos/install/include/freetype2/ft2build.h" \
   "prefix/include/glm/glm.hpp" \
   "swiftui/PyMOLViewer.xcodeproj/project.pbxproj" \
   "build_macos_swiftui/libpymol_core.a"; do

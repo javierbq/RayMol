@@ -8,7 +8,7 @@ RayMol's first submission (1.0 build 5) was rejected on four guidelines. The fix
 
 - **2.5.1 (private API):** the bundled Tcl/Tk `libtcl9tk9.0.dylib` referenced private `_NSWindowDidOrderOnScreenNotification`. Fix: the "Bundle Python" phase in `project.yml` prunes the whole Tcl/Tk stack from the embedded Python (the native Metal app never uses the legacy `pmg_tk` Tkinter GUI). If Tk creeps back, the prune glob missed it.
 - **2.5.2 (itms-services):** false positive — the literal `itms-services` lives in CPython's stdlib `urllib/parse.py` (`uses_netloc`). Fix: the packaging phase `sed`s the token out. Not a real URL scheme use.
-- **2.1(a) (launch crash on a clean machine):** the review machine has no Homebrew, so un-bundled Homebrew dylibs aborted launch. Fixed by bundling them (commit f97259da). A clean-VM launch test (the `mac-vm-test` / `raymol-mac-vm` skills) catches regressions.
+- **2.1(a) (launch crash on a clean machine):** the review machine has no Homebrew, so un-bundled Homebrew dylibs aborted launch. Fixed by bundling them (commit f97259da), and later by not shipping Homebrew dylibs at all: freetype/libpng are static archives from `scripts/build_macos_deps.sh` (bundling missed Homebrew freetype's `@rpath/libbrotlicommon` and beta 1.12.2 (212) crashed at launch). A clean-VM launch test (the `mac-vm-test` / `raymol-mac-vm` skills) catches regressions.
 - **1.5 (Support URL):** ASC Support URL must resolve. It's `https://raymol.io/support` (served from the RayMol website repo via GitHub Pages). Keep it live; ensure `support@raymol.io` actually receives mail.
 
 ## Error 90296 (App sandbox) — Sparkle is the offender
