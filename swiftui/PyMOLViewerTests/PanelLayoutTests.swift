@@ -294,4 +294,14 @@ final class PanelLayoutTests: XCTestCase {
     func testKeysAreUnique() {
         XCTAssertEqual(Set(PanelLayout.allKeys).count, PanelLayout.allKeys.count)
     }
+
+    /// #623: the iPad float's corner is a namespaced key in the list, and
+    /// an absent or unknown stored value reads as the default corner.
+    func testTheFloatCornerKeyIsListed() {
+        XCTAssertEqual(PanelLayout.lightsOrbitCornerKey, "raymol.panels.lightsOrbitCorner")
+        XCTAssertTrue(PanelLayout.allKeys.contains(PanelLayout.lightsOrbitCornerKey))
+        XCTAssertEqual(LightsFloatCorner.stored(""), .bottomLeading)
+        XCTAssertEqual(LightsFloatCorner.stored("xx"), .bottomLeading)
+        XCTAssertEqual(LightsFloatCorner.stored("tr"), .topTrailing)
+    }
 }

@@ -2,7 +2,7 @@
 
 The Lights bar (swiftui/PyMOLViewer/Shared/LightsBar.swift and
 LightsController.swift) runs the `lights` command of #612 for its buttons and
-calls Python for two things only, both in pymol.appkit_lights:
+calls Python for these things only, all in pymol.appkit_lights:
 
 * restore(b64(json)) for Revert: the JSON the app read through
   PyMOLBridge_LightsJSON (the same C++ as lighting._lights_json) when the mode
@@ -11,6 +11,11 @@ calls Python for two things only, both in pymol.appkit_lights:
 * write_presets(b64(path)) for the preset menu: [{"name", "description"}]
   in the order of lighting_commands.presets(), the format the Swift
   LightPreset decoder reads.
+* write_air_fields(b64(path)) for the Atmosphere card's field table (#726),
+  read in the same Python call as the presets; lighting_atmosphere.py tests
+  it.
+* restore_light(b64(json), name) for Revert this light (#620,
+  lighting_inspector.py tests it).
 
 TestSwiftSource reads the Swift sources (skipped outside a checkout): the
 Lights model never runs Python or a console command itself.
@@ -351,10 +356,12 @@ ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir,
 SHARED = os.path.join('swiftui', 'PyMOLViewer', 'Shared')
 
 # The Lights model, the bar, the shared edit path, the inspector, the side
-# column (#620), the orbit view's model (#621) and the gizmo's geometry and
-# model (#622): every button press goes through LightsSeams.perform and every
-# drag tick through the bridge setter seams the engine wires, so these files
-# name no Python or console entry point, no helper and no bridge function.
+# column (#620), the orbit view's model (#621), the gizmo's geometry and
+# model (#622), the touch targets, the phone sheet and the iPad float (#623),
+# the Atmosphere card's model (#726): every button press goes through
+# LightsSeams.perform and every drag tick through the bridge setter seams the
+# engine wires, so these files name no Python or console entry point, no
+# helper and no bridge function.
 NO_PYTHON_SOURCES = [os.path.join(SHARED, 'LightsController.swift'),
                      os.path.join(SHARED, 'LightsBar.swift'),
                      os.path.join(SHARED, 'LightsEditing.swift'),
@@ -364,7 +371,12 @@ NO_PYTHON_SOURCES = [os.path.join(SHARED, 'LightsController.swift'),
                      os.path.join(SHARED, 'LightsOrbitView.swift'),
                      os.path.join(SHARED, 'LightGizmoGeometry.swift'),
                      os.path.join(SHARED, 'LightGizmoModel.swift'),
-                     os.path.join(SHARED, 'LightGizmoOverlay.swift')]
+                     os.path.join(SHARED, 'LightGizmoOverlay.swift'),
+                     os.path.join(SHARED, 'LightsTouch.swift'),
+                     os.path.join(SHARED, 'LightsSheet.swift'),
+                     os.path.join(SHARED, 'LightsFloatingTools.swift'),
+                     os.path.join(SHARED, 'LightsAtmosphere.swift'),
+                     os.path.join(SHARED, 'LightsAtmosphereCard.swift')]
 NO_PYTHON = re.compile(
     r'\brunPython\w*|\bRunPython\w*|\brunCommand\w*|\bRunCommand\w*'
     r'|appkit_lights|\bPyMOLBridge_\w+\s*\(')
@@ -428,9 +440,11 @@ class TestSwiftSource(testing.PyMOLTestCase):
         callable: a renamed helper would otherwise fail only in the app, as
         one swallowed error line."""
         called = set(HELPER_CALL.findall(strip_comments(self.read(ENGINE))))
-        self.assertEqual(called, {'restore', 'restore_light', 'write_presets'},
+        self.assertEqual(called, {'restore', 'restore_light', 'write_presets',
+                                  'write_air_fields'},
                          'the engine calls appkit_lights for Revert, Revert '
-                         'this light and the preset menu only')
+                         'this light, the preset menu and the Atmosphere '
+                         "card's field table only")
         for name in sorted(called):
             with self.subTest(name):
                 self.assertTrue(callable(getattr(appkit_lights, name, None)),

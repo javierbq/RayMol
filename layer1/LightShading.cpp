@@ -99,7 +99,7 @@ LightClassicTerms LightRigClassic(
     return settings;
   const float classic = float(rig->classic);
   return {float(rig->ambient), settings.direct * classic,
-      settings.reflect * classic, settings.specular * classic};
+      settings.reflect * classic, settings.specular * classic, classic};
 }
 
 LightRigBlock LightRigPack(

@@ -144,6 +144,8 @@ struct LightsBar: View {
     @ObservedObject var controller: LightsController
     var style: LightsBarStyle
     var onDone: () -> Void
+    /// 44 on iOS (every control a 44 pt target, #623), 0 on macOS.
+    @Environment(\.lightsTouchMinimum) private var touchMinimum
 
     static let recentreHelp = "Re-centre: capture the centre and 1× size from the molecules"
     static let revertHelp = "Revert to the lights you had when you opened Lights mode"
@@ -193,9 +195,11 @@ struct LightsBar: View {
     }
 
     // iPhone portrait: no title; Presets, Re-centre and On/Off in one overflow
-    // menu. +, −, Revert and Done stay on the bar.
+    // menu. +, −, Revert and Done stay on the bar. With 44 pt targets (iOS)
+    // the frames carry the gaps, so the spacing drops to 2 and a 375 pt phone
+    // still shows about two chips.
     private func compact(_ state: LightsBarState) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: touchMinimum > 0 ? 2 : 10) {
             Image(systemName: "lightbulb.fill")
                 .foregroundColor(style.accent)
                 .accessibilityLabel("Lights")
@@ -266,7 +270,7 @@ struct LightsBar: View {
     }
 
     private func addButton(_ state: LightsBarState) -> some View {
-        Button { controller.add() } label: { icon("plus") }
+        Button { controller.add() } label: { icon("plus").lightsTouchTarget() }
             .buttonStyle(.plain)
             .disabled(!state.canAdd)
             .help(state.addHelp)
@@ -275,7 +279,7 @@ struct LightsBar: View {
     }
 
     private func removeButton(_ state: LightsBarState) -> some View {
-        Button { controller.removeSelected() } label: { icon("minus") }
+        Button { controller.removeSelected() } label: { icon("minus").lightsTouchTarget() }
             .buttonStyle(.plain)
             .disabled(!state.canRemove)
             .help(state.removeHelp)
@@ -305,6 +309,7 @@ struct LightsBar: View {
             }
             .font(.system(size: 12, weight: .medium))
             .foregroundColor(style.text)
+            .lightsTouchTarget()
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
@@ -317,7 +322,7 @@ struct LightsBar: View {
     }
 
     private func recentreButton(_ state: LightsBarState) -> some View {
-        Button { controller.recentre() } label: { icon("scope") }
+        Button { controller.recentre() } label: { icon("scope").lightsTouchTarget() }
             .buttonStyle(.plain)
             .disabled(!state.canRecentre)
             .help(Self.recentreHelp)
@@ -326,7 +331,7 @@ struct LightsBar: View {
     }
 
     private func powerButton(_ state: LightsBarState) -> some View {
-        Button { controller.setEnabled(!state.isOn) } label: { icon("power", on: state.isOn) }
+        Button { controller.setEnabled(!state.isOn) } label: { icon("power", on: state.isOn).lightsTouchTarget() }
             .buttonStyle(.plain)
             .disabled(!state.canToggle)
             .help(state.powerHelp)
@@ -350,7 +355,7 @@ struct LightsBar: View {
             .disabled(!state.canToggle)
             .help(state.powerHelp)
         } label: {
-            icon("ellipsis.circle")
+            icon("ellipsis.circle").lightsTouchTarget()
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
@@ -372,8 +377,9 @@ struct LightsBar: View {
                     Text("Revert").font(.system(size: 12, weight: .medium))
                 }
                 .foregroundColor(style.text)
+                .lightsTouchTarget()
             } else {
-                icon("arrow.uturn.backward")
+                icon("arrow.uturn.backward").lightsTouchTarget()
             }
         }
             .buttonStyle(.plain)
@@ -383,12 +389,30 @@ struct LightsBar: View {
             .accessibilityIdentifier("lights.revert")
     }
 
+    @ViewBuilder
     private var doneButton: some View {
-        Button("Done") { onDone() }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
+        if touchMinimum > 0 {
+            // A bordered button draws its fill around its label, so a 44 pt
+            // label would draw a 44 pt pill. Instead the pill is drawn small
+            // inside a plain button whose label is the 44 pt target.
+            Button { onDone() } label: {
+                Text("Done")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .background(Capsule().fill(style.accent))
+                    .lightsTouchTarget()
+            }
+            .buttonStyle(.plain)
             .help(Self.doneHelp)
             .accessibilityIdentifier("lights.done")
+        } else {
+            Button("Done") { onDone() }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .help(Self.doneHelp)
+                .accessibilityIdentifier("lights.done")
+        }
     }
 }
 
@@ -438,6 +462,8 @@ struct LightChipButton: View {
             .overlay(Capsule().stroke(chip.isSelected ? style.accent : style.text.opacity(0.2),
                                       lineWidth: chip.isSelected ? 1.5 : 1))
             .contentShape(Capsule())
+            // 44 pt tall on iOS; the chip keeps its width.
+            .lightsTouchTarget(width: false)
         }
         .buttonStyle(.plain)
         .help("Select \(chip.name)")

@@ -43,11 +43,16 @@ import Foundation
 // MARK: - Metrics
 
 /// Every size the gizmo draws and hit-tests with. `slop` (6 pt on macOS,
-/// 14 pt on iOS, `LightsOrbitMetrics.defaultSlop`) is the one knob #623 turns
-/// for 44 pt touch targets; the rest are the mock-up's.
+/// 14 pt on iOS, `LightsOrbitMetrics.defaultSlop`) and `minimumTarget` (0 on
+/// macOS, 44 on iOS, `LightsTouch.minimumTarget`) set the hit areas: each
+/// target is hit within its drawn size plus the slop, never less than half
+/// the minimum target (#623). The rest are the mock-up's.
 struct LightGizmoMetrics: Equatable {
     /// How far outside a drawn target a press still hits it.
     var slop: CGFloat
+    /// The smallest target side: every knob, the aim dot, each handle and
+    /// each ring line is hit within at least half of it.
+    var minimumTarget: CGFloat
     /// The drawn radius of a knob, and of the selected one.
     var knobRadius: CGFloat = 7
     var selectedKnobRadius: CGFloat = 9
@@ -55,8 +60,10 @@ struct LightGizmoMetrics: Equatable {
     var aimDotRadius: CGFloat = 4
     /// Half the side of a ring handle (a square).
     var handleHalfSide: CGFloat = 4.5
-    /// The handles keep this far from each other and from the aim dot.
-    var handleSeparation: CGFloat = 12
+    /// The handles keep this far from each other and from the aim dot: 12
+    /// pt, or the minimum target when larger (44 on iOS: a finger's width
+    /// between the two handles).
+    var handleSeparation: CGFloat
     /// A drag writes nothing until the pointer is this far from the press.
     var dragSlop: CGFloat = 3
     /// A knob dragged this far outside the sphere's outline swaps sides.
@@ -86,9 +93,23 @@ struct LightGizmoMetrics: Equatable {
     /// Between a knob's edge and its label.
     var labelGap: CGFloat = 4
 
-    init(slop: CGFloat = LightsOrbitMetrics.defaultSlop) {
+    init(slop: CGFloat = LightsOrbitMetrics.defaultSlop,
+         minimumTarget: CGFloat = LightsTouch.minimumTarget) {
         self.slop = slop
+        self.minimumTarget = minimumTarget
+        self.handleSeparation = max(12, minimumTarget)
     }
+
+    /// How far from its centre a round target drawn at `radius` is hit.
+    func reach(_ radius: CGFloat) -> CGFloat {
+        LightsTouch.reach(drawn: radius, slop: slop, minimumTarget: minimumTarget)
+    }
+
+    /// How far from its centre, per axis, a ring handle is hit.
+    var handleReach: CGFloat { reach(handleHalfSide) }
+
+    /// How far from a ring's line (its centre line) a press hits it.
+    func ringReach(width: CGFloat) -> CGFloat { reach(width / 2) }
 
     /// Knob opacity while the rig is off (still editable).
     static let dimmedOpacity = 0.45
@@ -233,7 +254,9 @@ struct LightGizmoLayout: Equatable {
     struct Handle: Equatable {
         /// Where it is drawn (and hit).
         var point: CGPoint
-        /// Where on its ring it belongs (the rightmost sample).
+        /// Where on its ring it belongs: the rightmost sample, or, when a
+        /// handle there would leave the view, the rightmost sample whose
+        /// handles both stay inside it (#693).
         var ringPoint: CGPoint
         /// Drawn away from its ring (the separation rule), joined by a tick.
         var isOffRing: Bool
@@ -366,12 +389,46 @@ struct LightGizmoLayout: Equatable {
               let o = outer.rightmost else { return s }
         s.outerRing = outer
         s.innerRing = inner
-        let i = inner.rightmost ?? aim
-        // The separation rule (mock-up items 2 and 3): the outer handle at
-        // least 2s from the aim dot, the inner one at least s from the aim
-        // dot and from the outer handle, so both stay reachable when the rings
-        // coincide (softness 0) and when the inner ring collapses onto the aim
-        // dot (softness 1).
+        var handles = Self.handles(aim: aim, outer: o, inner: inner.rightmost ?? aim, metrics: metrics)
+        // #693: handles at the rightmost samples can leave the view (a wide
+        // beam, a light near the right edge). Then the handles go to the
+        // rightmost sample index whose two handles both stay inside the view,
+        // inset by the handle's reach so the whole target can be pressed.
+        // Both rings share the basis and the sample count, so index k is the
+        // same direction on each. Handles already inside never move, and with
+        // no index inside, today's place stays.
+        let view = CGRect(origin: .zero, size: projection.viewSize)
+            .insetBy(dx: metrics.handleReach, dy: metrics.handleReach)
+        func inside(_ h: (outer: Handle, inner: Handle)) -> Bool {
+            view.contains(h.outer.point) && view.contains(h.inner.point)
+        }
+        if !inside(handles) {
+            let order = outer.samples.indices
+                .compactMap { k in outer.samples[k].map { (k, $0.x) } }
+                .sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0 < $1.0 }
+            for (k, _) in order {
+                guard let ok = outer.samples[k] else { continue }
+                let ik = (inner.samples.indices.contains(k) ? inner.samples[k] : nil) ?? aim
+                let candidate = Self.handles(aim: aim, outer: ok, inner: ik, metrics: metrics)
+                if inside(candidate) {
+                    handles = candidate
+                    break
+                }
+            }
+        }
+        s.outerHandle = handles.outer
+        s.innerHandle = handles.inner
+        return s
+    }
+
+    /// The handles for ring points `o` (outer) and `i` (inner), after the
+    /// separation rule (mock-up items 2 and 3): the outer handle at least 2s
+    /// from the aim dot, the inner one at least s from the aim dot and from
+    /// the outer handle, so both stay reachable when the rings coincide
+    /// (softness 0) and when the inner ring collapses onto the aim dot
+    /// (softness 1).
+    private static func handles(aim: CGPoint, outer o: CGPoint, inner i: CGPoint,
+                                metrics: LightGizmoMetrics) -> (outer: Handle, inner: Handle) {
         let sep = Double(metrics.handleSeparation)
         let outerVector = gizmoVector(aim, o)
         let outerLength = gizmoLength(outerVector)
@@ -383,9 +440,8 @@ struct LightGizmoLayout: Equatable {
         let innerUnit = innerLength > 1e-9 ? innerVector / innerLength : outerUnit
         let innerAt = min(max(innerLength, sep), outerAt - sep)
         let innerPoint = gizmoPoint(aim, innerUnit * innerAt)
-        s.outerHandle = Handle(point: outerPoint, ringPoint: o, isOffRing: gizmoDistance(outerPoint, o) > 0.5)
-        s.innerHandle = Handle(point: innerPoint, ringPoint: i, isOffRing: gizmoDistance(innerPoint, i) > 0.5)
-        return s
+        return (Handle(point: outerPoint, ringPoint: o, isOffRing: gizmoDistance(outerPoint, o) > 0.5),
+                Handle(point: innerPoint, ringPoint: i, isOffRing: gizmoDistance(innerPoint, i) > 0.5))
     }
 
     /// The cone's section at cosine `cos` around the selected light's aim
@@ -481,14 +537,17 @@ enum LightGizmoTarget: Hashable {
 }
 
 /// Which target a point lands on: section 4.7 of the plan.
-/// 1. Point targets (the aim dot, the handles, the knobs) by the distance
-///    outside their drawn shape (0 inside), within the slop: the smallest wins
-///    (within `tieTolerance`), then the lowest rank (aim dot 0, inner handle
-///    1, outer handle 2, selected knob 3, front knobs 4, behind knobs 5), then
-///    the later in drawing order. A press inside a knob always takes it, and an
-///    aim dot under a knob stays reachable at its centre.
-/// 2. Only when no point target is in reach: the ring lines, by distance minus
-///    half the stroke, within the slop; the nearer wins, and both within
+/// 1. Point targets (the aim dot, the handles, the knobs) within their reach
+///    (drawn size plus the slop, at least half the minimum target: 22 pt on
+///    iOS, #623), ranked by the distance outside their drawn shape (0
+///    inside): the smallest wins (within `tieTolerance`), then the lowest rank
+///    (aim dot 0, inner handle 1, outer handle 2, selected knob 3, front knobs
+///    4, behind knobs 5), then the later in drawing order. A press inside a
+///    knob always takes it, and an aim dot under a knob stays reachable at its
+///    centre.
+/// 2. Only when no point target is in reach: the ring lines, within half the
+///    stroke plus the slop (at least half the minimum target), by distance
+///    minus half the stroke; the nearer wins, and both within
 ///    `coincidentRings` of each other there is `.rings`.
 /// 3. Otherwise nil: ring interiors, the outline, labels and empty space keep
 ///    the camera gesture.
@@ -526,40 +585,46 @@ enum LightGizmoHitTest {
 
     private static func pointCandidates(at p: CGPoint, layout: LightGizmoLayout,
                                         knobsOnly: Bool) -> [Candidate] {
-        let slop = layout.metrics.slop
+        let metrics = layout.metrics
         var out: [Candidate] = []
         let n = layout.knobs.count
         for (order, index) in layout.drawingOrder.enumerated() {
             let knob = layout.knobs[index]
-            let m = max(0, gizmoDistance(p, knob.centre) - knob.radius)
-            guard m <= slop else { continue }
+            let d = gizmoDistance(p, knob.centre)
+            guard d <= metrics.reach(knob.radius) else { continue }
+            let m = max(0, d - knob.radius)
             let rank = knob.isSelected ? 3 : (knob.isBehind ? 5 : 4)
             out.append(Candidate(target: .knob(knob.name), margin: m, rank: rank, order: order))
         }
         guard !knobsOnly, let s = layout.selected else { return out }
         if let aim = s.aimDot {
-            let m = max(0, gizmoDistance(p, aim) - layout.metrics.aimDotRadius)
-            if m <= slop { out.append(Candidate(target: .aimDot, margin: m, rank: 0, order: n + 2)) }
+            let d = gizmoDistance(p, aim)
+            if d <= metrics.reach(metrics.aimDotRadius) {
+                let m = max(0, d - metrics.aimDotRadius)
+                out.append(Candidate(target: .aimDot, margin: m, rank: 0, order: n + 2))
+            }
         }
-        let half = layout.metrics.handleHalfSide
+        let half = metrics.handleHalfSide
         for (handle, target, rank) in [(s.innerHandle, LightGizmoTarget.innerHandle, 1),
                                        (s.outerHandle, LightGizmoTarget.outerHandle, 2)] {
             guard let h = handle?.point else { continue }
-            let m = max(abs(p.x - h.x) - half, abs(p.y - h.y) - half, 0)
-            if m <= slop { out.append(Candidate(target: target, margin: m, rank: rank, order: n + 2 - rank)) }
+            let axis = max(abs(p.x - h.x), abs(p.y - h.y))
+            guard axis <= metrics.handleReach else { continue }
+            let m = max(axis - half, 0)
+            out.append(Candidate(target: target, margin: m, rank: rank, order: n + 2 - rank))
         }
         return out
     }
 
     private static func ring(at p: CGPoint, layout: LightGizmoLayout) -> LightGizmoTarget? {
         guard let s = layout.selected, let outer = s.outerRing, let inner = s.innerRing else { return nil }
-        let slop = layout.metrics.slop
+        let metrics = layout.metrics
         let o = nearest(p, on: outer)
         let i = nearest(p, on: inner)
-        let mo = o.map { max(0, $0.distance - layout.metrics.outerRingWidth / 2) }
-        let mi = i.map { max(0, $0.distance - layout.metrics.innerRingWidth / 2) }
-        let outerHit = mo.map { $0 <= slop } ?? false
-        let innerHit = mi.map { $0 <= slop } ?? false
+        let mo = o.map { max(0, $0.distance - metrics.outerRingWidth / 2) }
+        let mi = i.map { max(0, $0.distance - metrics.innerRingWidth / 2) }
+        let outerHit = o.map { $0.distance <= metrics.ringReach(width: metrics.outerRingWidth) } ?? false
+        let innerHit = i.map { $0.distance <= metrics.ringReach(width: metrics.innerRingWidth) } ?? false
         switch (outerHit, innerHit) {
         case (true, true):
             if let o, let near = nearest(o.point, on: inner), near.distance <= layout.metrics.coincidentRings {
@@ -1086,7 +1151,16 @@ struct LightGizmoInteraction {
     /// A pinch begins at `point`: on a knob, that light selected and #621's
     /// pinch session (the 0.5× grid); nil elsewhere (the camera zooms).
     func beginPinch(at point: CGPoint, layout: LightGizmoLayout) -> OrbitPinchSession? {
-        guard let name = LightGizmoHitTest.knob(at: point, layout: layout), controller.canEdit else { return nil }
+        guard let name = LightGizmoHitTest.knob(at: point, layout: layout) else { return nil }
+        return beginPinch(named: name)
+    }
+
+    /// A pinch on the knob of light `name` (#623: a two-finger sequence
+    /// decided on that knob, opened wherever the centroid is by the time the
+    /// pinch begins): that light selected and #621's pinch session; nil when
+    /// the light cannot be edited or is gone.
+    func beginPinch(named name: String) -> OrbitPinchSession? {
+        guard controller.canEdit else { return nil }
         if !isSelected(name) { controller.select(name: name) }
         guard isSelected(name) else { return nil }
         return LightsOrbitInteraction(controller: controller).beginPinch()
@@ -1434,7 +1508,18 @@ struct GizmoAutoContext {
 /// - `wheel:<light>:<steps>`: wheel notches on the knob (+ farther);
 /// - `kpinch:<light>:<factor>`: a pinch on the knob from 1 to that factor;
 /// - `hl:<x>:<y>`: an option-click at scene NDC (x, y);
-/// - `gshadow:<0|1>`: the Shadow chip, pressed when the light differs.
+/// - `gshadow:<0|1>`: the Shadow chip, pressed when the light differs;
+/// - `tpinch:<light>:<factor>[:<span>]` (#623): a two-finger touch sequence
+///   on the knob through LightTwoFingerSequence (the pan begins on the knob
+///   with the fingers `span` pt apart, 60 by default; the pinch and the
+///   twist join 30 pt away), then pinch ticks to the factor on the light the
+///   sequence named; logs the owner, the radius, the beam and what the pan
+///   and the twist did;
+/// - `lpress:<x>:<y>` or `lpress:<light>` (#623): a touch long-press at scene
+///   NDC (x, y), or on that light's knob, through LightTouchRouter (declined
+///   on a point target), then the highlight;
+/// - `gprobe:<light>:<dx>:<dy>` (#623): the hit test at the knob's centre
+///   plus (dx, dy) points; logs the target or `camera`.
 enum GizmoAutoGesture: Equatable {
     case knob(String, Double, Double)
     case flip(String)
@@ -1445,8 +1530,18 @@ enum GizmoAutoGesture: Equatable {
     case pinch(String, Double)
     case highlight(Double, Double)
     case shadow(Bool)
+    case touchPinch(String, Double, Double?)
+    case longPress(Double, Double)
+    case longPressKnob(String)
+    case probe(String, Double, Double)
 
-    static let keys: Set<String> = ["knob", "flip", "outer", "inner", "aimat", "wheel", "kpinch", "hl", "gshadow"]
+    static let keys: Set<String> = ["knob", "flip", "outer", "inner", "aimat", "wheel", "kpinch", "hl", "gshadow",
+                                    "tpinch", "lpress", "gprobe"]
+
+    /// The fingers' span of a `tpinch` without one (a pinch on a knob).
+    static let autoPinchSpan: Double = 60
+    /// How far the pinch and twist of a `tpinch` begin from the knob.
+    static let autoPinchDrift: CGFloat = 30
 
     /// `token`'s key is a gizmo gesture's (whether or not the rest parses).
     static func claims(_ token: String) -> Bool {
@@ -1493,6 +1588,23 @@ enum GizmoAutoGesture: Equatable {
         case "gshadow":
             guard parts.count == 2, let v = number(1), v == 0 || v == 1 else { return nil }
             return .shadow(v == 1)
+        case "tpinch":
+            guard parts.count == 3 || parts.count == 4, let n = name(1), let f = number(2), f > 0 else { return nil }
+            if parts.count == 4 {
+                guard let span = number(3), span > 0 else { return nil }
+                return .touchPinch(n, f, span)
+            }
+            return .touchPinch(n, f, nil)
+        case "lpress":
+            if parts.count == 3 {
+                guard let x = number(1), let y = number(2) else { return nil }
+                return .longPress(x, y)
+            }
+            guard parts.count == 2, let n = name(1) else { return nil }
+            return .longPressKnob(n)
+        case "gprobe":
+            guard parts.count == 4, let n = name(1), let dx = number(2), let dy = number(3) else { return nil }
+            return .probe(n, dx, dy)
         default:
             return nil
         }
@@ -1510,6 +1622,11 @@ enum GizmoAutoGesture: Equatable {
         case .pinch(let n, let f): return "kpinch:\(n):\(Self.fmt(f))"
         case .highlight(let x, let y): return "hl:\(Self.fmt(x)):\(Self.fmt(y))"
         case .shadow(let on): return "gshadow:\(on ? 1 : 0)"
+        case .touchPinch(let n, let f, let span):
+            return "tpinch:\(n):\(Self.fmt(f))" + (span.map { ":" + Self.fmt($0) } ?? "")
+        case .longPress(let x, let y): return "lpress:\(Self.fmt(x)):\(Self.fmt(y))"
+        case .longPressKnob(let n): return "lpress:\(n)"
+        case .probe(let n, let dx, let dy): return "gprobe:\(n):\(Self.fmt(dx)):\(Self.fmt(dy))"
         }
     }
 
@@ -1631,14 +1748,60 @@ enum GizmoAutoGesture: Equatable {
             return "\(t) -> \(result()) radius=\(value(.radius, 2))"
         case .highlight(let x, let y):
             let r = interaction.placeHighlight(at: layout.projection.point(sceneNDC: SIMD2(x, y)), layout: layout)
-            let text: String
-            switch r {
-            case .noSelection: text = "no_selection"
-            case .miss: text = "miss"
-            case .refused: text = "refused"
-            case .placed(let rim): text = "placed rim=" + (rim.map { String(format: "%.0f", $0) } ?? "none")
+            return "\(t) -> \(Self.text(r)) \(aimText())"
+        case .touchPinch(let name, let factor, let span):
+            guard let knob = layout.knob(named: name) else { return "\(t) -> miss" }
+            let fingers = CGFloat(span ?? Self.autoPinchSpan)
+            let knobAt: (CGPoint) -> String? = { LightGizmoHitTest.knob(at: $0, layout: layout) }
+            var sequence = LightTwoFingerSequence()
+            // The pan begins first, on the knob, and decides; the pinch and
+            // the twist join after the centroid moved off the knob.
+            let moved = CGPoint(x: knob.centre.x + Self.autoPinchDrift, y: knob.centre.y)
+            _ = sequence.began(.pan, centroid: knob.centre, span: fingers, knob: knobAt)
+            let owner = sequence.began(.pinch, centroid: moved, span: fingers, knob: knobAt)
+            _ = sequence.began(.rotation, centroid: moved, span: fingers, knob: knobAt)
+            if case .gizmo(let named) = owner, var s = interaction.beginPinch(named: named) {
+                for k in 1...ticks {
+                    let m = 1 + (factor - 1) * Double(k) / Double(ticks)
+                    if let r = interaction.pinch(&s, magnification: m) { last = r }
+                    if s.isEnded { break }
+                }
             }
-            return "\(t) -> \(text) \(aimText())"
+            let ownerText: String
+            switch owner {
+            case .gizmo(let named): ownerText = "gizmo(\(named))"
+            case .camera: ownerText = "camera"
+            }
+            let pan = sequence.owner(of: .pan)?.isGizmo == true ? "ignored" : "camera"
+            let twist = sequence.owner(of: .rotation)?.isGizmo == true ? "ignored" : "camera"
+            for kind in LightTwoFingerKind.allCases { sequence.ended(kind) }
+            return "\(t) -> \(result()) owner=\(ownerText) radius=\(value(.radius, 2)) beam=\(value(.beam, 1))"
+                + " pan=\(pan) twist=\(twist) reset=\(sequence.isActive ? 0 : 1)"
+        case .longPress, .longPressKnob:
+            let point: CGPoint
+            if case .longPress(let x, let y) = gesture {
+                point = layout.projection.point(sceneNDC: SIMD2(x, y))
+            } else if case .longPressKnob(let name) = gesture, let knob = layout.knob(named: name) {
+                point = knob.centre
+            } else {
+                return "\(t) -> miss"
+            }
+            guard LightTouchRouter.shouldBeginLongPress(at: point, layout: layout) else {
+                return "\(t) -> route=declined"
+            }
+            switch LightTouchRouter.longPress(at: point, layout: layout,
+                                              hasSelection: controller.selectedLight != nil) {
+            case .contextMenu: return "\(t) -> route=context_menu"
+            case .ignore: return "\(t) -> route=ignore"
+            case .highlight:
+                let r = interaction.placeHighlight(at: point, layout: layout)
+                return "\(t) -> route=highlight -> \(Self.text(r)) \(aimText())"
+            }
+        case .probe(let name, let dx, let dy):
+            guard let knob = layout.knob(named: name) else { return "\(t) -> miss" }
+            let p = CGPoint(x: knob.centre.x + CGFloat(dx), y: knob.centre.y + CGFloat(dy))
+            let hit = LightGizmoHitTest.target(at: p, layout: layout).map(Self.text) ?? "camera"
+            return "\(t) -> \(hit) touch=\(Self.fmt(Double(layout.metrics.minimumTarget)))"
         case .shadow(let on):
             guard let light = controller.selectedLight else { return "\(t) -> no_light" }
             if light.shadow != on { last = interaction.toggleShadow() }
@@ -1678,6 +1841,29 @@ enum GizmoAutoGesture: Equatable {
 
     private static func fmt(_ x: Double) -> String {
         x == x.rounded() && abs(x) < 1e9 ? String(format: "%.0f", x) : String(x)
+    }
+
+    /// A highlight's outcome as logged.
+    private static func text(_ r: LightGizmoHighlightResult) -> String {
+        switch r {
+        case .noSelection: return "no_selection"
+        case .miss: return "miss"
+        case .refused: return "refused"
+        case .placed(let rim): return "placed rim=" + (rim.map { String(format: "%.0f", $0) } ?? "none")
+        }
+    }
+
+    /// A hit target as logged.
+    private static func text(_ target: LightGizmoTarget) -> String {
+        switch target {
+        case .knob(let name): return "knob:" + name
+        case .aimDot: return "aim"
+        case .outerHandle: return "outer_handle"
+        case .innerHandle: return "inner_handle"
+        case .outerRing: return "outer_ring"
+        case .innerRing: return "inner_ring"
+        case .rings: return "rings"
+        }
     }
 }
 #endif

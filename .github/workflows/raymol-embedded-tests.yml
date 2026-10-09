@@ -81,13 +81,22 @@ jobs:
               testing/tests/raymol/lighting_air.py \
               testing/tests/raymol/lighting_air_check.py \
               testing/tests/raymol/lighting_air_msl.py \
+              testing/tests/raymol/lighting_atmosphere.py \
               testing/tests/raymol/lighting_bridge.py \
               testing/tests/raymol/lighting_check.py \
               testing/tests/raymol/lighting_commands.py \
+              testing/tests/raymol/lighting_docs.py \
               testing/tests/raymol/lighting_eye.py \
+              testing/tests/raymol/lighting_gallery.py \
               testing/tests/raymol/lighting_gizmo.py \
               testing/tests/raymol/lighting_harness.py \
+              testing/tests/raymol/lighting_hdr.py \
+              testing/tests/raymol/lighting_hdr_check.py \
+              testing/tests/raymol/lighting_hdr_msl.py \
               testing/tests/raymol/lighting_inspector.py \
+              testing/tests/raymol/lighting_material_check.py \
+              testing/tests/raymol/lighting_material_msl.py \
+              testing/tests/raymol/lighting_materials.py \
               testing/tests/raymol/lighting_mode.py \
               testing/tests/raymol/lighting_msl.py \
               testing/tests/raymol/lighting_orbit.py \
@@ -100,6 +109,7 @@ jobs:
               testing/tests/raymol/lighting_shadow_check.py \
               testing/tests/raymol/lighting_shadow_msl.py \
               testing/tests/raymol/lighting_shadows.py \
+              testing/tests/raymol/lighting_touch.py \
               testing/tests/raymol/line_stick_helper.py \
               testing/tests/raymol/material_custom.py \
               testing/tests/raymol/material_docs.py \

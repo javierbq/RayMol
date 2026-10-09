@@ -1162,6 +1162,12 @@ PYMOL API
 
     cmd.get_names( [string: "objects"|"selections"|"all"|"public_objects"|"public_selections"] )
 
+ARGUMENTS
+
+    enabled_only = 0: all objects/selections (default)
+    enabled_only = 1: enabled objects/selections (object's own flag)
+    enabled_only = 2 or 'in_scene': enabled in scene (respects parent groups)
+
 NOTES
 
     The default behavior is to return only object names.
@@ -1194,6 +1200,10 @@ SEE ALSO
             mode = 9
         else:
             raise pymol.CmdException("unknown type: '{}'".format(type))
+        if enabled_only in ('in_scene', 'scene'):
+            enabled_only = 2
+        else:
+            enabled_only = int(enabled_only)
         with _self.lockcm:
             r = _cmd.get_names(_self._COb,int(mode),int(enabled_only),str(selection))
         return r

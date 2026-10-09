@@ -45,6 +45,7 @@ enum MCPDesktopInstaller {
     }
 
     // Pure: the .mcpb manifest. command points at the installed RayMol binary.
+    // entry_point is required by the MCPB schema, even for binary servers.
     static func mcpbManifest(command: String) -> Data {
         let manifest: [String: Any] = [
             "manifest_version": "0.3",
@@ -55,6 +56,7 @@ enum MCPDesktopInstaller {
             "author": ["name": "RayMol"],
             "server": [
                 "type": "binary",
+                "entry_point": command,
                 "mcp_config": ["command": command, "args": ["--mcp-bridge"]],
             ],
         ]

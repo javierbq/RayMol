@@ -896,6 +896,7 @@ constexpr int kBlockShadowAt = 100;
 constexpr int kBlockShadowFloats = 20;
 constexpr int kBlockGridAt = 160;
 constexpr int kBlockTileAt = 164;
+constexpr int kBlockToneAt = 168; // #624
 
 /// One map of the frame's plan, decoded from the block at its documented
 /// offsets plus the plan's own matrices (new reference, nullptr on error).
@@ -1035,6 +1036,8 @@ PyObject* LightFrameAsPyDict(
       !setItem(dict.get(), "direct", PyFloat_FromDouble(c.direct)) ||
       !setItem(dict.get(), "reflect", PyFloat_FromDouble(c.reflect)) ||
       !setItem(dict.get(), "specular", PyFloat_FromDouble(c.specular)) ||
+      // #615: the rig's classic while it is on, 1 otherwise
+      !setItem(dict.get(), "classic_scale", PyFloat_FromDouble(c.scale)) ||
       !setItem(dict.get(), "shininess", PyFloat_FromDouble(frame.shininess)) ||
       !setItem(dict.get(), "rig_on", PyBool_FromLong(frame.rig.has_value())) ||
       !setItem(dict.get(), "studio_shadows",
@@ -1053,8 +1056,9 @@ PyObject* LightFrameAsPyDict(
   // offsets LightRigBlock.h documents (not through the struct's fields), so
   // a layout change shows up in the tests.
   constexpr int kFloats = int(sizeof(pymol::LightRigBlock) / sizeof(float));
-  static_assert(kFloats == 168, "LightRigBlock is 168 floats");
-  static_assert(kBlockTileAt + 4 == kFloats, "the tile is the last float4");
+  static_assert(kFloats == 172, "LightRigBlock is 172 floats");
+  static_assert(kBlockTileAt + 4 == kBlockToneAt, "the tone follows the tile");
+  static_assert(kBlockToneAt + 4 == kFloats, "the tone is the last float4");
   float f[kFloats];
   std::memcpy(f, &*frame.rig, sizeof f);
   const int count = std::clamp(int(f[0]), 0, pymol::kLightRigBlockSlots);
@@ -1073,6 +1077,8 @@ PyObject* LightFrameAsPyDict(
       !setItem(out.get(), "block", pyFloats(f, kFloats)) ||
       !setItem(out.get(), "shadow_grid", pyFloats(f + kBlockGridAt, 4)) ||
       !setItem(out.get(), "shadow_tile", pyFloats(f + kBlockTileAt, 4)) ||
+      // #624: exposure, 1 = HDR, 0, 0
+      !setItem(out.get(), "tone", pyFloats(f + kBlockToneAt, 4)) ||
       !setItem(out.get(), "lights", lightsOwned.release()))
     return nullptr;
   for (int i = 0; i < count; ++i) {

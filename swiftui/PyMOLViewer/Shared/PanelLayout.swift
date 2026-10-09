@@ -44,6 +44,9 @@ enum PanelLayout {
     static let panelFracKey = ns + "panelFrac"
     /// Sequence strip visible. Written by PyMOLEngine, which owns the flag.
     static let sequenceVisibleKey = ns + "sequenceVisible"
+    /// The corner the iPad's floating orbit view snapped to last (#623;
+    /// LightsFloatCorner raw value, `bl` when absent).
+    static let lightsOrbitCornerKey = ns + "lightsOrbitCorner"
 
     /// Every key this type defines — the namespace/uniqueness check in the tests
     /// runs off this list, so a new key must be added here too.
@@ -51,6 +54,7 @@ enum PanelLayout {
         consoleVisibleKey, objectsVisibleKey,
         landscapeConsoleVisibleKey, landscapeObjectsVisibleKey,
         consoleFracKey, inspectorFracKey, panelFracKey, sequenceVisibleKey,
+        lightsOrbitCornerKey,
     ]
 
     // MARK: - Bounds

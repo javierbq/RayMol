@@ -87,15 +87,30 @@ struct OrbitPlanLayout: Equatable {
     /// The outer ring's radius in scene sizes: 4 or 8 (`extent(for:)`).
     var extent: Double
     var slop: CGFloat
+    /// The smallest target side (`LightsTouch.minimumTarget`: 44 on iOS, 0
+    /// on macOS): every target is hit within at least half of it.
+    var minimumTarget: CGFloat
 
     static let smallExtent = 4.0
     static let largeExtent = 8.0
 
     init(size: CGSize = LightsOrbitMetrics.planSize, extent: Double,
-         slop: CGFloat = LightsOrbitMetrics.defaultSlop) {
+         slop: CGFloat = LightsOrbitMetrics.defaultSlop,
+         minimumTarget: CGFloat = LightsTouch.minimumTarget) {
         self.size = size
         self.extent = extent
         self.slop = slop
+        self.minimumTarget = minimumTarget
+    }
+
+    /// How far from its centre a lamp drawn at `radius` points is hit.
+    func lampReach(_ radius: CGFloat) -> CGFloat {
+        LightsTouch.reach(drawn: radius, slop: slop, minimumTarget: minimumTarget)
+    }
+
+    /// How far from its centre, per axis, the radius square is hit.
+    var squareReach: CGFloat {
+        LightsTouch.reach(drawn: LightsOrbitMetrics.squareHalfSide, slop: slop, minimumTarget: minimumTarget)
     }
 
     /// The extent that shows lights at `radii`: 4 (rings 1× to 4×, sketch 2;
@@ -167,11 +182,12 @@ struct OrbitPlanLayout: Equatable {
     /// How many degrees before its lamp's orbit the radius square of a light
     /// at `radius` sits: 45° (sketch 2) unless the chord from the square to
     /// the lamp would be shorter than two selected-lamp hit radii
-    /// (2·R·sin(θ/2) ≥ 2·(lamp radius + slop)); then the smallest angle that
-    /// clears it, at most 180°.
+    /// (2·R·sin(θ/2) ≥ 2·max(lamp radius + slop, minimum target / 2): 28 pt
+    /// on macOS, 44 pt on iOS, as before the touch floor); then the smallest
+    /// angle that clears it, at most 180°.
     func squareAngle(radius: Double) -> Double {
         let r = Double(drawnDistance(radius: radius))
-        let needed = 2 * Double(LightsOrbitMetrics.selectedLampRadius + slop)
+        let needed = 2 * Double(max(LightsOrbitMetrics.selectedLampRadius + slop, minimumTarget / 2))
         let preferred = LightsOrbitMetrics.squareAngle
         if 2 * r * sin(preferred / 2 * .pi / 180) >= needed { return preferred }
         guard needed < 2 * r else { return 180 }
@@ -194,13 +210,27 @@ struct OrbitPlanLayout: Equatable {
 struct PitchArcLayout: Equatable {
     var size: CGSize
     var slop: CGFloat
+    /// The smallest target side (`LightsTouch.minimumTarget`).
+    var minimumTarget: CGFloat
 
     /// The arc's ticks (sketch 2).
     static let ticks: [Double] = [-90, -45, 0, 45, 90]
 
-    init(size: CGSize = LightsOrbitMetrics.arcSize, slop: CGFloat = LightsOrbitMetrics.defaultSlop) {
+    init(size: CGSize = LightsOrbitMetrics.arcSize, slop: CGFloat = LightsOrbitMetrics.defaultSlop,
+         minimumTarget: CGFloat = LightsTouch.minimumTarget) {
         self.size = size
         self.slop = slop
+        self.minimumTarget = minimumTarget
+    }
+
+    /// How far from its centre the handle is hit.
+    var handleReach: CGFloat {
+        LightsTouch.reach(drawn: LightsOrbitMetrics.handleRadius, slop: slop, minimumTarget: minimumTarget)
+    }
+
+    /// How far from the arc line the track is hit.
+    var trackReach: CGFloat {
+        LightsTouch.reach(drawn: 0, slop: slop, minimumTarget: minimumTarget)
     }
 
     var centre: CGPoint { CGPoint(x: LightsOrbitMetrics.arcInset, y: size.height / 2) }
@@ -246,8 +276,9 @@ enum OrbitTarget: Equatable {
 
 /// Which target a press hits. Targets are hit where they are drawn
 /// (out-of-range lamps on the outer ring), within their drawn size plus the
-/// layout's slop. Empty space, the rings, the labels and the 1× disc hit
-/// nothing.
+/// layout's slop, and never less than half the layout's minimum target (the
+/// 44 pt floor on iOS, LightsTouch). Empty space, the rings, the labels and
+/// the 1× disc hit nothing.
 enum OrbitHitTest {
     /// The plan target at `point`. Among the targets containing it, the
     /// nearest centre wins; exact ties go to the selected lamp, then the
@@ -264,8 +295,8 @@ enum OrbitHitTest {
         }
         for lamp in state.lamps {
             let c = layout.lampPoint(orbit: lamp.orbit, radius: lamp.radius)
-            let reach = (lamp.isSelected ? LightsOrbitMetrics.selectedLampRadius
-                                         : LightsOrbitMetrics.lampRadius) + layout.slop
+            let reach = layout.lampReach(lamp.isSelected ? LightsOrbitMetrics.selectedLampRadius
+                                                         : LightsOrbitMetrics.lampRadius)
             let d = hypot(point.x - c.x, point.y - c.y)
             guard d <= reach else { continue }
             consider(.lamp(name: lamp.name, index: lamp.index), d,
@@ -274,7 +305,7 @@ enum OrbitHitTest {
         let s = state.selected
         let angle = squareAngle ?? layout.squareAngle(radius: s.radius)
         let c = layout.squarePoint(orbit: s.orbit, radius: s.radius, angle: angle)
-        let half = LightsOrbitMetrics.squareHalfSide + layout.slop
+        let half = layout.squareReach
         if abs(point.x - c.x) <= half, abs(point.y - c.y) <= half {
             consider(.radiusSquare, hypot(point.x - c.x, point.y - c.y), 1)
         }
@@ -282,16 +313,17 @@ enum OrbitHitTest {
     }
 
     /// The arc target at `point` for a handle at `pitch`: the handle (drawn
-    /// radius plus slop), else the arc itself (within slop of it, not left of
-    /// the centre), else nil.
+    /// radius plus slop, at least half the minimum target), else the arc
+    /// itself (within the slop of it, at least half the minimum target, not
+    /// left of the centre), else nil.
     static func pitch(at point: CGPoint, layout: PitchArcLayout, pitch: Double) -> OrbitTarget? {
         let h = layout.point(pitch: pitch)
-        if hypot(point.x - h.x, point.y - h.y) <= LightsOrbitMetrics.handleRadius + layout.slop {
+        if hypot(point.x - h.x, point.y - h.y) <= layout.handleReach {
             return .pitchHandle
         }
         let c = layout.centre
         guard point.x >= c.x,
-              abs(hypot(point.x - c.x, point.y - c.y) - layout.radius) <= layout.slop else { return nil }
+              abs(hypot(point.x - c.x, point.y - c.y) - layout.radius) <= layout.trackReach else { return nil }
         return .pitchTrack
     }
 }
@@ -813,13 +845,18 @@ enum OrbitAutoGesture: Equatable {
     /// Run the gesture on `controller`; one `<token> -> <result> <value>`
     /// line: the last write's result (`none` when nothing was written, `miss`
     /// when the press hit no target) and the selected light's value after.
+    /// `planSize` and `arcSize` are the canvases' sizes in the placement that
+    /// shows them (the card's by default; #623's sheet and side panel pass
+    /// theirs), so a run drives the plan the user sees.
     @MainActor
     static func apply(_ gesture: OrbitAutoGesture, to controller: LightsController,
-                      slop: CGFloat = LightsOrbitMetrics.defaultSlop) -> String {
+                      slop: CGFloat = LightsOrbitMetrics.defaultSlop,
+                      planSize: CGSize = LightsOrbitMetrics.planSize,
+                      arcSize: CGSize = LightsOrbitMetrics.arcSize) -> String {
         let interaction = LightsOrbitInteraction(controller: controller)
         guard let state = LightsOrbitState(controller) else { return "\(gesture.token) -> no_light" }
-        let plan = OrbitPlanLayout(extent: state.extent, slop: slop)
-        let arc = PitchArcLayout(slop: slop)
+        let plan = OrbitPlanLayout(size: planSize, extent: state.extent, slop: slop)
+        let arc = PitchArcLayout(size: arcSize, slop: slop)
         let ticks = LightsOrbitMetrics.autoTicks
         var last: LightSetResult?
         func drag(_ session: inout OrbitDragSession, _ path: (Double) -> CGPoint) {

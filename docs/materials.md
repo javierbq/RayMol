@@ -377,6 +377,113 @@ knobs it has:
     - `.idtf` exports only triangles;
     - `.wrl` and `.obj` carry none.
 
+## Under studio lights
+
+With a studio light rig on (the `lights` command or the app's lighting
+controls; Metal only), each material takes the studio lights its own way
+(#615): a matte surface shows no studio highlight, metal's highlights take
+its colour, glass glints.
+Nothing is tuned per material by hand. The response is derived from the
+material's own parameters, so the Custom knobs move it too. `default` takes
+the lights exactly as it did before materials had a response, and with no
+rig, or the rig off, nothing here applies.
+
+The lights themselves (the `lights` and `atmosphere` commands, Lights mode,
+per-light shadows, haze and dust, exposure and HDR) are documented in
+[Studio lights](lighting.md).
+
+**The principle.** A studio light reaches a material the way that material's
+own shader takes PyMOL's key light. Strengths are relative to a light at its
+default `highlight` of 0.5: a white light at intensity 1 and highlight 0.5
+gives a material the highlight PyMOL's key light gives it. The reflective
+family is the stated exception (below).
+
+Five terms per material. **Diffuse** scales each light's diffuse.
+**Highlight** scales each light's own `highlight`. **Exponent** is the
+highlight's sharpness ("scene" means `shininess`). **Tint** mixes the
+highlight from the light's colour (0) toward the base colour (1). **Wrap**
+lets the diffuse reach past the terminator. Values at the table parameters:
+
+| Material | Diffuse | Highlight | Exponent | Tint | Wrap | From |
+|---|---|---|---|---|---|---|
+| `default` | 1 | 1 | scene | 0 | 0 | unchanged (compiled in) |
+| `matte` | 1 | 0 | scene | 0 | 0 | Lambert only, as its shader |
+| `clay` | 1 | 0 | scene | 0 | 0 | no specular, as its shader |
+| `rubber` | 1 | 0.34 | 8 | 0.7 | 0 | its key highlight: Highlight / 0.5 |
+| `marble` | 1 | 1 | scene | 0 | 0.35 | default's model with marble's wrap |
+| `plastic` | 1.0 | 3.54 | 86.9 | 0 | 0 | its environment lobe (below) |
+| `metallic` | 0.79 | 3.06 | 30.0 | 0.8 | 0 | its environment lobe (below) |
+| `glass` | 1 | 2.4 | 60 | 0 | 0 | its key glint: 1.2 x (1 - 0.8 rough) / 0.5 |
+| `frosted_glass` | 1 | 1.25 | 27.6 | 0 | 0 | the same law at rough 0.6 |
+| `jelly` | 0.40 | 2.2 | 70 | 0.25 | 0.6 | its glow (1.15 x Inner glow) and wet highlight |
+
+Glass takes the diffuse into its body at its coverage and the highlight as
+glints, scaled by its Reflection knob, as it takes PyMOL's own lights.
+
+**Design choices** (stated as choices, not derived):
+
+- **Reflective materials use their environment lobe.** `plastic`'s and
+  `metallic`'s own key-light highlight is `default`'s, so the principle would
+  give them none of their own. A lamp is instead a bright spot in the room
+  they reflect: a normalised Blinn-Phong lobe of exponent `n = 2/a^2 - 2`
+  with `a` = Roughness, at strength `reflect x (n + 2) / (2 pi)`.
+- **`a` is the roughness, not its square.** Squared, plastic would reach an
+  exponent near 3,900, a pin-point that clips to white in 8 bit.
+- **Roughness is floored at 0.1** for the lobe (exponent at most 198), so a
+  Custom roughness of 0 stays finite.
+- **0.5 is the reference highlight**, a new light's default.
+- **Reflective diffuse is `1 - reflect x tint`** (plastic 1.0, metallic
+  0.79), as the CPU `ray` command dims metal's body: under a coloured light
+  metal reads as metal, not as painted plastic. Metal's own shading keeps
+  full diffuse under PyMOL's lights.
+- **Metallic's highlight tint is the CPU's.** The tint is
+  `min(1, tint x 0.8 / 0.35)`: the table metallic gets exactly the 0.8
+  highlight tint `ray` gives metal, and a Custom Reflection tint scales from
+  there (0 white, 0.44 and above fully the base colour). Plastic (tint 0)
+  stays white.
+
+**Where the response departs from a material's own shader:**
+
+- **Jelly.** Its glow's rim thinning is not carried; its glow lights `base x
+  1.15` unclamped, so very bright bases are slightly over-lit; the broad half
+  of its two-lobe highlight is dropped (one lobe); the highlight tints toward
+  the base colour, not toward `base x 1.3`.
+- **Rubber.** The highlight tints toward the base colour, not toward
+  `base x 1.4`, and its diffuse compression is not carried.
+- **Clay.** Its diffuse compression is not carried.
+- **Procedural patterns.** The studio diffuse lights the plain base colour,
+  not the pattern: marble's veins, the grain and clay's edge darkening fade
+  under a rig whose `classic` is 0.
+
+**Custom knobs flow through.** Reflection, Reflection tint and Roughness move
+`plastic`'s and `metallic`'s response (tint 1 gives a fully tinted highlight
+and diffuse `1 - reflect`; a rougher surface a broader, dimmer highlight).
+Glass's Roughness and frosted glass's Frost widen and dim the glints, and
+glass's Reflection scales them. Rubber's Highlight and jelly's Wet highlight
+move their studio highlights, and jelly's Inner glow its studio diffuse.
+Out-of-range values are clamped as the renderer clamps them (a negative
+Highlight gives none).
+
+**PyMOL's own lights inside a material.** Glass's key-light and headlight
+glints, jelly's wet highlights and rubber's highlight reflect PyMOL's own
+lights, not the room. While a rig is on they follow its `classic`, as
+PyMOL's diffuse and specular do: at `classic` 0 they are gone, and the
+glints you see are the studio lights'. Environment reflections and rubber's
+Sheen (a grazing term with no light direction) stay under every rig.
+
+**Limits.**
+
+- With `shininess` 0 every studio highlight has exponent 1, as `default`'s
+  already does.
+- A ray-traced reflection (`metal_raytrace`) shows the reflected object
+  lit with `default`'s response.
+- The CPU `ray` command has no studio lights.
+- Under a light rig, bright light rolls off through one tone curve that keeps
+  its hue (HDR, #624; `metal_exposure` scales the lit scene). The materials'
+  own classic terms (environment, jelly, impostor and VBO shading) still pass
+  their 8-bit soft knee first, and `metal_light_hdr 2` brings the knee back
+  for the whole rig.
+
 ## Scenes and sessions
 
 Materials, `material_default`, `material_env` and `transparency_peel` are

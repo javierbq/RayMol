@@ -260,3 +260,41 @@ class TestNativeParity(PickBase):
                 metal_pick._native_pick(objs, cam, x, 0.0, aspect, thresh),
                 metal_pick._python_pick(objs, cam, x, 0.0, aspect, thresh),
                 'at ndc (%.1f, 0.0)' % x)
+
+
+class TestDisabledGroupNotPickable(PickBase):
+    """Issue #748: Objects hidden because a parent group is disabled cannot be
+    picked (hover, click, grid cells)."""
+
+    def testDisabledGroupAtomsNotPickable(self):
+        self.atoms([(0.0, 0.0, 0.0)], obj='m1', rep='spheres')
+        self.atoms([(5.0, 5.0, 0.0)], obj='m2', rep='spheres')
+        cmd.group('grp', 'm1 m2')
+
+        # When group is enabled, picking at m1's position hits m1
+        ndc_x, ndc_y = self.ndc(0.0, 0.0, 0.0)
+        hit = metal_pick._pick_atom(ndc_x, ndc_y, self.aspect())
+        self.assertIsNotNone(hit)
+        self.assertEqual(hit[1], 'm1')
+
+        # When group is disabled, m1 and m2 cannot be picked
+        cmd.disable('grp')
+        hit_disabled = metal_pick._pick_atom(ndc_x, ndc_y, self.aspect())
+        self.assertIsNone(hit_disabled, "Atom in disabled group was picked")
+
+        # enabled_only=1 still returns m1 and m2 (object's own flag, needed for ObjectPanel)
+        # enabled_only=2 returns neither m1 nor m2 nor grp (group-aware in-scene)
+        enabled_1 = cmd.get_names('objects', enabled_only=1)
+        enabled_2 = cmd.get_names('objects', enabled_only=2)
+        self.assertIn('m1', enabled_1)
+        self.assertIn('m2', enabled_1)
+        self.assertNotIn('m1', enabled_2)
+        self.assertNotIn('m2', enabled_2)
+        self.assertNotIn('grp', enabled_2)
+
+        # Re-enabling the group makes m1 pickable again
+        cmd.enable('grp')
+        hit_reenabled = metal_pick._pick_atom(ndc_x, ndc_y, self.aspect())
+        self.assertIsNotNone(hit_reenabled)
+        self.assertEqual(hit_reenabled[1], 'm1')
+        self.assertIn('m1', cmd.get_names('objects', enabled_only=2))

@@ -152,9 +152,124 @@ final class AirRedrawGateTests: XCTestCase {
     func testActiveVisibleTicksAtThirtyHertz() throws {
         let interval = try XCTUnwrap(AirRedrawGate.interval(shown),
                                      "an active, visible app with power to spare animates the dust")
-        XCTAssertEqual(interval, 1.0 / 30.0, accuracy: 1e-12)
-        XCTAssertEqual(AirRedrawGate.activeFPS, 30,
-                       "the active cap is 30 Hz (provisional until #623's device runs)")
+        XCTAssertEqual(interval, 1.0 / AirRedrawGate.activeFPS, accuracy: 1e-12)
+        XCTAssertEqual(AirRedrawGate.defaultFPS, 30,
+                       "the default cap is 30 Hz (provisional until #623's device runs)")
+        if ProcessInfo.processInfo.environment["RAYMOL_AIR_FPS"] == nil {
+            XCTAssertEqual(AirRedrawGate.activeFPS, 30, "without RAYMOL_AIR_FPS the cap is the default")
+            XCTAssertEqual(interval, 1.0 / 30.0, accuracy: 1e-12)
+        }
+    }
+
+    // MARK: - Launch switches (#623's calibration)
+
+    func testFPSReadsTheEnvironment() {
+        XCTAssertEqual(AirRedrawGate.fps(environment: [:]), 30, "unset: the default")
+        XCTAssertEqual(AirRedrawGate.fps(environment: ["RAYMOL_AIR_FPS": "20"]), 20)
+        XCTAssertEqual(AirRedrawGate.fps(environment: ["RAYMOL_AIR_FPS": "60"]), 60)
+        XCTAssertEqual(AirRedrawGate.fps(environment: ["RAYMOL_AIR_FPS": "1"]), 1, "the lowest cap")
+        XCTAssertEqual(AirRedrawGate.fps(environment: ["RAYMOL_AIR_FPS": "120"]), 120, "the highest cap")
+        XCTAssertEqual(AirRedrawGate.fps(environment: ["RAYMOL_AIR_FPS": "24.5"]), 24.5)
+        XCTAssertEqual(AirRedrawGate.fps(environment: ["RAYMOL_AIR_FPS": " 45 "]), 45,
+                       "surrounding spaces are ignored")
+        for bad in ["0", "0.5", "120.5", "500", "-30", "x", "", "nan", "inf", "30fps"] {
+            XCTAssertEqual(AirRedrawGate.fps(environment: ["RAYMOL_AIR_FPS": bad]), 30,
+                           "'\(bad)' is not a cap in 1...120: the default")
+        }
+        XCTAssertEqual(AirRedrawGate.fps(environment: ["RAYMOL_AIR_LOG": "60"]), 30,
+                       "only RAYMOL_AIR_FPS sets the cap")
+        XCTAssertEqual(AirRedrawGate.fpsRange, 1...120)
+        XCTAssertEqual(AirRedrawGate.activeFPS,
+                       AirRedrawGate.fps(environment: ProcessInfo.processInfo.environment),
+                       "the launch's cap is the process environment's")
+    }
+
+    func testACapFromTheEnvironmentSetsTheInterval() {
+        // The interval is 1 / activeFPS; at a 120 Hz display link a cap of 20
+        // or 60 lets that many air frames a second through.
+        for cap in [20.0, 60.0] {
+            var last = 0.0
+            var frames = 0
+            for tick in 1...120 {
+                let now = Double(tick) / 120
+                if AirRedrawGate.due(interval: 1 / cap, now: now, lastFrame: last) {
+                    frames += 1
+                    last = now
+                }
+            }
+            XCTAssertEqual(frames, Int(cap), "cap \(cap)")
+        }
+    }
+
+    func testLogEnabledOnlyForOne() {
+        XCTAssertTrue(AirRedrawGate.logEnabled(environment: ["RAYMOL_AIR_LOG": "1"]))
+        XCTAssertTrue(AirRedrawGate.logEnabled(environment: ["RAYMOL_AIR_LOG": " 1 "]))
+        XCTAssertFalse(AirRedrawGate.logEnabled(environment: [:]), "off by default")
+        for other in ["0", "", "true", "yes", "2"] {
+            XCTAssertFalse(AirRedrawGate.logEnabled(environment: ["RAYMOL_AIR_LOG": other]),
+                           "'\(other)'")
+        }
+        XCTAssertFalse(AirRedrawGate.logEnabled(environment: ["RAYMOL_AIR_FPS": "1"]))
+        XCTAssertEqual(AirRedrawGate.logsHolds,
+                       AirRedrawGate.logEnabled(environment: ProcessInfo.processInfo.environment))
+    }
+
+    func testHoldReasonNamesWhyTheDustIsStill() {
+        XCTAssertNil(AirRedrawGate.holdReason(shown), "shown: no hold")
+        XCTAssertEqual(AirRedrawGate.holdReason(Activity(active: false, visible: true, lowPower: false)),
+                       .inactive)
+        XCTAssertEqual(AirRedrawGate.holdReason(Activity(active: true, visible: false, lowPower: false)),
+                       .hidden)
+        XCTAssertEqual(AirRedrawGate.holdReason(Activity(active: true, visible: true, lowPower: true)),
+                       .lowPower)
+        // The first failing condition of interval's guard wins.
+        XCTAssertEqual(AirRedrawGate.holdReason(Activity(active: false, visible: false, lowPower: true)),
+                       .inactive)
+        XCTAssertEqual(AirRedrawGate.holdReason(Activity(active: true, visible: false, lowPower: true)),
+                       .hidden)
+        XCTAssertEqual(AirRedrawGate.HoldReason.lowPower.rawValue, "low_power")
+    }
+
+    func testAHoldReasonExactlyWhenTheDustIsStill() {
+        for active in [false, true] {
+            for visible in [false, true] {
+                for lowPower in [false, true] {
+                    let activity = Activity(active: active, visible: visible, lowPower: lowPower)
+                    XCTAssertEqual(AirRedrawGate.holdReason(activity) == nil,
+                                   AirRedrawGate.interval(activity) != nil, "\(activity)")
+                }
+            }
+        }
+    }
+
+    func testTheHoldLine() {
+        let none = AirRedrawGate.HoldState(reason: nil, lowPowerMode: false, thermalState: .nominal)
+        XCTAssertEqual(AirRedrawGate.holdLine(none, fps: 30),
+                       "AirRedrawGate: hold=none low_power_mode=0 thermal=nominal fps=30")
+        let lpm = AirRedrawGate.HoldState(reason: .lowPower, lowPowerMode: true, thermalState: .fair)
+        XCTAssertEqual(AirRedrawGate.holdLine(lpm, fps: 60),
+                       "AirRedrawGate: hold=low_power low_power_mode=1 thermal=fair fps=60")
+        let hot = AirRedrawGate.HoldState(reason: .lowPower, lowPowerMode: false, thermalState: .critical)
+        XCTAssertEqual(AirRedrawGate.holdLine(hot, fps: 24.5),
+                       "AirRedrawGate: hold=low_power low_power_mode=0 thermal=critical fps=24.5")
+        let away = AirRedrawGate.HoldState(reason: .inactive, lowPowerMode: false, thermalState: .serious)
+        XCTAssertEqual(AirRedrawGate.holdLine(away, fps: 30),
+                       "AirRedrawGate: hold=inactive low_power_mode=0 thermal=serious fps=30")
+        XCTAssertEqual(AirRedrawGate.thermalName(.nominal), "nominal")
+        XCTAssertEqual(AirRedrawGate.thermalName(.fair), "fair")
+        XCTAssertEqual(AirRedrawGate.thermalName(.serious), "serious")
+        XCTAssertEqual(AirRedrawGate.thermalName(.critical), "critical")
+    }
+
+    func testAThermalStepInsideAHoldIsANewState() {
+        // The coordinator logs when the HoldState changes, so serious to
+        // critical (same reason) still gives a line, and the same state twice
+        // gives one.
+        let serious = AirRedrawGate.HoldState(reason: .lowPower, lowPowerMode: false, thermalState: .serious)
+        let critical = AirRedrawGate.HoldState(reason: .lowPower, lowPowerMode: false, thermalState: .critical)
+        XCTAssertNotEqual(serious, critical)
+        XCTAssertEqual(serious, AirRedrawGate.HoldState(reason: .lowPower, lowPowerMode: false,
+                                                        thermalState: .serious))
     }
 
     func testInactiveAppHoldsTheDustStill() {

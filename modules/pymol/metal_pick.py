@@ -172,7 +172,7 @@ def _grid_cells(aspect):
             return None
     except Exception:
         return None
-    objs = [o for o in (cmd.get_names('objects', enabled_only=1) or [])
+    objs = [o for o in (cmd.get_names('objects', enabled_only=2) or [])
             if not o.startswith('_')]
     size = len(objs)
     try:
@@ -642,8 +642,11 @@ def _pick_atom(ndc_x, ndc_y, aspect, max_ndc2=None):
             pick_objs = [target_obj]
 
         if pick_objs is None:
-            pick_objs = [o for o in (cmd.get_names('objects', enabled_only=1) or [])
+            pick_objs = [o for o in (cmd.get_names('objects', enabled_only=2) or [])
                          if not o.startswith('_')]
+
+        if not pick_objs:
+            return None
 
         glycan_hit = _glycan_pick(pick_objs, cam, ndc_x, ndc_y, aspect, thresh)
         if glycan_hit is not None:

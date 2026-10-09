@@ -8,14 +8,18 @@ the regression renders against master, L2 and L3 prove on a Mac:
 
 * TestMasterUnchanged: every shader literal that master has is master's
   (sha256 of the comment-stripped, whitespace-free text, taken from master
-  83dd31bbe with these parsers, never from this branch), kAirSrc is the only
-  new one, and runPostChain, beginFrame, SceneRenderMetal and
-  SceneLightsFrame are master's once the air's own statement is taken out;
+  83dd31bbe with these parsers, never from this branch), except kMaterialSrc,
+  which #615 changes and pins at its head (CHANGED_BY_615), and four lit
+  libraries once #615's mat_classic_light arguments are taken out; kAirSrc
+  is the only new one; and runPostChain, beginFrame, SceneRenderMetal and
+  SceneLightsFrame are master's once the air's own statement (and, in
+  SceneRenderMetal, #615's setLightClassicScale statement) is taken out;
 * TestLibrary: kAirSrc is built once, as kEyeReconSrc + kMaterialSrc +
   kAirSrc, inside ensureAirPipelines (one attempt, every failure logged in
   the L4 console's words, everything but the pipeline released), which only
   runPostChain's air statement reaches; its functions come from airFunction,
-  the tube rig library's fallback (constant indices 0, 1 and 2); it defines
+  the tube rig library's fallback (constant indices 0 to 3; #624's kLightHdr,
+  read by the composite, is the fourth); it defines
   only post_air_ functions, LightAirU and AirVOut, and declares no function
   constant, no rig or shadow token and nothing at the lit libraries' rig and
   map indices;
@@ -112,6 +116,23 @@ MASTER_LITERALS = {
     'kSphereImpostorSrc': '1ed9ba64205bd960',
     'kVBOSrc': '728416d46e47293d',
 }
+# #615 (Materials own their response to studio lights) changes kMaterialSrc
+# itself: MaterialU carries the studio response, light_response reads it, the
+# material shaders name their light constants, and their own classic light
+# terms take the rig's classic scale (mat_classic_light; kLightRig declared
+# at the top). MASTER_LITERALS keeps
+# master's digest; this is the branch's, taken with the same parsers at
+# #615's head. #615 (re-take only when #615 changes kMaterialSrc);
+# lighting_material_msl.py pins what changed.
+CHANGED_BY_615 = {
+    'kMaterialSrc': '4f4f1e7f4c703bad',
+}
+# #615 appends the material's classic scale to every mat_glass_shade call
+# (`, mat_classic_light(m)`). These four literals carry such calls and nothing
+# else of #615's: with the argument taken out they are master's.
+CLASSIC_LIGHT_ARGUMENT = re.compile(r',\s*mat_classic_light\(\s*\w+\s*\)')
+CLASSIC_LIGHT_LITERALS = ('kVBOSrc', 'kSphereImpostorSrc', 'kCylinderImpostorSrc',
+                          'kMaterialImpostorSrc')
 # The same digests of four functions on master (cpp_function's body, braces
 # included, comments stripped); on this branch with the air's statement
 # taken out (AIR_STATEMENTS).
@@ -131,6 +152,141 @@ AIR_STATEMENTS = {
         r'if\s*\(frame\.rig && pymol::LightAirActive\(rig->air\)\)\s*'
         r'frame\.airSource\s*=[^;]*;'),
 }
+# #615's own statements in those functions, taken out the same way (exactly
+# one match each): SceneRenderMetal hands the renderer the rig's classic
+# scale right after the rig.
+STATEMENTS_615 = {
+    'SceneRenderMetal': re.compile(
+        r'G->Renderer->setLightClassicScale\(lights\.classic\.scale\);'),
+}
+# #624's (HDR) statement, taken out the same way (exactly one match):
+# SceneLightsFrame fills the rig block's tone only while the rig is on.
+STATEMENTS_624 = {
+    'SceneLightsFrame': re.compile(
+        r'if\s*\(\s*frame\.rig\s*\)\s*SceneLightsToneFill\(G,\s*\*frame\.rig\);'),
+    # beginFrame clears the frame's HDR colour with the rig (Part 4)
+    'RendererMetal::beginFrame': re.compile(r'_lightHdrOn\s*=\s*false\s*;'),
+}
+# #624's exposure hand-off in runPostChain (Part 4): #13's pass exposes at
+# postExposure, 1 in an HDR rig frame (the rig shaders apply the exposure)
+# and metal_exposure otherwise. With the declaration taken out (exactly one
+# match) and its three uses written back as _exposure, the function is what
+# it was.
+POST_EXPOSURE_624 = re.compile(
+    r'const\s+float\s+postExposure\s*=\s*_lightHdrOn\s*\?\s*1\.0f\s*:\s*'
+    r'_exposure\s*;')
+POST_EXPOSURE_USES_624 = 3
+
+
+def without_post_exposure_624(body):
+    """runPostChain's `body` with #624's postExposure put back. Returns
+    (text, declarations, uses)."""
+    body, declarations = POST_EXPOSURE_624.subn('', body)
+    body, uses = re.subn(r'\bpostExposure\b', '_exposure', body)
+    return body, declarations, uses
+
+
+# #624's RT rig composite choice in runPostChain (Part 5): the rig composites
+# are [transparent][hdr] slots and tried flags, and the builder takes the
+# frame's hdr choice. With the slot choice (exactly one match) and the
+# builder call (exactly one) written back as #613's, the function is what it
+# was.
+RT_RIG_CHOICE_624 = re.compile(
+    r'const\s+int\s+rigT\s*=\s*doRTTrans\s*\?\s*1\s*:\s*0\s*;\s*'
+    r'const\s+int\s+rigH\s*=\s*_lightHdrOn\s*\?\s*1\s*:\s*0\s*;\s*'
+    r'id<MTLRenderPipelineState>\s*\*\s*rigComposite\s*=\s*'
+    r'&_rtResolvePipelineRig\[rigT\]\[rigH\]\s*;\s*'
+    r'bool\s*\*\s*tried\s*=\s*&_rtRigTried\[rigT\]\[rigH\]\s*;')
+RT_RIG_CHOICE_613 = ('id<MTLRenderPipelineState>* rigComposite = '
+                     'doRTTrans ? &_rtResolvePipelineTRig : &_rtResolvePipelineRig; '
+                     'bool* tried = doRTTrans ? &_rtRigTTried : &_rtRigTried;')
+RT_RIG_BUILD_624 = re.compile(r'buildRTRigComposite\(\s*doRTTrans\s*,\s*_lightHdrOn\s*\)')
+
+
+def without_rt_rig_hdr_624(body):
+    """runPostChain's `body` with #624's RT rig composite choice put back.
+    Returns (text, choices, builds)."""
+    body, choices = RT_RIG_CHOICE_624.subn(RT_RIG_CHOICE_613, body)
+    body, builds = RT_RIG_BUILD_624.subn('buildRTRigComposite(doRTTrans)', body)
+    return body, choices, builds
+# #624 appends `float4 tone;` to the rig block's MSL mirror (LightRigU) in
+# kMaterialSrc and kRTSrc (layer1/LightRigBlock.h, 688 bytes). With the field
+# taken out (exactly one match each) the literals are what they were.
+TONE_FIELD_624 = re.compile(r'(?<=float4 shadowTile;)\s*float4\s+tone\s*;')
+TONE_FIELD_LITERALS = ('kMaterialSrc', 'kRTSrc')
+
+# #624's shader edits (HDR colour, Part 3 on), each put back by
+# without_hdr_624, so a pin on the code before #624 still holds once they are
+# taken out. Whitespace-free text (squash). The new functions (the tone
+# helpers, in kMaterialSrc and their copies in kRTSrc, and light_glass_cover)
+# and declarations (kLightHdr, the tone constants) are removed; every other
+# edit is (name, new, old). lighting_hdr_msl.py pins how many times each
+# applies in each literal (an explicit allowlist) and the new text itself.
+HDR_NEW_FUNCTIONS_624 = ('light_tone_scalar', 'light_tone_scalar_inverse',
+                         'light_tone', 'light_tone_inverse', 'light_glass_cover')
+HDR_DECLARATIONS_624 = re.compile(
+    r'constantboolkLightHdr\[\[function_constant\(\d\)\]\];'
+    r'|constantfloatkLightTone(?:Knee|White)=[0-9.]+;')
+HDR_EDITS_624 = (
+    # light_finish takes the frame's exposure and gains the HDR arm
+    ('finish_signature', 'float3light_finish(float3c,floatexposure)',
+     'float3light_finish(float3c)'),
+    ('finish_body', '{if(kLightHdr)returnlight_tone(c*exposure);'
+                    'returnmat_soft_knee(c);}',
+     '{returnmat_soft_knee(c);}'),
+    # ...which light_apply, light_apply_shadowed and rt_rig_hit hand it
+    ('apply_exposure', 'light_finish(rgb+base*t.diffuse+t.specular,rig.tone.x)',
+     'light_finish(rgb+base*t.diffuse+t.specular)'),
+    ('hit_exposure', 'light_finish(shaded+base*t.diffuse+t.specular,rig.tone.x)',
+     'light_finish(shaded+base*t.diffuse+t.specular)'),
+    # glass's rig glints: linear under HDR
+    ('glints_body', '{if(kLightHdr)return2.0*s;returnfloat3(1.0)-exp(-2.0*s);}',
+     '{returnfloat3(1.0)-exp(-2.0*s);}'),
+    # the rig glass covers (vbo_fragment_oit, cyl_impostor_fragment_oit)
+    ('vbo_cover', 'if(kLightRig&&kLightHdr)c=light_glass_cover(body,hi,in.color.a,'
+                  'rig.tone.x);elsec=mat_glass_cover(body,hi,in.color.a);',
+     'c=mat_glass_cover(body,hi,in.color.a);'),
+    ('cyl_cover', 'float4g;if(kLightRig&&kLightHdr)g=light_glass_cover(body,hi,a,'
+                  'rig.tone.x);elseg=mat_glass_cover(body,hi,a);',
+     'float4g=mat_glass_cover(body,hi,a);'),
+    # the sphere glass helpers through the rig's seam
+    ('sphere_glass', 'returnlight_outline(light_finish(body+hi,rig.tone.x),pt,rig);',
+     'returnlight_outline(mat_soft_knee(body+hi),pt,rig);'),
+    # the air composite: two arms, the exposure, the upsample's rig
+    ('air_signature', 'float3post_air_finish(float3c,float3a,floate)',
+     'float3post_air_finish(float3c,float3a)'),
+    ('air_body', '{if(kLightHdr){constfloat3add=all(isfinite(a))?max(a,float3(0.0))'
+                 '*e:float3(0.0);returnmax(saturate(c),light_tone(light_tone_inverse('
+                 'saturate(c))+add));}returnc+max(mat_soft_knee(c+a)-mat_soft_knee(c),'
+                 'float3(0.0));}',
+     '{returnc+max(light_finish(c+a)-light_finish(c),float3(0.0));}'),
+    ('air_full', 'post_air_finish(c.rgb,t.rgb,rig.tone.x)',
+     'post_air_finish(c.rgb,t.rgb)'),
+    ('air_upsample', 'post_air_finish(c.rgb,a,rig.tone.x)',
+     'post_air_finish(c.rgb,a)'),
+    ('air_upsample_rig', 'texture2d<float>termTex[[texture(3)]],constantLightAirU&'
+                         'air[[buffer(0)]],constantLightRigU&rig[[buffer(1)]])',
+     'texture2d<float>termTex[[texture(3)]],constantLightAirU&air[[buffer(0)]])'),
+)
+
+
+def without_hdr_624(code):
+    """`code` (comments stripped: a literal, or one function's signature or
+    body) without whitespace and with #624's shader edits put back. Returns
+    (text, counts): counts[name] is how many times each edit applied, the new
+    functions and declarations under 'functions' and 'declarations'."""
+    text = squash(code)
+    counts = {}
+    for name, (sig, body) in msl_functions(code).items():
+        if name in HDR_NEW_FUNCTIONS_624:
+            whole = squash(sig + body)
+            counts['functions'] = counts.get('functions', 0) + text.count(whole)
+            text = text.replace(whole, '')
+    text, counts['declarations'] = HDR_DECLARATIONS_624.subn('', text)
+    for name, new, old in HDR_EDITS_624:
+        counts[name] = text.count(new)
+        text = text.replace(new, old)
+    return text, counts
 
 # #616's shadow tokens (lighting_shadow_msl.py): never in another library.
 SHADOW_TOKENS = re.compile(r'\bkLightShadow\b|\blightShadow\w*|\w+_shadowed\b')
@@ -205,7 +361,24 @@ class TestMasterUnchanged(AirMSLCase):
     def testEveryMasterLiteralIsMasters(self):
         for name, want in sorted(MASTER_LITERALS.items()):
             self.assertIn(name, self.msl)
-            self.assertEqual(digest(strip_comments(self.msl[name])), want, name)
+            # #615: a literal it changed is pinned at #615's head instead
+            if name in CHANGED_BY_615:
+                self.assertNotEqual(CHANGED_BY_615[name], want, name)
+                want = CHANGED_BY_615[name]
+            code = strip_comments(self.msl[name])
+            # #624: the rig block's tone field taken out
+            if name in TONE_FIELD_LITERALS:
+                self.assertEqual(len(TONE_FIELD_624.findall(code)), 1, name)
+                code = TONE_FIELD_624.sub('', code, count=1)
+            # #624: its shader edits put back (lighting_hdr_msl.py pins
+            # which apply where)
+            code, _ = without_hdr_624(code)
+            # #615: the classic-scale argument of the glass calls taken out
+            if name in CLASSIC_LIGHT_LITERALS:
+                self.assertTrue(CLASSIC_LIGHT_ARGUMENT.search(code), name)
+                code = CLASSIC_LIGHT_ARGUMENT.sub('', code)
+            self.assertEqual(digest(code), want, name)
+        self.assertLessEqual(set(CHANGED_BY_615), set(MASTER_LITERALS))
         self.assertEqual(set(self.msl) - set(MASTER_LITERALS), {'kAirSrc'})
 
     def testFunctionsAreMastersWithoutTheAir(self):
@@ -216,7 +389,22 @@ class TestMasterUnchanged(AirMSLCase):
             body = cpp_function(sources[path], name)
             statement = AIR_STATEMENTS[name]
             self.assertEqual(len(statement.findall(body)), 1, name)
-            self.assertEqual(digest(statement.sub('', body, count=1)), want, name)
+            body = statement.sub('', body, count=1)
+            # #615's statement, taken out as the air's is
+            if name in STATEMENTS_615:
+                self.assertEqual(len(STATEMENTS_615[name].findall(body)), 1, name)
+                body = STATEMENTS_615[name].sub('', body, count=1)
+            # #624's statement, taken out as the air's is
+            if name in STATEMENTS_624:
+                self.assertEqual(len(STATEMENTS_624[name].findall(body)), 1, name)
+                body = STATEMENTS_624[name].sub('', body, count=1)
+            # #624's exposure hand-off and RT rig composite choice, put back
+            if name == 'RendererMetal::runPostChain':
+                body, declarations, uses = without_post_exposure_624(body)
+                self.assertEqual((declarations, uses), (1, POST_EXPOSURE_USES_624))
+                body, choices, builds = without_rt_rig_hdr_624(body)
+                self.assertEqual((choices, builds), (1, 1))
+            self.assertEqual(digest(body), want, name)
 
 
 class TestLibrary(AirMSLCase):
@@ -242,8 +430,11 @@ class TestLibrary(AirMSLCase):
 
     def testOneAttemptLoggedOnce(self):
         ensure = self.body('RendererMetal::ensureAirPipelines')
-        self.assertRegex(ensure, r'^\{\s*if\s*\(\s*_airFullPipeline\s*\)\s*return true;'
-                                 r'\s*if\s*\(\s*_airPipelinesTried\s*\)\s*return false;'
+        # #624 (re-taken): after the one attempt, the answer is whether this
+        # frame's composite (its kLightHdr variant) exists
+        self.assertRegex(ensure, r'^\{\s*const int h = _lightHdrOn \? 1 : 0;'
+                                 r'\s*if\s*\(\s*_airPipelinesTried\s*\)\s*'
+                                 r'return _airFullPipeline\[h\] != nil;'
                                  r'\s*_airPipelinesTried = true;')
         self.assertLess(ensure.index('_airPipelinesTried = true;'),
                         ensure.index('newLibraryWithSource:'))
@@ -261,7 +452,9 @@ class TestLibrary(AirMSLCase):
             self.assertIn(released, pipeline)
         self.assertNotIn('newRenderPipelineStateWithDescriptor:', ensure)
         self.assertEqual(pipeline.count('newRenderPipelineStateWithDescriptor:'), 1)
-        self.assertEqual(self.code.count('newAirPipeline('), 4)   # the definition, 3 calls
+        # the definition, 3 calls (#624: the full and upsample calls each in a
+        # loop over both kLightHdr variants)
+        self.assertEqual(self.code.count('newAirPipeline('), 4)
         self.assertIn('pd.rasterSampleCount = 1;', pipeline)
         self.assertIn('pd.colorAttachments[0].pixelFormat = format;', pipeline)
         self.assertIn('pd.vertexFunction = vfn;', pipeline)
@@ -274,30 +467,45 @@ class TestLibrary(AirMSLCase):
     def testFunctionsComeFromAirFunction(self):
         ensure = self.body('RendererMetal::ensureAirPipelines')
         self.assertNotIn('newFunctionWithName', ensure)
-        self.assertEqual(re.findall(r'airFunction\(lib, @"(\w+)"\)', ensure),
+        self.assertEqual(re.findall(r'airFunction\(lib, @"(\w+)", false\)', ensure),
                          ['post_air_vertex'])
-        # the fragments, each in its own pipeline and colour format
+        # the fragments, each in its own pipeline and colour format; the two
+        # composites in both kLightHdr variants (#624; v == 1 is HDR), each
+        # in its own slot, the march once
         self.assertEqual(
-            re.findall(r'newAirPipeline\(_device, lib, vfn, @"(\w+)",\s*(\w+)\)', ensure),
-            [('post_air_full', 'MTLPixelFormatBGRA8Unorm'),
-             ('post_air_march', 'MTLPixelFormatRGBA16Float'),
-             ('post_air_upsample', 'MTLPixelFormatBGRA8Unorm')])
+            re.findall(r'(\w+(?:\[v\])?) = newAirPipeline\(_device, lib, vfn, @"(\w+)",'
+                       r'\s*(\w+), ([^)]*)\)', ensure),
+            [('_airFullPipeline[v]', 'post_air_full', 'MTLPixelFormatBGRA8Unorm', 'v == 1'),
+             ('_airMarchPipeline', 'post_air_march', 'MTLPixelFormatRGBA16Float', 'false'),
+             ('_airUpsamplePipeline[v]', 'post_air_upsample', 'MTLPixelFormatBGRA8Unorm',
+              'v == 1')])
+        self.assertEqual(len(re.findall(r'for \(int v = 0; v < 2; \+\+v\)\s*'
+                                        r'_air(?:Full|Upsample)Pipeline\[v\] = '
+                                        r'newAirPipeline\(', ensure)), 2)
         pipeline = cpp_function(self.mm, 'newAirPipeline')
-        self.assertIn('id<MTLFunction> ffn = airFunction(lib, name);', pipeline)
+        self.assertIn('id<MTLFunction> ffn = airFunction(lib, name, hdr);', pipeline)
         self.assertNotIn('newFunctionWithName', pipeline)
         # bezierTubeRigFunction's logic, its log text aside
         air = cpp_function(self.mm, 'airFunction')
         tube = cpp_function(self.mm, 'bezierTubeRigFunction')
 
         def normal(body):
+            # #624: both builders make both kLightHdr variants and hand the
+            # function its choice (`bool hdr = lightHdr;`), so they still match
             return squash(re.sub(r'NSLog\(@"[^"]*"', 'NSLog(@""', body))
         self.assertEqual(normal(air), normal(tube))
         for index in ('atIndex:0]', 'atIndex:kLightRigConstantIndex]',
-                      'atIndex:kLightShadowConstantIndex]'):
+                      'atIndex:kLightShadowConstantIndex]',
+                      'atIndex:kLightHdrConstantIndex]'):
             self.assertIn(index, air)
         self.assertIn('int fam = cMaterialFamily_default;', air)
         self.assertIn('bool rig = false;', air)
         self.assertIn('bool shadow = false;', air)
+        # #624: the composites read kLightHdr (post_air_finish); the
+        # builder's choice (Part 5: both variants)
+        self.assertIn('bool hdr = lightHdr;', air)
+        self.assertRegex(self.code, r'static id<MTLFunction> airFunction\(id<MTLLibrary> lib, '
+                                    r'NSString\* name,\s*bool lightHdr\)')
 
     def testDefinesOnlyAirFunctionsAndStructs(self):
         self.assertTrue(self.functions)
@@ -321,11 +529,14 @@ class TestLibrary(AirMSLCase):
         self.assertNotIn('/*', self.air)
 
     def testCallsTheSharedHelpers(self):
+        # (#624: the composite's two arms call T, its inverse and the knee
+        # where they called light_finish)
         for helper in ('post_eye_pos(', 'post_linear_depth(', 'light_shadow_lookup(',
-                       'light_finish(', 'mat_hash(', 'mat_noise('):
+                       'light_tone(', 'light_tone_inverse(', 'mat_soft_knee(',
+                       'mat_hash(', 'mat_noise('):
             self.assertIn(helper, self.air_code, helper)
         for copy in ('float mat_hash(', 'float mat_noise(', 'float3 post_eye_pos(',
-                     'LightRigU {'):
+                     'LightRigU {', 'float3 light_tone(', 'float3 mat_soft_knee('):
             self.assertNotIn(copy, self.air_code, copy)
 
     def testTheFragmentAndItsArguments(self):
@@ -342,7 +553,9 @@ class TestLibrary(AirMSLCase):
         self.assertIn('colorTex.read(px)', body)
         self.assertIn('depthTex.read(px)', body)
         self.assertNotIn('.sample(', body)
-        self.assertIn('returnfloat4(post_air_finish(c.rgb,t.rgb),c.a);', squash(body))
+        # (#624: at the frame's exposure, the rig block's tone.x)
+        self.assertIn('returnfloat4(post_air_finish(c.rgb,t.rgb,rig.tone.x),c.a);',
+                      squash(body))
 
 
 class TestLayout(AirMSLCase):
@@ -487,9 +700,19 @@ class TestModel(AirMSLCase):
         self.assertIn('if (z >= zHi) break;', dust)
 
     def testCompositeOnlyAddsLight(self):
-        _, finish = self.fn('post_air_finish')
+        # #624: under kLightHdr the air is added in scene units, T(Tinv(c) +
+        # e a), never negative and nothing non-finite, and never under c in
+        # any channel (T scales by the largest channel: coloured air must not
+        # lower the others); otherwise #618's composite through the rig's
+        # 8-bit knee, light_finish's false arm written out (lighting_hdr_msl.py
+        # pins both arms)
+        sig, finish = self.fn('post_air_finish')
+        self.assertIn('float3post_air_finish(float3c,float3a,floate)', squash(sig))
         self.assertEqual(squash(finish),
-                         '{returnc+max(light_finish(c+a)-light_finish(c),float3(0.0));}')
+                         '{if(kLightHdr){constfloat3add=all(isfinite(a))?'
+                         'max(a,float3(0.0))*e:float3(0.0);returnmax(saturate(c),'
+                         'light_tone(light_tone_inverse(saturate(c))+add));}'
+                         'returnc+max(mat_soft_knee(c+a)-mat_soft_knee(c),float3(0.0));}')
         _, full = self.fn('post_air_full')
         self.assertIn('post_air_finish(', full)
 
@@ -577,8 +800,10 @@ class TestPostChain(AirMSLCase):
         self.assertIn('id<MTLTexture> dst = (sceneSrc == _sceneColor) ? _postColor : '
                       '_sceneColor;', enc)
         self.assertIn('[ea setFragmentTexture:sceneSrc atIndex:kAirColorTextureIndex];', enc)
-        self.assertIn('[ea setRenderPipelineState:(half ? _airUpsamplePipeline : '
-                      '_airFullPipeline)];', enc)
+        # #624 (re-taken): this frame's kLightHdr variant
+        self.assertIn('const int h = _lightHdrOn ? 1 : 0;', enc)
+        self.assertIn('[ea setRenderPipelineState:(half ? _airUpsamplePipeline[h] : '
+                      '_airFullPipeline[h])];', enc)
         self.assertRegex(enc, r'return dst;\s*\}$')
 
     def testStandInMaps(self):
@@ -594,17 +819,22 @@ class TestPostChain(AirMSLCase):
 
     def testDestructorReleases(self):
         dtor = self.body('RendererMetal::~RendererMetal')
-        self.assertIn('[_airFullPipeline release];', dtor)
+        # #624 (re-taken): both kLightHdr variants of each composite
+        for name in ('_airFullPipeline', '_airUpsamplePipeline'):
+            for v in (0, 1):
+                self.assertIn('[%s[%d] release];' % (name, v), dtor)
         self.assertIn('[_airNoMaps release];', dtor)
-        for name in ('_airMarchPipeline', '_airUpsamplePipeline', '_airTerm'):
+        for name in ('_airMarchPipeline', '_airTerm'):
             self.assertIn('[%s release];' % name, dtor)
         # nothing else releases or rebuilds them (single-sample: a sample-count
         # change leaves them alone), but the attempt that cannot make the
         # stand-in maps
-        self.assertEqual(self.code.count('[_airFullPipeline release]'), 2)
+        self.assertEqual(len(re.findall(r'\[_airFullPipeline\[\w+\] release\]', self.code)),
+                         3)
         self.assertRegex(self.body('RendererMetal::ensureAirPipelines'),
-                         r'if \(_airFullPipeline && !ensureAirNoMaps\(\)\) \{\s*'
-                         r'\[_airFullPipeline release\];\s*_airFullPipeline = nil;')
+                         r'if \(\(_airFullPipeline\[0\] \|\| _airFullPipeline\[1\]\) && '
+                         r'!ensureAirNoMaps\(\)\) \{\s*for \(int v = 0; v < 2; \+\+v\) \{\s*'
+                         r'\[_airFullPipeline\[v\] release\];\s*_airFullPipeline\[v\] = nil;')
         self.assertEqual(self.code.count('[_airNoMaps release]'), 1)
         self.assertNotIn('_airFullPipeline', self.body('RendererMetal::rebuildDrawPipelines'))
 
@@ -660,7 +890,7 @@ class TestHalf(AirMSLCase):
         # half: the block asks for it (view.x 0.5) and everything exists; else
         # full, and the shaders are told so
         self.assertRegex(enc, r'const bool half = air\.view\[0\] < 0\.75f && '
-                              r'_airMarchPipeline && _airUpsamplePipeline &&\s*'
+                              r'_airMarchPipeline && _airUpsamplePipeline\[h\] &&\s*'
                               r'ensureAirTerm\(dst\.width, dst\.height\);\s*'
                               r'if \(!half\)\s*air\.view\[0\] = 1\.0f;')
         march = enc.index('[em setRenderPipelineState:_airMarchPipeline];')
@@ -679,14 +909,21 @@ class TestHalf(AirMSLCase):
 
     def testHalfFallsBackToFull(self):
         ensure = self.body('RendererMetal::ensureAirPipelines')
-        # the half pipelines are made only with the full one, and a failure
-        # of either drops both (half then draws at full); full alone is enough
-        self.assertRegex(ensure, r'if \(_airFullPipeline\) \{\s*_airMarchPipeline = ')
-        self.assertRegex(ensure, r'if \(!_airMarchPipeline \|\| !_airUpsamplePipeline\) \{'
-                                 r'[^}]*_airMarchPipeline = nil;\s*_airUpsamplePipeline = nil;')
-        self.assertRegex(ensure, r'return _airFullPipeline != nil;\s*\}$')
+        # the half pipelines are made only with a full one; without the march
+        # neither upsample is kept (half then draws at full), and a missing
+        # upsample variant draws its own frames at full (encodeAirPass asks
+        # for _airUpsamplePipeline[h]); full alone is enough. #624 (re-taken):
+        # the composites in both kLightHdr variants, the march single.
+        self.assertRegex(ensure, r'if \(_airFullPipeline\[0\] \|\| _airFullPipeline\[1\]\) '
+                                 r'\{\s*_airMarchPipeline = ')
+        self.assertRegex(ensure, r'if \(!_airMarchPipeline\) \{[^}]*'
+                                 r'for \(int v = 0; v < 2; \+\+v\) \{\s*'
+                                 r'\[_airUpsamplePipeline\[v\] release\];\s*'
+                                 r'_airUpsamplePipeline\[v\] = nil;\s*\}')
+        self.assertRegex(ensure, r'return _airFullPipeline\[h\] != nil;\s*\}$')
         self.assertRegex(self.header, r'id<MTLRenderPipelineState> _airMarchPipeline = nil;')
-        self.assertRegex(self.header, r'id<MTLRenderPipelineState> _airUpsamplePipeline = nil;')
+        self.assertRegex(self.header, r'id<MTLRenderPipelineState> _airUpsamplePipeline\[2\] '
+                                      r'= \{\};')
 
     def testCheckerboardDepth(self):
         sig, body = self.fn('post_air_march')
@@ -717,7 +954,10 @@ class TestHalf(AirMSLCase):
         for arg in (r'texture2d<float>\s+colorTex\s*\[\[\s*texture\(0\)\s*\]\]',
                     r'depth2d<float>\s+depthTex\s*\[\[\s*texture\(1\)\s*\]\]',
                     r'texture2d<float>\s+termTex\s*\[\[\s*texture\(3\)\s*\]\]',
-                    r'constant\s+LightAirU\s*&\s*air\s*\[\[\s*buffer\(0\)\s*\]\]'):
+                    r'constant\s+LightAirU\s*&\s*air\s*\[\[\s*buffer\(0\)\s*\]\]',
+                    # #624: the rig block, for its tone (bindAir binds it to
+                    # every air pass)
+                    r'constant\s+LightRigU\s*&\s*rig\s*\[\[\s*buffer\(1\)\s*\]\]'):
             self.assertRegex(sig, arg)
         self.assertIn('colorTex.read(px)', body)
         self.assertIn('const float z = post_air_stop(depthTex.read(px), air);', body)
@@ -734,7 +974,7 @@ class TestHalf(AirMSLCase):
         # the nearest-depth fallback, then the composite, alpha kept
         self.assertIn('if (dz < best)', body)
         self.assertIn('const float3 a = wsum > 1e-4 ? sum / wsum : nearest;', body)
-        self.assertIn('return float4(post_air_finish(c.rgb, a), c.a);', body)
+        self.assertIn('return float4(post_air_finish(c.rgb, a, rig.tone.x), c.a);', body)
 
     def testStopIsTheTermsRange(self):
         _, stop = self.fn('post_air_stop')
@@ -883,7 +1123,30 @@ class TestBridgeAndApp(AirMSLCase):
     def testGatePolicy(self):
         gate = swift_body(self.viewport, 'enum AirRedrawGate')
         self.assertIsNotNone(gate, 'enum AirRedrawGate not found')
-        self.assertRegex(gate, r'static let activeFPS: Double = 30\b')
+        # The 30 Hz default stays (#623 changes no default); RAYMOL_AIR_FPS
+        # (1-120, read once per launch) is the calibration's switch.
+        self.assertRegex(gate, r'static let defaultFPS: Double = 30\b')
+        self.assertRegex(gate, r'static let activeFPS: Double = '
+                               r'fps\(environment: ProcessInfo\.processInfo\.environment\)')
+        self.assertRegex(gate, r'static let fpsRange: ClosedRange<Double> = 1\.\.\.120\b')
+        fps = swift_body(gate, 'static func fps(environment: [String: String]) -> Double')
+        self.assertIsNotNone(fps, 'AirRedrawGate.fps(environment:) not found')
+        self.assertIn('environment["RAYMOL_AIR_FPS"]', fps)
+        self.assertIn('value.isFinite, fpsRange.contains(value) else { return defaultFPS }', fps)
+        log = swift_body(gate, 'static func logEnabled(environment: [String: String]) -> Bool')
+        self.assertIsNotNone(log, 'AirRedrawGate.logEnabled(environment:) not found')
+        self.assertIn('environment["RAYMOL_AIR_LOG"]', log)
+        self.assertIn('== "1"', log)
+        # The gate reads the environment once per launch, for those two only;
+        # no other viewport code reads either switch.
+        self.assertEqual(gate.count('ProcessInfo.processInfo.environment'), 2)
+        self.assertEqual(self.viewport.count('"RAYMOL_AIR_FPS"'), 1)
+        self.assertEqual(self.viewport.count('"RAYMOL_AIR_LOG"'), 1)
+        hold = swift_body(gate, 'static func holdReason(_ activity: Activity) -> HoldReason?')
+        self.assertIsNotNone(hold, 'AirRedrawGate.holdReason not found')
+        self.assertLess(hold.index('!activity.active'), hold.index('!activity.visible'))
+        self.assertLess(hold.index('!activity.visible'), hold.index('activity.lowPower'))
+        self.assertIn('case lowPower = "low_power"', gate)
         self.assertRegex(gate, r'static let dueShare: Double = 0\.95\b')
         self.assertRegex(gate, r'struct Activity: Equatable \{\s*var active: Bool\s*'
                                r'var visible: Bool\s*var lowPower: Bool\s*\}')
@@ -922,6 +1185,18 @@ class TestBridgeAndApp(AirMSLCase):
         # behind the cheap terms.
         self.assertEqual(self.viewport.count('lightAirAnimating'), 1)
         self.assertEqual(len(re.findall(r'(?<!func )\bairTickDue\(view:', self.viewport)), 1)
+        # #623: the activity is read once; the hold log (RAYMOL_AIR_LOG=1
+        # only) notes it before the interval guard, and asks the core nothing.
+        self.assertEqual(due.count('airActivity(of: view)'), 1)
+        self.assertRegex(due, r'if AirRedrawGate\.logsHolds \{ noteAirHold\(activity\) \}')
+        self.assertLess(due.index('noteAirHold(activity)'),
+                        due.index('guard let interval = AirRedrawGate.interval(activity)'))
+        note = swift_body(self.viewport, 'private func noteAirHold(')
+        self.assertIsNotNone(note, 'Coordinator.noteAirHold not found')
+        self.assertIn('guard state != lastAirHold else { return }', note)
+        self.assertIn('AirRedrawGate.holdLine(state, fps: AirRedrawGate.activeFPS)', note)
+        self.assertNotIn('engine', note)
+        self.assertNotIn('#if DEBUG', note)
         draw = swift_body(self.viewport, 'func draw(in view: MTKView)')
         self.assertRegex(draw, r'let airDue = !pending && !forceRedraw && hasRenderedOnce\s*'
                                r'&& airTickDue\(view: view, engine: engine\)')

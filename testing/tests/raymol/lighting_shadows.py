@@ -38,7 +38,11 @@ SHADOW_AT = 100            # map s at 100 + 20 s
 SHADOW_FLOATS = 20
 GRID_AT = 160
 TILE_AT = 164
-BLOCK_FLOATS = 168
+# #624 appends the tone (exposure, 1 = HDR, 0, 0) after the tile; with the
+# settings at their defaults it is [1, 1, 0, 0] while the rig is on.
+TONE_AT = 168
+BLOCK_FLOATS = 172
+DEFAULT_TONE = [1.0, 1.0, 0.0, 0.0]
 
 # LightShadows.h, written out (the plan's D4, D13): the tests derive every
 # expected value from these and their own maths.
@@ -225,7 +229,7 @@ class ShadowCase(testing.PyMOLTestCase):
 
 
 class TestGate(ShadowCase):
-    """No plan, and the 168-float block equal to the same rig's with no
+    """No plan, and the 172-float block equal to the same rig's with no
     shadowed light (pos.w -1, head.w 0, tail zero), unless the rig is on,
     metal_shadows is on, a light has `shadow` and there are casters."""
 
@@ -243,8 +247,10 @@ class TestGate(ShadowCase):
         self.assertEqual(block[3], 0.0, msg)
         for i in range(int(block[0])):
             self.assertEqual(block[4 + 16 * i + 3], -1.0, msg)
-        self.assertEqual(block[PREFIX_FLOATS:], [0.0] * (BLOCK_FLOATS - PREFIX_FLOATS),
+        # #616's tail zero; #624's tone (checked on its own) after it
+        self.assertEqual(block[PREFIX_FLOATS:TONE_AT], [0.0] * (TONE_AT - PREFIX_FLOATS),
                          msg)
+        self.assertEqual(block[TONE_AT:], DEFAULT_TONE, msg)
 
     def testNoRig(self):
         self.load_m()

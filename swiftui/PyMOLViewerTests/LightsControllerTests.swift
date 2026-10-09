@@ -176,10 +176,28 @@ final class FakeRigStore {
     ]
     static let maxShadowed = 3
 
+    /// The air rows of the core's field table (layer1/LightRig.cpp), as
+    /// appkit_lights.write_air_fields gives them (#726).
+    static let airTable: [AirField] = {
+        let json = #"[{"name": "haze", "kind": "float", "default": 0.0, "min": 0.0, "max": 1.0}, "#
+            + #"{"name": "dust", "kind": "float", "default": 0.0, "min": 0.0, "max": 1.0}, "#
+            + #"{"name": "dust_size", "kind": "float", "default": 0.35, "min": 0.05, "max": 2.0}, "#
+            + #"{"name": "dust_speed", "kind": "float", "default": 1.0, "min": 0.0, "max": 10.0}, "#
+            + #"{"name": "scatter", "kind": "float", "default": 0.55, "min": -0.9, "max": 0.9}, "#
+            + #"{"name": "seed", "kind": "int", "default": 0, "min": 0, "max": 1000000}]"#
+        return try! AirField.decodeList(Data(json.utf8))
+    }()
+    /// The core's default air (LightAir in layer1/LightRig.h).
+    static let defaultAir = LightRigSnapshot.Air(haze: 0, dust: 0, dustSize: 0.35, dustSpeed: 1,
+                                                 scatter: 0.55, seed: 0)
+
     var exists = false
     var enabled = false
     var centreX = 0.0
     var lights: [Light] = []
+    /// The rig's air: presets and `lights off` keep it; `atmosphere off`, a
+    /// restore and the setters at index -1 change it.
+    var air = FakeRigStore.defaultAir
 
     var ready = true
     var busy = false
@@ -207,6 +225,9 @@ final class FakeRigStore {
     private(set) var reads = 0
     private(set) var eyeReads = 0
     private(set) var presetLoads = 0
+    /// What the air-field seam serves, and how often it was asked.
+    var airFieldList: [AirField] = FakeRigStore.airTable
+    private(set) var airFieldLoads = 0
     var presetList: [LightPreset] = [
         LightPreset(name: "three_point", description: "Classic portrait"),
         LightPreset(name: "softbox", description: "Product shot"),
@@ -260,7 +281,9 @@ final class FakeRigStore {
         let frame = lights.isEmpty ? "\"centre\":null,\"size\":null"
             : "\"centre\":[\(Self.num(centreX)),0.0,0.0],\"size\":10.0"
         return "{\"version\":1,\"enabled\":\(enabled),\(frame),\"ambient\":0.05,\"classic\":0.0,"
-            + "\"air\":{\"haze\":0.0,\"dust\":0.0,\"dust_size\":0.35,\"dust_speed\":1.0,\"scatter\":0.55,\"seed\":0},"
+            + "\"air\":{\"haze\":\(Self.num(air.haze)),\"dust\":\(Self.num(air.dust)),"
+            + "\"dust_size\":\(Self.num(air.dustSize)),\"dust_speed\":\(Self.num(air.dustSpeed)),"
+            + "\"scatter\":\(Self.num(air.scatter)),\"seed\":\(air.seed)},"
             + "\"lights\":[\(lightsJSON)]}"
     }
 
@@ -370,6 +393,7 @@ final class FakeRigStore {
                 exists = false
                 enabled = false
                 lights = []
+                air = Self.defaultAir
                 return
             }
             guard let rig = try? LightRigSnapshot.decode(Data(json.utf8)) else { return }
@@ -377,6 +401,7 @@ final class FakeRigStore {
             enabled = rig.enabled
             centreX = rig.centre?.x ?? 0
             lights = rig.lights.map(Self.light(from:))
+            air = rig.air
         case .restoreLight(let name, let json):
             // appkit_lights.restore_light: that light only, at its index now.
             let key = name.lowercased()
@@ -403,12 +428,52 @@ final class FakeRigStore {
                 lights[index].pinned = false
                 eyePlacements[key] = nil
             }
+        case .atmosphereOff:
+            // `atmosphere off`: with no rig it prints a line and changes
+            // nothing.
+            guard exists else { return }
+            air = Self.defaultAir
+        case .setAir(let values):
+            // `atmosphere f=v, ...`: a value outside its range is an error
+            // and changes nothing; with no rig it creates one, off and empty.
+            for value in values {
+                guard let field = Self.airTable.first(where: { $0.name == value.field }),
+                      value.value.isFinite, field.range.contains(value.value) else { return }
+            }
+            if !exists {
+                exists = true
+                enabled = false
+                lights = []
+            }
+            for value in values { setAirField(value.field, value.value) }
+        }
+    }
+
+    /// One air field set, clamped to the table (seed rounded): LightRigSet.
+    private func setAirField(_ name: String, _ value: Double) {
+        guard let field = Self.airTable.first(where: { $0.name == name }) else { return }
+        let v = value.clamped(to: field.range)
+        switch name {
+        case "haze": air.haze = v
+        case "dust": air.dust = v
+        case "dust_size": air.dustSize = v
+        case "dust_speed": air.dustSpeed = v
+        case "scatter": air.scatter = v
+        case "seed": air.seed = Int(v.rounded())
+        default: break
         }
     }
 
     /// LightRigSet for a number field of a light.
     private func setNumber(_ index: Int, _ field: String, _ value: Double) -> LightSetResult {
         guard ready, exists else { return .noRig }
+        if index == -1 {
+            // The rig and its air: only the air fields here.
+            guard Self.airTable.contains(where: { $0.name == field }) else { return .unknownField }
+            guard value.isFinite else { return .badValue }
+            setAirField(field, value)
+            return .ok
+        }
         guard lights.indices.contains(index) else { return .badIndex }
         guard value.isFinite else { return .badValue }
         var light = lights[index]
@@ -491,6 +556,10 @@ final class FakeRigStore {
             loadPresets: {
                 self.presetLoads += 1
                 return self.presetList
+            },
+            loadAirFields: {
+                self.airFieldLoads += 1
+                return self.airFieldList
             },
             isReady: { self.ready },
             isBusy: { self.busy },

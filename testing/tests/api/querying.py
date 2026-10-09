@@ -310,6 +310,12 @@ class TestQuerying(testing.PyMOLTestCase):
         cmd.disable('gly')
         cmd.disable('ramp1')
         self.assertEqual(cmd.get_names(enabled_only=1), ['cys'])
+        self.assertEqual(cmd.get_names(enabled_only=2), ['cys'])
+        self.assertEqual(cmd.get_names(enabled_only='in_scene'), ['cys'])
+        with self.assertRaises((ValueError, TypeError)):
+            cmd.get_names(enabled_only='typo')
+        with self.assertRaises((ValueError, TypeError)):
+            cmd.get_names(enabled_only=None)
         self.assertEqual(cmd.get_names('selections'), ['foo'])
         self.assertEqual(cmd.get_names('all'), ['gly', 'cys', 'ramp1', 'foo'])
 

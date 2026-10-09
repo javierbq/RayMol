@@ -18,6 +18,12 @@
 // eye data (each light's current orbit, pitch and radius, and on demand the
 // whole rig in eye space) is in LightsEyeState below, a separate object so a
 // per-frame update redraws only the views that show it, never the bar.
+//
+// The rig's air (haze and dust, #726) goes the same two ways: the Atmosphere
+// card's slider ticks and typed values write it through the setter seam at
+// index -1 (`writeRigNumbers`), and its On/Off switch is a button press
+// (`setAtmosphere(on:)`: one `atmosphere` command). The air's typed API, its
+// field table and the card's model are in LightsAtmosphere.swift.
 
 import Foundation
 import Combine
@@ -172,6 +178,12 @@ enum LightsAction: Equatable {
     /// rule, or `rim` degrees towards the outline when given; `pin` keeps a
     /// pinned light pinned (the helper otherwise leaves a camera light).
     case highlight(name: String, x: Double, y: Double, rim: Double?, pin: Bool)
+    /// The Atmosphere card's Off (#726): every air field back to its table
+    /// default (`atmosphere off`).
+    case atmosphereOff
+    /// The Atmosphere card's On (#726): set these air fields in one
+    /// `atmosphere` command (with no rig it creates one, off, with no lights).
+    case setAir([AirValue])
 }
 
 /// What the controller needs from the engine. The engine wires the real ones;
@@ -188,6 +200,10 @@ struct LightsSeams {
     var perform: (LightsAction) -> Void
     /// The preset menu (one Python call; the controller caches it).
     var loadPresets: () -> [LightPreset]
+    /// The air rows of the core's field table, the Atmosphere card's ranges
+    /// and defaults (#726; the engine reads them in the presets' Python call
+    /// and caches both; the controller caches them too).
+    var loadAirFields: () -> [AirField] = { [] }
     /// The engine is up.
     var isReady: () -> Bool
     /// The rig must not be touched now (a movie export reads it off-main).
@@ -308,6 +324,15 @@ final class LightsController: ObservableObject {
     @Published private(set) var identitySlots: [String: Int] = [:]
     /// The preset menu, loaded once (retried while it comes back empty).
     @Published private(set) var presets: [LightPreset] = []
+    /// The air rows of the core's field table (#726): the Atmosphere card's
+    /// ranges and defaults. Loaded with the presets at the first entry,
+    /// retried at each entry while empty.
+    @Published private(set) var airFields: [AirField] = []
+    /// The air the Atmosphere card's Off put away, for its On (#726). Lives
+    /// for one Lights-mode visit: `end()` drops it (Done, Esc, another mode,
+    /// and a command that replaces the document, which ends the mode). Not
+    /// published: it changes only with the rig, which is.
+    private(set) var airMemory: LightRigSnapshot.Air?
     /// The rig's JSON when the mode was entered, for Revert: nil while not
     /// taken (inactive, or the engine was not ready yet), "null" for no rig.
     @Published private(set) var entryJSON: String?
@@ -405,6 +430,12 @@ final class LightsController: ObservableObject {
     var canRemove: Bool { canAct && selection.index != nil }
     var canRecentre: Bool { canAct && hasLights }
     var canToggle: Bool { canAct && hasLights }
+    /// The Atmosphere card's switch can be pressed: active, not busy, and
+    /// the field table read (with no rig too: On creates one).
+    var canToggleAir: Bool { canAct && !airFields.isEmpty }
+    /// The Atmosphere card's rows can be edited: the switch can be pressed
+    /// and there is a rig (the setter has nothing to write to otherwise).
+    var canEditAir: Bool { canToggleAir && rig != nil }
     /// Something changed since the mode was entered.
     var canRevert: Bool {
         guard canAct, let entry = entryJSON else { return false }
@@ -436,13 +467,14 @@ final class LightsController: ObservableObject {
     }
 
     /// Lights mode was left (Done, Esc, another mode). Edits are kept; the
-    /// entry snapshot is dropped. The selection stays, repaired on the next
-    /// `begin()`.
+    /// entry snapshot and the Atmosphere switch's memory are dropped. The
+    /// selection stays, repaired on the next `begin()`.
     func end() {
         if isActive { isActive = false }
         needsSnapshot = false
         if entryJSON != nil { entryJSON = nil }
         entryRig = nil
+        airMemory = nil
         noteShadowRefused(false)
         eye.clear()
         facing.publish([])
@@ -464,6 +496,12 @@ final class LightsController: ObservableObject {
             if presets.isEmpty {
                 let loaded = seams.loadPresets()
                 if !loaded.isEmpty { presets = loaded }
+            }
+            // The engine reads both tables in the presets' one Python call,
+            // so on a first entry this is a cache hit.
+            if airFields.isEmpty {
+                let loaded = seams.loadAirFields()
+                if !loaded.isEmpty { airFields = loaded }
             }
         }
         guard !hasMirror || json != mirrorJSON else {
@@ -644,6 +682,36 @@ final class LightsController: ObservableObject {
         refresh()
     }
 
+    /// The Atmosphere card's On/Off switch (#726), a button press: one
+    /// echoed `atmosphere` command, never a drag tick.
+    /// - Off remembers the air for this visit, then runs `atmosphere off`
+    ///   (every air field back to its table default).
+    /// - On runs `atmosphere f=v, ...` with `AtmosphereSwitch.onValues`: the
+    ///   remembered air (fields changed since Off keep their value), or the
+    ///   start look. With no rig it creates one, off and with no lights.
+    /// Returns true when a command ran; false, and nothing run, unless
+    /// `canToggleAir`, when the air already is `on`, or when there is
+    /// nothing to send.
+    @discardableResult
+    func setAtmosphere(on: Bool) -> Bool {
+        guard canToggleAir else { return false }
+        refreshIfStale()
+        guard on != airIsOn else { return false }
+        if !on {
+            airMemory = rig?.air
+            seams.perform(.atmosphereOff)
+            refresh()
+            return true
+        }
+        let values = AtmosphereSwitch.onValues(current: rig?.air, memory: airMemory,
+                                               fields: airFields)
+        let action = LightsAction.setAir(values)
+        guard !values.isEmpty, action.invocation != nil else { return false }
+        seams.perform(action)
+        refresh()
+        return true
+    }
+
     // MARK: continuous edits (bridge setters only)
 
     /// Set one number field of the selected light through the bridge setter
@@ -684,6 +752,29 @@ final class LightsController: ObservableObject {
         }
         if wrote { refresh() }
         noteShadowRefused(refusedShadow)
+        return result
+    }
+
+    /// Set several number fields of the rig and its air (index -1), in
+    /// order, through the bridge setter (no Python): what the Atmosphere
+    /// card's slider ticks and typed values call (#726). Stops at the first
+    /// result that is not `.ok` and returns it; re-reads the mirror once if
+    /// any write succeeded. `.badIndex` when inactive or busy, `.noRig` with
+    /// no rig. Leaves `shadowRefused` alone (that notice is about the
+    /// selected light).
+    @discardableResult
+    func writeRigNumbers(_ fields: [(String, Double)]) -> LightSetResult {
+        guard canAct else { return .badIndex }
+        refreshIfStale()
+        guard rig != nil else { return .noRig }
+        var result = LightSetResult.ok
+        var wrote = false
+        for (field, value) in fields {
+            result = seams.setNumber(-1, field, value)
+            guard result == .ok else { break }
+            wrote = true
+        }
+        if wrote { refresh() }
         return result
     }
 

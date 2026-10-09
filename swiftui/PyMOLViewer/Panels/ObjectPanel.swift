@@ -37,6 +37,23 @@ private let kGutterW: CGFloat = 26
 private let kIndentW: CGFloat = 13
 private let kMaxIndentDepth: Int = 3
 
+// Layout width of the leading disclosure column (chevron / ⊕ ⊖). Every row type
+// leads with this width so the checkbox column lines up; the selection,
+// alignment, MSA and "all" rows pad it with a Spacer instead of a button.
+private let kDisclosureW: CGFloat = 13
+// #751: the glyph is 9–10 pt, far below the 44 pt touch guideline and tight for
+// a pointer. The hit area is extended by this much to each side (and to the
+// full row height) WITHOUT changing the layout width, so near-misses expand
+// instead of falling through to the row tap (which toggles enable and makes
+// the object vanish). Right-hand slop stops just short of the checkbox glyph,
+// which sits centred in kGutterW; where they overlap the checkbox is the later
+// sibling and still wins.
+#if os(iOS)
+private let kDisclosureHitSlop: CGFloat = 14
+#else
+private let kDisclosureHitSlop: CGFloat = 8
+#endif
+
 /// Atom predicate behind the S ▸ / H ▸ "side chains" menu items.
 ///
 /// PyMOL's `sidechain` selection drops two backbone atoms the sticks need:
@@ -2179,7 +2196,7 @@ private struct ObjectRowView: View {
     var body: some View {
         HStack(spacing: 2) {
             // Align with object rows, which lead with a disclosure chevron.
-            Spacer().frame(width: 13)
+            Spacer().frame(width: kDisclosureW)
             // Enable/disable toggle
             Button(action: { toggleEnabled() }) {
                 Image(systemName: entry.isEnabled ? "checkmark.square.fill" : "square")
@@ -2254,7 +2271,7 @@ private struct AlignmentRowView: View {
     var body: some View {
         HStack(spacing: 6) {
             // Line up with the object rows' chevron + checkbox gutter.
-            Spacer().frame(width: 13 + kGutterW)
+            Spacer().frame(width: kDisclosureW + kGutterW)
 
             Text(entry.name)
                 .font(.system(size: 11))
@@ -2345,7 +2362,7 @@ private struct MSASearchRowView: View {
         HStack(spacing: 6) {
             // Line up with the object rows' chevron + checkbox gutter, as the
             // alignment rows do.
-            Spacer().frame(width: 13 + kGutterW)
+            Spacer().frame(width: kDisclosureW + kGutterW)
 
             ProgressView()
                 .progressViewStyle(.circular)
@@ -2404,7 +2421,7 @@ private struct AllControlsRow: View {
     var body: some View {
         HStack(spacing: 2) {
             // Align with object rows, which lead with a disclosure chevron.
-            Spacer().frame(width: 13)
+            Spacer().frame(width: kDisclosureW)
             // Enable/disable ALL objects at once (mirrors desktop PyMOL's "all" row).
             Button(action: { toggleAll() }) {
                 Image(systemName: allEnabled ? "checkmark.square.fill" : "square")
@@ -3688,9 +3705,19 @@ private struct ObjectCard: View {
                           : (expanded ? "chevron.down" : "chevron.right"))
                         .font(.system(size: entry.isGroup ? 10 : 9))
                         .foregroundColor(PanelTheme.headerColor)
-                        .frame(width: 13)
+                        // Fill the row height, then pad sideways so the label
+                        // (= the plain button's hit area) is wider than the
+                        // column; the negative padding below hands the extra
+                        // width back to layout. A `contentShape` inset past the
+                        // bounds was NOT hit-testable on macOS 15, so the hit
+                        // area has to be real frame (#751).
+                        .frame(width: kDisclosureW)
+                        .frame(maxHeight: .infinity)
+                        .padding(.horizontal, kDisclosureHitSlop)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .padding(.horizontal, -kDisclosureHitSlop)
                 .accessibilityLabel(entry.isGroup
                     ? "\(isOpen ? "Collapse" : "Expand") group \(entry.name)"
                     : "\(expanded ? "Collapse" : "Expand") \(entry.name)")

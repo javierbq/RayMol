@@ -58,11 +58,31 @@ if(PYMOL_METAL_ONLY)
     # headers from Homebrew (build-time only).
     set(BREW_PREFIX "${PYMOL_EXTERNAL_PREFIX}")
     set(Python3_INCLUDE_DIRS "${PYMOL_PYTHON_INCLUDE_DIR}")
-    set(Python3_NumPy_INCLUDE_DIRS "")
+    # numpy/arrayobject.h, from the numpy installed into the same staged tree by
+    # scripts/bundle_numpy_macos.sh. build_macos.sh passes the path that numpy
+    # itself reports; the glob is the fallback for a hand-configured build dir.
+    # Without it the core compiles with no _PYMOL_NUMPY and cmd.get_coords
+    # silently returns None (#373).
+    if(PYMOL_PYTHON_NUMPY_INCLUDE_DIR AND EXISTS "${PYMOL_PYTHON_NUMPY_INCLUDE_DIR}/numpy/arrayobject.h")
+        set(Python3_NumPy_INCLUDE_DIRS "${PYMOL_PYTHON_NUMPY_INCLUDE_DIR}")
+    else()
+        file(GLOB _np_inc "${PYMOL_PYTHON_INCLUDE_DIR}/../../lib/python3.*/site-packages/numpy/_core/include")
+        if(_np_inc AND EXISTS "${_np_inc}/numpy/arrayobject.h")
+            set(Python3_NumPy_INCLUDE_DIRS "${_np_inc}")
+        else()
+            set(Python3_NumPy_INCLUDE_DIRS "")
+        endif()
+    endif()
     set(PNG_INCLUDE_DIRS "${BREW_PREFIX}/include/libpng16" "${BREW_PREFIX}/include")
     set(FREETYPE_INCLUDE_DIRS "${BREW_PREFIX}/include/freetype2" "${BREW_PREFIX}/include")
     find_path(GLM_INCLUDE glm/glm.hpp HINTS ${BREW_PREFIX}/include)
     message(STATUS "macOS metal-only build: standalone Python headers ${Python3_INCLUDE_DIRS}")
+    if(Python3_NumPy_INCLUDE_DIRS)
+        message(STATUS "  numpy headers: ${Python3_NumPy_INCLUDE_DIRS}")
+    else()
+        message(WARNING "numpy headers not found - cmd.get_coords/get_coordset/get_volume_field "
+                        "will return None (#373). Run scripts/bundle_numpy_macos.sh.")
+    endif()
 elseif(NOT PYMOL_IOS)
     # macOS: use Homebrew and system packages
     if(EXISTS "/opt/homebrew")
@@ -240,6 +260,11 @@ if(PYMOL_IOS)
     list(APPEND PYMOL_DEFINES _PYMOL_NO_OPENGL _PYMOL_IOS)
 elseif(PYMOL_METAL_ONLY)
     list(APPEND PYMOL_DEFINES _PYMOL_NO_OPENGL _PYMOL_METAL_ONLY)
+    # Gated on the headers being present so a tree without the numpy staging
+    # step still builds - it just keeps today's degraded behaviour (#373).
+    if(Python3_NumPy_INCLUDE_DIRS)
+        list(APPEND PYMOL_DEFINES _PYMOL_NUMPY)
+    endif()
 else()
     list(APPEND PYMOL_DEFINES _PYMOL_NUMPY _PYMOL_APPKIT)
 endif()
