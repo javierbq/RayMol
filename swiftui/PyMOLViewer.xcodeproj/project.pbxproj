@@ -7,8 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		0162102F61A7D39A781DCB53 /* LightsOrbitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3595D421CC5DB21F3162789F /* LightsOrbitTests.swift */; };
 		012182FD275AE30AF5663457 /* GlycanTopologyView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C9BEB27834F9CF6697BDF95 /* GlycanTopologyView.swift */; };
+		0162102F61A7D39A781DCB53 /* LightsOrbitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3595D421CC5DB21F3162789F /* LightsOrbitTests.swift */; };
 		020822B7AD61092433C2F78E /* whatsnew-170-move.png in Resources */ = {isa = PBXBuildFile; fileRef = 4C570F9CAC877E201F237016 /* whatsnew-170-move.png */; };
 		0289EAA2F61546F2DD2430BA /* LightRigBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED82B93C6739F52D7124AE90 /* LightRigBridge.swift */; };
 		042F08F899EE19B73EFEC143 /* CommandPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B50D264C420888CBF7FDE633 /* CommandPanel.swift */; };
@@ -64,11 +64,11 @@
 		2E559E9581421DDC00C8BBB8 /* DesignScoreCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEC5AE545F97DF175BFE0462 /* DesignScoreCache.swift */; };
 		300656C47AD9A9C18C129C42 /* SequencePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 474D18A43D0D9A6BDD69EEFD /* SequencePanel.swift */; };
 		303210F410E1AD9DBCCF57F3 /* BoltzJobManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A4B5DB2F82A55E25041FE28 /* BoltzJobManager.swift */; };
+		31D695FD43081FF7BE38907C /* GlycanTopologyView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C9BEB27834F9CF6697BDF95 /* GlycanTopologyView.swift */; };
 		31E2886301F34D938627FF2D /* PanelLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B75287139FE86E2C9524CA8D /* PanelLayoutTests.swift */; };
 		32061FAD7CD7E949C8C6A7BF /* HoverReadout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80137B4E6E0FA24F011D7E87 /* HoverReadout.swift */; };
 		325EE49F9617F5A907D7BDF7 /* whatsnew-1100-msa.png in Resources */ = {isa = PBXBuildFile; fileRef = 727EA43D6A4FCC275ABC49D0 /* whatsnew-1100-msa.png */; };
 		33925DA4B65039A7C4C0DE8F /* BoltzRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2367C4CEE5BD2E682055D3F /* BoltzRuntime.swift */; };
-		31D695FD43081FF7BE38907C /* GlycanTopologyView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C9BEB27834F9CF6697BDF95 /* GlycanTopologyView.swift */; };
 		33C46A7EB6127A6A99D7048D /* TimelinePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B820FE9080BF73526A54CD66 /* TimelinePanel.swift */; };
 		3494764DF6FC43A45FB259AF /* PredictSizeGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C07F661E0541060409A09F7 /* PredictSizeGuard.swift */; };
 		34985FCB3C0FBC450384D4C9 /* ProtenixSizeGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EE8A26A41F551AB296B2F8E /* ProtenixSizeGuard.swift */; };
@@ -395,9 +395,9 @@
 		29DBC7BEEA492BFACB616C34 /* whatsnew-152-camera-dock.mp4 */ = {isa = PBXFileReference; path = "whatsnew-152-camera-dock.mp4"; sourceTree = "<group>"; };
 		2B749BA43350521D047F2CE4 /* whatsnew-190-design.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-190-design.png"; sourceTree = "<group>"; };
 		2BEE4A89F9323D032B1F5F3B /* LightsInspectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsInspectorTests.swift; sourceTree = "<group>"; };
+		2C9BEB27834F9CF6697BDF95 /* GlycanTopologyView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlycanTopologyView.swift; sourceTree = "<group>"; };
 		2E5AA1A4BFA5787E1B83D100 /* PredictAvailability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictAvailability.swift; sourceTree = "<group>"; };
 		2E5C2F6163EFEA36009B55A5 /* MSAServerControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MSAServerControls.swift; sourceTree = "<group>"; };
-		2C9BEB27834F9CF6697BDF95 /* GlycanTopologyView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlycanTopologyView.swift; sourceTree = "<group>"; };
 		33D6A753E4525628B96C259C /* PyMOLEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PyMOLEngine.swift; sourceTree = "<group>"; };
 		35444C782524F25C4DDD4F9F /* LightsBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsBar.swift; sourceTree = "<group>"; };
 		356FC561FA1515B3D15A26E2 /* PyMOLBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PyMOLBridge.mm; sourceTree = "<group>"; };
@@ -559,7 +559,7 @@
 		FEE394EC8EC4DF566360104C /* LightGizmoGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightGizmoGeometry.swift; sourceTree = "<group>"; };
 		FF4FB7F151982A2927D612F0 /* DesignController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignController.swift; sourceTree = "<group>"; };
 		FFD9E3092D310E443F7CD546 /* DesignTargetSelectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTargetSelectionTests.swift; sourceTree = "<group>"; };
-		"TEMP_AB7551C0-B01C-44D2-9EAA-89B73F9E45B3" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
+		"TEMP_EDD84068-517B-461C-BDE0-73E905351476" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -876,10 +876,10 @@
 			path = Bridge;
 			sourceTree = "<group>";
 		};
-		"TEMP_A4F98062-C024-4B18-AB49-72EB93B4BAB2" /* swiftui */ = {
+		"TEMP_15D071A7-6EBD-4C98-87F9-8E40D402B8C9" /* swiftui */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_AB7551C0-B01C-44D2-9EAA-89B73F9E45B3" /* PyMOLBridge.xcconfig */,
+				"TEMP_EDD84068-517B-461C-BDE0-73E905351476" /* PyMOLBridge.xcconfig */,
 			);
 			path = swiftui;
 			sourceTree = "<group>";
@@ -1033,10 +1033,10 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				5C02477A5F60954358D0D615 /* PyMOLViewer_iOS */,
-				403C29EE7864FF79CFA77A80 /* PyMOLViewer_macOS */,
 				BFFDF4CBA2B92A93CDBB24E7 /* PyMOLViewerTests */,
 				A8AA9F6242B9A29B6AAA26F7 /* PyMOLViewerUITests */,
+				5C02477A5F60954358D0D615 /* PyMOLViewer_iOS */,
+				403C29EE7864FF79CFA77A80 /* PyMOLViewer_macOS */,
 			);
 		};
 /* End PBXProject section */
@@ -1664,10 +1664,10 @@
 				2E559E9581421DDC00C8BBB8 /* DesignScoreCache.swift in Sources */,
 				65CE08E50C85C8ACDAC92D07 /* DesignSizeGuard.swift in Sources */,
 				8C04C5D4AB27F2D9BEF79561 /* GizmoOverlay.swift in Sources */,
+				012182FD275AE30AF5663457 /* GlycanTopologyView.swift in Sources */,
 				32061FAD7CD7E949C8C6A7BF /* HoverReadout.swift in Sources */,
 				59414471A1C1412AF869074D /* InferenceJob.swift in Sources */,
 				AC4CB915ECB531A4406CF387 /* InferenceRouter.swift in Sources */,
-				012182FD275AE30AF5663457 /* GlycanTopologyView.swift in Sources */,
 				2C2D4B24DF4807FA1407582D /* KeyRouting.swift in Sources */,
 				5EF0E37865315509A3D51202 /* LightGizmoGeometry.swift in Sources */,
 				BAAE4478A0C2B308D407E7C1 /* LightGizmoModel.swift in Sources */,
@@ -1757,10 +1757,10 @@
 				6C8AA3C224C1B2106FBF4881 /* DesignScoreCache.swift in Sources */,
 				1A580F6792CD440D91FA9F45 /* DesignSizeGuard.swift in Sources */,
 				8F71359FAD68AE5D09416C1B /* GizmoOverlay.swift in Sources */,
+				31D695FD43081FF7BE38907C /* GlycanTopologyView.swift in Sources */,
 				12A3993A3E181A358E00AF0A /* HoverReadout.swift in Sources */,
 				82DADD44C2ED6C0A534EBD26 /* InferenceJob.swift in Sources */,
 				966C6886E3CE816365256220 /* InferenceRouter.swift in Sources */,
-				31D695FD43081FF7BE38907C /* GlycanTopologyView.swift in Sources */,
 				768E23FCAB4D2B27205900B6 /* KeyRouting.swift in Sources */,
 				709CFA72F2FF7502C4043BB3 /* LightGizmoGeometry.swift in Sources */,
 				1691ECBD7CEDBFFB64B1D690 /* LightGizmoModel.swift in Sources */,
@@ -1851,7 +1851,7 @@
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = RayMol;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 32;
+				CURRENT_PROJECT_VERSION = 203;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_GENERATION_MODE = GeneratedFile;
@@ -1865,7 +1865,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.12.0;
+				MARKETING_VERSION = 1.12.1;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
@@ -1885,7 +1885,7 @@
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = RayMol;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 32;
+				CURRENT_PROJECT_VERSION = 203;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_GENERATION_MODE = GeneratedFile;
@@ -1899,7 +1899,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.12.0;
+				MARKETING_VERSION = 1.12.1;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
@@ -1921,7 +1921,7 @@
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = PyMOLViewer/RayMolMac.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 32;
+				CURRENT_PROJECT_VERSION = 203;
 				DEVELOPMENT_TEAM = VT99UQUQ89;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1937,7 +1937,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.12.0;
+				MARKETING_VERSION = 1.12.1;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
@@ -1979,7 +1979,7 @@
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = PyMOLViewer/RayMolMac.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 32;
+				CURRENT_PROJECT_VERSION = 203;
 				DEVELOPMENT_TEAM = VT99UQUQ89;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -1995,7 +1995,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.12.0;
+				MARKETING_VERSION = 1.12.1;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
@@ -2011,7 +2011,7 @@
 		};
 		76B7E9DB75E073D1E60928FA /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_AB7551C0-B01C-44D2-9EAA-89B73F9E45B3" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_EDD84068-517B-461C-BDE0-73E905351476" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -2118,7 +2118,7 @@
 		};
 		D8F44FDFF036013D2F03BA83 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_AB7551C0-B01C-44D2-9EAA-89B73F9E45B3" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = "TEMP_EDD84068-517B-461C-BDE0-73E905351476" /* PyMOLBridge.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
