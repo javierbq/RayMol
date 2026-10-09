@@ -86,14 +86,16 @@ echo "== 2/7  Toolchain =="
 # [macOS] adds libomp. The Metal-only core compiles OpenMP surface sampling
 # (appkit/CMakeLists.txt PYMOL_OPENMP, finds omp.h under the prefix) and the
 # app links $(PYMOL_EXTERNAL_PREFIX)/opt/libomp/lib/libomp.a STATICALLY
-# (PyMOLBridge.xcconfig PYMOL_LIBOMP_STATIC). On macOS libpng and freetype are
-# also LINKED from the prefix (-lfreetype -lpng16), not just read for headers;
-# the "Bundle Homebrew dylibs" build phase then copies them into the app.
-# GLEW, libxml2 and netcdf stay out: the Metal-only build (PYMOL_METAL_ONLY,
-# -DPYMOL_LIBXML=OFF) never looks for them either.
+# (PyMOLBridge.xcconfig PYMOL_LIBOMP_STATIC). [macOS] does NOT install libpng
+# or freetype: build_macos.sh (step 6) builds them from pinned sources as static
+# archives (scripts/build_macos_deps.sh) and the app links those. Linking
+# Homebrew's freetype dylib is what shipped 1.12.2 (212), which crashed at
+# launch on a libbrotlicommon that Homebrew's freetype pulled in and the app
+# did not carry. GLEW, libxml2 and netcdf stay out: the Metal-only build
+# (PYMOL_METAL_ONLY, -DPYMOL_LIBXML=OFF) never looks for them either.
 case "$PLATFORM" in
   iOS)   brew install cmake glm xcodegen libpng freetype ;;
-  macOS) brew install cmake glm xcodegen libpng freetype libomp ;;
+  macOS) brew install cmake glm xcodegen libomp ;;
 esac
 # Read the prefix rather than trusting /opt/homebrew: Xcode Cloud runs at
 # /usr/local. Hardcoding /opt/homebrew here would be the same mistake line 22

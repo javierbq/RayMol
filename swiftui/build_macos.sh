@@ -30,6 +30,11 @@ if [ -z "$NUMPY_INC" ]; then
     echo "         Run scripts/bundle_numpy_macos.sh, then rebuild with CLEAN=1."
 fi
 
+# Static libpng + freetype (deps_macos/install): the core compiles against their
+# headers and the app links the archives, so no Homebrew dylib ever ships.
+# No-op when already staged; every macOS build path runs through here.
+bash "$PYMOL_ROOT/scripts/build_macos_deps.sh"
+
 CLEAN="${CLEAN:-0}"
 case "$CLEAN" in
   1|true|yes|on) echo "== Clean core build (rm -rf $BUILD_DIR) =="; rm -rf "$BUILD_DIR" ;;
@@ -44,6 +49,7 @@ cmake "$PYMOL_ROOT/appkit" \
     -DPYMOL_PYTHON_INCLUDE_DIR="$PY/include/python3.13" \
     -DPYMOL_PYTHON_NUMPY_INCLUDE_DIR="$NUMPY_INC" \
     -DPYMOL_EXTERNAL_PREFIX="$PYMOL_EXTERNAL_PREFIX" \
+    -DPYMOL_MACOS_DEPS="$PYMOL_ROOT/deps_macos/install" \
     -DCMAKE_OSX_ARCHITECTURES=arm64 \
     -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
     -DCMAKE_BUILD_TYPE=Release

@@ -598,17 +598,17 @@ targets:
                 -o runtime --timestamp=none "$f" || true
             done
           fi
-      # macOS portability: freetype/libpng are linked out of Homebrew (-lfreetype
-      # -lpng16 from /opt/homebrew/lib in PyMOLBridge.xcconfig), so the linker
-      # bakes /opt/homebrew/.../libfreetype.6.dylib into the binary as a hard load
-      # command. On any Mac without those exact Homebrew kegs (every end user, a
-      # clean VM, the App Store sandbox) dyld can't find them and aborts at launch
-      # ("Library not loaded ... Namespace DYLD ... Library missing"). This step
-      # copies those dylibs into Contents/Frameworks and rewrites the load
-      # commands + ids to @rpath, adding @executable_path/../Frameworks to the
-      # binary's runpath, so the app is self-contained. Idempotent: a second run
-      # finds nothing to rewrite. The script signs only the copied dylibs (when
-      # signing); the main binary is sealed by Xcode's final CodeSign / make_dmg.
+      # macOS portability GUARD. freetype/libpng are now STATIC archives built
+      # from pinned sources (scripts/build_macos_deps.sh, linked by path in
+      # PyMOLBridge.xcconfig), so normally there is nothing to copy and this step
+      # only verifies: no Mach-O in the app may reference a non-system absolute
+      # path, or an @rpath/@loader_path library that resolves to nothing. That
+      # second check is what would have stopped 1.12.2 (212), which shipped
+      # Homebrew's libbrotlidec without its libbrotlicommon and died at launch.
+      # If a package-manager dylib ever gets linked again, the script still
+      # copies it into Contents/Frameworks and rewrites it to @rpath rather than
+      # ship a hard /opt/homebrew load command. Idempotent; signs only what it
+      # copies; the main binary is sealed by Xcode's final CodeSign / make_dmg.
       - name: "macOS: Bundle Homebrew dylibs into Frameworks (@rpath)"
         basedOnDependencyAnalysis: false
         script: |

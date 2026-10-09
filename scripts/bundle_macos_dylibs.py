@@ -145,6 +145,47 @@ def nonportable_refs(path):
     ]
 
 
+def unresolved_relative_refs(path, main_binary, main_rpaths):
+    """@rpath/@loader_path/@executable_path deps of `path` that dyld could not
+    find. An absolute-path check alone misses these: Homebrew's libbrotlidec
+    loads @rpath/libbrotlicommon.1.dylib, so bundling libbrotlidec without its
+    sibling passed verification and then aborted at launch (1.12.2 beta 212).
+
+    @rpath is searched through the image's own LC_RPATHs and then the main
+    executable's (dyld walks the loader chain; the main binary is its root).
+    A system rpath (/usr/lib/swift) resolves only the Swift runtime: those
+    libswift* dylibs live in the dyld shared cache, not on disk. It must NOT
+    vouch for arbitrary names — the main binary always carries /usr/lib/swift,
+    and treating it as a wildcard is exactly how the missing libbrotlicommon
+    slipped through.
+    """
+    loader_dir = str(path.parent)
+    exe_dir = str(main_binary.parent)
+
+    def expand(p):
+        return (p.replace("@loader_path", loader_dir)
+                 .replace("@executable_path", exe_dir))
+
+    rpaths = list(existing_rpaths(path)) + list(main_rpaths)
+    missing = []
+    for ref in deps_of(path):
+        if ref.startswith("@rpath/"):
+            rest = ref[len("@rpath/"):]
+            ok = False
+            for rp in rpaths:
+                rp = expand(rp)
+                if os.path.exists(os.path.join(rp, rest)) or (
+                        rp.startswith(SYSTEM_PREFIXES) and rest.startswith("libswift")):
+                    ok = True
+                    break
+            if not ok:
+                missing.append(ref)
+        elif ref.startswith(("@loader_path/", "@executable_path/")):
+            if not os.path.exists(expand(ref)):
+                missing.append(ref)
+    return missing
+
+
 def strip_signature(path):
     subprocess.run(
         ["codesign", "--remove-signature", str(path)],
@@ -337,11 +378,14 @@ def main():
     # than shipping a dyld crash.
     print("Verifying (whole bundle)...")
     violations = []
+    main_rpaths = existing_rpaths(binary)
     for p in all_macho(app):
         for ref in nonportable_refs(p):
             violations.append((p.relative_to(app), ref))
+        for ref in unresolved_relative_refs(p, binary, main_rpaths):
+            violations.append((p.relative_to(app), f"{ref} (resolves to nothing)"))
     if violations:
-        print(f"  FAIL: {len(violations)} non-portable absolute reference(s):")
+        print(f"  FAIL: {len(violations)} non-portable or unresolvable reference(s):")
         for rel, ref in violations:
             print(f"    {rel}: {ref}")
         sys.exit(1)
