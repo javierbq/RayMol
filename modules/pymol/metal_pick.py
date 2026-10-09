@@ -554,6 +554,64 @@ def _python_pick(pick_objs, cam, ndc_x, ndc_y, aspect, thresh):
     return best
 
 
+def _glycan_pick(pick_objs, cam, ndc_x, ndc_y, aspect, thresh):
+    """Return a real residue atom for a visible virtual SNFG symbol.
+
+    Glycan cartoons are CGO geometry, so the native atom picker cannot identify
+    them. ``raymol_glycan`` retains a centroid-to-residue map; project those
+    centroids with the same camera used by the atom picker and make the symbol's
+    visible footprint selectable.
+    """
+    from pymol import cmd
+    try:
+        from pymol import raymol_glycan
+        enabled = set(cmd.get_names('objects', enabled_only=1) or [])
+        allowed = enabled.intersection(pick_objs)
+        r00, r01, r02, r10, r11, r12, r20, r21, r22 = cam.rot
+        tx, ty, tz = cam.pos
+        ox, oy, oz = cam.origin
+        candidates = []
+        for target in raymol_glycan.get_pick_targets():
+            if target['cgo_object'] not in allowed:
+                continue
+            cx, cy, cz = target['coord']
+            dx, dy, dz = cx - ox, cy - oy, cz - oz
+            ex = r00 * dx + r01 * dy + r02 * dz + tx
+            ey = r10 * dx + r11 * dy + r12 * dz + ty
+            ez = r20 * dx + r21 * dy + r22 * dz + tz
+            depth = -ez
+            if depth <= 0.01:
+                continue
+            if cam.clip_front is not None and cam.clip_back > cam.clip_front \
+                    and (depth < cam.clip_front or depth > cam.clip_back):
+                continue
+            half_h = depth * cam.tan_half
+            half_w = half_h * aspect
+            sx, sy = ex / half_w, ey / half_h
+            d2 = (sx - ndc_x) ** 2 + (sy - ndc_y) ** 2
+            radius = float(target['radius'])
+            screen_radius = max(radius / half_w, radius / half_h)
+            if d2 > max(thresh, screen_radius * screen_radius):
+                continue
+            candidates.append((
+                d2, depth, target['object'], target['chain'], target['resi'],
+                target['resn'], target['segi'] or target['chain'],
+                target['name'], sx, sy,
+            ))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda candidate: candidate[0])
+        minimum = candidates[0][0]
+        cluster = [candidate for candidate in candidates
+                   if candidate[0] <= minimum + _CLUSTER_NDC2]
+        candidate = min(cluster, key=lambda item: item[1])
+        return (candidate[0], candidate[2], candidate[3], candidate[4],
+                candidate[5], candidate[6], candidate[7], candidate[8],
+                candidate[9])
+    except Exception:
+        return None
+
+
 def _pick_atom(ndc_x, ndc_y, aspect, max_ndc2=None):
     """Project all DRAWN atoms and return the front-most atom under the click as
     (screen_d2, obj, chain, resi, resn, segi, name, sx, sy), or None for empty
@@ -589,6 +647,10 @@ def _pick_atom(ndc_x, ndc_y, aspect, max_ndc2=None):
 
         if not pick_objs:
             return None
+
+        glycan_hit = _glycan_pick(pick_objs, cam, ndc_x, ndc_y, aspect, thresh)
+        if glycan_hit is not None:
+            return glycan_hit
 
         # The debug harness wants the projection diagnostics only the Python
         # path collects (candidate count, projected extent), and has no use for

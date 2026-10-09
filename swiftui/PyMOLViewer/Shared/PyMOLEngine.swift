@@ -2555,6 +2555,27 @@ final class PyMOLEngine: ObservableObject {
         return rows
     }
 
+    /// Bond-derived glycan topology and advisory geometry assessments for the
+    /// native topology sheet. The temporary-file bridge avoids feedback-size
+    /// limits for branched glycans and matches the Analysis Notes data bridge.
+    func glycanTopology(selection: String = "all") -> GlycanForestPayload? {
+        guard isReady else { return nil }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("raymol-glycan-tree-\(UUID().uuidString).json")
+        let encodedPath = Data(url.path.utf8).base64EncodedString()
+        let encodedSelection = Data(selection.utf8).base64EncodedString()
+        runPython("""
+        import base64 as _b64
+        from pymol.glyco.tree import write_glycan_tree as _write_glycan_tree
+        _path = _b64.b64decode('\(encodedPath)').decode('utf-8')
+        _selection = _b64.b64decode('\(encodedSelection)').decode('utf-8')
+        _write_glycan_tree(_path, selection=_selection)
+        """)
+        defer { try? FileManager.default.removeItem(at: url) }
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(GlycanForestPayload.self, from: data)
+    }
+
     /// Safe residue selection used by raymol-residue links in note Preview.
     func selectNoteResidue(object: String, chain: String, resi: String) {
         let values = [object, chain, resi].map { Data($0.utf8).base64EncodedString() }

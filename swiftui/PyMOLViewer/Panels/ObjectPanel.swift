@@ -1758,6 +1758,7 @@ struct ObjectPanel: View {
     @Environment(\.horizontalSizeClass) private var hSizeClass
     #endif
     @State private var showSelectionBuilder = false
+    @State private var showGlycanTopology = false
     @State private var renameText = ""
     @State private var groupNameText = ""
     @State private var copyToNewText = ""
@@ -1893,7 +1894,16 @@ struct ObjectPanel: View {
 
                     // OBJECTS — the loaded molecules + the global "all" row.
                     sectionHeader("OBJECTS", id: "objects",
-                                  tag: objects.isEmpty ? nil : "\(objects.count)") { EmptyView() }
+                                  tag: objects.isEmpty ? nil : "\(objects.count)") {
+                        Button(action: { showGlycanTopology = true }) {
+                            Image(systemName: "list.bullet.indent")
+                                .font(.system(size: 11))
+                                .foregroundColor(PanelTheme.headerColor)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Glycan topology")
+                        .help("Inspect glycan topology and geometry")
+                    }
                     if openSections.contains("objects") {
                         if objects.isEmpty {
                             emptyHint("No objects loaded")
@@ -2010,6 +2020,9 @@ struct ObjectPanel: View {
         .background(PanelTheme.background)
         .sheet(isPresented: $showSelectionBuilder) {
             SelectionBuilderSheet()
+        }
+        .sheet(isPresented: $showGlycanTopology) {
+            GlycanTopologyView().environmentObject(engine)
         }
         .onAppear {
             refreshObjects()
@@ -2658,6 +2671,10 @@ private struct ShowButton: View {
                     }
                 }
             }
+            Divider()
+            Button("Glycan cartoon") {
+                engine.runCommand("glycocartoon selection=\(name)", naming: name)
+            }
         } label: {
             Text("S")
                 .frame(width: kActBtnW, height: kActBtnH)
@@ -2702,6 +2719,10 @@ private struct HideButton: View {
                         engine.runCommand("hide \(rep), \(name)", naming: name)
                     }
                 }
+            }
+            Divider()
+            Button("Glycan cartoon") {
+                engine.runCommand("glycocartoon_hide selection=\(name)", naming: name)
             }
         } label: {
             Text("H")
@@ -2823,6 +2844,10 @@ private struct ColorMenuButton: View {
                         swatchLabel(row.title, swatch: row.swatch)
                     }
                 }
+            }
+            Divider()
+            Button("SNFG glycan palette") {
+                engine.runCommand("glycocolor selection=\(name)", naming: name)
             }
             Divider()
             // A ColorPicker can't live inside a Menu (it renders disabled), so
