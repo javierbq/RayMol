@@ -2002,6 +2002,18 @@ static void SceneRenderPostProcessStack(PyMOLGlobals* G, const GLFramebufferConf
 }
 
 /**
+ * Does the object have any visible representation? Molecules: the OR of the
+ * atoms' visRep (cached by ObjectMolecule::repsShownByAtoms(), dropped by
+ * invalidate(cRepInvVisib)); everything else: its own visRep.
+ */
+static bool SceneObjectShowsAnyRep(const pymol::CObject* obj)
+{
+  if (obj->type == cObjectMolecule)
+    return static_cast<const ObjectMolecule*>(obj)->repsShownByAtoms() != 0;
+  return obj->visRep != 0;
+}
+
+/**
  * Model-space bounding box of the geometry that casts shadows: every object
  * enabled in the scene, with solvent atoms left out.
  *
@@ -2019,7 +2031,9 @@ static void SceneRenderPostProcessStack(PyMOLGlobals* G, const GLFramebufferConf
  * @param[out] mn,mx model-space min/max corners
  * @param skip_solvent exclude atoms flagged as solvent
  * @param skip_overlays exclude overlays (SceneObjectIsOverlay: gadgets,
- *        gizmos, the Move gizmo's CGO), which never cast studio shadows (#616)
+ *        gizmos, the Move gizmo's CGO), which never cast studio shadows (#616).
+ *        Also leaves out enabled objects with no visible representation: they
+ *        draw nothing, so they cast nothing (#690).
  * @return false if nothing contributed (mn/mx untouched)
  */
 static bool SceneComputeShadowExtent(PyMOLGlobals* G, float* mn, float* mx,
@@ -2041,6 +2055,8 @@ static bool SceneComputeShadowExtent(PyMOLGlobals* G, float* mn, float* mx,
 
   for (auto* obj : I->Obj) {
     if (skip_overlays && SceneObjectIsOverlay(obj))
+      continue;
+    if (skip_overlays && !SceneObjectShowsAnyRep(obj))
       continue;
     if (obj->type != cObjectMolecule) {
       // Maps, meshes, surfaces, CGOs: they already carry a cached extent.
