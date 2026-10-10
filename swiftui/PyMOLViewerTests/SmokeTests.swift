@@ -315,4 +315,15 @@ final class ScriptedMovieExportTests: XCTestCase {
         wait(for: [settle], timeout: 1)
         XCTAssertEqual(timedOut, 1)
     }
+
+    // A poll that runs after the deadline times out even if the renderer is
+    // ready by then (Copilot review of #766): the wait stays bounded.
+    func testWaiterTimesOutPastTheDeadlineEvenIfReady() {
+        let done = expectation(description: "timeout")
+        PyMOLEngine.pollUntilReady(
+            ready: { true }, busy: { false }, deadline: .now(), interval: 0.01,
+            onReady: { XCTFail("started past the deadline") }, onBusy: { XCTFail("busy") },
+            onTimeout: { done.fulfill() })
+        wait(for: [done], timeout: 2)
+    }
 }

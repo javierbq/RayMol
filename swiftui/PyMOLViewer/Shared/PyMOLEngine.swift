@@ -1494,18 +1494,21 @@ final class PyMOLEngine: ObservableObject {
 
     // The scripted export's bounded wait (#654): poll `ready` on the main
     // queue every `interval` until it is true, then run `onReady` once, or
-    // `onBusy` instead if another export began meanwhile; past `deadline`
-    // (monotonic, so a wall-clock change cannot shorten or stretch it) run
+    // `onBusy` instead if another export began meanwhile; at or past `deadline`
+    // (checked first, and monotonic, so a wall-clock change cannot shorten or
+    // stretch it) run
     // `onTimeout` once. Exactly one of the three runs. Static, for tests.
     static func pollUntilReady(ready: @escaping () -> Bool, busy: @escaping () -> Bool,
                                deadline: DispatchTime, interval: TimeInterval,
                                onReady: @escaping () -> Void, onBusy: @escaping () -> Void,
                                onTimeout: @escaping () -> Void) {
         DispatchQueue.main.asyncAfter(deadline: .now() + interval) {
-            if ready() {
-                if busy() { onBusy() } else { onReady() }
-            } else if DispatchTime.now() >= deadline {
+            // The deadline first: a poll that runs late (a stalled main queue)
+            // times out rather than starting past the bounded wait.
+            if DispatchTime.now() >= deadline {
                 onTimeout()
+            } else if ready() {
+                if busy() { onBusy() } else { onReady() }
             } else {
                 pollUntilReady(ready: ready, busy: busy, deadline: deadline, interval: interval,
                                onReady: onReady, onBusy: onBusy, onTimeout: onTimeout)
