@@ -482,6 +482,22 @@ enum InspectorMetrics {
     static let fieldWidth: CGFloat = 60
     static let font = Font.system(size: 12)
     static let valueFont = Font.system(size: 11).monospacedDigit()
+
+    /// The HStack spacing of an inspector row.
+    static let rowSpacing: CGFloat = 6
+
+    /// The width of the Orbit and Pitch steppers' touch buttons (minus and
+    /// plus, each a `minimum` pt square) on iOS (#720); 0 when `minimum` is 0
+    /// (macOS draws the system stepper).
+    static func touchStepperWidth(minimum: CGFloat) -> CGFloat { 2 * minimum }
+
+    /// The narrowest an Orbit or Pitch row can be with touch buttons: label,
+    /// dial, field, the two buttons, and the gaps between the five children
+    /// (the spacer included).
+    static func angleRowMinimumWidth(minimum: CGFloat) -> CGFloat {
+        labelWidth + LightAngleDial.side + fieldWidth + touchStepperWidth(minimum: minimum)
+            + 4 * rowSpacing
+    }
 }
 
 /// A slider row: label, continuous slider (no ticks), value label. The
@@ -545,7 +561,7 @@ struct LightAngleFieldRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: InspectorMetrics.rowSpacing) {
             Text(parameter.label)
                 .font(InspectorMetrics.font)
                 .foregroundColor(style.text.opacity(0.8))
@@ -568,14 +584,9 @@ struct LightAngleFieldRow: View {
                 .accessibilityLabel(LightsInspectorState.fieldLabel(parameter))
                 .accessibilityIdentifier("lights.inspector.\(parameter.field).field")
             Spacer(minLength: 0)
-            Stepper(parameter.label,
-                    onIncrement: { controller.step(parameter, by: LightsInspectorState.stepperStep) },
-                    onDecrement: { controller.step(parameter, by: -LightsInspectorState.stepperStep) })
-                .labelsHidden()
-                .controlSize(.small)
-                .accessibilityLabel(parameter.label)
-                .accessibilityValue(row?.spoken ?? "")
-                .accessibilityIdentifier("lights.inspector.\(parameter.field).stepper")
+            LightAngleStepper(parameter: parameter, spoken: row?.spoken ?? "", style: style) { step in
+                controller.step(parameter, by: step)
+            }
         }
         .onAppear { editor.show(row?.value, light: lightName) }
         .onChange(of: row?.value) { editor.show(row?.value, light: lightName) }
@@ -622,6 +633,62 @@ struct LightAngleFieldRow: View {
         editor.show(controller.value(parameter), light: controller.selection.name)
         editor.begin(light: controller.selection.name)
         return .handled
+    }
+}
+
+/// An Orbit or Pitch stepper: two 44 pt touch buttons on iOS (#720), or the
+/// system stepper on macOS.
+struct LightAngleStepper: View {
+    let parameter: LightParameter
+    let spoken: String
+    let style: LightsBarStyle
+    let onStep: (Double) -> Void
+
+    @Environment(\.lightsTouchMinimum) private var touchMinimum
+
+    var body: some View {
+        if touchMinimum > 0 {
+            HStack(spacing: 0) {
+                button("minus", by: -LightsInspectorState.stepperStep)
+                Rectangle().fill(style.text.opacity(0.25)).frame(width: 1, height: 18)
+                button("plus", by: LightsInspectorState.stepperStep)
+            }
+            .background(Capsule().fill(style.text.opacity(0.12)).frame(height: 32))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(parameter.label)
+            .accessibilityValue(spoken)
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment: onStep(LightsInspectorState.stepperStep)
+                case .decrement: onStep(-LightsInspectorState.stepperStep)
+                @unknown default: break
+                }
+            }
+            .accessibilityIdentifier("lights.inspector.\(parameter.field).stepper")
+        } else {
+            Stepper(parameter.label,
+                    onIncrement: { onStep(LightsInspectorState.stepperStep) },
+                    onDecrement: { onStep(-LightsInspectorState.stepperStep) })
+                .labelsHidden()
+                .controlSize(.small)
+                .accessibilityLabel(parameter.label)
+                .accessibilityValue(spoken)
+                .accessibilityIdentifier("lights.inspector.\(parameter.field).stepper")
+        }
+    }
+
+    private func button(_ name: String, by step: Double) -> some View {
+        Button {
+            onStep(step)
+        } label: {
+            Image(systemName: name)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(style.text)
+                .frame(width: touchMinimum, height: touchMinimum)
+                .contentShape(Rectangle())
+                .lightsTouchTarget()
+        }
+        .buttonStyle(.plain)
     }
 }
 

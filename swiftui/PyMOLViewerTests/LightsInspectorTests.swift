@@ -976,3 +976,16 @@ final class LightsInspectorSnapshotTests: XCTestCase {
         return true
     }
 }
+
+// MARK: - The angle steppers' touch targets (#720)
+
+final class LightAngleStepperMetricsTests: XCTestCase {
+    func testTouchButtonsAre44PointAndFitTheCard() {
+        XCTAssertEqual(InspectorMetrics.touchStepperWidth(minimum: 44), 88, "two 44 pt buttons")
+        XCTAssertEqual(InspectorMetrics.touchStepperWidth(minimum: 0), 0, "macOS: the system stepper")
+        XCTAssertLessThanOrEqual(InspectorMetrics.angleRowMinimumWidth(minimum: 44) + 1,
+                                 LightsInspector.width - 24, "the row fits the 284 pt card")
+        XCTAssertEqual(InspectorMetrics.touchStepperWidth(minimum: LightsTouch.minimumTarget),
+                       2 * LightsTouch.minimumTarget)
+    }
+}
