@@ -4157,7 +4157,9 @@ final class PyMOLEngine: ObservableObject {
             self.lastHoverFire = Date()
             let wantsPreview = self.hoverPreviewEnabled
             let wantsInfo = self.hoverReadoutEnabled
-            self.hoverPreviewMayBeShown = true
+            // Only a preview pick writes '_preselect'; a readout-only pick
+            // leaves it alone, so it must not make the next clear run Python.
+            if wantsPreview { self.hoverPreviewMayBeShown = true }
             self.runPython(
                 "from pymol import metal_pick as _mp; "
                 + "_mp.hover_preview_at(\(ndcX), \(ndcY), \(aspect), "
@@ -4237,10 +4239,7 @@ final class PyMOLEngine: ObservableObject {
         let fire: () -> Void = { [weak self] in
             guard let self else { return }
             self.lastDesignHoverFire = Date()
-            self.hoverPreviewMayBeShown = true
-            self.runPython(
-                "from pymol import metal_pick as _mp; "
-                + "_mp.hover_design_at(\(ndcX), \(ndcY), \(aspect))")
+            self.runHoverDesignPick(ndcX, ndcY, aspect)
             self.readDesignHoverHit()
         }
         let elapsed = Date().timeIntervalSince(lastDesignHoverFire)
@@ -4297,9 +4296,17 @@ final class PyMOLEngine: ObservableObject {
         deliver(out.object, out.chain, out.resi, out.hit)
     }
 
+    /// Run `hover_design_at`, which always writes '_preselect', and arm the
+    /// hover clear (#694). Every caller goes through here so none can leave a
+    /// glow that a later `clearHoverPreview` would skip.
+    private func runHoverDesignPick(_ ndcX: Float, _ ndcY: Float, _ aspect: Float) {
+        hoverPreviewMayBeShown = true
+        runPython("from pymol import metal_pick as _mp; _mp.hover_design_at(\(ndcX), \(ndcY), \(aspect))")
+    }
+
     func designPickResidue(ndcX: Float, ndcY: Float, aspect: Float) {
         guard designMode, isReady else { return }
-        runPython("from pymol import metal_pick as _mp; _mp.hover_design_at(\(ndcX), \(ndcY), \(aspect))")
+        runHoverDesignPick(ndcX, ndcY, aspect)
         let path = (NSTemporaryDirectory() as NSString)
             .appendingPathComponent("pymol_hover_design.json")
         // An unreadable payload must NOT reach the controller: `handleViewportHit`

@@ -608,6 +608,21 @@ final class LightGizmoRoutingTests: XCTestCase {
 
         engine.clearHoverPreview()
         XCTAssertEqual(t.python.lines.count, 1, "the second clear adds none")
+
+        // A readout-only pick (preview off) leaves '_preselect' alone, so it
+        // must not make the next clear run Python.
+        let savedReadout = engine.hoverReadoutEnabled
+        defer { engine.hoverReadoutEnabled = savedReadout }
+        engine.hoverPreviewEnabled = false
+        engine.hoverReadoutEnabled = true
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        t.python.lines = []
+        engine.hoverPreview(-0.9, -0.9, 1.0)
+        XCTAssertEqual(t.python.lines.count, 1, "the readout pick runs")
+        XCTAssertTrue(t.python.lines.first?.contains("hover_preview_at") == true, "\(t.python.lines)")
+        XCTAssertFalse(engine.hoverPreviewMayBeShown, "a readout-only pick writes no preview")
+        engine.clearHoverPreview()
+        XCTAssertEqual(t.python.lines.count, 1, "the clear after a readout-only pick runs no Python")
     }
 
     // MARK: DEBUG size check
