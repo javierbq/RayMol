@@ -1474,24 +1474,41 @@ final class PyMOLEngine: ObservableObject {
         }
 
         exportLog(" movie_export: waiting for the renderer (no live frame yet)…")
-        let startTime = Date()
-        waitForMetalRenderer(startTime: startTime, onReady: startExport)
+        Self.pollUntilReady(
+            ready: { [weak self] in self?.metalRendererReady() ?? false },
+            busy: { [weak self] in
+                guard let self else { return true }
+                return self.scriptedMovieExporter.isExporting || self.exportRenderActive
+            },
+            deadline: .now() + scriptedExportRendererWait,
+            interval: Self.scriptedExportPollInterval,
+            onReady: startExport,
+            onBusy: { [weak self] in
+                self?.exportLog(" movie_export: another movie export is already running")
+            },
+            onTimeout: { [weak self] in
+                self?.exportLog(" movie_export: failed: the renderer is not ready "
+                                + "(no live frame was drawn; is the window visible?)")
+            })
     }
 
-    private func waitForMetalRenderer(startTime: Date, onReady: @escaping () -> Void) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.scriptedExportPollInterval) { [weak self] in
-            guard let self else { return }
-            if self.metalRendererReady() {
-                let exporter = self.scriptedMovieExporter
-                guard !exporter.isExporting && !self.exportRenderActive else {
-                    self.exportLog(" movie_export: another movie export is already running")
-                    return
-                }
-                onReady()
-            } else if Date().timeIntervalSince(startTime) >= self.scriptedExportRendererWait {
-                self.exportLog(" movie_export: failed: the renderer is not ready (no live frame was drawn; is the window visible?)")
+    // The scripted export's bounded wait (#654): poll `ready` on the main
+    // queue every `interval` until it is true, then run `onReady` once, or
+    // `onBusy` instead if another export began meanwhile; past `deadline`
+    // (monotonic, so a wall-clock change cannot shorten or stretch it) run
+    // `onTimeout` once. Exactly one of the three runs. Static, for tests.
+    static func pollUntilReady(ready: @escaping () -> Bool, busy: @escaping () -> Bool,
+                               deadline: DispatchTime, interval: TimeInterval,
+                               onReady: @escaping () -> Void, onBusy: @escaping () -> Void,
+                               onTimeout: @escaping () -> Void) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + interval) {
+            if ready() {
+                if busy() { onBusy() } else { onReady() }
+            } else if DispatchTime.now() >= deadline {
+                onTimeout()
             } else {
-                self.waitForMetalRenderer(startTime: startTime, onReady: onReady)
+                pollUntilReady(ready: ready, busy: busy, deadline: deadline, interval: interval,
+                               onReady: onReady, onBusy: onBusy, onTimeout: onTimeout)
             }
         }
     }

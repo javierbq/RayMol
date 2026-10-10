@@ -271,5 +271,48 @@ final class ScriptedMovieExportTests: XCTestCase {
             $0.contains("waiting for the renderer")
         }), "Expected no waiting line, got: \(engine.feedbackLog)")
     }
-}
 
+    // The recovery path (Copilot review of #766): readiness flips to true
+    // after a few polls and exactly one start runs.
+    func testWaiterStartsExactlyOnceWhenTheRendererBecomesReady() {
+        var polls = 0, started = 0, busy = 0, timedOut = 0
+        let done = expectation(description: "start")
+        PyMOLEngine.pollUntilReady(
+            ready: { polls += 1; return polls >= 3 }, busy: { false },
+            deadline: .now() + 5, interval: 0.01,
+            onReady: { started += 1; done.fulfill() }, onBusy: { busy += 1 },
+            onTimeout: { timedOut += 1 })
+        wait(for: [done], timeout: 2)
+        let settle = expectation(description: "no more polls")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { settle.fulfill() }
+        wait(for: [settle], timeout: 1)
+        XCTAssertEqual(started, 1)
+        XCTAssertEqual(polls, 3, "polling stops once ready")
+        XCTAssertEqual(busy, 0)
+        XCTAssertEqual(timedOut, 0)
+    }
+
+    func testWaiterReportsBusyInsteadOfStartingASecondExport() {
+        var started = 0
+        let done = expectation(description: "busy")
+        PyMOLEngine.pollUntilReady(
+            ready: { true }, busy: { true }, deadline: .now() + 5, interval: 0.01,
+            onReady: { started += 1 }, onBusy: { done.fulfill() }, onTimeout: { XCTFail("timeout") })
+        wait(for: [done], timeout: 2)
+        XCTAssertEqual(started, 0)
+    }
+
+    func testWaiterTimesOutOnceAtTheDeadline() {
+        var timedOut = 0
+        let done = expectation(description: "timeout")
+        PyMOLEngine.pollUntilReady(
+            ready: { false }, busy: { false }, deadline: .now() + 0.05, interval: 0.01,
+            onReady: { XCTFail("started") }, onBusy: { XCTFail("busy") },
+            onTimeout: { timedOut += 1; done.fulfill() })
+        wait(for: [done], timeout: 2)
+        let settle = expectation(description: "no more polls")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { settle.fulfill() }
+        wait(for: [settle], timeout: 1)
+        XCTAssertEqual(timedOut, 1)
+    }
+}
