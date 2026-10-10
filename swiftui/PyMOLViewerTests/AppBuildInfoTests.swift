@@ -129,3 +129,38 @@ final class AppBuildInfoTests: XCTestCase {
         XCTAssertTrue(AppBuildInfo.consoleBanner.hasPrefix(" [build] RayMol "))
     }
 }
+
+// MARK: - ScriptedLaunchTests (#671)
+
+/// Covers `PyMOLEngine.isScriptedLaunch(environment:)`, which detects whether
+/// the scene is being scripted via test affordances (PYMOL_AUTOCMD/PYMOL_AUTOLOAD)
+/// so launch-time theme re-assertion does not clobber requested render settings.
+final class ScriptedLaunchTests: XCTestCase {
+
+    func testEmptyEnvironmentIsNotScripted() {
+        XCTAssertFalse(PyMOLEngine.isScriptedLaunch(environment: [:]))
+    }
+
+    func testAutoCmdIsScripted() {
+        XCTAssertTrue(PyMOLEngine.isScriptedLaunch(environment: ["PYMOL_AUTOCMD": "set metal_shadows, 0"]))
+    }
+
+    func testAutoLoadIsScripted() {
+        XCTAssertTrue(PyMOLEngine.isScriptedLaunch(environment: ["PYMOL_AUTOLOAD": "1crn.pdb"]))
+    }
+
+    func testUnrelatedEnvironmentVariablesAreNotScripted() {
+        let env = [
+            "PYMOL_AUTOEXPORT": "out.png,800,600",
+            "PYMOL_SKIP_WHATS_NEW": "1",
+        ]
+        XCTAssertFalse(PyMOLEngine.isScriptedLaunch(environment: env))
+    }
+
+    func testScriptSetsOutlineOnlyWhenTheScriptMentionsIt() {
+        XCTAssertTrue(PyMOLEngine.scriptSetsOutline(environment: ["PYMOL_AUTOCMD": "load x.pdb; set metal_outline, 1"]))
+        XCTAssertFalse(PyMOLEngine.scriptSetsOutline(environment: ["PYMOL_AUTOCMD": "set metal_shadows, 0"]))
+        XCTAssertFalse(PyMOLEngine.scriptSetsOutline(environment: ["PYMOL_AUTOLOAD": "1crn.pdb"]))
+        XCTAssertFalse(PyMOLEngine.scriptSetsOutline(environment: [:]))
+    }
+}

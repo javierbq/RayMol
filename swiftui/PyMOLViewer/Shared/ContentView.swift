@@ -4721,12 +4721,15 @@ struct ContentView: View {
         themeManager.apply(engine: engine,
                            applyRenderToggles: !engine.suppressLaunchThemeRenderToggles)
         // Outline is off by default in RayMol 1.6.1 and no theme enables it.
-        // Force it off unconditionally on launch — independent of the theme's
-        // render-toggle suppression AND of the (historically flaky) compiled core
-        // default — so a stale core / cached theme can never surface an outline
-        // the user didn't ask for. Users can still enable it live (Display ▸
-        // Effects); this only governs the default at launch.
-        engine.runCommand("set metal_outline, 0")
+        // Force it off on launch — independent of the theme's render-toggle
+        // suppression AND of the (historically flaky) compiled core default —
+        // so a stale core / cached theme can never surface an outline the user
+        // didn't ask for. Users can still enable it live (Display ▸ Effects);
+        // this only governs the default at launch. Skipped when PYMOL_AUTOCMD
+        // sets metal_outline itself (#671), so the script's value wins.
+        if !engine.scriptSetsOutline {
+            engine.runCommand("set metal_outline, 0")
+        }
         // Load ~/.raymolrc(.py) LAST, after the theme defaults above, so a
         // user's startup script can override them (e.g. a custom bg_color) —
         // matching vanilla PyMOL, where .pymolrc runs after all built-in

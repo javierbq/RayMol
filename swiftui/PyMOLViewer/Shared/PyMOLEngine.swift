@@ -1025,8 +1025,7 @@ final class PyMOLEngine: ObservableObject {
     /// itself so the two can't disagree.
     private var autosaveIsRestorable: Bool {
         guard !launchOpenRequested else { return false }
-        let env = ProcessInfo.processInfo.environment
-        guard env["PYMOL_AUTOLOAD"] == nil, env["PYMOL_AUTOCMD"] == nil else { return false }
+        guard !isScriptedLaunch else { return false }
         guard UserDefaults.standard.bool(forKey: Self.autosaveDefaultsKey),
               let url = autosaveURL,
               FileManager.default.fileExists(atPath: url.path) else { return false }
@@ -1650,19 +1649,45 @@ final class PyMOLEngine: ObservableObject {
         return FileManager.default.fileExists(atPath: documentURL.path)
     }
 
+    // MARK: - Scripted launch (#671)
+
+    /// Pure helper returning true when the environment contains test/scripting
+    /// affordances (PYMOL_AUTOCMD or PYMOL_AUTOLOAD) that set up the scene at launch.
+    static func isScriptedLaunch(environment: [String: String]) -> Bool {
+        environment["PYMOL_AUTOCMD"] != nil || environment["PYMOL_AUTOLOAD"] != nil
+    }
+
+    /// True when this process was launched with PYMOL_AUTOCMD or PYMOL_AUTOLOAD (#671).
+    var isScriptedLaunch: Bool {
+        Self.isScriptedLaunch(environment: ProcessInfo.processInfo.environment)
+    }
+
+    /// Whether PYMOL_AUTOCMD sets metal_outline itself, so the launch's forced
+    /// `set metal_outline, 0` must not clobber it (#671). A script that does not
+    /// mention it still gets the forced default.
+    static func scriptSetsOutline(environment: [String: String]) -> Bool {
+        environment["PYMOL_AUTOCMD"]?.lowercased().contains("metal_outline") ?? false
+    }
+
+    var scriptSetsOutline: Bool {
+        Self.scriptSetsOutline(environment: ProcessInfo.processInfo.environment)
+    }
+
     // MARK: - Theme
 
     /// Whether the passive launch-time theme re-assertion
     /// (ContentView.applyPersistedTheme) should SKIP the theme's render toggles
     /// (metal_outline / metal_raytrace / metal_shadows). True when a session was
-    /// restored or a file-open is pending at launch: that session OWNS its render
-    /// state and must not be clobbered by the theme (the .pse already restored
-    /// them). On a fresh/empty launch this is false so the theme establishes them.
+    /// restored, a file-open is pending at launch, or the launch is scripted
+    /// (PYMOL_AUTOCMD / PYMOL_AUTOLOAD): on both platforms a scripted launch
+    /// owns its render state and must not be clobbered by the theme (#671).
+    /// On a fresh/empty launch this is false so the theme establishes them.
     var suppressLaunchThemeRenderToggles: Bool {
         #if os(iOS)
-        return didRestoreAutosave || launchOpenRequested
+        return isScriptedLaunch || didRestoreAutosave || launchOpenRequested
         #else
-        return false   // macOS launch-open loads the .pse AFTER the theme, so the session wins
+        // A launch-open .pse loads AFTER the theme on macOS, so the session wins anyway.
+        return isScriptedLaunch
         #endif
     }
 
