@@ -14195,9 +14195,6 @@ pymol::Result<> ExecutiveSetRepVisMask(
     TrackerDelList(I_Tracker, list_id);
     TrackerDelIter(I_Tracker, iter_id);
   }
-  // Show/hide by selection or `all` never reaches SceneChanged(), and the
-  // light shadow extent skips objects with no visible rep (#690).
-  SceneInvalidateExtentCache(G);
   PRINTFD(G, FB_Executive)
   " ExecutiveSetRepVisib: leaving...\n" ENDFD;
   return {};

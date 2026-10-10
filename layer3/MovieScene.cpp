@@ -570,6 +570,9 @@ pymol::Result<> MovieSceneRecallImpl(PyMOLGlobals* G, const MovieScene& scene,
   for (auto& item : objectstoinvalidate) {
     item.first->invalidate(cRepAll, item.second ? cRepInvVisib : cRepInvColor, -1);
   }
+  if (!objectstoinvalidate.empty()) {
+    SceneInvalidateExtentCache(G); // non-molecule objects' visRep (#690)
+  }
 
   // camera view
   if (recall_view) {
