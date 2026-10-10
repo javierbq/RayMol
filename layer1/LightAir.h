@@ -118,7 +118,8 @@ struct LightAirClockInputs {
   bool offscreen = false;
   /// A movie plays (live frames only).
   bool playing = false;
-  /// SceneCountFrames and SceneGetFrame (0-based).
+  /// The movie's frame count (SceneCountFrames) when a movie is defined
+  /// (MovieGetLength > 0), else 1 (#688), and SceneGetFrame (0-based).
   int frames = 1;
   int frame = 0;
   /// movie_fps; 0 or less reads as kLightAirDefaultFps.
