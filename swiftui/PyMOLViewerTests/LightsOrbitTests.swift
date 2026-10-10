@@ -274,11 +274,39 @@ final class OrbitPlanLayoutTests: XCTestCase {
                                              aim: SIMD2(0, 1 - 14 / Double(mac.pointsPerSize))))
         XCTAssertLessThan(hypot(near.to.x - near.from.x, near.to.y - near.from.y),
                           LightsOrbitMetrics.aimTickLength)
-        // A lamp on the outer ring aiming outwards stays inside the plan.
+        // A lamp on the outer ring aiming outwards has no room for a tick.
         let rim = mac.lampPoint(orbit: 0, radius: 9)
-        let out = try XCTUnwrap(mac.aimTick(from: rim, lampRadius: 6, aim: SIMD2(0, 20)))
-        XCTAssertLessThanOrEqual(hypot(out.to.x - mac.centre.x, out.to.y - mac.centre.y),
+        XCTAssertNil(mac.aimTick(from: rim, lampRadius: 6, aim: SIMD2(0, 20)))
+        // Aiming back inwards from the rim, the tick keeps the beam's direction.
+        let inward = try XCTUnwrap(mac.aimTick(from: rim, lampRadius: 6, aim: SIMD2(0.5, 0)))
+        let ux = (mac.centre.x + 0.5 * mac.pointsPerSize - rim.x), uy = mac.centre.y - rim.y
+        let cross = (inward.to.x - inward.from.x) * uy - (inward.to.y - inward.from.y) * ux
+        XCTAssertEqual(cross, 0, accuracy: 1e-6)
+        XCTAssertLessThanOrEqual(hypot(inward.to.x - mac.centre.x, inward.to.y - mac.centre.y),
                                  mac.outerRadius + 1e-9)
+        // A tick that would cross the ring is cut where the beam leaves it.
+        let edge = mac.point(orbit: 0, distance: mac.outerRadius - 12)
+        let cut = try XCTUnwrap(mac.aimTick(from: edge, lampRadius: 6, aim: SIMD2(0, 20)))
+        XCTAssertEqual(hypot(cut.to.x - mac.centre.x, cut.to.y - mac.centre.y), mac.outerRadius, accuracy: 1e-6)
+        XCTAssertEqual(cut.to.x, cut.from.x, accuracy: 1e-9)
+    }
+
+    func testTheStatePublishesAPointAimOnThePlanAxes() {
+        func light(aim: LightRigSnapshot.Aim, target: SIMD3<Float>) -> LightEyeSpace.Light {
+            LightEyeSpace.Light(position: .zero, target: target, direction: SIMD3(0, 0, 1), aimDistance: 1,
+                                cosOuter: 0.9, cosInner: 0.95, orbit: 0, pitch: 0, radius: 1,
+                                anchor: .camera, aim: aim, shadow: false, outline: false)
+        }
+        let eye = LightEyeSpace(enabled: true, hasFrame: true, centre: SIMD3(1, 2, 3), size: 10,
+                                lights: [light(aim: .point, target: SIMD3(6, 9, -7)),
+                                         light(aim: .centre, target: SIMD3(1, 2, 3))])
+        XCTAssertEqual(LightsOrbitState.aimOffset(eye, at: 0), SIMD2(0.5, -1))
+        XCTAssertNil(LightsOrbitState.aimOffset(eye, at: 1), "a centre aim has no tick")
+        XCTAssertNil(LightsOrbitState.aimOffset(eye, at: 2), "no such light")
+        XCTAssertNil(LightsOrbitState.aimOffset(nil, at: 0), "eye space not read")
+        var noFrame = eye
+        noFrame.hasFrame = false
+        XCTAssertNil(LightsOrbitState.aimOffset(noFrame, at: 0))
     }
 
     func testExtent() {

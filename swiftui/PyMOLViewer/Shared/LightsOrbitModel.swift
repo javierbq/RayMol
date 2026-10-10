@@ -187,15 +187,17 @@ struct OrbitPlanLayout: Equatable {
         let gap = lampRadius + LightsOrbitMetrics.aimTickGap
         guard distance > gap + LightsOrbitMetrics.aimTickMinimum else { return nil }
         let ux = dx / distance, uy = dy / distance
-        let length = min(LightsOrbitMetrics.aimTickLength, distance - gap)
+        var length = min(LightsOrbitMetrics.aimTickLength, distance - gap)
         let start = CGPoint(x: lamp.x + ux * gap, y: lamp.y + uy * gap)
-        var end = CGPoint(x: start.x + ux * length, y: start.y + uy * length)
-        let reach = hypot(end.x - centre.x, end.y - centre.y)
-        if reach > outerRadius {
-            end = CGPoint(x: centre.x + (end.x - centre.x) * outerRadius / reach,
-                          y: centre.y + (end.y - centre.y) * outerRadius / reach)
-        }
-        guard hypot(end.x - start.x, end.y - start.y) >= LightsOrbitMetrics.aimTickMinimum else { return nil }
+        // Clip along the beam where it leaves the outer ring; a start already
+        // outside it (a lamp on the rim aiming outwards) has no tick.
+        let sx = start.x - centre.x, sy = start.y - centre.y
+        let c = sx * sx + sy * sy - outerRadius * outerRadius
+        guard c <= 0 else { return nil }
+        let b = sx * ux + sy * uy
+        length = min(length, -b + (b * b - c).squareRoot())
+        guard length >= LightsOrbitMetrics.aimTickMinimum else { return nil }
+        let end = CGPoint(x: start.x + ux * length, y: start.y + uy * length)
         return (start, end)
     }
 
