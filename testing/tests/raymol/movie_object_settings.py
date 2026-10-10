@@ -98,16 +98,13 @@ class TestMovieObjectSettings(testing.PyMOLTestCase):
         self.assertIn(s2, list(seen.values()))
         firsts2 = min(f for f, v in seen.items() if v == s2)
         self.assertGreater(firsts2, 2)
-        # ...and back to s1 after it (the loop cut): o4's s2-only override must
-        # be UNSET, not left at rubber
-        # Only the paths whose movie actually cuts back to s1 (the loop cut)
-        # can show it; make_movie and rebuild end inside s2, so for them this is
-        # asserted not at all rather than skipped silently.
+        # ...and back to s1 when the loop returns to frame 1 (enter_scene runs
+        # at the markers, #659): o4's s2-only override must be UNSET, not left
+        # at rubber. play() has just shown the last frame, inside s2.
         if loops_back:
-            later = [v for f, v in sorted(seen.items())
-                     if f > firsts2 and v[0] == 'marble']
-            self.assertTrue(later, 'no cut back to s1 to check the unset on')
-            self.assertEqual(later[0], s1)
+            self.assertEqual(seen[max(seen)][3], 'rubber')
+            cmd.frame(1)
+            self.assertEqual(obj_state(), s1)
 
     def testPlaceSceneLeavesTheSessionAloneAndPlaybackSteps(self):
         cmd.mset('1 x60')
