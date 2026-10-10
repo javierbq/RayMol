@@ -191,6 +191,26 @@ final class LightsBarModelTests: XCTestCase {
         XCTAssertEqual(LightPalette.color(LightPalette.count), LightPalette.color(0))
         XCTAssertEqual(LightPalette.color(-1), LightPalette.color(LightPalette.count - 1))
     }
+
+    func testRevertAsksOnlyForMoreThanOneEdit() {
+        var state = begin(with: ["key", "fill", "rim"])
+        XCTAssertFalse(state.revertNeedsConfirmation)
+        XCTAssertEqual(state.editCount, 0)
+
+        controller.add()
+        state = LightsBarState(controller)
+        XCTAssertTrue(state.canRevert)
+        XCTAssertFalse(state.revertNeedsConfirmation)
+        XCTAssertEqual(state.editCount, 1)
+
+        controller.setEnabled(false)
+        state = LightsBarState(controller)
+        XCTAssertTrue(state.canRevert)
+        XCTAssertTrue(state.revertNeedsConfirmation)
+        XCTAssertEqual(state.editCount, 2)
+
+        XCTAssertEqual(LightsBar.revertConfirmLabel(2), "Revert 2 edits")
+    }
 }
 
 // MARK: - Pictures
