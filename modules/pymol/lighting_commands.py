@@ -1054,6 +1054,7 @@ def _apply_light(where, rig, index, spec, change, _self, label):
 # target= keeps the light's anchor.
 
 _FIT_MARGIN = 1.15      # beam fit: the cone covers the patch with 15 % spare
+_HIGHLIGHT_MIN_BEAM = 20.0  # click=/highlight=: never collapse below this (#723)
 _TARGET_PAD = 1.5       # target=: the selection's radius plus this (A)
 _PATCH = 10.0           # click= and highlight=: the patch radius (A)
 _NEAR = 1.5             # highlight=: the hit within vdW + this of an atom (A)
@@ -1190,9 +1191,9 @@ def _current_radius(rig, light):
     return light['radius']
 
 
-def _beam_fit(index, reach, _self):
+def _beam_fit(index, reach, _self, floor=1.0):
     '''A post-step: the beam that covers a patch of radius `reach` (A) at
-    the light's aim distance, clamped into 1 to 170 degrees.'''
+    the light's aim distance, clamped into floor to 170 degrees.'''
     def step():
         eye = lighting._lights_eye(_self=_self)
         distance = eye['lights'][index]['aim_distance']
@@ -1201,7 +1202,7 @@ def _beam_fit(index, reach, _self):
                                                 distance))
         else:
             beam = 170.0
-        beam = min(170.0, max(1.0, beam))
+        beam = min(170.0, max(floor, beam))
         lighting._light_set(index, 'beam', beam, _self=_self)
     return step
 
@@ -1296,7 +1297,8 @@ def _apply_helpers(where, rig, index, spec, change, _self, label):
         where, index, typed, point, direction, radius, spec.pin, change,
         _self)))
     if fit:
-        change.steps.append((label, 'beam', _beam_fit(index, _PATCH, _self)))
+        change.steps.append((label, 'beam', _beam_fit(index, _PATCH, _self,
+                                                      floor=_HIGHLIGHT_MIN_BEAM)))
 
 
 def _light_report(change, index, header, _self, returns_name):

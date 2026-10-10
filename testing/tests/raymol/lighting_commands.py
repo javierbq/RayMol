@@ -2093,6 +2093,40 @@ class TestPlacement(PlacementCase):
         cmd.lights('key', target='ball', beam=12)
         self.assertEqual(light('key')['beam'], 12.0)
 
+    def testClickAndHighlightBeamFitFloor(self):
+        # click= and highlight= fit the beam to a 10 A patch at the light's
+        # aim distance, but never collapse below 20 degrees (#723).
+        self.ball('ball', (0.0, 0.0, 0.0), self.R)
+        self.frame()
+        # with radius=8 (aim distance 80 - 2 = 78 A), the unclamped fit is
+        # ~16.8 degrees; the floor keeps the beam at 20.0
+        cmd.lights('key', click='0/0', radius=8)
+        key = light('key')
+        D = eye('key')['aim_distance']
+        unclamped = fitted_beam(10.0, D)
+        self.assertLess(unclamped, 20.0)
+        self.assertEqual(key['beam'], 20.0)
+
+        # highlight= on the ball also respects the 20-degree floor
+        cmd.lights('key', highlight='ball', radius=8)
+        key = light('key')
+        D = eye('key')['aim_distance']
+        unclamped = fitted_beam(10.0, D)
+        self.assertLess(unclamped, 20.0)
+        self.assertEqual(key['beam'], 20.0)
+
+    def testTargetFitNotFloored(self):
+        # target= fits to a selection with the normal 1-170 clamp, not
+        # floored at 20 degrees (#723).
+        cmd.pseudoatom('t', pos=[0.0, 0.0, 0.0])
+        self.frame(radius=8.0)
+        cmd.lights('key', target='t')
+        key = light('key')
+        D = eye('key')['aim_distance']
+        expected = fitted_beam(1.5, D)
+        self.assertLess(expected, 20.0)
+        self.assertAlmostEqual(key['beam'], expected, places=3)
+
     def testPinWithClick(self):
         self.ball('ball', (0.0, 0.0, 0.0), self.R)
         self.frame()
