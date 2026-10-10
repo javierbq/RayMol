@@ -1162,7 +1162,13 @@ class TestAirAlpha(AirMSLCase):
         self.assertRegex(tex, r'^\{\s*if \(w == _airAlphaW && h == _airAlphaH\)\s*'
                               r'return _airAlphaTex != nil;\s*\[_airAlphaTex release\];')
         self.assertEqual(tex.count('newTextureWithDescriptor:'), 1)
-        self.assertEqual(self.code.count('[_airAlphaTex release]'), 2)
+        # re-made, and the destructor; plus ensurePostTargets, where every
+        # size-dependent target goes: a full-size export target does not
+        # outlive the export's size (the live view's resize frees it)
+        self.assertEqual(self.code.count('[_airAlphaTex release]'), 3)
+        post = self.body('RendererMetal::ensurePostTargets')
+        self.assertIn('[_airAlphaTex release];   _airAlphaTex = nil;   '
+                      '_airAlphaW = _airAlphaH = 0;', post)
         for name in ('_airAlphaPipeline', '_airAlphaMergePipeline'):
             self.assertIn('[%s release];' % name, self.body('RendererMetal::~RendererMetal'))
             self.assertRegex(self.header, r'id<MTLRenderPipelineState> %s = nil;' % name)

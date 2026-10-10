@@ -2633,6 +2633,9 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   [_rtAOHistory release];   [_rtAOAccum release];
   [_surfaceCoverageTex release];
   [_aoExemptMaskTex release];
+  // The air's alpha (#684) is a full-size target too: made again, at the new
+  // size, by the next transparent export that asks for it.
+  [_airAlphaTex release];   _airAlphaTex = nil;   _airAlphaW = _airAlphaH = 0;
   _sceneColor = _postColor = _sceneDepth = nil;
   _sceneColorMS = _sceneDepthMS = nil;
   _oitAccum = _oitReveal = _oitRefract = nil;
