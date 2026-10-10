@@ -186,3 +186,90 @@ final class ExportBackgroundTests: XCTestCase {
     }
 }
 
+/// Scripted movie_export at launch when renderer is not yet ready (#654).
+@MainActor
+final class ScriptedMovieExportTests: XCTestCase {
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+
+    private func makeRequestJSON(path: String, frames: Int = 10, first: Int = 1, last: Int = 2) -> String {
+        """
+        {
+            "path": "\(path)",
+            "frames": \(frames),
+            "width": 320,
+            "height": 240,
+            "format": "png",
+            "codec": "",
+            "quality": "standard",
+            "overrides": {},
+            "supersample": 1,
+            "fps": 30,
+            "ray": 0,
+            "bitrate": 0.0,
+            "first": \(first),
+            "last": \(last)
+        }
+        """
+    }
+
+    func testRendererNeverReadyTimesOut() {
+        let savedReady = engine.metalRendererReady
+        let savedWait = engine.scriptedExportRendererWait
+        defer {
+            engine.metalRendererReady = savedReady
+            engine.scriptedExportRendererWait = savedWait
+        }
+
+        engine.metalRendererReady = { false }
+        engine.scriptedExportRendererWait = 0.3
+        engine.feedbackLog.removeAll()
+
+        let exportPath = NSTemporaryDirectory() + "test_scripted_export_\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: exportPath) }
+
+        let json = makeRequestJSON(path: exportPath, frames: 10, first: 1, last: 2)
+        engine.startScriptedMovieExport(json)
+
+        XCTAssertTrue(engine.feedbackLog.contains(where: {
+            $0.contains("movie_export: waiting for the renderer (no live frame yet)")
+        }), "Expected waiting line at once, got: \(engine.feedbackLog)")
+
+        let exp = expectation(description: "Wait for renderer timeout")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            exp.fulfill()
+        }
+        wait(for: [exp], timeout: 2.0)
+
+        XCTAssertTrue(engine.feedbackLog.contains(where: {
+            $0.contains("movie_export: failed: the renderer is not ready (no live frame was drawn; is the window visible?)")
+        }), "Expected failure line, got: \(engine.feedbackLog)")
+
+        XCTAssertFalse(engine.scriptedMovieExporter.isExporting)
+    }
+
+    func testInvalidRequestFailsImmediatelyWithoutWaiting() {
+        let savedReady = engine.metalRendererReady
+        let savedWait = engine.scriptedExportRendererWait
+        defer {
+            engine.metalRendererReady = savedReady
+            engine.scriptedExportRendererWait = savedWait
+        }
+
+        engine.metalRendererReady = { false }
+        engine.scriptedExportRendererWait = 0.3
+        engine.feedbackLog.removeAll()
+
+        let exportPath = NSTemporaryDirectory() + "test_scripted_export_\(UUID().uuidString)"
+        let json = makeRequestJSON(path: exportPath, frames: 1, first: 1, last: 1)
+        engine.startScriptedMovieExport(json)
+
+        XCTAssertTrue(engine.feedbackLog.contains(where: {
+            $0.contains("movie_export: there is no movie to export (build one in the Movie tab)")
+        }), "Expected 'there is no movie to export' line, got: \(engine.feedbackLog)")
+
+        XCTAssertFalse(engine.feedbackLog.contains(where: {
+            $0.contains("waiting for the renderer")
+        }), "Expected no waiting line, got: \(engine.feedbackLog)")
+    }
+}
+

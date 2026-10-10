@@ -1372,10 +1372,23 @@ final class PyMOLEngine: ObservableObject {
         PyMOLBridge_RenderHiResPNG(inst, path, Int32(width), Int32(height), Int32(rayTraced))
     }
 
+    // Check whether the Metal renderer is initialized and ready for hi-res
+    // renders (#654). Injectable so tests can simulate cold launch where no
+    // live frame has drawn yet.
+    lazy var metalRendererReady: () -> Bool = { [weak self] in
+        guard let inst = self?.instance else { return false }
+        return PyMOLBridge_GetRenderer(inst) != nil
+    }
+
+    // Bounded wait for the renderer during scripted movie_export (#654).
+    var scriptedExportRendererWait: TimeInterval = 10
+    private static let scriptedExportPollInterval: TimeInterval = 0.1
+
     // Exporter for cmd.movie_export requests (#581). Owned here, not by a sheet,
     // so a scripted export outlives any UI and has no save panel: it writes
     // straight to the requested path and reports in the log.
-    private lazy var scriptedMovieExporter = MovieExporter()
+    // Readable (not settable) outside the class so tests can check it (#654).
+    private(set) lazy var scriptedMovieExporter = MovieExporter()
 
     // Append a line to the console log from the main thread.
     func logLine(_ line: String) {
@@ -1383,27 +1396,34 @@ final class PyMOLEngine: ObservableObject {
         if feedbackLog.count > 400 { feedbackLog.removeFirst(feedbackLog.count - 400) }
     }
 
+    // Log a line to both the in-app feedback log and system log (NSLog)
+    // so outcomes are visible to headless callers (#654).
+    private func exportLog(_ line: String) {
+        logLine(line)
+        NSLog("%@", line)
+    }
+
     // Handle a `MOVIEEXPORT:<json>` request emitted by cmd.movie_export.
     // MUST be called on the main thread.
     func startScriptedMovieExport(_ json: String) {
         let req: MovieExportRequest
         switch MovieExportRequest.decode(json) {
-        case .failure(let e): logLine(" movie_export: \(e.message)"); return
+        case .failure(let e): exportLog(" movie_export: \(e.message)"); return
         case .success(let r): req = r
         }
         let exporter = scriptedMovieExporter
         guard !exporter.isExporting && !exportRenderActive else {
-            logLine(" movie_export: another movie export is already running"); return
+            exportLog(" movie_export: another movie export is already running"); return
         }
         // From the request, not the playback mirror (which lags by a poll).
         let frames = max(req.frames, 1)
         guard frames > 1 else {
-            logLine(" movie_export: there is no movie to export (build one in the Movie tab)"); return
+            exportLog(" movie_export: there is no movie to export (build one in the Movie tab)"); return
         }
         let first = max(req.first, 1)
         let last = req.last > 0 ? min(req.last, frames) : frames
         guard first <= last else {
-            logLine(" movie_export: first frame \(first) is past the last frame \(last)"); return
+            exportLog(" movie_export: first frame \(first) is past the last frame \(last)"); return
         }
         let fps = max(req.options.fpsOverride, 1)
         let dest = URL(fileURLWithPath: req.path)
@@ -1412,36 +1432,68 @@ final class PyMOLEngine: ObservableObject {
         // didn't make: a PNG sequence needs a new or empty folder; a movie file
         // may replace a file but never a folder.
         if let problem = Self.movieDestinationProblem(dest, frames: isFrames) {
-            logLine(" movie_export: \(problem)"); return
+            exportLog(" movie_export: \(problem)"); return
         }
-        exporter.onFinish = { [weak self] url, error in
-            guard let self = self else { return }
-            guard let url = url else {
-                self.logLine(" movie_export: failed: \(error ?? "unknown error")"); return
+
+        let startExport = { [weak self] in
+            guard let self else { return }
+            let exporter = self.scriptedMovieExporter
+            exporter.onFinish = { [weak self] url, error in
+                guard let self = self else { return }
+                guard let url = url else {
+                    self.exportLog(" movie_export: failed: \(error ?? "unknown error")"); return
+                }
+                do {
+                    let fm = FileManager.default
+                    try fm.createDirectory(at: dest.deletingLastPathComponent(),
+                                           withIntermediateDirectories: true)
+                    // Re-check: the destination may have changed during the render.
+                    if let problem = Self.movieDestinationProblem(dest, frames: isFrames) {
+                        try? fm.removeItem(at: url)
+                        self.exportLog(" movie_export: \(problem)"); return
+                    }
+                    if fm.fileExists(atPath: dest.path) {
+                        // Only an empty folder (frames) or a file (movie) gets here.
+                        try fm.removeItem(at: dest)
+                    }
+                    try fm.moveItem(at: url, to: dest)
+                    self.exportLog(" movie_export: wrote \(dest.path)")
+                } catch {
+                    self.exportLog(" movie_export: could not write \(dest.path): \(error.localizedDescription)")
+                }
             }
-            do {
-                let fm = FileManager.default
-                try fm.createDirectory(at: dest.deletingLastPathComponent(),
-                                       withIntermediateDirectories: true)
-                // Re-check: the destination may have changed during the render.
-                if let problem = Self.movieDestinationProblem(dest, frames: isFrames) {
-                    try? fm.removeItem(at: url)
-                    self.logLine(" movie_export: \(problem)"); return
+            self.exportLog(" movie_export: rendering \(last - first + 1) frames at "
+                    + "\(req.options.width)×\(req.options.height)…")
+            exporter.start(engine: self, options: req.options,
+                           first: first, last: last, fps: fps)
+        }
+
+        if metalRendererReady() {
+            startExport()
+            return
+        }
+
+        exportLog(" movie_export: waiting for the renderer (no live frame yet)…")
+        let startTime = Date()
+        waitForMetalRenderer(startTime: startTime, onReady: startExport)
+    }
+
+    private func waitForMetalRenderer(startTime: Date, onReady: @escaping () -> Void) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.scriptedExportPollInterval) { [weak self] in
+            guard let self else { return }
+            if self.metalRendererReady() {
+                let exporter = self.scriptedMovieExporter
+                guard !exporter.isExporting && !self.exportRenderActive else {
+                    self.exportLog(" movie_export: another movie export is already running")
+                    return
                 }
-                if fm.fileExists(atPath: dest.path) {
-                    // Only an empty folder (frames) or a file (movie) gets here.
-                    try fm.removeItem(at: dest)
-                }
-                try fm.moveItem(at: url, to: dest)
-                self.logLine(" movie_export: wrote \(dest.path)")
-            } catch {
-                self.logLine(" movie_export: could not write \(dest.path): \(error.localizedDescription)")
+                onReady()
+            } else if Date().timeIntervalSince(startTime) >= self.scriptedExportRendererWait {
+                self.exportLog(" movie_export: failed: the renderer is not ready (no live frame was drawn; is the window visible?)")
+            } else {
+                self.waitForMetalRenderer(startTime: startTime, onReady: onReady)
             }
         }
-        logLine(" movie_export: rendering \(last - first + 1) frames at "
-                + "\(req.options.width)×\(req.options.height)…")
-        exporter.start(engine: self, options: req.options,
-                       first: first, last: last, fps: fps)
     }
 
     // Why `dest` can't receive this export, or nil if it can.
