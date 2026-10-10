@@ -898,6 +898,9 @@ final class AtmosphereSeedTests: AtmosphereControllerCase {
         begin(["key"])
         XCTAssertEqual(controller.setAirSeed(2_000_000), .ok)
         XCTAssertEqual(controller.air?.seed, 1_000_000)
+        XCTAssertEqual(controller.setAirSeed(0), .ok)
+        XCTAssertEqual(controller.setAirSeed(Int.max), .ok, "an overflowing typed seed")
+        XCTAssertEqual(controller.air?.seed, 1_000_000)
     }
 
     func testNoRigAndInactive() {
@@ -961,6 +964,7 @@ final class AirSeedEditorTests: XCTestCase {
     func testParseSeed() {
         let good: [(String, Int)] = [
             ("7", 7), (" 7 ", 7), ("+7", 7), ("0", 0), ("2000000", 2000000),
+            ("99999999999999999999999", Int.max),
         ]
         for (text, value) in good {
             XCTAssertEqual(AtmosphereFormat.parseSeed(text), value, text)

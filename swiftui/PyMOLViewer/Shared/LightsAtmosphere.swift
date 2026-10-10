@@ -221,12 +221,13 @@ enum AtmosphereFormat {
 
     /// A typed whole-number seed: whitespace is trimmed, an optional leading
     /// `+` is accepted, followed by non-empty ASCII digits 0-9. Out-of-range
-    /// large values come back as typed (the core clamps).
+    /// large values come back as typed (the core clamps); digits past
+    /// `Int.max` come back as `Int.max`, so they clamp too.
     static func parseSeed(_ text: String) -> Int? {
         var s = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if s.hasPrefix("+") { s.removeFirst() }
         guard !s.isEmpty, s.allSatisfy({ ("0"..."9").contains($0) }) else { return nil }
-        return Int(s)
+        return Int(s) ?? Int.max
     }
 
     /// (negative, two-decimal magnitude); a value that rounds to 0 is never
