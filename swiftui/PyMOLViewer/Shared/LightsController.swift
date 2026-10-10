@@ -648,8 +648,9 @@ final class LightsController: ObservableObject {
                                             rim: rim, pin: light.anchor == .pinned)
         guard action.invocation != nil else { return false }
         seams.perform(action)
-        noteEdit(nil)
+        let mirrorBefore = mirrorJSON
         refresh()
+        noteEdit(nil, ifChangedFrom: mirrorBefore)
         return true
     }
 
@@ -658,8 +659,9 @@ final class LightsController: ObservableObject {
         guard canAdd else { return }
         let before = Set((rig?.lights ?? []).map { $0.name.lowercased() })
         seams.perform(.add)
-        noteEdit(nil)
+        let mirrorBefore = mirrorJSON
         refresh()
+        noteEdit(nil, ifChangedFrom: mirrorBefore)
         if let added = rig?.lights.firstIndex(where: { !before.contains($0.name.lowercased()) }) {
             select(index: added)
         }
@@ -672,16 +674,18 @@ final class LightsController: ObservableObject {
         let target = selectedLight?.name ?? selection.name
         guard let name = target else { return }
         seams.perform(.remove(name))
-        noteEdit(nil)
+        let mirrorBefore = mirrorJSON
         refresh()
+        noteEdit(nil, ifChangedFrom: mirrorBefore)
     }
 
     /// Apply the preset called `name` and select its first light.
     func applyPreset(_ name: String) {
         guard canAct else { return }
         seams.perform(.preset(name))
-        noteEdit(nil)
+        let mirrorBefore = mirrorJSON
         refresh()
+        noteEdit(nil, ifChangedFrom: mirrorBefore)
         select(index: 0)
     }
 
@@ -689,16 +693,18 @@ final class LightsController: ObservableObject {
     func recentre() {
         guard canRecentre else { return }
         seams.perform(.recenter)
-        noteEdit(nil)
+        let mirrorBefore = mirrorJSON
         refresh()
+        noteEdit(nil, ifChangedFrom: mirrorBefore)
     }
 
     /// Turn the rig on or off.
     func setEnabled(_ on: Bool) {
         guard canToggle else { return }
         seams.perform(.setEnabled(on))
-        noteEdit(nil)
+        let mirrorBefore = mirrorJSON
         refresh()
+        noteEdit(nil, ifChangedFrom: mirrorBefore)
     }
 
     /// Put back the rig the mode was entered with. The mode stays open and the
@@ -718,8 +724,9 @@ final class LightsController: ObservableObject {
         guard canRevertLight, let entry = entryJSON,
               let name = selectedLight?.name else { return }
         seams.perform(.restoreLight(name: name, json: entry))
-        noteEdit(nil)
+        let mirrorBefore = mirrorJSON
         refresh()
+        noteEdit(nil, ifChangedFrom: mirrorBefore)
     }
 
     /// The Atmosphere card's On/Off switch (#726), a button press: one
@@ -740,8 +747,9 @@ final class LightsController: ObservableObject {
         if !on {
             airMemory = rig?.air
             seams.perform(.atmosphereOff)
-            noteEdit(nil)
+            let mirrorBefore = mirrorJSON
             refresh()
+            noteEdit(nil, ifChangedFrom: mirrorBefore)
             return true
         }
         let values = AtmosphereSwitch.onValues(current: rig?.air, memory: airMemory,
@@ -749,8 +757,9 @@ final class LightsController: ObservableObject {
         let action = LightsAction.setAir(values)
         guard !values.isEmpty, action.invocation != nil else { return false }
         seams.perform(action)
-        noteEdit(nil)
+        let mirrorBefore = mirrorJSON
         refresh()
+        noteEdit(nil, ifChangedFrom: mirrorBefore)
         return true
     }
 
@@ -794,8 +803,9 @@ final class LightsController: ObservableObject {
         }
         if wrote {
             let key = editKey ?? "light:\(index):" + fields.map(\.0).joined(separator: ",")
-            noteEdit(key)
+            let mirrorBefore = mirrorJSON
             refresh()
+            noteEdit(key, ifChangedFrom: mirrorBefore)
         }
         noteShadowRefused(refusedShadow)
         return result
@@ -822,8 +832,9 @@ final class LightsController: ObservableObject {
         }
         if wrote {
             let key = editKey ?? "rig:" + fields.map(\.0).joined(separator: ",")
-            noteEdit(key)
+            let mirrorBefore = mirrorJSON
             refresh()
+            noteEdit(key, ifChangedFrom: mirrorBefore)
         }
         return result
     }
@@ -835,6 +846,14 @@ final class LightsController: ObservableObject {
         if key != nil, key == lastEditKey { return }
         editCount += 1
         lastEditKey = key
+    }
+
+    /// `noteEdit(key)` only when the re-read mirror differs from `before`
+    /// (the mirror JSON just before the re-read): a refused write (a 4th
+    /// shadowed light) or one that changes nothing is not an edit.
+    private func noteEdit(_ key: String?, ifChangedFrom before: String?) {
+        guard mirrorJSON != before else { return }
+        noteEdit(key)
     }
 
     // MARK: private
@@ -853,8 +872,9 @@ final class LightsController: ObservableObject {
         guard let index = selection.index else { return .badIndex }
         let result = set(index)
         if result == .ok {
-            noteEdit(key(index))
+            let mirrorBefore = mirrorJSON
             refresh()
+            noteEdit(key(index), ifChangedFrom: mirrorBefore)
         }
         noteShadowRefused(false)
         return result

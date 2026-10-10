@@ -1319,4 +1319,27 @@ final class LightsControllerTests: XCTestCase {
         XCTAssertEqual(controller.edit("orbit", 70), .badIndex)
         XCTAssertEqual(controller.editCount, 1)
     }
+    func testRefusedOrNoOpEditsDoNotCount() {
+        store.setRig(["key", "fill", "rim", "light4"])
+        store.lights[3].shadow = true
+        controller.begin()
+        controller.select(name: "light4")
+        XCTAssertEqual(controller.setShadow(false), .ok)
+        for name in ["key", "fill", "rim"] {
+            controller.select(name: name)
+            XCTAssertEqual(controller.setShadow(true), .ok)
+        }
+        XCTAssertEqual(controller.editCount, 4)
+
+        // A write of the value the light already has changes nothing.
+        XCTAssertEqual(controller.setShadow(true), .ok)
+        XCTAssertEqual(controller.editCount, 4)
+
+        // Revert this light is refused by the 3-shadow cap: the rig is
+        // unchanged, so it is not an edit.
+        controller.select(name: "light4")
+        controller.revertSelectedLight()
+        XCTAssertEqual(store.lights[3].shadow, false, "refused")
+        XCTAssertEqual(controller.editCount, 4)
+    }
 }
