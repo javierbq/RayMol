@@ -238,6 +238,49 @@ final class OrbitPlanLayoutTests: XCTestCase {
         XCTAssertEqual(p.y, y, accuracy: 1e-9, file: file, line: line)
     }
 
+    func testAimTickPointsTowardsAPointAim() throws {
+        let lamp = mac.lampPoint(orbit: 0, radius: 2)   // straight below the centre
+        let tick = try XCTUnwrap(mac.aimTick(from: lamp, lampRadius: 6, aim: SIMD2(1, 0)))
+        // The aim is to the right of the centre and above the lamp: up and right.
+        XCTAssertGreaterThan(tick.to.x, tick.from.x)
+        XCTAssertLessThan(tick.to.y, tick.from.y)
+        let length = hypot(tick.to.x - tick.from.x, tick.to.y - tick.from.y)
+        XCTAssertLessThanOrEqual(length, LightsOrbitMetrics.aimTickLength + 1e-9)
+        XCTAssertGreaterThan(length, 0)
+        // It starts clear of the lamp.
+        XCTAssertGreaterThanOrEqual(hypot(tick.from.x - lamp.x, tick.from.y - lamp.y), 6)
+        // Straight at the centre from a lamp on the right: due left.
+        let right = mac.lampPoint(orbit: 90, radius: 2)
+        let inward = try XCTUnwrap(mac.aimTick(from: right, lampRadius: 6, aim: SIMD2(0, 0)))
+        XCTAssertEqual(inward.to.y, inward.from.y, accuracy: 1e-9)
+        XCTAssertLessThan(inward.to.x, inward.from.x)
+    }
+
+    func testAimTickIsAbsentForACentreAim() {
+        XCTAssertNil(mac.aimTick(from: mac.lampPoint(orbit: 45, radius: 2), lampRadius: 6, aim: nil))
+    }
+
+    func testAimTickIsAbsentWhenTheAimIsOnTheLamp() {
+        let lamp = mac.lampPoint(orbit: 90, radius: 2)
+        let aim = SIMD2(2.0, 0.0)   // the lamp's own plan position, in scene sizes
+        XCTAssertNil(mac.aimTick(from: lamp, lampRadius: 6, aim: aim))
+        XCTAssertNil(mac.aimTick(from: lamp, lampRadius: 6, aim: SIMD2(.nan, 0)))
+    }
+
+    func testAimTickStopsAtTheAimAndInsideThePlan() throws {
+        // An aim point only a little beyond the lamp's gap: the tick is short.
+        let lamp = mac.lampPoint(orbit: 0, radius: 1)
+        let near = try XCTUnwrap(mac.aimTick(from: lamp, lampRadius: 6,
+                                             aim: SIMD2(0, 1 - 14 / Double(mac.pointsPerSize))))
+        XCTAssertLessThan(hypot(near.to.x - near.from.x, near.to.y - near.from.y),
+                          LightsOrbitMetrics.aimTickLength)
+        // A lamp on the outer ring aiming outwards stays inside the plan.
+        let rim = mac.lampPoint(orbit: 0, radius: 9)
+        let out = try XCTUnwrap(mac.aimTick(from: rim, lampRadius: 6, aim: SIMD2(0, 20)))
+        XCTAssertLessThanOrEqual(hypot(out.to.x - mac.centre.x, out.to.y - mac.centre.y),
+                                 mac.outerRadius + 1e-9)
+    }
+
     func testExtent() {
         XCTAssertEqual(OrbitPlanLayout.extent(for: []), 4)
         XCTAssertEqual(OrbitPlanLayout.extent(for: [4.0005]), 4)
