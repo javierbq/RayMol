@@ -59,7 +59,8 @@ pymol::Result<> SceneLightsReplace(PyMOLGlobals* G, pymol::LightRig rig);
  * enabled objects in the current state, that is the enabled atoms with
  * solvent excluded, plus the cached extents of enabled objects that are not
  * molecules (maps, meshes, isosurfaces, CGOs, measurements, slices, volumes;
- * not gadgets or gizmos). The centre is the box midpoint and the size half
+ * not overlays: gadgets, gizmos and the Move gizmo's CGO,
+ * SceneObjectIsOverlay). The centre is the box midpoint and the size half
  * its diagonal (at least 1 Å). Falls back to every enabled atom when only
  * solvent is enabled, and to the rotation origin with 10 Å when nothing
  * enabled has an extent.
