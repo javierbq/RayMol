@@ -915,9 +915,10 @@ def rename_scene(old, new, _self=cmd):
     each affected frame slot in place: only our own command pieces naming
     `old` are replaced, so a user's mdo/mappend text sharing the slot
     survives (a rename is not a re-author; clear_authored would blank whole
-    slots). Without a readable slot (an older core) it falls back to
-    clear_authored + re-emit. Returns the number of frames touched (0 when
-    nothing referenced `old`)."""
+    slots). Without a slot reader (an older core: AttributeError) it falls
+    back to clear_authored + re-emit; any other read error restores the
+    state, writes nothing and propagates. Returns the number of frames
+    touched (0 when nothing referenced `old`)."""
     if not old or not new or old == new:
         return 0
     in_marks = any(n == old for _f, n in _scene_marks)
@@ -925,6 +926,7 @@ def rename_scene(old, new, _self=cmd):
     if not (in_marks or in_lights):
         return 0
     before = _our_commands()
+    saved = (list(_scene_marks), dict(_lights_track))
     _scene_marks[:] = [(int(f), new if n == old else n) for f, n in _scene_marks]
     for f, (a, b, t) in list(_lights_track.items()):
         _lights_track[f] = (new if a == old else a, new if b == old else b, t)
@@ -933,15 +935,22 @@ def rename_scene(old, new, _self=cmd):
                if before.get(f) != after.get(f)]
     try:
         slots = {f: _frame_command(f, _self) for f in changed}
-    except Exception:
-        # No slot reader: the old trade-off (see clear_authored), re-emitted
-        # whole. clear_authored only needs the frame lists, which a rename
-        # does not change.
+    except AttributeError:
+        # An older core with no slot reader: the old trade-off (see
+        # clear_authored), re-emitted whole. clear_authored only needs the
+        # frame lists, which a rename does not change.
         clear_authored(_self)
         touched = set(emit_scene_marks(_scene_marks, _self))
         touched.update(emit_track(_track, _self))
         touched.update(emit_lights_track(_lights_track, _self))
         return len(touched)
+    except Exception:
+        # Any other read failure: nothing was written yet, so put the state
+        # back and leave the movie as it was (the caller reports the error).
+        _scene_marks[:] = saved[0]
+        _lights_track.clear()
+        _lights_track.update(saved[1])
+        raise
     done = []
     for f in changed:
         slot = slots[f]

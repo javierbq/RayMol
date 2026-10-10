@@ -1110,6 +1110,25 @@ class TestAuthorAndSession(unittest.TestCase):
         self.assertEqual(self.anim._scene_marks, [(1, 'A'), (6, 'C')])
         self.assertIn(self.anim.scene_mark_command('C'), fake._slots[6])
 
+    def test_rename_scene_read_error_changes_nothing(self):
+        # Only a missing reader falls back to clear + re-emit; any other read
+        # failure must leave the movie and the state untouched (Copilot
+        # review of #763).
+        class Flaky(FakeCmd):
+            def get_frame_command(self, frame):
+                raise RuntimeError('transient')
+        self._two_scenes()
+        fake = Flaky()
+        self.anim.author([(1, 'A', 0.0), (6, 'B', 0.0)], _self=fake)
+        fake.mappend(6, 'print("mine")')
+        slots = dict(fake._slots)
+        fake.done[:] = []
+        with self.assertRaises(RuntimeError):
+            self.anim.rename_scene('B', 'C', _self=fake)
+        self.assertEqual(fake.done, [])
+        self.assertEqual(fake._slots, slots)
+        self.assertEqual(self.anim._scene_marks, [(1, 'A'), (6, 'B')])
+
     def test_rename_scene_noop_when_not_referenced(self):
         self._two_scenes()
         fake = FakeCmd()
