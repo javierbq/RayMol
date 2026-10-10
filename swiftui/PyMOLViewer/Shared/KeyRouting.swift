@@ -172,6 +172,35 @@ enum KeyRouting {
         return modifiers.contains(.shift) ? -1 : 1
     }
 
+    /// Degrees one arrow press moves the selected light, and with Shift held (#700).
+    static let lightNudgeStep = 1.0
+    static let lightNudgeShiftStep = 10.0
+
+    /// The nudge an arrow key makes on the selected light (#700), or nil when the
+    /// event is not one: only in Lights mode with a light selected and no text
+    /// field focused, only the four arrows, and never with Command, Control or
+    /// Option held. Left/right are orbit -/+, down/up are pitch -/+; Shift makes
+    /// the step `lightNudgeShiftStep`. Only shift/command/control/option are
+    /// read: arrow events also carry .function and .numericPad, which must not
+    /// block the nudge.
+    static func lightNudge(keyCode: UInt16,
+                           modifiers: NSEvent.ModifierFlags,
+                           lightsMode: Bool,
+                           lightSelected: Bool,
+                           textFieldFocused: Bool) -> LightNudge? {
+        guard lightsMode, lightSelected, !textFieldFocused else { return nil }
+        if modifiers.contains(.command) || modifiers.contains(.control)
+            || modifiers.contains(.option) { return nil }
+        let step = modifiers.contains(.shift) ? lightNudgeShiftStep : lightNudgeStep
+        switch keyCode {
+        case 123: return LightNudge(parameter: .orbit, delta: -step)  // left
+        case 124: return LightNudge(parameter: .orbit, delta: step)   // right
+        case 125: return LightNudge(parameter: .pitch, delta: -step)  // down
+        case 126: return LightNudge(parameter: .pitch, delta: step)   // up
+        default: return nil
+        }
+    }
+
     /// PyMOL's modifier prefix for the held combination, or nil when it has no
     /// token at all. modifier_keys is ['', 'SHFT', 'CTRL', 'CTSH', 'ALT'] — it
     /// has no entry for ALT+SHFT or CTRL+ALT, so rather than guess a prefix we

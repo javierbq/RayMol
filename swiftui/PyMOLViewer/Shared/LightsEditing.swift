@@ -40,6 +40,12 @@ import Foundation
 
 // MARK: - Parameters
 
+/// One arrow-key nudge of the selected light (#700): which placement field and by how many degrees.
+struct LightNudge: Equatable {
+    let parameter: LightParameter
+    let delta: Double
+}
+
 /// One numeric control of the selected light: a core light field of kind
 /// float or angle.
 enum LightParameter: String, CaseIterable {
@@ -451,6 +457,12 @@ extension LightsController {
         guard let current = freshValue(parameter) else { return .badIndex }
         return set(parameter, current + delta)
     }
+
+    /// An arrow-key nudge in the main view (#700): one stepper-style write, so it
+    /// re-reads a stale mirror, wraps orbit / clamps pitch in the core, and counts
+    /// as an edit by the same rules as a stepper press.
+    @discardableResult
+    func nudge(_ nudge: LightNudge) -> LightSetResult { step(nudge.parameter, by: nudge.delta) }
 
     /// Move the selected light: each given value is written with the selected
     /// index fixed for the whole call, in the order pitch, orbit, radius

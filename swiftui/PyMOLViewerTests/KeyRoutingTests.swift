@@ -370,3 +370,46 @@ final class AppShortcutsTests: XCTestCase {
         }
     }
 }
+
+/// KeyRouting.lightNudge: the arrows that nudge the selected light (#700).
+final class LightNudgeRoutingTests: XCTestCase {
+    private func nudge(_ key: UInt16, _ mods: NSEvent.ModifierFlags = [],
+                       lights: Bool = true, selected: Bool = true,
+                       text: Bool = false) -> LightNudge? {
+        KeyRouting.lightNudge(keyCode: key, modifiers: mods, lightsMode: lights,
+                              lightSelected: selected, textFieldFocused: text)
+    }
+
+    func testArrowsMapToOrbitAndPitch() {
+        let table: [(UInt16, LightParameter, Double)] = [
+            (123, .orbit, -1), (124, .orbit, 1), (125, .pitch, -1), (126, .pitch, 1),
+        ]
+        for (key, parameter, sign) in table {
+            XCTAssertEqual(nudge(key), LightNudge(parameter: parameter, delta: sign * 1))
+            XCTAssertEqual(nudge(key, .shift), LightNudge(parameter: parameter, delta: sign * 10))
+        }
+    }
+
+    func testArrowFunctionAndNumericPadFlagsStillNudge() {
+        let arrow: NSEvent.ModifierFlags = [.function, .numericPad]
+        XCTAssertEqual(nudge(124, arrow), LightNudge(parameter: .orbit, delta: 1))
+        XCTAssertEqual(nudge(126, arrow.union(.shift)), LightNudge(parameter: .pitch, delta: 10))
+    }
+
+    func testNotLightsModeNoSelectionOrTextFieldIsNil() {
+        XCTAssertNil(nudge(124, lights: false))
+        XCTAssertNil(nudge(124, selected: false))
+        XCTAssertNil(nudge(124, text: true))
+    }
+
+    func testCommandControlOptionAreNotNudges() {
+        XCTAssertNil(nudge(124, .command))
+        XCTAssertNil(nudge(124, .control))
+        XCTAssertNil(nudge(124, .option))
+        XCTAssertNil(nudge(124, [.option, .shift]))
+    }
+
+    func testNonArrowKeysAreNil() {
+        for key: UInt16 in [116, 0, 53, 48] { XCTAssertNil(nudge(key)) }
+    }
+}

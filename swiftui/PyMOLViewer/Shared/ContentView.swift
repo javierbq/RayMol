@@ -1078,6 +1078,15 @@ struct ContentView: View {
             if secondaryWindowOwnsKeys() { return event }
 
             let focus = textFocusFlags()
+            if let nudge = KeyRouting.lightNudge(
+                    keyCode: event.keyCode,
+                    modifiers: event.modifierFlags,
+                    lightsMode: engine.interactionMode == .lights,
+                    lightSelected: engine.lightsController.selectedIndex != nil,
+                    textFieldFocused: focus.focused) {
+                engine.lightsController.nudge(nudge)
+                return nil  // consume: in Lights mode the arrows move the light, not the frame
+            }
             guard let token = KeyRouting.token(
                     keyCode: event.keyCode,
                     charactersIgnoringModifiers: event.charactersIgnoringModifiers,
