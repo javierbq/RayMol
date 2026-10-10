@@ -178,6 +178,9 @@ enum LightsAction: Equatable {
     /// rule, or `rim` degrees towards the outline when given; `pin` keeps a
     /// pinned light pinned (the helper otherwise leaves a camera light).
     case highlight(name: String, x: Double, y: Double, rim: Double?, pin: Bool)
+    /// Aim light `name` back at the rig centre (#699: a double-click or
+    /// double-tap on the gizmo's aim dot), the `aim=centre` the console takes.
+    case aimAtCentre(String)
     /// The Atmosphere card's Off (#726): every air field back to its table
     /// default (`atmosphere off`).
     case atmosphereOff
@@ -629,6 +632,24 @@ final class LightsController: ObservableObject {
         guard let light = selectedLight else { return false }
         let action = LightsAction.highlight(name: light.name, x: sceneNDC.x, y: sceneNDC.y,
                                             rim: rim, pin: light.anchor == .pinned)
+        guard action.invocation != nil else { return false }
+        seams.perform(action)
+        refresh()
+        return true
+    }
+
+    /// Aim the selected light called `name` (ignoring case) back at the rig
+    /// centre (#699): one `lights <name>, aim=centre` command, a click, never
+    /// a drag tick. False, and nothing run, unless the selected light can be
+    /// edited, is still `name` after a stale re-read, aims at a point now, and
+    /// the action is one the engine would run.
+    @discardableResult
+    func aimAtCentre(name: String) -> Bool {
+        guard canEdit else { return false }
+        refreshIfStale()
+        guard let light = selectedLight, light.name.lowercased() == name.lowercased(),
+              light.aim == .point else { return false }
+        let action = LightsAction.aimAtCentre(light.name)
         guard action.invocation != nil else { return false }
         seams.perform(action)
         refresh()

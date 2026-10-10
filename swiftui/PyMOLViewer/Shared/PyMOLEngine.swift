@@ -5055,7 +5055,8 @@ extension LightsAction {
     /// so nothing is run (no quoting is ever needed). The command strings are
     /// pinned by LightsActionInvocationTests and, run through the core, by
     /// testing/tests/raymol/lighting_mode.py TestBarCommands (the highlight
-    /// strings by lighting_gizmo.py TestHighlightCommand, the Atmosphere
+    /// strings by lighting_gizmo.py TestHighlightCommand, the aim=centre
+    /// string by lighting_gizmo.py TestAimCentreCommand, the Atmosphere
     /// card's by lighting_atmosphere.py TestCardCommands): change them
     /// together.
     var invocation: Invocation? {
@@ -5094,6 +5095,9 @@ extension LightsAction {
             }
             if pin { command += ", pin=1" }
             return .command(command)
+        case .aimAtCentre(let name):
+            // #699's double-click or double-tap on the aim dot, run once.
+            return Self.isValidName(name) ? .command("lights \(name), aim=centre") : nil
         case .atmosphereOff:
             return .command("atmosphere off")
         case .setAir(let values):

@@ -15,8 +15,9 @@
 //   chip), keyed by the `lightsTouchMinimum` environment value so snapshot
 //   tests on macOS can draw the iOS profile;
 // - the touch routing deciders (LightTwoFingerSequence, LightTouchRouter,
-//   LightTouchGeometry): the knob pinch, the long-press and option-tap
-//   highlights and the touch-down point, wired by MetalViewport on iOS.
+//   LightTouchGeometry, LightAimDoubleTap): the knob pinch, the long-press
+//   and option-tap highlights, the touch-down point and the aim dot's
+//   double-tap (#699), wired by MetalViewport on iOS.
 //
 // Nothing here edits a light or names Python (testing/tests/raymol/
 // lighting_mode.py and lighting_touch.py check that).
@@ -252,5 +253,37 @@ enum LightTouchRouter {
     static func optionTap(at point: CGPoint, layout: LightGizmoLayout?) -> Bool {
         guard let layout else { return false }
         return LightGizmoHitTest.target(at: point, layout: layout) == nil
+    }
+}
+
+/// #699: a double-tap on the selected light's aim dot (iOS). UIKit's one-tap
+/// recognizer reports each tap of a double-tap, so the second is recognised
+/// here: the same light's aim dot within `interval` seconds and `slop` points
+/// of the first. Any other tap forgets the first.
+struct LightAimDoubleTap {
+    static let interval: TimeInterval = 0.35
+    static let slop: CGFloat = 24
+
+    private(set) var last: (point: CGPoint, time: TimeInterval, light: String)?
+
+    init() {}
+
+    /// A tap at `point` at `time` on `target` (nil: no target) while `light`
+    /// is selected. True when it completes a double-tap on the aim dot (and
+    /// the pair is forgotten, so a third tap starts over).
+    mutating func tap(on target: LightGizmoTarget?, light: String?, at point: CGPoint,
+                      time: TimeInterval) -> Bool {
+        guard target == .aimDot, let light else {
+            last = nil
+            return false
+        }
+        if let first = last, first.light.lowercased() == light.lowercased(),
+           (0...Self.interval).contains(time - first.time),
+           hypot(point.x - first.point.x, point.y - first.point.y) <= Self.slop {
+            last = nil
+            return true
+        }
+        last = (point, time, light)
+        return false
     }
 }

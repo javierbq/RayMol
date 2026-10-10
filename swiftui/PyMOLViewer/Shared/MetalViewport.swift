@@ -1113,9 +1113,11 @@ extension MetalViewport {
 
         /// A press at `p` (top-left points): true when the gizmo took it (a
         /// target was hit and its session opened, or an option-press off
-        /// every target waits to be a click). Outside Lights mode it only
-        /// forgets a press the gizmo still held (its release never came).
-        private func lightGizmoPress(at p: CGPoint, option: Bool, in view: MTKView) -> Bool {
+        /// every target waits to be a click). `clickCount` is the event's: a
+        /// double-click's second press on the aim dot re-aims the light at the
+        /// centre on its release (#699). Outside Lights mode it only forgets a
+        /// press the gizmo still held (its release never came).
+        private func lightGizmoPress(at p: CGPoint, option: Bool, clickCount: Int, in view: MTKView) -> Bool {
             guard let engine else { return false }
             guard engine.interactionMode == .lights else {
                 let pointer = engine.lightGizmoPointer
@@ -1125,7 +1127,8 @@ extension MetalViewport {
             let layout = lightGizmoLayout(in: view)
             let interaction = lightGizmoInteraction(engine)
             let route = MainActor.assumeIsolated {
-                engine.lightGizmoPointer.press(at: p, option: option, layout: layout, interaction: interaction)
+                engine.lightGizmoPointer.press(at: p, option: option, layout: layout, interaction: interaction,
+                                               clickCount: clickCount)
             }
             if route == .gizmo { showLightGizmoDrag(engine, in: view) }
             return route != .camera
@@ -1187,7 +1190,8 @@ extension MetalViewport {
             // Lights mode (#622): a press on a light gizmo target is the
             // gizmo's to its release; no PyMOL button event is ever sent.
             if lightGizmoPress(at: lightGizmoPoint(mouseDownLoc, in: view),
-                               option: event.modifierFlags.contains(.option), in: view) {
+                               option: event.modifierFlags.contains(.option),
+                               clickCount: event.clickCount, in: view) {
                 return
             }
             // Move mode: remember whether the press landed on a gizmo handle, so
@@ -1817,21 +1821,33 @@ extension MetalViewport {
         /// gizmo target. A knob selects its light (the bar and the inspector
         /// follow); any other target takes the tap with no atom pick. An
         /// option-tap off every target (an iPad hardware keyboard, #623)
-        /// places a highlight for the selected light, as a long-press does.
+        /// places a highlight for the selected light, as a long-press does. A
+        /// double-tap on the selected light's aim dot aims it back at the rig
+        /// centre (#699).
         private func lightGizmoTap(at p: CGPoint, option: Bool, in view: MTKView) -> Bool {
             guard let engine, engine.interactionMode == .lights,
                   let layout = lightGizmoLayout(in: view) else { return false }
             guard let target = LightGizmoHitTest.target(at: p, layout: layout) else {
+                lightAimTaps = LightAimDoubleTap()
                 guard option, LightTouchRouter.optionTap(at: p, layout: layout) else { return false }
                 let interaction = lightGizmoInteraction(engine)
                 _ = MainActor.assumeIsolated { interaction.placeHighlight(at: p, layout: layout) }
                 return true
+            }
+            let selected = MainActor.assumeIsolated { engine.lightsController.selection.name }
+            if lightAimTaps.tap(on: target, light: selected, at: p, time: ProcessInfo.processInfo.systemUptime),
+               let name = selected {
+                let interaction = lightGizmoInteraction(engine)
+                _ = MainActor.assumeIsolated { interaction.aimAtCentre(name: name) }
             }
             if case .knob(let name) = target {
                 MainActor.assumeIsolated { engine.lightsController.select(name: name) }
             }
             return true
         }
+
+        /// The aim dot's first tap, waiting for a second (#699).
+        private var lightAimTaps = LightAimDoubleTap()
 
         /// A one-finger pan (#622): true when the light gizmo owns it.
         /// UIKit reports `.began` after its own slop, so the press is hit-

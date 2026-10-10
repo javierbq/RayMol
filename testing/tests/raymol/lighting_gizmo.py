@@ -25,6 +25,10 @@ This file pins what the gizmo relies on in the core:
   together) aim at the surface_at hit, put the light in front of it (the
   mirror rule) or behind it (rim=145), keep a pinned light pinned with pin=1,
   and change nothing on a miss;
+- TestAimCentreCommand: the string LightsAction.aimAtCentre sends (#699's
+  double-click or double-tap on the aim dot; LightsActionInvocationTests
+  pins it) aims the light back at the rig centre, clears the aim selection
+  and keeps the placement and the cone;
 - TestRingsAreTheBeamCone: the rings the gizmo draws (aim distance x
   tan(acos(cos_outer or cos_inner)), LightGizmoLayout) invert, through the
   setter, to the beam and softness that produce them (the band clamp near
@@ -358,6 +362,10 @@ CLICK_RIM_PIN = 'lights key, click=0.1250/-0.0625, rim=145, pin=1'
 CLICK_ZERO = 'lights key, click=0.0000/0.2500'
 CLICK_MISS = 'lights key, click=0.9000/0.9000'
 
+# What LightsAction.aimAtCentre(_:).invocation sends
+# (LightsActionInvocationTests.testAimAtCentreStrings).
+AIM_CENTRE = 'lights key, aim=centre'
+
 
 class TestHighlightCommand(testing.PyMOLTestCase):
     """A ball of radius 8 at the origin under the pinned camera: every click
@@ -425,6 +433,27 @@ class TestHighlightCommand(testing.PyMOLTestCase):
         text = do(CLICK_MISS)
         self.assertIn('lights', text)
         self.assertEqual(lighting._lights_json(), before)
+
+
+class TestAimCentreCommand(GizmoCase):
+    """#699: the double-click (double-tap) on the aim dot runs AIM_CENTRE
+    once, as a console command."""
+
+    def testAimsBackAtTheCentre(self):
+        self.turn()
+        self.rig([{'name': 'key', 'orbit': -30.0, 'pitch': 20.0,
+                   'radius': 2.5, 'aim': 'point', 'aim_point': [1.0, 2.0, 3.0],
+                   'aim_selection': 'resi 2'}])
+        before = lighting.get_lights()['lights'][0]
+        self.assertEqual(before['aim'], 'point')
+        text = do(AIM_CENTRE)
+        self.assertNotIn('Error', text)
+        after = lighting.get_lights()['lights'][0]
+        self.assertEqual(after['aim'], 'centre')
+        self.assertEqual(after['aim_selection'], '', 'the selection text is cleared')
+        for field in ('orbit', 'pitch', 'radius', 'beam', 'softness', 'anchor'):
+            self.assertEqual(after[field], before[field], field)
+        self.assertVec(eye_light()['target'], world_to_eye([1.0, -2.0, 3.0]), rel=1e-4)
 
 
 class TestRingsAreTheBeamCone(GizmoCase):
@@ -555,7 +584,8 @@ MODEL_READS = {'isActive', 'isBusy', 'isOn', 'rig', 'selection', 'selectedIndex'
                'selectedLight', 'identitySlot', 'eye', 'canEdit', 'placement',
                'value', 'freshValue', 'isBehind'}
 MODEL_GUARDED_WRITES = {'set', 'setPlacement', 'setAim'}
-MODEL_PRESSES = {'select', 'beginGesture', 'placeHighlight', 'setShadow'}
+MODEL_PRESSES = {'select', 'beginGesture', 'placeHighlight', 'setShadow',
+                 'aimAtCentre'}
 # What the overlay may touch on the controller: the observed state, the
 # chip's enablement and the VoiceOver Select action (the chip writes through
 # LightGizmoInteraction.toggleShadow, the inspector's setShadow).
