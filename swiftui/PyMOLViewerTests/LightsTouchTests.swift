@@ -126,6 +126,34 @@ private func handLayout(_ metrics: LightGizmoMetrics) throws -> LightGizmoLayout
         drawingOrder: [2, 0, 1], selected: selected, isOn: true, rigSize: 10)
 }
 
+/// One selected light aimed straight into the screen under an orthoscopic
+/// camera, so its rings are circles of `outer` and `inner` points around
+/// the view point `aim` (sample 0 the rightmost, y down).
+private func ringInputs(aim: CGPoint, outer: CGFloat, inner: CGFloat,
+                        insets: LightGizmoInsets = .zero) throws -> LightGizmoInputs {
+    let camera = LightCameraProjection(orthoscopic: true, fovDegrees: 20, cameraDistance: 200,
+                                       letterboxAspect: 0)
+    let projection = try XCTUnwrap(LightGizmoProjection(camera: camera, viewSize: gizmoViewSize))
+    let perAngstrom = try XCTUnwrap(projection.pointsPerAngstrom(atDepth: -200))
+    let ndc = projection.unclampedSceneNDC(point: aim)
+    let hh = camera.orthoHalfHeight
+    let target = SIMD3<Float>(Float(ndc.x * hh * projection.aspect), Float(ndc.y * hh), -200)
+    let distance: Float = 100
+    func cosine(_ r: CGFloat) -> Float { Float(cos(atan(Double(r) / perAngstrom / Double(distance)))) }
+    let light = LightEyeSpace.Light(
+        position: target + SIMD3<Float>(0, 0, distance), target: target, direction: SIMD3<Float>(0, 0, -1),
+        aimDistance: distance, cosOuter: cosine(outer), cosInner: cosine(inner),
+        orbit: 0, pitch: 0, radius: 3, anchor: .camera, aim: .point, shadow: false, outline: false)
+    let eye = LightEyeSpace(enabled: true, hasFrame: true, centre: SIMD3<Float>(0, 0, -200), size: 20,
+                            lights: [light])
+    return LightGizmoInputs(
+        isActive: true, isBusy: false, isOn: true,
+        lights: [.init(name: "key", slot: 0, beam: 60, softness: 0.5, shadow: false)],
+        selection: LightSelection(name: "key", index: 0), rigSize: 20, eyeSpace: eye,
+        projection: camera, viewSize: gizmoViewSize, gridMode: false, sceneShadowsOn: true,
+        chromeInsets: insets)
+}
+
 @MainActor
 final class LightsTouchTargetTests: XCTestCase {
 
@@ -436,6 +464,71 @@ final class LightsTouchTargetTests: XCTestCase {
             let key = try XCTUnwrap(l.knob(named: "key"))
             XCTAssertGreaterThanOrEqual(dist(place.point, key.centre),
                                         metrics.reach(key.radius) + LightGizmoOverlay.chipGap - 1e-9)
+        }
+    }
+
+    func testHandleComesBackFromPastTheRightEdge() throws {
+        for metrics in [iosMetrics, macMetrics] {
+            let inputs = try ringInputs(aim: CGPoint(x: 850, y: 300), outer: 150, inner: 20)
+            let l = try XCTUnwrap(LightGizmoLayout.make(inputs, metrics: metrics))
+            let s = try XCTUnwrap(l.selected)
+            let outerRing = try XCTUnwrap(s.outerRing)
+            let outerHandle = try XCTUnwrap(s.outerHandle)
+
+            let rightmost = try XCTUnwrap(outerRing.rightmost)
+            XCTAssertGreaterThan(rightmost.x, 800)
+
+            let allowed = CGRect(origin: .zero, size: gizmoViewSize)
+                .insetBy(dx: metrics.handleReach, dy: metrics.handleReach)
+            XCTAssertTrue(allowed.contains(outerHandle.point))
+            XCTAssertFalse(outerHandle.isOffRing)
+            XCTAssertEqual(LightGizmoHitTest.target(at: outerHandle.point, layout: l), .outerHandle)
+        }
+    }
+
+    func testHandleComesBackFromPastTheTopEdge() throws {
+        for metrics in [iosMetrics, macMetrics] {
+            let inputs = try ringInputs(aim: CGPoint(x: 400, y: -60), outer: 150, inner: 20)
+            let l = try XCTUnwrap(LightGizmoLayout.make(inputs, metrics: metrics))
+            let s = try XCTUnwrap(l.selected)
+            let outerRing = try XCTUnwrap(s.outerRing)
+            let outerHandle = try XCTUnwrap(s.outerHandle)
+
+            let rightmost = try XCTUnwrap(outerRing.rightmost)
+            XCTAssertLessThan(rightmost.y, 0)
+
+            let allowed = CGRect(origin: .zero, size: gizmoViewSize)
+                .insetBy(dx: metrics.handleReach, dy: metrics.handleReach)
+            XCTAssertTrue(allowed.contains(outerHandle.point))
+            XCTAssertFalse(outerHandle.isOffRing)
+            XCTAssertEqual(LightGizmoHitTest.target(at: outerHandle.point, layout: l), .outerHandle)
+        }
+    }
+
+    func testHandlesKeepOutFromUnderTheBar() throws {
+        let insets = LightGizmoInsets(top: 80)
+        for metrics in [iosMetrics, macMetrics] {
+            let inputs = try ringInputs(aim: CGPoint(x: 400, y: 60), outer: 100, inner: 50, insets: insets)
+            let l = try XCTUnwrap(LightGizmoLayout.make(inputs, metrics: metrics))
+            let s = try XCTUnwrap(l.selected)
+            let outerRing = try XCTUnwrap(s.outerRing)
+            let outerHandle = try XCTUnwrap(s.outerHandle)
+            let innerHandle = try XCTUnwrap(s.innerHandle)
+
+            let allowed = CGRect(x: insets.left, y: insets.top,
+                                 width: gizmoViewSize.width - insets.left - insets.right,
+                                 height: gizmoViewSize.height - insets.top - insets.bottom)
+                .insetBy(dx: metrics.handleReach, dy: metrics.handleReach)
+            XCTAssertTrue(allowed.contains(outerHandle.point))
+            XCTAssertTrue(allowed.contains(innerHandle.point))
+            XCTAssertNotEqual(outerHandle.ringPoint, outerRing.rightmost)
+
+            let zeroInputs = try ringInputs(aim: CGPoint(x: 400, y: 60), outer: 100, inner: 50, insets: .zero)
+            let zeroLayout = try XCTUnwrap(LightGizmoLayout.make(zeroInputs, metrics: metrics))
+            let zeroSelected = try XCTUnwrap(zeroLayout.selected)
+            let zeroOuterRing = try XCTUnwrap(zeroSelected.outerRing)
+            let zeroOuterHandle = try XCTUnwrap(zeroSelected.outerHandle)
+            XCTAssertEqual(zeroOuterHandle.ringPoint, zeroOuterRing.rightmost)
         }
     }
 }

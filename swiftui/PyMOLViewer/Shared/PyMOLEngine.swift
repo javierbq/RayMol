@@ -3400,7 +3400,8 @@ final class PyMOLEngine: ObservableObject {
         return MainActor.assumeIsolated {
             LightGizmoLayout.make(
                 LightGizmoInputs(controller: lightsController, viewSize: viewSize,
-                                 gridMode: lightGizmoGridMode, sceneShadowsOn: sceneShadowsOn),
+                                 gridMode: lightGizmoGridMode, sceneShadowsOn: sceneShadowsOn,
+                                 chromeInsets: lightGizmoUI.chromeInsets),
                 metrics: metrics)
         }
     }

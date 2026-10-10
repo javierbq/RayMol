@@ -369,6 +369,38 @@ final class LightGizmoOverlayTests: XCTestCase {
         return h
     }
 
+    /// #693: the macOS Lights bar, laid out at the top of the viewport,
+    /// publishes its rendered height as the gizmo's top chrome inset, and
+    /// publishes it again when Lights mode ends (a reset) and returns.
+    func testLightsBarPublishesItsHeightAsTheTopInset() throws {
+        let (_, controller) = viewController()
+        let ui = LightGizmoUIState()
+        let bar = LightsBar(controller: controller, style: viewStyle, onDone: {})
+        let expected = NSHostingView(rootView: bar.frame(width: viewTestSize.width)).fittingSize.height
+        XCTAssertGreaterThan(expected, 0)
+        let overlay = VStack(spacing: 8) {
+            bar.lightGizmoTopChrome(ui)
+            Spacer()
+        }
+        .frame(width: viewTestSize.width, height: viewTestSize.height)
+
+        let first = host(overlay)
+        XCTAssertEqual(ui.chromeInsets.top, expected, accuracy: 1)
+        XCTAssertEqual(ui.chromeInsets.left, 0)
+        XCTAssertEqual(ui.chromeInsets.bottom, 0)
+        XCTAssertEqual(ui.chromeInsets.right, 0)
+
+        // Leave the mode: the bar goes away and the state resets.
+        first.window.contentView = NSView()
+        first.settle()
+        ui.reset()
+        XCTAssertEqual(ui.chromeInsets, .zero)
+
+        // Enter it again: the new bar publishes its height again.
+        _ = host(overlay)
+        XCTAssertEqual(ui.chromeInsets.top, expected, accuracy: 1)
+    }
+
     /// Drawn only while the gizmo shows: in Lights mode with lights and eye
     /// data, not in grid mode, not while busy; nothing drawn writes.
     func testDrawsOnlyWhenTheGizmoShows() throws {

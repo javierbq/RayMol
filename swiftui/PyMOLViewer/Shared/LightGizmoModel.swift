@@ -125,6 +125,16 @@ struct LightGizmoMetrics: Equatable {
 
 // MARK: - Inputs
 
+/// The view's edges covered by chrome drawn over the viewport (the macOS
+/// Lights bar), in points. The ring handles keep out of them (#693).
+struct LightGizmoInsets: Equatable {
+    var top: CGFloat = 0
+    var left: CGFloat = 0
+    var bottom: CGFloat = 0
+    var right: CGFloat = 0
+    static let zero = LightGizmoInsets()
+}
+
 /// Everything the layout is made from, as a plain value: tests build it
 /// without a controller; the overlay and the viewport build it from the same
 /// controller, so what is drawn is what is hit-tested.
@@ -157,10 +167,13 @@ struct LightGizmoInputs: Equatable {
     var gridMode: Bool
     /// The scene's Shadows switch as last read (nil: unknown).
     var sceneShadowsOn: Bool?
+    /// Edges covered by chrome drawn over the viewport (#693).
+    var chromeInsets: LightGizmoInsets
 
     init(isActive: Bool, isBusy: Bool, isOn: Bool, lights: [Light], selection: LightSelection,
          rigSize: Double?, eyeSpace: LightEyeSpace?, projection: LightCameraProjection?,
-         viewSize: CGSize, gridMode: Bool, sceneShadowsOn: Bool?) {
+         viewSize: CGSize, gridMode: Bool, sceneShadowsOn: Bool?,
+         chromeInsets: LightGizmoInsets = .zero) {
         self.isActive = isActive
         self.isBusy = isBusy
         self.isOn = isOn
@@ -172,11 +185,13 @@ struct LightGizmoInputs: Equatable {
         self.viewSize = viewSize
         self.gridMode = gridMode
         self.sceneShadowsOn = sceneShadowsOn
+        self.chromeInsets = chromeInsets
     }
 
     /// The controller's state now, for a view of `viewSize` points.
     @MainActor
-    init(controller: LightsController, viewSize: CGSize, gridMode: Bool, sceneShadowsOn: Bool?) {
+    init(controller: LightsController, viewSize: CGSize, gridMode: Bool, sceneShadowsOn: Bool?,
+         chromeInsets: LightGizmoInsets = .zero) {
         self.init(
             isActive: controller.isActive, isBusy: controller.isBusy, isOn: controller.isOn,
             lights: (controller.rig?.lights ?? []).map {
@@ -185,7 +200,8 @@ struct LightGizmoInputs: Equatable {
             },
             selection: controller.selection, rigSize: controller.rig?.size,
             eyeSpace: controller.eye.eyeSpace, projection: controller.eye.projection,
-            viewSize: viewSize, gridMode: gridMode, sceneShadowsOn: sceneShadowsOn)
+            viewSize: viewSize, gridMode: gridMode, sceneShadowsOn: sceneShadowsOn,
+            chromeInsets: chromeInsets)
     }
 }
 
@@ -254,9 +270,9 @@ struct LightGizmoLayout: Equatable {
     struct Handle: Equatable {
         /// Where it is drawn (and hit).
         var point: CGPoint
-        /// Where on its ring it belongs: the rightmost sample, or, when a
-        /// handle there would leave the view, the rightmost sample whose
-        /// handles both stay inside it (#693).
+        /// Where on its ring it belongs: the rightmost sample, or, when
+        /// handles there would leave the view or fall under chrome, the best
+        /// candidate sample keeping handles in view (#693).
         var ringPoint: CGPoint
         /// Drawn away from its ring (the separation rule), joined by a tick.
         var isOffRing: Bool
@@ -365,7 +381,7 @@ struct LightGizmoLayout: Equatable {
         var selected: Selected?
         if let index = selectedIndex {
             selected = Self.selected(index: index, light: inputs.lights[index], eye: eye.lights[index],
-                                     projection: projection, metrics: metrics)
+                                     projection: projection, metrics: metrics, insets: inputs.chromeInsets)
         }
         return LightGizmoLayout(projection: projection, metrics: metrics, centre: centre,
                                 sphereRadius: sphereRadius, knobs: knobs, drawingOrder: drawingOrder,
@@ -375,7 +391,8 @@ struct LightGizmoLayout: Equatable {
     /// The selected light's aim dot, rings and handles.
     private static func selected(index: Int, light: LightGizmoInputs.Light, eye: LightEyeSpace.Light,
                                  projection: LightGizmoProjection,
-                                 metrics: LightGizmoMetrics) -> Selected {
+                                 metrics: LightGizmoMetrics,
+                                 insets: LightGizmoInsets) -> Selected {
         let target = SIMD3<Double>(eye.target)
         let direction = SIMD3<Double>(eye.direction)
         var s = Selected(name: light.name, index: index, placement: LightPlacement(eye),
@@ -391,28 +408,47 @@ struct LightGizmoLayout: Equatable {
         s.innerRing = inner
         var handles = Self.handles(aim: aim, outer: o, inner: inner.rightmost ?? aim, metrics: metrics)
         // #693: handles at the rightmost samples can leave the view (a wide
-        // beam, a light near the right edge). Then the handles go to the
-        // rightmost sample index whose two handles both stay inside the view,
-        // inset by the handle's reach so the whole target can be pressed.
-        // Both rings share the basis and the sample count, so index k is the
-        // same direction on each. Handles already inside never move, and with
-        // no index inside, today's place stays.
-        let view = CGRect(origin: .zero, size: projection.viewSize)
-            .insetBy(dx: metrics.handleReach, dy: metrics.handleReach)
-        func inside(_ h: (outer: Handle, inner: Handle)) -> Bool {
-            view.contains(h.outer.point) && view.contains(h.inner.point)
+        // beam, a light near the right edge) or fall under chrome (the macOS
+        // Lights bar). In priority order:
+        // 1. Keep the rightmost-sample handles if both lie inside allowed bounds.
+        // 2. Otherwise, pick the rightmost sample index whose candidate handles
+        //    both lie inside allowed bounds.
+        // 3. Fallback: among indices whose candidate outer handle lies inside
+        //    allowed bounds, choose the one whose outer sample is nearest the
+        //    aim dot (ties within 0.5 pt go to the larger sample x, then lower k).
+        // 4. Otherwise, keep the rightmost-sample handles.
+        var allowed = CGRect(origin: .zero, size: projection.viewSize)
+        allowed.origin.x += insets.left
+        allowed.origin.y += insets.top
+        allowed.size.width -= insets.left + insets.right
+        allowed.size.height -= insets.top + insets.bottom
+        allowed = allowed.insetBy(dx: metrics.handleReach, dy: metrics.handleReach)
+
+        func insideBoth(_ h: (outer: Handle, inner: Handle)) -> Bool {
+            allowed.contains(h.outer.point) && allowed.contains(h.inner.point)
         }
-        if !inside(handles) {
-            let order = outer.samples.indices
-                .compactMap { k in outer.samples[k].map { (k, $0.x) } }
-                .sorted { $0.1 != $1.1 ? $0.1 > $1.1 : $0.0 < $1.0 }
-            for (k, _) in order {
-                guard let ok = outer.samples[k] else { continue }
+
+        if !insideBoth(handles) {
+            // Both rings share the basis and the sample count, so index k is
+            // the same direction on each.
+            typealias Candidate = (k: Int, ring: CGPoint, handles: (outer: Handle, inner: Handle))
+            let candidates = outer.samples.indices.compactMap { k -> Candidate? in
+                guard let ok = outer.samples[k] else { return nil }
                 let ik = (inner.samples.indices.contains(k) ? inner.samples[k] : nil) ?? aim
-                let candidate = Self.handles(aim: aim, outer: ok, inner: ik, metrics: metrics)
-                if inside(candidate) {
-                    handles = candidate
-                    break
+                return (k, ok, Self.handles(aim: aim, outer: ok, inner: ik, metrics: metrics))
+            }
+            // Rightmost first, ties to the lower index.
+            func righter(_ a: Candidate, _ b: Candidate) -> Bool {
+                a.ring.x != b.ring.x ? a.ring.x > b.ring.x : a.k < b.k
+            }
+            if let best = candidates.filter({ insideBoth($0.handles) }).sorted(by: righter).first {
+                handles = best.handles
+            } else {
+                let visible = candidates.filter { allowed.contains($0.handles.outer.point) }
+                if let nearest = visible.map({ gizmoDistance($0.ring, aim) }).min(),
+                   let best = visible.filter({ gizmoDistance($0.ring, aim) - nearest <= 0.5 })
+                       .sorted(by: righter).first {
+                    handles = best.handles
                 }
             }
         }

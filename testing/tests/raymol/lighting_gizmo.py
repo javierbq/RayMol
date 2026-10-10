@@ -809,7 +809,7 @@ class TestGizmoSource(testing.PyMOLTestCase):
         """The overlay reads the controller's observed state and writes only
         through the Shadow chip (LightGizmoInteraction.toggleShadow, the
         inspector's setShadow) and the VoiceOver Select action; of the UI
-        state it sets only its own size."""
+        state it sets only its own size and the chrome insets (#693)."""
         text = self.read(OVERLAY)
         members = set(re.findall(r'\bcontroller\.(\w+)', text))
         self.assertEqual(members - OVERLAY_MEMBERS, set())
@@ -819,7 +819,7 @@ class TestGizmoSource(testing.PyMOLTestCase):
                      'beginGesture(', 'perform(', 'seams'):
             with self.subTest(name):
                 self.assertNotIn(name, text)
-        self.assertEqual(set(re.findall(r'\bui\.(\w+)\s*=(?!=)', text)), {'viewSize'})
+        self.assertEqual(set(re.findall(r'\bui\.(\w+)\s*=(?!=)', text)), {'viewSize', 'chromeInsets'})
 
     def testContentViewPlacesTheOverlay(self):
         """ContentView puts the overlay on MetalViewport in Lights mode on
