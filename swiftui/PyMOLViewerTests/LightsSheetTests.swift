@@ -294,9 +294,11 @@ final class LightsSheetModelTests: XCTestCase {
         XCTAssertEqual(plan.size, compact)
         XCTAssertEqual(plan.outerRadius, 164 / 2 - LightsOrbitMetrics.planMargin)
         XCTAssertEqual(OrbitCanvases.planLayout(state, frozenExtent: nil).size, LightsOrbitMetrics.planSize)
-        // The widest pinned arc: radius 82 (the card's is 42).
-        XCTAssertEqual(PitchArcLayout(size: CGSize(width: 98, height: 194)).radius, 82)
-        XCTAssertEqual(PitchArcLayout().radius, 42)
+        // The widest pinned arc: horizontal radius 82 (the card's is 42); both fill the height.
+        XCTAssertEqual(PitchArcLayout(size: CGSize(width: 98, height: 194)).radiusX, 82)
+        XCTAssertEqual(PitchArcLayout(size: CGSize(width: 98, height: 194)).radiusY, 89)
+        XCTAssertEqual(PitchArcLayout().radiusX, 42)
+        XCTAssertEqual(PitchArcLayout().radiusY, 90)
     }
 }
 

@@ -234,20 +234,53 @@ struct PitchArcLayout: Equatable {
     }
 
     var centre: CGPoint { CGPoint(x: LightsOrbitMetrics.arcInset, y: size.height / 2) }
-    var radius: CGFloat {
-        max(min(size.width - LightsOrbitMetrics.arcInset - LightsOrbitMetrics.arcMargin,
-                size.height / 2 - LightsOrbitMetrics.arcMargin), 1)
+    /// The half ellipse's horizontal radius: out to the canvas's right margin.
+    var radiusX: CGFloat {
+        max(size.width - LightsOrbitMetrics.arcInset - LightsOrbitMetrics.arcMargin, 1)
+    }
+    /// Its vertical radius: the full canvas height less the margins, so a
+    /// narrow canvas gets a flatter ellipse instead of a small circle (#681).
+    var radiusY: CGFloat {
+        max(size.height / 2 - LightsOrbitMetrics.arcMargin, 1)
     }
 
     /// The point of the arc at `pitch`.
     func point(pitch: Double) -> CGPoint {
         let o = LightAngles.offset(pitch: pitch)
-        return CGPoint(x: centre.x + radius * CGFloat(o.dx), y: centre.y + radius * CGFloat(o.dy))
+        return CGPoint(x: centre.x + radiusX * CGFloat(o.dx), y: centre.y + radiusY * CGFloat(o.dy))
     }
 
-    /// The pitch of `point` around the centre (the left half clamps to ±90).
+    /// How far `point` is from the arc's ellipse (positive outside, negative
+    /// inside): the distance to the nearest point of the full ellipse, found
+    /// by a coarse scan and a refinement. Infinite at the centre.
+    func distanceToArc(_ point: CGPoint) -> CGFloat {
+        let dx = point.x - centre.x, dy = point.y - centre.y
+        let f = hypot(dx / radiusX, dy / radiusY)
+        guard f > 1e-9 else { return .infinity }
+        func gap(_ degrees: Double) -> Double {
+            let o = LightAngles.offset(pitch: degrees)
+            return hypot(Double(dx - radiusX * CGFloat(o.dx)), Double(dy - radiusY * CGFloat(o.dy)))
+        }
+        var best = -180.0, bestGap = Double.infinity
+        for degrees in stride(from: -180.0, through: 180, by: 2) where gap(degrees) < bestGap {
+            best = degrees
+            bestGap = gap(degrees)
+        }
+        var low = best - 2, high = best + 2
+        for _ in 0..<30 {
+            let m1 = low + (high - low) / 3, m2 = high - (high - low) / 3
+            if gap(m1) < gap(m2) { high = m2 } else { low = m1 }
+        }
+        let nearest = CGFloat(gap((low + high) / 2))
+        return f >= 1 ? nearest : -nearest
+    }
+
+    /// The pitch of `point` around the centre (the left half clamps to ±90):
+    /// the offset is unsquashed by the radii first, so the inverse of
+    /// `point(pitch:)` for any ellipse.
     func pitch(at point: CGPoint) -> Double {
-        LightAngles.pitch(dx: Double(point.x - centre.x), dy: Double(point.y - centre.y))
+        LightAngles.pitch(dx: Double(point.x - centre.x) / Double(radiusX),
+                          dy: Double(point.y - centre.y) / Double(radiusY))
     }
 }
 
@@ -323,7 +356,7 @@ enum OrbitHitTest {
         }
         let c = layout.centre
         guard point.x >= c.x,
-              abs(hypot(point.x - c.x, point.y - c.y) - layout.radius) <= layout.trackReach else { return nil }
+              abs(layout.distanceToArc(point)) <= layout.trackReach else { return nil }
         return .pitchTrack
     }
 }
