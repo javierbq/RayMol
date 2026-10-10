@@ -741,4 +741,24 @@ final class LightGizmoRoutingTests: XCTestCase {
     }
     #endif
 }
+
+// MARK: - Cursor (#701)
+
+final class LightGizmoCursorTests: XCTestCase {
+    func testCursorChoice() {
+        typealias K = LightGizmoCursorKind
+        let targets: [LightGizmoTarget] = [.aimDot, .outerHandle, .innerHandle, .knob("k"),
+                                           .outerRing, .innerRing, .rings]
+        for t in targets {
+            XCTAssertEqual(K.cursor(mode: .lights, hovered: t, isDragging: false), .openHand)
+            XCTAssertEqual(K.cursor(mode: .lights, hovered: t, isDragging: true), .closedHand)
+            XCTAssertEqual(K.cursor(mode: .viewing, hovered: t, isDragging: false), .normal)
+        }
+        XCTAssertEqual(K.cursor(mode: .lights, hovered: nil, isDragging: false), .normal)
+        // The closed hand stays while dragging, even once the pointer is off the target.
+        XCTAssertEqual(K.cursor(mode: .lights, hovered: nil, isDragging: true), .closedHand)
+        // Leaving Lights mode restores the normal cursor, even mid-press.
+        XCTAssertEqual(K.cursor(mode: .move, hovered: .aimDot, isDragging: true), .normal)
+    }
+}
 #endif
