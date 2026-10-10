@@ -683,7 +683,11 @@ ARGUMENTS
         # inherit the previous movie's animation.
         try:
             from pymol import raymol_scene_anim as _an
-            _an.author(_scene_kfs, _self=cmd)
+            # Wrap (#656) only when these scenes ARE the movie: appended after
+            # earlier content, the camera wraps to that content's first
+            # keyframe, not to the first scene.
+            _an.author(_scene_kfs, _self=cmd,
+                       wrap=bool(int(loop)) and int(start) == 1)
         except Exception as e:
             print('MOVIE_ERR:' + str(e))
         cmd.frame(start)

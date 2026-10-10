@@ -1162,3 +1162,164 @@ class TestAuthorAndSession(unittest.TestCase):
         # Verify our command strings were stripped out on save
         leftover = ''.join(sess['movie'][5])
         self.assertEqual(leftover, '')
+
+
+class TestLoopWrap(unittest.TestCase):
+    def setUp(self):
+        self.scenes, self.anim = load_modules()
+        self.scenes.clear_all()
+        self.anim._track.clear()
+        self.anim._scene_marks[:] = []
+        self.anim._lights_track.clear()
+
+    def _store(self, name, **settings):
+        self.scenes._scene_settings[name] = {k: str(v) for k, v in settings.items()}
+
+    def test_build_track_wrap(self):
+        self._store('A', ambient=0.2)
+        self._store('B', ambient=0.6)
+        track = self.anim.build_track([(1, 'A', 0.0), (40, 'B', 0.0)], wrap_length=60)
+        track0 = self.anim.build_track([(1, 'A', 0.0), (40, 'B', 0.0)], wrap_length=0)
+        # frames 2..39 identical to wrap_length=0
+        for f in range(2, 40):
+            self.assertEqual(track[f], track0[f])
+        # frames 41..60 present, no key > 60 and none at 1 or 40
+        self.assertEqual(sorted(f for f in track if f >= 40), list(range(41, 61)))
+        self.assertNotIn(1, track)
+        self.assertNotIn(40, track)
+        self.assertFalse(any(k > 60 for k in track))
+        # value at f equals 0.6 + (0.2-0.6)*ease((f-40)/21.0, 1.4)
+        pw = self.anim.effective_power(0.0, 0.0, None)
+        for f in range(41, 61):
+            want = 0.6 + (0.2 - 0.6) * self.anim.ease((f - 40) / 21.0, pw)
+            self.assertAlmostEqual(track[f]['ambient'], want)
+        # values strictly decreasing from 41 to 60
+        vals = [track[f]['ambient'] for f in range(41, 61)]
+        self.assertEqual(vals, sorted(vals, reverse=True))
+        for i in range(len(vals) - 1):
+            self.assertGreater(vals[i], vals[i + 1])
+
+    def test_first_keyframe_after_frame_1(self):
+        self._store('A', ambient=0.2)
+        self._store('B', ambient=0.6)
+        track = self.anim.build_track([(5, 'A', 0.0), (40, 'B', 0.0)], wrap_length=60)
+        # wrap span 40->65, frames 41..60 and 1..4 present
+        self.assertTrue(set(range(41, 61)).issubset(track))
+        self.assertTrue(set(range(1, 5)).issubset(track))
+        pw = self.anim.effective_power(0.0, 0.0, None)
+        want1 = 0.6 + (0.2 - 0.6) * self.anim.ease((61 - 40) / 25.0, pw)
+        want4 = 0.6 + (0.2 - 0.6) * self.anim.ease((64 - 40) / 25.0, pw)
+        self.assertAlmostEqual(track[1]['ambient'], want1)
+        self.assertAlmostEqual(track[4]['ambient'], want4)
+
+    def test_keyframe_at_last_frame(self):
+        self._store('A', ambient=0.2)
+        self._store('B', ambient=0.6)
+        track_wrap = self.anim.build_track([(1, 'A', 0.0), (60, 'B', 0.0)], wrap_length=60)
+        track0 = self.anim.build_track([(1, 'A', 0.0), (60, 'B', 0.0)], wrap_length=0)
+        self.assertEqual(track_wrap, track0)
+
+    def test_single_and_no_keyframes(self):
+        self._store('A', ambient=0.2)
+        self.assertEqual(self.anim.build_track([(1, 'A', 0.0)], wrap_length=60), {})
+        self.assertEqual(self.anim.build_track([], wrap_length=60), {})
+
+    def test_default_wrap_length_unchanged(self):
+        self._store('A', ambient=0.2)
+        self._store('B', ambient=0.6)
+        track = self.anim.build_track([(1, 'A', 0.0), (40, 'B', 0.0)])
+        self.assertEqual(sorted(track), list(range(2, 40)))
+
+    def test_transitions_directly(self):
+        # unsorted input is sorted, wrap pair is last and has frame f0+N
+        kfs = [(40, 'B', 0.5), (5, 'A', 0.2)]
+        t = self.anim.transitions(kfs, wrap_length=60)
+        self.assertEqual(t[0], ((5, 'A', 0.2), (40, 'B', 0.5)))
+        self.assertEqual(t[1], ((40, 'B', 0.5), (65, 'A', 0.2)))
+        # no wrap pair when the last keyframe is > wrap_length
+        t_nowrap = self.anim.transitions([(5, 'A', 0.2), (65, 'B', 0.5)], wrap_length=60)
+        self.assertEqual(len(t_nowrap), 1)
+        self.assertEqual(t_nowrap[0], ((5, 'A', 0.2), (65, 'B', 0.5)))
+
+    def test_build_lights_track_wrap(self):
+        self.scenes._scene_lights['A'] = {'enabled': True, 'lights': [{'name': 'key'}]}
+        self.scenes._scene_lights['B'] = {'enabled': True, 'lights': [{'name': 'fill'}]}
+        track = self.anim.build_lights_track([(1, 'A', 0.0), (40, 'B', 0.0)], wrap_length=60)
+        pw = self.anim.effective_power(0.0, 0.0, None)
+        for f in range(41, 61):
+            t = float('%.6g' % self.anim.ease((f - 40) / 21.0, pw))
+            self.assertEqual(track[f], ('B', 'A', t))
+        self.assertFalse(any(f > 60 for f in track))
+
+    def test_build_dof_transition_wrap(self):
+        self._store('OFF', metal_dof='off', metal_dof_aperture=14,
+                    metal_dof_focus=0, metal_dof_autofocus='off')
+        self._store('ON', metal_dof='on', metal_dof_aperture=6,
+                    metal_dof_focus=30, metal_dof_autofocus='off')
+        fake = ViewCmd()
+        out = self.anim.build_dof_transition([(1, 'ON', 0.0), (10, 'OFF', 0.0)],
+                                             _self=fake, wrap_length=20)
+        # the wrap span (10 -> 21) yields frames 11..20 fading back IN
+        aps = [out[f]['metal_dof_aperture'] for f in range(11, 21)]
+        self.assertEqual(aps, sorted(aps))
+        self.assertGreater(aps[0], 0.0)
+        self.assertLess(aps[-1], 6.0)
+        self.assertGreater(aps[-1], 5.0)
+        # every frame passed to ViewCmd.frame is within 1..20
+        self.assertTrue(fake.frames_seen)
+        self.assertTrue(all(1 <= f <= 20 for f in fake.frames_seen))
+
+    def test_author_wrap_resolution(self):
+        class LoopFakeCmd(FakeCmd):
+            def __init__(self, loop='on', length=60):
+                super().__init__()
+                self.loop = loop
+                self.length = length
+
+            def get(self, name):
+                if name == 'movie_loop':
+                    return self.loop
+                return None
+
+            def get_movie_length(self):
+                return self.length
+
+        self._store('A', ambient=0.2)
+        self._store('B', ambient=0.6)
+        kfs = [(1, 'A', 0.0), (40, 'B', 0.0)]
+
+        # loop 'on' + default wrap -> slots 41..60 receive a mappend
+        fake = LoopFakeCmd(loop='on', length=60)
+        self.anim.author(kfs, _self=fake)
+        frames = [f for f, _ in fake.appended]
+        self.assertTrue(set(range(41, 61)).issubset(frames))
+        self.anim.author([], _self=fake)
+
+        # loop 'off' -> none
+        fake = LoopFakeCmd(loop='off', length=60)
+        self.anim.author(kfs, _self=fake)
+        frames = [f for f, _ in fake.appended]
+        self.assertFalse(any(41 <= f <= 60 for f in frames))
+        self.anim.author([], _self=fake)
+
+        # wrap=False with 'on' -> none
+        fake = LoopFakeCmd(loop='on', length=60)
+        self.anim.author(kfs, _self=fake, wrap=False)
+        frames = [f for f, _ in fake.appended]
+        self.assertFalse(any(41 <= f <= 60 for f in frames))
+        self.anim.author([], _self=fake)
+
+        # wrap=True with 'off' -> present
+        fake = LoopFakeCmd(loop='off', length=60)
+        self.anim.author(kfs, _self=fake, wrap=True)
+        frames = [f for f, _ in fake.appended]
+        self.assertTrue(set(range(41, 61)).issubset(frames))
+        self.anim.author([], _self=fake)
+
+        # plain FakeCmd (no get/get_movie_length) -> none and no exception
+        fake = FakeCmd()
+        self.anim.author(kfs, _self=fake)
+        frames = [f for f, _ in fake.appended]
+        self.assertFalse(any(41 <= f <= 60 for f in frames))
+        self.anim.author([], _self=fake)
+
