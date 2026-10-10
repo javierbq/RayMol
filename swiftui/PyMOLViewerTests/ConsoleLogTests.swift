@@ -172,3 +172,74 @@ final class ConsoleLogTests: XCTestCase {
         return textView
     }
 }
+
+// MARK: - Command input normalization (#185)
+
+final class CommandInputTests: XCTestCase {
+
+    func testCurlyDoubleQuotesInPythonCommand() {
+        let input = "/print(“NUMPY_OK”)"
+        let expected = "/print(\"NUMPY_OK\")"
+        XCTAssertEqual(CommandInput.normalizingSmartPunctuation(input), expected)
+    }
+
+    func testCurlySingleQuotesInPyMOLCommand() {
+        let input = "select ‘ligand’, resn ‘LIG’"
+        let expected = "select 'ligand', resn 'LIG'"
+        XCTAssertEqual(CommandInput.normalizingSmartPunctuation(input), expected)
+    }
+
+    func testAllDoubleQuoteVariants() {
+        // “ ” „ ‟ ″ → "
+        let input = "“test” and „test‟ with ″double prime″"
+        let expected = "\"test\" and \"test\" with \"double prime\""
+        XCTAssertEqual(CommandInput.normalizingSmartPunctuation(input), expected)
+    }
+
+    func testAllSingleQuoteVariants() {
+        // ‘ ’ ‚ ‛ ′ → '
+        let input = "‘test’ and ‚test‛ with ′prime′"
+        let expected = "'test' and 'test' with 'prime'"
+        XCTAssertEqual(CommandInput.normalizingSmartPunctuation(input), expected)
+    }
+
+    func testEmDashMapsToDoubleHyphen() {
+        // — → --
+        let input = "cmd.color(—red—)"
+        let expected = "cmd.color(--red--)"
+        XCTAssertEqual(CommandInput.normalizingSmartPunctuation(input), expected)
+    }
+
+    func testEnDashMapsToSingleHyphen() {
+        // – → -
+        let input = "resi 1–10"
+        let expected = "resi 1-10"
+        XCTAssertEqual(CommandInput.normalizingSmartPunctuation(input), expected)
+    }
+
+    func testEllipsisMapsToThreeDots() {
+        // … → ...
+        let input = "print(x…)"
+        let expected = "print(x...)"
+        XCTAssertEqual(CommandInput.normalizingSmartPunctuation(input), expected)
+    }
+
+    func testUntouchedInputReturnedEqual() {
+        let ascii = "select resn ALA and name CA"
+        XCTAssertEqual(CommandInput.normalizingSmartPunctuation(ascii), ascii)
+
+        let unicode = "distance 2.5 Å, angle 109.5°"
+        XCTAssertEqual(CommandInput.normalizingSmartPunctuation(unicode), unicode)
+    }
+
+    func testIdempotence() {
+        let input = "“quoted” ‘single’ —em –en …dots Å °"
+        let once = CommandInput.normalizingSmartPunctuation(input)
+        let twice = CommandInput.normalizingSmartPunctuation(once)
+        let thrice = CommandInput.normalizingSmartPunctuation(twice)
+        XCTAssertEqual(once, twice)
+        XCTAssertEqual(twice, thrice)
+        XCTAssertEqual(once, "\"quoted\" 'single' --em -en ...dots Å °")
+    }
+}
+
