@@ -1033,6 +1033,12 @@ class TestSceneMovieBlend(_BlendCase):
             else:
                 self.assertRigAlmostEqual(got, self.expected(f), 'f%d' % f)
 
+    def testSceneRenameMaintainsMoviePlayback(self):
+        self.build()
+        cmd.scene('B', 'rename', new_key='C')
+        self.assertEqual(played(25), self.b)
+        self.assertRigAlmostEqual(played(13), self.expected(13))
+
     def testLinearEasing(self):
         self.build(power=1.0, linear=1)
         for f in (2, 7, 13, 19, 24):

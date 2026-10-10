@@ -810,6 +810,19 @@ static PyObject * CmdSetVolumeRamp(PyObject * self, PyObject * args)
   return APIResult(G, result);
 }
 
+/* The movie command text of 1-based `frame` ("" outside the movie), so a
+ * caller can edit its own part of a slot without dropping the rest (#655). */
+static PyObject *CmdGetFrameCommand(PyObject * self, PyObject * args)
+{
+  PyMOLGlobals *G = nullptr;
+  int frame;
+  API_SETUP_ARGS(G, self, args, "Oi", &self, &frame);
+  API_ASSERT(APIEnterBlockedNotModal(G));
+  std::string text = MovieGetCommand(G, frame - 1);
+  APIExitBlocked(G);
+  return PyUnicode_FromString(text.c_str());
+}
+
 static PyObject *CmdGetVis(PyObject * self, PyObject * args)
 {
   PyMOLGlobals *G = nullptr;
@@ -8061,6 +8074,7 @@ static PyMethodDef Cmd_methods[] = {
   {"get_viewport", CmdGetViewPort, METH_VARARGS},
   {"get_vis", CmdGetVis, METH_VARARGS},
   {"get_atom_reps", CmdGetAtomReps, METH_VARARGS},
+  {"get_frame_command", CmdGetFrameCommand, METH_VARARGS},
   {"get_capabilities", CmdGetCapabilities, METH_NOARGS, "Get a set of compiled-in capabilities"},
   {"get_ccp4str", CmdGetCCP4Str, METH_VARARGS},
   {"get_volume_field", CmdGetVolumeField, METH_VARARGS},

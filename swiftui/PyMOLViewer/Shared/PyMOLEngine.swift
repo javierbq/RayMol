@@ -2198,6 +2198,31 @@ final class PyMOLEngine: ObservableObject {
             + "_c.scene(_b64.b64decode('\(b64)').decode('utf-8'), '\(action)')")
     }
 
+    // The (old, new) names of a `SCENERENAME:<b64 old>:<b64 new>` feedback
+    // line (raymol_scenes._emit_rename, #655), or nil for any other line.
+    static func sceneRenameEvent(_ line: String) -> (String, String)? {
+        guard line.hasPrefix("SCENERENAME:") else { return nil }
+        let parts = line.dropFirst("SCENERENAME:".count).split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 2,
+              let a = Data(base64Encoded: String(parts[0])), let b = Data(base64Encoded: String(parts[1])),
+              let old = String(data: a, encoding: .utf8), let new = String(data: b, encoding: .utf8),
+              !old.isEmpty, !new.isEmpty else { return nil }
+        return (old, new)
+    }
+
+    // The Timeline after renaming scene `old` to `new` (#655): every scene item
+    // naming `old` now names `new`; everything else (ids, transitions, other
+    // kinds) is unchanged. renameScene applies it so the next rebuildMovie does
+    // not reference a scene that no longer exists. Pure, for tests.
+    static func renamingScene(in items: [TimelineItem], from old: String, to new: String) -> [TimelineItem] {
+        items.map { item in
+            guard case .scene(let name) = item.kind, name == old else { return item }
+            var updated = item
+            updated.kind = .scene(name: new)
+            return updated
+        }
+    }
+
     func renameScene(_ name: String, to newName: String) {
         let n = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, !n.isEmpty, n != name else { return }
@@ -2206,6 +2231,12 @@ final class PyMOLEngine: ObservableObject {
         runPython("import base64 as _b64\nfrom pymol import cmd as _c\n"
             + "_c.scene(_b64.b64decode('\(b)').decode('utf-8'), 'rename', "
             + "new_key=_b64.b64decode('\(nb)').decode('utf-8'))")
+        // The core re-keyed the authored movie (raymol_scene_anim.rename_scene),
+        // so only the Timeline's own copy of the name changes here: no rebuild.
+        let updated = Self.renamingScene(in: timelineItems, from: name, to: n)
+        if updated != timelineItems {
+            timelineItems = updated
+        }
     }
 
     // Move the playhead to `frame` and commit (for tapping a keyframe/ruler in
@@ -4538,6 +4569,13 @@ final class PyMOLEngine: ObservableObject {
                     parsePlaybackFeedback(line)
                 } else if line.hasPrefix("PLAYBACK_ERR:") {
                     // swallow (don't flood the log with poll errors)
+                } else if let (old, new) = Self.sceneRenameEvent(line) {
+                    // A scene renamed from the console, Python or MCP (#655):
+                    // re-key the Timeline's copy of the name too.
+                    DispatchQueue.main.async {
+                        let updated = Self.renamingScene(in: self.timelineItems, from: old, to: new)
+                        if updated != self.timelineItems { self.timelineItems = updated }
+                    }
                 } else if line.hasPrefix("MOVIEEXPORT:") {
                     // cmd.movie_export (#581): a scripted export request.
                     let json = String(line.dropFirst("MOVIEEXPORT:".count))
