@@ -456,11 +456,10 @@ class TestAlignWithRay(MaterialCase):
         self.assertAlmostEqual(draw_params('p', 'surface')[3],
                                METALLIC_TABLE_TINT, delta=1e-6)
 
-    def testClayIsTheKnownDivergence(self):
-        """The CPU keeps default's highlight on clay; its Metal shader and its
-        studio response have none (proposed follow-up)."""
+    def testClayHasNoHighlightInEither(self):
+        """Clay has no highlight under ray or studio lights (#711)."""
         (spec, _d, _t), got = self.both('clay')
-        self.assertEqual(spec, 1.0)
+        self.assertEqual(spec, 0.0)
         self.assertEqual(got['highlight'], 0.0)
 
 

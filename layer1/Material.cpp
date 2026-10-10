@@ -281,12 +281,14 @@ MaterialRayParams MaterialRayParamsFor(int id)
      smooth cosine field over the surface position -- the only mode that reads
      as veining. Matte 1 perturbs every sample's normal at random, a fine dry
      grain (unglazed clay); Matte 2 perturbs it through a coarser positional
-     lookup, a mottled skin (rubber). These three ALSO keep default's
+     lookup, a mottled skin (rubber). Marble and rubber keep default's
      highlight, so "marble under ray" and "default under ray_texture 2" are the
-     same image, byte for byte. Clay and rubber are the same only
-     STATISTICALLY: Matte 1 and Matte 2 draw from rand(), and RayNew refills
-     its table on every render, so no two traces of either match. frosted_glass
-     takes Matte 1 as well, on top of the transparency it already implies.
+     same image, byte for byte. Rubber is the same only STATISTICALLY: Matte 1
+     and Matte 2 draw from rand(), and RayNew refills its table on every
+     render, so no two traces of a Matte texture match. Clay drops the
+     highlight (below), so it shares only its texture with "default under
+     ray_texture 1". frosted_glass takes Matte 1 as well, on top of the
+     transparency it already implies.
 
      A known limit of the positional textures: Swirl 1 (marble) is evaluated
      at the impact point in CAMERA space, and Matte 2 (rubber) un-rotates it
@@ -297,7 +299,8 @@ MaterialRayParams MaterialRayParamsFor(int id)
      noise per sample, so there is no pattern to lock or to slide.
 
      The highlight knobs are best effort, and deliberately few. matte drops the
-     highlight entirely, as its Lambert shader does. plastic is a brighter
+     highlight entirely, as its Lambert shader does. clay, like matte, drops it
+     (its Metal shader has no specular either, #711). plastic is a brighter
      white highlight on unchanged diffuse. metallic dims the diffuse term and
      tints the highlight toward the surface's own colour, which is what makes
      a metal read as metal without an environment to reflect. */
@@ -322,6 +325,7 @@ MaterialRayParams MaterialRayParamsFor(int id)
     break;
   case cMaterial_clay:
     r.wobble = 1;
+    r.specular = 0.0f;
     break;
   case cMaterial_rubber:
     r.wobble = 4;
