@@ -249,17 +249,20 @@ class TestTouchSource(testing.PyMOLTestCase):
 
     def testHandlesStayInTheView(self):
         """#693: the handles go to the rightmost sample first; only when one
-        would leave the view (inset by the handle's reach) does another index
-        win, and both rings use the same index."""
+        would leave the view (less the chrome insets, inset by the handle's
+        reach) does another index win, both rings using the same index, with
+        the visible sample nearest the aim dot as the fallback."""
         text = self.read(GIZMO_MODEL)
         selected = body(text, 'private static func selected(')
         self.assertIsNotNone(selected, 'LightGizmoLayout.selected not found')
         first = selected.find('inner.rightmost ?? aim')
-        rule = selected.find('if !inside(handles)')
+        rule = selected.find('if !insideBoth(handles)')
         self.assertGreaterEqual(first, 0, 'the rightmost placement comes first')
         self.assertGreater(rule, first, 'the in-view rule only replaces it')
         self.assertIn('.insetBy(dx: metrics.handleReach, dy: metrics.handleReach)', selected)
         self.assertIn('inner.samples[k]', selected)
+        self.assertIn('insets.top', selected)
+        self.assertIn('gizmoDistance($0.ring, aim)', selected)
 
     def testTheOverlayUsesTheReach(self):
         """The knobs' VoiceOver (and XCUITest) frames are their hit areas,
