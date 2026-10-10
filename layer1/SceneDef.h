@@ -159,6 +159,12 @@ class CScene : public Block {
      SceneReinitialize. Not an object: never in Obj, never in an extent. */
   std::optional<pymol::LightRig> lightRig;
 
+  /* Document generation (#649): bumped when the whole document is replaced
+     (SceneReinitialize, a full ExecutiveSetSession), so the app can tell a
+     replacement made from Python or MCP. Read through
+     SceneGetDocumentGeneration. */
+  unsigned DocumentGeneration{};
+
   /* Scene Names */
   int ButtonsShown{}, ButtonDrag{}, ButtonMargin{}, ButtonsValid{};
   int Over{-1}, Pressed{-1}, PressMode{}, HowFarDown{}, NSkip{};

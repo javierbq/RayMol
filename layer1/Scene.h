@@ -206,6 +206,15 @@ void SceneRovingUpdate(PyMOLGlobals * G);
 void SceneRovingChanged(PyMOLGlobals * G);
 void SceneRovingPostpone(PyMOLGlobals * G);
 int SceneReinitialize(PyMOLGlobals * G);
+
+/**
+ * Document-generation counter (#649): bumped on reinitialize and full session
+ * restores so the app layer can detect when a document was replaced from
+ * Python or MCP and end modes (e.g. Lights) whose state belongs to the old
+ * document.
+ */
+unsigned SceneGetDocumentGeneration(PyMOLGlobals * G);
+void SceneBumpDocumentGeneration(PyMOLGlobals * G);
 void SceneUpdateStereoMode(PyMOLGlobals * G);
 void SceneSuppressMovieFrame(PyMOLGlobals * G);
 int SceneDeferClick(Block * block, int button, int x, int y, int mod);

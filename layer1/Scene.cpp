@@ -4239,9 +4239,21 @@ void SceneSetDefaultView(PyMOLGlobals * G)
 
 }
 
+unsigned SceneGetDocumentGeneration(PyMOLGlobals * G)
+{
+  return G && G->Scene ? G->Scene->DocumentGeneration : 0;
+}
+
+void SceneBumpDocumentGeneration(PyMOLGlobals * G)
+{
+  if (G && G->Scene)
+    ++G->Scene->DocumentGeneration;
+}
+
 int SceneReinitialize(PyMOLGlobals * G)
 {
   int ok = true;
+  SceneBumpDocumentGeneration(G); // document replaced (#649)
   SceneSetDefaultView(G);
   SceneCountFrames(G);
   SceneSetFrame(G, 0, 0);

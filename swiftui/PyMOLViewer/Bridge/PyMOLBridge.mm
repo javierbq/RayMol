@@ -496,6 +496,14 @@ int PyMOLBridge_AirAnimating(PyMOLHandle h)
     return SceneLightsAirAnimating(G) ? 1 : 0;
 }
 
+unsigned PyMOLBridge_DocumentGeneration(PyMOLHandle h)
+{
+    if (!h) return 0;
+    PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
+    if (!G) return 0;
+    return SceneGetDocumentGeneration(G);
+}
+
 char *PyMOLBridge_Complete(const char *text)
 {
     if (!text) return nullptr;

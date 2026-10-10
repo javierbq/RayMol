@@ -5725,6 +5725,7 @@ int ExecutiveSetSession(
   int partial_session = false;
 
   if (!partial_restore) { /* if user has requested partial restore */
+    SceneBumpDocumentGeneration(G); // document replaced (#649)
     ExecutiveDelete(G, "all");
     ColorReset(G);
   }

@@ -382,6 +382,67 @@ final class LightsModeEngineTests: XCTestCase {
         engine.noteCommandForLightsMode("reinitialize")
         XCTAssertEqual(engine.interactionMode, .move, "only Lights mode is ended by the hook")
     }
+
+    func testDocumentGenerationChangeEndsLightsMode() {
+        var generation: UInt32 = 10
+        let originalReader = engine.documentGenerationReader
+        defer { engine.documentGenerationReader = originalReader }
+        engine.documentGenerationReader = { generation }
+
+        engine.setInteractionMode(.lights)
+        XCTAssertEqual(engine.interactionMode, .lights)
+        XCTAssertTrue(controller.isActive)
+
+        // Generation unchanged -> the mode stays .lights.
+        engine.noteDocumentGenerationForLightsMode()
+        XCTAssertEqual(engine.interactionMode, .lights)
+        XCTAssertTrue(controller.isActive)
+
+        // Generation changes while in Lights mode -> ends the mode.
+        generation = 11
+        engine.noteDocumentGenerationForLightsMode()
+        XCTAssertEqual(engine.interactionMode, .viewing)
+        XCTAssertFalse(controller.isActive)
+        XCTAssertNil(controller.entryJSON, "the old document's snapshot must go")
+
+        // Outside Lights mode (e.g. .move), a changed generation does nothing.
+        engine.setInteractionMode(.move)
+        generation = 12
+        engine.noteDocumentGenerationForLightsMode()
+        XCTAssertEqual(engine.interactionMode, .move, "only Lights mode is ended by the generation hook")
+
+        // Re-entering after an ended mode takes a fresh baseline, so a stale counter
+        // does not immediately end the new session.
+        engine.setInteractionMode(.lights)
+        XCTAssertEqual(engine.interactionMode, .lights)
+        XCTAssertTrue(controller.isActive)
+        engine.noteDocumentGenerationForLightsMode()
+        XCTAssertEqual(engine.interactionMode, .lights, "stale counter does not end new session")
+
+        generation = 13
+        engine.noteDocumentGenerationForLightsMode()
+        XCTAssertEqual(engine.interactionMode, .viewing)
+        XCTAssertFalse(controller.isActive)
+    }
+
+    func testRevertActionRejectsStaleDocumentGeneration() {
+        var generation: UInt32 = 20
+        let originalReader = engine.documentGenerationReader
+        defer { engine.documentGenerationReader = originalReader }
+        engine.documentGenerationReader = { generation }
+
+        engine.setInteractionMode(.lights)
+        generation = 21
+        engine.performLightsAction(.restore("{}"))
+        XCTAssertEqual(engine.interactionMode, .viewing)
+        XCTAssertFalse(controller.isActive)
+
+        engine.setInteractionMode(.lights)
+        generation = 22
+        engine.performLightsAction(.restoreLight(name: "key", json: "{}"))
+        XCTAssertEqual(engine.interactionMode, .viewing)
+        XCTAssertFalse(controller.isActive)
+    }
 }
 
 // MARK: - Revert against the live engine
