@@ -768,3 +768,30 @@ final class SceneRenameTimelineTests: XCTestCase {
         XCTAssertNil(PyMOLEngine.sceneRenameEvent("SCENERENAME:\(old)"))
     }
 }
+
+// MARK: - Mouse legend in Lights mode (#677)
+
+final class MouseLegendPresentationTests: XCTestCase {
+    func testLightsHidesTheLegendWhateverThePreference() {
+        XCTAssertEqual(MouseLegendPresentation.resolve(collapsed: false, interactionMode: .lights), .hidden)
+        XCTAssertEqual(MouseLegendPresentation.resolve(collapsed: true, interactionMode: .lights), .hidden)
+    }
+
+    func testOtherModesFollowThePreference() {
+        let modes: [InteractionMode] = [.viewing, .move, .boxSelect]
+        for mode in modes {
+            XCTAssertEqual(MouseLegendPresentation.resolve(collapsed: false, interactionMode: mode), .expanded, "for mode \(mode)")
+            XCTAssertEqual(MouseLegendPresentation.resolve(collapsed: true, interactionMode: mode), .collapsed, "for mode \(mode)")
+        }
+    }
+
+    func testLeavingLightsRestoresThePreviousPresentation() {
+        // Expanded preference: hidden while in lights, expanded again when back to viewing.
+        XCTAssertEqual(MouseLegendPresentation.resolve(collapsed: false, interactionMode: .lights), .hidden)
+        XCTAssertEqual(MouseLegendPresentation.resolve(collapsed: false, interactionMode: .viewing), .expanded)
+
+        // Collapsed preference: hidden while in lights, collapsed again when back to viewing.
+        XCTAssertEqual(MouseLegendPresentation.resolve(collapsed: true, interactionMode: .lights), .hidden)
+        XCTAssertEqual(MouseLegendPresentation.resolve(collapsed: true, interactionMode: .viewing), .collapsed)
+    }
+}
