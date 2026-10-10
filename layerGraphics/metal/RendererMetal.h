@@ -256,6 +256,7 @@ public:
   void setEnvironment(int mode, float bgR, float bgG, float bgB) override;
   void drawBezierTubes(const void* controlPoints, size_t dataSize, float radius,
       float r, float g, float b) override;
+  void setOverlayDraw(bool overlay) override { _overlayDraw = overlay; }
 
   // Shadow map: SceneRenderMetal replays the opaque geometry a second time
   // between begin/endShadowPass with the LIGHT view-projection loaded via
@@ -728,6 +729,7 @@ private:
   bool _peelUnseeded = false;
   bool _oitPeelTest = false;    // true while an OIT pass tests against the peel
   bool _oitCleared = false;     // the frame's first transparent encoder cleared
+  bool _overlayDraw = false;    // true while drawing UI overlays (never recorded for RT)
 
   // --- Real shadow map (light-POV depth pre-pass + PCF in the post pass) ---
   // _shadowDepth is a fixed-resolution single-sample Depth32Float map rendered

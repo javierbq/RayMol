@@ -9905,7 +9905,7 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
 
   // Ray tracing: capture solid triangle meshes (cartoon/surface) once per CPU
   // buffer — the frame only records that this buffer contributed.
-  if (_rtEnabled && !_shadowMode && !_peelMode && (!_oitActive || _rtTransparent)) {
+  if (_rtEnabled && !_shadowMode && !_peelMode && !_overlayDraw && (!_oitActive || _rtTransparent)) {
     rtNoteGeometry(data, nullptr,
         rtMixParams({(uint64_t)mode, (uint64_t)vertexCount, (uint64_t)stride,
                      (uint64_t)posOffset, (uint64_t)(colorOffset + 1), (uint64_t)colorType}),
@@ -10250,7 +10250,7 @@ void RendererMetal::drawVBOIndexed(PrimitiveType mode, int indexCount,
   // Ray tracing: capture solid triangle meshes (cartoon/surface) once per CPU
   // buffer. Keyed on the vertex data, with the index buffer as an alias so
   // freeing either one drops the cached triangles.
-  if (_rtEnabled && !_shadowMode && !_peelMode && (!_oitActive || _rtTransparent)) {
+  if (_rtEnabled && !_shadowMode && !_peelMode && !_overlayDraw && (!_oitActive || _rtTransparent)) {
     rtNoteGeometry(vertexData, indexData,
         rtMixParams({(uint64_t)mode, (uint64_t)indexCount, (uint64_t)stride,
                      (uint64_t)posOffset, (uint64_t)(colorOffset + 1), (uint64_t)colorType,
@@ -11292,7 +11292,7 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
   // consecutive verts sharing the same a_vertex_radius (float4 @ offset 0).
   // sphereSizeScale is baked into the stored radius, so it is part of the
   // params signature: changing sphere_scale re-extracts.
-  if (_rtEnabled && !_shadowMode && !_peelMode && (!_oitActive || _rtTransparent)) {
+  if (_rtEnabled && !_shadowMode && !_peelMode && !_overlayDraw && (!_oitActive || _rtTransparent)) {
     rtNoteGeometry(call.data, nullptr,
         rtMixParams({(uint64_t)vertexCount, (uint64_t)call.stride,
                      (uint64_t)call.posRadiusOff,
@@ -12126,8 +12126,8 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
   // once per CPU buffer (opaque pass only) — this used to be 24 triangles per
   // stick regenerated on every frame, including pure camera moves. 8
   // verts/cylinder share v1/v2/radius.
-  if (_rtEnabled && !_shadowMode && !_peelMode && (!_oitActive || _rtTransparent) &&
-      call.cylinderCount > 0) {
+  if (_rtEnabled && !_shadowMode && !_peelMode && !_overlayDraw &&
+      (!_oitActive || _rtTransparent) && call.cylinderCount > 0) {
     rtNoteGeometry(call.vdata, nullptr,
         rtMixParams({(uint64_t)call.cylinderCount, (uint64_t)call.stride,
                      (uint64_t)call.v1Off, (uint64_t)call.v2Off,

@@ -577,6 +577,10 @@ public:
       float radius, float r, float g, float b)
   {
   }
+
+  // When true, current draw calls represent UI overlays (gadgets, gizmos)
+  // that should not be recorded into ray tracing acceleration structures (#433).
+  virtual void setOverlayDraw(bool /*overlay*/) {}
 };
 
 } // namespace pymol

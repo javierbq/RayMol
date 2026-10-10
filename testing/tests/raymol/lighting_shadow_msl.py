@@ -827,13 +827,13 @@ SCENE_RENDER = os.path.join(ROOT, 'layer1', 'SceneRender.cpp')
 # function (comments stripped, whitespace removed, the first 16 hex digits),
 # and of the classic pre-pass body in SceneRenderMetal (inside the braces of
 # its `if`, from `float shadowRadius` to the restore of the camera matrices).
-# Taken from master with lighting_msl.py's parsers, never from this branch:
-# studio shadows replace the classic pass, they never edit it.
+# Updated for #433 / #662: the classic pre-pass and light frustum exclude
+# overlays (SceneLightShadowOverlays and SceneGetLightShadowExtent).
 MASTER_CLASSIC = {
     'RendererMetal::beginShadowPass': 'c421447f5f77a489',
     'RendererMetal::endShadowPass': '5dd9374e7be0fb2f',
-    'SceneBuildLightViewProjEye': '6b975b5c9dc7bec8',
-    'classic pre-pass body': 'b3b5919caf1bbff4',
+    'SceneBuildLightViewProjEye': 'c969b5d7bcc919d7',
+    'classic pre-pass body': 'fb70b8ac2adbcad8',
 }
 # The statements both passes end with: the scene pass reopened with CLEAR.
 # Today's grid code on master (aea4e74c6), hashed as MASTER_CLASSIC is: the
@@ -876,6 +876,48 @@ class TestClassicShadowUnchanged(ShadowMSLCase):
             'classic pre-pass body': digest(classic_pre_pass_body(scene_render)),
         }
         self.assertEqual(found, MASTER_CLASSIC)
+
+
+class TestOverlayShadowExclusion(ShadowMSLCase):
+    """Overlays (Move gizmo, gadgets, gizmos) must not cast shadows in the
+    classic pre-pass, widen the classic light frustum, or enter the ray
+    tracing acceleration structure (#433 / #662)."""
+
+    def setUp(self):
+        super().setUp()
+        self.header = strip_comments(read(METAL_H))
+        self.scene_render = read(SCENE_RENDER)
+        self.renderer_h = read(os.path.join(ROOT, 'layerGraphics', 'Renderer.h'))
+
+    def testClassicPrePassExcludesOverlays(self):
+        body = classic_pre_pass_body(self.scene_render)
+        self.assertIn('SceneLightShadowOverlays(G)', body)
+        self.assertRegex(body, r'SceneRenderAll\([^;]*&overlays\s*\);')
+
+    def testClassicLightFrustumUsesLightShadowExtent(self):
+        body = cpp_function(self.scene_render, 'SceneBuildLightViewProjEye')
+        self.assertIn('SceneGetLightShadowExtent(G, mn, mx)', body)
+        self.assertNotIn('SceneGetShadowExtent(G, mn, mx)', body)
+
+    def testOverlayDrawSuppressesRayTracingGeometry(self):
+        for method in ('RendererMetal::drawVBO',
+                       'RendererMetal::drawVBOIndexed',
+                       'RendererMetal::drawSphereImpostors',
+                       'RendererMetal::drawCylinderImpostors'):
+            body = strip_block_comments(cpp_function(self.mm, method))
+            self.assertRegex(body, r'if\s*\([^;]*!_overlayDraw[^;]*rtNoteGeometry',
+                             f'{method} must guard rtNoteGeometry with !_overlayDraw')
+
+    def testSceneRenderAllObjectSetsOverlayDraw(self):
+        body = cpp_function(self.scene_render, 'SceneRenderAllObject')
+        self.assertIn('SceneObjectIsOverlay', body)
+        self.assertIn('setOverlayDraw(true)', body)
+        self.assertIn('setOverlayDraw(false)', body)
+
+    def testRendererBaseHasSetOverlayDraw(self):
+        self.assertIn('virtual void setOverlayDraw(bool', self.renderer_h)
+        self.assertIn('void setOverlayDraw(bool overlay) override', self.header)
+        self.assertIn('bool _overlayDraw = false;', self.header)
 
 
 class TestMapPass(ShadowMSLCase):
