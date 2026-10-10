@@ -294,6 +294,62 @@ final class LightsEditTests: XCTestCase {
         XCTAssertEqual(controller.value(.orbit), 178)
     }
 
+    func testNudgeWritesThroughTheStepper() throws {
+        XCTAssertEqual(controller.nudge(LightNudge(parameter: .orbit, delta: 1)), .ok)
+        var write = try XCTUnwrap(store.numberWrites.last)
+        XCTAssertEqual(write.index, 0)
+        XCTAssertEqual(write.field, "orbit")
+        XCTAssertEqual(write.value, 1)
+        XCTAssertEqual(controller.value(.orbit), 1)
+        XCTAssertEqual(controller.nudge(LightNudge(parameter: .pitch, delta: 10)), .ok)
+        write = try XCTUnwrap(store.numberWrites.last)
+        XCTAssertEqual(write.index, 0)
+        XCTAssertEqual(write.field, "pitch")
+        XCTAssertEqual(write.value, 40, "key starts at pitch 30")
+        XCTAssertEqual(controller.value(.pitch), 40)
+        XCTAssertTrue(store.performed.isEmpty, "no Python")
+    }
+
+    func testNudgeWrapsOrbitAndClampsPitch() {
+        XCTAssertEqual(controller.set(.orbit, 179.5), .ok)
+        XCTAssertEqual(controller.nudge(LightNudge(parameter: .orbit, delta: 1)), .ok)
+        XCTAssertEqual(controller.value(.orbit), -179.5)
+        XCTAssertEqual(controller.set(.pitch, 85), .ok)
+        XCTAssertEqual(controller.nudge(LightNudge(parameter: .pitch, delta: 10)), .ok)
+        XCTAssertEqual(controller.value(.pitch), 90)
+    }
+
+    func testNudgeCountsAsAnEdit() {
+        let orbit = LightNudge(parameter: .orbit, delta: 1)
+        let pitch = LightNudge(parameter: .pitch, delta: 1)
+        let start = controller.editCount
+        controller.nudge(orbit)
+        XCTAssertEqual(controller.editCount, start + 1)
+        controller.nudge(orbit)
+        XCTAssertEqual(controller.editCount, start + 1, "a quick repeat on one field is one edit")
+        store.clock += 1
+        controller.nudge(orbit)
+        XCTAssertEqual(controller.editCount, start + 2, "after the run gap it counts again")
+        controller.nudge(pitch)
+        XCTAssertEqual(controller.editCount, start + 3, "the other field counts")
+    }
+
+    func testNudgeAddsToAFreshValue() {
+        XCTAssertEqual(controller.set(.orbit, 10), .ok)
+        store.lights[0].orbit = 50
+        store.clock += 1
+        XCTAssertEqual(controller.nudge(LightNudge(parameter: .orbit, delta: 1)), .ok)
+        XCTAssertEqual(store.lights[0].orbit, 51)
+        XCTAssertEqual(controller.value(.orbit), 51)
+    }
+
+    func testNudgeWithNoSelectionWritesNothing() {
+        controller.end()
+        let writes = store.numberWrites.count
+        XCTAssertEqual(controller.nudge(LightNudge(parameter: .orbit, delta: 1)), .badIndex)
+        XCTAssertEqual(store.numberWrites.count, writes)
+    }
+
     func testStepOnAPinnedLightReadsTheEyeNow() {
         XCTAssertEqual(controller.setPinned(true), .ok)
         // The camera turned: key's eye placement moved, no frame rendered yet.
