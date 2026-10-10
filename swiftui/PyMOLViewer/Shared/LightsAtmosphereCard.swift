@@ -5,8 +5,9 @@
 // LightsAtmosphere.swift. Its header holds the On/Off switch (a LightsChip, as
 // the inspector's Shadow and Pin); its rows are Haze, Dust, Dust size and Dust
 // speed (on a square-root track), each a slider with a typed field, and
-// Scatter (g) under a disclosure. One hint at a time says why the air may not
-// show (AtmosphereHint); a collapsed card shows it as a header glyph, so a
+// Scatter (g) and the dust Seed (a whole-number field, #740) under a
+// disclosure. One hint at a time says why the air may not show
+// (AtmosphereHint); a collapsed card shows it as a header glyph, so a
 // collapsed card is always one header row tall (44 pt on iOS).
 // - Slider ticks and typed values write through the typed air API
 //   (`setAirIfChanged` / `setAir` -> the bridge setter at index -1): no Python
@@ -69,6 +70,8 @@ enum AtmosphereCardIDs {
     static let collapse = "lights.atmosphere.collapse"
     static let hint = "lights.atmosphere.hint"
     static let scatterDisclosure = "lights.atmosphere.scatter.disclosure"
+    static let seedField = "lights.atmosphere.seed.field"
+    static let seedRow = "lights.atmosphere.row.seed"
     static let section = "lights.atmosphere.section"
     static let header = "lights.atmosphere.header"
     static let rows = "lights.atmosphere.rows"
@@ -89,6 +92,7 @@ enum AtmosphereCardIDs {
         "\(spoken), \(shown ? "shown" : "hidden")"
     }
     static func fieldLabel(_ p: AirParameter) -> String { "\(p.label) value" }
+    static let seedFieldLabel = "Dust seed value"
 
     static let sheetButtonLabel = "Atmosphere"
     static let sheetButtonHint = "Shows the haze and dust settings"
@@ -283,6 +287,7 @@ struct LightsAtmosphereCard: View {
                             .font(.system(size: 11))
                             .foregroundColor(style.text.opacity(0.6))
                             .fixedSize(horizontal: false, vertical: true)
+                        seedRow(state)
                     }
                 }
                 .disabled(!state.canEdit)
@@ -312,6 +317,18 @@ struct LightsAtmosphereCard: View {
         if let row = state.row(p), let field = controller.airField(p) {
             AtmosphereSliderRow(controller: controller, row: row, field: field, style: style)
                 .id(AtmosphereCardIDs.row(p))
+        }
+    }
+
+    @ViewBuilder
+    private func seedRow(_ state: AtmosphereCardState) -> some View {
+        if let seed = state.seed {
+            AtmosphereSeedRow(controller: controller, row: seed, style: style)
+                .id(AtmosphereCardIDs.seedRow)
+            Text(AtmosphereCardState.seedNote)
+                .font(.system(size: 11))
+                .foregroundColor(style.text.opacity(0.6))
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -440,6 +457,63 @@ struct AtmosphereSliderRow: View {
             controller.setAir(p, value)
         }
         editor.show(controller.airValue(p))
+    }
+}
+
+/// One air row for the dust pattern's whole-number seed: label and typed field
+/// (no slider).
+struct AtmosphereSeedRow: View {
+    let controller: LightsController
+    let row: AtmosphereCardState.SeedRow
+    let style: LightsBarStyle
+
+    @State private var editor = AirSeedEditor()
+    @FocusState private var focused: Bool
+    @Environment(\.lightsTouchMinimum) private var touchMinimum
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(AtmosphereCardState.seedLabel)
+                .font(InspectorMetrics.font)
+                .foregroundColor(style.text.opacity(0.8))
+                .lineLimit(1)
+                .frame(width: AtmosphereCardMetrics.labelWidth, alignment: .leading)
+                .accessibilityHidden(true)
+            Spacer(minLength: 4)
+            TextField(AtmosphereCardState.seedLabel, text: textBinding)
+                .textFieldStyle(.roundedBorder)
+                .font(InspectorMetrics.valueFont)
+                .multilineTextAlignment(.trailing)
+                .frame(width: InspectorMetrics.fieldWidth)
+                .focused($focused)
+                .onSubmit { commit() }
+                .lightsNumberKeyboard()
+                .accessibilityLabel(AtmosphereCardIDs.seedFieldLabel)
+                .accessibilityIdentifier(AtmosphereCardIDs.seedField)
+        }
+        .frame(minHeight: touchMinimum)
+        .onAppear { editor.show(row.value) }
+        .onChange(of: row.value) { editor.show(row.value) }
+        .onChange(of: focused) { _, now in
+            if now { editor.begin() } else { commit() }
+        }
+        .preference(key: LightsFieldFocusKey.self, value: focused)
+        .preference(key: LightsSheetScrollTargetKey.self, value: focused ? AtmosphereCardIDs.seedRow : nil)
+    }
+
+    private var textBinding: Binding<String> {
+        Binding(get: { editor.text }, set: { new in
+            guard new != editor.text else { return }
+            if !editor.isEditing { editor.begin() }
+            editor.type(new)
+        })
+    }
+
+    private func commit() {
+        if let value = editor.commit() {
+            controller.setAirSeed(value)
+        }
+        editor.show(controller.airSeed)
     }
 }
 
