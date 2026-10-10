@@ -156,11 +156,4 @@ final class ScriptedLaunchTests: XCTestCase {
         ]
         XCTAssertFalse(PyMOLEngine.isScriptedLaunch(environment: env))
     }
-
-    func testScriptSetsOutlineOnlyWhenTheScriptMentionsIt() {
-        XCTAssertTrue(PyMOLEngine.scriptSetsOutline(environment: ["PYMOL_AUTOCMD": "load x.pdb; set metal_outline, 1"]))
-        XCTAssertFalse(PyMOLEngine.scriptSetsOutline(environment: ["PYMOL_AUTOCMD": "set metal_shadows, 0"]))
-        XCTAssertFalse(PyMOLEngine.scriptSetsOutline(environment: ["PYMOL_AUTOLOAD": "1crn.pdb"]))
-        XCTAssertFalse(PyMOLEngine.scriptSetsOutline(environment: [:]))
-    }
 }

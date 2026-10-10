@@ -4725,9 +4725,10 @@ struct ContentView: View {
         // suppression AND of the (historically flaky) compiled core default —
         // so a stale core / cached theme can never surface an outline the user
         // didn't ask for. Users can still enable it live (Display ▸ Effects);
-        // this only governs the default at launch. Skipped when PYMOL_AUTOCMD
-        // sets metal_outline itself (#671), so the script's value wins.
-        if !engine.scriptSetsOutline {
+        // this only governs the default at launch. Skipped on a scripted launch
+        // (#671): the engine forced it before PYMOL_AUTOCMD ran, so the
+        // script's own value, if any, wins.
+        if !engine.isScriptedLaunch {
             engine.runCommand("set metal_outline, 0")
         }
         // Load ~/.raymolrc(.py) LAST, after the theme defaults above, so a

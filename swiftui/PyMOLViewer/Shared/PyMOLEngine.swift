@@ -615,6 +615,15 @@ final class PyMOLEngine: ObservableObject {
         let tmp = NSTemporaryDirectory()
         runPython("from pymol import cmd as _c; _c.set('fetch_path', '\(tmp)')")
 
+        // A scripted launch (#671) skips the launch theme's render toggles and
+        // its forced outline-off (ContentView.applyPersistedTheme), so the
+        // script owns that state. Force the outline default here instead,
+        // BEFORE the script runs, so a script that sets metal_outline (directly
+        // or through run / @file) wins and one that does not still starts off.
+        if isScriptedLaunch {
+            runCommand("set metal_outline, 0")
+        }
+
         // Test affordance (no-op unless env var set): auto-load a bundled
         // structure so a screenshot has content without UI typing.
         if let f = ProcessInfo.processInfo.environment["PYMOL_AUTOLOAD"] {
@@ -1660,17 +1669,6 @@ final class PyMOLEngine: ObservableObject {
     /// True when this process was launched with PYMOL_AUTOCMD or PYMOL_AUTOLOAD (#671).
     var isScriptedLaunch: Bool {
         Self.isScriptedLaunch(environment: ProcessInfo.processInfo.environment)
-    }
-
-    /// Whether PYMOL_AUTOCMD sets metal_outline itself, so the launch's forced
-    /// `set metal_outline, 0` must not clobber it (#671). A script that does not
-    /// mention it still gets the forced default.
-    static func scriptSetsOutline(environment: [String: String]) -> Bool {
-        environment["PYMOL_AUTOCMD"]?.lowercased().contains("metal_outline") ?? false
-    }
-
-    var scriptSetsOutline: Bool {
-        Self.scriptSetsOutline(environment: ProcessInfo.processInfo.environment)
     }
 
     // MARK: - Theme
