@@ -156,4 +156,21 @@ final class ScriptedLaunchTests: XCTestCase {
         ]
         XCTAssertFalse(PyMOLEngine.isScriptedLaunch(environment: env))
     }
+
+    /// The launch-time theme rule itself (#671), as applyPersistedTheme uses it.
+    func testLaunchThemePlan() {
+        typealias Plan = PyMOLEngine.LaunchThemePlan
+        // Fresh launch: the theme sets the toggles and the outline default.
+        XCTAssertEqual(PyMOLEngine.launchThemePlan(scripted: false, sessionOwnsRenderState: false),
+                       Plan(applyRenderToggles: true, forceOutlineOff: true))
+        // Restored/opened session: its toggles win, the outline default still applies.
+        XCTAssertEqual(PyMOLEngine.launchThemePlan(scripted: false, sessionOwnsRenderState: true),
+                       Plan(applyRenderToggles: false, forceOutlineOff: true))
+        // Scripted launch: the script's metal_shadows / metal_raytrace /
+        // metal_outline survive the theme (neither toggles nor outline-off).
+        XCTAssertEqual(PyMOLEngine.launchThemePlan(scripted: true, sessionOwnsRenderState: false),
+                       Plan(applyRenderToggles: false, forceOutlineOff: false))
+        XCTAssertEqual(PyMOLEngine.launchThemePlan(scripted: true, sessionOwnsRenderState: true),
+                       Plan(applyRenderToggles: false, forceOutlineOff: false))
+    }
 }
