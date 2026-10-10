@@ -85,7 +85,7 @@ bool LightAirAnimating(const LightAir& air, double pinned, bool playing,
 }
 
 std::optional<LightAirBlock> LightAirPack(const LightAirSource& source,
-    double clock, int resolution, int shadowFilter)
+    double clock, int resolution, int shadowFilter, bool alpha)
 {
   const LightAir& air = source.air;
   if (!LightAirActive(air))
@@ -116,6 +116,7 @@ std::optional<LightAirBlock> LightAirPack(const LightAirSource& source,
   b.motion[3] = float(shadowFilter == kLightAirLookup ? kLightAirLookup
                                                       : kLightAirOneTap);
   b.view[0] = resolution == kLightAirHalf ? 0.5f : 1.0f;
+  b.view[2] = alpha ? 1.0f : 0.0f;
   return b;
 }
 

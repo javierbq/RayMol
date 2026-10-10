@@ -2132,8 +2132,11 @@ NOTES
     Settings: metal_light_air_resolution (0 the platform default, half on
     the Mac and on iOS; 1 full; 2 half), metal_light_air_time (below 0
     the dust follows its clock; 0 or more pins it, in seconds, for
-    repeatable renders) and metal_light_air_shadow_filter (0 the default,
-    1 one shadow tap per haze step, 2 the 3x3 lookup).
+    repeatable renders), metal_light_air_shadow_filter (0 the default,
+    1 one shadow tap per haze step, 2 the 3x3 lookup) and
+    metal_light_air_alpha (0 the default; 1 lets the air count toward
+    alpha in a transparent-background export, so haze and dust over empty
+    background are kept instead of cut out).
 
 PYMOL API
 

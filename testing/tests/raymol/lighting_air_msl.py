@@ -74,6 +74,7 @@ ROOT = os.path.normpath(os.path.join(HERE, os.pardir, os.pardir, os.pardir))
 METAL_MM = os.path.join(ROOT, 'layerGraphics', 'metal', 'RendererMetal.mm')
 METAL_H = os.path.join(ROOT, 'layerGraphics', 'metal', 'RendererMetal.h')
 AIR_H = os.path.join(ROOT, 'layer1', 'LightAir.h')
+AIR_CPP = os.path.join(ROOT, 'layer1', 'LightAir.cpp')
 AIR_BLOCK_H = os.path.join(ROOT, 'layer1', 'LightAirBlock.h')
 SCENE_RENDER = os.path.join(ROOT, 'layer1', 'SceneRender.cpp')
 SCENE_LIGHTS = os.path.join(ROOT, 'layer1', 'SceneLights.cpp')
@@ -167,6 +168,26 @@ STATEMENTS_624 = {
     # beginFrame clears the frame's HDR colour with the rig (Part 4)
     'RendererMetal::beginFrame': re.compile(r'_lightHdrOn\s*=\s*false\s*;'),
 }
+# #684's (metal_light_air_alpha) statements in runPostChain, taken out the same
+# way (exactly one match each): the frame's flag is cleared before the air,
+# and the export's matte takes the air's alpha right after the export pass.
+STATEMENTS_684 = (
+    re.compile(r'_airAlphaDrawn\s*=\s*false\s*;'),
+    re.compile(r'if\s*\(\s*_airAlphaDrawn\s*\)\s*sceneSrc\s*=\s*'
+               r'encodeAirAlphaMerge\(sceneSrc\)\s*;'),
+)
+
+
+def without_air_alpha_684(body):
+    """runPostChain's `body` with #684's two statements taken out. Returns
+    (text, matches): the number of times each applied."""
+    matches = []
+    for statement in STATEMENTS_684:
+        body, n = statement.subn('', body)
+        matches.append(n)
+    return body, matches
+
+
 # #624's exposure hand-off in runPostChain (Part 4): #13's pass exposes at
 # postExposure, 1 in an HDR rig frame (the rig shaders apply the exposure)
 # and metal_exposure otherwise. With the declaration taken out (exactly one
@@ -270,6 +291,11 @@ HDR_EDITS_624 = (
 )
 
 
+# #684's functions in kAirSrc (taken out by without_hdr_624, so the literal
+# is what it was without them).
+AIR_ALPHA_FUNCTIONS_684 = ('post_air_alpha', 'post_air_alpha_merge')
+
+
 def without_hdr_624(code):
     """`code` (comments stripped: a literal, or one function's signature or
     body) without whitespace and with #624's shader edits put back. Returns
@@ -286,6 +312,13 @@ def without_hdr_624(code):
     for name, new, old in HDR_EDITS_624:
         counts[name] = text.count(new)
         text = text.replace(new, old)
+    # #684's two export-alpha passes (metal_light_air_alpha), in kAirSrc only
+    for name, (sig, body) in msl_functions(code).items():
+        if name in AIR_ALPHA_FUNCTIONS_684:
+            whole = squash(sig + body)
+            counts['alpha_functions'] = (counts.get('alpha_functions', 0)
+                                         + text.count(whole))
+            text = text.replace(whole, '')
     return text, counts
 
 # #616's shadow tokens (lighting_shadow_msl.py): never in another library.
@@ -404,6 +437,8 @@ class TestMasterUnchanged(AirMSLCase):
                 self.assertEqual((declarations, uses), (1, POST_EXPOSURE_USES_624))
                 body, choices, builds = without_rt_rig_hdr_624(body)
                 self.assertEqual((choices, builds), (1, 1))
+                body, alpha = without_air_alpha_684(body)
+                self.assertEqual(alpha, [1, 1])
             self.assertEqual(digest(body), want, name)
 
 
@@ -453,8 +488,8 @@ class TestLibrary(AirMSLCase):
         self.assertNotIn('newRenderPipelineStateWithDescriptor:', ensure)
         self.assertEqual(pipeline.count('newRenderPipelineStateWithDescriptor:'), 1)
         # the definition, 3 calls (#624: the full and upsample calls each in a
-        # loop over both kLightHdr variants)
-        self.assertEqual(self.code.count('newAirPipeline('), 4)
+        # loop over both kLightHdr variants), and #684's two
+        self.assertEqual(self.code.count('newAirPipeline('), 6)
         self.assertIn('pd.rasterSampleCount = 1;', pipeline)
         self.assertIn('pd.colorAttachments[0].pixelFormat = format;', pipeline)
         self.assertIn('pd.vertexFunction = vfn;', pipeline)
@@ -478,7 +513,11 @@ class TestLibrary(AirMSLCase):
             [('_airFullPipeline[v]', 'post_air_full', 'MTLPixelFormatBGRA8Unorm', 'v == 1'),
              ('_airMarchPipeline', 'post_air_march', 'MTLPixelFormatRGBA16Float', 'false'),
              ('_airUpsamplePipeline[v]', 'post_air_upsample', 'MTLPixelFormatBGRA8Unorm',
-              'v == 1')])
+              'v == 1'),
+             # #684 (metal_light_air_alpha): the export alpha's two passes
+             ('_airAlphaPipeline', 'post_air_alpha', 'MTLPixelFormatR8Unorm', 'false'),
+             ('_airAlphaMergePipeline', 'post_air_alpha_merge',
+              'MTLPixelFormatBGRA8Unorm', 'false')])
         self.assertEqual(len(re.findall(r'for \(int v = 0; v < 2; \+\+v\)\s*'
                                         r'_air(?:Full|Upsample)Pipeline\[v\] = '
                                         r'newAirPipeline\(', ensure)), 2)
@@ -515,7 +554,9 @@ class TestLibrary(AirMSLCase):
                      'post_air_visibility', 'post_air_light', 'post_air_ray',
                      'post_air_haze', 'post_air_dust', 'post_air_term',
                      'post_air_finish', 'post_air_full', 'post_air_stop',
-                     'post_air_march', 'post_air_upsample'):
+                     'post_air_march', 'post_air_upsample',
+                     # #684 (metal_light_air_alpha)
+                     'post_air_alpha', 'post_air_alpha_merge'):
             self.assertIn(name, self.functions)
         self.assertEqual(sorted(re.findall(r'\bstruct\s+(\w+)', self.air_code)),
                          ['AirVOut', 'LightAirU'])
@@ -1031,6 +1072,120 @@ AIR_DRAW_EDITS = (
     (re.compile(r'lastFrameTime = CACurrentMediaTime\(\)'), ''),
 )
 AIR_BRIDGE_CALLS = {'INST', 'PyMOL_GetGlobals', 'SceneLightsAirAnimating'}
+
+
+class TestAirAlpha(AirMSLCase):
+    """#684, metal_light_air_alpha: a transparent export keeps the air over
+    empty background in its alpha. Off (the default) none of it runs; the
+    pixels cannot be checked here (no GPU), only the source."""
+
+    def testAlphaPassIsWhatTheAirAdded(self):
+        sig, body = self.fn('post_air_alpha')
+        self.assertTrue(sig.lstrip().startswith('fragment float4 post_air_alpha('))
+        for arg in (r'texture2d<float>\s+beforeTex\s*\[\[\s*texture\(0\)\s*\]\]',
+                    r'texture2d<float>\s+afterTex\s*\[\[\s*texture\(1\)\s*\]\]'):
+            self.assertRegex(sig, arg)
+        self.assertNotIn('.sample(', body)
+        # the composite minus the colour it was composited over, never
+        # negative, as a luminance clamped to 1
+        self.assertIn('max(afterTex.read(px).rgb - beforeTex.read(px).rgb', body)
+        self.assertIn('saturate(dot(add, float3(0.2126, 0.7152, 0.0722)))', body)
+
+    def testMergeKeepsColourAndTakesTheLargerAlpha(self):
+        sig, body = self.fn('post_air_alpha_merge')
+        self.assertTrue(sig.lstrip().startswith('fragment float4 post_air_alpha_merge('))
+        self.assertRegex(sig, r'texture2d<float>\s+matteTex\s*\[\[\s*texture\(0\)\s*\]\]')
+        self.assertRegex(sig, r'texture2d<float>\s+airTex\s*\[\[\s*texture\(1\)\s*\]\]')
+        self.assertNotIn('.sample(', body)
+        self.assertIn('return float4(m.rgb, max(m.a, airTex.read(px).r));', body)
+
+    def testCompiles(self):
+        """The assembled air library (the one ensureAirPipelines builds)
+        compiles with Apple's Metal compiler, when this machine has one."""
+        import shutil
+        import subprocess
+        import tempfile
+        if not shutil.which('xcrun'):
+            self.skipTest('no xcrun')
+        probe = subprocess.run(['xcrun', '-sdk', 'macosx', '--find', 'metal'],
+                               capture_output=True, text=True)
+        if probe.returncode != 0:
+            self.skipTest('no Metal compiler')
+        with tempfile.TemporaryDirectory() as tmp:
+            src = os.path.join(tmp, 'air.metal')
+            with open(src, 'w') as f:
+                f.write('\n'.join((self.msl['kEyeReconSrc'], self.msl['kMaterialSrc'],
+                                   self.air)))
+            run = subprocess.run(['xcrun', '-sdk', 'macosx', 'metal', '-c', src,
+                                  '-o', os.path.join(tmp, 'air.air')],
+                                 capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stderr[-2000:])
+
+    def testBlockFlagIsViewZ(self):
+        pack = cpp_function(read(AIR_CPP), 'LightAirPack')
+        self.assertIn('b.view[2] = alpha ? 1.0f : 0.0f;', pack)
+        self.assertRegex(read(AIR_CPP),
+                         r'LightAirPack\(const LightAirSource& source,\s*double clock, '
+                         r'int resolution, int shadowFilter, bool alpha\)')
+        self.assertIn('z air counts toward', read(AIR_BLOCK_H))
+        self.assertIn('bool alpha = false', read(AIR_H))
+        # the scene reads the setting once, with the air's other settings
+        body = cpp_function(read(SCENE_LIGHTS), 'SceneLightsAir')
+        self.assertEqual(body.count('cSetting_metal_light_air_alpha'), 1)
+        self.assertRegex(body, r'cSetting_metal_light_air_alpha\)\s*==\s*1')
+
+    def testEncodedOnlyForATransparentOffscreenFrameThatAsked(self):
+        enc = self.body('RendererMetal::encodeAirPass')
+        self.assertIn('encodeAirAlpha(sceneSrc, dst, air.view[2] > 0.5f);', enc)
+        # after the composite, before the frame's result is returned
+        self.assertLess(enc.index('[ea endEncoding];'), enc.index('encodeAirAlpha('))
+        self.assertRegex(enc, r'encodeAirAlpha\([^;]*\);\s*return dst;\s*\}$')
+        alpha = self.body('RendererMetal::encodeAirAlpha')
+        self.assertRegex(alpha, r'^\{\s*if \(!wanted \|\| !_offscreen \|\| !\(_clearA < 0\.5f\) '
+                                r'\|\| !_airAlphaPipeline \|\|\s*!_airAlphaMergePipeline '
+                                r'\|\| !ensureAirAlpha\(after\.width, after\.height\)\)\s*return;')
+        # the colour before and after the composite, into the R8 target; the
+        # flag is set only once it is encoded
+        self.assertIn('ad.colorAttachments[0].texture = _airAlphaTex;', alpha)
+        self.assertIn('[eb setFragmentTexture:before atIndex:0];', alpha)
+        self.assertIn('[eb setFragmentTexture:after atIndex:1];', alpha)
+        self.assertEqual(alpha.count('_airAlphaDrawn = true;'), 1)
+        self.assertGreater(alpha.index('_airAlphaDrawn = true;'), alpha.index('[eb endEncoding];'))
+        self.assertEqual(len(re.findall(r'(?<!::)\bencodeAirAlpha\(', self.code)), 1)
+
+    def testTextureIsR8AndKeptWhileTheSizeHolds(self):
+        tex = self.body('RendererMetal::ensureAirAlpha')
+        self.assertRegex(tex, r'texture2DDescriptorWithPixelFormat:MTLPixelFormatR8Unorm\s*'
+                              r'width:w height:h mipmapped:NO\]')
+        self.assertIn('d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;', tex)
+        self.assertIn('d.storageMode = MTLStorageModePrivate;', tex)
+        self.assertRegex(tex, r'^\{\s*if \(w == _airAlphaW && h == _airAlphaH\)\s*'
+                              r'return _airAlphaTex != nil;\s*\[_airAlphaTex release\];')
+        self.assertEqual(tex.count('newTextureWithDescriptor:'), 1)
+        self.assertEqual(self.code.count('[_airAlphaTex release]'), 2)
+        for name in ('_airAlphaPipeline', '_airAlphaMergePipeline'):
+            self.assertIn('[%s release];' % name, self.body('RendererMetal::~RendererMetal'))
+            self.assertRegex(self.header, r'id<MTLRenderPipelineState> %s = nil;' % name)
+        self.assertRegex(self.header, r'id<MTLTexture> _airAlphaTex = nil;')
+        self.assertRegex(self.header, r'bool _airAlphaDrawn = false;')
+
+    def testMergeFollowsTheExportMatteInRunPostChain(self):
+        post = self.body('RendererMetal::runPostChain')
+        # cleared before the air, so a frame without it never merges
+        clear = post.index('_airAlphaDrawn = false;')
+        self.assertLess(clear, post.index('encodeAirPass('))
+        merge = re.search(r'if\s*\(\s*_airAlphaDrawn\s*\)\s*sceneSrc = '
+                          r'encodeAirAlphaMerge\(sceneSrc\);', post)
+        self.assertIsNotNone(merge)
+        self.assertEqual(depth_at(post, merge.start()), 1)
+        # after the export's own matte, before the final pass
+        self.assertGreater(merge.start(), post.index('_exportAlphaPipeline'))
+        self.assertLess(merge.end(), post.index('if (!_offscreen) {'))
+        body = self.body('RendererMetal::encodeAirAlphaMerge')
+        self.assertIn('[em setFragmentTexture:matte atIndex:0];', body)
+        self.assertIn('[em setFragmentTexture:_airAlphaTex atIndex:1];', body)
+        self.assertIn('id<MTLTexture> dst = (matte == _sceneColor) ? _postColor : _sceneColor;',
+                      body)
 
 
 def _load_lighting_bridge():

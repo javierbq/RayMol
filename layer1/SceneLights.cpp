@@ -385,8 +385,11 @@ std::optional<pymol::LightAirBlock> SceneLightsAir(PyMOLGlobals* G,
   const int filter = pymol::LightAirShadowFilter(
       SettingGetGlobal_i(G, cSetting_metal_light_air_shadow_filter),
       kSceneLightsMobile);
+  // #684: 1 only for exactly 1; read with the rest, only while the air draws.
+  const bool alpha =
+      SettingGetGlobal_i(G, cSetting_metal_light_air_alpha) == 1;
   return pymol::LightAirPack(
-      *frame.airSource, pymol::LightAirClock(in), resolution, filter);
+      *frame.airSource, pymol::LightAirClock(in), resolution, filter, alpha);
 }
 
 bool SceneLightsAirAnimating(PyMOLGlobals* G)

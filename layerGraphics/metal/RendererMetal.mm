@@ -610,6 +610,9 @@ RendererMetal::~RendererMetal()
   [_airFullPipeline[0] release];      [_airFullPipeline[1] release];
   [_airUpsamplePipeline[0] release];  [_airUpsamplePipeline[1] release];
   [_airMarchPipeline release];
+  [_airAlphaPipeline release];
+  [_airAlphaMergePipeline release];
+  [_airAlphaTex release];
   [_airTerm release];
   [_blitPipeline release];            [_ssaoPipeline release];
   [_fxaaPipeline release];            [_outlinePipeline release];
@@ -2161,7 +2164,8 @@ struct LightAirU {
                   // centre), w dust cell (A)
   float4 motion;  // x dust time (s), y mote radius (A), z defocus gain
                   // (per A), w haze shadow filter (1 one tap, 2 the lookup)
-  float4 view;    // x resolution scale (1 | 0.5), y orthographic 0|1
+  float4 view;    // x resolution scale (1 | 0.5), y orthographic 0|1, z air
+                  // alpha for a transparent export 0|1 (read by the host)
   float4 proj;    // the projection terms A, B, X, Y
 };
 
@@ -2546,6 +2550,33 @@ fragment float4 post_air_upsample(AirVOut in [[stage_in]],
   }
   const float3 a = wsum > 1e-4 ? sum / wsum : nearest;
   return float4(post_air_finish(c.rgb, a, rig.tone.x), c.a);
+}
+
+// What the air added to a pixel, as an alpha (#684, metal_light_air_alpha): the
+// luminance of the composite minus the colour it was composited over, never
+// negative, clamped to 1. Run after the composite (full or upsample, whichever
+// drew), so it sees exactly the light the air put on screen under this frame's
+// tone arm, and needs neither the term nor the march. Read by the transparent
+// export's matte; the live view and an opaque export never run it.
+fragment float4 post_air_alpha(AirVOut in [[stage_in]],
+    texture2d<float> beforeTex [[texture(0)]],
+    texture2d<float> afterTex [[texture(1)]]) {
+  const uint2 px = uint2(in.position.xy);
+  const float3 add = max(afterTex.read(px).rgb - beforeTex.read(px).rgb,
+                         float3(0.0));
+  return float4(saturate(dot(add, float3(0.2126, 0.7152, 0.0722))), 0.0, 0.0, 1.0);
+}
+
+// The transparent export's matte with the air in it (#684): the export's
+// colour, and alpha the larger of its matte and the air's alpha. Where the
+// matte is already 1 (geometry) nothing changes. Run only for a transparent
+// export of a frame whose air drew post_air_alpha.
+fragment float4 post_air_alpha_merge(AirVOut in [[stage_in]],
+    texture2d<float> matteTex [[texture(0)]],
+    texture2d<float> airTex [[texture(1)]]) {
+  const uint2 px = uint2(in.position.xy);
+  const float4 m = matteTex.read(px);
+  return float4(m.rgb, max(m.a, airTex.read(px).r));
 }
 )";
 
@@ -5267,6 +5298,7 @@ void RendererMetal::runPostChain()
   // (both read the same raster depth, rig and maps, so they get the same air),
   // and before the OIT resolve, so glass and transparent surfaces composite
   // over it. Only while the frame has air and the rig is on.
+  _airAlphaDrawn = false;
   if (_lightAirOn && _lightRigOn && _postColor && _sceneDepth &&
       ensureAirPipelines())
     sceneSrc = encodeAirPass(sceneSrc);
@@ -5585,6 +5617,11 @@ void RendererMetal::runPostChain()
     [ea endEncoding];
     sceneSrc = dst;
   }
+
+  // metal_light_air_alpha (#684): the air counts toward the matte. Only a
+  // transparent export of a frame whose air pass drew its alpha (setting on).
+  if (_airAlphaDrawn)
+    sceneSrc = encodeAirAlphaMerge(sceneSrc);
 
   // Final pass → drawable: FXAA if available, else a 1:1 blit.
   // PYMOL_NO_AA forces the blit (A/B testing + user escape hatch).
@@ -12649,6 +12686,12 @@ bool RendererMetal::ensureAirPipelines()
       }
     }
   }
+  // #684: the alpha pass, R8, no constants. Its own failure only costs the
+  // option (logged by newAirPipeline), never the air.
+  _airAlphaPipeline = newAirPipeline(_device, lib, vfn, @"post_air_alpha",
+                                     MTLPixelFormatR8Unorm, false);
+  _airAlphaMergePipeline = newAirPipeline(_device, lib, vfn, @"post_air_alpha_merge",
+                                          MTLPixelFormatBGRA8Unorm, false);
   // MRC: the pipeline states keep what they need.
   [vfn release]; [lib release];
   // The maps' stand-in, in the same single attempt.
@@ -12661,6 +12704,10 @@ bool RendererMetal::ensureAirPipelines()
     }
     [_airMarchPipeline release];
     _airMarchPipeline = nil;
+    [_airAlphaPipeline release];
+    _airAlphaPipeline = nil;
+    [_airAlphaMergePipeline release];
+    _airAlphaMergePipeline = nil;
   }
   return _airFullPipeline[h] != nil;
 }
@@ -12788,7 +12835,81 @@ id<MTLTexture> RendererMetal::encodeAirPass(id<MTLTexture> sceneSrc)
     [ea setFragmentTexture:_airTerm atIndex:kAirTermTextureIndex];
   [ea drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
   [ea endEncoding];
+  encodeAirAlpha(sceneSrc, dst, air.view[2] > 0.5f);
   return dst;
+}
+
+// metal_light_air_alpha (#684): what the air added to a frame, as an alpha
+// (post_air_alpha), for the transparent export's matte (encodeAirAlphaMerge).
+// `before` is the colour the composite read (still intact: `after` was the
+// other ping-pong target) and `after` what it wrote. Only a transparent
+// offscreen frame whose block asked for it (`wanted`: view.z) draws it, so
+// with the setting off (the default), in the live view and in an opaque
+// export nothing here runs and _airAlphaDrawn stays false.
+void RendererMetal::encodeAirAlpha(id<MTLTexture> before, id<MTLTexture> after,
+                                   bool wanted)
+{
+  if (!wanted || !_offscreen || !(_clearA < 0.5f) || !_airAlphaPipeline ||
+      !_airAlphaMergePipeline || !ensureAirAlpha(after.width, after.height))
+    return;
+  MTLRenderPassDescriptor* ad = [MTLRenderPassDescriptor renderPassDescriptor];
+  ad.colorAttachments[0].texture = _airAlphaTex;
+  ad.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+  ad.colorAttachments[0].storeAction = MTLStoreActionStore;
+  id<MTLRenderCommandEncoder> eb = [_cmdBuffer renderCommandEncoderWithDescriptor:ad];
+  [eb setRenderPipelineState:_airAlphaPipeline];
+  [eb setFragmentTexture:before atIndex:0];
+  [eb setFragmentTexture:after atIndex:1];
+  [eb drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+  [eb endEncoding];
+  _airAlphaDrawn = true;
+}
+
+// The export's matte with the air in it (#684): `matte` is the transparent
+// export's output (colour, alpha from depth); the result has the larger of
+// that alpha and the air's. Called only when _airAlphaDrawn.
+id<MTLTexture> RendererMetal::encodeAirAlphaMerge(id<MTLTexture> matte)
+{
+  if (!_airAlphaDrawn || !_airAlphaMergePipeline || !_airAlphaTex)
+    return matte;
+  id<MTLTexture> dst = (matte == _sceneColor) ? _postColor : _sceneColor;
+  MTLRenderPassDescriptor* pd = [MTLRenderPassDescriptor renderPassDescriptor];
+  pd.colorAttachments[0].texture = dst;
+  pd.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+  pd.colorAttachments[0].storeAction = MTLStoreActionStore;
+  id<MTLRenderCommandEncoder> em = [_cmdBuffer renderCommandEncoderWithDescriptor:pd];
+  [em setRenderPipelineState:_airAlphaMergePipeline];
+  [em setFragmentTexture:matte atIndex:0];
+  [em setFragmentTexture:_airAlphaTex atIndex:1];
+  [em drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+  [em endEncoding];
+  return dst;
+}
+
+// The air's alpha target (#684): R8Unorm, w x h, private, made on the first
+// transparent export that asks for it and re-made on a size change; a size it
+// could not be made for is logged once and not retried until the size changes
+// (the export then keeps today's matte).
+bool RendererMetal::ensureAirAlpha(NSUInteger w, NSUInteger h)
+{
+  if (w == _airAlphaW && h == _airAlphaH)
+    return _airAlphaTex != nil;
+  [_airAlphaTex release];   // MRC: the one made for the old size
+  _airAlphaTex = nil;
+  _airAlphaW = w;
+  _airAlphaH = h;
+  if (w == 0 || h == 0)
+    return false;
+  MTLTextureDescriptor* d = [MTLTextureDescriptor
+      texture2DDescriptorWithPixelFormat:MTLPixelFormatR8Unorm
+                                   width:w height:h mipmapped:NO];
+  d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+  d.storageMode = MTLStorageModePrivate;
+  _airAlphaTex = [_device newTextureWithDescriptor:d];
+  if (!_airAlphaTex)
+    NSLog(@"RendererMetal: air alpha %lux%lu failed; the export keeps the depth matte",
+          (unsigned long) w, (unsigned long) h);
+  return _airAlphaTex != nil;
 }
 
 // half-float bit pattern for a tessellation factor

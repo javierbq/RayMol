@@ -140,7 +140,8 @@ EDIT_COUNTS = {
     'kCylinderImpostorSrc': {'cyl_cover': 1},
     'kSphereImpostorSrc': {'sphere_glass': 2},
     'kAirSrc': {'air_signature': 1, 'air_body': 1, 'air_full': 1,
-                'air_upsample': 1, 'air_upsample_rig': 1},
+                'air_upsample': 1, 'air_upsample_rig': 1,
+                'alpha_functions': 2},   # #684: post_air_alpha, post_air_alpha_merge
 }
 UNTOUCHED = ('kPostSrc', 'kEyeReconSrc', 'kBezierTubeSrc', 'kBezierTubeRigSrc',
              'kLabelShaderSrc', 'kConnectorShaderSrc', 'kMaterialImpostorSrc')
@@ -571,7 +572,9 @@ class TestSpecialisers(HdrMSLCase):
         self.assertEqual([(n, squash(h)) for n, h in re.findall(
             r'newAirPipeline\(_device, lib, vfn, @"(\w+)",\s*\w+, ([^)]*)\)', ensure)],
             [('post_air_full', 'v==1'), ('post_air_march', 'false'),
-             ('post_air_upsample', 'v==1')])
+             ('post_air_upsample', 'v==1'),
+             # #684: the export alpha's two passes read no constant
+             ('post_air_alpha', 'false'), ('post_air_alpha_merge', 'false')])
         # Part 5: the RT rig composite is built once per call site, with the
         # frame's choice
         rt = [squash(r) for r in re.findall(r'(?<![\w:])buildRTRigComposite\(([^;]*)\);',
@@ -910,6 +913,9 @@ class TestFrame(HdrMSLCase):
         # Part 5: the RT rig composite choice, put back
         body, choices, builds = _air.without_rt_rig_hdr_624(body)
         self.assertEqual((choices, builds), (1, 1))
+        # #684: the air alpha's two statements, taken out
+        body, alpha = _air.without_air_alpha_684(body)
+        self.assertEqual(alpha, [1, 1])
         self.assertEqual(digest(body),
                          _air.MASTER_FUNCTIONS[('RendererMetal.mm',
                                                 'RendererMetal::runPostChain')])
