@@ -755,4 +755,16 @@ final class SceneRenameTimelineTests: XCTestCase {
         let result = PyMOLEngine.renamingScene(in: items, from: "Nonexistent", to: "C")
         XCTAssertEqual(result, items)
     }
+
+    func testSceneRenameEventParsesTheFeedbackLine() {
+        // raymol_scenes._emit_rename: SCENERENAME:<b64 old>:<b64 new>
+        let old = Data("A: one".utf8).base64EncodedString()
+        let new = Data("Café".utf8).base64EncodedString()
+        let parsed = PyMOLEngine.sceneRenameEvent("SCENERENAME:\(old):\(new)")
+        XCTAssertEqual(parsed?.0, "A: one")
+        XCTAssertEqual(parsed?.1, "Café")
+        XCTAssertNil(PyMOLEngine.sceneRenameEvent("MOVIEEXPORT:{}"))
+        XCTAssertNil(PyMOLEngine.sceneRenameEvent("SCENERENAME:not base64!:x"))
+        XCTAssertNil(PyMOLEngine.sceneRenameEvent("SCENERENAME:\(old)"))
+    }
 }

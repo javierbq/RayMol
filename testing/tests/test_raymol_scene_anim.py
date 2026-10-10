@@ -178,6 +178,10 @@ class FakeCmd:
         self.done.append((f, command))
         self._slots[f] = str(command)
 
+    def get_frame_command(self, frame):
+        # _cmd.get_frame_command: the slot text as the core holds it (#655).
+        return self._slots.get(int(frame), '')
+
     def set(self, setting, value, *a, **k):
         self.sets.append((setting, value))
 
@@ -1039,15 +1043,16 @@ class TestAuthorAndSession(unittest.TestCase):
         fake.done[:] = []
         fake.appended[:] = []
         touched = self.anim.rename_scene('B', 'C', _self=fake)
-        self.assertEqual(touched, 10)
+        self.assertEqual(touched, 9)   # frames 2-10; frame 1 (scene A) is unchanged
 
         # 1. marks and lights entries re-keyed
         self.assertEqual(self.anim._scene_marks, [(1, 'A'), (10, 'C')])
         self.assertTrue(all(a == 'A' and b == 'C' for a, b, _t in self.anim._lights_track.values()))
 
-        # 2. clear_authored was called (slots blanked via mdo) then frames re-emitted with new name
+        # 2. edited in place: one mdo per changed slot, never a blanking one
         self.assertTrue(fake.done)
-        self.assertTrue(all(cmd == '' for _f, cmd in fake.done))
+        self.assertTrue(all(cmd for _f, cmd in fake.done))
+        self.assertEqual(fake.appended, [])
 
         # Check frame 10 (scene mark for C)
         b64_c = base64.b64encode(b'C').decode('ascii')
@@ -1063,6 +1068,47 @@ class TestAuthorAndSession(unittest.TestCase):
         slot5 = fake._slots.get(5, '')
         self.assertIn('_lights_blend %s, %s' % (hex_a, hex_c), slot5)
         self.assertNotIn('_lights_blend %s, %s' % (hex_a, hex_b), slot5)
+
+    def test_rename_scene_keeps_a_users_command_in_the_slot(self):
+        # A rename edits only our pieces: a user's mdo/mappend text sharing a
+        # keyframe or interior slot survives (Copilot review of #763).
+        self._two_scenes()
+        self.scenes._scene_lights['A'] = {'enabled': True, 'lights': [{'name': 'key'}]}
+        self.scenes._scene_lights['B'] = {'enabled': True, 'lights': [{'name': 'key'}]}
+        fake = FakeCmd()
+        self.anim.author([(1, 'A', 0.0), (10, 'B', 0.0)], _self=fake)
+        fake.mappend(10, 'print("mine at 10")')
+        fake.mappend(5, 'turn y, 5')
+        self.anim.rename_scene('B', 'C', _self=fake)
+        b64_b = base64.b64encode(b'B').decode('ascii')
+        self.assertIn('print("mine at 10")', fake._slots[10])
+        self.assertIn('turn y, 5', fake._slots[5])
+        self.assertIn(self.anim.scene_mark_command('C'), fake._slots[10])
+        self.assertNotIn(b64_b, fake._slots[10])
+        self.assertNotIn('_lights_blend %s, %s,' % (self.anim._name_hex('A'),
+                                                    self.anim._name_hex('B')),
+                         fake._slots[5])
+        # And it is exactly what a fresh author of A -> C writes, plus the user's text.
+        fresh = FakeCmd()
+        self.scenes._scene_settings['C'] = self.scenes._scene_settings['B']
+        self.scenes._scene_lights['C'] = self.scenes._scene_lights['B']
+        self.anim.author([(1, 'A', 0.0), (10, 'C', 0.0)], _self=fresh)
+        self.assertEqual(fake._slots[10], fresh._slots[10] + ';print("mine at 10")')
+        self.assertEqual(fake._slots[5], fresh._slots[5] + ';turn y, 5')
+
+    def test_rename_scene_without_a_slot_reader_reauthors(self):
+        # An older core with no get_frame_command: the old clear + re-emit.
+        class NoReader(FakeCmd):
+            def get_frame_command(self, frame):
+                raise AttributeError('get_frame_command')
+        self._two_scenes()
+        fake = NoReader()
+        self.anim.author([(1, 'A', 0.0), (6, 'B', 0.0)], _self=fake)
+        fake.done[:] = []
+        self.anim.rename_scene('B', 'C', _self=fake)
+        self.assertTrue(fake.done and all(c == '' for _f, c in fake.done))
+        self.assertEqual(self.anim._scene_marks, [(1, 'A'), (6, 'C')])
+        self.assertIn(self.anim.scene_mark_command('C'), fake._slots[6])
 
     def test_rename_scene_noop_when_not_referenced(self):
         self._two_scenes()

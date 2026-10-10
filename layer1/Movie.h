@@ -107,6 +107,8 @@ int MoviePNG(PyMOLGlobals * G, const char* prefix, int save, int start, int stop
              int width=0, int height=0);
 void MovieSetScrollBarFrame(PyMOLGlobals * G, int frame);
 void MovieSetCommand(PyMOLGlobals* G, int frame, const char* command);
+/* The command text of 0-based `frame` ("" outside the movie) (#655). */
+std::string MovieGetCommand(PyMOLGlobals* G, int frame);
 void MovieAppendCommand(PyMOLGlobals * G, int frame, const char* command);
 
 void MovieDoFrameCommand(PyMOLGlobals * G, int frame);

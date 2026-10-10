@@ -897,36 +897,62 @@ def author(keyframes, _self=cmd, power=None):
     return len(touched)
 
 
+def _frame_command(frame, _self=cmd):
+    """The movie command text of `frame` as the core holds it (#655)."""
+    getter = getattr(_self, 'get_frame_command', None)   # test doubles
+    if getter is not None:
+        return getter(int(frame))
+    from pymol import _cmd
+    return _cmd.get_frame_command(_self._COb, int(frame))
+
+
 def rename_scene(old, new, _self=cmd):
-    """Re-key authored movie tracks when a scene is renamed (issue #655).
+    """Re-key the authored movie when scene `old` is renamed to `new` (#655).
 
-    `_scene_marks` and `_lights_track` record scene names so the movie can
-    recall a scene at its keyframe and blend rigs during transitions. When a
-    scene is renamed, stale names would leave the movie applying missing scenes
-    or failing rig blends.
-
-    If `old` appears in `_scene_marks` or either scene slot of `_lights_track`:
-    clears previously authored frames, replaces `old` with `new` in
-    `_scene_marks` and `_lights_track` (keeping frames and `t`), and re-emits
-    scene marks, settings track, and lights blend track. Otherwise does
-    nothing (no mdo calls). Returns the number of frames touched (0 when
-    nothing referenced `old`).
-    """
+    `_scene_marks` and `_lights_track` name scenes, and so does the frame
+    command text emitted from them, so after a rename the movie would neither
+    apply the scene at its keyframe nor blend into it. Re-key both, then edit
+    each affected frame slot in place: only our own command pieces naming
+    `old` are replaced, so a user's mdo/mappend text sharing the slot
+    survives (a rename is not a re-author; clear_authored would blank whole
+    slots). Without a readable slot (an older core) it falls back to
+    clear_authored + re-emit. Returns the number of frames touched (0 when
+    nothing referenced `old`)."""
     if not old or not new or old == new:
         return 0
     in_marks = any(n == old for _f, n in _scene_marks)
-    in_lights = any(a == old or b == old for a, b, _t in _lights_track.values())
+    in_lights = any(old in (a, b) for a, b, _t in _lights_track.values())
     if not (in_marks or in_lights):
         return 0
-
-    clear_authored(_self)
+    before = _our_commands()
     _scene_marks[:] = [(int(f), new if n == old else n) for f, n in _scene_marks]
     for f, (a, b, t) in list(_lights_track.items()):
         _lights_track[f] = (new if a == old else a, new if b == old else b, t)
-    touched = set(emit_scene_marks(_scene_marks, _self))
-    touched.update(emit_track(_track, _self))
-    touched.update(emit_lights_track(_lights_track, _self))
-    return len(touched)
+    after = _our_commands()
+    changed = [f for f in sorted(set(before) | set(after))
+               if before.get(f) != after.get(f)]
+    try:
+        slots = {f: _frame_command(f, _self) for f in changed}
+    except Exception:
+        # No slot reader: the old trade-off (see clear_authored), re-emitted
+        # whole. clear_authored only needs the frame lists, which a rename
+        # does not change.
+        clear_authored(_self)
+        touched = set(emit_scene_marks(_scene_marks, _self))
+        touched.update(emit_track(_track, _self))
+        touched.update(emit_lights_track(_lights_track, _self))
+        return len(touched)
+    done = []
+    for f in changed:
+        slot = slots[f]
+        for o, n in zip(before.get(f, []), after.get(f, [])):
+            slot = slot.replace(o, n, 1) if o in slot else slot + ';' + n
+        try:
+            _self.mdo(f, slot)
+            done.append(f)
+        except Exception as e:
+            print('MOVIE_ERR:' + str(e))
+    return len(done)
 
 
 def _our_commands():

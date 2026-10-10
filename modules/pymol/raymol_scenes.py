@@ -872,6 +872,24 @@ def rename(old, new, _self=cmd):
         _scene_lights[new] = _scene_lights.pop(old)
 
 
+def _emit_rename(old, new):
+    """Tell the app a scene was renamed (#655): `SCENERENAME:<b64 old>:<b64
+    new>` on the feedback stream, so the Timeline re-keys its scene items for
+    console, Python and MCP renames too. Base64 because names may hold any
+    character. pcatch when embedded (a stdout capture cannot swallow it, as
+    movie_exporting._emit); a plain print otherwise."""
+    if not old or not new or old == new:
+        return
+    import base64
+    b = lambda v: base64.b64encode(v.encode('utf-8')).decode('ascii')
+    line = 'SCENERENAME:%s:%s' % (b(old), b(new))
+    try:
+        import pcatch
+        pcatch.write(line + '\n')
+    except ImportError:
+        print(line)
+
+
 def on_scene_action(key, action, new_key=None, _self=cmd):
     """Central hook called from cmd.scene AFTER the native op completes. `action`
     is already normalized by cmd.scene (update/append -> store, clear -> delete,
@@ -894,6 +912,7 @@ def on_scene_action(key, action, new_key=None, _self=cmd):
             _anim.rename_scene(key, new_key, _self)
         except Exception as e:
             print('MOVIE_ERR:' + str(e))
+        _emit_rename(key, new_key)
 
 
 # --- .pse persistence (registered in cmd._deferred_init_pymol_internals) ---
