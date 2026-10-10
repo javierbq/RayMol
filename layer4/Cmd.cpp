@@ -821,6 +821,24 @@ static PyObject *CmdGetVis(PyObject * self, PyObject * args)
   return (APIAutoNone(result));
 }
 
+static PyObject *CmdGetAtomReps(PyObject * self, PyObject * args)
+{
+  PyMOLGlobals *G = nullptr;
+  const char *name = nullptr;
+  PyObject *result = nullptr;
+  API_SETUP_ARGS(G, self, args, "Os", &self, &name);
+  API_ASSERT(APIEnterBlockedNotModal(G));
+  int *reps = ExecutiveGetRepsInSceneForObject(G, name);
+  APIExitBlocked(G);
+  if (reps) {
+    result = PConvIntVLAToPyList(reps);
+    VLAFreeP(reps);
+  } else {
+    result = PyList_New(0);
+  }
+  return APIAutoNone(result);
+}
+
 static PyObject *CmdSetVis(PyObject * self, PyObject * args)
 {
   PyMOLGlobals *G = nullptr;
@@ -8042,6 +8060,7 @@ static PyMethodDef Cmd_methods[] = {
   {"get_view", CmdGetView, METH_VARARGS},
   {"get_viewport", CmdGetViewPort, METH_VARARGS},
   {"get_vis", CmdGetVis, METH_VARARGS},
+  {"get_atom_reps", CmdGetAtomReps, METH_VARARGS},
   {"get_capabilities", CmdGetCapabilities, METH_NOARGS, "Get a set of compiled-in capabilities"},
   {"get_ccp4str", CmdGetCCP4Str, METH_VARARGS},
   {"get_volume_field", CmdGetVolumeField, METH_VARARGS},

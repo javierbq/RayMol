@@ -4530,13 +4530,16 @@ static int* getRepArrayFromBitmask(int visRep)
   return RepVis;
 }
 
-#ifdef _PYMOL_LIB
 /**
  * Returns a list (VLA) of enabled atom representations (AtomInfoType.visRep)
  * in selection (e.g. {cRepLine, cRepNonbonded})
  */
 int* ExecutiveGetRepsInSceneForObject(PyMOLGlobals* G, const char* name)
 {
+  if (!G || !name) {
+    return nullptr;
+  }
+
   int visRep = 0;
 
   for (SeleAtomIterator iter(G, name); iter.next();) {
@@ -4547,6 +4550,7 @@ int* ExecutiveGetRepsInSceneForObject(PyMOLGlobals* G, const char* name)
   return getRepArrayFromBitmask(visRep);
 }
 
+#ifdef _PYMOL_LIB
 /**
  * Returns a list (VLA) of enabled object representations (rec->obj->visRep)
  * (e.g. {cRepCell, cRepExtent})

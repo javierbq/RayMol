@@ -440,6 +440,31 @@ def object_has_atom_transp(obj):
     return False
 
 
+def _shown_reps(o):
+    """Set of rep names shown on `o` (e.g. {'cartoon', 'sticks'}).
+
+    One core call (`_cmd.get_atom_reps`: the OR of the atoms' visRep, a
+    single selector pass) instead of a count_atoms pass per rep, each over
+    every loaded atom (#398). An older core without the call, or an error,
+    falls back to the per-rep probe.
+    """
+    try:
+        from pymol import _cmd
+        from pymol.constants import repres
+        names = {repres[r]: r for r in REPS}
+        return {names[i] for i in _cmd.get_atom_reps(cmd._COb, o)
+                if i in names}
+    except Exception:
+        shown = set()
+        for r in REPS:
+            try:
+                if cmd.count_atoms('(%s) & rep %s' % (o, r)) > 0:
+                    shown.add(r)
+            except Exception:
+                pass
+        return shown
+
+
 def _build(objs):
     detail = {}
     # One lookup for the whole tick. takes_atom_selection() also guards, but calling
@@ -471,11 +496,9 @@ def _build(objs):
             explicit = {e[0] for e in (cmd.get_object_settings(o) or [])}
         except Exception:
             explicit = set()
+        shown = _shown_reps(o)
         for r in REPS:
-            try:
-                present = cmd.count_atoms('(%s) & rep %s' % (o, r)) > 0
-            except Exception:
-                present = False
+            present = r in shown
             if not present:
                 continue
             vals = {}
