@@ -1342,4 +1342,29 @@ final class LightsControllerTests: XCTestCase {
         XCTAssertEqual(store.lights[3].shadow, false, "refused")
         XCTAssertEqual(controller.editCount, 4)
     }
+    func testSeparateRunsOnOneFieldAreSeparateEdits() {
+        begin(with: ["key", "fill", "rim"])
+        for i in 1...10 {
+            store.clock += 1.0 / 60.0
+            XCTAssertEqual(controller.edit("orbit", Double(i)), .ok)
+        }
+        XCTAssertEqual(controller.editCount, 1, "one drag")
+        XCTAssertFalse(controller.revertNeedsConfirmation)
+
+        // Released, then dragged again: a second edit.
+        store.clock += 1
+        for i in 20...30 {
+            store.clock += 1.0 / 60.0
+            XCTAssertEqual(controller.edit("orbit", Double(i)), .ok)
+        }
+        XCTAssertEqual(controller.editCount, 2)
+        XCTAssertTrue(controller.revertNeedsConfirmation)
+
+        // A gesture held still past the gap is still one edit.
+        let owner = controller.beginGesture()!
+        XCTAssertEqual(controller.set(.pitch, 10, owner: owner), .ok)
+        store.clock += 2
+        XCTAssertEqual(controller.set(.pitch, 20, owner: owner), .ok)
+        XCTAssertEqual(controller.editCount, 3)
+    }
 }

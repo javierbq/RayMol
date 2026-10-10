@@ -323,6 +323,9 @@ final class LightsController: ObservableObject {
     /// A mirror older than this is re-read before an edit writes to it, so a
     /// gesture never writes to the light that used to be at the selected index.
     nonisolated static let staleAfter: TimeInterval = 1.0 / 60.0
+    /// Continuous writes with the same key further apart than this are
+    /// separate edits (#651): a slider released and dragged again.
+    nonisolated static let editRunGap: TimeInterval = 0.5
 
     /// Lights mode is on (between `begin()` and `end()`).
     @Published private(set) var isActive = false
@@ -360,8 +363,8 @@ final class LightsController: ObservableObject {
     @Published private(set) var gestureGeneration = 0
     /// Committed edits since the entry snapshot (#651): one per button action,
     /// one per gesture, and one per run of continuous writes to the same
-    /// target and fields (a slider drag, repeated stepper presses on one
-    /// field). Reset by begin(), end() and revert(). Revert asks for
+    /// target and fields with no gap over `editRunGap` (a slider drag,
+    /// quick repeated stepper presses on one field). Reset by begin(), end() and revert(). Revert asks for
     /// confirmation when it would drop more than one.
     @Published private(set) var editCount = 0
 
@@ -393,6 +396,8 @@ final class LightsController: ObservableObject {
     private var needsSnapshot = false
     /// The coalescing key of the last counted edit (see `noteEdit`).
     private var lastEditKey: String?
+    /// When the last counted or continued edit was written (`seams.now()`).
+    private var lastEditTime: TimeInterval?
     /// `eye.placements` must be rebuilt on the next refresh even when the rig
     /// is unchanged (after `end()`, or an eye read that disagreed with it).
     private var eyeNeedsRebuild = true
@@ -842,8 +847,16 @@ final class LightsController: ObservableObject {
     /// Count one committed edit (#651). A non-nil `key` names the target and
     /// fields of a continuous write: the same key as the last edit continues
     /// that edit (a drag, a gesture). A nil key always counts and ends any run.
+    /// A run of writes with the same key ends after `editRunGap` without a
+    /// counted write, so two separate drags of one slider are two edits. A
+    /// gesture's key is unique to that gesture and never times out.
     func noteEdit(_ key: String?) {
-        if key != nil, key == lastEditKey { return }
+        let now = seams.now()
+        defer { lastEditTime = now }
+        if let key, key == lastEditKey,
+           key.hasPrefix("gesture#") || now - (lastEditTime ?? now) <= Self.editRunGap {
+            return
+        }
         editCount += 1
         lastEditKey = key
     }
@@ -861,6 +874,7 @@ final class LightsController: ObservableObject {
     private func resetEdits() {
         if editCount != 0 { editCount = 0 }
         lastEditKey = nil
+        lastEditTime = nil
     }
 
     private func write(key: (Int) -> String, _ set: (Int) -> LightSetResult) -> LightSetResult {
