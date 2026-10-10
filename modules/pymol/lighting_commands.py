@@ -1131,6 +1131,28 @@ def _viewport_aspect(_self):
     return float(width) / float(height)
 
 
+# The aspect a pick falls back to while the viewport has no size yet (#746):
+# a startup script (the app's PYMOL_AUTOCMD first pass, a .pymolrc) runs
+# before the window's first layout, when get_viewport reports 0 x 1.
+_FALLBACK_SIZE = (640, 480)
+
+
+def _pick_aspect(_self):
+    '''(aspect, size): the viewport's width / height and None, or, while
+    it has no size yet, the aspect of the size PyMOL is configured to open
+    its window at (pymol.invocation.options win_x x win_y, else 640 x 480)
+    and that (w, h).'''
+    aspect = _viewport_aspect(_self)
+    if aspect is not None:
+        return aspect, None
+    from pymol import invocation
+    opts = getattr(invocation, 'options', None)
+    w, h = (getattr(opts, 'win_x', 0), getattr(opts, 'win_y', 0))
+    if not (isinstance(w, int) and isinstance(h, int) and w > 0 and h > 0):
+        w, h = _FALLBACK_SIZE
+    return float(w) / float(h), (w, h)
+
+
 def _project(cam, point, ortho, aspect):
     '''(ndc_x, ndc_y, depth) of a world point, as the renderer projects it
     (metal_pick.camera; the orthoscopic half-height is the pick's
@@ -1158,9 +1180,7 @@ def _pick_selection(where, typed, sele, cam, ortho, _self):
                      'its own view); use click=x/y' % typed)
     atoms = _selection_model(where, typed.split('=', 1)[0], sele, _self)
     centre = _centroid([a.coord for a in atoms])
-    aspect = _viewport_aspect(_self)
-    if aspect is None:
-        raise _error(where, '%s: the viewport has no size' % typed)
+    aspect, size = _pick_aspect(_self)
     x, y, depth = _project(cam, centre, ortho, aspect)
     if x is None:
         raise _error(where, '%s: the selection is behind the camera' % typed)
@@ -1179,7 +1199,7 @@ def _pick_selection(where, typed, sele, cam, ortho, _self):
         raise _error(where, "%s: the pick hit the %s of '%s' in front of "
                      "the selection; show the selection (e.g. as sticks) or "
                      "use click=x/y" % (typed, hit.rep, hit.object))
-    return hit
+    return hit, size
 
 
 def _current_radius(rig, light):
@@ -1273,7 +1293,11 @@ def _apply_helpers(where, rig, index, spec, change, _self, label):
         role, sele = 'click', ''
         typed = spec.typed(role)
         x, y = helpers['click']
-        hit = metal_pick.surface_at(x, y, _self=_self)
+        aspect, size = _pick_aspect(_self)
+        if size is not None:
+            hit = metal_pick.surface_at(x, y, aspect=aspect, _self=_self)
+        else:
+            hit = metal_pick.surface_at(x, y, _self=_self)
         if hit is None:
             raise _error(where, 'nothing drawn as %s under %s' % (
                 _SURFACE_WORDS, typed))
@@ -1281,7 +1305,7 @@ def _apply_helpers(where, rig, index, spec, change, _self, label):
         role = 'highlight=<sele>'
         sele = helpers['highlight']
         typed = spec.typed(role)
-        hit = _pick_selection(where, typed, sele, cam, ortho, _self)
+        hit, size = _pick_selection(where, typed, sele, cam, ortho, _self)
 
     point = [float(c) for c in hit.point]
     normal = _unit(hit.normal) or _towards_camera(cam, point, ortho)
@@ -1293,6 +1317,11 @@ def _apply_helpers(where, rig, index, spec, change, _self, label):
     light['aim_selection'] = sele
     change.notes.append(" %s: %s picked the %s of '%s' at %s" % (
         where, typed, hit.rep, hit.object, _xyz(point)))
+    if size is not None:
+        w, h = size
+        change.notes.append(
+            " %s: %s: the viewport has no size yet, so the pick used the "
+            "aspect of a %dx%d window" % (where, typed, w, h))
     change.steps.append((label, spec.given[role], _place_step(
         where, index, typed, point, direction, radius, spec.pin, change,
         _self)))

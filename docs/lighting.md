@@ -274,6 +274,13 @@ beam) unless `beam=` is given. One helper at a time;
 `orbit`, `pitch` and `position` cannot be given with `highlight=` or
 `click=`, and `aim` with no helper.
 
+`highlight=` and `click=` pick through the viewport. In a startup script
+(the app's PYMOL_AUTOCMD, a .pymolrc) that runs before the window's first
+layout, the viewport has no size yet; the pick then uses the aspect of the
+window PyMOL is configured to open (640 x 480 unless `-W`/`-H` say otherwise),
+with a note. The point picked can differ from what the sized window would pick
+when the selection or click is far from the centre.
+
 ```pymol
 lights three_point
 lights key, target=organic
