@@ -1,7 +1,7 @@
 """Tests for representation inspector query optimizations (#398).
 
 Verifies that cmd._cmd.get_atom_reps returns the active atom representation
-indices directly from the C++ core in O(atoms) rather than 12 count_atoms
+indices directly from the C++ core in O(atoms) rather than 11 count_atoms
 selector passes, that groups return the union of member reps, that bad/empty
 names return [], and that appkit_inspector._build produces identical rep lists
 with and without fallback.
