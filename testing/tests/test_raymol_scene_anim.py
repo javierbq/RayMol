@@ -798,6 +798,7 @@ class TestAuthorAndSession(unittest.TestCase):
         self.scenes.clear_all()
         self.anim._track.clear()
         self.anim._scene_marks[:] = []
+        self.anim._lights_track.clear()
 
     def _two_scenes(self):
         self.scenes._scene_settings['A'] = {'ambient': '0.0', 'metal_dof': 'off'}
@@ -1024,3 +1025,75 @@ class TestAuthorAndSession(unittest.TestCase):
         self.assertNotIn('enter_scene', leftover)
         self.assertNotIn('set ambient', leftover)
         self.assertEqual(sess['movie'][5][0], '')    # frame 1 fully emptied
+
+    def test_rename_scene_rekeys_marks_and_lights_and_reemits(self):
+        self._two_scenes()
+        self.scenes._scene_lights['A'] = {'enabled': True, 'lights': [{'name': 'key'}]}
+        self.scenes._scene_lights['B'] = {'enabled': True, 'lights': [{'name': 'key'}]}
+        fake = FakeCmd()
+        self.anim.author([(1, 'A', 0.0), (10, 'B', 0.0)], _self=fake)
+        self.assertEqual(self.anim._scene_marks, [(1, 'A'), (10, 'B')])
+        self.assertTrue(self.anim._lights_track)
+        self.assertTrue(all(a == 'A' and b == 'B' for a, b, _t in self.anim._lights_track.values()))
+
+        fake.done[:] = []
+        fake.appended[:] = []
+        touched = self.anim.rename_scene('B', 'C', _self=fake)
+        self.assertEqual(touched, 10)
+
+        # 1. marks and lights entries re-keyed
+        self.assertEqual(self.anim._scene_marks, [(1, 'A'), (10, 'C')])
+        self.assertTrue(all(a == 'A' and b == 'C' for a, b, _t in self.anim._lights_track.values()))
+
+        # 2. clear_authored was called (slots blanked via mdo) then frames re-emitted with new name
+        self.assertTrue(fake.done)
+        self.assertTrue(all(cmd == '' for _f, cmd in fake.done))
+
+        # Check frame 10 (scene mark for C)
+        b64_c = base64.b64encode(b'C').decode('ascii')
+        b64_b = base64.b64encode(b'B').decode('ascii')
+        slot10 = fake._slots.get(10, '')
+        self.assertIn(b64_c, slot10)
+        self.assertNotIn(b64_b, slot10)
+
+        # Check interior frames (lights blend from A to C)
+        hex_a = self.anim._name_hex('A')
+        hex_c = self.anim._name_hex('C')
+        hex_b = self.anim._name_hex('B')
+        slot5 = fake._slots.get(5, '')
+        self.assertIn('_lights_blend %s, %s' % (hex_a, hex_c), slot5)
+        self.assertNotIn('_lights_blend %s, %s' % (hex_a, hex_b), slot5)
+
+    def test_rename_scene_noop_when_not_referenced(self):
+        self._two_scenes()
+        fake = FakeCmd()
+        self.anim.author([(1, 'A', 0.0), (6, 'B', 0.0)], _self=fake)
+        fake.done[:] = []
+        fake.appended[:] = []
+
+        touched = self.anim.rename_scene('Nonexistent', 'C', _self=fake)
+        self.assertEqual(touched, 0)
+        self.assertEqual(fake.done, [])
+        self.assertEqual(fake.appended, [])
+
+    def test_session_save_after_rename_saves_new_name(self):
+        self._two_scenes()
+        self.scenes._scene_lights['A'] = {'enabled': True, 'lights': [{'name': 'key'}]}
+        self.scenes._scene_lights['B'] = {'enabled': True, 'lights': [{'name': 'key'}]}
+        fake = FakeCmd()
+        self.anim.author([(1, 'A', 0.0), (6, 'B', 0.0)], _self=fake)
+        self.anim.rename_scene('B', 'C', _self=fake)
+
+        sess = {'movie': [None] * 6}
+        sess['movie'][5] = self._slots_as_cmds(fake, 8)
+        self.anim.session_save(sess, _self=fake)
+
+        self.assertIn('raymol_movie_anim', sess)
+        payload = sess['raymol_movie_anim']
+        self.assertEqual(payload['marks'], [[1, 'A'], [6, 'C']])
+        self.assertIn('lights', payload)
+        self.assertTrue(all(a == 'A' and b == 'C' for _f, a, b, _t in payload['lights']))
+
+        # Verify our command strings were stripped out on save
+        leftover = ''.join(sess['movie'][5])
+        self.assertEqual(leftover, '')

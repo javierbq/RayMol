@@ -889,6 +889,11 @@ def on_scene_action(key, action, new_key=None, _self=cmd):
             prune(_self)
     elif action == 'rename':
         rename(key, new_key, _self)
+        try:
+            from pymol import raymol_scene_anim as _anim
+            _anim.rename_scene(key, new_key, _self)
+        except Exception as e:
+            print('MOVIE_ERR:' + str(e))
 
 
 # --- .pse persistence (registered in cmd._deferred_init_pymol_internals) ---

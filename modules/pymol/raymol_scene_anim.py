@@ -897,6 +897,38 @@ def author(keyframes, _self=cmd, power=None):
     return len(touched)
 
 
+def rename_scene(old, new, _self=cmd):
+    """Re-key authored movie tracks when a scene is renamed (issue #655).
+
+    `_scene_marks` and `_lights_track` record scene names so the movie can
+    recall a scene at its keyframe and blend rigs during transitions. When a
+    scene is renamed, stale names would leave the movie applying missing scenes
+    or failing rig blends.
+
+    If `old` appears in `_scene_marks` or either scene slot of `_lights_track`:
+    clears previously authored frames, replaces `old` with `new` in
+    `_scene_marks` and `_lights_track` (keeping frames and `t`), and re-emits
+    scene marks, settings track, and lights blend track. Otherwise does
+    nothing (no mdo calls). Returns the number of frames touched (0 when
+    nothing referenced `old`).
+    """
+    if not old or not new or old == new:
+        return 0
+    in_marks = any(n == old for _f, n in _scene_marks)
+    in_lights = any(a == old or b == old for a, b, _t in _lights_track.values())
+    if not (in_marks or in_lights):
+        return 0
+
+    clear_authored(_self)
+    _scene_marks[:] = [(int(f), new if n == old else n) for f, n in _scene_marks]
+    for f, (a, b, t) in list(_lights_track.items()):
+        _lights_track[f] = (new if a == old else a, new if b == old else b, t)
+    touched = set(emit_scene_marks(_scene_marks, _self))
+    touched.update(emit_track(_track, _self))
+    touched.update(emit_lights_track(_lights_track, _self))
+    return len(touched)
+
+
 def _our_commands():
     """{frame: [piece, ...]} for every frame command piece this module authored."""
     out = {}

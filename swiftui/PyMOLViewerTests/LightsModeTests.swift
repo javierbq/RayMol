@@ -684,3 +684,75 @@ final class LightsRevertBridgeTests: XCTestCase {
         XCTAssertEqual(controller.presets.map(\.description), pairs.map { $0[1] })
     }
 }
+
+// MARK: - Timeline Scene Rename Tests (#655)
+
+final class SceneRenameTimelineTests: XCTestCase {
+
+    func testEmptyListStaysEmpty() {
+        let result = PyMOLEngine.renamingScene(in: [], from: "A", to: "B")
+        XCTAssertTrue(result.isEmpty)
+    }
+
+    func testRenamesOnlyMatchingSceneItemsAndLeavesOthersAlone() {
+        let idA1 = UUID()
+        let transA1 = PyMOLEngine.Transition(seconds: 3.5, linear: true)
+        let itemA1 = PyMOLEngine.TimelineItem(
+            id: idA1,
+            kind: .scene(name: "A"),
+            transition: transA1,
+            pinnedState: 2,
+            atFrame: 10
+        )
+
+        let idCam = UUID()
+        let transCam = PyMOLEngine.Transition(seconds: 1.0, linear: false)
+        let itemCam = PyMOLEngine.TimelineItem(id: idCam, kind: .camera, transition: transCam)
+
+        let idB = UUID()
+        let itemB = PyMOLEngine.TimelineItem(id: idB, kind: .scene(name: "B"))
+
+        let idStates = UUID()
+        let spec = PyMOLEngine.StatesSpec(objects: ["obj1"], mode: .sweep, firstModel: 1, lastModel: 5, durationSeconds: 2.0)
+        let itemStates = PyMOLEngine.TimelineItem(id: idStates, kind: .states(spec))
+
+        let idA2 = UUID()
+        let itemA2 = PyMOLEngine.TimelineItem(id: idA2, kind: .scene(name: "A"))
+
+        let items = [itemA1, itemCam, itemB, itemStates, itemA2]
+        let result = PyMOLEngine.renamingScene(in: items, from: "A", to: "C")
+
+        XCTAssertEqual(result.count, 5)
+
+        // itemA1 was renamed to C, keeping id, transition, pinnedState, atFrame
+        XCTAssertEqual(result[0].id, idA1)
+        XCTAssertEqual(result[0].kind, .scene(name: "C"))
+        XCTAssertEqual(result[0].transition, transA1)
+        XCTAssertEqual(result[0].pinnedState, 2)
+        XCTAssertEqual(result[0].atFrame, 10)
+
+        // itemCam is untouched
+        XCTAssertEqual(result[1], itemCam)
+
+        // itemB is untouched
+        XCTAssertEqual(result[2], itemB)
+
+        // itemStates is untouched
+        XCTAssertEqual(result[3], itemStates)
+
+        // itemA2 was renamed to C, keeping id and other fields
+        XCTAssertEqual(result[4].id, idA2)
+        XCTAssertEqual(result[4].kind, .scene(name: "C"))
+        XCTAssertEqual(result[4].transition, itemA2.transition)
+        XCTAssertNil(result[4].pinnedState)
+        XCTAssertNil(result[4].atFrame)
+    }
+
+    func testUnmatchedSceneNameLeavesItemsUnchanged() {
+        let itemA = PyMOLEngine.TimelineItem(kind: .scene(name: "A"))
+        let itemB = PyMOLEngine.TimelineItem(kind: .scene(name: "B"))
+        let items = [itemA, itemB]
+        let result = PyMOLEngine.renamingScene(in: items, from: "Nonexistent", to: "C")
+        XCTAssertEqual(result, items)
+    }
+}
