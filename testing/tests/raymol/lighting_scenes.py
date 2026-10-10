@@ -1446,7 +1446,35 @@ class TestSceneMovieBlend(_BlendCase):
         cmd.frame(7)
         appkit_movie._scene_keyframes()
         self.assertEqual(cmd.get_frame(), 7)
-        self.assertNotIn('_raymol_kf_probe', cmd.get_names('all'))
+        self.assertFalse([n for n in cmd.get_names('all')
+                          if n.startswith('_raymol_kf_probe')])
+
+    def testSceneKeyframesSparesAnObjectNamedLikeTheProbe(self):
+        appkit_movie.reset_movie()
+        cmd.mset('1 x25')
+        cmd.pseudoatom('_raymol_kf_probe')
+        try:
+            appkit_movie.place_scene(1, 'A')
+            appkit_movie.place_scene(25, 'B')
+            self.assertEqual([(f, n) for f, n, _p in
+                              appkit_movie._scene_keyframes()],
+                             [(1, 'A'), (25, 'B')])
+            self.assertEqual(cmd.count_atoms('_raymol_kf_probe'), 1)
+        finally:
+            cmd.delete('_raymol_kf_probe')
+
+    def testSceneKeyframesCarryTheStoredPowers(self):
+        # a Timeline rebuild stores per-keyframe powers; a later place_scene
+        # must hand them to author() (the core still eases with them)
+        rebuild(scene_item(1, 'A', power=1.0, linear=1),
+                scene_item(25, 'B', end=40, power=2.0, linear=0))
+        self.assertEqual(appkit_movie._scene_keyframes(),
+                         [(1, 'A', 1.0), (25, 'B', 2.0)])
+        with spying(anim, 'author') as calls:
+            appkit_movie.place_scene(40, 'A')
+        kfs = calls[-1][0][0]
+        self.assertEqual(kfs[:2], [(1, 'A', 1.0), (25, 'B', 2.0)])
+        self.assertEqual([(f, n) for f, n, _p in kfs[2:]], [(40, 'A')])
 
 
 # --- the L2 scene file (scripts/lighting/scenes/lighting_617_movie.json) ----

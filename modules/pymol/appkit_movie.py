@@ -194,7 +194,7 @@ def clear_keyframe(frame, linear=0):
 
 
 def _movie_keyframes(_self=cmd):
-    """[(frame, scene_name_or_None)] for every stored camera keyframe
+    """[(frame, scene_name_or_None, power)] for every stored camera keyframe
     (ViewElem specification_level 2), in frame order (1-based), read from the
     core's movie ViewElem list. The core only exports that list with a
     session, so this exports one limited to an empty hidden selection (a names
@@ -204,10 +204,12 @@ def _movie_keyframes(_self=cmd):
     The name is the scene the core tagged the keyframe with. Note that a plain
     `mview store` tags it with the scene current at that moment, and playback
     then recalls that scene there, so such a keyframe counts as a scene marker
-    too. Returns [] on any failure or when there is no movie."""
-    probe = '_raymol_kf_probe'
+    too. `power` is the keyframe's stored easing power, 0.0 when none is
+    stored. Returns [] on any failure or when there is no movie."""
     try:
         d = {}
+        # an unused name: never overwrite (and then delete) a user's object
+        probe = _self.get_unused_name('_raymol_kf_probe')
         try:
             _self.select(probe, 'none', enable=0)
             with _self.lockcm:
@@ -227,7 +229,12 @@ def _movie_keyframes(_self=cmd):
         for i, v in enumerate(elems):
             if v and len(v) > 12 and v[12] == 2:
                 scene = v[14] if (len(v) > 14 and v[13] and isinstance(v[14], str) and v[14]) else None
-                out.append((i + 1, scene))
+                # v[16] is exported only with ortho_flag, which SceneToViewElem
+                # always sets on a stored keyframe
+                power = 0.0
+                if len(v) > 16 and v[15] and isinstance(v[16], (int, float)):
+                    power = float(v[16])
+                out.append((i + 1, scene, power))
         return out
     except Exception:
         return []
@@ -240,12 +247,11 @@ def _scene_keyframes(_self=cmd):
     interpolation cuts between scenes (halfway, by mview's default cut), so the
     blends finished halfway through the camera move (#659).
 
-    The per-keyframe power is reported as 0.0 ("none stored"): the export
-    only writes ViewElem.power when ortho_flag is set, so it cannot be read
-    back reliably. That is not a loss here: both callers drive the easing with
-    a movie-wide `mview reinterpolate power=`, which the core resolves ahead of
-    both endpoints, and pass that same value to raymol_scene_anim.author."""
-    return [(f, name, 0.0) for f, name in _movie_keyframes(_self) if name]
+    Each power is the one stored with that keyframe (0.0 = none stored), so
+    raymol_scene_anim.author resolves the easing exactly like the core does
+    for the callers' movie-wide `mview reinterpolate power=` (endpoint powers
+    of, say, a Timeline rebuild survive a later place_scene)."""
+    return [(f, name, p) for f, name, p in _movie_keyframes(_self) if name]
 
 
 def _scene_wrap(_self=cmd):
