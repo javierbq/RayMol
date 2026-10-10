@@ -615,6 +615,15 @@ final class PyMOLEngine: ObservableObject {
         let tmp = NSTemporaryDirectory()
         runPython("from pymol import cmd as _c; _c.set('fetch_path', '\(tmp)')")
 
+        // A scripted launch (#671) skips the launch theme's render toggles and
+        // its forced outline-off (ContentView.applyPersistedTheme), so the
+        // script owns that state. Force the outline default here instead,
+        // BEFORE the script runs, so a script that sets metal_outline (directly
+        // or through run / @file) wins and one that does not still starts off.
+        if isScriptedLaunch {
+            runCommand("set metal_outline, 0")
+        }
+
         // Test affordance (no-op unless env var set): auto-load a bundled
         // structure so a screenshot has content without UI typing.
         if let f = ProcessInfo.processInfo.environment["PYMOL_AUTOLOAD"] {
@@ -1025,8 +1034,7 @@ final class PyMOLEngine: ObservableObject {
     /// itself so the two can't disagree.
     private var autosaveIsRestorable: Bool {
         guard !launchOpenRequested else { return false }
-        let env = ProcessInfo.processInfo.environment
-        guard env["PYMOL_AUTOLOAD"] == nil, env["PYMOL_AUTOCMD"] == nil else { return false }
+        guard !isScriptedLaunch else { return false }
         guard UserDefaults.standard.bool(forKey: Self.autosaveDefaultsKey),
               let url = autosaveURL,
               FileManager.default.fileExists(atPath: url.path) else { return false }
@@ -1722,20 +1730,48 @@ final class PyMOLEngine: ObservableObject {
         return FileManager.default.fileExists(atPath: documentURL.path)
     }
 
+    // MARK: - Scripted launch (#671)
+
+    /// Pure helper returning true when the environment contains test/scripting
+    /// affordances (PYMOL_AUTOCMD or PYMOL_AUTOLOAD) that set up the scene at launch.
+    static func isScriptedLaunch(environment: [String: String]) -> Bool {
+        environment["PYMOL_AUTOCMD"] != nil || environment["PYMOL_AUTOLOAD"] != nil
+    }
+
+    /// True when this process was launched with PYMOL_AUTOCMD or PYMOL_AUTOLOAD (#671).
+    var isScriptedLaunch: Bool {
+        Self.isScriptedLaunch(environment: ProcessInfo.processInfo.environment)
+    }
+
     // MARK: - Theme
 
-    /// Whether the passive launch-time theme re-assertion
-    /// (ContentView.applyPersistedTheme) should SKIP the theme's render toggles
-    /// (metal_outline / metal_raytrace / metal_shadows). True when a session was
-    /// restored or a file-open is pending at launch: that session OWNS its render
-    /// state and must not be clobbered by the theme (the .pse already restored
-    /// them). On a fresh/empty launch this is false so the theme establishes them.
-    var suppressLaunchThemeRenderToggles: Bool {
+    /// What the passive launch-time theme re-assertion
+    /// (ContentView.applyPersistedTheme) does: whether it applies the theme's
+    /// render toggles (metal_outline / metal_raytrace / metal_shadows), and
+    /// whether it then forces metal_outline off. Pure, so a test pins the rule.
+    struct LaunchThemePlan: Equatable {
+        var applyRenderToggles: Bool
+        var forceOutlineOff: Bool
+    }
+
+    /// The rule (#671): a scripted launch (PYMOL_AUTOCMD / PYMOL_AUTOLOAD)
+    /// owns its render state on both platforms, so it gets neither the toggles
+    /// nor the forced outline-off (the engine forced the outline default
+    /// before the script ran). A restored or opened session owns the toggles
+    /// too (the .pse restored them) but still gets the outline default. A
+    /// fresh launch gets both, so the theme establishes them.
+    static func launchThemePlan(scripted: Bool, sessionOwnsRenderState: Bool) -> LaunchThemePlan {
+        LaunchThemePlan(applyRenderToggles: !(scripted || sessionOwnsRenderState),
+                        forceOutlineOff: !scripted)
+    }
+
+    var launchThemePlan: LaunchThemePlan {
         #if os(iOS)
-        return didRestoreAutosave || launchOpenRequested
+        let sessionOwns = didRestoreAutosave || launchOpenRequested
         #else
-        return false   // macOS launch-open loads the .pse AFTER the theme, so the session wins
+        let sessionOwns = false   // macOS launch-open loads the .pse AFTER the theme, so the session wins
         #endif
+        return Self.launchThemePlan(scripted: isScriptedLaunch, sessionOwnsRenderState: sessionOwns)
     }
 
     /// Push a theme's molecular/viewport defaults into PyMOL. Chrome is handled
@@ -1743,7 +1779,7 @@ final class PyMOLEngine: ObservableObject {
     /// that NEW objects pick up via raymol_theme.apply_to. Does NOT restyle or
     /// recolor existing objects. `applyRenderToggles` gates the three render-state
     /// settings (outline/raytrace/shadows) so the launch-time re-assertion won't
-    /// clobber a restored session (see suppressLaunchThemeRenderToggles).
+    /// clobber a restored session (see launchThemePlan).
     func applyTheme(_ theme: Theme, applyRenderToggles: Bool = true) {
         guard isReady else { return }
         // 3D selection-indicator color follows the theme's selection color.

@@ -4745,15 +4745,19 @@ struct ContentView: View {
     // and re-asserting the theme here would clobber it (the theme apply fires on
     // the isReady onChange, i.e. AFTER the synchronous autosave restore).
     private func applyPersistedTheme() {
-        themeManager.apply(engine: engine,
-                           applyRenderToggles: !engine.suppressLaunchThemeRenderToggles)
+        let plan = engine.launchThemePlan
+        themeManager.apply(engine: engine, applyRenderToggles: plan.applyRenderToggles)
         // Outline is off by default in RayMol 1.6.1 and no theme enables it.
-        // Force it off unconditionally on launch — independent of the theme's
-        // render-toggle suppression AND of the (historically flaky) compiled core
-        // default — so a stale core / cached theme can never surface an outline
-        // the user didn't ask for. Users can still enable it live (Display ▸
-        // Effects); this only governs the default at launch.
-        engine.runCommand("set metal_outline, 0")
+        // Force it off on launch — independent of the theme's render-toggle
+        // suppression AND of the (historically flaky) compiled core default —
+        // so a stale core / cached theme can never surface an outline the user
+        // didn't ask for. Users can still enable it live (Display ▸ Effects);
+        // this only governs the default at launch. Skipped on a scripted launch
+        // (#671): the engine forced it before PYMOL_AUTOCMD ran, so the
+        // script's own value, if any, wins.
+        if plan.forceOutlineOff {
+            engine.runCommand("set metal_outline, 0")
+        }
         // Load ~/.raymolrc(.py) LAST, after the theme defaults above, so a
         // user's startup script can override them (e.g. a custom bg_color) —
         // matching vanilla PyMOL, where .pymolrc runs after all built-in
