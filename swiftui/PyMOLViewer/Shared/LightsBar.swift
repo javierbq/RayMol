@@ -96,6 +96,8 @@ struct LightsBarState: Equatable {
     var canRecentre: Bool
     var canToggle: Bool
     var canRevert: Bool
+    var editCount: Int
+    var revertNeedsConfirmation: Bool
     var addHelp: String
     var removeHelp: String
     var powerLabel: String
@@ -120,6 +122,8 @@ struct LightsBarState: Equatable {
         canRecentre = controller.canRecentre
         canToggle = controller.canToggle
         canRevert = controller.canRevert
+        editCount = controller.editCount
+        revertNeedsConfirmation = controller.revertNeedsConfirmation
         presets = controller.presets
         addHelp = lights.count >= LightsController.maxLights
             ? "A rig holds at most \(LightsController.maxLights) lights"
@@ -147,6 +151,11 @@ struct LightsBar: View {
     /// 44 on iOS (every control a 44 pt target, #623), 0 on macOS.
     @Environment(\.lightsTouchMinimum) private var touchMinimum
 
+    @State private var confirmRevert = false
+
+    static let revertConfirmTitle = "Revert your light edits?"
+    static func revertConfirmLabel(_ count: Int) -> String { "Revert \(count) edits" }
+
     static let recentreHelp = "Re-centre: capture the centre and 1× size from the molecules"
     static let revertHelp = "Revert to the lights you had when you opened Lights mode"
     static let presetsHelp = "Replace the lights with a preset"
@@ -168,6 +177,12 @@ struct LightsBar: View {
         .frame(maxWidth: .infinity)
         .background(style.background)
         .tint(style.accent)
+        .confirmationDialog(Self.revertConfirmTitle, isPresented: $confirmRevert, titleVisibility: .visible) {
+            Button(Self.revertConfirmLabel(controller.editCount), role: .destructive) { controller.revert() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This puts back the lights you had when you opened Lights mode.")
+        }
     }
 
     // Everything on one row: icon and title, chips, the actions, Done.
@@ -368,10 +383,13 @@ struct LightsBar: View {
     }
 
     private func revertButton(_ state: LightsBarState, showsRevertWord: Bool = false) -> some View {
-        Button { controller.revert() } label: {
+        Button {
+            if state.revertNeedsConfirmation { confirmRevert = true } else { controller.revert() }
+        } label: {
             if showsRevertWord {
                 // The word, not a bare undo glyph: Revert drops every edit made
-                // since the mode opened, not one step.
+                // since the mode opened, not one step (with a confirmation when
+                // more than one would be lost, #651).
                 HStack(spacing: 3) {
                     icon("arrow.uturn.backward")
                     Text("Revert").font(.system(size: 12, weight: .medium))

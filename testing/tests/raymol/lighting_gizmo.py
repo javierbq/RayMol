@@ -655,9 +655,12 @@ class TestGizmoSource(testing.PyMOLTestCase):
                 first = block[1:].lstrip()
                 self.assertTrue(first.startswith('guard ownsGesture(owner) else'),
                                 first[:60])
-        self.assertIn('edit("aim_point", point)', entries['setAim'])
-        self.assertIn('setPlacement(orbit: orbit, pitch: pitch, radius: radius)',
-                      entries['setPlacement'])
+        self.assertIn('edit("aim_point", point, editKey: gestureEditKey)',
+                      entries['setAim'])
+        self.assertIn('setPlacement(orbit: orbit, pitch: pitch, radius: radius, '
+                      'editKey: gestureEditKey)', entries['setPlacement'])
+        # A gesture counts as one edit for Revert's confirmation (#651).
+        self.assertIn('editKey: gestureEditKey', entries['set'])
 
     def testTheEngineDrivesTheEyeDemand(self):
         """setInteractionMode sets .everyFrame before begin() on entering

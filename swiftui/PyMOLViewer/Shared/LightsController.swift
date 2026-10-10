@@ -323,6 +323,9 @@ final class LightsController: ObservableObject {
     /// A mirror older than this is re-read before an edit writes to it, so a
     /// gesture never writes to the light that used to be at the selected index.
     nonisolated static let staleAfter: TimeInterval = 1.0 / 60.0
+    /// Continuous writes with the same key further apart than this are
+    /// separate edits (#651): a slider released and dragged again.
+    nonisolated static let editRunGap: TimeInterval = 0.5
 
     /// Lights mode is on (between `begin()` and `end()`).
     @Published private(set) var isActive = false
@@ -358,6 +361,12 @@ final class LightsController: ObservableObject {
     /// selected light (`beginGesture()`), never per tick. The inspector's
     /// Orbit and Pitch fields observe it and drop typed text.
     @Published private(set) var gestureGeneration = 0
+    /// Committed edits since the entry snapshot (#651): one per button action,
+    /// one per gesture, and one per run of continuous writes to the same
+    /// target and fields with no gap over `editRunGap` (a slider drag,
+    /// quick repeated stepper presses on one field). Reset by begin(), end() and revert(). Revert asks for
+    /// confirmation when it would drop more than one.
+    @Published private(set) var editCount = 0
 
     /// The per-frame eye data (see LightsEyeState). Not @Published: a change
     /// in it must not re-render the controller's observers.
@@ -385,6 +394,10 @@ final class LightsController: ObservableObject {
     private var lastRefresh: TimeInterval?
     /// `begin()` ran but the entry snapshot is still to be taken.
     private var needsSnapshot = false
+    /// The coalescing key of the last counted edit (see `noteEdit`).
+    private var lastEditKey: String?
+    /// When the last counted or continued edit was written (`seams.now()`).
+    private var lastEditTime: TimeInterval?
     /// `eye.placements` must be rebuilt on the next refresh even when the rig
     /// is unchanged (after `end()`, or an eye read that disagreed with it).
     private var eyeNeedsRebuild = true
@@ -453,6 +466,12 @@ final class LightsController: ObservableObject {
         return (mirrorJSON ?? "null") != entry
     }
 
+    /// Revert asks before dropping the edits: more than one would be lost.
+    nonisolated static func revertNeedsConfirmation(editCount: Int) -> Bool { editCount > 1 }
+    var revertNeedsConfirmation: Bool { Self.revertNeedsConfirmation(editCount: editCount) }
+    /// The coalescing key of a direct-manipulation gesture's writes.
+    var gestureEditKey: String { "gesture#\(gestureGeneration)" }
+
     /// The identity colour slot of the light called `name` (ignoring case).
     func identitySlot(for name: String) -> Int {
         identitySlots[name.lowercased()] ?? LightPalette.defaultSlot(for: name) ?? 0
@@ -472,6 +491,7 @@ final class LightsController: ObservableObject {
     func begin() {
         guard !isActive else { return }
         isActive = true
+        resetEdits()
         needsSnapshot = true
         refresh()
         repairSelection()
@@ -483,6 +503,7 @@ final class LightsController: ObservableObject {
     func end() {
         if isActive { isActive = false }
         needsSnapshot = false
+        resetEdits()
         if entryJSON != nil { entryJSON = nil }
         entryRig = nil
         airMemory = nil
@@ -503,6 +524,7 @@ final class LightsController: ObservableObject {
         lastRefresh = seams.now()
         if needsSnapshot {
             needsSnapshot = false
+            resetEdits()
             entryJSON = json ?? "null"
             entryRig = json.flatMap(Self.decode)
             if presets.isEmpty {
@@ -631,7 +653,9 @@ final class LightsController: ObservableObject {
                                             rim: rim, pin: light.anchor == .pinned)
         guard action.invocation != nil else { return false }
         seams.perform(action)
+        let mirrorBefore = mirrorJSON
         refresh()
+        noteEdit(nil, ifChangedFrom: mirrorBefore)
         return true
     }
 
@@ -640,7 +664,9 @@ final class LightsController: ObservableObject {
         guard canAdd else { return }
         let before = Set((rig?.lights ?? []).map { $0.name.lowercased() })
         seams.perform(.add)
+        let mirrorBefore = mirrorJSON
         refresh()
+        noteEdit(nil, ifChangedFrom: mirrorBefore)
         if let added = rig?.lights.firstIndex(where: { !before.contains($0.name.lowercased()) }) {
             select(index: added)
         }
@@ -653,14 +679,18 @@ final class LightsController: ObservableObject {
         let target = selectedLight?.name ?? selection.name
         guard let name = target else { return }
         seams.perform(.remove(name))
+        let mirrorBefore = mirrorJSON
         refresh()
+        noteEdit(nil, ifChangedFrom: mirrorBefore)
     }
 
     /// Apply the preset called `name` and select its first light.
     func applyPreset(_ name: String) {
         guard canAct else { return }
         seams.perform(.preset(name))
+        let mirrorBefore = mirrorJSON
         refresh()
+        noteEdit(nil, ifChangedFrom: mirrorBefore)
         select(index: 0)
     }
 
@@ -668,14 +698,18 @@ final class LightsController: ObservableObject {
     func recentre() {
         guard canRecentre else { return }
         seams.perform(.recenter)
+        let mirrorBefore = mirrorJSON
         refresh()
+        noteEdit(nil, ifChangedFrom: mirrorBefore)
     }
 
     /// Turn the rig on or off.
     func setEnabled(_ on: Bool) {
         guard canToggle else { return }
         seams.perform(.setEnabled(on))
+        let mirrorBefore = mirrorJSON
         refresh()
+        noteEdit(nil, ifChangedFrom: mirrorBefore)
     }
 
     /// Put back the rig the mode was entered with. The mode stays open and the
@@ -684,6 +718,7 @@ final class LightsController: ObservableObject {
         guard canAct, let entry = entryJSON else { return }
         seams.perform(.restore(entry))
         refresh()
+        resetEdits()
     }
 
     /// Put back only the selected light as it was when the mode was entered
@@ -694,7 +729,9 @@ final class LightsController: ObservableObject {
         guard canRevertLight, let entry = entryJSON,
               let name = selectedLight?.name else { return }
         seams.perform(.restoreLight(name: name, json: entry))
+        let mirrorBefore = mirrorJSON
         refresh()
+        noteEdit(nil, ifChangedFrom: mirrorBefore)
     }
 
     /// The Atmosphere card's On/Off switch (#726), a button press: one
@@ -715,7 +752,9 @@ final class LightsController: ObservableObject {
         if !on {
             airMemory = rig?.air
             seams.perform(.atmosphereOff)
+            let mirrorBefore = mirrorJSON
             refresh()
+            noteEdit(nil, ifChangedFrom: mirrorBefore)
             return true
         }
         let values = AtmosphereSwitch.onValues(current: rig?.air, memory: airMemory,
@@ -723,7 +762,9 @@ final class LightsController: ObservableObject {
         let action = LightsAction.setAir(values)
         guard !values.isEmpty, action.invocation != nil else { return false }
         seams.perform(action)
+        let mirrorBefore = mirrorJSON
         refresh()
+        noteEdit(nil, ifChangedFrom: mirrorBefore)
         return true
     }
 
@@ -733,14 +774,14 @@ final class LightsController: ObservableObject {
     /// (no Python): what a drag tick of #620-#622 calls. `.badIndex` when
     /// inactive, busy or nothing is selected.
     @discardableResult
-    func edit(_ field: String, _ value: Double) -> LightSetResult {
-        write { self.seams.setNumber($0, field, value) }
+    func edit(_ field: String, _ value: Double, editKey: String? = nil) -> LightSetResult {
+        write(key: { editKey ?? "light:\($0):\(field)" }) { self.seams.setNumber($0, field, value) }
     }
 
     /// Set one vector field of the selected light through the bridge setter.
     @discardableResult
-    func edit(_ field: String, _ vector: SIMD3<Double>) -> LightSetResult {
-        write { self.seams.setVector($0, field, vector) }
+    func edit(_ field: String, _ vector: SIMD3<Double>, editKey: String? = nil) -> LightSetResult {
+        write(key: { editKey ?? "light:\($0):\(field)" }) { self.seams.setVector($0, field, vector) }
     }
 
     /// Set several number fields of the selected light, in order, with the
@@ -750,7 +791,7 @@ final class LightsController: ObservableObject {
     /// inactive, busy or nothing is selected. A refused `shadow` write sets
     /// `shadowRefused`; any other write clears it.
     @discardableResult
-    func writeNumbers(_ fields: [(String, Double)]) -> LightSetResult {
+    func writeNumbers(_ fields: [(String, Double)], editKey: String? = nil) -> LightSetResult {
         guard canAct, selection.index != nil else { return .badIndex }
         refreshIfStale()
         guard let index = selection.index else { return .badIndex }
@@ -765,7 +806,12 @@ final class LightsController: ObservableObject {
             }
             wrote = true
         }
-        if wrote { refresh() }
+        if wrote {
+            let key = editKey ?? "light:\(index):" + fields.map(\.0).joined(separator: ",")
+            let mirrorBefore = mirrorJSON
+            refresh()
+            noteEdit(key, ifChangedFrom: mirrorBefore)
+        }
         noteShadowRefused(refusedShadow)
         return result
     }
@@ -778,7 +824,7 @@ final class LightsController: ObservableObject {
     /// no rig. Leaves `shadowRefused` alone (that notice is about the
     /// selected light).
     @discardableResult
-    func writeRigNumbers(_ fields: [(String, Double)]) -> LightSetResult {
+    func writeRigNumbers(_ fields: [(String, Double)], editKey: String? = nil) -> LightSetResult {
         guard canAct else { return .badIndex }
         refreshIfStale()
         guard rig != nil else { return .noRig }
@@ -789,13 +835,49 @@ final class LightsController: ObservableObject {
             guard result == .ok else { break }
             wrote = true
         }
-        if wrote { refresh() }
+        if wrote {
+            let key = editKey ?? "rig:" + fields.map(\.0).joined(separator: ",")
+            let mirrorBefore = mirrorJSON
+            refresh()
+            noteEdit(key, ifChangedFrom: mirrorBefore)
+        }
         return result
+    }
+
+    /// Count one committed edit (#651). A non-nil `key` names the target and
+    /// fields of a continuous write: the same key as the last edit continues
+    /// that edit (a drag, a gesture). A nil key always counts and ends any run.
+    /// A run of writes with the same key ends after `editRunGap` without a
+    /// counted write, so two separate drags of one slider are two edits. A
+    /// gesture's key is unique to that gesture and never times out.
+    func noteEdit(_ key: String?) {
+        let now = seams.now()
+        defer { lastEditTime = now }
+        if let key, key == lastEditKey,
+           key.hasPrefix("gesture#") || now - (lastEditTime ?? now) <= Self.editRunGap {
+            return
+        }
+        editCount += 1
+        lastEditKey = key
+    }
+
+    /// `noteEdit(key)` only when the re-read mirror differs from `before`
+    /// (the mirror JSON just before the re-read): a refused write (a 4th
+    /// shadowed light) or one that changes nothing is not an edit.
+    private func noteEdit(_ key: String?, ifChangedFrom before: String?) {
+        guard mirrorJSON != before else { return }
+        noteEdit(key)
     }
 
     // MARK: private
 
-    private func write(_ set: (Int) -> LightSetResult) -> LightSetResult {
+    private func resetEdits() {
+        if editCount != 0 { editCount = 0 }
+        lastEditKey = nil
+        lastEditTime = nil
+    }
+
+    private func write(key: (Int) -> String, _ set: (Int) -> LightSetResult) -> LightSetResult {
         guard canAct, selection.index != nil else { return .badIndex }
         // A console or MCP change since the last read may have moved the
         // selected light: re-read first so the write lands on the light that
@@ -803,7 +885,11 @@ final class LightsController: ObservableObject {
         refreshIfStale()
         guard let index = selection.index else { return .badIndex }
         let result = set(index)
-        if result == .ok { refresh() }
+        if result == .ok {
+            let mirrorBefore = mirrorJSON
+            refresh()
+            noteEdit(key(index), ifChangedFrom: mirrorBefore)
+        }
         noteShadowRefused(false)
         return result
     }

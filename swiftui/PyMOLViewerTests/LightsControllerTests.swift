@@ -1239,4 +1239,132 @@ final class LightsControllerTests: XCTestCase {
         XCTAssertFalse(controller.placeHighlight(sceneNDC: SIMD2(0, 0), rim: nil))
         XCTAssertTrue(store.performed.isEmpty)
     }
+
+    // MARK: edit count and revert confirmation (#651)
+
+    func testRevertNeedsConfirmationRule() {
+        XCTAssertFalse(LightsController.revertNeedsConfirmation(editCount: 0))
+        XCTAssertFalse(LightsController.revertNeedsConfirmation(editCount: 1))
+        XCTAssertTrue(LightsController.revertNeedsConfirmation(editCount: 2))
+        XCTAssertTrue(LightsController.revertNeedsConfirmation(editCount: 10))
+    }
+
+    func testEditCountCountsActionsAndCoalescesRuns() {
+        begin(with: ["key", "fill", "rim"])
+        XCTAssertEqual(controller.editCount, 0)
+        XCTAssertFalse(controller.revertNeedsConfirmation)
+
+        for i in 0..<100 {
+            XCTAssertEqual(controller.edit("orbit", Double(i)), .ok)
+        }
+        XCTAssertEqual(controller.editCount, 1)
+        XCTAssertFalse(controller.revertNeedsConfirmation)
+
+        XCTAssertEqual(controller.edit("pitch", 10), .ok)
+        XCTAssertEqual(controller.editCount, 2)
+        XCTAssertTrue(controller.revertNeedsConfirmation)
+
+        controller.add()
+        XCTAssertEqual(controller.editCount, 3)
+
+        controller.select(name: "key")
+        XCTAssertEqual(controller.edit("pitch", 5), .ok)
+        XCTAssertEqual(controller.editCount, 4)
+    }
+
+    func testGestureIsOneEdit() throws {
+        begin(with: ["key", "fill", "rim"])
+        let owner = try XCTUnwrap(controller.beginGesture())
+        for i in 0..<50 {
+            XCTAssertEqual(controller.set(.orbit, Double(i), owner: owner), .ok)
+            XCTAssertEqual(controller.setPlacement(orbit: 1, pitch: 2, owner: owner), .ok)
+        }
+        XCTAssertEqual(controller.editCount, 1)
+
+        let owner2 = try XCTUnwrap(controller.beginGesture())
+        XCTAssertEqual(controller.set(.orbit, 3, owner: owner2), .ok)
+        XCTAssertEqual(controller.editCount, 2)
+    }
+
+    func testEditCountResetsOnRevertEndAndBegin() {
+        begin(with: ["key", "fill", "rim"])
+        controller.add()
+        XCTAssertEqual(controller.edit("orbit", 30), .ok)
+        XCTAssertEqual(controller.editCount, 2)
+
+        controller.revert()
+        XCTAssertEqual(controller.editCount, 0)
+        XCTAssertFalse(controller.revertNeedsConfirmation)
+
+        XCTAssertEqual(controller.edit("orbit", 40), .ok)
+        XCTAssertEqual(controller.editCount, 1)
+
+        controller.end()
+        XCTAssertEqual(controller.editCount, 0)
+
+        // Failed/refused writes after end() do not count.
+        XCTAssertEqual(controller.edit("orbit", 50), .badIndex)
+        XCTAssertEqual(controller.editCount, 0)
+
+        controller.begin()
+        XCTAssertEqual(controller.editCount, 0)
+
+        XCTAssertEqual(controller.edit("orbit", 60), .ok)
+        XCTAssertEqual(controller.editCount, 1)
+
+        // Failed/refused write with nothing selected does not count.
+        store.setRig([])
+        controller.refresh()
+        XCTAssertNil(controller.selection.index)
+        XCTAssertEqual(controller.edit("orbit", 70), .badIndex)
+        XCTAssertEqual(controller.editCount, 1)
+    }
+    func testRefusedOrNoOpEditsDoNotCount() {
+        store.setRig(["key", "fill", "rim", "light4"])
+        store.lights[3].shadow = true
+        controller.begin()
+        controller.select(name: "light4")
+        XCTAssertEqual(controller.setShadow(false), .ok)
+        for name in ["key", "fill", "rim"] {
+            controller.select(name: name)
+            XCTAssertEqual(controller.setShadow(true), .ok)
+        }
+        XCTAssertEqual(controller.editCount, 4)
+
+        // A write of the value the light already has changes nothing.
+        XCTAssertEqual(controller.setShadow(true), .ok)
+        XCTAssertEqual(controller.editCount, 4)
+
+        // Revert this light is refused by the 3-shadow cap: the rig is
+        // unchanged, so it is not an edit.
+        controller.select(name: "light4")
+        controller.revertSelectedLight()
+        XCTAssertEqual(store.lights[3].shadow, false, "refused")
+        XCTAssertEqual(controller.editCount, 4)
+    }
+    func testSeparateRunsOnOneFieldAreSeparateEdits() {
+        begin(with: ["key", "fill", "rim"])
+        for i in 1...10 {
+            store.clock += 1.0 / 60.0
+            XCTAssertEqual(controller.edit("orbit", Double(i)), .ok)
+        }
+        XCTAssertEqual(controller.editCount, 1, "one drag")
+        XCTAssertFalse(controller.revertNeedsConfirmation)
+
+        // Released, then dragged again: a second edit.
+        store.clock += 1
+        for i in 20...30 {
+            store.clock += 1.0 / 60.0
+            XCTAssertEqual(controller.edit("orbit", Double(i)), .ok)
+        }
+        XCTAssertEqual(controller.editCount, 2)
+        XCTAssertTrue(controller.revertNeedsConfirmation)
+
+        // A gesture held still past the gap is still one edit.
+        let owner = controller.beginGesture()!
+        XCTAssertEqual(controller.set(.pitch, 10, owner: owner), .ok)
+        store.clock += 2
+        XCTAssertEqual(controller.set(.pitch, 20, owner: owner), .ok)
+        XCTAssertEqual(controller.editCount, 3)
+    }
 }

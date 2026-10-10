@@ -394,7 +394,7 @@ extension LightsController {
     @discardableResult
     func set(_ parameter: LightParameter, _ value: Double, owner: String) -> LightSetResult {
         guard ownsGesture(owner) else { return .badIndex }
-        return set(parameter, value)
+        return writeNumbers([(parameter.field, value)], editKey: gestureEditKey)
     }
 
     /// Move the light a gesture began on (#622's knob tick): `ownsGesture`,
@@ -405,7 +405,7 @@ extension LightsController {
     func setPlacement(orbit: Double?, pitch: Double?, radius: Double? = nil,
                       owner: String) -> LightSetResult {
         guard ownsGesture(owner) else { return .badIndex }
-        return setPlacement(orbit: orbit, pitch: pitch, radius: radius)
+        return setPlacement(orbit: orbit, pitch: pitch, radius: radius, editKey: gestureEditKey)
     }
 
     /// Aim the light a gesture began on at a world point (#622's aim dot,
@@ -415,7 +415,7 @@ extension LightsController {
     @discardableResult
     func setAim(_ point: SIMD3<Double>, owner: String) -> LightSetResult {
         guard ownsGesture(owner) else { return .badIndex }
-        return edit("aim_point", point)
+        return edit("aim_point", point, editKey: gestureEditKey)
     }
 
     /// The one owner guard of every gesture write (`set`, `setPlacement` and
@@ -461,12 +461,12 @@ extension LightsController {
     /// succeeded.
     @discardableResult
     func setPlacement(orbit: Double? = nil, pitch: Double? = nil,
-                      radius: Double? = nil) -> LightSetResult {
+                      radius: Double? = nil, editKey: String? = nil) -> LightSetResult {
         var fields: [(String, Double)] = []
         if let pitch { fields.append((LightParameter.pitch.field, pitch)) }
         if let orbit { fields.append((LightParameter.orbit.field, orbit)) }
         if let radius { fields.append((LightParameter.radius.field, radius)) }
-        return writeNumbers(fields)
+        return writeNumbers(fields, editKey: editKey)
     }
 
     /// Set the selected light's colour (sRGB 0...1). A colour within
