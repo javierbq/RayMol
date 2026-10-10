@@ -1102,10 +1102,7 @@ struct ContentView: View {
     // reshapes the drawable on entering the mode.
     private var macLightsOverlay: some View {
         VStack(alignment: .trailing, spacing: 8) {
-            lightsBar
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-                    engine.lightGizmoUI.chromeInsets = LightGizmoInsets(top: height)
-                }
+            lightsBar.lightGizmoTopChrome(engine.lightGizmoUI)
             lightsSideColumn.padding(.trailing, 10).padding(.bottom, 10)
         }
     }
