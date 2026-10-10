@@ -1084,11 +1084,12 @@ extension MetalViewport {
         }
 
         /// The overlay shows the pointer's drag (none once it ended), with
-        /// the readout of the layout after the tick's write.
-        private func showLightGizmoDrag(_ engine: PyMOLEngine, in view: MTKView) {
+        /// the readout of the layout after the tick's write beside `pointer`
+        /// (top-left points; nil: beside the target) (#703).
+        private func showLightGizmoDrag(_ engine: PyMOLEngine, in view: MTKView, at pointer: CGPoint?) {
             let layout = engine.lightGizmoPointer.session == nil ? nil : lightGizmoLayout(in: view)
             MainActor.assumeIsolated {
-                engine.lightGizmoUI.track(engine.lightGizmoPointer.session, layout: layout)
+                engine.lightGizmoUI.track(engine.lightGizmoPointer.session, layout: layout, pointer: pointer)
             }
         }
 
@@ -1130,7 +1131,7 @@ extension MetalViewport {
                 engine.lightGizmoPointer.press(at: p, option: option, layout: layout, interaction: interaction,
                                                clickCount: clickCount)
             }
-            if route == .gizmo { showLightGizmoDrag(engine, in: view) }
+            if route == .gizmo { showLightGizmoDrag(engine, in: view, at: p) }
             return route != .camera
         }
 
@@ -1146,7 +1147,7 @@ extension MetalViewport {
             let route = MainActor.assumeIsolated {
                 engine.lightGizmoPointer.drag(to: p, interaction: interaction)
             }
-            if route == .gizmo { showLightGizmoDrag(engine, in: view) }
+            if route == .gizmo { showLightGizmoDrag(engine, in: view, at: p) }
             return route != .camera
         }
 
@@ -1161,7 +1162,7 @@ extension MetalViewport {
             let route = MainActor.assumeIsolated {
                 engine.lightGizmoPointer.release(at: p, interaction: interaction)
             }
-            showLightGizmoDrag(engine, in: view)
+            showLightGizmoDrag(engine, in: view, at: nil)
             return route != .camera
         }
 
@@ -1875,7 +1876,7 @@ extension MetalViewport {
                                                                  interaction: interaction)
                 }
                 guard route == .gizmo else { return false }
-                showLightGizmoDrag(engine, in: view)
+                showLightGizmoDrag(engine, in: view, at: location)
                 return true
             case .changed:
                 guard engine.lightGizmoPointer.ownsPress else { return false }
@@ -1887,7 +1888,7 @@ extension MetalViewport {
                 MainActor.assumeIsolated {
                     _ = engine.lightGizmoPointer.touchEnded(at: location, interaction: interaction)
                 }
-                showLightGizmoDrag(engine, in: view)
+                showLightGizmoDrag(engine, in: view, at: nil)
                 return true
             default:
                 return engine.lightGizmoPointer.ownsPress

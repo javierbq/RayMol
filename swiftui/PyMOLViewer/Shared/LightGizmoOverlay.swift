@@ -69,6 +69,9 @@ final class LightGizmoUIState: ObservableObject {
         var viewSize: CGSize?
         /// The edges covered by chrome drawn over the viewport (#693).
         var chromeInsets = LightGizmoInsets.zero
+        /// The pointer of the drag shown (top-left points), nil with no drag:
+        /// the readout sits beside it (#703).
+        var pointer: CGPoint?
     }
 
     private(set) var values = Values()
@@ -110,11 +113,17 @@ final class LightGizmoUIState: ObservableObject {
         set { update(\.chromeInsets, newValue) }
     }
 
+    var pointer: CGPoint? {
+        get { values.pointer }
+        set { update(\.pointer, newValue) }
+    }
+
     /// The drag state of `session` (nil or ended: none) with the readout of
     /// `layout` (the layout after the tick's write): the target shown active
     /// (coincident rings as the ring the first move chose), the knob's side,
-    /// the band state and the readout. One publish at most.
-    func track(_ session: LightGizmoDragSession?, layout: LightGizmoLayout?) {
+    /// the band state, the readout and the drag's `pointer` (the readout
+    /// sits beside it; nil: beside the target). One publish at most.
+    func track(_ session: LightGizmoDragSession?, layout: LightGizmoLayout?, pointer: CGPoint? = nil) {
         var next = values
         if let session, !session.isEnded {
             let shown = Self.shownTarget(session)
@@ -122,11 +131,13 @@ final class LightGizmoUIState: ObservableObject {
             next.hemisphere = session.isBehind.map { $0 ? .behind : .front }
             next.outside = session.isOutside
             next.readout = layout?.readout(for: shown)
+            next.pointer = pointer
         } else {
             next.active = nil
             next.hemisphere = nil
             next.outside = false
             next.readout = nil
+            next.pointer = nil
         }
         set(next)
     }
@@ -137,6 +148,7 @@ final class LightGizmoUIState: ObservableObject {
         var next = values
         next.hemisphere = nil
         next.outside = false
+        next.pointer = nil
         if let name, let readout = layout?.radiusReadout(name) {
             next.active = .knob(name)
             next.readout = readout
@@ -663,8 +675,9 @@ struct LightGizmoPainter {
 
     // MARK: the readout
 
-    /// Where the readout sits: beside the active target (else the hovered
-    /// one; else above the sphere).
+    /// Where the readout sits when no drag pointer is known (a scroll or a
+    /// pinch): beside the active target (else the hovered one; else above
+    /// the sphere).
     func readoutAnchor() -> CGPoint {
         for target in [ui.active, ui.hovered].compactMap({ $0 }) {
             if let p = point(of: target) { return p }
@@ -690,12 +703,19 @@ struct LightGizmoPainter {
         let size = resolved.measure(in: CGSize(width: 1000, height: 100))
         let pad = CGSize(width: 6, height: 3)
         let box = CGSize(width: size.width + 2 * pad.width, height: size.height + 2 * pad.height)
-        let p = readoutAnchor()
         let view = layout.projection.viewSize
-        let margin: CGFloat = 8
-        func clamp(_ v: CGFloat, _ lo: CGFloat, _ hi: CGFloat) -> CGFloat { hi < lo ? lo : min(max(v, lo), hi) }
-        let origin = CGPoint(x: clamp(p.x + 14, margin, view.width - margin - box.width),
+        let origin: CGPoint
+        if let pointer = ui.pointer {
+            // A drag: beside the pointer, inside the view and its chrome (#703).
+            origin = LightGizmoReadoutPlacement.origin(pointer: pointer, box: box, viewSize: view,
+                                                       insets: ui.chromeInsets)
+        } else {
+            let p = readoutAnchor()
+            let margin: CGFloat = 8
+            func clamp(_ v: CGFloat, _ lo: CGFloat, _ hi: CGFloat) -> CGFloat { hi < lo ? lo : min(max(v, lo), hi) }
+            origin = CGPoint(x: clamp(p.x + 14, margin, view.width - margin - box.width),
                              y: clamp(p.y - 14 - box.height, margin, view.height - margin - box.height))
+        }
         let rect = CGRect(origin: origin, size: box)
         context.fill(Path(roundedRect: rect, cornerRadius: 5), with: .color(.black.opacity(0.72)))
         context.draw(resolved, in: CGRect(x: rect.minX + pad.width, y: rect.minY + pad.height,
