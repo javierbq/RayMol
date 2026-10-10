@@ -588,6 +588,11 @@ final class LightGizmoRoutingTests: XCTestCase {
 
         let t = taps()
         defer { t.stop() }
+        // Only the hover pick and the clear: deferred work another test left
+        // on the main queue (e.g. leaving Design mode) may run Python too.
+        func hoverLines() -> [String] {
+            t.python.lines.filter { $0.contains("hover_preview_at") || $0.contains("_preselect") }
+        }
 
         engine.clearHoverPreview()
         XCTAssertEqual(t.python.lines, [], "an idle clear runs no Python")
@@ -596,10 +601,11 @@ final class LightGizmoRoutingTests: XCTestCase {
         // Wait past the hover throttle so the next hover fires on the leading edge.
         RunLoop.current.run(until: Date().addingTimeInterval(0.1))
 
+        t.python.lines = []
         engine.hoverPreview(0.9, 0.9, 1.0)
         XCTAssertTrue(engine.hoverPreviewMayBeShown)
-        XCTAssertEqual(t.python.lines.count, 1)
-        XCTAssertTrue(t.python.lines.first?.contains("hover_preview_at") == true, "\(t.python.lines)")
+        XCTAssertEqual(hoverLines().count, 1, "\(t.python.lines)")
+        XCTAssertTrue(hoverLines().first?.contains("hover_preview_at") == true, "\(t.python.lines)")
 
         t.python.lines = []
         engine.clearHoverPreview()
@@ -618,12 +624,52 @@ final class LightGizmoRoutingTests: XCTestCase {
         RunLoop.current.run(until: Date().addingTimeInterval(0.1))
         t.python.lines = []
         engine.hoverPreview(-0.9, -0.9, 1.0)
-        XCTAssertEqual(t.python.lines.count, 1, "the readout pick runs")
-        XCTAssertTrue(t.python.lines.first?.contains("hover_preview_at") == true, "\(t.python.lines)")
+        XCTAssertEqual(hoverLines().count, 1, "the readout pick runs: \(t.python.lines)")
+        XCTAssertTrue(hoverLines().first?.contains("hover_preview_at") == true, "\(t.python.lines)")
         XCTAssertFalse(engine.hoverPreviewMayBeShown, "a readout-only pick writes no preview")
         engine.clearHoverPreview()
-        XCTAssertEqual(t.python.lines.count, 1, "the clear after a readout-only pick runs no Python")
+        XCTAssertEqual(hoverLines().count, 1, "the clear after a readout-only pick runs no Python")
     }
+
+    #if RAYMOL_MPNN
+    /// Both Design-mode callers of `hover_design_at` (the hover and the iOS
+    /// tap) write '_preselect', so each must arm exactly one later clear
+    /// (#694); otherwise the clear would leave the cyan glow behind.
+    func testDesignPicksArmTheHoverClear() throws {
+        try LightsLive.requireEngine()
+        engine.setDesignMode(true)
+        defer {
+            engine.setDesignMode(false)
+            // Let leaving Design mode finish its deferred work here, not in
+            // the next test.
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        XCTAssertTrue(engine.designMode)
+        engine.clearHoverPreview()
+
+        let t = taps()
+        defer { t.stop() }
+        let picks: [(String, () -> Void)] = [
+            ("hoverDesignPreview", { self.engine.hoverDesignPreview(-0.9, -0.9, 1.0) }),
+            ("designPickResidue", { self.engine.designPickResidue(ndcX: -0.9, ndcY: -0.9, aspect: 1.0) }),
+        ]
+        for (name, pick) in picks {
+            engine.clearHoverPreview()
+            XCTAssertFalse(engine.hoverPreviewMayBeShown, name)
+            // Past the design-hover throttle, so the hover fires on the leading edge.
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+            t.python.lines = []
+            pick()
+            XCTAssertTrue(t.python.lines.contains { $0.contains("hover_design_at") }, "\(name): \(t.python.lines)")
+            XCTAssertTrue(engine.hoverPreviewMayBeShown, "\(name) arms the clear")
+            t.python.lines = []
+            engine.clearHoverPreview()
+            engine.clearHoverPreview()
+            XCTAssertEqual(t.python.lines.filter { $0.contains("_preselect") }.count, 1,
+                           "\(name): exactly one clear runs Python \(t.python.lines)")
+        }
+    }
+    #endif
 
     // MARK: DEBUG size check
 
