@@ -43,6 +43,7 @@ final class BackgroundOpacityTests: XCTestCase {
 @MainActor
 final class ExportBackgroundTests: XCTestCase {
     private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var settingsSaved = false
 
     private func requireEngine() throws {
         let deadline = Date().addingTimeInterval(20)
@@ -53,6 +54,24 @@ final class ExportBackgroundTests: XCTestCase {
             XCTFail("PyMOLEngine.shared was not ready")
             throw NSError(domain: "PyMOLEngine", code: 1)
         }
+        // The engine is shared by every live test: save what these tests
+        // change so tearDown can put it back.
+        engine.runPython(
+            "from pymol import cmd as _ebg_c\n"
+            + "_ebg_saved = {_k: _ebg_c.get(_k) for _k in ('bg_rgb',\n"
+            + "    'ray_opaque_background', 'metal_shadows')}\n")
+        settingsSaved = true
+    }
+
+    override func tearDown() {
+        if settingsSaved {
+            engine.runPython(
+                "from pymol import cmd as _ebg_c\n"
+                + "for _k, _v in globals().pop('_ebg_saved', {}).items():\n"
+                + "    _ebg_c.set(_k, _v)\n")
+            settingsSaved = false
+        }
+        super.tearDown()
     }
 
     private func pngPixels(_ path: String) -> (width: Int, height: Int, rgba: [UInt8])? {
