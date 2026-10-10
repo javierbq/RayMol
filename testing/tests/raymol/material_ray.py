@@ -9,8 +9,8 @@ lighting model already has (layer1/Material.h, MaterialRayParams):
     so a marble surface traces exactly as the same surface under
     `ray_texture 2`, and an explicit `ray_texture` wins;
   * a per-primitive highlight scale, diffuse scale and highlight tint -- matte
-    loses its highlight, plastic brightens it, metallic dims the diffuse and
-    tints the highlight toward the surface's own colour.
+    and clay lose their highlight, plastic brightens it, metallic dims the
+    diffuse and tints the highlight toward the surface's own colour.
 
 No setting is written, and `default` traces byte for byte as before.
 
@@ -52,7 +52,7 @@ EXPECTED = {
     'frosted_glass': (1, 5, 1.0, 1.0, 0.0),
     'jelly':         (0, 6, 1.0, 1.0, 0.0),
     'marble':        (2, 7, 1.0, 1.0, 0.0),
-    'clay':          (1, 8, 1.0, 1.0, 0.0),
+    'clay':          (1, 8, 0.0, 1.0, 0.0),
     'rubber':        (4, 9, 1.0, 1.0, 0.0),
 }
 
@@ -254,10 +254,12 @@ class TestTheRenders(_RayCase):
 
     def testTheMatteModesTraceTheirTexture(self):
         # Random textures: compared by high-frequency energy, not by pixels.
-        smooth = hf_energy(self.render())
-        for name, tex in (('clay', 1), ('rubber', 4)):
+        # Clay also drops the highlight (#711), so its smooth and explicit
+        # twins are matte (no highlight) rather than default.
+        for name, tex, twin in (('clay', 1, 'matte'), ('rubber', 4, None)):
+            smooth = hf_energy(self.render(material=twin))
             mat = hf_energy(self.render(material=name))
-            explicit = hf_energy(self.render(tex=tex))
+            explicit = hf_energy(self.render(material=twin, tex=tex))
             self.assertGreater(mat, 1.3 * smooth, name)
             self.assertLess(abs(mat - explicit), 0.1 * explicit, name)
 
@@ -281,10 +283,12 @@ class TestTheRenders(_RayCase):
         (0.2, 0.5, 0.8), so red is the channel only white light raises."""
         return subject(img) & (img[..., 0] > 150)
 
-    def testMatteHasNoHighlight(self):
+    def testMatteAndClayHaveNoHighlight(self):
         self.assertGreater(self.highlight_pixels(self.render()).sum(), 20)
-        self.assertEqual(
-            self.highlight_pixels(self.render(material='matte')).sum(), 0)
+        for name in ('matte', 'clay'):
+            self.assertEqual(
+                self.highlight_pixels(self.render(material=name)).sum(), 0,
+                name)
 
     def testPlasticBrightensTheHighlight(self):
         default = self.highlight_pixels(self.render()).sum()
