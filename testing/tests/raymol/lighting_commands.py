@@ -65,6 +65,7 @@ import re
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 import pymol
 import pymol.invocation
@@ -2037,6 +2038,56 @@ class TestPlacement(PlacementCase):
         self.assertError(r'lights: key: highlight=ball: not available in '
                          r'grid mode.*use click=x/y', cmd.lights, 'key',
                          highlight='ball')
+
+    @contextlib.contextmanager
+    def unsized_viewport(self):
+        with mock.patch.object(_cmd, 'get_viewport', lambda *a: (0, 1)):
+            self.assertIsNone(lighting_commands._viewport_aspect(cmd))
+            yield
+
+    def testHighlightWithAnUnsizedViewport(self):
+        self.ball('s1', (-6.0, 0.0, 0.0), self.R)
+        c2 = (5.0, 3.0, -4.0)
+        self.ball('s2', c2, self.R)
+        self.frame()
+        with self.unsized_viewport():
+            _, text = output(cmd.lights, 'key', highlight='s2', radius=3,
+                             quiet=0)
+        V = vunit(vsub(CAMERA, c2))
+        A = vadd(c2, vscale(self.R, V))
+        P = self.assertPlaced('key', A, V, None)
+        self.assertAlmostEqual(vnorm(P), 30.0, places=3)
+        note = ("the viewport has no size yet, so the pick used the aspect of a "
+                "%dx%d window" % (pymol.invocation.options.win_x,
+                                  pymol.invocation.options.win_y))
+        self.assertIn(note, text)
+
+    def testClickWithAnUnsizedViewport(self):
+        self.ball('ball', (0.0, 0.0, 0.0), self.R)
+        self.frame()
+        with mock.patch.object(metal_pick, 'surface_at',
+                               wraps=metal_pick.surface_at) as spy:
+            with self.unsized_viewport():
+                cmd.lights('key', click='0/0', radius=2)
+            self.assertVec(world_position('key'), (0.0, 0.0, 20.0), places=3)
+            spy.assert_called_once()
+            _, kwargs = spy.call_args
+            expected_aspect = (float(pymol.invocation.options.win_x) /
+                               float(pymol.invocation.options.win_y))
+            self.assertIn('aspect', kwargs)
+            self.assertEqual(kwargs['aspect'], expected_aspect)
+
+    def testSizedViewportPassesNoAspectToClick(self):
+        self.ball('ball', (0.0, 0.0, 0.0), self.R)
+        self.frame()
+        with mock.patch.object(metal_pick, 'surface_at',
+                               wraps=metal_pick.surface_at) as spy:
+            _, text = output(cmd.lights, 'key', click='0/0', radius=2,
+                             quiet=0)
+            spy.assert_called_once()
+            _, kwargs = spy.call_args
+            self.assertNotIn('aspect', kwargs)
+            self.assertNotIn('no size yet', text)
 
     def testTarget(self):
         cmd.pseudoatom('t', name='A', pos=[1.0, 0.0, 0.0])
