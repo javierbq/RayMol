@@ -6572,10 +6572,20 @@ void RendererMetal::bindEnvironment(id<MTLRenderCommandEncoder> enc)
 
 void RendererMetal::clearColor(float r, float g, float b, float a)
 {
+  if (_clearR == r && _clearG == g && _clearB == b && _clearA == a)
+    return;
   _clearR = r;
   _clearG = g;
   _clearB = b;
   _clearA = a;
+
+  // If an encoder is active on the scene pass before any geometry has drawn
+  // (e.g. SceneRenderMetal updating clearColor after beginFrame), re-clear so
+  // this frame reflects the new colour immediately.
+  if (_encoder && _passDesc == _scenePassDesc && !_shadowMode && !_oitActive) {
+    clear(true, true, true);
+    ensureEncoder();
+  }
 }
 
 void RendererMetal::scissor(int x, int y, int w, int h)

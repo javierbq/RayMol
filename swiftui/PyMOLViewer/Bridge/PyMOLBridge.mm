@@ -13,6 +13,7 @@
 #include "SceneLights.h"  // the light rig (#611): no Python
 #include "MyPNG.h"        // MyPNGSetFastWrite (#601)
 #include "SurfacePick.h"  // ScenePickSurface / Prepare / Release (#614)
+#include "Color.h"        // ColorGet (#628)
 
 #include "PyMOLBridgeLights.h"  // PyMOLLightRigEye, PyMOLLightEye, PYMOL_LIGHT_SET_*
 
@@ -722,6 +723,15 @@ void PyMOLBridge_SetupMetalRenderer(PyMOLHandle h, void *mtkViewPtr)
     G->Renderer = new pymol::RendererMetal(g_metalDevice, g_metalQueue);
 }
 
+static void syncClearColor(PyMOLGlobals* G, pymol::RendererMetal* renderer)
+{
+    const float* bg = ColorGet(G, SettingGetGlobal_color(G, cSetting_bg_rgb));
+    int opaqueBg = SettingGetGlobal_b(G, cSetting_ray_opaque_background);
+    if (bg) {
+        renderer->clearColor(bg[0], bg[1], bg[2], opaqueBg ? 1.0f : 0.0f);
+    }
+}
+
 int PyMOLBridge_RenderMetalFrame(PyMOLHandle h, void *mtkViewPtr,
                                  int width, int height)
 {
@@ -767,6 +777,7 @@ int PyMOLBridge_RenderMetalFrame(PyMOLHandle h, void *mtkViewPtr,
     renderer->beginLiveFrame(width, height);
     renderer->setLetterboxOrigin(ox, oy);
     renderer->viewport(ox, oy, vpW, vpH);
+    syncClearColor(G, renderer);
     renderer->beginFrame();
     ImmBatch_SetActiveRenderer(renderer);
     PyMOL_PushValidContext(INST(h));
@@ -815,6 +826,7 @@ static void renderOneOffscreen(PyMOLHandle h, PyMOLGlobals* G,
                                int width, int height, const std::string& path)
 {
     renderer->beginOffscreen(width, height, path);
+    syncClearColor(G, renderer);
     renderer->beginFrame();
     ImmBatch_SetActiveRenderer(renderer);
     PyMOL_PushValidContext(INST(h));
