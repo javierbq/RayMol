@@ -269,7 +269,8 @@ sticks.
 light on its radius as a camera light. When the picked point is on or beyond
 that radius, the radius is raised to put the light half a size past it, with
 a note; past 8 that is an error (re-centre first). The beam is fitted to a
-10 Å patch around the point unless `beam=` is given. One helper at a time;
+10 Å patch around the point (never below 20°, so a far light keeps a usable
+beam) unless `beam=` is given. One helper at a time;
 `orbit`, `pitch` and `position` cannot be given with `highlight=` or
 `click=`, and `aim` with no helper.
 
