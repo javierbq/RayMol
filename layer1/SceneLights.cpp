@@ -369,7 +369,9 @@ std::optional<pymol::LightAirBlock> SceneLightsAir(PyMOLGlobals* G,
   in.offscreen = options && options->offscreen
                      ? *options->offscreen
                      : (G->Renderer && G->Renderer->offscreenFrame());
-  in.frames = SceneCountFrames(G);
+  // #688: only a defined movie drives the dust; without one, the states
+  // of a multi-state object do not (an offscreen still uses 0).
+  in.frames = MovieGetLength(G) > 0 ? SceneCountFrames(G) : 1;
   in.frame = SceneGetFrame(G);
   in.fps = SettingGetGlobal_f(G, cSetting_movie_fps);
   if (!in.offscreen && !(in.pinned >= 0.0))

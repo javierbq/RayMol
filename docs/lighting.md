@@ -388,8 +388,9 @@ atmosphere off
   seconds (before `dust_speed`), for repeatable renders. Below 0 (the
   default), exports and a playing movie use movie time (frame N at
   (N - 1) / `movie_fps` seconds), so a movie export is repeatable; an
-  offscreen still with no movie uses time 0 (but see #688); the live view
-  uses the wall clock.
+  offscreen still with no movie uses time 0, whatever the state of a
+  multi-state object (stepping states animates the dust only when a movie is
+  defined, #688); the live view uses the wall clock.
 - The air pass runs at half resolution by default on the Mac and on iOS
   (`metal_light_air_resolution`), and the haze takes one shadow tap per step
   (`metal_light_air_shadow_filter`); see [Settings](#settings).
@@ -750,10 +751,9 @@ Open follow-ups of the lighting work (#610) that you may notice:
   lower the exposure, the haze or the light (#683, see [Backlit
   haze](#backlit-haze)). No air in grid mode (#686). Transparent-background
   exports drop the air over the empty background (#684). Animated dust
-  redraws the whole scene on every tick (#685). An offscreen still of a
-  multi-state object with no movie takes its dust time from the state
-  (#688). The dust jumps when `dust_speed` is blended across scenes (#687).
-  The dust seed has no control in the Atmosphere card (#740).
+  redraws the whole scene on every tick (#685). The dust jumps when
+  `dust_speed` is blended across scenes (#687). The dust seed has no control
+  in the Atmosphere card (#740).
 - **Materials and HDR.** The studio diffuse lights a material's plain base
   colour, not its procedural pattern (#710). Glass glints on sphere impostors
   do not show (#713). The materials' own classic terms pass their 8-bit knee

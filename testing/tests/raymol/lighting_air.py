@@ -577,6 +577,24 @@ class TestMovieTime(AirCase):
         cmd.frame(16)
         self.assertEqual(self.time(offscreen=False, wall=50.0), 100.0)
 
+    def testStatesWithoutMovieAreStill(self):
+        # #688: with no movie, a multi-state object's state never drives
+        # the dust; an offscreen still of state 3 has time 0, like state 1
+        cmd.mset()                      # clear the movie from setUp
+        cmd.create('ms', 'm', 1, 1)
+        cmd.create('ms', 'm', 1, 2)
+        cmd.create('ms', 'm', 1, 3)
+        self.assertEqual(cmd.count_states('ms'), 3)
+        self.rig(air=dict(AIR, dust_speed=2.0))
+        for state in (1, 3):
+            cmd.set('state', state)
+            self.assertEqual(cmd.get_state(), state)
+            self.assertEqual(self.time(), 0.0, state)
+        # a movie over the same states still drives the dust
+        cmd.mset('1 -3')
+        cmd.frame(3)
+        self.assertEqual(self.time(), f32(2 / 30.0 * 2.0))
+
 
 class TestAnimating(AirCase):
 
