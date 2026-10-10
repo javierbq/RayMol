@@ -272,7 +272,8 @@ def place_scene(frame, name, linear=0):
         # settings ease exactly like the camera.
         try:
             from pymol import raymol_scene_anim as _an
-            _an.author(_scene_keyframes(), power=power)
+            # The scrub reports cut frames, not markers (#659), so do not wrap.
+            _an.author(_scene_keyframes(), power=power, wrap=False)
         except Exception as e:
             print('MOVIE_ERR:' + str(e))
     except Exception as e:
@@ -432,7 +433,8 @@ def append_template(kind, duration=8.0, axis='y', angle=30.0,
                 # module for the non-scenes path.
                 try:
                     from pymol import raymol_scene_anim as _an
-                    _an.author(_scene_keyframes())
+                    # The scrub reports cut frames, not markers (#659), so do not wrap.
+                    _an.author(_scene_keyframes(), wrap=False)
                 except Exception as e:
                     print('MOVIE_ERR:' + str(e))
 

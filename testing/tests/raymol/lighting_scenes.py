@@ -1294,21 +1294,91 @@ class TestSceneMovieBlend(_BlendCase):
         self.assertNotIn('lights', cmd.get_session()['raymol_movie_anim'])
         self.assertFalse(any('_lights_blend' in c for c in raw_movie_commands()))
 
-    def testLoopWrapIsNotBlended(self):
-        """Known limit (Q8): the loop-wrap span after the last marker has no
-        keyframe pair, so the rig holds B there and pops to A at frame 1."""
+    def testLoopWrapBlendsBackToTheFirstScene(self):
+        cmd.set('movie_loop', 1)
         rebuild(scene_item(1, 'A'), scene_item(40, 'B', end=60))
         cmds = raw_movie_commands()
         self.assertEqual(len(cmds), 60)
-        self.assertTrue(all('_lights_blend' in cmds[f - 1] for f in range(2, 40)))
-        self.assertFalse(any('_lights_blend' in cmds[f - 1]
-                             for f in range(40, 61)))
-        # played in order: the cut at 40 applies B, which then holds
-        for f in range(1, 61):
-            got = played(f)
-            if f >= 40:
-                self.assertEqual(got, self.b, f)
+        self.assertFalse(any('_lights_blend' in cmds[f - 1] for f in (1, 40)))
+        for f in list(range(2, 40)) + list(range(41, 61)):
+            self.assertEqual(cmds[f - 1].count('_lights_blend'), 1, f)
+        for f in range(41, 61):
+            self.assertEqual(anim._lights_track[f],
+                             ('B', 'A', eased_t(f, 40, 61)), f)
+        for f in (41, 50, 60):
+            self.assertRigAlmostEqual(
+                played(f),
+                anim.blend_target(self.b, self.a, eased_t(f, 40, 61)),
+                'f%d' % f)
+        self.assertEqual(played(40), self.b)
         self.assertEqual(played(1), self.a)
+
+    def testLoopOffHoldsTheLastScene(self):
+        cmd.set('movie_loop', 0)
+        try:
+            rebuild(scene_item(1, 'A'), scene_item(40, 'B', end=60))
+            cmds = raw_movie_commands()
+            self.assertFalse(any('_lights_blend' in cmds[f - 1]
+                                 for f in range(40, 61)))
+            for f in range(40, 61):
+                self.assertEqual(played(f), self.b, f)
+            for f in range(2, 40):
+                self.assertEqual(cmds[f - 1].count('_lights_blend'), 1, f)
+        finally:
+            cmd.set('movie_loop', 1)
+
+    def testLoopWrapBlendsTheSettings(self):
+        cmd.set('movie_loop', 1)
+        cmd.set('ambient', 0.1)
+        self.store('A2', MOVIE_A)
+        cmd.set('ambient', 0.5)
+        self.store('B2', MOVIE_B)
+        rebuild(scene_item(1, 'A2'), scene_item(40, 'B2', end=60))
+        for f in range(41, 61):
+            self.assertIn(f, anim._track)
+            self.assertIn('ambient', anim._track[f])
+            v = anim._track[f]['ambient']
+            self.assertTrue(0.1 < v < 0.5, (f, v))
+        ambs = [anim._track[f]['ambient'] for f in range(41, 61)]
+        self.assertEqual(ambs, sorted(ambs, reverse=True))
+        for i in range(len(ambs) - 1):
+            self.assertGreater(ambs[i], ambs[i + 1])
+        played(50)
+        self.assertAlmostEqual(cmd.get_setting_float('ambient'),
+                               anim._track[50]['ambient'], places=4)
+
+    def testAddScenesLoopFlag(self):
+        from pymol import movie
+        try:
+            cmd.set('movie_loop', 1)
+            appkit_movie.reset_movie()
+            movie.add_scenes(['A', 'B'], pause=1.0, animate=0.5, rock=0, loop=1)
+            max_mark = max(f for f, _n in anim._scene_marks)
+            max_lights = max(anim._lights_track)
+            self.assertGreater(max_lights, max_mark)
+            wrap_frames = [f for f in anim._lights_track if f > max_mark]
+            self.assertTrue(wrap_frames)
+            for f in wrap_frames:
+                self.assertEqual(anim._lights_track[f][0], 'B')
+                self.assertEqual(anim._lights_track[f][1], 'A')
+            appkit_movie.reset_movie()
+            movie.add_scenes(['A', 'B'], pause=1.0, animate=0.5, rock=0, loop=0)
+            max_mark0 = max(f for f, _n in anim._scene_marks)
+            wrap_frames0 = [f for f in anim._lights_track if f > max_mark0]
+            self.assertFalse(wrap_frames0)
+            # appended after earlier content: the camera wraps to that
+            # content, not to scene A, so the settings do not wrap either
+            appkit_movie.reset_movie()
+            cmd.mset('1 x20')
+            movie.add_scenes(['A', 'B'], pause=1.0, animate=0.5, rock=0, loop=1)
+            first_mark = min(f for f, _n in anim._scene_marks)
+            last_mark = max(f for f, _n in anim._scene_marks)
+            self.assertEqual(first_mark, 21)
+            self.assertTrue(anim._lights_track)
+            self.assertFalse([f for f in anim._lights_track
+                              if f < first_mark or f > last_mark])
+        finally:
+            cmd.set('movie_loop', 1)
 
 
 # --- the L2 scene file (scripts/lighting/scenes/lighting_617_movie.json) ----

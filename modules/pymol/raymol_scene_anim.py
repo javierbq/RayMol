@@ -34,9 +34,9 @@ interpolates in linear RGB, pinned lights arc around the blended centre, and a
 light in only one scene fades its intensity from or to 0. Rig on/off steps at
 the cut. The track is saved as structured data under 'lights' (only when there
 is one), stripped from the saved movie and regenerated on load like the rest.
-Known limit: the loop-wrap span of a looping movie (camera flying from the
-last scene back to the first) has no keyframe pair, so neither the settings
-nor the rig blend there; the rig pops to the first scene's at frame 1.
+Loop-wrap transitions (#656): when the movie loops (movie_loop on or wrap=True),
+a pseudo-transition from the last keyframe back to the first shifted by the movie
+length blends settings, DOF and the light rig across the wrap span.
 """
 import base64
 import copy
@@ -183,21 +183,41 @@ def value_at(setting, a, b, e):
     return a + (b - a) * e
 
 
-def build_track(keyframes, power=None):
+def transitions(keyframes, wrap_length=0):
+    """[((f0, n0, p0), (f1, n1, p1))] for each consecutive keyframe pair
+    (frames as int, sorted by frame), plus -- when wrap_length > 0 -- the
+    loop-wrap pseudo-transition from the last keyframe to the first at
+    first_frame + wrap_length (the camera's own wrap, Movie.cpp
+    MViewAction::Interpolate). The wrap pair is added only with >= 2
+    keyframes and a last keyframe at or before wrap_length."""
+    kfs = [(int(f), n, p) for f, n, p in sorted(keyframes, key=lambda k: int(k[0]))]
+    pairs = list(zip(kfs, kfs[1:]))
+    if len(kfs) >= 2 and wrap_length > 0 and kfs[-1][0] <= wrap_length:
+        f0, n0, p0 = kfs[0]
+        pairs.append((kfs[-1], (f0 + wrap_length, n0, p0)))
+    return pairs
+
+
+def _slot(f, wrap_length):
+    """The real movie frame for transition frame f: f - wrap_length past
+    the end of a wrapping movie, else f."""
+    return f - wrap_length if wrap_length > 0 and f > wrap_length else f
+
+
+def build_track(keyframes, power=None, wrap_length=0):
     """Per-frame interpolated values for the INTERIOR frames of each transition.
 
     `keyframes` is an ordered iterable of (frame, scene_name, power) where power is
     the one stored WITH that keyframe (as passed to mview store). `power` is the
     movie-wide override the path passed to mview interpolate/reinterpolate, if any.
+    `wrap_length` > 0 adds the loop-wrap transition back to the first keyframe.
     Both endpoints of a transition contribute — see effective_power.
     Returns {frame: {setting: float}}. Scene keyframes themselves are applied by
     enter_scene (exact captured values), so they are deliberately absent here,
     as is everything in _DOF_OWNED (build_dof_transition's territory)."""
     from pymol import raymol_scenes as _rs
     track = {}
-    kfs = sorted(keyframes, key=lambda k: int(k[0]))
-    for (f0, n0, p0), (f1, n1, p1) in zip(kfs, kfs[1:]):
-        f0, f1 = int(f0), int(f1)
+    for (f0, n0, p0), (f1, n1, p1) in transitions(keyframes, wrap_length):
         span = f1 - f0
         if span < 2:
             continue                      # no interior frames
@@ -218,7 +238,7 @@ def build_track(keyframes, power=None):
         pw = effective_power(p0, p1, power)
         for f in range(f0 + 1, f1):
             e = ease((f - f0) / float(span), pw)
-            slot = track.setdefault(f, {})
+            slot = track.setdefault(_slot(f, wrap_length), {})
             for s, (fa, fb) in pairs.items():
                 slot[s] = value_at(s, fa, fb, e)
     return track
@@ -390,7 +410,7 @@ def resolve_focus(name, view, _self=cmd):
     return None
 
 
-def build_dof_transition(keyframes, _self=cmd, power=None):
+def build_dof_transition(keyframes, _self=cmd, power=None, wrap_length=0):
     """Per-frame depth-of-field animation across each transition: a focus pull
     while DOF stays on, and a blur FADE where it switches on or off.
 
@@ -411,15 +431,14 @@ def build_dof_transition(keyframes, _self=cmd, power=None):
       (SceneRender.cpp:2050).
 
     Returns {frame: {setting: float}} for interior frames only; author() overlays
-    it on top of build_track, so these win. Must run AFTER cmd.mview
-    ('interpolate') so cmd.frame(f) yields the interpolated view. Note: this
-    function leaves the playhead at the last interior frame it visited; callers
-    should reset to a specific frame afterwards if they need a known frame active."""
+    it on top of build_track, so these win. `wrap_length` > 0 adds the loop-wrap
+    transition. Must run AFTER cmd.mview ('interpolate') so cmd.frame(f) yields
+    the interpolated view. Note: this function leaves the playhead at the last
+    interior frame it visited; callers should reset to a specific frame afterwards
+    if they need a known frame active."""
     from pymol import raymol_scenes as _rs
     out = {}
-    kfs = sorted(keyframes, key=lambda k: int(k[0]))
-    for (f0, n0, p0), (f1, n1, p1) in zip(kfs, kfs[1:]):
-        f0, f1 = int(f0), int(f1)
+    for (f0, n0, p0), (f1, n1, p1) in transitions(keyframes, wrap_length):
         span = f1 - f0
         if span < 2:
             continue
@@ -443,8 +462,9 @@ def build_dof_transition(keyframes, _self=cmd, power=None):
         pw = effective_power(p0, p1, power)
         for f in range(f0 + 1, f1):
             e = ease((f - f0) / float(span), pw)
+            slot = _slot(f, wrap_length)
             try:
-                _self.frame(f)
+                _self.frame(slot)
                 view = _self.get_view()
             except Exception:
                 view = None               # focus cannot resolve; the fade still can
@@ -468,7 +488,7 @@ def build_dof_transition(keyframes, _self=cmd, power=None):
                 # Equal distances: same plane. Emitting nothing leaves autofocus
                 # on, still tracking its target correctly by itself.
             if vals:
-                out[f] = vals
+                out[slot] = vals
     return out
 
 
@@ -760,17 +780,15 @@ def lights_command(a, b, t):
     return '_lights_blend %s, %s, %s' % (_name_hex(a), _name_hex(b), _fmt(t))
 
 
-def build_lights_track(keyframes, power=None):
+def build_lights_track(keyframes, power=None, wrap_length=0):
     """{frame: (scene_a, scene_b, t)} for the interior frames of every
     transition between two DISTINCT scenes, at least one of which holds a rig
-    entry now ('off' or a dict). `t` is the camera's eased position (the
-    easing build_track uses), stored pre-rounded so a restore regenerates the
-    same command text."""
+    entry now ('off' or a dict). `wrap_length` > 0 adds the loop-wrap
+    transition. `t` is the camera's eased position (the easing build_track
+    uses), stored pre-rounded so a restore regenerates the same command text."""
     from pymol import raymol_scenes as _rs
     track = {}
-    kfs = sorted(keyframes, key=lambda k: int(k[0]))
-    for (f0, n0, p0), (f1, n1, p1) in zip(kfs, kfs[1:]):
-        f0, f1 = int(f0), int(f1)
+    for (f0, n0, p0), (f1, n1, p1) in transitions(keyframes, wrap_length):
         span = f1 - f0
         if span < 2 or n0 == n1:
             continue
@@ -779,7 +797,7 @@ def build_lights_track(keyframes, power=None):
         pw = effective_power(p0, p1, power)
         for f in range(f0 + 1, f1):
             t = float(_fmt(ease((f - f0) / float(span), pw)))
-            track[f] = (n0, n1, t)
+            track[_slot(f, wrap_length)] = (n0, n1, t)
     return track
 
 
@@ -861,15 +879,34 @@ def clear_authored(_self=cmd):
     return done
 
 
-def author(keyframes, _self=cmd, power=None):
+def _wrap_length(wrap, _self):
+    """Movie length for a wrapping movie, 0 if wrap is off or length <= 0."""
+    if wrap is None:
+        try:
+            wrap = _truthy(_self.get('movie_loop'))
+        except Exception:
+            wrap = False
+    if not wrap:
+        return 0
+    try:
+        return max(0, int(_self.get_movie_length()))
+    except Exception:
+        return 0
+
+
+def author(keyframes, _self=cmd, power=None, wrap=None):
     """Author the whole per-scene setting animation for a movie.
 
     `keyframes` is [(frame, scene_name, power)] for every scene keyframe in the
     movie, in any order (sorted internally by frame), each power being the one
     stored with that keyframe. `power` is the movie-wide easing override the path
     passed to cmd.mview('interpolate'/'reinterpolate') — 0/None means it passed
-    none and the endpoints decide. Call AFTER the path's cmd.mset and
-    cmd.mview('interpolate'). Returns the number of frames touched.
+    none and the endpoints decide. `wrap` governs loop-wrap pseudo-transitions:
+    None follows the `movie_loop` setting (like `mview interpolate`'s wrap=-1);
+    True/False forces wrapping on or off (pass what the camera's interpolate used).
+    Call AFTER the path's cmd.mset and cmd.mview('interpolate') so the movie
+    length is final and the camera track is interpolated. Returns the number of
+    frames touched.
 
     author([]) is the reset: it un-emits the previous pass and clears the track,
     so call it unconditionally — including on a rebuild that has no scenes at all,
@@ -879,18 +916,19 @@ def author(keyframes, _self=cmd, power=None):
     _track.clear()
     _scene_marks[:] = []
     _lights_track.clear()
+    wrap_length = _wrap_length(wrap, _self) if keyframes else 0
     marks = [(int(f), n) for f, n, _p in keyframes]
-    track = build_track(keyframes, power)
+    track = build_track(keyframes, power, wrap_length=wrap_length)
     # DOF owns focus/aperture/enable wherever it applies, so it goes on LAST and
     # overrides the plain ramp (build_track's aperture ramp across a fade would
     # otherwise start from the disabled side's meaningless captured value).
-    for f, vals in build_dof_transition(keyframes, _self, power).items():
+    for f, vals in build_dof_transition(keyframes, _self, power, wrap_length=wrap_length).items():
         track.setdefault(f, {}).update(vals)
     _track.update(track)
     _scene_marks[:] = sorted(set(marks))
     # The rig blend (#617): read at play time, so it only records which
     # transitions to blend and where along each one the camera is.
-    _lights_track.update(build_lights_track(keyframes, power))
+    _lights_track.update(build_lights_track(keyframes, power, wrap_length=wrap_length))
     touched = set(emit_scene_marks(_scene_marks, _self))
     touched.update(emit_track(_track, _self))
     touched.update(emit_lights_track(_lights_track, _self))
