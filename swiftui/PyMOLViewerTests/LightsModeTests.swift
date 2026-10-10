@@ -57,7 +57,15 @@ final class LightsActionInvocationTests: XCTestCase {
             XCTAssertNil(LightsAction.preset(name).invocation, "preset \(name)")
             XCTAssertNil(LightsAction.restoreLight(name: name, json: "null").invocation,
                          "restoreLight \(name)")
+            XCTAssertNil(LightsAction.aimAtCentre(name).invocation, "aimAtCentre \(name)")
         }
+    }
+
+    /// #699's double-click or double-tap on the aim dot. lighting_gizmo.py
+    /// TestAimCentreCommand runs this string through the core.
+    func testAimAtCentreStrings() {
+        XCTAssertEqual(LightsAction.aimAtCentre("key").invocation, .command("lights key, aim=centre"))
+        XCTAssertEqual(LightsAction.aimAtCentre("Light4").invocation, .command("lights Light4, aim=centre"))
     }
 
     /// #622's ⌥-click: #612's click= helper, run once. lighting_gizmo.py

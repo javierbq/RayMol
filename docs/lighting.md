@@ -542,7 +542,9 @@ molecule.
   and behind.
 - The selected light shows its beam: drag the outer ring to set the beam,
   the inner ring to set the softness, and the aim dot to re-aim the light at
-  the surface under the pointer.
+  the surface under the pointer. Double-click the aim dot (double-tap on
+  iPad and iPhone) to aim the light back at the rig centre (`lights <name>,
+  aim=centre`).
 - Scroll over a knob to change its radius.
 - Option-click the molecule to place a highlight there (the `click=`
   helper: the mirror rule, or a rim light near the outline).

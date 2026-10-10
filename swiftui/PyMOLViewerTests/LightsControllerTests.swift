@@ -435,6 +435,11 @@ final class FakeRigStore {
                 lights[index].pinned = false
                 eyePlacements[key] = nil
             }
+        case .aimAtCentre(let name):
+            // `aim=centre`: aimed at the centre, the placement kept.
+            let key = name.lowercased()
+            guard let index = lights.firstIndex(where: { $0.name.lowercased() == key }) else { return }
+            lights[index].aimPoint = nil
         case .atmosphereOff:
             // `atmosphere off`: with no rig it prints a line and changes
             // nothing.

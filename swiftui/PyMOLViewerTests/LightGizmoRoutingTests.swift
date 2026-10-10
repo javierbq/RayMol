@@ -202,25 +202,26 @@ final class LightGizmoRoutingTests: XCTestCase {
 
     // MARK: events (points are the gizmo's: top-left)
 
-    private func mouse(_ type: NSEvent.EventType, at p: CGPoint, option: Bool = false) throws -> NSEvent {
+    private func mouse(_ type: NSEvent.EventType, at p: CGPoint, option: Bool = false,
+                       clickCount: Int = 1) throws -> NSEvent {
         let window = try XCTUnwrap(window)
         let location = CGPoint(x: p.x, y: viewSize.height - p.y)   // window: bottom-left
         return try XCTUnwrap(NSEvent.mouseEvent(
             with: type, location: location, modifierFlags: option ? [.option] : [],
             timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
-            context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1))
+            context: nil, eventNumber: 0, clickCount: clickCount, pressure: type == .leftMouseUp ? 0 : 1))
     }
 
-    private func press(_ p: CGPoint, option: Bool = false) throws {
-        view.mouseDown(with: try mouse(.leftMouseDown, at: p, option: option))
+    private func press(_ p: CGPoint, option: Bool = false, clickCount: Int = 1) throws {
+        view.mouseDown(with: try mouse(.leftMouseDown, at: p, option: option, clickCount: clickCount))
     }
 
     private func dragTo(_ p: CGPoint, option: Bool = false) throws {
         view.mouseDragged(with: try mouse(.leftMouseDragged, at: p, option: option))
     }
 
-    private func release(_ p: CGPoint, option: Bool = false) throws {
-        view.mouseUp(with: try mouse(.leftMouseUp, at: p, option: option))
+    private func release(_ p: CGPoint, option: Bool = false, clickCount: Int = 1) throws {
+        view.mouseUp(with: try mouse(.leftMouseUp, at: p, option: option, clickCount: clickCount))
     }
 
     private func hover(_ p: CGPoint) throws {
@@ -528,6 +529,42 @@ final class LightGizmoRoutingTests: XCTestCase {
         guard t.events.list.count == 1, case .pick = t.events.list[0] else {
             return XCTFail("a plain click is today's atom pick: \(t.events.list)")
         }
+    }
+
+    // MARK: Double-click on the aim dot (#699)
+
+    /// A double-click on the selected light's aim dot runs one
+    /// `lights <name>, aim=centre` and nothing else (no atom pick, no PyMOL
+    /// button); a single click there runs nothing.
+    func testDoubleClickOnTheAimDotAimsAtTheCentre() throws {
+        try enterGizmo()
+        controller.select(name: "fill")
+        engine.lightsFrameRendered()
+        let l = try layout()
+        XCTAssertEqual(l.selected?.name.lowercased(), "fill")
+        let aim = try XCTUnwrap(l.selected?.aimDot, "no aim dot")
+        XCTAssertEqual(LightGizmoHitTest.target(at: aim, layout: l), .aimDot)
+        XCTAssertEqual(try rig().lights[1].aim, .point)
+        let json = engine.lightRigJSON()
+
+        var t = taps()
+        try press(aim)
+        try release(aim)
+        t.stop()
+        XCTAssertEqual(t.events.list, [], "a click on the aim dot is the gizmo's")
+        XCTAssertEqual(t.commands.lines, [])
+        XCTAssertEqual(engine.lightRigJSON(), json)
+
+        t = taps()
+        try press(aim)
+        try release(aim)
+        try press(aim, clickCount: 2)
+        try release(aim, clickCount: 2)
+        t.stop()
+        XCTAssertEqual(t.commands.lines, ["lights fill, aim=centre"])
+        XCTAssertEqual(t.events.list, [], "no atom pick and no button")
+        XCTAssertEqual(try rig().lights[1].aim, .centre)
+        XCTAssertEqual(engine.lightGizmoPointer.lastRecentre, true)
     }
 
     // MARK: Esc mid-drag

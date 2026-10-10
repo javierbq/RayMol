@@ -1225,6 +1225,14 @@ struct LightGizmoInteraction {
         return controller.placeHighlight(sceneNDC: ndc, rim: rim) ? .placed(rim: rim) : .refused
     }
 
+    /// Re-aim the selected light called `name` at the rig centre (#699's
+    /// double-click or double-tap on its aim dot). False when nothing ran.
+    @discardableResult
+    func aimAtCentre(name: String) -> Bool {
+        guard controller.canEdit, isSelected(name) else { return false }
+        return controller.aimAtCentre(name: name)
+    }
+
     /// The Shadow chip: the selected light's shadow toggled with the
     /// inspector's own call, so the cap, its notice and their clearing are
     /// shared.
@@ -1270,6 +1278,17 @@ struct LightGizmoInteraction {
 
 // MARK: - Press ownership
 
+/// #699: when a gizmo press re-aims its light at the rig centre.
+enum LightAimRecentre {
+    /// macOS: a press on `target` with `clickCount` (NSEvent's: 2 for the
+    /// second press of a double-click) ends; `hasMoved` when it dragged past
+    /// the slop. True only for a double-click (or more) on the aim dot that
+    /// never dragged: a single click or any drag stays today's.
+    static func onRelease(target: LightGizmoTarget?, clickCount: Int, hasMoved: Bool) -> Bool {
+        target == .aimDot && clickCount >= 2 && !hasMoved
+    }
+}
+
 /// Which input owns a press, from its start to its end, whatever the mode does
 /// meanwhile (plan 4.13; the viewport wires it in Lights mode):
 /// - a press on a target opens a session and owns the press (`.gizmo`): no
@@ -1301,16 +1320,23 @@ struct LightGizmoPointer {
     private var candidateLayout: LightGizmoLayout?
     /// The last option-click's outcome.
     private(set) var lastHighlight: LightGizmoHighlightResult?
+    /// The last double-click on the aim dot (#699): true ran `aim=centre`,
+    /// false was refused; nil before the first.
+    private(set) var lastRecentre: Bool?
+    /// The current press's click count (2 for a double-click's second press).
+    private var pressClickCount = 1
     private var touch = OrbitTouchSequence()
 
     init() {}
 
-    /// A press at `point` (`option`: the option key is down). `layout` is
-    /// nil when the gizmo is not shown.
+    /// A press at `point` (`option`: the option key is down; `clickCount`:
+    /// NSEvent's, 2 for a double-click's second press). `layout` is nil when
+    /// the gizmo is not shown.
     @MainActor
     mutating func press(at point: CGPoint, option: Bool, layout: LightGizmoLayout?,
-                        interaction: LightGizmoInteraction) -> Route {
+                        interaction: LightGizmoInteraction, clickCount: Int = 1) -> Route {
         forgetPress()
+        pressClickCount = clickCount
         guard let layout else { return .camera }
         if LightGizmoHitTest.target(at: point, layout: layout) != nil {
             guard let started = interaction.press(at: point, layout: layout) else { return .camera }
@@ -1347,13 +1373,21 @@ struct LightGizmoPointer {
     }
 
     /// The press ends at `point`. A highlight candidate that never dragged
-    /// places a highlight (at its press point) and is consumed.
+    /// places a highlight (at its press point) and is consumed. A double-click
+    /// on the aim dot that never dragged aims its light at the centre (#699).
     @MainActor
     mutating func release(at point: CGPoint, interaction: LightGizmoInteraction) -> Route {
         if ownsPress {
+            var recentre: String?
+            if let s = session, !s.isEnded,
+               LightAimRecentre.onRelease(target: s.target, clickCount: pressClickCount, hasMoved: s.hasMoved) {
+                recentre = s.owner
+            }
             session?.end()
             session = nil
             ownsPress = false
+            pressClickCount = 1
+            if let recentre { lastRecentre = interaction.aimAtCentre(name: recentre) }
             return .gizmo
         }
         if let start = candidate, let layout = candidateLayout {
@@ -1406,6 +1440,7 @@ struct LightGizmoPointer {
         session?.end()
         session = nil
         ownsPress = false
+        pressClickCount = 1
         candidate = nil
         candidateLayout = nil
     }
