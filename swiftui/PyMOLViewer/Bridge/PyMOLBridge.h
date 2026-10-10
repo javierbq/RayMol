@@ -112,6 +112,9 @@ int PyMOLBridge_LightsEyeSpace(PyMOLHandle instance, PyMOLLightRigEye *rig, PyMO
 // PyMOLBridge_Light*, whose set lighting_bridge.py pins.
 int PyMOLBridge_AirAnimating(PyMOLHandle instance);
 
+// Document-generation counter (#649); 0 when there is no instance.
+unsigned PyMOLBridge_DocumentGeneration(PyMOLHandle instance);
+
 // Tab autocomplete: runs PyMOL's own command-line completion (cmd._parser.complete)
 // on the current input and returns the completed string (extended to the
 // unambiguous prefix; the candidate list, when ambiguous, is printed to the

@@ -3182,6 +3182,8 @@ final class PyMOLEngine: ObservableObject {
             self.panelPolled
                 .sink { [weak self, weak lc] in
                     guard let self, self.interactionMode == .lights else { return }
+                    self.noteDocumentGenerationForLightsMode()
+                    guard self.interactionMode == .lights else { return }
                     lc?.refresh()
                 }
                 .store(in: &self.lightsCancellables)
@@ -3190,6 +3192,14 @@ final class PyMOLEngine: ObservableObject {
     }()
 
     private var lightsCancellables = Set<AnyCancellable>()
+    private var lightsEntryDocumentGeneration: UInt32?
+
+    /// Reads the core document-generation counter (#649). Defaults to reading the
+    /// bridge for the live instance; tests can replace it.
+    lazy var documentGenerationReader: () -> UInt32 = { [weak self] in
+        guard let self, self.isReady, let inst = self.instance else { return 0 }
+        return PyMOLBridge_DocumentGeneration(inst)
+    }
 
     /// The per-frame hook of the light tools (#620): MetalViewport.draw(in:)
     /// calls it once per rendered frame while in Lights mode, so a pinned
@@ -3302,6 +3312,13 @@ final class PyMOLEngine: ObservableObject {
     /// card teach the command) or, for Revert, one Python call. Never called
     /// per drag tick.
     func performLightsAction(_ action: LightsAction) {
+        switch action {
+        case .restore, .restoreLight:
+            noteDocumentGenerationForLightsMode()
+            guard interactionMode == .lights else { return }
+        default:
+            break
+        }
         guard let invocation = action.invocation else {
             // Names come from the core (which enforces the same rule), presets
             // from #612's table and air values from the rig and the field
@@ -3363,13 +3380,26 @@ final class PyMOLEngine: ObservableObject {
         }
     }
 
+    /// Document replacement check for Lights mode (#649): if a replacement
+    /// ran without going through `runCommandCore` (Python or MCP `cmd.load('x.pse')`,
+    /// `cmd.reinitialize()`, etc.), the core document generation differs from its
+    /// value when Lights mode began. End the mode the way Done does so Revert
+    /// cannot write the old document's rig into the new document.
+    func noteDocumentGenerationForLightsMode() {
+        guard interactionMode == .lights,
+              let entry = lightsEntryDocumentGeneration,
+              documentGenerationReader() != entry else { return }
+        setInteractionMode(.viewing)
+    }
+
     /// A command that replaces the whole document ends Lights mode the way Done
     /// does (edits kept), so Revert does not put the previous document's rig into
     /// the new one. Called by runCommandCore after the command ran, so it sees the
     /// command forms this app and the console type (`load`, `reinitialize` and its
-    /// abbreviations); a replacement that never goes through runCommandCore (MCP,
-    /// Python `cmd.load(...)`, scripts) is not seen (follow-up). Internal so a
-    /// test can drive it without running the command in the shared host.
+    /// abbreviations); replacements that never go through runCommandCore (MCP,
+    /// Python `cmd.load(...)`, scripts) are caught by the document-generation check
+    /// (`noteDocumentGenerationForLightsMode`). Internal so a test can drive it
+    /// without running the command in the shared host.
     func noteCommandForLightsMode(_ command: String) {
         guard interactionMode == .lights, Self.endsLightsMode(command: command) else { return }
         setInteractionMode(.viewing)
@@ -3579,12 +3609,14 @@ final class PyMOLEngine: ObservableObject {
             // follows the mode: .everyFrame BEFORE begin(), whose refresh then
             // publishes the eye space and the projection at once.
             if previous != .lights {
+                lightsEntryDocumentGeneration = documentGenerationReader()
                 MainActor.assumeIsolated {
                     lightsController.eyeDemand = .everyFrame
                     lightsController.begin()
                 }
             }
         } else if previous == .lights {
+            lightsEntryDocumentGeneration = nil
             // Done, Esc or another mode: the edits stay, the snapshot goes; no
             // more per-frame eye reads, no gizmo hover or drag state, and the
             // aim dot's pick grids go back. A gizmo drag under way writes no
