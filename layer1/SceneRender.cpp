@@ -731,6 +731,25 @@ static void SceneRenderAllObject(PyMOLGlobals* G, CScene* I,
   if (!SceneGetDrawFlag(grid, slot_vla, obj->grid_slot))
     return;
 
+  // UI overlays (gadgets, gizmos, _move_gizmo) must never enter the ray
+  // tracing acceleration structure (#433). Inform the renderer so it suppresses
+  // rtNoteGeometry for this object's draw calls.
+  struct ScopedOverlayDraw {
+    PyMOLGlobals* G;
+    bool is_overlay;
+    ScopedOverlayDraw(PyMOLGlobals* g, const pymol::CObject* o)
+        : G(g), is_overlay(SceneObjectIsOverlay(o))
+    {
+      if (is_overlay && G->Renderer)
+        G->Renderer->setOverlayDraw(true);
+    }
+    ~ScopedOverlayDraw()
+    {
+      if (is_overlay && G->Renderer)
+        G->Renderer->setOverlayDraw(false);
+    }
+  } overlayDrawGuard(G, obj);
+
   auto use_shader = info->use_shaders;
 
 #ifndef _WEBGL
@@ -2130,7 +2149,7 @@ static glm::mat4 SceneBuildLightViewProjEye(PyMOLGlobals* G, float* outRadius = 
   float mn[3], mx[3];
   glm::vec3 centerEye(0.0f);
   float radius = 10.0f;
-  if (SceneGetShadowExtent(G, mn, mx)) {
+  if (SceneGetLightShadowExtent(G, mn, mx)) {
     glm::vec3 cw(
         (mn[0] + mx[0]) * 0.5f, (mn[1] + mx[1]) * 0.5f, (mn[2] + mx[2]) * 0.5f);
     glm::vec3 dw(mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]);
@@ -2614,9 +2633,11 @@ void SceneRenderMetal(PyMOLGlobals* G)
     G->Renderer->loadMatrixf(glm::value_ptr(lightVP_eye));
     G->Renderer->matrixMode(0x1700); // MODELVIEW = camera modelview
     G->Renderer->loadMatrixf(mvp);
+    const std::vector<pymol::CObject*> overlays = SceneLightShadowOverlays(G);
     G->Renderer->beginShadowPass();
     SceneRenderAll(G, &context, normal, nullptr, RenderPass::Opaque, false, 0.0f,
-        &I->grid, 0, SceneRenderWhich::All, SceneRenderOrder::GadgetsLast);
+        &I->grid, 0, SceneRenderWhich::All, SceneRenderOrder::GadgetsLast,
+        nullptr, &overlays);
     G->Renderer->endShadowPass();
     // Restore the camera matrices for the normal scene pass.
     G->Renderer->matrixMode(0x1701);

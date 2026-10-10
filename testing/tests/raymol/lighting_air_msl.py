@@ -139,7 +139,7 @@ CLASSIC_LIGHT_LITERALS = ('kVBOSrc', 'kSphereImpostorSrc', 'kCylinderImpostorSrc
 MASTER_FUNCTIONS = {
     ('RendererMetal.mm', 'RendererMetal::runPostChain'): '4f0c6097ac77fcb0',
     ('RendererMetal.mm', 'RendererMetal::beginFrame'): 'a943ed9e4b89cda5',
-    ('SceneRender.cpp', 'SceneRenderMetal'): '1b36877a11862fd2',
+    ('SceneRender.cpp', 'SceneRenderMetal'): '555f9bb27d8c8aee',  # #433/#662: classic pre-pass excludes overlays
     ('SceneLights.cpp', 'SceneLightsFrame'): '5fb060d63ab0d96b',
 }
 AIR_STATEMENTS = {
