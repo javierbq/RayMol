@@ -247,7 +247,11 @@ def main_executable(app):
 
 
 def all_macho(app):
-    for root, _dirs, files in os.walk(app):
+    for root, dirs, files in os.walk(app):
+        # Xcode embeds .xctest bundles under Contents/PlugIns during test runs;
+        # those link XCTest from Xcode, which is not bundled into the app.
+        if "PlugIns" in dirs:
+            dirs.remove("PlugIns")
         for fn in files:
             p = Path(root) / fn
             if is_macho(p):
