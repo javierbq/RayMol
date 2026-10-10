@@ -48,6 +48,10 @@ final class LightRigBridgeTests: XCTestCase {
             "from pymol import cmd as _lrb_cmd\n"
             + "_lrb_cmd.set_lights(None)\n"
             + "_lrb_cmd.delete('_lrb_air')\n"
+            + "_lrb_cmd.delete('_lrb_shadow')\n"
+            + "if '_lrb_ms' in globals():\n"
+            + "    _lrb_cmd.set('metal_shadows', _lrb_ms)\n"
+            + "    del _lrb_ms\n"
             + "_lrb_cmd.set('metal_light_air_time', -1.0)\n"
             + "if '_lrb_view' in globals():\n"
             + "    _lrb_cmd.set_view(_lrb_view)\n"
@@ -445,6 +449,45 @@ final class LightRigBridgeTests: XCTestCase {
         XCTAssertEqual(engine.setLight(0, "colour", 1), .unknownField)
         XCTAssertEqual(engine.setLight(0, "orbit", .nan), .badValue)
         XCTAssertEqual(posts.count, 2)
+    }
+
+    /// Studio shadows (#616, #673): the bridge's eye-space shadowSlot matches
+    /// the frame plan's slots (_light_frame), including -1 for a shadowed light
+    /// aimed away from the casters, and is -1 everywhere with metal_shadows or
+    /// the rig off.
+    func testEyeSpaceShadowSlotMatchesTheFramePlan() throws {
+        try requireEngine()
+        engine.runPython(
+            "from pymol import cmd as _lrb_cmd\n"
+            + "_lrb_ms = _lrb_cmd.get_setting_int('metal_shadows')\n"
+            + "_lrb_cmd.pseudoatom('_lrb_shadow', pos=[0,0,0])\n"
+            + "_lrb_cmd.show('spheres', '_lrb_shadow')\n"
+            + "_lrb_cmd.set('metal_shadows', 1)\n")
+        setRig("""
+            {'enabled': True, 'centre': [0,0,0], 'size': 10.0, 'lights': [
+             {'name': 'key', 'shadow': True},
+             {'name': 'fill', 'orbit': -60.0},
+             {'name': 'away', 'shadow': True, 'anchor': 'pinned', 'position': [0.0, 0.0, 8.0],
+              'aim': 'point', 'aim_point': [0.0, 0.0, 500.0], 'beam': 10.0}]}
+            """)
+        let jsonStr = try XCTUnwrap(python("_lrb_json.dumps([l['shadow_slot'] for l in _lrb_lighting._light_frame()['rig']['lights']])"))
+        let oracleSlots = try JSONDecoder().decode([Int].self, from: Data(jsonStr.utf8))
+        let eyeSpace = try XCTUnwrap(engine.lightsEyeSpace())
+        let eyeSlots = eyeSpace.lights.map(\.shadowSlot)
+        XCTAssertEqual(eyeSlots, oracleSlots)
+        XCTAssertEqual(eyeSlots, [0, -1, -1],
+                       "key lights the caster; fill casts no shadow; away's narrow beam points away from it")
+
+        // Then metal_shadows 0: all slots -1.
+        engine.runPython("_lrb_cmd.set('metal_shadows', 0)\n")
+        let slotsShadowsOff = try XCTUnwrap(engine.lightsEyeSpace()).lights.map(\.shadowSlot)
+        XCTAssertEqual(slotsShadowsOff, [-1, -1, -1])
+
+        // Then with metal_shadows 1 and the rig disabled (setLight(-1, "enabled", 0)): all -1.
+        engine.runPython("_lrb_cmd.set('metal_shadows', 1)\n")
+        XCTAssertEqual(engine.setLight(-1, "enabled", 0), .ok)
+        let slotsRigOff = try XCTUnwrap(engine.lightsEyeSpace()).lights.map(\.shadowSlot)
+        XCTAssertEqual(slotsRigOff, [-1, -1, -1])
     }
 }
 

@@ -479,6 +479,24 @@ int PyMOLBridge_LightsEyeSpace(PyMOLHandle h, PyMOLLightRigEye *rig, PyMOLLightE
         dst.aim = src.aim == pymol::LightAim::Point ? 1 : 0;
         dst.shadow = src.shadow ? 1 : 0;
         dst.outline = src.outline ? 1 : 0;
+        dst.shadowSlot = -1;
+    }
+    // #673: each light's shadow-map slot, from the same plan the renderer and
+    // _light_frame make (SceneLightsFrame). Planned only when a shadow could
+    // exist (the rig on and some light shadowed), so the per-frame read stays
+    // cheap otherwise; SceneLightsFrame writes nothing.
+    bool hasShadow = false;
+    for (int i = 0; i < count && !hasShadow; ++i) hasShadow = eye->lights[i].shadow;
+    if (filled > 0 && eye->enabled && hasShadow) {
+        const SceneLightFrame frame = SceneLightsFrame(G, SceneGetWorldToEye(G));
+        if (frame.shadows) {
+            for (int s = 0; s < frame.shadows->count; ++s) {
+                const int l = frame.shadows->light[s];
+                if (l >= 0 && l < filled) {
+                    lights[l].shadowSlot = s;
+                }
+            }
+        }
     }
     return count;
 }

@@ -215,6 +215,8 @@ final class FakeRigStore {
     /// What the projection seam serves (the gizmo's camera).
     var projection: LightCameraProjection?
     private(set) var projectionReads = 0
+    /// Per-light shadow slots in `eyeSpace` (defaults to -1 for each light) (#673).
+    var shadowSlots: [Int]?
     /// Run after every number write (before it returns): a test can change
     /// things in the middle of a multi-field write.
     var afterNumberWrite: (() -> Void)?
@@ -247,6 +249,7 @@ final class FakeRigStore {
         self.enabled = enabled
         lights = names.map { Light(name: $0) }
         eyePlacements = [:]
+        shadowSlots = nil
     }
 
     func removeLight(_ name: String) {
@@ -299,6 +302,7 @@ final class FakeRigStore {
                 let light = lights[index]
                 let place = currentPlacement(index)
                 let cosOuter = Float(cos(light.beam / 2 * .pi / 180))
+                let slot = shadowSlots?.indices.contains(index) == true ? shadowSlots![index] : -1
                 return LightEyeSpace.Light(
                     position: .zero, target: .zero, direction: SIMD3(0, 0, -1),
                     aimDistance: Float(place.radius * 10),
@@ -306,7 +310,8 @@ final class FakeRigStore {
                     orbit: Float(place.orbit), pitch: Float(place.pitch),
                     radius: Float(place.radius),
                     anchor: light.pinned ? .pinned : .camera, aim: .centre,
-                    shadow: light.shadow, outline: false)
+                    shadow: light.shadow, outline: false,
+                    shadowSlot: slot)
             })
     }
 
@@ -339,6 +344,7 @@ final class FakeRigStore {
                 let cosOuter = cos(half)
                 let band = min(1e-4, 0.5 * (1 - cosOuter))
                 let cosInner = min(1, max(cos(half * (1 - light.softness)), cosOuter + band))
+                let slot = shadowSlots?.indices.contains(index) == true ? shadowSlots![index] : -1
                 return LightEyeSpace.Light(
                     position: float3(position), target: float3(target),
                     direction: float3(direction), aimDistance: Float(distance),
@@ -347,7 +353,8 @@ final class FakeRigStore {
                     radius: Float(place.radius),
                     anchor: light.pinned ? .pinned : .camera,
                     aim: light.aimPoint == nil ? .centre : .point,
-                    shadow: light.shadow, outline: false)
+                    shadow: light.shadow, outline: false,
+                    shadowSlot: slot)
             })
     }
 

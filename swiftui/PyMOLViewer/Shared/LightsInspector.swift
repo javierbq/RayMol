@@ -6,7 +6,9 @@
 // and Delete. Under the header it says why a Shadow press did nothing (a 4th
 // shadowed light) and when the selected light's shadow cannot show because
 // the scene's Shadows switch is off (#616: studio shadows render only while
-// it is on), with a Turn On button the owner (ContentView) wires.
+// it is on), with a Turn On button the owner (ContentView) wires; and, in a
+// muted line, when the switch is on but this frame's shadow plan gave the
+// light no map because no caster is in its beam (#673, LightsFacingState).
 // It sits in the Lights side column (LightsSideColumn.swift): under the bar on
 // macOS, at the viewport's top-trailing corner on iOS (ContentView places it).
 // The iPhone sheet and the side panel (#623, LightsSheet.swift) draw its
@@ -169,6 +171,8 @@ struct LightsInspectorState: Equatable {
         + "Turn one off first."
     /// The hint while the selected light casts a shadow the scene does not show.
     static let shadowsOffHint = "Shadows are off for this scene"
+    /// The muted line under the header while the selected light's shadow has no map (#673).
+    static let noCastersHint = "No casters in this light's beam"
     static let turnOnTitle = "Turn On"
     static let turnOnLabel = "Turn on scene shadows"
     static let turnOnHelp = "Turn on the scene's Shadows switch, so lights with Shadow cast them"
@@ -210,6 +214,14 @@ struct LightsInspectorState: Equatable {
         return parameter.rounded(raw)
     }
 
+    /// #673: show `noCastersHint` only when every fact is known: the light has Shadow on,
+    /// the rig is on, the scene's Shadows switch is on and this frame's plan gave the light
+    /// no map (slot -1). nil (unknown) shows nothing.
+    static func showsNoCastersHint(isShadowed: Bool, rigOn: Bool, sceneShadowsOn: Bool?,
+                                   shadowSlot: Int?) -> Bool {
+        isShadowed && rigOn && sceneShadowsOn == true && shadowSlot == -1
+    }
+
     var name: String
     var index: Int
     var slot: Int
@@ -221,6 +233,9 @@ struct LightsInspectorState: Equatable {
     /// The selected light casts a shadow and the scene's Shadows switch is off
     /// (known to be off: nil, not yet read, shows no hint).
     var showsShadowsHint: Bool
+    /// The selected light casts a shadow but has no shadow map because no
+    /// casters sit in front of it (#673).
+    var showsNoCastersHint: Bool
     var isOn: Bool
     /// The muted header status (`Lights off`), nil while the rig is on.
     var status: String?
@@ -251,6 +266,11 @@ struct LightsInspectorState: Equatable {
         isShadowed = light.shadow
         notice = controller.shadowRefused ? Self.shadowCapNotice : nil
         showsShadowsHint = light.shadow && sceneShadowsOn == false
+        showsNoCastersHint = Self.showsNoCastersHint(
+            isShadowed: light.shadow,
+            rigOn: controller.isOn,
+            sceneShadowsOn: sceneShadowsOn,
+            shadowSlot: controller.facing.shadowSlot(of: light.name))
         isOn = controller.isOn
         status = controller.isOn ? nil : Self.rigOffText
         canEdit = controller.canEdit
@@ -301,6 +321,7 @@ struct LightsInspectorState: Equatable {
             + " beam=\(v(.beam, "%.1f")) softness=\(v(.softness, "%.2f"))"
             + " color=\(rgb) swatch=\(swatch) edit=\(canEdit ? 1 : 0) revert=\(canRevertLight ? 1 : 0)"
             + (notice == nil ? "" : " notice=shadow_cap") + (showsShadowsHint ? " hint=shadows_off" : "")
+            + (showsNoCastersHint ? " hint=no_casters" : "")
     }
 }
 
@@ -804,6 +825,9 @@ private struct LightsInspectorHeightKey: PreferenceKey {
 /// selected light (LightsInspectorState is nil otherwise).
 struct LightsInspector: View {
     @ObservedObject var controller: LightsController
+    /// The controller's `facing`, observed for the shadow slots (#673's
+    /// "No casters" line); it publishes only when a value changes.
+    @ObservedObject var facing: LightsFacingState
     var style: LightsBarStyle
     /// The scene's Shadows switch (metal_shadows) as last read; nil when
     /// unknown (no Shadows hint then).
@@ -833,6 +857,7 @@ struct LightsInspector: View {
          sceneShadowsOn: Bool? = nil, onEnableSceneShadows: @escaping () -> Void = {},
          presentation: LightsInspectorPresentation = .card) {
         self.controller = controller
+        _facing = ObservedObject(wrappedValue: controller.facing)
         self.style = style
         self.sceneShadowsOn = sceneShadowsOn
         self.onEnableSceneShadows = onEnableSceneShadows
@@ -868,6 +893,9 @@ struct LightsInspector: View {
             if state.showsShadowsHint {
                 shadowsHintRow(state).padding(.bottom, 8)
             }
+            if state.showsNoCastersHint {
+                noCastersHintRow().padding(.bottom, 8)
+            }
         }
         .tint(style.accent)
         .accessibilityElement(children: .contain)
@@ -887,6 +915,10 @@ struct LightsInspector: View {
             }
             if state.showsShadowsHint {
                 shadowsHintRow(state)
+                    .padding(.horizontal, 12).padding(.bottom, 8)
+            }
+            if state.showsNoCastersHint {
+                noCastersHintRow()
                     .padding(.horizontal, 12).padding(.bottom, 8)
             }
             if !collapsed {
@@ -1026,6 +1058,22 @@ struct LightsInspector: View {
                 .accessibilityLabel(LightsInspectorState.turnOnLabel)
                 .accessibilityIdentifier("lights.inspector.shadows_turn_on")
         }
+    }
+
+    private func noCastersHintRow() -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "info.circle")
+                .font(.system(size: 10))
+                .foregroundColor(style.text.opacity(0.55))
+                .accessibilityHidden(true)
+            Text(LightsInspectorState.noCastersHint)
+                .font(.system(size: 11))
+                .foregroundColor(style.text.opacity(0.55))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("lights.inspector.no_casters_hint")
     }
 
     // Text items with a checkmark on the selected one: macOS menus draw only
