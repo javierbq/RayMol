@@ -600,6 +600,24 @@ enum LightGizmoTarget: Hashable {
     case rings
 }
 
+/// The cursor the viewport shows over the light gizmo (#701).
+enum LightGizmoCursorKind: Equatable {
+    /// Unchanged: whatever the viewport shows today.
+    case normal
+    /// Over a target a press would take.
+    case openHand
+    /// Dragging a target.
+    case closedHand
+
+    /// The cursor for `mode`, the target under the pointer and whether the
+    /// gizmo owns a press. Only Lights mode changes the cursor.
+    static func cursor(mode: InteractionMode, hovered: LightGizmoTarget?, isDragging: Bool) -> LightGizmoCursorKind {
+        guard mode == .lights else { return .normal }
+        if isDragging { return .closedHand }
+        return hovered == nil ? .normal : .openHand
+    }
+}
+
 /// Which target a point lands on: section 4.7 of the plan.
 /// 1. Point targets (the aim dot, the handles, the knobs) within their reach
 ///    (drawn size plus the slop, at least half the minimum target: 22 pt on

@@ -2,6 +2,7 @@
 // Uses NSViewRepresentable on macOS, UIViewRepresentable on iPadOS.
 
 import SwiftUI
+import Combine
 import MetalKit
 import QuartzCore   // CACurrentMediaTime (the air redraw policy, #618)
 #if canImport(UIKit)
@@ -269,6 +270,11 @@ struct MetalViewport: NSViewRepresentable {
         view.isPaused = false
         context.coordinator.engine = engine
         context.coordinator.mtkView = view
+        // Leaving Lights mode (Esc, Done) restores the normal cursor even
+        // when the pointer never moves (#701).
+        context.coordinator.modeCursorSink = engine.$interactionMode
+            .receive(on: DispatchQueue.main)
+            .sink { [weak coordinator = context.coordinator] _ in coordinator?.updateGizmoCursor() }
         // Back-reference so the view's NSEvent overrides can reach the
         // coordinator's input handlers. Without this, mouseDown/Dragged/etc.
         // call `coordinator?.handle...` on a nil coordinator and silently
@@ -442,6 +448,29 @@ class PyMOLMTKView: MTKView {
         hoverTrackingArea = area
     }
 
+    // Light gizmo cursor (#701). A cursor rect over the whole view, so AppKit
+    // owns the cursor and nothing is pushed (it cannot stick): the open hand
+    // over a target, the closed hand while dragging, nothing otherwise.
+    var gizmoCursorKind: LightGizmoCursorKind = .normal {
+        didSet {
+            guard gizmoCursorKind != oldValue else { return }
+            window?.invalidateCursorRects(for: self)
+            switch gizmoCursorKind {
+            case .openHand: NSCursor.openHand.set()
+            case .closedHand: NSCursor.closedHand.set()
+            case .normal: NSCursor.arrow.set()
+            }
+        }
+    }
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        switch gizmoCursorKind {
+        case .openHand: addCursorRect(visibleRect, cursor: .openHand)
+        case .closedHand: addCursorRect(visibleRect, cursor: .closedHand)
+        case .normal: break
+        }
+    }
+
     override func mouseMoved(with event: NSEvent) {
         coordinator?.handleMouseMoved(event, in: self)
     }
@@ -593,6 +622,9 @@ extension MetalViewport {
     class Coordinator: NSObject, MTKViewDelegate {
         weak var engine: PyMOLEngine?
         weak var mtkView: MTKView?
+        #if os(macOS)
+        var modeCursorSink: AnyCancellable?
+        #endif
         private var viewportSize: CGSize = .zero
         // Set when the app/display wakes (unlock, system wake, re-activate). The
         // next draw(in:) then renders unconditionally, bypassing the on-demand
@@ -1112,6 +1144,21 @@ extension MetalViewport {
             MainActor.assumeIsolated { engine.lightGizmoUI.hovered = target }
         }
 
+        #if os(macOS)
+        /// The viewport's cursor for the gizmo state (#701). The pointer is
+        /// outside the view (`inside` false) or the mode is not Lights: normal.
+        func updateGizmoCursor(inside: Bool = true) {
+            guard let engine, let view = mtkView as? PyMOLMTKView else { return }
+            let kind: LightGizmoCursorKind = MainActor.assumeIsolated {
+                LightGizmoCursorKind.cursor(
+                    mode: engine.interactionMode,
+                    hovered: inside ? engine.lightGizmoUI.hovered : nil,
+                    isDragging: engine.lightGizmoPointer.ownsPress)
+            }
+            view.gizmoCursorKind = kind
+        }
+        #endif
+
         /// A press at `p` (top-left points): true when the gizmo took it (a
         /// target was hit and its session opened, or an option-press off
         /// every target waits to be a click). `clickCount` is the event's: a
@@ -1170,6 +1217,7 @@ extension MetalViewport {
 
         #if os(macOS)
         func handleMouseDown(_ event: NSEvent, in view: MTKView) {
+            defer { updateGizmoCursor() }
             // Don't send PyMOL a button-down yet: a left-click in PyMOL's
             // viewing mode runs SceneClick/Release, whose GL pick is dead on
             // Metal and ends up CLEARING the active selection. We only want
@@ -1219,6 +1267,7 @@ extension MetalViewport {
         // re-pick when the pointer barely moved; the engine additionally
         // debounces the actual Python pick.
         func handleMouseMoved(_ event: NSEvent, in view: MTKView) {
+            defer { updateGizmoCursor() }
             guard !didDrag else { return }
             // No hover picking while the box tool is on: the box is already
             // driving the selection, and a hover pick would fight it.
@@ -1289,9 +1338,11 @@ extension MetalViewport {
             if engine?.moveShiftHeld == true { engine?.moveShiftHeld = false }
             // Lights mode (#622): no light gizmo hover once the pointer left.
             lightGizmoHover(at: nil, in: view)
+            updateGizmoCursor(inside: false)
         }
 
         func handleMouseUp(_ event: NSEvent, in view: MTKView) {
+            defer { updateGizmoCursor() }
             // Clear the drag flag on exit so passive hover (which is gated on
             // !didDrag) resumes immediately after a drag, not only after the next
             // mouse-down.
