@@ -1342,7 +1342,13 @@ extension MetalViewport {
         }
 
         func handleMouseUp(_ event: NSEvent, in view: MTKView) {
-            defer { updateGizmoCursor() }
+            // The drag never re-ran the hover hit test: do it at the release
+            // point so the cursor is not chosen from the pre-drag hover (#701).
+            defer {
+                let p = view.convert(event.locationInWindow, from: nil)
+                lightGizmoHover(at: lightGizmoPoint(p, in: view), in: view)
+                updateGizmoCursor()
+            }
             // Clear the drag flag on exit so passive hover (which is gated on
             // !didDrag) resumes immediately after a drag, not only after the next
             // mouse-down.

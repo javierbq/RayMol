@@ -755,7 +755,7 @@ final class LightGizmoCursorTests: XCTestCase {
             XCTAssertEqual(K.cursor(mode: .viewing, hovered: t, isDragging: false), .normal)
         }
         XCTAssertEqual(K.cursor(mode: .lights, hovered: nil, isDragging: false), .normal)
-        // A drag the pointer left the target during keeps the closed hand.
+        // The closed hand stays while dragging, even once the pointer is off the target.
         XCTAssertEqual(K.cursor(mode: .lights, hovered: nil, isDragging: true), .closedHand)
         // Leaving Lights mode restores the normal cursor, even mid-press.
         XCTAssertEqual(K.cursor(mode: .move, hovered: .aimDot, isDragging: true), .normal)
