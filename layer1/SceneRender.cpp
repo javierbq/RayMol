@@ -2004,7 +2004,7 @@ static void SceneRenderPostProcessStack(PyMOLGlobals* G, const GLFramebufferConf
 /**
  * Does the object have any visible representation? Molecules: the OR of the
  * atoms' visRep (cached by ObjectMolecule::repsShownByAtoms(), dropped by
- * invalidate(cRepInvVisib)) or the unit cell. Other objects: only the reps
+ * invalidate(cRepInvVisib)); a unit cell has no extent of its own. Other objects: only the reps
  * their renderer honours (CObject starts with nearly every bit set, so
  * `visRep != 0` alone would never be false for a CGO or a mesh).
  */
@@ -2013,19 +2013,18 @@ static bool SceneObjectShowsAnyRep(const pymol::CObject* obj)
   int drawn = 0;
   switch (obj->type) {
   case cObjectMolecule:
-    return static_cast<const ObjectMolecule*>(obj)->repsShownByAtoms() != 0 ||
-           (obj->visRep & cRepCellBit) != 0;
+    return static_cast<const ObjectMolecule*>(obj)->repsShownByAtoms() != 0;
   case cObjectCGO:
     drawn = cRepCGOBit;
     break;
   case cObjectMesh:
-    drawn = cRepMeshBit | cRepCellBit;
+    drawn = cRepMeshBit;
     break;
   case cObjectSurface:
-    drawn = cRepSurfaceBit | cRepCellBit;
+    drawn = cRepSurfaceBit;
     break;
   case cObjectMap:
-    drawn = cRepExtentBit | cRepDotBit | cRepCellBit;
+    drawn = cRepExtentBit | cRepDotBit;
     break;
   default:
     return obj->visRep != 0;

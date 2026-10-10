@@ -701,7 +701,7 @@ class TestCasters(ShadowCase):
         cmd.hide('everything')
         self.assertIsNone(self._extent())
 
-    def testToggleSceneAndCellCount(self):
+    def testToggleAndSceneRecall(self):
         base = self._extent()
         far = add(self.centre, [0.0, 200.0, 0.0])
         cmd.pseudoatom('far', pos=far)
@@ -718,10 +718,6 @@ class TestCasters(ShadowCase):
         self.assertVec(self._extent()[1], base[1], 1e-4)
         cmd.scene('shown', 'recall')
         self.assertGreaterEqual(self._extent()[1][1], far[1] - 1e-3)
-        # a shown unit cell is geometry too
-        cmd.hide('everything', 'far')
-        cmd.show('cell', 'far')
-        self.assertGreaterEqual(self._extent()[1][1], far[1] - 1e-3)
 
     def testHiddenNonMoleculeDoesNotCount(self):
         base = self._extent()
@@ -736,6 +732,14 @@ class TestCasters(ShadowCase):
         self.assertVec(self._extent()[1], base[1], 1e-4)
         cmd.show('cgo', 'farcgo')
         self.assertGreaterEqual(self._extent()[1][1], far[1])
+
+    def testHideAllWithOnlyACgo(self):
+        for name in ('m', 'blocker', '_move_gizmo'):
+            cmd.delete(name)
+        cmd.load_cgo([cgo.SPHERE, 1.0, 2.0, 3.0, 2.0], 'only', zoom=0)
+        self.assertIsNotNone(self._extent())
+        cmd.hide('everything')
+        self.assertIsNone(self._extent())
 
     def testFarOverlayLeavesTheFrustaAlone(self):
         self.rig([light('key', orbit=-40.0, pitch=30.0, shadow=True),
