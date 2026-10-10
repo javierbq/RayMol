@@ -1594,6 +1594,8 @@ struct ContentView: View {
     @Environment(\.verticalSizeClass) private var vSize
     @State private var panelFrac: CGFloat = 0.53
     @State private var committedFrac: CGFloat = 0.53
+    /// True while dragging the panel divider; resets on gesture end or cancel (#724).
+    @GestureState private var dividerDragging = false
     @State private var panelCollapsed = false
     // iPhone: full-screen viewport mode (hides the bottom panel + sequence strip).
     // Currently always off — the explicit toggle was removed; collapse the rail +
@@ -3135,6 +3137,9 @@ struct ContentView: View {
         .contentShape(Rectangle())
         .gesture(
             DragGesture(minimumDistance: 2)
+                .updating($dividerDragging) { _, state, _ in
+                    state = true
+                }
                 .onChanged { v in
                     // Freeze the Metal drawable for the duration of the drag so the
                     // renderer doesn't reallocate all offscreen targets every frame
@@ -3160,6 +3165,16 @@ struct ContentView: View {
                     engine.suppressDrawableResize = false
                 }
         )
+        .onChange(of: dividerDragging) { dragging in
+            if !dragging {
+                engine.suppressDrawableResize = false
+                // A cancelled drag leaves panelFrac != committedFrac (onEnded never
+                // committed): snap back to the last committed size (#724).
+                if panelFrac != committedFrac {
+                    panelFrac = committedFrac
+                }
+            }
+        }
     }
 
     // MARK: Gesture legend / first-run coaching
