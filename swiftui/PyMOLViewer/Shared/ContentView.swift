@@ -1596,6 +1596,10 @@ struct ContentView: View {
     @State private var committedFrac: CGFloat = 0.53
     /// True while dragging the panel divider; resets on gesture end or cancel (#724).
     @GestureState private var dividerDragging = false
+    /// The divider's drag froze the drawable and has not released it yet, so
+    /// a cancel or the divider leaving the layout (rotation) releases only a
+    /// freeze it set, never another feature's (#724).
+    @State private var dividerFroze = false
     @State private var panelCollapsed = false
     // iPhone: full-screen viewport mode (hides the bottom panel + sequence strip).
     // Currently always off — the explicit toggle was removed; collapse the rail +
@@ -3147,6 +3151,7 @@ struct ContentView: View {
                     // resize live (cheap SwiftUI); the viewport content just scales
                     // until release, when one reshape snaps it crisp.
                     engine.suppressDrawableResize = true
+                    dividerFroze = true
                     let d = landscape ? -v.translation.width : -v.translation.height
                     // Bottom panel can grow to near-full (0.92) so content like AI
                     // Chat can use all the space; the iPad side column stays ≤0.45.
@@ -3163,18 +3168,25 @@ struct ContentView: View {
                     }
                     // Resume live drawable sizing → exactly one reshape at the final size.
                     engine.suppressDrawableResize = false
+                    dividerFroze = false
                 }
         )
+        // A cancelled drag never reaches onEnded; the gesture state's reset does.
         .onChange(of: dividerDragging) { dragging in
-            if !dragging {
-                engine.suppressDrawableResize = false
-                // A cancelled drag leaves panelFrac != committedFrac (onEnded never
-                // committed): snap back to the last committed size (#724).
-                if panelFrac != committedFrac {
-                    panelFrac = committedFrac
-                }
-            }
+            if !dragging { releaseDividerFreeze() }
         }
+        // A rotation can remove the divider (and its onChange) mid-drag, so
+        // release on the way out too, as the macOS inspector seam does.
+        .onDisappear { releaseDividerFreeze() }
+    }
+
+    // End a divider drag that onEnded did not: release the drawable freeze it
+    // set and snap the panel back to its last committed size (#724).
+    private func releaseDividerFreeze() {
+        guard dividerFroze else { return }
+        dividerFroze = false
+        engine.suppressDrawableResize = false
+        if panelFrac != committedFrac { panelFrac = committedFrac }
     }
 
     // MARK: Gesture legend / first-run coaching
