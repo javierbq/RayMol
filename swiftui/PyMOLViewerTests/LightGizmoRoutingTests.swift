@@ -282,10 +282,9 @@ final class LightGizmoRoutingTests: XCTestCase {
         try press(key.centre)
         XCTAssertTrue(engine.lightGizmoPointer.ownsPress)
         XCTAssertEqual(ui.active, .knob("key"))
-        // Every press clears the hover preview first (one Python call, as in
-        // every mode since #165); the ticks and the release add none.
-        let pressPython = t.python.lines
-        XCTAssertLessThanOrEqual(pressPython.count, 1, "\(pressPython)")
+        // Entering Lights mode cleared the hover preview and none can show
+        // since, so the press runs no Python at all (#694).
+        XCTAssertEqual(t.python.lines, [], "a Lights-mode press runs no Python")
         try drag(from: key.centre, to: target)
         XCTAssertNotNil(ui.readout, "the drag shows its readout")
         XCTAssertEqual(ui.hemisphere, .front)
@@ -293,7 +292,7 @@ final class LightGizmoRoutingTests: XCTestCase {
         t.stop()
 
         XCTAssertEqual(t.events.list, [], "a gizmo drag sends no PyMOL button, drag or pick")
-        XCTAssertEqual(t.python.lines, pressPython, "no Python on a drag tick or the release")
+        XCTAssertEqual(t.python.lines, [], "no Python on the press, a drag tick or the release")
         XCTAssertEqual(t.commands.lines, [])
         XCTAssertFalse(engine.lightGizmoPointer.ownsPress)
         XCTAssertNil(ui.active)
@@ -573,6 +572,104 @@ final class LightGizmoRoutingTests: XCTestCase {
             return XCTFail("after the release the camera has the next drag: \(t.events.list)")
         }
     }
+
+    // MARK: hover clear (#694)
+
+    /// The hover clear skips its Python select when no preview has run since
+    /// the last clear (#694). A press in Lights mode (and every idle clear)
+    /// runs no Python.
+    func testHoverClearRunsPythonOnlyAfterAPreview() throws {
+        try LightsLive.requireEngine()
+        let saved = engine.hoverPreviewEnabled
+        defer { engine.hoverPreviewEnabled = saved }
+        engine.hoverPreviewEnabled = true
+
+        engine.clearHoverPreview()
+
+        let t = taps()
+        defer { t.stop() }
+        // Only the hover pick and the clear: deferred work another test left
+        // on the main queue (e.g. leaving Design mode) may run Python too.
+        func hoverLines() -> [String] {
+            t.python.lines.filter { $0.contains("hover_preview_at") || $0.contains("_preselect") }
+        }
+
+        engine.clearHoverPreview()
+        XCTAssertEqual(t.python.lines, [], "an idle clear runs no Python")
+        XCTAssertFalse(engine.hoverPreviewMayBeShown)
+
+        // Wait past the hover throttle so the next hover fires on the leading edge.
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+
+        t.python.lines = []
+        engine.hoverPreview(0.9, 0.9, 1.0)
+        XCTAssertTrue(engine.hoverPreviewMayBeShown)
+        XCTAssertEqual(hoverLines().count, 1, "\(t.python.lines)")
+        XCTAssertTrue(hoverLines().first?.contains("hover_preview_at") == true, "\(t.python.lines)")
+
+        t.python.lines = []
+        engine.clearHoverPreview()
+        XCTAssertEqual(t.python.lines.count, 1)
+        XCTAssertTrue(t.python.lines.first?.contains("_preselect") == true, "\(t.python.lines)")
+
+        engine.clearHoverPreview()
+        XCTAssertEqual(t.python.lines.count, 1, "the second clear adds none")
+
+        // A readout-only pick (preview off) leaves '_preselect' alone, so it
+        // must not make the next clear run Python.
+        let savedReadout = engine.hoverReadoutEnabled
+        defer { engine.hoverReadoutEnabled = savedReadout }
+        engine.hoverPreviewEnabled = false
+        engine.hoverReadoutEnabled = true
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        t.python.lines = []
+        engine.hoverPreview(-0.9, -0.9, 1.0)
+        XCTAssertEqual(hoverLines().count, 1, "the readout pick runs: \(t.python.lines)")
+        XCTAssertTrue(hoverLines().first?.contains("hover_preview_at") == true, "\(t.python.lines)")
+        XCTAssertFalse(engine.hoverPreviewMayBeShown, "a readout-only pick writes no preview")
+        engine.clearHoverPreview()
+        XCTAssertEqual(hoverLines().count, 1, "the clear after a readout-only pick runs no Python")
+    }
+
+    #if RAYMOL_MPNN
+    /// Both Design-mode callers of `hover_design_at` (the hover and the iOS
+    /// tap) write '_preselect', so each must arm exactly one later clear
+    /// (#694); otherwise the clear would leave the cyan glow behind.
+    func testDesignPicksArmTheHoverClear() throws {
+        try LightsLive.requireEngine()
+        engine.setDesignMode(true)
+        defer {
+            engine.setDesignMode(false)
+            // Let leaving Design mode finish its deferred work here, not in
+            // the next test.
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        XCTAssertTrue(engine.designMode)
+        engine.clearHoverPreview()
+
+        let t = taps()
+        defer { t.stop() }
+        let picks: [(String, () -> Void)] = [
+            ("hoverDesignPreview", { self.engine.hoverDesignPreview(-0.9, -0.9, 1.0) }),
+            ("designPickResidue", { self.engine.designPickResidue(ndcX: -0.9, ndcY: -0.9, aspect: 1.0) }),
+        ]
+        for (name, pick) in picks {
+            engine.clearHoverPreview()
+            XCTAssertFalse(engine.hoverPreviewMayBeShown, name)
+            // Past the design-hover throttle, so the hover fires on the leading edge.
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+            t.python.lines = []
+            pick()
+            XCTAssertTrue(t.python.lines.contains { $0.contains("hover_design_at") }, "\(name): \(t.python.lines)")
+            XCTAssertTrue(engine.hoverPreviewMayBeShown, "\(name) arms the clear")
+            t.python.lines = []
+            engine.clearHoverPreview()
+            engine.clearHoverPreview()
+            XCTAssertEqual(t.python.lines.filter { $0.contains("_preselect") }.count, 1,
+                           "\(name): exactly one clear runs Python \(t.python.lines)")
+        }
+    }
+    #endif
 
     // MARK: DEBUG size check
 
