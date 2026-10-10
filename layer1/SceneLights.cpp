@@ -81,14 +81,15 @@ void SceneLightRigCapture(PyMOLGlobals* G, glm::dvec3& centre, double& size)
   // Enabled objects that are not molecules (maps, meshes, isosurfaces, CGOs,
   // measurements, slices, volumes): their cached extents, as zoom and the
   // shadow frustum use them. Left out: alignments (their atoms are the
-  // molecules'), gadgets (drawn in screen space) and gizmos (UI).
+  // molecules'), groups, and overlays (gadgets, gizmos and the Move gizmo's
+  // CGO, SceneObjectIsOverlay, not drawn as scene content).
   ExecutiveUpdateSceneMembers(G);
   for (auto* obj : G->Scene->Obj) {
+    if (SceneObjectIsOverlay(obj))
+      continue;
     switch (obj->type) {
     case cObjectMolecule:
     case cObjectAlignment:
-    case cObjectGadget:
-    case cObjectGizmo:
     case cObjectGroup:
       continue;
     case cObjectMap:

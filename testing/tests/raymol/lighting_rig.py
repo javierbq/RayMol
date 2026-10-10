@@ -541,6 +541,28 @@ class TestLightRig(testing.PyMOLTestCase):
         cmd.set_lights({'lights': [{}]})
         self.assertEqual(cmd.get_lights(), before)
 
+    def testCaptureIgnoresMoveGizmo(self):
+        """The Move gizmo CGO is an overlay and must not count towards the rig
+        frame, neither during initial capture nor on recenter (#669)."""
+        self.load()
+        cmd.load_cgo([cgo.SPHERE, 100.0, 100.0, 100.0, 4.0],
+                     '_move_gizmo', zoom=0)
+        cmd.set_lights({'lights': [{}]})
+        centre, size = self.frame_of('(enabled and not solvent)')
+        self.assertFrame(cmd.get_lights(), centre, size)
+
+        cmd.translate([10.0, 0.0, 0.0], 'm', camera=0)
+        lighting._lights_recenter()
+        centre, size = self.frame_of('(enabled and not solvent)')
+        self.assertFrame(cmd.get_lights(), centre, size)
+
+        # Control: an ordinary CGO at the same far place DOES move the frame.
+        cmd.delete('_move_gizmo')
+        cmd.load_cgo([cgo.SPHERE, 100.0, 100.0, 100.0, 4.0],
+                     'far', zoom=0)
+        lighting._lights_recenter()
+        self.assertNotEqual(cmd.get_lights()['centre'], centre)
+
     def testFrameNotMovedByViewChanges(self):
         self.load()
         cmd.set_lights({'lights': [{}]})
