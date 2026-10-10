@@ -1079,22 +1079,24 @@ class TestSceneMovieBlend(_BlendCase):
         self.assertEqual([n for _f, n, _p in kfs], ['A', 'A', 'B', 'B'])
 
         # script-only paths: place_scene and append_template('scenes') blend
-        # between the frames _scene_keyframes reports -- today the native
-        # scene CUT frames, not the markers (a proposed follow-up updates
-        # this on purpose)
+        # between the frames _scene_keyframes reports -- now the marker frames,
+        # not the cut frames (#659)
         appkit_movie.reset_movie()
         cmd.mset('1 x25')
         with spying(anim, 'author') as calls:
             appkit_movie.place_scene(1, 'A')
             appkit_movie.place_scene(25, 'B')
         kfs = self.check_received(calls)
-        self.assertEqual(kfs, [(1, 'A', 0.0), (13, 'B', 0.0)])
+        self.assertEqual(kfs, [(1, 'A', 0.0), (25, 'B', 0.0)])
 
         appkit_movie.reset_movie()
         with spying(anim, 'author') as calls:
             appkit_movie.append_template('scenes', seconds_per_scene=0.5,
                                          scenes=['A', 'B'])
-        self.check_received(calls)
+        kfs = self.check_received(calls)
+        fps = cmd.get_setting_float('movie_fps') or 30.0
+        per = max(2, int(round(0.5 * fps)))
+        self.assertEqual(kfs, [(1, 'A', 0.0), (1 + per, 'B', 0.0)])
 
     def testOneCompactCommandPerFrame(self):
         self.build()
@@ -1379,6 +1381,72 @@ class TestSceneMovieBlend(_BlendCase):
                               if f < first_mark or f > last_mark])
         finally:
             cmd.set('movie_loop', 1)
+
+    def testPlaceSceneWrapsWithTheCamera(self):
+        try:
+            cmd.set('movie_loop', 1)
+            appkit_movie.reset_movie()
+            cmd.mset('1 x60')
+            appkit_movie.place_scene(1, 'A')
+            appkit_movie.place_scene(40, 'B')
+            for f in range(41, 61):
+                self.assertIn(f, anim._lights_track)
+                self.assertEqual(anim._lights_track[f][0], 'B')
+                self.assertEqual(anim._lights_track[f][1], 'A')
+
+            cmd.set('movie_loop', 0)
+            appkit_movie.reset_movie()
+            cmd.mset('1 x60')
+            appkit_movie.place_scene(1, 'A')
+            appkit_movie.place_scene(40, 'B')
+            self.assertFalse([f for f in anim._lights_track if f > 40])
+        finally:
+            cmd.set('movie_loop', 1)
+
+    def testPlaceSceneDoesNotWrapToACameraKeyframe(self):
+        try:
+            cmd.set('movie_loop', 1)
+            appkit_movie.reset_movie()
+            cmd.mset('1 x60')
+            cmd.frame(1)
+            # the core tags a plain `mview store` with the CURRENT scene, so
+            # store the camera keyframe with no scene current
+            cmd.set('scene_current_name', '')
+            cmd.mview('store', first=1)
+            appkit_movie.place_scene(20, 'A')
+            appkit_movie.place_scene(40, 'B')
+            self.assertEqual(appkit_movie._scene_keyframes(),
+                             [(20, 'A', 0.0), (40, 'B', 0.0)])
+            self.assertFalse([f for f in anim._lights_track if f < 20 or f > 40])
+        finally:
+            cmd.set('movie_loop', 1)
+
+    def testAppendTemplateWrapsWithTheCamera(self):
+        try:
+            cmd.set('movie_loop', 1)
+            appkit_movie.reset_movie()
+            appkit_movie.append_template('scenes', seconds_per_scene=0.5,
+                                         scenes=['A', 'B'])
+            fps = cmd.get_setting_float('movie_fps') or 30.0
+            per = max(2, int(round(0.5 * fps)))
+            last_marker = 1 + per
+            wrap_frames = [f for f in anim._lights_track if f > last_marker]
+            self.assertTrue(wrap_frames)
+            for f in wrap_frames:
+                self.assertEqual(anim._lights_track[f][0], 'B')
+                self.assertEqual(anim._lights_track[f][1], 'A')
+        finally:
+            cmd.set('movie_loop', 1)
+
+    def testSceneKeyframesLeavesThePlayheadAlone(self):
+        appkit_movie.reset_movie()
+        cmd.mset('1 x25')
+        appkit_movie.place_scene(1, 'A')
+        appkit_movie.place_scene(25, 'B')
+        cmd.frame(7)
+        appkit_movie._scene_keyframes()
+        self.assertEqual(cmd.get_frame(), 7)
+        self.assertNotIn('_raymol_kf_probe', cmd.get_names('all'))
 
 
 # --- the L2 scene file (scripts/lighting/scenes/lighting_617_movie.json) ----

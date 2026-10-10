@@ -304,12 +304,11 @@ def preserved(_self=cmd):
     (#508, #617). Nests.
 
     For code that has to DISPLAY movie frames only to read something off them
-    -- appkit_movie._scene_keyframes scrubs every frame to find the scene cuts
-    -- because displaying a frame runs its authored commands: each scene
-    keyframe's enter_scene and each interpolated `set`. Without this, building
-    a movie left the live session carrying whatever the last scrubbed frame
-    applied. Restored through the same conditional writes as a recall, so an
-    unchanged value costs nothing."""
+    because displaying a frame runs its authored commands: each scene
+    keyframe's enter_scene and each interpolated `set`. Without this,
+    displaying frames leaves the live session carrying whatever the last
+    displayed frame applied. Restored through the same conditional writes as a
+    recall, so an unchanged value costs nothing."""
     return _Preserved(_self)
 
 

@@ -193,46 +193,70 @@ def clear_keyframe(frame, linear=0):
         print('MOVIE_ERR:' + str(e))
 
 
-def _scene_keyframes():
-    """[(frame, scene_name, power)] for every scene marker currently on the
-    timeline, recovered by scrubbing: a scene-tagged keyframe sets
-    scene_current_name when its frame is displayed. Restores the playhead before
-    returning — the caller's frame must survive the scrub.
+def _movie_keyframes(_self=cmd):
+    """[(frame, scene_name_or_None)] for every stored camera keyframe
+    (ViewElem specification_level 2), in frame order (1-based), read from the
+    core's movie ViewElem list. The core only exports that list with a
+    session, so this exports one limited to an empty hidden selection (a names
+    pattern that matches nothing would serialize every object). Nothing is
+    displayed: the playhead and the live settings are untouched.
 
-    The per-keyframe power is reported as 0.0 ("none stored") because scrubbing
-    cannot read ViewElem.power back. That is not a loss here: every path that
-    scrubs also drives the easing with a movie-wide `mview reinterpolate power=`,
-    which the core resolves ahead of both endpoints — the caller passes that same
-    value to raymol_scene_anim.author(power=...)."""
-    out = []
+    The name is the scene the core tagged the keyframe with. Note that a plain
+    `mview store` tags it with the scene current at that moment, and playback
+    then recalls that scene there, so such a keyframe counts as a scene marker
+    too. Returns [] on any failure or when there is no movie."""
+    probe = '_raymol_kf_probe'
     try:
-        n = int(cmd.count_frames())
-    except Exception:
-        return out
-    try:
-        saved = int(cmd.get_frame() or 1)
-    except Exception:
-        saved = 1
-    seen = None
-    # Displaying a frame runs its authored commands (enter_scene, interpolated
-    # `set`s), so the scrub is wrapped: it READS the cuts and must leave the
-    # live settings as it found them (#508).
-    from pymol import raymol_scenes as _rs
-    with _rs.preserved():
-        for f in range(1, n + 1):
-            try:
-                cmd.frame(f)
-                cur = cmd.get('scene_current_name') or ''
-            except Exception:
-                continue
-            if cur and cur != seen:
-                out.append((f, cur, 0.0))
-            seen = cur
+        d = {}
         try:
-            cmd.frame(saved)
-        except Exception:
-            pass
-    return out
+            _self.select(probe, 'none', enable=0)
+            with _self.lockcm:
+                _self._cmd.get_session(_self._COb, d, probe, 0, 1)
+        finally:
+            try:
+                _self.delete(probe)
+            except Exception:
+                pass
+        movie = d.get('movie')
+        if not movie or len(movie) < 7:
+            return []
+        elems = movie[6]
+        if not elems or not isinstance(elems, list):
+            return []
+        out = []
+        for i, v in enumerate(elems):
+            if v and len(v) > 12 and v[12] == 2:
+                scene = v[14] if (len(v) > 14 and v[13] and isinstance(v[14], str) and v[14]) else None
+                out.append((i + 1, scene))
+        return out
+    except Exception:
+        return []
+
+
+def _scene_keyframes(_self=cmd):
+    """[(frame, scene_name, power)] for every scene-tagged keyframe currently on
+    the timeline, read from the core's ViewElem list. It reports the MARKER
+    frames; the old scrub of scene_current_name reported where the camera
+    interpolation cuts between scenes (halfway, by mview's default cut), so the
+    blends finished halfway through the camera move (#659).
+
+    The per-keyframe power is reported as 0.0 ("none stored"): the export
+    only writes ViewElem.power when ortho_flag is set, so it cannot be read
+    back reliably. That is not a loss here: both callers drive the easing with
+    a movie-wide `mview reinterpolate power=`, which the core resolves ahead of
+    both endpoints, and pass that same value to raymol_scene_anim.author."""
+    return [(f, name, 0.0) for f, name in _movie_keyframes(_self) if name]
+
+
+def _scene_wrap(_self=cmd):
+    """None (follow movie_loop, like the camera's wrap=-1) when the movie has at
+    least one stored keyframe and both the first and last stored keyframes from
+    _movie_keyframes are scene markers; otherwise False (the camera would wrap
+    to or from a non-scene keyframe, so the settings must not wrap, #656, #659)."""
+    kfs = _movie_keyframes(_self)
+    if kfs and kfs[0][1] and kfs[-1][1]:
+        return None
+    return False
 
 
 def place_scene(frame, name, linear=0):
@@ -272,8 +296,8 @@ def place_scene(frame, name, linear=0):
         # settings ease exactly like the camera.
         try:
             from pymol import raymol_scene_anim as _an
-            # The scrub reports cut frames, not markers (#659), so do not wrap.
-            _an.author(_scene_keyframes(), power=power, wrap=False)
+            # Settings wrap only when the camera wraps scene to scene (#656, #659).
+            _an.author(_scene_keyframes(), power=power, wrap=_scene_wrap())
         except Exception as e:
             print('MOVIE_ERR:' + str(e))
     except Exception as e:
@@ -424,17 +448,18 @@ def append_template(kind, duration=8.0, axis='y', angle=30.0,
                     except Exception:
                         pass
                 # Author from ALL markers currently on the timeline (not just the
-                # ones this batch placed). _scene_keyframes() recovers every
-                # scene-tagged keyframe by scrubbing, so calling append_template
-                # a second time does not wipe the first batch's animation: author
-                # runs once over the union, not twice over disjoint sets.
+                # ones this batch placed). _scene_keyframes() reads every
+                # scene-tagged keyframe from the core ViewElem list, so calling
+                # append_template a second time does not wipe the first batch's
+                # animation: author runs once over the union, not twice over
+                # disjoint sets.
                 # Unconditional: author([]) is the reset when names is empty;
                 # guarding would leave a previous movie's animation live in the
                 # module for the non-scenes path.
                 try:
                     from pymol import raymol_scene_anim as _an
-                    # The scrub reports cut frames, not markers (#659), so do not wrap.
-                    _an.author(_scene_keyframes(), wrap=False)
+                    # Settings wrap only when the camera wraps scene to scene (#656, #659).
+                    _an.author(_scene_keyframes(), wrap=_scene_wrap())
                 except Exception as e:
                     print('MOVIE_ERR:' + str(e))
 
