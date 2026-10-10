@@ -149,6 +149,18 @@ private extension View {
     }
 }
 
+/// What the macOS mouse-mode legend shows (#677). Lights mode hides it so it
+/// can't cover the Lights side column in short windows; the user's persisted
+/// collapsed/expanded choice is untouched and applies again once the mode ends.
+enum MouseLegendPresentation: Equatable {
+    case hidden, collapsed, expanded
+
+    static func resolve(collapsed: Bool, interactionMode: InteractionMode) -> MouseLegendPresentation {
+        if interactionMode == .lights { return .hidden }
+        return collapsed ? .collapsed : .expanded
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject var engine: PyMOLEngine
     @EnvironmentObject private var themeManager: ThemeManager
@@ -463,8 +475,12 @@ struct ContentView: View {
     #if os(macOS)
     // Minimizable mouse-mode legend: full card with a minimize button, or a
     // small mouse button when collapsed (state persists via @AppStorage).
+    // Lights mode hides it entirely so it can't cover the Lights side column (#677).
     @ViewBuilder private var mouseLegendCard: some View {
-        if mouseLegendCollapsed {
+        switch MouseLegendPresentation.resolve(collapsed: mouseLegendCollapsed, interactionMode: engine.interactionMode) {
+        case .hidden:
+            EmptyView()
+        case .collapsed:
             Button { withAnimation(.easeInOut(duration: 0.15)) { mouseLegendCollapsed = false } } label: {
                 Image(systemName: "computermouse")
                     .font(.system(size: 15))
@@ -475,7 +491,7 @@ struct ContentView: View {
             .buttonStyle(.plain)
             .help("Show mouse controls")
             .padding(8)
-        } else {
+        case .expanded:
             // The minimize button lives in a reserved trailing gutter (top-right),
             // NOT overlaid on the panel: MousePanel's mode Picker uses
             // `maxWidth: .infinity`, so its `.menu` chevron would otherwise run
@@ -507,7 +523,10 @@ struct ContentView: View {
             .padding(8)
             .onHover { hovering in
                 mouseLegendCollapseWork?.cancel()
-                guard !hovering else { return }
+                // Entering Lights removes the card (#677); a hover-exit caused by
+                // that removal must not minimize it, or Lights would change the
+                // persisted preference.
+                guard !hovering, engine.interactionMode != .lights else { return }
                 // Auto-minimize ~1s after the pointer leaves the expanded legend.
                 let work = DispatchWorkItem {
                     withAnimation(.easeInOut(duration: 0.15)) { mouseLegendCollapsed = true }
