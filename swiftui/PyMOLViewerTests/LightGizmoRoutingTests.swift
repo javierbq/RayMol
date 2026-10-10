@@ -282,10 +282,9 @@ final class LightGizmoRoutingTests: XCTestCase {
         try press(key.centre)
         XCTAssertTrue(engine.lightGizmoPointer.ownsPress)
         XCTAssertEqual(ui.active, .knob("key"))
-        // Every press clears the hover preview first (one Python call, as in
-        // every mode since #165); the ticks and the release add none.
-        let pressPython = t.python.lines
-        XCTAssertLessThanOrEqual(pressPython.count, 1, "\(pressPython)")
+        // Entering Lights mode cleared the hover preview and none can show
+        // since, so the press runs no Python at all (#694).
+        XCTAssertEqual(t.python.lines, [], "a Lights-mode press runs no Python")
         try drag(from: key.centre, to: target)
         XCTAssertNotNil(ui.readout, "the drag shows its readout")
         XCTAssertEqual(ui.hemisphere, .front)
@@ -293,7 +292,7 @@ final class LightGizmoRoutingTests: XCTestCase {
         t.stop()
 
         XCTAssertEqual(t.events.list, [], "a gizmo drag sends no PyMOL button, drag or pick")
-        XCTAssertEqual(t.python.lines, pressPython, "no Python on a drag tick or the release")
+        XCTAssertEqual(t.python.lines, [], "no Python on the press, a drag tick or the release")
         XCTAssertEqual(t.commands.lines, [])
         XCTAssertFalse(engine.lightGizmoPointer.ownsPress)
         XCTAssertNil(ui.active)
@@ -572,6 +571,43 @@ final class LightGizmoRoutingTests: XCTestCase {
               case .button(Self.left, Self.up, _, _, _)? = t.events.list.last else {
             return XCTFail("after the release the camera has the next drag: \(t.events.list)")
         }
+    }
+
+    // MARK: hover clear (#694)
+
+    /// The hover clear skips its Python select when no preview has run since
+    /// the last clear (#694). A press in Lights mode (and every idle clear)
+    /// runs no Python.
+    func testHoverClearRunsPythonOnlyAfterAPreview() throws {
+        try LightsLive.requireEngine()
+        let saved = engine.hoverPreviewEnabled
+        defer { engine.hoverPreviewEnabled = saved }
+        engine.hoverPreviewEnabled = true
+
+        engine.clearHoverPreview()
+
+        let t = taps()
+        defer { t.stop() }
+
+        engine.clearHoverPreview()
+        XCTAssertEqual(t.python.lines, [], "an idle clear runs no Python")
+        XCTAssertFalse(engine.hoverPreviewMayBeShown)
+
+        // Wait past the hover throttle so the next hover fires on the leading edge.
+        RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+
+        engine.hoverPreview(0.9, 0.9, 1.0)
+        XCTAssertTrue(engine.hoverPreviewMayBeShown)
+        XCTAssertEqual(t.python.lines.count, 1)
+        XCTAssertTrue(t.python.lines.first?.contains("hover_preview_at") == true, "\(t.python.lines)")
+
+        t.python.lines = []
+        engine.clearHoverPreview()
+        XCTAssertEqual(t.python.lines.count, 1)
+        XCTAssertTrue(t.python.lines.first?.contains("_preselect") == true, "\(t.python.lines)")
+
+        engine.clearHoverPreview()
+        XCTAssertEqual(t.python.lines.count, 1, "the second clear adds none")
     }
 
     // MARK: DEBUG size check

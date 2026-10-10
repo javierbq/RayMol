@@ -4122,6 +4122,12 @@ final class PyMOLEngine: ObservableObject {
     private var lastHoverFire = Date.distantPast
     private let kHoverInterval = 0.045        // leading-edge throttle: ≤~22 picks/s
     private let kHoverMinNDC: Float = 0.004   // sub-pixel move gate (NDC²-ish)
+    /// Whether a hover pick that may have written '_preselect' has run since the
+    /// last clear (#694). clearHoverPreview skips its Python select when false,
+    /// so a press with nothing previewed (every press in Lights mode) runs no
+    /// Python. Starts true so the first clear is unconditional (a session or
+    /// script could have left '_preselect' populated).
+    private(set) var hoverPreviewMayBeShown = true
     // Separate throttle state for the design-mode hover path so it doesn't
     // interfere with the viewing-mode hover path's NDC gate / work item.
     #if RAYMOL_MPNN
@@ -4151,6 +4157,7 @@ final class PyMOLEngine: ObservableObject {
             self.lastHoverFire = Date()
             let wantsPreview = self.hoverPreviewEnabled
             let wantsInfo = self.hoverReadoutEnabled
+            self.hoverPreviewMayBeShown = true
             self.runPython(
                 "from pymol import metal_pick as _mp; "
                 + "_mp.hover_preview_at(\(ndcX), \(ndcY), \(aspect), "
@@ -4170,7 +4177,8 @@ final class PyMOLEngine: ObservableObject {
 
     /// Cancel any pending hover pick and empty the preview selection. Cheap and
     /// idempotent — safe to call from mouse-down / drag-start / mouse-exit and
-    /// when the user toggles the feature off.
+    /// when the user toggles the feature off; runs no Python when nothing was
+    /// previewed since the last clear (#694).
     func clearHoverPreview() {
         hoverWork?.cancel()
         hoverWork = nil
@@ -4186,7 +4194,10 @@ final class PyMOLEngine: ObservableObject {
         lastDesignHoverNDC = nil
         if designMode { MainActor.assumeIsolated { designController.clearHover() } }
         #endif
-        guard isReady else { return }
+        // Nothing previewed since the last clear → '_preselect' is already empty;
+        // skip the Python (#694: every Lights-mode press used to pay for it).
+        guard isReady, hoverPreviewMayBeShown else { return }
+        hoverPreviewMayBeShown = false
         // enable=0: never enable '_preselect' — enabling a selection is exclusive
         // and would disable the committed 'sele', hiding its markers. (The
         // renderer draws '_preselect' by membership regardless of enabled state.)
@@ -4226,6 +4237,7 @@ final class PyMOLEngine: ObservableObject {
         let fire: () -> Void = { [weak self] in
             guard let self else { return }
             self.lastDesignHoverFire = Date()
+            self.hoverPreviewMayBeShown = true
             self.runPython(
                 "from pymol import metal_pick as _mp; "
                 + "_mp.hover_design_at(\(ndcX), \(ndcY), \(aspect))")
