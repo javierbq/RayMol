@@ -710,7 +710,7 @@ struct PitchArcPainter {
 
     func draw(in context: inout GraphicsContext) {
         let c = layout.centre
-        let r = layout.radius
+        let rx = layout.radiusX, ry = layout.radiusY
         let muted = style.text.opacity(0.55)
         let font = Font.system(size: 9).monospacedDigit()
 
@@ -730,8 +730,8 @@ struct PitchArcPainter {
         for pitch in PitchArcLayout.ticks {
             let o = LightAngles.offset(pitch: pitch)
             var tick = Path()
-            tick.move(to: CGPoint(x: c.x + (r - 3) * CGFloat(o.dx), y: c.y + (r - 3) * CGFloat(o.dy)))
-            tick.addLine(to: CGPoint(x: c.x + (r + 3) * CGFloat(o.dx), y: c.y + (r + 3) * CGFloat(o.dy)))
+            tick.move(to: CGPoint(x: c.x + (rx - 3) * CGFloat(o.dx), y: c.y + (ry - 3) * CGFloat(o.dy)))
+            tick.addLine(to: CGPoint(x: c.x + (rx + 3) * CGFloat(o.dx), y: c.y + (ry + 3) * CGFloat(o.dy)))
             context.stroke(tick, with: .color(style.text.opacity(0.35)), lineWidth: 1)
         }
         let top = layout.point(pitch: 90), bottom = layout.point(pitch: -90)

@@ -371,18 +371,54 @@ final class PitchArcLayoutTests: XCTestCase {
         XCTAssertEqual(arc.size, LightsOrbitMetrics.arcSize)
         XCTAssertLessThan(c.x, arc.size.width / 4, "centred near the left edge")
         let level = arc.point(pitch: 0)
-        XCTAssertEqual(level.x, c.x + arc.radius, accuracy: 1e-9)
+        XCTAssertEqual(level.x, c.x + arc.radiusX, accuracy: 1e-9)
         XCTAssertEqual(level.y, c.y, accuracy: 1e-9)
         let up = arc.point(pitch: 90)
         XCTAssertEqual(up.x, c.x, accuracy: 1e-9)
-        XCTAssertEqual(up.y, c.y - arc.radius, accuracy: 1e-9)
+        XCTAssertEqual(up.y, c.y - arc.radiusY, accuracy: 1e-9)
         let down = arc.point(pitch: -90)
-        XCTAssertEqual(down.y, c.y + arc.radius, accuracy: 1e-9)
+        XCTAssertEqual(down.y, c.y + arc.radiusY, accuracy: 1e-9)
         XCTAssertEqual(PitchArcLayout.ticks, [-90, -45, 0, 45, 90])
         // The whole arc and its handle fit the canvas.
         XCTAssertLessThanOrEqual(level.x + LightsOrbitMetrics.handleRadius, arc.size.width)
         XCTAssertGreaterThanOrEqual(up.y - LightsOrbitMetrics.handleRadius, 0)
         XCTAssertLessThanOrEqual(down.y + LightsOrbitMetrics.handleRadius, arc.size.height)
+    }
+
+    /// #681: the arc fills the canvas height (a flatter ellipse), not the
+    /// 58 pt width's half circle.
+    func testTheArcFillsTheCanvasHeight() {
+        let top = arc.point(pitch: 90), bottom = arc.point(pitch: -90)
+        let extent = bottom.y - top.y
+        XCTAssertGreaterThanOrEqual(extent, 0.9 * arc.size.height)
+        XCTAssertLessThanOrEqual(extent, arc.size.height)
+        XCTAssertGreaterThan(arc.radiusY, arc.radiusX, "flatter, not a small circle")
+        for size in [CGSize(width: 58, height: 196), CGSize(width: 98, height: 194), CGSize(width: 70, height: 300)] {
+            let a = PitchArcLayout(size: size, slop: 6)
+            XCTAssertGreaterThanOrEqual(a.point(pitch: -90).y - a.point(pitch: 90).y,
+                                        size.height - 2 * LightsOrbitMetrics.arcMargin - 1e-9, "\(size)")
+            XCTAssertLessThanOrEqual(a.point(pitch: 0).x, size.width - LightsOrbitMetrics.arcMargin + 1e-9)
+        }
+    }
+
+    func testEndpointsAreTheRange() {
+        XCTAssertEqual(arc.pitch(at: arc.point(pitch: 90)), 90, accuracy: 1e-9)
+        XCTAssertEqual(arc.pitch(at: arc.point(pitch: -90)), -90, accuracy: 1e-9)
+        XCTAssertEqual(arc.pitch(at: arc.point(pitch: 0)), 0, accuracy: 1e-9)
+        XCTAssertEqual(arc.pitch(at: CGPoint(x: arc.centre.x, y: 0)), 90, accuracy: 1e-9, "canvas top")
+        XCTAssertEqual(arc.pitch(at: CGPoint(x: arc.centre.x, y: arc.size.height)), -90, accuracy: 1e-9,
+                       "canvas bottom")
+    }
+
+    /// A pointer anywhere on the ray through the handle maps to its pitch.
+    func testPointerOnTheRayMapsToThePitch() {
+        for pitch in stride(from: -85.0, through: 85, by: 10) {
+            let p = arc.point(pitch: pitch), c = arc.centre
+            for k in [0.4, 1.0, 1.6] {
+                let q = CGPoint(x: c.x + (p.x - c.x) * k, y: c.y + (p.y - c.y) * k)
+                XCTAssertEqual(arc.pitch(at: q), pitch, accuracy: 1e-9)
+            }
+        }
     }
 
     func testRoundTripAndClamp() {
@@ -566,13 +602,13 @@ final class OrbitHitTestTests: XCTestCase {
         let nearHandle = CGPoint(x: arc.point(pitch: 35).x + 10, y: arc.point(pitch: 35).y)
         XCTAssertEqual(OrbitHitTest.pitch(at: nearHandle, layout: arc, pitch: 35), .pitchHandle)
         XCTAssertEqual(OrbitHitTest.pitch(at: arc.point(pitch: -60), layout: arc, pitch: 35), .pitchTrack)
-        let justOff = CGPoint(x: c.x + arc.radius + 5, y: c.y)
+        let justOff = CGPoint(x: c.x + arc.radiusX + 5, y: c.y)
         XCTAssertEqual(OrbitHitTest.pitch(at: justOff, layout: arc, pitch: 35), .pitchTrack)
-        XCTAssertNil(OrbitHitTest.pitch(at: CGPoint(x: c.x + arc.radius + 7, y: c.y), layout: arc, pitch: 35))
+        XCTAssertNil(OrbitHitTest.pitch(at: CGPoint(x: c.x + arc.radiusX + 7, y: c.y), layout: arc, pitch: 35))
         XCTAssertNil(OrbitHitTest.pitch(at: c, layout: arc, pitch: 35), "the centre")
-        XCTAssertNil(OrbitHitTest.pitch(at: CGPoint(x: c.x + arc.radius / 2, y: c.y), layout: arc, pitch: 35),
+        XCTAssertNil(OrbitHitTest.pitch(at: CGPoint(x: c.x + arc.radiusX / 2, y: c.y), layout: arc, pitch: 35),
                      "inside the arc")
-        XCTAssertNil(OrbitHitTest.pitch(at: CGPoint(x: c.x - 4, y: c.y - arc.radius + 2), layout: arc,
+        XCTAssertNil(OrbitHitTest.pitch(at: CGPoint(x: c.x - 4, y: c.y - arc.radiusY + 2), layout: arc,
                                         pitch: 0), "left of the centre")
     }
 

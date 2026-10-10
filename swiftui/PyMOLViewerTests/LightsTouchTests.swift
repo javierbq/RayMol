@@ -263,8 +263,10 @@ final class LightsTouchTargetTests: XCTestCase {
         }
         // The track at -60°, away from the handle, perpendicular to the arc.
         let p = ios.point(pitch: -60)
+        // (The ellipse's normal at the point: the gradient of the squashed radius.)
         let o = LightAngles.offset(pitch: -60)
-        let outward = CGVector(dx: o.dx, dy: o.dy), inward = CGVector(dx: -o.dx, dy: -o.dy)
+        let nx = o.dx / Double(ios.radiusX), ny = o.dy / Double(ios.radiusY), n = hypot(nx, ny)
+        let outward = CGVector(dx: nx / n, dy: ny / n), inward = CGVector(dx: -nx / n, dy: -ny / n)
         for u in [outward, inward] {
             XCTAssertEqual(OrbitHitTest.pitch(at: along(p, u, 21.9), layout: ios, pitch: 80), .pitchTrack)
             XCTAssertNil(OrbitHitTest.pitch(at: along(p, u, 22.1), layout: ios, pitch: 80))
