@@ -440,6 +440,33 @@ final class LightsInspectorStateTests: XCTestCase {
         controller.refresh()
         XCTAssertTrue(try hint(false))
     }
+
+    func testTheNoCastersHint() throws {
+        store.setRig(["key", "fill"])
+        store.lights[0].shadow = true
+        controller.begin()
+        controller.eyeDemand = .everyFrame
+        store.shadowSlots = [-1, -1]
+        controller.frameRendered()
+        let state1 = try XCTUnwrap(LightsInspectorState(controller, sceneShadowsOn: true))
+        XCTAssertTrue(state1.showsNoCastersHint)
+        XCTAssertTrue(state1.summary.hasSuffix(" hint=no_casters"), state1.summary)
+
+        // With slot 0 after another frameRendered it is false.
+        store.shadowSlots = [0, -1]
+        controller.frameRendered()
+        let state2 = try XCTUnwrap(LightsInspectorState(controller, sceneShadowsOn: true))
+        XCTAssertFalse(state2.showsNoCastersHint)
+        XCTAssertFalse(state2.summary.contains("hint=no_casters"), state2.summary)
+
+        // With sceneShadowsOn: false it is false (and showsShadowsHint true).
+        store.shadowSlots = [-1, -1]
+        controller.frameRendered()
+        let state3 = try XCTUnwrap(LightsInspectorState(controller, sceneShadowsOn: false))
+        XCTAssertFalse(state3.showsNoCastersHint)
+        XCTAssertTrue(state3.showsShadowsHint)
+        XCTAssertTrue(state3.summary.hasSuffix(" hint=shadows_off"), state3.summary)
+    }
 }
 
 // MARK: - The DEBUG edit hook
@@ -987,5 +1014,44 @@ final class LightAngleStepperMetricsTests: XCTestCase {
                                  LightsInspector.width - 24, "the row fits the 284 pt card")
         XCTAssertEqual(InspectorMetrics.touchStepperWidth(minimum: LightsTouch.minimumTarget),
                        2 * LightsTouch.minimumTarget)
+    }
+}
+
+// MARK: - No casters hint (#673)
+
+final class LightsNoCastersHintTests: XCTestCase {
+    func testExactHintText() {
+        XCTAssertEqual(LightsInspectorState.noCastersHint, "No casters in this light's beam")
+    }
+
+    func testPureDecisionTruthTable() {
+        // True only for (isShadowed: true, rigOn: true, sceneShadowsOn: true, shadowSlot: -1).
+        XCTAssertTrue(LightsInspectorState.showsNoCastersHint(
+            isShadowed: true, rigOn: true, sceneShadowsOn: true, shadowSlot: -1))
+
+        // False for slot 0/1/2.
+        for slot in [0, 1, 2] {
+            XCTAssertFalse(LightsInspectorState.showsNoCastersHint(
+                isShadowed: true, rigOn: true, sceneShadowsOn: true, shadowSlot: slot),
+                "slot \(slot) should not show hint")
+        }
+
+        // False for slot nil.
+        XCTAssertFalse(LightsInspectorState.showsNoCastersHint(
+            isShadowed: true, rigOn: true, sceneShadowsOn: true, shadowSlot: nil))
+
+        // False for sceneShadowsOn false or nil.
+        XCTAssertFalse(LightsInspectorState.showsNoCastersHint(
+            isShadowed: true, rigOn: true, sceneShadowsOn: false, shadowSlot: -1))
+        XCTAssertFalse(LightsInspectorState.showsNoCastersHint(
+            isShadowed: true, rigOn: true, sceneShadowsOn: nil, shadowSlot: -1))
+
+        // False for rigOn false.
+        XCTAssertFalse(LightsInspectorState.showsNoCastersHint(
+            isShadowed: true, rigOn: false, sceneShadowsOn: true, shadowSlot: -1))
+
+        // False for isShadowed false.
+        XCTAssertFalse(LightsInspectorState.showsNoCastersHint(
+            isShadowed: false, rigOn: true, sceneShadowsOn: true, shadowSlot: -1))
     }
 }

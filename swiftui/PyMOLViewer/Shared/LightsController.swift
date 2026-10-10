@@ -278,21 +278,32 @@ final class LightsEyeState: ObservableObject {
 }
 
 /// Which lights are behind the molecule (`LightDepth`: behind the rig centre
-/// in eye depth), the one answer the bar's chips and the gizmo's knobs show.
-/// Its own object, published only when a light crosses, so the per-frame eye
-/// read of a pinned light re-renders the chips only on a crossing, never the
-/// bar or the inspector.
+/// in eye depth), the one answer the bar's chips and the gizmo's knobs show,
+/// and each light's shadow-map slot this frame (#673), which the inspector's
+/// "No casters" line reads. Its own object, published only when a value
+/// changes, so the per-frame eye read re-renders its observers (the chips,
+/// the inspector) only on a crossing or a slot change, never the bar.
 @MainActor
 final class LightsFacingState: ObservableObject {
     /// Lowercased names of the lights behind the molecule. Empty while
     /// Lights mode is off.
     @Published fileprivate(set) var behind: Set<String> = []
+    /// Lowercased light name -> slot (0..2, or -1 when it gets no map), from the latest
+    /// consistent eye read; empty when unknown (#673).
+    @Published fileprivate(set) var shadowSlots: [String: Int] = [:]
 
     /// The light called `name` (ignoring case) is behind the molecule.
     func isBehind(_ name: String) -> Bool { behind.contains(name.lowercased()) }
 
+    /// The shadow-map slot of the light called `name` (ignoring case), or nil when unknown (#673).
+    func shadowSlot(of name: String) -> Int? { shadowSlots[name.lowercased()] }
+
     fileprivate func publish(_ new: Set<String>) {
         if new != behind { behind = new }
+    }
+
+    fileprivate func publish(shadowSlots new: [String: Int]) {
+        if new != shadowSlots { shadowSlots = new }
     }
 }
 
@@ -478,6 +489,7 @@ final class LightsController: ObservableObject {
         noteShadowRefused(false)
         eye.clear()
         facing.publish([])
+        facing.publish(shadowSlots: [:])
         eyeNeedsRebuild = true
     }
 
@@ -550,17 +562,20 @@ final class LightsController: ObservableObject {
         guard eyeDemand == .everyFrame || lights.contains(where: { $0.anchor == .pinned }) else {
             eye.publish(eyeSpace: nil)
             eye.publish(projection: nil)
+            facing.publish(shadowSlots: [:])
             return
         }
         let read = seams.eyeSpace()
         guard Self.eye(read, isConsistentWith: rig) else {
             eyeNeedsRebuild = true
+            facing.publish(shadowSlots: [:])
             refresh()
             return
         }
         let placements = Self.placements(of: lights, eye: read)
         eye.publish(placements, tolerance: Self.placementTolerance)
         publishFacing(lights, placements)
+        publishShadowSlots(lights: lights, eye: read)
         // The projection goes with an eye-space read (none for no rig).
         let everyFrame = eyeDemand == .everyFrame && read != nil
         eye.publish(eyeSpace: everyFrame ? read : nil)
@@ -811,9 +826,24 @@ final class LightsController: ObservableObject {
         let placements = Self.placements(of: lights, eye: usable ? read : nil)
         eye.publish(placements, tolerance: 0)
         publishFacing(lights, placements)
+        publishShadowSlots(lights: lights, eye: usable ? read : nil)
         let everyFrame = eyeDemand == .everyFrame && usable && read != nil
         eye.publish(eyeSpace: everyFrame ? read : nil)
         eye.publish(projection: everyFrame ? seams.projection() : nil)
+    }
+
+    /// Publish each light's shadow-map slot from `eye` (only when `eye` is
+    /// non-nil and consistent with `lights`): only when the mapping changes (#673).
+    private func publishShadowSlots(lights: [LightRigSnapshot.Light], eye: LightEyeSpace?) {
+        guard let eye else {
+            facing.publish(shadowSlots: [:])
+            return
+        }
+        var slots: [String: Int] = [:]
+        for (light, eyeLight) in zip(lights, eye.lights) {
+            slots[light.name.lowercased()] = eyeLight.shadowSlot
+        }
+        facing.publish(shadowSlots: slots)
     }
 
     /// Publish which of `lights` are behind the molecule at `placements`

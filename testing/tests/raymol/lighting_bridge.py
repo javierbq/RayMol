@@ -49,6 +49,7 @@ FUNCTIONS = {'PyMOLBridge_LightsJSON', 'PyMOLBridge_LightSet',
 ALLOWED_CALLS = {
     'INST', 'PyMOL_GetGlobals',
     'SceneLightsJSON', 'SceneLightSet', 'SceneLightsResolve',
+    'SceneLightsFrame', 'SceneGetWorldToEye',
     'strdup', 'c_str', 'size', 'min', 'max',
 }
 KEYWORDS = {'if', 'for', 'while', 'switch', 'return', 'sizeof'}
@@ -164,7 +165,8 @@ class TestLightingBridge(testing.PyMOLTestCase):
         # The rig functions the bridge calls live in SceneLights.cpp, which
         # testRigCoreHasNoPython reads.
         scene_lights = strip_comments(self.read(os.path.join('layer1', 'SceneLights.cpp')))
-        for callee in ('SceneLightsJSON', 'SceneLightSet', 'SceneLightsResolve'):
+        for callee in ('SceneLightsJSON', 'SceneLightSet', 'SceneLightsResolve',
+                       'SceneLightsFrame', 'SceneGetWorldToEye'):
             self.assertRegex(scene_lights, r'\n[^\n;]*\b%s\s*\([^;{]*\)\s*\{' % callee)
 
     def testRigCoreHasNoPython(self):
@@ -222,3 +224,19 @@ class TestLightingBridge(testing.PyMOLTestCase):
         mapped = dict(re.findall(
             r'case\s+PYMOL_LIGHT_SET_(\w+)\s*:\s*self\s*=\s*\.(\w+)', swift))
         self.assertEqual(mapped, {name: upper_snake_to_camel(name) for name in c})
+
+    def testEyeReadCarriesTheShadowSlot(self):
+        lights_h = strip_comments(self.read(LIGHTS_H))
+        m = re.search(r'typedef\s+struct\s*\{([^}]*)\}\s*PyMOLLightEye\s*;', lights_h)
+        self.assertIsNotNone(m, 'PyMOLLightEye struct not found in PyMOLBridgeLights.h')
+        fields = [f.strip() for f in m.group(1).split(';') if f.strip()]
+        self.assertEqual(fields[-1], 'int shadowSlot')
+
+        defs = definitions(self.read(MM))
+        self.assertIn('PyMOLBridge_LightsEyeSpace', defs)
+        _, _, body = defs['PyMOLBridge_LightsEyeSpace']
+        self.assertIn('shadowSlot', body)
+        self.assertIn('SceneLightsFrame', body)
+
+        swift = strip_comments(self.read(SWIFT))
+        self.assertIn('light.shadowSlot', swift)

@@ -95,9 +95,10 @@ int PyMOLBridge_LightSet(PyMOLHandle instance, int index, const char *field, dou
 // Set one vector field of light `index`: color (sRGB 0..1), aim_point (world
 // Å; aims the light at it) or position (world Å; pins the light there).
 int PyMOLBridge_LightSetVector(PyMOLHandle instance, int index, const char *field, double x, double y, double z);
-// Resolve the rig for the live camera. Fills *rig (when not NULL) and the
-// first min(count, capacity) entries of `lights`; returns the light count, or
-// -1 when there is no rig. PYMOL_LIGHTS_MAX entries always suffice.
+// Resolve the rig for the live camera, including each light's shadow-map
+// slot (#673). Fills *rig (when not NULL) and the first min(count, capacity)
+// entries of `lights`; returns the light count, or -1 when there is no rig.
+// PYMOL_LIGHTS_MAX entries always suffice.
 int PyMOLBridge_LightsEyeSpace(PyMOLHandle instance, PyMOLLightRigEye *rig, PyMOLLightEye *lights, int capacity);
 
 // --- The rig's air (#618) ---

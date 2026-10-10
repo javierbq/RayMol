@@ -106,6 +106,8 @@ struct LightEyeSpace: Equatable {
         var aim: LightRigSnapshot.Aim
         var shadow: Bool
         var outline: Bool
+        /// This frame's shadow-map slot 0..2; -1 when it gets no map (#673).
+        var shadowSlot: Int = -1
     }
 
     var enabled: Bool
@@ -228,7 +230,8 @@ extension PyMOLEngine {
                     anchor: light.anchor != 0 ? .pinned : .camera,
                     aim: light.aim != 0 ? .point : .centre,
                     shadow: light.shadow != 0,
-                    outline: light.outline != 0)
+                    outline: light.outline != 0,
+                    shadowSlot: Int(light.shadowSlot))
             })
     }
 }
