@@ -234,8 +234,8 @@ class TestAirFieldsHelper(AtmosphereCase):
             self.assertEqual(handle.read(), HELPER_JSON)
 
     def testCardSliderFieldsAreTheFloatAirFields(self):
-        """The card has a slider for every float air field (seed stays
-        command-only, Q5)."""
+        """The card has a slider for every float air field (seed has a
+        whole-number field, not a slider)."""
         floats = [name for name, kind, *_ in air_rows() if kind == 'float']
         self.assertEqual(floats, list(STEPS))
         for field, value in START_LOOK.items():
@@ -410,6 +410,18 @@ class TestCardSetterPath(AtmosphereCase):
         text = do('atmosphere')
         self.assertIn('haze 0.4, dust 0.45, dust_size 0.6, dust_speed 2.5, '
                       'scatter -0.25', text)
+
+    def testSeedSetterIsWhatAtmosphereReads(self):
+        self.three_point()
+        lighting._light_set(-1, 'seed', 42)
+        self.assertEqual(self.air()['seed'], 42)
+        result, _ = output(cmd.atmosphere)
+        self.assertEqual(result['seed'], 42)
+        _kind, _default, lo, hi = air_table()['seed']
+        lighting._light_set(-1, 'seed', 2000000)
+        self.assertEqual(self.air()['seed'], hi)
+        lighting._light_set(-1, 'seed', -5)
+        self.assertEqual(self.air()['seed'], lo)
 
     def testSetterClampsToTheTableRange(self):
         self.three_point()
@@ -757,7 +769,7 @@ class TestAtmosphereSource(testing.PyMOLTestCase):
         reads."""
         text = self.read(CARD)
         calls = set(re.findall(r'controller\.(\w+)\(', text))
-        self.assertEqual(calls, {'setAirIfChanged', 'setAir', 'setAtmosphere', 'airField', 'airValue'})
+        self.assertEqual(calls, {'setAirIfChanged', 'setAir', 'setAtmosphere', 'airField', 'airValue', 'setAirSeed'})
         for name in ('seams', 'perform(', 'writeRigNumbers', 'beginGesture('):
             with self.subTest(name):
                 self.assertNotIn(name, text)

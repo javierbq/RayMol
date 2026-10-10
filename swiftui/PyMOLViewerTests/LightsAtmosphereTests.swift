@@ -867,3 +867,106 @@ final class AtmosphereMirrorTests: AtmosphereControllerCase {
                        + "\"dust_speed\":1.0,\"scatter\":0.55,\"seed\":0},\"lights\":[]}")
     }
 }
+
+// MARK: - The dust pattern seed
+
+final class AtmosphereSeedTests: AtmosphereControllerCase {
+    func testTheSeedRowShowsTheRigsSeed() {
+        begin(["key"], air: Self.remembered)
+        XCTAssertEqual(state?.seed?.value, 7)
+        XCTAssertEqual(state?.seed?.text, "7")
+        XCTAssertEqual(state?.seed?.range, 0...1_000_000)
+    }
+
+    func testNoRigShowsTheTableDefault() {
+        begin(nil)
+        XCTAssertEqual(state?.seed?.value, 0)
+    }
+
+    func testSettingTheSeedWritesTheSetterAtIndexMinusOne() {
+        begin(["key"])
+        XCTAssertEqual(controller.setAirSeed(42), .ok)
+        XCTAssertEqual(store.numberWrites.last?.index, -1)
+        XCTAssertEqual(store.numberWrites.last?.field, "seed")
+        XCTAssertEqual(store.numberWrites.last?.value, 42)
+        XCTAssertEqual(controller.air?.seed, 42)
+        XCTAssertEqual(state?.seed?.value, 42)
+        XCTAssertEqual(store.performed, [])
+    }
+
+    func testTheCoreClampsTheSeed() {
+        begin(["key"])
+        XCTAssertEqual(controller.setAirSeed(2_000_000), .ok)
+        XCTAssertEqual(controller.air?.seed, 1_000_000)
+    }
+
+    func testNoRigAndInactive() {
+        // Inactive (never begin).
+        XCTAssertEqual(controller.setAirSeed(3), .badIndex)
+        XCTAssertTrue(store.numberWrites.isEmpty)
+
+        // With no rig after begin(nil).
+        begin(nil)
+        XCTAssertEqual(controller.setAirSeed(3), .noRig)
+        XCTAssertTrue(store.numberWrites.isEmpty)
+    }
+}
+
+final class AirSeedEditorTests: XCTestCase {
+    func testShowFollowsTheModelUntilTheUserTypes() {
+        var editor = AirSeedEditor()
+        editor.show(7)
+        XCTAssertEqual(editor.text, "7")
+        editor.begin()
+        XCTAssertTrue(editor.isEditing)
+        editor.show(8)
+        XCTAssertEqual(editor.text, "8", "focus alone keeps following the model")
+        editor.type("9")
+        editor.show(10)
+        XCTAssertEqual(editor.text, "9", "typed text is kept while the model moves")
+        XCTAssertEqual(editor.commit(), 9)
+        XCTAssertEqual(editor.text, "9")
+        XCTAssertFalse(editor.isEditing)
+        XCTAssertFalse(editor.typed)
+    }
+
+    func testCommitWithoutTypingReturnsNil() {
+        var editor = AirSeedEditor()
+        editor.show(7)
+        editor.begin()
+        XCTAssertNil(editor.commit())
+        XCTAssertEqual(editor.text, "7")
+    }
+
+    func testTypedValuesPassAndTextFormats() {
+        var editor = AirSeedEditor()
+        editor.show(7)
+        editor.begin()
+        editor.type("  +12 ")
+        XCTAssertEqual(editor.commit(), 12)
+        XCTAssertEqual(editor.text, "12")
+    }
+
+    func testInvalidTextCommitsNilAndRestoresModelText() {
+        for bad in ["3.5", "-4", "1e3", "", "abc"] {
+            var editor = AirSeedEditor()
+            editor.show(7)
+            editor.begin()
+            editor.type(bad)
+            XCTAssertNil(editor.commit(), bad)
+            XCTAssertEqual(editor.text, "7", bad)
+        }
+    }
+
+    func testParseSeed() {
+        let good: [(String, Int)] = [
+            ("7", 7), (" 7 ", 7), ("+7", 7), ("0", 0), ("2000000", 2000000),
+        ]
+        for (text, value) in good {
+            XCTAssertEqual(AtmosphereFormat.parseSeed(text), value, text)
+        }
+        for text in ["-1", "7.0", "1e3", "", "+", "x7"] {
+            XCTAssertNil(AtmosphereFormat.parseSeed(text), text)
+        }
+    }
+}
