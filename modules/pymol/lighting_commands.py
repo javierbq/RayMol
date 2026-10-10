@@ -1673,9 +1673,9 @@ PLACEMENT
     is an error ("lights recenter" first). The beam is fitted to a 10 A
     patch around the point, never below 20 degrees so a far light keeps a
     usable beam (for target=, to the selection, with no such floor) unless
-    beam= is given. One helper at a time (rim goes with highlight or click); orbit,
-    pitch and position cannot be given with highlight or click, and aim
-    cannot be given with any helper.
+    beam= is given. One helper at a time (rim goes with highlight or
+    click); orbit, pitch and position cannot be given with highlight or
+    click, and aim cannot be given with any helper.
 
 EXAMPLES
 
