@@ -67,6 +67,8 @@ final class LightGizmoUIState: ObservableObject {
         var readout: String?
         /// The overlay's size in points, nil until it appears.
         var viewSize: CGSize?
+        /// The edges covered by chrome drawn over the viewport (#693).
+        var chromeInsets = LightGizmoInsets.zero
     }
 
     private(set) var values = Values()
@@ -101,6 +103,11 @@ final class LightGizmoUIState: ObservableObject {
     var viewSize: CGSize? {
         get { values.viewSize }
         set { update(\.viewSize, newValue) }
+    }
+
+    var chromeInsets: LightGizmoInsets {
+        get { values.chromeInsets }
+        set { update(\.chromeInsets, newValue) }
     }
 
     /// The drag state of `session` (nil or ended: none) with the readout of
@@ -220,7 +227,8 @@ struct LightGizmoOverlay: View {
                     .accessibilityHidden(true)
                 if let layout = LightGizmoLayout.make(
                     LightGizmoInputs(controller: controller, viewSize: size, gridMode: gridMode,
-                                     sceneShadowsOn: sceneShadowsOn), metrics: metrics) {
+                                     sceneShadowsOn: sceneShadowsOn, chromeInsets: ui.chromeInsets),
+                    metrics: metrics) {
                     gizmo(layout, state: LightGizmoState(controller, sceneShadowsOn: sceneShadowsOn))
                 }
             }
