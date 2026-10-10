@@ -135,6 +135,34 @@ struct LightGizmoInsets: Equatable {
     static let zero = LightGizmoInsets()
 }
 
+/// Where the transient readout's box goes during a gizmo drag (#703): at the
+/// pointer (the cursor, the finger) with a fixed offset, right of and above
+/// it; flipped to the left near the right edge and below near the top; then
+/// kept inside the view less its chrome insets and a margin. Top-left points.
+enum LightGizmoReadoutPlacement {
+    /// The box's offset from the pointer.
+    static let offset = CGSize(width: 14, height: 14)
+    /// The box keeps this far inside the view (and its insets).
+    static let margin: CGFloat = 8
+
+    /// The box's top-left corner for a box of `box` points beside `pointer`
+    /// in a view of `viewSize` whose edges `insets` are covered.
+    static func origin(pointer: CGPoint, box: CGSize, viewSize: CGSize,
+                       insets: LightGizmoInsets = .zero,
+                       offset: CGSize = offset, margin: CGFloat = margin) -> CGPoint {
+        let minX = insets.left + margin
+        let maxX = viewSize.width - insets.right - margin - box.width
+        let minY = insets.top + margin
+        let maxY = viewSize.height - insets.bottom - margin - box.height
+        var x = pointer.x + offset.width
+        if x > maxX { x = pointer.x - offset.width - box.width }
+        var y = pointer.y - offset.height - box.height
+        if y < minY { y = pointer.y + offset.height }
+        func clamp(_ v: CGFloat, _ lo: CGFloat, _ hi: CGFloat) -> CGFloat { hi < lo ? lo : min(max(v, lo), hi) }
+        return CGPoint(x: clamp(x, minX, maxX), y: clamp(y, minY, maxY))
+    }
+}
+
 /// Everything the layout is made from, as a plain value: tests build it
 /// without a controller; the overlay and the viewport build it from the same
 /// controller, so what is drawn is what is hit-tested.
