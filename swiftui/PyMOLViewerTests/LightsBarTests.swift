@@ -289,6 +289,9 @@ final class LightsBarSnapshotTests: XCTestCase {
         var dark: Bool
         /// The touch profile's minimum target (44: iOS, drawn on macOS).
         var touch: CGFloat = 0
+        /// A phone's Atmosphere entry (#795): the bar's `onAtmosphere`.
+        var atmosphere = false
+        var air: LightRigSnapshot.Air?
     }
 
     private static let three = ["key", "fill", "rim"]
@@ -332,8 +335,22 @@ final class LightsBarSnapshotTests: XCTestCase {
                  dark: false, touch: 44),
             Shot(name: "compact_6_ios44_375_dark", lights: Self.six, width: 375, dark: true, touch: 44),
             Shot(name: "compact_0_ios44_375_light", lights: nil, width: 375, dark: false, touch: 44),
+            // #795: the phone's Atmosphere entry. Portrait: an item in the
+            // overflow menu (the bar itself looks as before). Landscape:
+            // a bar button, at the widths of an iPhone in landscape (932,
+            // 852, 667, 568 pt) with the air on and off.
+            Shot(name: "atmosphere_compact_ios44_375_light", lights: Self.three, select: "fill", width: 375,
+                 dark: false, touch: 44, atmosphere: true),
+            Shot(name: "atmosphere_wide_ios44_932_light", lights: Self.three, select: "fill", width: 932,
+                 dark: false, touch: 44, atmosphere: true),
+            Shot(name: "atmosphere_wide_on_ios44_852_dark", lights: Self.three, select: "fill", width: 852,
+                 dark: true, touch: 44, atmosphere: true, air: atmosphereOnAir),
+            Shot(name: "atmosphere_wide_ios44_667_light", lights: Self.three, select: "fill", width: 667,
+                 dark: false, touch: 44, atmosphere: true),
+            Shot(name: "atmosphere_wide_ios44_568_light", lights: Self.three, select: "fill", width: 568,
+                 dark: false, touch: 44, atmosphere: true),
         ]
-        XCTAssertEqual(shots.count, 13)
+        XCTAssertEqual(shots.count, 18)
 
         let dir = Self.outputDirectory
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -356,11 +373,13 @@ final class LightsBarSnapshotTests: XCTestCase {
     private func render(_ shot: Shot, to url: URL) throws {
         let store = FakeRigStore()
         if let lights = shot.lights { store.setRig(lights, enabled: shot.enabled) }
+        if let air = shot.air { store.air = air }
         let controller = LightsController(seams: store.seams)
         controller.begin()
         if let name = shot.select { controller.select(name: name) }
 
-        let root = LightsBar(controller: controller, style: style(dark: shot.dark), onDone: {})
+        let root = LightsBar(controller: controller, style: style(dark: shot.dark),
+                             onAtmosphere: shot.atmosphere ? {} : nil, onDone: {})
             .frame(width: shot.width)
             .fixedSize(horizontal: false, vertical: true)
             .environment(\.lightsTouchMinimum, shot.touch)
