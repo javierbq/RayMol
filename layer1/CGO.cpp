@@ -5592,6 +5592,17 @@ int CGOGetExtent(const CGO* I, float* mn, float* mx)
       check_extent(pc + 3, 0);
       check_extent(pc + 6, 0);
       break;
+    case CGO_BEZIER:
+      // A cubic Bezier's four control points (#663): the curve lies inside
+      // their convex hull. Without them a tube cartoon had no extent, so the
+      // studio shadow frusta (SceneGetLightShadowExtent) left it outside
+      // their depth range and it neither cast nor received. The Metal tube's
+      // radius is a setting (cartoon_tube_radius), not CGO data.
+      check_extent(pc, 0);
+      check_extent(pc + 3, 0);
+      check_extent(pc + 6, 0);
+      check_extent(pc + 9, 0);
+      break;
     case CGO_DRAW_ARRAYS: {
       const cgo::draw::arrays* sp = reinterpret_cast<decltype(sp)>(pc);
       const float* pct = sp->floatdata;

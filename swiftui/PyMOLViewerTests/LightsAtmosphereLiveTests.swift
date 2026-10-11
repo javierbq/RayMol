@@ -739,4 +739,214 @@ final class AirDustTickCacheTests: XCTestCase {
         XCTAssertLessThan(dustMedian, fullMedian, "a dust-only tick must cost less GPU time")
     }
 }
+
+/// Issue #663: bezier tube cartoons cast and receive studio shadows.
+@MainActor
+final class BezierTubeStudioShadowTests: XCTestCase {
+    // Image boxes (x0, y0, x1, y1; row 0 at the top) of the 400 x 300
+    // render. castBox: on the sphere, inside the band the tube shadows and
+    // clear of the tube itself. receiveBox: on the tube, inside the
+    // occluder's shadow and clear of the occluder itself.
+    private static let castBox = (x0: 190, y0: 110, x1: 210, y1: 130)
+    private static let receiveBox = (x0: 190, y0: 143, x1: 210, y1: 157)
+
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var sceneBuilt = false
+    private var savedView: [Float]?
+
+    override func tearDown() {
+        if sceneBuilt {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.delete('bt663*')
+            _c.set('metal_shadows', globals().pop('_bt663_shadows', 1))
+            _c.set('metal_raytrace', globals().pop('_bt663_raytrace', 0))
+            _c.set('bg_rgb', globals().pop('_bt663_bg', [0.0, 0.0, 0.0]))
+            _c.set_lights(globals().pop('_bt663_rig', None))
+            for _n in globals().pop('_bt663_enabled', []):
+                _c.enable(_n)
+            """)
+            sceneBuilt = false
+        }
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        super.tearDown()
+    }
+
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            throw XCTSkip("the PyMOL engine did not come up under the test host")
+        }
+    }
+
+    private func buildScene() {
+        savedView = engine.captureView()
+        sceneBuilt = true
+        engine.runPython("""
+        from pymol import cmd as _c
+        _bt663_enabled = _c.get_names('objects', enabled_only=1)
+        _bt663_bg = list(_c.get_setting_tuple('bg_rgb')[1])
+        _bt663_shadows = _c.get_setting_int('metal_shadows')
+        _bt663_raytrace = _c.get_setting_int('metal_raytrace')
+        _bt663_rig = _c.get_lights()
+        for _n in _bt663_enabled:
+            _c.disable(_n)
+        _c.set('bg_rgb', [0.0, 0.0, 0.0])
+        _c.set('metal_raytrace', 0)
+        _c.set('metal_shadows', 1)
+        # Explicit centre and size: adding or removing an object must not move the light.
+        _c.set_lights({'enabled': True, 'centre': [0.0, 0.0, 0.0], 'size': 20.0,
+                       'lights': [{'name': 'key', 'anchor': 'camera', 'orbit': -30.0,
+                                   'pitch': 20.0, 'shadow': True}]})
+        """)
+    }
+
+    /// The fixed camera, set after the objects exist: loading the first
+    /// object auto-zooms, which would replace the view (and its clipping).
+    private func frameScene() {
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                     0.0, 0.0, -60.0, 0.0, 0.0, 0.0, 20.0, 100.0, -20.0))
+        """)
+    }
+
+    private func passes(forget: Bool = false) throws -> Int {
+        let out = NSTemporaryDirectory() + "issue_663_passes.txt"
+        defer { try? FileManager.default.removeItem(atPath: out) }
+        engine.runPython("""
+        from pymol import cmd as _c
+        open(r'\(out)', 'w').write(str(_c._cmd.get_light_shadow_map_passes(_c._COb, \(forget ? 1 : 0))))
+        """)
+        let text = try XCTUnwrap(FileManager.default.contents(atPath: out)
+            .flatMap { String(data: $0, encoding: .utf8) }, "no readout written")
+        return try XCTUnwrap(Int(text))
+    }
+
+    private func render() throws -> [UInt8] {
+        let png = NSTemporaryDirectory() + "issue_663_render.png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: 400, height: 300, rayTraced: 0)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(
+            URL(fileURLWithPath: png) as CFURL, nil), "no export written")
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        let w = image.width, h = image.height
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return rgba
+    }
+
+    private func differs(_ a: [UInt8], _ b: [UInt8]) -> Int {
+        guard a.count == b.count else { return Int.max }
+        var diff = 0
+        for i in stride(from: 0, to: a.count, by: 4) {
+            if a[i] != b[i] || a[i + 1] != b[i + 1] || a[i + 2] != b[i + 2] {
+                diff += 1
+            }
+        }
+        return diff
+    }
+
+    private func boxMean(_ px: [UInt8], x0: Int, y0: Int, x1: Int, y1: Int) -> Double {
+        guard x1 > x0 && y1 > y0 else { return 0.0 }
+        let width = 400
+        var total = 0.0
+        var count = 0
+        for y in y0..<y1 {
+            let rowOffset = y * width * 4
+            for x in x0..<x1 {
+                let i = rowOffset + x * 4
+                guard i + 2 < px.count else { continue }
+                let r = Double(px[i])
+                let g = Double(px[i + 1])
+                let b = Double(px[i + 2])
+                total += (r + g + b) / 3.0
+                count += 1
+            }
+        }
+        return count > 0 ? total / Double(count) : 0.0
+    }
+
+    func testTubeCastsAStudioShadow() throws {
+        try requireEngine()
+        buildScene()
+        engine.runPython("""
+        from pymol import cmd as _c, cgo
+        _c.pseudoatom('bt663s', pos=[0.0, 0.0, 0.0], vdw=1.0)
+        _c.show_as('spheres', 'bt663s')
+        _c.color('white', 'bt663s')
+        _c.set('sphere_scale', 6.0, 'bt663s')
+        obj = [cgo.COLOR, 1.0, 1.0, 1.0,
+               cgo.BEZIER,
+               -12.0, 5.1, 12.2,
+               -4.0, 5.1, 12.2,
+               4.0, 5.1, 12.2,
+               12.0, 5.1, 12.2]
+        _c.load_cgo(obj, 'bt663t')
+        _c.set('cartoon_tube_radius', 1.5, 'bt663t')
+        _c.disable('bt663t')
+        """)
+        frameScene()
+        let without = try render()
+        engine.runPython("from pymol import cmd as _c\n_c.enable('bt663t')")
+        let withTube = try render()
+        let b = Self.castBox
+        let meanWithout = boxMean(without, x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1)
+        let meanWith = boxMean(withTube, x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1)
+        XCTAssertGreaterThanOrEqual(
+            meanWithout - meanWith, 20.0,
+            "tube must cast a shadow onto the sphere (mean without=\(meanWithout), with=\(meanWith))")
+
+        _ = try passes(forget: true)
+        let uncached = try render()
+        XCTAssertTrue(
+            uncached == withTube,
+            "uncached frame differs from cached in \(differs(uncached, withTube)) pixels")
+    }
+
+    func testTubeReceivesAStudioShadow() throws {
+        try requireEngine()
+        buildScene()
+        engine.runPython("""
+        from pymol import cmd as _c, cgo
+        obj = [cgo.COLOR, 1.0, 1.0, 1.0,
+               cgo.BEZIER,
+               -12.0, 0.0, 0.0,
+               -4.0, 0.0, 0.0,
+               4.0, 0.0, 0.0,
+               12.0, 0.0, 0.0]
+        _c.load_cgo(obj, 'bt663r')
+        _c.set('cartoon_tube_radius', 2.0, 'bt663r')
+        _c.pseudoatom('bt663o', pos=[-5.6, 4.1, 9.7], vdw=1.0)
+        _c.show_as('spheres', 'bt663o')
+        _c.color('white', 'bt663o')
+        _c.set('sphere_scale', 2.5, 'bt663o')
+        _c.disable('bt663o')
+        """)
+        frameScene()
+        let unoccluded = try render()
+        engine.runPython("from pymol import cmd as _c\n_c.enable('bt663o')")
+        let occluded = try render()
+        let b = Self.receiveBox
+        let meanUnoccluded = boxMean(unoccluded, x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1)
+        let meanOccluded = boxMean(occluded, x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1)
+        XCTAssertGreaterThanOrEqual(
+            meanUnoccluded - meanOccluded, 20.0,
+            "tube must receive a shadow from the sphere (mean unoccluded=\(meanUnoccluded), occluded=\(meanOccluded))")
+    }
+}
 #endif

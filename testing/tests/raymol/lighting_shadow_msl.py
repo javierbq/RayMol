@@ -22,9 +22,9 @@ L1, the regression renders against master and L3 prove on a Mac:
   with kLightShadow false is #613's fragment verbatim (pinned against
   master aea4e74c6, the forms of the plan's D8 table);
 * no other library sees kLightShadow (the ray tracer, the tubes, the post
-  chain);
+  chain; kBezierTubeRigSrc takes the studio shadow maps as plain arguments, #663);
 * materialFragmentFunction sets index 2 on every specialisation, the tube's
-  fallback sets it false, and the shadow variants (VBO, sphere, cylinder)
+  fallback sets it false, and the shadow variants (VBO, sphere, cylinder, tube)
   are chosen only under lightShadowsReady(), keyed apart from every classic
   and #613 key, fall back to the rig's own pipeline, and are released with
   the rig's;
@@ -315,18 +315,40 @@ class TestShadowBlock(ShadowMSLCase):
         for name, literal in self.msl.items():
             if name == 'kMaterialSrc' or name in SHADOW_LIBRARIES:
                 continue
+            if name == 'kBezierTubeRigSrc':
+                # #663: kBezierTubeRigSrc carries lightShadowMaps, lightShadowSmp
+                # and light_apply_shadowed only in bezier_tube_fragment_rig_shadow,
+                # but never kLightShadow
+                code = strip_comments(literal)
+                self.assertNotIn('kLightShadow', code)
+                funcs = msl_functions(literal)
+                for fn_name, (sig, body) in funcs.items():
+                    if fn_name != 'bezier_tube_fragment_rig_shadow':
+                        self.assertNotRegex(sig + body, SHADOW_TOKENS, fn_name)
+                    else:
+                        self.assertNotIn('kLightShadow', sig + body)
+                        self.assertIn('depth2d_array<float> lightShadowMaps [[texture(7)]]', sig)
+                        self.assertIn('sampler lightShadowSmp [[sampler(7)]]', sig)
+                        self.assertIn('light_apply_shadowed', body)
+                continue
             self.assertNotRegex(strip_comments(literal), SHADOW_TOKENS, name)
         for name in ('kRTSrc', 'kBezierTubeSrc', 'kBezierTubeRigSrc', 'kPostSrc',
                      'kEyeReconSrc'):
             self.assertIn(name, self.msl)
         # texture(7) and sampler(7) are the maps' alone
-        for lib in ('kMaterialSrc', 'kMaterialImpostorSrc') + SHADOW_LIBRARIES:
+        for lib in ('kMaterialSrc', 'kMaterialImpostorSrc', 'kBezierTubeRigSrc') + SHADOW_LIBRARIES:
             code = strip_comments(self.msl[lib])
             for m in re.finditer(r'[^\n,(]*\[\[\s*(?:texture|sampler)\(7\)[^\]]*\]\]',
                                  code):
-                self.assertTrue(MAPS_ARGUMENT.search(m.group(0)) or
-                                SAMPLER_ARGUMENT.search(m.group(0)),
-                                '%s: %r' % (lib, m.group(0).strip()))
+                if lib == 'kBezierTubeRigSrc':
+                    self.assertTrue(
+                        re.search(r'depth2d_array<float>\s+lightShadowMaps\s*\[\[\s*texture\(7\)\s*\]\]', m.group(0)) or
+                        re.search(r'sampler\s+lightShadowSmp\s*\[\[\s*sampler\(7\)\s*\]\]', m.group(0)),
+                        '%s: %r' % (lib, m.group(0).strip()))
+                else:
+                    self.assertTrue(MAPS_ARGUMENT.search(m.group(0)) or
+                                    SAMPLER_ARGUMENT.search(m.group(0)),
+                                    '%s: %r' % (lib, m.group(0).strip()))
 
     def testHelpersAreUnusedStaticAndReadNoConstant(self):
         constant = re.compile(r'\bkLightRig\b|\bkLightShadow\b|\bkMat[A-Z]\w*|'
@@ -479,6 +501,13 @@ class TestFragments(ShadowMSLCase):
     def testEachRigFragmentTakesTheMapsUnderTheConstant(self):
         for lib in self.msl:
             for name, (sig, body) in fragments(self.msl[lib]).items():
+                if lib == 'kBezierTubeRigSrc' and name == 'bezier_tube_fragment_rig_shadow':
+                    # #663: the tube's studio-shadow fragment takes the maps as plain arguments
+                    self.assertNotIn('kLightShadow', sig + body)
+                    self.assertIn('depth2d_array<float> lightShadowMaps [[texture(7)]]', sig)
+                    self.assertIn('sampler lightShadowSmp [[sampler(7)]]', sig)
+                    self.assertIn('light_apply_shadowed', body)
+                    continue
                 takes = lib in RIG_FRAGMENTS and name in RIG_FRAGMENTS[lib]
                 if not takes:
                     self.assertNotRegex(sig + body, SHADOW_TOKENS,
@@ -809,6 +838,23 @@ class TestPipelines(ShadowMSLCase):
         self.assertLess(draw.index('buildCylinderImpostorPipeline(call, false);'),
                         block.start())
 
+    def testTubeShadowVariantChosenOnlyWhenReady(self):
+        """#663: the tube's shadow variant is chosen only under lightShadowsReady()
+        (mirroring the sphere/VBO ones)."""
+        draw = self.body('RendererMetal::drawBezierTubes')
+        block = re.search(r'if\s*\(\s*_lightRigOn\s*&&\s*!_shadowMode\s*\)\s*\{', draw)
+        self.assertIsNotNone(block)
+        inside = draw[block.end():match_brace(draw, block.end() - 1)]
+        shadow_block = re.search(r'if\s*\(\s*tubeRig\s*&&\s*lightShadowsReady\(\)\s*\)\s*\{', inside)
+        self.assertIsNotNone(shadow_block)
+        shadow_inside = inside[shadow_block.end():match_brace(inside, shadow_block.end() - 1)]
+        self.assertRegex(shadow_inside,
+                         r'id<MTLRenderPipelineState>\s+shadowTube\s*=\s*'
+                         r'_bezierTubeRigShadowPipeline\[_lightHdrOn\s*\?\s*1\s*:\s*0\];')
+        self.assertIn('tubePipeline = shadowTube;', shadow_inside)
+        self.assertIn('_lightShadowWarned = true;', shadow_inside)
+        self.assertLess(inside.index('buildBezierTubeRigPipeline();'), shadow_block.start())
+
     def testShadowNeverChosenWithoutTheRig(self):
         """Every shadow-variant choice sits under lightShadowsReady(), which
         needs the rig on and a colour draw."""
@@ -819,7 +865,9 @@ class TestPipelines(ShadowMSLCase):
                          ('RendererMetal::drawSphereImpostors',
                           r'ensureSphereRigShadowPipelines\('),
                          ('RendererMetal::drawCylinderImpostors',
-                          r'buildCylinderImpostorPipeline\(call,\s*true,\s*true,')):
+                          r'buildCylinderImpostorPipeline\(call,\s*true,\s*true,'),
+                         ('RendererMetal::drawBezierTubes',
+                          r'_bezierTubeRigShadowPipeline\[')):
             body = strip_block_comments(self.body(fn))
             found = list(re.finditer(call, body))
             self.assertTrue(found, fn)

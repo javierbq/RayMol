@@ -955,6 +955,11 @@ private:
   id<MTLBuffer> _bezierTessFactors = nil;  // MTLQuadTessellationFactorsHalf/patch
   NSUInteger _bezierTessPatchCap = 0;      // patches the factor buffer covers
   void buildBezierTubePipeline();
+  // The tube's depth-only pipeline (#663): the studio maps and the classic
+  // shadow pre-pass. Lazy, one attempt; sample-count independent.
+  id<MTLRenderPipelineState> _bezierTubeShadowPipeline = nil;
+  bool _bezierTubeShadowTried = false;
+  void buildBezierTubeShadowPipeline();
   // The tube under the light rig (#613): a separate library and pipeline
   // (kMaterialSrc + kBezierTubeSrc + kBezierTubeRigSrc), so the classic tube
   // above is untouched. Built lazily on the first rig-on tube draw, one
@@ -963,6 +968,7 @@ private:
   // frame's, both built from the one library compile under the one tried
   // flag.
   id<MTLRenderPipelineState> _bezierTubeRigPipeline[2] = {};
+  id<MTLRenderPipelineState> _bezierTubeRigShadowPipeline[2] = {};
   bool _bezierTubeRigTried = false;
   void buildBezierTubeRigPipeline();
   // Per-frame post params (fog/depth-cue + SSAO), set by SceneRenderMetal.

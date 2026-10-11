@@ -479,7 +479,9 @@ void RendererMetal::rebuildDrawPipelines()
   // The tube's light-rig pipelines (#613; both hdr variants, #624): lazy,
   // rebuilt at the new sample count the next time a rig-on frame draws a tube.
   for (int h = 0; h < 2; ++h) {
-    [_bezierTubeRigPipeline[h] release];  _bezierTubeRigPipeline[h] = nil;
+    [_bezierTubeRigPipeline[h] release];        _bezierTubeRigPipeline[h] = nil;
+    [_bezierTubeRigShadowPipeline[h] release];
+    _bezierTubeRigShadowPipeline[h] = nil;
   }
   _bezierTubeRigTried = false;
   [_labelPipeline release];            _labelPipeline = nil;
@@ -611,8 +613,11 @@ RendererMetal::~RendererMetal()
   [_aoExemptMaskTex release];         [_aoMaskPipeline release];
   [_aoMaskDepthState release];
   [_vboLinePipeline release];         [_bezierTubePipeline release];
+  [_bezierTubeShadowPipeline release];
   // the tube's light-rig pipelines (#613; both hdr variants, #624)
   [_bezierTubeRigPipeline[0] release]; [_bezierTubeRigPipeline[1] release];
+  [_bezierTubeRigShadowPipeline[0] release];
+  [_bezierTubeRigShadowPipeline[1] release];
   [_airNoMaps release];  // the air (#618); both hdr composites (#624)
   [_airFullPipeline[0] release];      [_airFullPipeline[1] release];
   [_airUpsamplePipeline[0] release];  [_airUpsamplePipeline[1] release];
@@ -12843,15 +12848,18 @@ fragment float4 bezier_tube_fragment(TubeOut in [[stage_in]],
 // LightU from the classic source and the light_ helpers from the shared
 // material block.
 //
-// The two functions are copies of the classic ones: the vertex stage adds the
-// eye-space position the spot cones need, and the fragment adds the rig on
-// top of the classic two-light colour. lighting_msl.py keeps the copies equal
-// to the originals. Neither reads a function constant (nor does any helper
-// they reach), so the builder takes them with plain newFunctionWithName:. The
-// rig is a plain buffer(9) argument for the same reason: this library is
-// never specialised, and the rig pipeline is only ever drawn with the rig on.
-// Every material takes the rig the same way until #615, and a tube has no
-// material, so it uses the neutral response directly.
+// The functions are copies of the classic ones: the vertex stage adds the
+// eye-space position the spot cones need, the fragment adds the rig on
+// top of the classic two-light colour, and the shadow fragment (#663) adds
+// the studio shadow maps. lighting_msl.py keeps the copies equal to the
+// originals. None of them reads a function constant (nor does any helper
+// they reach, except kLightHdr through light_finish), so the builder takes
+// them with plain newFunctionWithName: (or specialised for kLightHdr). The
+// rig is a plain buffer(9) argument and the maps are plain
+// texture(7)/sampler(7) arguments for the same reason: this library is never
+// specialised for kLightRig or kLightShadow, and the rig pipelines are only
+// ever drawn with the rig on. Every material takes the rig the same way until
+// #615, and a tube has no material, so it uses the neutral response directly.
 static NSString* const kBezierTubeRigSrc = @R"(
 struct TubeRigOut {
   float4 position [[position]];
@@ -12919,6 +12927,40 @@ fragment float4 bezier_tube_fragment_rig(TubeRigOut in [[stage_in]],
   rgb = light_apply(rgb, in.color.rgb, nrm, in.posEye, rig, light_response_neutral());
   return float4(rgb, in.color.a);
 }
+
+// The studio shadow maps (#663): bezier_tube_fragment_rig with the studio
+// shadow maps, used only while this frame's maps are ready. lighting_msl.py
+// keeps it equal to the rig copy.
+fragment float4 bezier_tube_fragment_rig_shadow(TubeRigOut in [[stage_in]],
+    constant LightU& lt [[buffer(0)]],
+    constant LightRigU& rig [[buffer(9)]],
+    depth2d_array<float> lightShadowMaps [[texture(7)]],
+    sampler lightShadowSmp [[sampler(7)]]) {
+  // PyMOL two-light model driven by the live lighting settings (Scene sliders).
+  // Two-sided via the view vector: orient the normal toward the camera
+  // (eye-space +z) so both the outer surface and the open tube ends/interior
+  // are lit, never black.
+  float3 nrm = normalize(in.eyeNormal);
+  if (nrm.z < 0.0) nrm = -nrm;
+  float ambient = lt.ambient, direct = lt.direct, reflectv = lt.reflect;
+  float spec_value = lt.spec, shininess = max(lt.shininess, 1.0);
+  const float3 L0 = float3(0.0,0.0,1.0);
+  const float3 L1 = normalize(float3(lt.klx, lt.kly, lt.klz));  // key light (cSetting_light)
+  float intensity = ambient, specular = 0.0;
+  float n0 = dot(nrm, L0);
+  intensity += direct * saturate((n0 + lt.wrap) / (1.0 + lt.wrap));
+  float n1 = dot(nrm, L1);
+  intensity += reflectv * saturate((n1 + lt.wrap) / (1.0 + lt.wrap));
+  if (n1 > 0.0) {
+    float3 H1 = normalize(L1 + float3(0.0,0.0,1.0));
+    specular += spec_value * pow(max(dot(nrm, H1), 0.0), shininess);
+  }
+  float3 rgb = in.color.rgb * min(intensity, 1.0) + specular;
+  rgb = light_apply_shadowed(rgb, in.color.rgb, nrm, in.posEye, rig,
+                             lightShadowMaps, lightShadowSmp,
+                             light_response_neutral());
+  return float4(rgb, in.color.a);
+}
 )";
 
 void RendererMetal::buildBezierTubePipeline()
@@ -12957,6 +12999,51 @@ void RendererMetal::buildBezierTubePipeline()
     NSLog(@"RendererMetal: bezier tube pipeline failed: %@", err);
 }
 
+// The bezier tube's depth-only pipeline (#663): the studio shadow maps and
+// the classic shadow pre-pass. Lazy, single attempt; sample-count independent
+// (rasterSampleCount = 1, Depth32Float, no colour attachment).
+void RendererMetal::buildBezierTubeShadowPipeline()
+{
+  if (_bezierTubeShadowTried) return;
+  _bezierTubeShadowTried = true;
+  NSError* err = nil;
+  id<MTLLibrary> lib = [_device newLibraryWithSource:kBezierTubeSrc
+                                             options:nil error:&err];
+  if (!lib) {
+    NSLog(@"RendererMetal: bezier tube shadow compile failed: %@", err);
+    return;
+  }
+  id<MTLFunction> vfn = [lib newFunctionWithName:@"bezier_tube_vertex"];
+  if (!vfn) {
+    NSLog(@"RendererMetal: bezier tube shadow funcs missing");
+    [lib release];
+    return;
+  }
+
+  MTLVertexDescriptor* vd = [MTLVertexDescriptor vertexDescriptor];
+  vd.attributes[0].format = MTLVertexFormatFloat3;  // control point position
+  vd.attributes[0].offset = 0;
+  vd.attributes[0].bufferIndex = 0;
+  vd.layouts[0].stride = 12;
+  vd.layouts[0].stepFunction = MTLVertexStepFunctionPerPatchControlPoint;
+
+  MTLRenderPipelineDescriptor* psd = [[MTLRenderPipelineDescriptor alloc] init];
+  psd.vertexFunction = vfn;
+  psd.vertexDescriptor = vd;
+  psd.rasterSampleCount = 1;
+  psd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
+  psd.maxTessellationFactor = 64;
+  psd.tessellationFactorStepFunction = MTLTessellationFactorStepFunctionConstant;
+  psd.tessellationFactorFormat = MTLTessellationFactorFormatHalf;
+  psd.tessellationOutputWindingOrder = MTLWindingClockwise;
+  psd.tessellationPartitionMode = MTLTessellationPartitionModeInteger;
+  _bezierTubeShadowPipeline =
+      [_device newRenderPipelineStateWithDescriptor:psd error:&err];
+  if (!_bezierTubeShadowPipeline)
+    NSLog(@"RendererMetal: bezier tube shadow pipeline failed: %@", err);
+  [psd release]; [vfn release]; [lib release];
+}
+
 // One of the tube rig library's functions (#613). The vertex function reads
 // no function constant, so plain newFunctionWithName: is enough for it. The
 // fragment reads one, kLightHdr (#624), through light_apply's light_finish,
@@ -12979,8 +13066,9 @@ static id<MTLFunction> bezierTubeRigFunction(id<MTLLibrary> lib, NSString* name,
   bool rig = false;
   [cv setConstantValue:&rig type:MTLDataTypeBool atIndex:kLightRigConstantIndex];
   // The studio shadow maps' constant (#616), declared by kMaterialSrc too:
-  // false, so every constant Metal could list here is set. Tubes neither cast
-  // nor receive studio shadows.
+  // false, so every constant Metal could list here is set. The tube's
+  // studio-shadow fragment (#663) takes the maps as plain texture(7)/sampler(7)
+  // arguments, not under this constant, so it is false for every tube function.
   bool shadow = false;
   [cv setConstantValue:&shadow type:MTLDataTypeBool atIndex:kLightShadowConstantIndex];
   // HDR colour's constant (#624), read by light_finish: true for an HDR
@@ -13053,6 +13141,18 @@ void RendererMetal::buildBezierTubeRigPipeline()
     if (!_bezierTubeRigPipeline[h])
       NSLog(@"RendererMetal: bezier tube rig pipeline failed: %@", err);
     [ffn release];   // MRC: the pipeline state keeps what it needs
+
+    id<MTLFunction> sfn = bezierTubeRigFunction(
+        lib, @"bezier_tube_fragment_rig_shadow", /*lightHdr*/ h == 1);
+    if (sfn) {
+      psd.fragmentFunction = sfn;
+      _bezierTubeRigShadowPipeline[h] =
+          [_device newRenderPipelineStateWithDescriptor:psd error:&err];
+      if (!_bezierTubeRigShadowPipeline[h])
+        NSLog(@"RendererMetal: bezier tube studio-shadow pipeline "
+              @"failed: %@", err);
+      [sfn release];   // MRC
+    }
   }
   // MRC: the pipeline states keep what they need; vd is autoreleased.
   [psd release]; [vfn release]; [lib release];
@@ -13540,22 +13640,25 @@ void RendererMetal::drawBezierTubes(const void* cp, size_t dataSize,
     float radius, float r, float g, float b)
 {
   if (!cp || dataSize < 48) return;       // need at least one 4-point patch
-  // The tube has no depth-only shadow pipeline yet; skip casting in shadow mode
-  // (it still receives shadows). Avoids a pipeline/attachment mismatch crash.
-  if (_shadowMode) return;
-  // Same reason for the peel pre-pass (#488), which has ZERO colour
-  // attachments -- exactly the mismatch this guard exists to prevent.
+  // The peel pre-pass (#488) has ZERO colour attachments and the tube has no
+  // peel pipeline: skip it.
   if (_peelMode) return;
   ensureEncoder();
   if (!_encoder) return;
-  buildBezierTubePipeline();
-  if (!_bezierTubePipeline) return;
-  // The light rig (#613): its own tube pipeline while the rig is on (the
-  // shadow and peel passes returned above), else today's. A rig pipeline that
-  // cannot be built draws the classic tube and logs once.
-  id<MTLRenderPipelineState> tubePipeline = _bezierTubePipeline;
+  // The shadow passes (studio slices and the classic pre-pass) draw the
+  // tube depth-only (#663); a colour draw starts from the classic tube.
+  id<MTLRenderPipelineState> tubePipeline = nil;
+  if (_shadowMode) {
+    buildBezierTubeShadowPipeline();
+    if (!_bezierTubeShadowPipeline) return;  // can't cast: skip safely
+    tubePipeline = _bezierTubeShadowPipeline;
+  } else {
+    buildBezierTubePipeline();
+    if (!_bezierTubePipeline) return;
+    tubePipeline = _bezierTubePipeline;
+  }
   bool tubeRig = false;
-  if (_lightRigOn) {
+  if (_lightRigOn && !_shadowMode) {
     buildBezierTubeRigPipeline();
     // HDR colour (#624): an HDR frame's variant, else the 8-bit knee's.
     id<MTLRenderPipelineState> rigTube = _bezierTubeRigPipeline[_lightHdrOn ? 1 : 0];
@@ -13565,6 +13668,21 @@ void RendererMetal::drawBezierTubes(const void* cp, size_t dataSize,
     } else if (!_lightRigWarned) {
       NSLog(@"RendererMetal: light-rig bezier tube pipeline failed; drawing without the rig");
       _lightRigWarned = true;
+    }
+    // The studio shadow maps (#663): while this frame's maps are ready, the
+    // shadow variant of the rig tube (bindLightRig below binds the maps);
+    // the rig tube itself if it was not built (logged once). Only on top of
+    // the rig tube: without it nothing binds the rig the variant reads.
+    if (tubeRig && lightShadowsReady()) {
+      id<MTLRenderPipelineState> shadowTube =
+          _bezierTubeRigShadowPipeline[_lightHdrOn ? 1 : 0];
+      if (shadowTube) {
+        tubePipeline = shadowTube;
+      } else if (!_lightShadowWarned) {
+        NSLog(@"RendererMetal: studio-shadow bezier tube pipeline failed; "
+              @"drawing the rig without its shadow maps");
+        _lightShadowWarned = true;
+      }
     }
   }
 
@@ -13603,8 +13721,12 @@ void RendererMetal::drawBezierTubes(const void* cp, size_t dataSize,
   }
 
   [_encoder setRenderPipelineState:tubePipeline];
-  // Opaque geometry: standard depth test + write.
-  [_encoder setDepthStencilState:bezierDepthState()];
+  // Opaque geometry: standard depth test + write; the shadow passes' LESS +
+  // write from the light's point of view.
+  if (_shadowMode)
+    [_encoder setDepthStencilState:_shadowDepthState];
+  else
+    [_encoder setDepthStencilState:bezierDepthState()];
   [_encoder setCullMode:MTLCullModeNone];
   [_encoder setVertexBuffer:cpBuf offset:0 atIndex:0];
 

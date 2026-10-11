@@ -741,6 +741,28 @@ class TestCasters(ShadowCase):
         cmd.hide('everything')
         self.assertIsNone(self._extent())
 
+    def testBezierTubeCgoIsACaster(self):
+        """#663: a CGO BEZIER (the Metal tube cartoon) has an extent, the box
+        of its four control points, so the studio frusta are fitted to it.
+        Without one, a scene of tubes had no casters at all and a tube next
+        to other geometry fell outside the maps' depth range."""
+        for name in ('m', 'blocker', '_move_gizmo'):
+            cmd.delete(name)
+        pts = [[-4.0, 1.0, 2.0], [0.0, 6.0, -3.0], [5.0, -2.0, 1.0],
+               [9.0, 0.0, 7.0]]
+        cmd.load_cgo([cgo.BEZIER] + [c for p in pts for c in p], 'tube',
+                     zoom=0)
+        lo = [min(p[k] for p in pts) for k in range(3)]
+        hi = [max(p[k] for p in pts) for k in range(3)]
+        got = lighting._light_shadow_casters()
+        self.assertEqual(got['casters'], ['tube'])
+        self.assertIsNotNone(got['extent'])
+        self.assertVec(got['extent'][0], lo, 1e-4)
+        self.assertVec(got['extent'][1], hi, 1e-4)
+        ext = cmd.get_extent('tube')
+        self.assertVec(ext[0], lo, 1e-4)
+        self.assertVec(ext[1], hi, 1e-4)
+
     def testFarOverlayLeavesTheFrustaAlone(self):
         self.rig([light('key', orbit=-40.0, pitch=30.0, shadow=True),
                   light('rim', orbit=150.0, pitch=20.0, shadow=True)])
