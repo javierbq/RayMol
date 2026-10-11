@@ -768,7 +768,7 @@ private:
   static constexpr NSUInteger kShadowDim = 4096;
 #endif
   id<MTLTexture> _shadowDepth = nil;
-  id<MTLTexture> _shadowNone = nil;   // 1x1 stand-in bound while _shadowDepth is nil
+  id<MTLTexture> _shadowNone = nil;  // 1x1 stand-in while _shadowDepth is nil
   MTLRenderPassDescriptor* _shadowPassDesc = nil;
   bool _shadowMapFailed = false;      // allocation failed once: not retried
   bool ensureShadowMap();
@@ -1028,10 +1028,12 @@ private:
   std::shared_ptr<GpuFrameTimes> _gpuTiming;
   int _gpuTimingMode = 0;
   // Test-only (#667, _cmd.get_classic_shadow_map_bytes): the classic shadow
-  // map's size in bytes, 0 while it has not been allocated.
+  // map's size in bytes, 0 while it has not been allocated. Read from the
+  // texture itself (Depth32Float: 4 bytes a texel), not from kShadowDim.
   size_t classicShadowMapBytes() const override
   {
-    return _shadowDepth ? (size_t)kShadowDim * kShadowDim * 4 : 0;
+    return _shadowDepth ? (size_t)_shadowDepth.width * _shadowDepth.height * 4
+                        : 0;
   }
   void releaseClassicShadowMap() override;
   // This frame's studio shadow maps for the readout: the slices the map pass

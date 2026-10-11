@@ -659,7 +659,9 @@ final class ClassicShadowMapLazyTests: XCTestCase {
     }
 
     /// A sphere floor with a smaller sphere in front of it, which the classic
-    /// shadow map makes cast a shadow on the floor.
+    /// shadow map makes cast a shadow on the floor. Shadows start OFF, so a
+    /// live-view frame drawn between two steps cannot make the map behind a
+    /// test's back (metal_shadows defaults to on).
     private func buildScene() {
         savedView = engine.captureView()
         sceneBuilt = true
@@ -668,6 +670,7 @@ final class ClassicShadowMapLazyTests: XCTestCase {
         _sm667_enabled = _c.get_names('objects', enabled_only=1)
         _sm667_bg = list(_c.get_setting_tuple('bg_rgb')[1])
         _sm667_shadows = _c.get_setting_int('metal_shadows')
+        _c.set('metal_shadows', 0)
         for _n in _sm667_enabled:
             _c.disable(_n)
         _c.pseudoatom('sm667f', pos=[0.0, 0.0, 0.0])

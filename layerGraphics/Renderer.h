@@ -488,7 +488,7 @@ public:
   // map's size in bytes, 0 while it is not allocated (it is made lazily by the
   // first classic shadow pre-pass) or with no such map.
   virtual size_t classicShadowMapBytes() const { return 0; }
-  // Test-only: drops the classic shadow map so the next pre-pass makes it again.
+  // Test-only: drops the classic shadow map; the next pre-pass makes it again.
   virtual void releaseClassicShadowMap() {}
 
   // The air (#618, haze and dust): this frame's air block, or nullptr when
@@ -553,9 +553,9 @@ public:
   // beginShadowPass/endShadowPass with the light VP loaded (matrixMode/
   // loadMatrixf); draws route to depth-only pipelines writing the light-POV
   // depth map, which the post pass PCF-samples. beginShadowPass returns false
-  // when the pass did not open (no map, no pipelines): the caller then skips the
-  // replay and endShadowPass, and the frame draws unshadowed (#667). Default:
-  // no-op, true (GL unaffected).
+  // when the pass did not open (no map, no pipelines): the caller then skips
+  // the replay and endShadowPass, and the frame draws unshadowed (#667).
+  // Default: no-op, true (GL unaffected).
   virtual bool beginShadowPass() { return true; }
   virtual void endShadowPass() {}
   virtual void setLightViewProjEye(const float* m) {}

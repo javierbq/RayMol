@@ -897,18 +897,30 @@ class TestLazyClassicShadowMap(ShadowMSLCase):
         self.assertNotIn('kShadowDim', code)
 
     def testOnlyEnsureShadowMapAllocatesIt(self):
+        # Every assignment sits in ensureShadowMap, or is the test-only
+        # release's `= nil` (the destructor's release is a message send).
+        spans = {}
+        for fn in ('RendererMetal::ensureShadowMap',
+                   'RendererMetal::releaseClassicShadowMap'):
+            body = cpp_function(self.mm, fn)
+            self.assertEqual(self.code.count(body), 1, fn)
+            start = self.code.index(body)
+            spans[fn] = (start, start + len(body))
+        release = squash(cpp_function(
+            self.mm, 'RendererMetal::releaseClassicShadowMap'))
         for name in ('_shadowDepth', '_shadowPassDesc'):
             sites = [m.start() for m in re.finditer(
                 r'\b%s\s*=\s*(?!=)' % name, self.code)]
-            body_start = self.code.index('bool RendererMetal::ensureShadowMap()')
-            body = cpp_function(self.mm, 'RendererMetal::ensureShadowMap')
-            body_end = body_start + len(strip_comments(body)) + 400
-            # every assignment sits in ensureShadowMap (the release in the
-            # destructor is a message send, not an assignment)
-            for at in sites:
-                self.assertTrue(body_start <= at <= body_end,
-                                '%s assigned outside ensureShadowMap' % name)
             self.assertTrue(sites, name)
+            inside = {fn: [at for at in sites if lo <= at < hi]
+                      for fn, (lo, hi) in spans.items()}
+            self.assertEqual(sum(len(v) for v in inside.values()), len(sites),
+                             '%s assigned outside ensureShadowMap' % name)
+            self.assertTrue(inside['RendererMetal::ensureShadowMap'], name)
+            self.assertEqual(len(inside['RendererMetal::releaseClassicShadowMap']),
+                             release.count('%s=' % name), name)
+            self.assertEqual(release.count('%s=' % name),
+                             release.count('%s=nil;' % name), name)
         body = squash(strip_comments(
             cpp_function(self.mm, 'RendererMetal::ensureShadowMap')))
         self.assertIn('newTextureWithDescriptor:sd', body)
