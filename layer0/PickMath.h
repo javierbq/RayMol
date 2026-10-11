@@ -98,13 +98,16 @@ struct PickSpan {
   float n_out[3] = {0.f, 0.f, 1.f}; ///< outward normal at the exit
   bool has_in = false, has_out = false;
   /**
-   * The far wall the impostor shader tests when the near plane cuts its
-   * front surface (Impostor rule, interior cap): for a sphere its exit; for
-   * a cylinder the INFINITE tube's far crossing, whatever the ends are
-   * (cyl_shade's `dist2`, RendererMetal.mm), so a round or open end does not
-   * change it.
+   * The solid the impostor shader's interior cap tests when the near plane
+   * cuts it (Impostor rule): it caps where s_cap_near < plane < s_cap_far.
+   * For a sphere its entry and exit. For a cylinder (cyl_shade,
+   * RendererMetal.mm, #641) the capped solid's, an OPEN end closed by its
+   * disc: the tube segment's own end. Every ball of a stick junction is some
+   * bond's round end, so the caps of all the bonds are exactly the union's
+   * cross-section. No crossing: s_cap_near = +inf, s_cap_far = -inf.
    */
-  float s_cap_far = 0.f;
+  float s_cap_near = 1e30f;
+  float s_cap_far = -1e30f;
 };
 
 namespace pickmath
@@ -186,6 +189,7 @@ inline bool pickSphere(
     return false;
   span.s_in = float(s0);
   span.s_out = float(s1);
+  span.s_cap_near = span.s_in;
   span.s_cap_far = span.s_out;
   pickmath::sphereNormal(a, d, cd, s0, span.n_in);
   pickmath::sphereNormal(a, d, cd, s1, span.n_out);
@@ -260,8 +264,7 @@ inline bool pickCylinder(const float* a, const float* d, const float* p0,
   }
 
   // A (near) zero-length cylinder: RepCylBond draws a lone zero-order-bond
-  // atom as one (axis 1e-4) with round caps, i.e. a sphere. The impostor
-  // still decides its interior cap from the tube about that tiny axis.
+  // atom as one (axis 1e-4) with round caps, i.e. a sphere, capped as one.
   // (Pointed ends draw a double cone there, handled below.)
   if (h < 1e-3 && !pointed) {
     if (cap0 != PickCap::Round && cap1 != PickCap::Round)
@@ -271,7 +274,8 @@ inline bool pickCylinder(const float* a, const float* d, const float* p0,
       return false;
     span.s_in = float(s0);
     span.s_out = float(s1);
-    span.s_cap_far = float((h > 0.0 && tube && !parallel) ? t1 : s1);
+    span.s_cap_near = span.s_in;
+    span.s_cap_far = span.s_out;
     sphereNormal(a, d, c0, s0, span.n_in);
     sphereNormal(a, d, c0, s1, span.n_out);
     span.has_in = span.has_out = true;
@@ -292,7 +296,9 @@ inline bool pickCylinder(const float* a, const float* d, const float* p0,
 
   // Resolve one crossing of the infinite cylinder into a crossing of the
   // capped solid. `entering` picks the front (true) or back (false) root.
-  auto resolve = [&](double t, bool entering, double& s, float* n) -> int {
+  // `open_disc` closes an open end with its disc (the interior cap's solid).
+  auto resolve = [&](double t, bool entering, double& s, float* n,
+                     bool open_disc) -> int {
     // returns 1 = surface, 0 = open end (no surface), -1 = no crossing.
     // Parallel to the axis, the ray enters through the end it moves away
     // from and leaves through the other one.
@@ -310,7 +316,7 @@ inline bool pickCylinder(const float* a, const float* d, const float* p0,
     }
     const bool at_end0 = z < z_lo;
     const PickCap cap = at_end0 ? cap0 : cap1;
-    if (cap == PickCap::None)
+    if (cap == PickCap::None && !open_disc)
       return 0;
     if (cap == PickCap::Round) {
       const double* cc = at_end0 ? c0 : c1;
@@ -382,7 +388,8 @@ inline bool pickCylinder(const float* a, const float* d, const float* p0,
       store3(n, nn);
       return 1;
     }
-    // Flat (or a pointed end with no tip: a flat fan): the end plane,
+    // Flat (or a pointed end with no tip: a flat fan, or an open end's
+    // disc for the interior cap): the end plane,
     // crossed in the right direction, inside the disc. The outward normal of
     // end 0 is -u, of end 1 is +u.
     if (std::fabs(du) < 1e-300)
@@ -411,8 +418,8 @@ inline bool pickCylinder(const float* a, const float* d, const float* p0,
   };
 
   double s_in = 0.0, s_out = 0.0;
-  const int rin = resolve(t0, true, s_in, span.n_in);
-  const int rout = resolve(t1, false, s_out, span.n_out);
+  const int rin = resolve(t0, true, s_in, span.n_in, false);
+  const int rout = resolve(t1, false, s_out, span.n_out, false);
   if (rin < 0 && rout < 0)
     return false;
   if (rin < 0 || rout < 0) {
@@ -420,7 +427,15 @@ inline bool pickCylinder(const float* a, const float* d, const float* p0,
     // Treat as a miss rather than invent a crossing.
     return false;
   }
-  if (rin == 0 && rout == 0)
+  // The interior cap's solid (cyl_shade, #641): the same, with an open end
+  // closed by its disc. Only an open end's crossing can differ.
+  double s_near = s_in, s_far = s_out;
+  float n_unused[3];
+  const int cin =
+      rin == 0 ? resolve(t0, true, s_near, n_unused, true) : rin;
+  const int cout =
+      rout == 0 ? resolve(t1, false, s_far, n_unused, true) : rout;
+  if (rin == 0 && rout == 0 && (cin != 1 || cout != 1))
     return false; // straight through both open ends: nothing drawn
   span.has_in = rin == 1;
   span.has_out = rout == 1;
@@ -430,9 +445,9 @@ inline bool pickCylinder(const float* a, const float* d, const float* p0,
   span.s_out = float(rout == 1 ? s_out : t1);
   if (span.s_in > span.s_out)
     return false;
-  // cyl_shade's far body crossing. Exactly parallel to the axis it has none
-  // (the shader divides by zero there): fall back to the solid's exit.
-  span.s_cap_far = parallel ? span.s_out : float(t1);
+  // No crossing of an open end's disc (a ray grazing its rim): no cap.
+  span.s_cap_near = cin == 1 ? float(s_near) : 1e30f;
+  span.s_cap_far = cout == 1 ? float(s_far) : -1e30f;
   return true;
 }
 
@@ -540,10 +555,10 @@ inline bool pickTriangleMesh(const float* a, const float* d, const float* v0,
  * [smin, smax].
  *
  *  - Impostor: only the front surface exists. An entry in [smin, smax] is a
- *    hit. If the near plane (smin) cuts in front of it, the hit is a flat
- *    cap at smin when `cap_on` and the shader's far wall is behind the plane
- *    (s_cap_far > smin), else the primitive is see-through and the ray
- *    carries on. An open end in front shows nothing.
+ *    hit (an open end's is not: it draws nothing). If the near plane (smin)
+ *    cuts the cap's solid (s_cap_near < smin < s_cap_far), the hit is a flat
+ *    cap at smin when `cap_on`, else the primitive is see-through and the
+ *    ray carries on.
  *  - Mesh: the first drawn crossing inside the window; when the entry is
  *    clipped away (or open) the far wall is seen from inside.
  */
@@ -553,9 +568,7 @@ inline bool pickApplyRule(PickRule rule, bool cap_on, const PickSpan& span,
   if (smin > smax)
     return false;
   if (rule == PickRule::Impostor) {
-    if (!span.has_in)
-      return false;
-    if (span.s_in >= smin) {
+    if (span.has_in && span.s_in >= smin) {
       if (span.s_in > smax)
         return false;
       hit.s = span.s_in;
@@ -564,7 +577,9 @@ inline bool pickApplyRule(PickRule rule, bool cap_on, const PickSpan& span,
       hit.cap = false;
       return true;
     }
-    if (cap_on && span.s_cap_far > smin) {
+    // An open entry draws nothing, but an open end's disc still bounds the
+    // solid the cap tests.
+    if (cap_on && span.s_cap_near < smin && span.s_cap_far > smin) {
       hit.s = smin;
       hit.inside = false;
       hit.cap = true;

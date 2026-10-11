@@ -12023,6 +12023,26 @@ static float cyl_oit_weight(float a, float z) {
                pow(1.0 - z * 0.9, 3.0), 1e-2, 3e3);
 }
 
+// Where the ray origin + t * dir (dir toward the camera) crosses a cylinder
+// end at c: its ball (isRound) or its disc (normal outAxis, within the
+// radius). leaving picks the exit (where the ray, travelling away from the
+// camera, leaves) over the entry. False on a miss.
+static bool cyl_end_hit(float3 origin, float3 dir, float3 c, float3 outAxis,
+    bool isRound, float radius2, bool leaving, thread float3& p) {
+  if (isRound) {
+    float3 sd = c - origin;
+    float b = dot(sd, dir);
+    float pos = b*b + radius2 - dot(sd, sd);
+    if (pos < 0.0) return false;
+    p = origin + (leaving ? b - sqrt(pos) : b + sqrt(pos)) * dir;
+    return true;
+  }
+  float dNV = dot(outAxis, dir);           // > 0: the disc faces the camera
+  if (leaving ? (dNV >= 0.0) : (dNV < 0.0)) return false;
+  p = origin + dir * (dot(outAxis, c - origin) / dNV);
+  return dot(p - c, p - c) <= radius2;     // as the pick's resolve()
+}
+
 // Shared ray-cylinder intersection (caps + two-color interp) + PyMOL shading.
 // Discards on miss; returns lit rgb, alpha, window depth.
 // Geometry, depth and the DEFAULT two-light result; material-free for the same
@@ -12061,6 +12081,10 @@ static void cyl_shade(CylVOut in, constant CylU& u,
   bool endcapround   = (cyl_bit(fcap) > 0.5) && (u.no_flat_caps > 0.5);
   bool nocolorinterp = !(cyl_bit(fcap) > 0.5);
 
+  // The base end's shape, before the end-cap branch below reuses
+  // frontcapround for whichever end the front point is past.
+  const bool basecapround = frontcapround;
+
   float ratio = dot(new_point - in.base, in.end_cyl - in.base) * in.inv_sqr_height;
   if (nocolorinterp) {
     float dp = clamp(-u.half_bond * new_point.z * u.inv_height, 0.0, 0.5);
@@ -12072,6 +12096,7 @@ static void cyl_shade(CylVOut in, constant CylU& u,
 
   bool cap_test_base = 0.0 > dot(new_point - in.base, in.axis);
   bool cap_test_end  = 0.0 < dot(new_point - in.end_cyl, in.axis);
+  bool openFront = false;
   if (cap_test_base || cap_test_end) {
     float3 thisaxis = -in.axis;
     float3 thisbase = in.base;
@@ -12079,38 +12104,46 @@ static void cyl_shade(CylVOut in, constant CylU& u,
       thisaxis = in.axis; thisbase = in.end_cyl;
       frontcap = endcap; frontcapround = endcapround;
     }
-    if (!frontcap) discard_fragment();
-    if (frontcapround) {
-      float3 sd = thisbase - ray_origin;
-      float b = dot(sd, ray_dir);
-      float pos = b*b + radius2 - dot(sd, sd);
-      if (pos < 0.0) discard_fragment();
-      float nr = sqrt(pos) + b;
-      new_point = nr * ray_dir + ray_origin;
-      normal = normalize(new_point - thisbase);
-    } else {
-      float dNV = dot(thisaxis, ray_dir);
-      if (dNV < 0.0) discard_fragment();
-      float nr = dot(thisaxis, thisbase - ray_origin) / dNV;
-      new_point = ray_dir * nr + ray_origin;
-      if (dot(new_point - thisbase, new_point - thisbase) > radius2) discard_fragment();
-      normal = thisaxis;
+    // An open end draws nothing, but its disc still bounds the solid the
+    // slab's interior cap tests (#641): keep it for that test only.
+    if (!frontcap) {
+      if (u.interiorCap < 0.5) discard_fragment();
+      openFront = true;
     }
+    if (!cyl_end_hit(ray_origin, ray_dir, thisbase, thisaxis, frontcapround,
+                     radius2, false, new_point)) discard_fragment();
+    normal = frontcapround ? normalize(new_point - thisbase) : thisaxis;
   }
 
   float4 clip = u.projection * float4(new_point, 1.0);
   float ndcz = clip.z / clip.w;
   depth = (u.depthZeroToOne >= 0.5) ? ndcz : (0.5 + 0.5 * ndcz);
   if (depth <= 0.0) {
-    // Surface point is in front of the slab. If the cylinder body still straddles
+    // Surface point is in front of the slab. If the capped solid still straddles
     // the slab (its far wall is inside), cap the cross-section with a flat
     // interior color instead of discarding (= see-through). Else discard.
     if (u.interiorCap < 0.5) discard_fragment();
-    float dist2 = (-a1 - sqrt(d)) / a2;            // far body intersection
+    // The far wall is the CAPPED solid's exit (#641), not the infinite
+    // tube's: the tube's far crossing between the end planes; past an end,
+    // that end's ball (round) or disc (flat, or open). Else a stick wholly
+    // in front of the slab, whose axis runs on past it, would cap the slab
+    // where none of it is. An open end's disc is the tube segment's own end:
+    // the atom's ball is another bond's round end, so the bonds' caps
+    // together are exactly the cross-section of the sticks' union.
+    float dist2 = (-a1 - sqrt(d)) / a2;            // far tube crossing
     float3 p2 = ray_target + dist2 * ray_dir;
+    float z2 = dot(p2 - in.base, in.axis);
+    float hz = dot(in.end_cyl - in.base, in.axis);
+    if (z2 < 0.0 || z2 > hz) {
+      bool atEnd = z2 > hz;
+      if (!cyl_end_hit(ray_origin, ray_dir, atEnd ? in.end_cyl : in.base,
+                       atEnd ? in.axis : -in.axis,
+                       atEnd ? endcapround : basecapround, radius2, true, p2))
+        discard_fragment();
+    }
     float4 c2 = u.projection * float4(p2, 1.0);
     float d2 = (u.depthZeroToOne >= 0.5) ? (c2.z / c2.w) : (0.5 + 0.5 * c2.z / c2.w);
-    if (d2 <= 0.0) discard_fragment();             // whole stick in front of slab
+    if (d2 <= 0.0) discard_fragment();             // the whole solid is in front of the slab
     depth = 1e-5;                                  // flat disc at the slab plane
     rgb = (u.interiorColor.a > 0.5) ? u.interiorColor.rgb  // ray_interior_color
                                     : color.rgb * 0.45;    // else bond darkened
@@ -12118,6 +12151,7 @@ static void cyl_shade(CylVOut in, constant CylU& u,
     litOut = false;
     return;
   }
+  if (openFront) discard_fragment();   // an open end inside the slab: nothing
 
   // PyMOL two-light model, driven by the live lighting settings in CylU.
   float ambient    = u.lAmbient;

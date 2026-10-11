@@ -178,12 +178,11 @@ public:
    *
    * With `eye`, impostors follow what Metal rasterizes at the slab's
    * planes. A sphere's quad sits at its centre's depth, so a sphere whose
-   * centre is outside the slab draws nothing. With `cap_on`, a cylinder's
-   * box follows cyl_impostor_vertex's near-plane clamp: one wholly in front
-   * of the plane still caps it where its infinite tube runs on behind the
-   * plane, provided Metal keeps its box (the walk starts early enough to
-   * meet such cylinders). Without `eye`, every impostor proxy counts as
-   * drawn.
+   * centre is outside the slab draws nothing. With `cap_on`, a cylinder
+   * caps the plane where its capped solid straddles it (#641), provided
+   * Metal keeps its box (cyl_impostor_vertex's near-plane clamp, which in a
+   * frame of unit scale always holds then). Without `eye`, every impostor
+   * proxy counts as drawn.
    */
   bool intersect(const PickRay& ray, bool cap_on, PickRayHit& hit,
       const PickTriFilter* filter = nullptr,
@@ -218,9 +217,6 @@ private:
   std::uint32_t m_blockTris = 0;
   Mesh m_mesh;
   PickNubShape m_nub;
-  /// Largest length + 3.5 r of the impostor cylinders: how far in front of
-  /// the near plane (in depth) one can sit and still have its box kept.
-  float m_capReach = 0.f;
   // First item id of each kind (spheres start at 0); set by build().
   std::uint32_t m_firstCyl = 0, m_firstTri = 0, m_firstBlock = 0,
                 m_firstMesh = 0;

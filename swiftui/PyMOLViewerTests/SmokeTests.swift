@@ -1730,3 +1730,108 @@ final class SphereGlassRenderTests: XCTestCase {
         XCTAssertEqual(firstDefault, secondDefault, "second default render must be byte-identical to first default render")
     }
 }
+
+/// A stick wholly in front of the near plane, whose axis runs on past it,
+/// draws no interior cap (#641); 2 A further back it straddles the plane
+/// and does.
+final class CylinderInteriorCapNearPlaneTests: XCTestCase {
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var sceneBuilt = false
+    private var savedView: [Float]?
+
+    override func tearDown() {
+        if sceneBuilt {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.delete('sm641')
+            _c.set('bg_rgb', globals().pop('_sm641_bg', [0.0, 0.0, 0.0]))
+            for _n in globals().pop('_sm641_enabled', []):
+                _c.enable(_n)
+            """)
+            sceneBuilt = false
+        }
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        super.tearDown()
+    }
+
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            throw XCTSkip("the PyMOL engine did not come up under the test host")
+        }
+    }
+
+    private func buildScene() {
+        savedView = engine.captureView()
+        sceneBuilt = true
+        engine.runPython("""
+        from pymol import cmd as _c
+        _sm641_enabled = _c.get_names('objects', enabled_only=1)
+        _sm641_bg = list(_c.get_setting_tuple('bg_rgb')[1])
+        for _n in _sm641_enabled:
+            _c.disable(_n)
+        _c.pseudoatom('sm641', name='A1', pos=[0.0, -3.0, 58.0])
+        _c.pseudoatom('sm641', name='A2', pos=[0.0, 3.0, 51.5])
+        _c.bond('sm641 and name A1', 'sm641 and name A2')
+        _c.show_as('sticks', 'sm641')
+        _c.color('blue', 'sm641')
+        _c.set('stick_radius', 1.0, 'sm641')
+        _c.set('metal_interior_cap', 1, 'sm641')
+        _c.set('ray_interior_color', 'green', 'sm641')
+        _c.set('bg_rgb', [0.0, 0.0, 0.0])
+        _c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                     0.0, 0.0, -100.0, 0.0, 0.0, 0.0, 50.0, 150.0, -20.0))
+        """)
+    }
+
+    private func greenPixels(_ tag: String) throws -> Int {
+        let w = 400, h = 300
+        let png = NSTemporaryDirectory() + "issue_641_\(tag).png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: w, height: h, rayTraced: 0)
+        guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: png) as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            XCTFail("no export written (\(tag))")
+            return 0
+        }
+        XCTAssertEqual(image.width, w)
+        XCTAssertEqual(image.height, h)
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        var count = 0
+        for i in 0..<(w * h) {
+            let r = Int(rgba[i * 4]), g = Int(rgba[i * 4 + 1]), b = Int(rgba[i * 4 + 2])
+            if g > 60 && g - r > 40 && g - b > 40 {
+                count += 1
+            }
+        }
+        return count
+    }
+
+    func testNoCapForAStickWhollyInFrontOfTheNearPlane() throws {
+        try requireEngine()
+        buildScene()
+
+        XCTAssertEqual(try greenPixels("front"), 0,
+                       "a stick wholly in front of the near plane drew an interior cap")
+
+        engine.runPython("from pymol import cmd as _c\n_c.translate([0.0, 0.0, -2.0], 'sm641', camera=0)")
+        XCTAssertGreaterThan(try greenPixels("straddle"), 300,
+                             "a stick that straddles the near plane is capped")
+    }
+}
+
