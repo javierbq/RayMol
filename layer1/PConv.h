@@ -361,8 +361,19 @@ inline bool PConvFromPyObject(PyMOLGlobals *, PyObject * obj, std::string &out) 
   if (PyBytes_Check(obj)) {
     // the legacy (pse_export_version < 1.9) pickler returns non-ASCII text
     // as UTF-8 bytes
-    out.assign(PyBytes_AsString(obj), PyBytes_Size(obj));
-    return true;
+    // (strictly validated, so the value converts back to a Python str)
+    PyObject* text = PyUnicode_DecodeUTF8(
+        PyBytes_AsString(obj), PyBytes_Size(obj), "strict");
+    if (!text) {
+      PyErr_Clear();
+      return false;
+    }
+    const char* buffer = PyUnicode_AsUTF8(text);
+    if (buffer) {
+      out = buffer;
+    }
+    Py_DECREF(text);
+    return buffer != nullptr;
   }
   const char* buffer = PyUnicode_AsUTF8(obj);
   if (!buffer) {

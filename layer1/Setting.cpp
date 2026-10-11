@@ -1046,14 +1046,9 @@ static int set_list(CSetting * I, PyObject * list)
     {
       // the legacy (pse_export_version < 1.9) pickler hands non-ASCII text
       // back as UTF-8 bytes
-      PyObject* item = PyList_GetItem(list, 2);
-      ok_assert(1, item != nullptr);
-      if (PyBytes_Check(item)) {
-        ok_assert(1, val_s = PyBytes_AsString(item));
-      } else {
-        ok_assert(1, val_s = PyString_AsString(item));
-      }
-      SettingSet_s(I, index, val_s);
+      std::string text;
+      ok_assert(1, PConvFromPyObject(I->G, PyList_GetItem(list, 2), text));
+      SettingSet_s(I, index, text.c_str());
     }
     break;
   default:
