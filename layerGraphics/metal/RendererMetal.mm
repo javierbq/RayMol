@@ -6115,10 +6115,10 @@ void RendererMetal::setShadowBias(float bias)
   _shadowBias = (bias > 0.0f) ? bias : 0.0f;
 }
 
-void RendererMetal::beginShadowPass()
+bool RendererMetal::beginShadowPass()
 {
-  if (!_cmdBuffer || !_vboShadowPipelineUByte) return;
-  if (!ensureShadowMap()) return;  // the lazy 4096^2 map (#667)
+  if (!_cmdBuffer || !_vboShadowPipelineUByte) return false;
+  if (!ensureShadowMap()) return false;  // the lazy 4096^2 map (#667)
   buildShadowPipelines();  // no-op if already built
   // End the scene encoder opened by beginFrame (it has only the pending clear;
   // no opaque geometry has drawn yet). Switch to the light-POV depth pass.
@@ -6132,7 +6132,7 @@ void RendererMetal::beginShadowPass()
   // scene and OIT passes -- a reflective object must reflect the same room
   // whichever pass draws it.
   bindEnvironment(_encoder);
-  if (!_encoder) { _passDesc = _scenePassDesc; return; }
+  if (!_encoder) { _passDesc = _scenePassDesc; return false; }
   MTLViewport vp = {0.0, 0.0, (double)kShadowDim, (double)kShadowDim, 0.0, 1.0};
   [_encoder setViewport:vp];
   if (!_shadowDepthState) {
@@ -6145,6 +6145,7 @@ void RendererMetal::beginShadowPass()
   [_encoder setDepthStencilState:_shadowDepthState];
   [_encoder setCullMode:MTLCullModeNone];
   _shadowMode = true;
+  return true;
 }
 
 void RendererMetal::endShadowPass()

@@ -829,12 +829,13 @@ SCENE_RENDER = os.path.join(ROOT, 'layer1', 'SceneRender.cpp')
 # its `if`, from `float shadowRadius` to the restore of the camera matrices).
 # Updated for #433 / #662: the classic pre-pass and light frustum exclude
 # overlays (SceneLightShadowOverlays and SceneGetLightShadowExtent).
-# Updated for #667: beginShadowPass makes the shadow map lazily (ensureShadowMap).
+# Updated for #667: beginShadowPass makes the shadow map lazily (ensureShadowMap)
+# and reports whether the pass opened; the pre-pass replays only when it did.
 MASTER_CLASSIC = {
-    'RendererMetal::beginShadowPass': '9273a338bb56bfea',
+    'RendererMetal::beginShadowPass': '1b34be8859274632',
     'RendererMetal::endShadowPass': '5dd9374e7be0fb2f',
     'SceneBuildLightViewProjEye': 'c969b5d7bcc919d7',
-    'classic pre-pass body': 'fb70b8ac2adbcad8',
+    'classic pre-pass body': 'ddda139e03990989',
 }
 # The statements both passes end with: the scene pass reopened with CLEAR.
 # Today's grid code on master (aea4e74c6), hashed as MASTER_CLASSIC is: the
@@ -916,10 +917,17 @@ class TestLazyClassicShadowMap(ShadowMSLCase):
     def testFirstPrePassMakesIt(self):
         body = squash(strip_comments(
             cpp_function(self.mm, 'RendererMetal::beginShadowPass')))
-        self.assertIn('if(!ensureShadowMap())return;', body)
+        self.assertIn('if(!ensureShadowMap())returnfalse;', body)
         self.assertLess(body.index('ensureShadowMap()'),
                         body.index('renderCommandEncoderWithDescriptor:_shadowPassDesc'))
         self.assertNotIn('!_shadowPassDesc', body)
+        # no map, no replay (the pass would draw into the scene targets)
+        scene = squash(strip_comments(read(SCENE_RENDER)))
+        self.assertIn('if(G->Renderer->beginShadowPass()){SceneRenderAll(', scene)
+        self.assertRegex(scene, r'SceneRenderAll\([^;]*&overlays\);'
+                                r'G->Renderer->endShadowPass\(\);\}')
+        self.assertIn('virtual bool beginShadowPass() { return true; }',
+                      read(os.path.join(ROOT, 'layerGraphics', 'Renderer.h')))
 
     def testEveryPostReaderToleratesNoMap(self):
         # No post pass binds _shadowDepth raw (nil without shadows): they

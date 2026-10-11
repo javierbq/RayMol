@@ -552,8 +552,11 @@ public:
   // via setLightViewProjEye, then replays the opaque geometry between
   // beginShadowPass/endShadowPass with the light VP loaded (matrixMode/
   // loadMatrixf); draws route to depth-only pipelines writing the light-POV
-  // depth map, which the post pass PCF-samples. Default: no-op (GL unaffected).
-  virtual void beginShadowPass() {}
+  // depth map, which the post pass PCF-samples. beginShadowPass returns false
+  // when the pass did not open (no map, no pipelines): the caller then skips the
+  // replay and endShadowPass, and the frame draws unshadowed (#667). Default:
+  // no-op, true (GL unaffected).
+  virtual bool beginShadowPass() { return true; }
   virtual void endShadowPass() {}
   virtual void setLightViewProjEye(const float* m) {}
   // World half-extent of the shadow ortho box, so the receiver can express its

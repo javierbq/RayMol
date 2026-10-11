@@ -264,7 +264,7 @@ public:
   // matrixMode/loadMatrixf. Draws route to depth-only pipelines that write
   // into _shadowDepth (the light-POV depth map). setLightViewProjEye hands the
   // renderer the eye-space light VP so the post pass can sample the map.
-  void beginShadowPass() override;
+  bool beginShadowPass() override;
   void endShadowPass() override;
   void setLightViewProjEye(const float* m) override;
   void setShadowFrustum(float radius) override;

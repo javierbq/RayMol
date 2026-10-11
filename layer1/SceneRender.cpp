@@ -2669,11 +2669,13 @@ void SceneRenderMetal(PyMOLGlobals* G)
     G->Renderer->matrixMode(0x1700); // MODELVIEW = camera modelview
     G->Renderer->loadMatrixf(mvp);
     const std::vector<pymol::CObject*> overlays = SceneLightShadowOverlays(G);
-    G->Renderer->beginShadowPass();
-    SceneRenderAll(G, &context, normal, nullptr, RenderPass::Opaque, false, 0.0f,
-        &I->grid, 0, SceneRenderWhich::All, SceneRenderOrder::GadgetsLast,
-        nullptr, &overlays);
-    G->Renderer->endShadowPass();
+    // No pass (the map could not be made): no replay, the frame is unshadowed.
+    if (G->Renderer->beginShadowPass()) {
+      SceneRenderAll(G, &context, normal, nullptr, RenderPass::Opaque, false,
+          0.0f, &I->grid, 0, SceneRenderWhich::All,
+          SceneRenderOrder::GadgetsLast, nullptr, &overlays);
+      G->Renderer->endShadowPass();
+    }
     // Restore the camera matrices for the normal scene pass.
     G->Renderer->matrixMode(0x1701);
     G->Renderer->loadMatrixf(SceneGetProjectionMatrixPtr(G));
