@@ -1,3 +1,4 @@
+import io
 import json
 import sys
 import threading
@@ -154,6 +155,43 @@ class TestMainThreadMarshalling(unittest.TestCase):
         mainthread._main_ident = None
         with self.assertRaises(TimeoutError):
             mainthread.run_on_main(lambda: None, timeout=0.05)
+
+
+class TestRunPythonTeesStdout(unittest.TestCase):
+    """run_python must still return the user's output, but must not swallow
+    feedback markers: the app's feedback sink reads the REAL stdout, so a
+    ``PREDICT:submit:`` line captured only into the tool result never starts the
+    job (#596)."""
+
+    def setUp(self):
+        claim_main_thread(self)
+        self.real = io.StringIO()
+        self.addCleanup(setattr, sys, "stdout", sys.stdout)
+        sys.stdout = self.real
+
+    def test_marker_reaches_real_stdout_and_tool_result(self):
+        res = tools.call("run_python",
+                         {"code": "print('PREDICT:submit:x')"})
+        self.assertFalse(res.get("isError"))
+        self.assertIn("PREDICT:submit:x", self.real.getvalue())
+        self.assertIn("PREDICT:submit:x", res["content"][0]["text"])
+
+    def test_ordinary_output_is_still_returned(self):
+        res = tools.call("run_python", {"code": "print('hello', 1 + 1)"})
+        self.assertFalse(res.get("isError"))
+        self.assertIn("hello 2", res["content"][0]["text"])
+
+    def test_no_output_returns_ok(self):
+        res = tools.call("run_python", {"code": "x = 1"})
+        self.assertEqual(res["content"][0]["text"], "ok")
+
+    def test_output_before_an_exception_is_kept_in_the_error(self):
+        res = tools.call("run_python",
+                         {"code": "print('PREDICT:submit:y')\n1/0"})
+        self.assertTrue(res["isError"])
+        self.assertIn("PREDICT:submit:y", res["content"][0]["text"])
+        self.assertIn("ZeroDivisionError", res["content"][0]["text"])
+        self.assertIn("PREDICT:submit:y", self.real.getvalue())
 
 
 class TestMcpToolsRegistry(unittest.TestCase):
