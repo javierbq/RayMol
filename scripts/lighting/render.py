@@ -225,7 +225,10 @@ RIGS = ('none', 'off', 'on')
 
 # Text the app acts on inside a command (PyMOLEngine.runCommandCore:
 # maybeWidenClipForSurface, handleSessionViewport), or that `run`, AUTOCMD (';')
-# and AUTOEXPORT (',') would split or expand.
+# and AUTOEXPORT (',') would split or expand. The app matches these as plain
+# substrings (`l.contains(...)` on the lowercased command), not whole words, so
+# check_path matches them as substrings too: `lighting_presets.json` is refused
+# for containing 'reset'. Do not switch to word-boundary matching.
 FORBIDDEN_WORDS = ('orient', 'reset', 'load ', 'fetch ', 'show ', '.pse')
 FORBIDDEN_CHARS = (',', ';', '$', "'", '"')
 MAIN_BUNDLE_ID = 'io.raymol.RayMol'
@@ -485,7 +488,13 @@ def select(jobs, tags, what='--only'):
 # --- refusals -----------------------------------------------------------------
 
 def check_path(label, path):
-    """Refuse a path the app's command handling would split, expand or act on."""
+    """Refuse a path the app's command handling would split, expand or act on.
+
+    FORBIDDEN_WORDS are matched as case-insensitive substrings of the whole
+    path, not whole words, because the app's own trigger check is a substring
+    match (PyMOLEngine.maybeWidenClipForSurface uses `contains`). So
+    'lighting_612_presets.json' is refused for the 'reset' inside 'presets';
+    rename the file or directory."""
     if any(c.isspace() for c in path):
         raise Refusal('%s %r contains whitespace: `run` takes its path unquoted'
                       % (label, path))
@@ -497,8 +506,12 @@ def check_path(label, path):
     lower = path.lower()
     for word in FORBIDDEN_WORDS:
         if word in lower:
-            raise Refusal('%s %r contains %r, which the app acts on inside a '
-                          'command (PyMOLEngine.runCommandCore)' % (label, path, word))
+            raise Refusal('%s %r contains %r as a substring (not only as a '
+                          'whole word): the app acts on that text anywhere '
+                          'inside a command (PyMOLEngine.runCommandCore uses '
+                          'substring triggers). Rename the file or directory '
+                          'so the path does not contain %r'
+                          % (label, path, word, word))
 
 
 def app_info(app):

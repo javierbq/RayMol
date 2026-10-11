@@ -1594,6 +1594,18 @@ class TestMovieSceneFile(_BlendCase):
             self.assertEqual(job.extra[-1], "cmd.color('grey80', 'm')",
                              job.tag)
 
+    def testCheckPathRefusalSaysSubstring(self):
+        # #646: the app's triggers are substrings, so 'presets' (has 'reset')
+        # is refused, and the message says so and suggests a rename.
+        render = self.render
+        with self.assertRaises(render.Refusal) as ctx:
+            render.check_path('--scenes', 'lighting_612_presets.json')
+        msg = str(ctx.exception)
+        self.assertIn('substring', msg)
+        self.assertIn("'reset'", msg)
+        self.assertIn('Rename', msg)
+        render.check_path('--scenes', 'lighting_612_rigs.json')
+
     def testLighting617MovieFile(self):
         render = self.render
         out = os.path.join(self.tmp, 'l2')
