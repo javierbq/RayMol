@@ -1043,8 +1043,13 @@ static int set_list(CSetting * I, PyObject * list)
     SettingSet_3fv(I, index, val_3f);
     break;
   case cSetting_string:
-    ok_assert(1, val_s = PyString_AsString(PyList_GetItem(list, 2)));
-    SettingSet_s(I, index, val_s);
+    {
+      // the legacy (pse_export_version < 1.9) pickler hands non-ASCII text
+      // back as UTF-8 bytes
+      std::string text;
+      ok_assert(1, PConvFromPyObject(I->G, PyList_GetItem(list, 2), text));
+      SettingSet_s(I, index, text.c_str());
+    }
     break;
   default:
     ok_raise(1);
