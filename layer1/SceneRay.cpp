@@ -181,6 +181,15 @@ bool SceneRay(PyMOLGlobals * G,
     GridUpdate(&I->grid, aspRat, grid_mode, grid_size);
     if(I->grid.active)
       aspRat *= I->grid.asp_adjust;
+  } else {
+    // No grid for this ray (grid_mode 0, or a non-PyMOL renderer such as the
+    // OBJ/VRML export): drop a layout left by an earlier grid ray. Headless,
+    // SceneRender never runs to reset it.
+    I->grid.active = false;
+  }
+  if (!I->grid.active) {
+    // a stale last_slot would make the slot loop below run once per old cell
+    I->grid.last_slot = 0;
   }
   if (last_grid_active != I->grid.active || grid_size != I->last_grid_size){
     //    ExecutiveInvalidateRep(G, cKeywordAll, cRepLabel, cRepInvAll);

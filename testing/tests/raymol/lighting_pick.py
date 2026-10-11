@@ -2291,20 +2291,45 @@ class TestScope(PickCase):
         cmd.pseudoatom('multi', pos=[0.0, -3.0, 5.0], vdw=2.0, state=2)
         cmd.show_as('spheres', 'multi')
         cmd.set('grid_mode', 3)
-        self.addCleanup(self.reset_ray_grid)
         self.assertPicksLeaveTheRenderAlone(
             points + [(-0.5, 0.5), (0.5, -0.5)], 'grid_mode 3')
 
-    def reset_ray_grid(self):
-        '''A ray render in grid mode leaves the scene's grid layout behind,
-        and a later ray with grid_mode 0 (an OBJ export in another test)
-        still draws through it: SceneRay only updates the layout in grid
-        mode, and headless no SceneRender resets it (pre-existing; proposed
-        follow-up). A one-slot grid ray clears it.'''
-        cmd.delete('all')
+    def objVertices(self):
+        '''The vertex count of an OBJ export of every enabled object.'''
+        with testing.mktemp('.obj') as path:
+            cmd.save(path)
+            with open(path) as handle:
+                return sum(1 for line in handle if line.startswith('v '))
+
+    def testGridRayLeavesNoLayoutBehind(self):
+        # #640: a ray traced in grid mode must not leave its layout behind;
+        # a later grid_mode 0 ray or OBJ export draws every object.
+        for name, x in (('ga', -2.0), ('gb', 2.0)):
+            cmd.pseudoatom(name, pos=[x, 0.0, 0.0], vdw=1.5)
+            cmd.show_as('spheres', name)
+        self.addCleanup(cmd.set, 'grid_mode', 0)
+        cmd.set('geometry_export_mode', 1)
+        self.addCleanup(cmd.set, 'geometry_export_mode', 0)
+        both = self.objVertices()
+        self.assertGreater(both, 0)
+        cmd.set('grid_mode', 1)
+        grid_frame = self.render()
+        cmd.set('grid_mode', 0)
+        self.assertEqual(self.objVertices(), both, 'OBJ after a grid ray')
+        flat = self.render()
+        self.assertNotEqual(flat, grid_frame)
+        self.assertEqual(self.objVertices(), both, 'OBJ after a flat ray')
+        cmd.set('grid_mode', 0)
+        self.assertEqual(self.render(), flat, 'flat ray is stable')
+        # A one-slot grid (a single object) also leaves the layout inactive.
         cmd.set('grid_mode', 1)
         self.render()
+        cmd.delete('gb')
+        self.render()
         cmd.set('grid_mode', 0)
+        cmd.pseudoatom('gc', pos=[0.0, 3.0, 0.0], vdw=1.5)
+        cmd.show_as('spheres', 'gc')
+        self.assertEqual(self.objVertices(), both, 'OBJ after a one-slot grid')
 
     def testReleaseDropsTheGrids(self):
         from pymol.cmd import _cmd
