@@ -2018,10 +2018,10 @@ static bool SceneObjectShowsAnyRep(const pymol::CObject* obj)
     drawn = cRepCGOBit;
     break;
   case cObjectMesh:
-    drawn = cRepMeshBit;
+    drawn = cRepMeshBit | cRepCellBit;
     break;
   case cObjectSurface:
-    drawn = cRepSurfaceBit;
+    drawn = cRepSurfaceBit | cRepCellBit;
     break;
   case cObjectMap:
     drawn = cRepExtentBit | cRepDotBit;
