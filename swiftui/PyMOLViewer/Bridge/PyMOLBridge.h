@@ -58,8 +58,10 @@ int PyMOLBridge_SupportsRayTracing(PyMOLHandle instance);
 // Fires a cmd.set_key binding by its canonical PyMOL key token ("left",
 // "CTRL-T", "ALT-A", "F1"). Returns 1 if a binding existed and was invoked
 // (including when the binding's callable raised — the key is still consumed so
-// it isn't ALSO dispatched to a menu). Returns 0 when the key is unbound, and
-// also 0 when pymol.internal cannot be imported (shutdown / corrupted state) —
+// it isn't ALSO dispatched to a menu). A bare F-key / special-key name with no
+// binding instead recalls the scene or view of that name and counts as fired
+// (#260); arrow keys never fall back. Returns 0 when nothing fired, and also 0
+// when pymol.raymol_keys cannot be imported (shutdown / corrupted state) —
 // in that case no binding could have run, so the key falls through to macOS
 // menus and RayMol's own ⌃M / ⌃D shortcuts keep working (#258).
 int PyMOLBridge_InvokeKey(const char *key);
