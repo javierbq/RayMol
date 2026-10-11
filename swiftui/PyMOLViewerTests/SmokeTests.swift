@@ -500,6 +500,7 @@ final class LabelColorExportTests: XCTestCase {
 /// because ObjectStatePushAndApplyMatrix never loaded the matrix into the
 /// renderer's modelview. A red sphere is stored at local (5, 0, 0); its state
 /// matrix turns it 90 degrees about z and lifts it by 10, to world (0, 5, 10).
+@MainActor
 final class StateMatrixRenderTests: XCTestCase {
     private var engine: PyMOLEngine { PyMOLEngine.shared }
     private var sceneBuilt = false
