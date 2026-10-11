@@ -845,11 +845,11 @@ SCENE_RENDER = os.path.join(ROOT, 'layer1', 'SceneRender.cpp')
 # and reports whether the pass opened; the pre-pass replays only when it did.
 # Updated for #665: the classic pass opens with the light's view (premultiplied
 # onto every modelview) and SceneBuildLightViewProjEye returns the view and the
-# projection apart.
+# projection apart, with an up vector that is never parallel to the light.
 MASTER_CLASSIC = {
     'RendererMetal::beginShadowPass': '5eb1721676008f76',
     'RendererMetal::endShadowPass': 'e7cc6973c0584cd7',
-    'SceneBuildLightViewProjEye': 'b2392fd547957ddb',
+    'SceneBuildLightViewProjEye': 'bf60a49daa88d2a3',
     'classic pre-pass body': '2a3fc69cf0876da4',
 }
 # The statements both passes end with: the scene pass reopened with CLEAR.
@@ -878,8 +878,9 @@ def classic_pre_pass_body(scene_render):
 
 
 class TestClassicShadowUnchanged(ShadowMSLCase):
-    """Sha pins: the classic pass, its light frustum and the pre-pass body
-    are master's."""
+    """Sha pins: the classic pass, its light frustum and the pre-pass body,
+    as #665 left them (master's, but for the light view the pass opens
+    with)."""
 
     def testClassicCodeIsMasters(self):
         scene_render = read(SCENE_RENDER)
@@ -960,9 +961,14 @@ class TestClassicShadowCastersFaceTheLight(ShadowMSLCase):
         self.assertNotIn('loadMatrixf(glm::value_ptr(lightVP_eye))', prepass)
 
         fn = cpp_function(scene_render, 'SceneBuildLightViewProjEye')
-        self.assertIn('lightView = glm::lookAt(', fn)
-        self.assertIn('lightProj = glm::ortho(', fn)
+        self.assertIn('lightView=glm::lookAt(', squash(fn))
+        self.assertIn('lightProj=glm::ortho(', squash(fn))
         self.assertNotIn('return lightProj', fn)
+        # lookAt's up is never parallel to the light: +x when the light is
+        # near the view axis or near the y axis (a light straight above)
+        self.assertIn('glm::vec3up=(Ldir.z*Ldir.z<0.81f&&std::fabs(Ldir.y)<0.95f)'
+                      '?glm::vec3(0,1,0):glm::vec3(1,0,0);',
+                      squash(strip_comments(fn)))
 
 
 class TestLazyClassicShadowMap(ShadowMSLCase):
@@ -1397,8 +1403,10 @@ class TestMapPass(ShadowMSLCase):
         for fn in ('RendererMetal::drawSphereImpostors',
                    'RendererMetal::drawCylinderImpostors'):
             body = self.body(fn)
-            self.assertEqual(re.findall(r'\bu\.ortho\s*=\s*([^;]*);', body),
-                             ['_lightShadowSlotOpen >= 0 ? 0.0f : _classicShadowViewOpen ? 1.0f : (float)call.ortho'], fn)
+            self.assertEqual([' '.join(x.split()) for x in
+                              re.findall(r'\bu\.ortho\s*=\s*([^;]*);', body)],
+                             ['_lightShadowSlotOpen >= 0 ? 0.0f : '
+                              '_classicShadowViewOpen ? 1.0f : (float)call.ortho'], fn)
 
     def testMapsBoundOnlyWithTheRigWhenReady(self):
         bind = self.body('RendererMetal::bindLightRig')

@@ -2229,11 +2229,16 @@ static void SceneBuildLightViewProjEye(PyMOLGlobals* G, glm::mat4& lightView,
   if (glm::length(Ldir) < 1e-6f)
     Ldir = glm::vec3(0.4f, 0.4f, 1.0f); // degenerate light: historical fallback
   Ldir = glm::normalize(Ldir);          // toward light
-  glm::vec3 up = (Ldir.z * Ldir.z < 0.81f) ? glm::vec3(0, 1, 0)
-                                           : glm::vec3(1, 0, 0);
+  // +y unless the light is near the view axis, or near the y axis itself,
+  // where lookAt's up would be parallel to the light and its view NaN (a
+  // light straight from above or below, `light [0, -1, 0]`; #665).
+  glm::vec3 up = (Ldir.z * Ldir.z < 0.81f && std::fabs(Ldir.y) < 0.95f)
+                     ? glm::vec3(0, 1, 0)
+                     : glm::vec3(1, 0, 0);
   glm::vec3 lightPos = centerEye + Ldir * (radius * 2.0f);
   lightView = glm::lookAt(lightPos, centerEye, up);
-  lightProj = glm::ortho(-radius, radius, -radius, radius, 0.05f, radius * 4.0f);
+  lightProj =
+      glm::ortho(-radius, radius, -radius, radius, 0.05f, radius * 4.0f);
   if (outRadius)
     *outRadius = radius; // world half-extent of the ortho box; the renderer
                          // turns this into a scale-aware shadow bias (Angstroms)

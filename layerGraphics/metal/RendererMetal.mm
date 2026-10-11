@@ -11869,7 +11869,9 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
   // A shadow map ray-casts the impostors from its light, whatever the camera's
   // projection: perspective for a studio slice (#616), orthographic for the
   // classic map (#665).
-  u.ortho = _lightShadowSlotOpen >= 0 ? 0.0f : _classicShadowViewOpen ? 1.0f : (float)call.ortho;
+  u.ortho = _lightShadowSlotOpen >= 0 ? 0.0f
+            : _classicShadowViewOpen ? 1.0f
+                                     : (float)call.ortho;
   // Projection is GL-convention ([-1,1] clip Z): remap to [0,1] for Metal's
   // fragment depth (matches the GL sphere.fs `0.5 + 0.5 * clipZ/clipW`).
   u.depthZeroToOne = 0.0f;
@@ -12736,7 +12738,9 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
   // A shadow map ray-casts the impostors from its light, whatever the camera's
   // projection: perspective for a studio slice (#616), orthographic for the
   // classic map (#665).
-  u.ortho = _lightShadowSlotOpen >= 0 ? 0.0f : _classicShadowViewOpen ? 1.0f : (float)call.ortho;
+  u.ortho = _lightShadowSlotOpen >= 0 ? 0.0f
+            : _classicShadowViewOpen ? 1.0f
+                                     : (float)call.ortho;
   u.depthZeroToOne = 0.0f; // GL-convention clip Z (matches the sphere path)
   u.no_flat_caps = (float)call.noFlatCaps;
   // Negative tells the shader to read a_cap per-vertex (attribute 6) instead.
