@@ -114,8 +114,8 @@ MASTER_054B525 = {
     'kLabelShaderSrc': 'ca5097bd2ad97d60',  # #736: label_fragment_oit, the OIT pass's variant
     'kMaterialImpostorSrc': 'ad8142cda60dc979',
     'kMaterialSrc': '4f4f1e7f4c703bad',
-    'kPostSrc': 'c13f90740b5420b8',
-    'kRTSrc': 'c3f2065ac121a166',
+    'kPostSrc': 'f55a914833611313',
+    'kRTSrc': 'd74464e842d20aa4',
     'kSphereImpostorSrc': 'd4db196a0bab087c',
     'kVBOSrc': '834ce9f8e90f5832',
 }

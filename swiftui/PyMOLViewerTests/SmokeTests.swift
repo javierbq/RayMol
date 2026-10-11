@@ -622,3 +622,151 @@ final class StateMatrixRenderTests: XCTestCase {
         XCTAssertLessThan(moved.y, 110, "matrix_mode 1: sphere should be in the upper half")
     }
 }
+
+/// The classic 4096x4096 shadow map is allocated by the first classic shadow
+/// pre-pass, not with the renderer's targets (#667).
+final class ClassicShadowMapLazyTests: XCTestCase {
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var sceneBuilt = false
+    private var savedView: [Float]?
+
+    override func tearDown() {
+        if sceneBuilt {
+            engine.runPython(
+                "from pymol import cmd as _c\n"
+                + "_c.delete('sm667f or sm667o')\n"
+                + "_c.set('metal_shadows', globals().pop('_sm667_shadows', 1))\n"
+                + "_c.set('bg_rgb', globals().pop('_sm667_bg', [0.0, 0.0, 0.0]))\n"
+                + "for _n in globals().pop('_sm667_enabled', []):\n"
+                + "    _c.enable(_n)\n")
+            sceneBuilt = false
+        }
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        super.tearDown()
+    }
+
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            throw XCTSkip("the PyMOL engine did not come up under the test host")
+        }
+    }
+
+    /// A sphere floor with a smaller sphere in front of it, which the classic
+    /// shadow map makes cast a shadow on the floor. Shadows start OFF, so a
+    /// live-view frame drawn between two steps cannot make the map behind a
+    /// test's back (metal_shadows defaults to on).
+    private func buildScene() {
+        savedView = engine.captureView()
+        sceneBuilt = true
+        engine.runPython("""
+        from pymol import cmd as _c
+        _sm667_enabled = _c.get_names('objects', enabled_only=1)
+        _sm667_bg = list(_c.get_setting_tuple('bg_rgb')[1])
+        _sm667_shadows = _c.get_setting_int('metal_shadows')
+        _c.set('metal_shadows', 0)
+        for _n in _sm667_enabled:
+            _c.disable(_n)
+        _c.pseudoatom('sm667f', pos=[0.0, 0.0, 0.0])
+        _c.pseudoatom('sm667o', pos=[3.0, 3.0, 18.0])
+        _c.show_as('spheres', 'sm667f or sm667o')
+        _c.color('white', 'sm667f or sm667o')
+        _c.set('sphere_scale', 12.0, 'sm667f')
+        _c.set('sphere_scale', 2.5, 'sm667o')
+        _c.set('bg_rgb', [0.0, 0.0, 0.0])
+        _c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                     0.0, 0.0, -60.0, 0.0, 0.0, 0.0, 40.0, 100.0, -20.0))
+        """)
+    }
+
+    /// The classic shadow map's size in bytes (0 = not allocated); `release`
+    /// drops it first.
+    private func shadowMapBytes(release: Bool = false) throws -> Int {
+        let out = NSTemporaryDirectory() + "issue_667_bytes.txt"
+        defer { try? FileManager.default.removeItem(atPath: out) }
+        engine.runPython("""
+        from pymol import cmd as _c
+        open(r'\(out)', 'w').write(str(_c._cmd.get_classic_shadow_map_bytes(_c._COb, \(release ? 1 : 0))))
+        """)
+        let text = try XCTUnwrap(FileManager.default.contents(atPath: out)
+            .flatMap { String(data: $0, encoding: .utf8) }, "no readout written")
+        return try XCTUnwrap(Int(text))
+    }
+
+    private func render(shadows: Bool) throws -> [UInt8] {
+        engine.runPython("from pymol import cmd as _c\n_c.set('metal_shadows', \(shadows ? 1 : 0))")
+        let png = NSTemporaryDirectory() + "issue_667_\(shadows ? "on" : "off").png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: 400, height: 300, rayTraced: 0)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(
+            URL(fileURLWithPath: png) as CFURL, nil), "no export written")
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        let w = image.width, h = image.height
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return rgba
+    }
+
+    func testMapIsAllocatedByTheFirstShadowedRenderOnly() throws {
+        try requireEngine()
+        buildScene()
+        // Drop whatever an earlier test in this process left.
+        XCTAssertEqual(try shadowMapBytes(release: true), 0)
+
+        _ = try render(shadows: false)
+        XCTAssertEqual(try shadowMapBytes(), 0,
+                       "a render without shadows allocated the classic map")
+
+        _ = try render(shadows: true)
+        let bytes = try shadowMapBytes()
+        #if os(macOS)
+        XCTAssertEqual(bytes, 4096 * 4096 * 4, "the classic map after a shadowed render")
+        #else
+        XCTAssertEqual(bytes, 2048 * 2048 * 4, "the classic map after a shadowed render")
+        #endif
+
+        // Shadows off again: the map is kept (no re-allocation per toggle).
+        _ = try render(shadows: false)
+        XCTAssertEqual(try shadowMapBytes(), bytes)
+    }
+
+    func testShadowedRenderIsTheSameWithALazyOrAnExistingMap() throws {
+        try requireEngine()
+        buildScene()
+
+        let plain = try render(shadows: false)
+        _ = try shadowMapBytes(release: true)
+        let lazy = try render(shadows: true)       // allocates the map
+        XCTAssertGreaterThan(try shadowMapBytes(), 0)
+        let kept = try render(shadows: true)       // the map exists already
+        _ = try shadowMapBytes(release: true)
+        let again = try render(shadows: true)      // allocates it anew
+
+        var shadowed = 0
+        for i in stride(from: 0, to: plain.count, by: 4) where
+            plain[i] != lazy[i] || plain[i + 1] != lazy[i + 1] || plain[i + 2] != lazy[i + 2] {
+            shadowed += 1
+        }
+        XCTAssertGreaterThan(shadowed, 100, "shadows changed no pixels")
+        XCTAssertEqual(lazy, kept, "the first shadowed frame differs from a later one")
+        XCTAssertEqual(lazy, again, "a re-allocated map renders differently")
+        // For a before/after comparison against a build with the eager map.
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in lazy { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
+        print("667-shadowed-hash \(String(hash, radix: 16))")
+    }
+}

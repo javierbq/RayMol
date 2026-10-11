@@ -5722,6 +5722,23 @@ static PyObject* CmdGetGpuFrameStats(PyObject* self, PyObject* args)
   return GpuFrameReportAsPyDict(report);
 }
 
+/// Test-only (#667): the Metal renderer's classic shadow map in bytes; 0 while
+/// it is not allocated, and with no Metal renderer. With release=1 the map is
+/// dropped first (the reply is then 0), so a test can watch the next shadowed
+/// frame allocate it again.
+static PyObject* CmdGetClassicShadowMapBytes(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  int release = 0;
+  API_SETUP_ARGS(G, self, args, "Oi", &self, &release);
+  APIEnterBlocked(G);
+  if (G->Renderer && release)
+    G->Renderer->releaseClassicShadowMap();
+  const size_t bytes = G->Renderer ? G->Renderer->classicShadowMapBytes() : 0;
+  APIExitBlocked(G);
+  return PyLong_FromSize_t(bytes);
+}
+
 /* ---- end per-light shadows (#616) -------------------------------------- */
 
 /* ---- the air (#618) ------------------------------------------------------
@@ -8006,6 +8023,7 @@ static PyMethodDef Cmd_methods[] = {
   {"get_light_shadow_casters", CmdGetLightShadowCasters, METH_VARARGS},
   {"gpu_time_summary", CmdGpuTimeSummary, METH_VARARGS},
   {"get_gpu_frame_stats", CmdGetGpuFrameStats, METH_VARARGS},
+  {"get_classic_shadow_map_bytes", CmdGetClassicShadowMapBytes, METH_VARARGS},
   {"gpu_time_replay", CmdGpuTimeReplay, METH_VARARGS},
   /* the air (#618) */
   {"get_light_air_frame", CmdGetLightAirFrame, METH_VARARGS},

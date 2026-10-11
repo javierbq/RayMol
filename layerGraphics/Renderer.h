@@ -484,6 +484,13 @@ public:
   virtual void setGpuTiming(int /*mode*/) {}
   virtual bool getGpuFrameStats(GpuFrameReport* /*out*/) const { return false; }
 
+  // Test-only (#667, _cmd.get_classic_shadow_map_bytes): the classic shadow
+  // map's size in bytes, 0 while it is not allocated (it is made lazily by the
+  // first classic shadow pre-pass) or with no such map.
+  virtual size_t classicShadowMapBytes() const { return 0; }
+  // Test-only: drops the classic shadow map; the next pre-pass makes it again.
+  virtual void releaseClassicShadowMap() {}
+
   // The air (#618, haze and dust): this frame's air block, or nullptr when
   // the frame draws no air. SceneRenderMetal calls it once per frame, after
   // setGpuTiming() and before any draw. The block is only valid during the
@@ -545,8 +552,11 @@ public:
   // via setLightViewProjEye, then replays the opaque geometry between
   // beginShadowPass/endShadowPass with the light VP loaded (matrixMode/
   // loadMatrixf); draws route to depth-only pipelines writing the light-POV
-  // depth map, which the post pass PCF-samples. Default: no-op (GL unaffected).
-  virtual void beginShadowPass() {}
+  // depth map, which the post pass PCF-samples. beginShadowPass returns false
+  // when the pass did not open (no map, no pipelines): the caller then skips
+  // the replay and endShadowPass, and the frame draws unshadowed (#667).
+  // Default: no-op, true (GL unaffected).
+  virtual bool beginShadowPass() { return true; }
   virtual void endShadowPass() {}
   virtual void setLightViewProjEye(const float* m) {}
   // World half-extent of the shadow ortho box, so the receiver can express its

@@ -576,7 +576,7 @@ RendererMetal::~RendererMetal()
   [_peelDepth release];      _peelDepth = nil;
   [_rtAO release];           [_rtAOHistory release];    [_rtAOAccum release];
   [_dofTex release];
-  [_shadowDepth release];    [_labelAtlas release];
+  [_shadowDepth release];    [_shadowNone release];    [_labelAtlas release];
   [_lightShadowArray release]; // the studio shadow maps (#616)
 
   // Render-pass descriptors ([[MTLRenderPassDescriptor alloc] init], +1).
@@ -1897,7 +1897,8 @@ fragment float4 post_ssao_fog(PostVOut in [[stage_in]],
     // others"); the removed sep=0.12 was a frustum FRACTION (~19A dead-zone at
     // radius 40) that erased genuine inter-element cast shadows.
     float S = max(u.shadowRadius * 4.0 - 0.05, 1.0);
-    float worldTexel = 2.0 * u.shadowRadius / 4096.0;    // one shadow-map texel
+    float shadowDim = float(shadowTex.get_width());       // 4096 (2048 on iOS)
+    float worldTexel = 2.0 * u.shadowRadius / shadowDim;  // one shadow-map texel
     float c = clamp(dot(nrm, Ldir), 0.0, 1.0);
     // Normal-offset shadow mapping: push the receiver OUT along its smooth normal
     // (more at grazing angles) so the light-space compare leaves the receiver's
@@ -1917,7 +1918,7 @@ fragment float4 post_ssao_fog(PostVOut in [[stage_in]],
         // facets where the normal-offset alone leaves residual self-crossing.
         float slopeTan = sqrt(max(0.0, 1.0 - c * c)) / max(c, 0.15);
         float sepA = min(0.35 + 1.2 * slopeTan, 12.0) * u.shadowBias;
-        float sep = sepA / S + 1.0 / 4096.0;
+        float sep = sepA / S + 1.0 / shadowDim;
         float2 texel =
             1.0 / float2(shadowTex.get_width(), shadowTex.get_height());
         // 4x4 taps of hardware-bilinear depth comparison (sample_compare with a
@@ -2822,9 +2823,21 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   _oitPeelPassDesc.depthAttachment.storeAction = MTLStoreActionDontCare;
   _oitPeelPassDesc.stencilAttachment.texture = nil;
 
-  // Shadow map: fixed-resolution single-sample depth target rendered from the
-  // light POV. Independent of the viewport (kShadowDim^2), so it survives
-  // resize without recreation. A depth-only pass (no color attachment) is valid.
+  // The classic shadow map is NOT made here: ensureShadowMap makes it on the
+  // first pre-pass that needs it (#667).
+}
+
+// The classic shadow map: a fixed-resolution single-sample depth target
+// rendered from the light POV. Independent of the viewport (kShadowDim^2), so
+// it survives resize without recreation. A depth-only pass (no color
+// attachment) is valid. Made by the first classic pre-pass and kept (#667);
+// false when the allocation failed (once: it is not retried).
+bool RendererMetal::ensureShadowMap()
+{
+  if (_shadowDepth && _shadowPassDesc)
+    return true;
+  if (_shadowMapFailed)
+    return false;
   if (!_shadowDepth) {
     MTLTextureDescriptor* sd = [MTLTextureDescriptor
         texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
@@ -2833,6 +2846,13 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
     sd.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
     sd.storageMode = MTLStorageModePrivate;
     _shadowDepth = [_device newTextureWithDescriptor:sd];
+    if (!_shadowDepth) {
+      _shadowMapFailed = true;
+      NSLog(@"RendererMetal: shadow map (%lux%lu) allocation failed; drawing "
+            @"without shadows", (unsigned long)kShadowDim,
+            (unsigned long)kShadowDim);
+      return false;
+    }
   }
   if (!_shadowPassDesc) {
     _shadowPassDesc = [[MTLRenderPassDescriptor alloc] init];
@@ -2841,6 +2861,36 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
     _shadowPassDesc.depthAttachment.clearDepth = 1.0;
     _shadowPassDesc.depthAttachment.storeAction = MTLStoreActionStore;
   }
+  return true;
+}
+
+// Test-only (#667): the map and its pass descriptor go, and a failed
+// allocation may be tried again; the next classic pre-pass makes them anew.
+// A command buffer already committed keeps its own reference to the texture.
+void RendererMetal::releaseClassicShadowMap()
+{
+  [_shadowDepth release];     _shadowDepth = nil;
+  [_shadowPassDesc release];  _shadowPassDesc = nil;
+  _shadowMapFailed = false;
+  _shadowMapValid = false;
+}
+
+// What the post passes bind at the shadow-map slot: the map once it exists,
+// else a 1x1 stand-in (a declared texture must be bound; it is never sampled
+// while shadowEnabled is 0).
+id<MTLTexture> RendererMetal::shadowTextureForBind()
+{
+  if (_shadowDepth)
+    return _shadowDepth;
+  if (!_shadowNone) {
+    MTLTextureDescriptor* d = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
+                                     width:1 height:1 mipmapped:NO];
+    d.usage = MTLTextureUsageShaderRead;
+    d.storageMode = MTLStorageModePrivate;
+    _shadowNone = [_device newTextureWithDescriptor:d];
+  }
+  return _shadowNone;
 }
 
 void RendererMetal::buildPostPipelines()
@@ -3783,7 +3833,8 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
     float3 Ldir = normalize(float3(u.klx, u.kly, u.klz)); // key light (cSetting_light)
     float faceGate = smoothstep(0.0, 0.35, dot(nEye, Ldir));
     float S = max(u.shadowRadius * 4.0 - 0.05, 1.0);
-    float worldTexel = 2.0 * u.shadowRadius / 4096.0;
+    float shadowDim = float(shadowTex.get_width());       // 4096 (2048 on iOS)
+    float worldTexel = 2.0 * u.shadowRadius / shadowDim;
     float c = clamp(dot(nEye, Ldir), 0.0, 1.0);
     float3 pOff = pEye + nEye * (1.5 * worldTexel / max(c, 0.25));
     float4 lc = u.lightViewProj * float4(pOff, 1.0);     // eye -> light clip
@@ -3795,7 +3846,7 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
           fragDepth > 0.0 && fragDepth < 1.0) {
         float slopeTan = sqrt(max(0.0, 1.0 - c * c)) / max(c, 0.15);
         float sepA = min(0.35 + 1.2 * slopeTan, 12.0) * u.shadowBias;
-        float sep = sepA / S + 1.0 / 4096.0;
+        float sep = sepA / S + 1.0 / shadowDim;
         float2 stex = 1.0 / float2(shadowTex.get_width(), shadowTex.get_height());
         float lit = 0.0;
         for (int j = -2; j <= 1; j++)
@@ -5205,7 +5256,7 @@ void RendererMetal::runPostChain()
     }
     [er setFragmentTexture:_sceneColor atIndex:0];
     [er setFragmentTexture:_sceneDepth atIndex:1];
-    [er setFragmentTexture:_shadowDepth atIndex:2];
+    [er setFragmentTexture:shadowTextureForBind() atIndex:2];
     [er setFragmentTexture:aoForComposite atIndex:3];
     // texture(4) = cartoon AO-exempt mask; bind a valid 2D texture even when
     // unused (aoExemptEnabled gates the sample), since the shader declares it.
@@ -5289,7 +5340,7 @@ void RendererMetal::runPostChain()
     [e1 setRenderPipelineState:_ssaoPipeline];
     [e1 setFragmentTexture:_sceneColor atIndex:0];
     [e1 setFragmentTexture:_sceneDepth atIndex:1];
-    [e1 setFragmentTexture:_shadowDepth atIndex:2];
+    [e1 setFragmentTexture:shadowTextureForBind() atIndex:2];
     // texture(3) = AO-exempt mask; bind a valid 2D texture even when unused
     // (aoExemptEnabled gates the sample), since the shader declares it.
     [e1 setFragmentTexture:(aoMaskReady ? _aoExemptMaskTex : _sceneColor) atIndex:3];
@@ -6064,9 +6115,10 @@ void RendererMetal::setShadowBias(float bias)
   _shadowBias = (bias > 0.0f) ? bias : 0.0f;
 }
 
-void RendererMetal::beginShadowPass()
+bool RendererMetal::beginShadowPass()
 {
-  if (!_cmdBuffer || !_shadowPassDesc || !_vboShadowPipelineUByte) return;
+  if (!_cmdBuffer || !_vboShadowPipelineUByte) return false;
+  if (!ensureShadowMap()) return false;  // the lazy 4096^2 map (#667)
   buildShadowPipelines();  // no-op if already built
   // End the scene encoder opened by beginFrame (it has only the pending clear;
   // no opaque geometry has drawn yet). Switch to the light-POV depth pass.
@@ -6080,7 +6132,7 @@ void RendererMetal::beginShadowPass()
   // scene and OIT passes -- a reflective object must reflect the same room
   // whichever pass draws it.
   bindEnvironment(_encoder);
-  if (!_encoder) { _passDesc = _scenePassDesc; return; }
+  if (!_encoder) { _passDesc = _scenePassDesc; return false; }
   MTLViewport vp = {0.0, 0.0, (double)kShadowDim, (double)kShadowDim, 0.0, 1.0};
   [_encoder setViewport:vp];
   if (!_shadowDepthState) {
@@ -6093,6 +6145,7 @@ void RendererMetal::beginShadowPass()
   [_encoder setDepthStencilState:_shadowDepthState];
   [_encoder setCullMode:MTLCullModeNone];
   _shadowMode = true;
+  return true;
 }
 
 void RendererMetal::endShadowPass()
