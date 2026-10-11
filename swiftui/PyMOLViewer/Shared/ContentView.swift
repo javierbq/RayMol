@@ -140,9 +140,11 @@ extension View {
 
     /// Applies the iPhone chrome fade (#391) to a floating viewport control.
     func phoneChromeFade(_ appearance: PhoneChromeFade.Appearance) -> some View {
-        opacity(appearance.opacity)
+        // Scoped to the opacity alone, so a layout or colour change that lands in
+        // the same transaction (the tongue's chevron, the dock opening) is not
+        // animated with it (cf. #480).
+        animation(.easeInOut(duration: PhoneChromeFade.fadeDuration)) { $0.opacity(appearance.opacity) }
             .allowsHitTesting(appearance.isHitTestable)
-            .animation(.easeInOut(duration: PhoneChromeFade.fadeDuration), value: appearance.opacity)
     }
 }
 
@@ -3195,6 +3197,13 @@ struct ContentView: View {
             .onChange(of: objectsBinding.wrappedValue) { _, _ in noteChromeInteraction() }
             .onChange(of: engine.objects.count) { _, _ in noteChromeInteraction() }
             .onChange(of: voiceOverEnabled) { _, _ in noteChromeInteraction() }
+            // A fresh viewport (an orientation change swaps layouts and rebuilds
+            // the MTKView mid-gesture) or a return from the background can miss a
+            // gesture's end edge: start shown with no gesture in progress.
+            .onAppear { noteChromeInteraction(gestureActive: false) }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+                noteChromeInteraction(gestureActive: false)
+            }
             .task(id: chromeLastInteraction) {
                 // Re-checked after each sleep, so the dim lands even if a wake-up
                 // comes early.
