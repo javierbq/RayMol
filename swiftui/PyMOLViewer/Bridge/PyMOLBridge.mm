@@ -323,13 +323,17 @@ int PyMOLBridge_InvokeKey(const char *key)
     if (!G) return 0;
     int blk = PAutoBlock(G);
     int fired = 0;
-    // pymol.internal._invoke_key(key, quiet=1) — the same routine cmd._special
-    // and cmd._ctrl funnel through. Reached via pymol.internal because cmd
-    // re-exports only _special/_ctrl/_alt, not _invoke_key. quiet=1 suppresses
-    // the "No key mapping" print for the (very common) unbound case.
-    PyObject *mod = PyImport_ImportModule("pymol.internal");
+    // pymol.raymol_keys.invoke(key) — fires the cmd.set_key binding via
+    // pymol.internal._invoke_key(key, quiet=1) (the routine cmd._special and
+    // cmd._ctrl funnel through), then for a bare F-key / special-key name with
+    // no binding recalls the scene or view of that name, as desktop PyMOL's
+    // _special does (#260). _special itself is not called: it also grabs the
+    // arrow keys for the core's hidden Ortho prompt, which RayMol doesn't use.
+    // quiet=1 suppresses the "No key mapping" print for the (very common)
+    // unbound case.
+    PyObject *mod = PyImport_ImportModule("pymol.raymol_keys");
     if (mod) {
-        PyObject *res = PyObject_CallMethod(mod, "_invoke_key", "si", key, 1);
+        PyObject *res = PyObject_CallMethod(mod, "invoke", "s", key);
         if (res) {
             fired = PyObject_IsTrue(res) == 1 ? 1 : 0;
             Py_DECREF(res);
@@ -343,7 +347,7 @@ int PyMOLBridge_InvokeKey(const char *key)
         }
         Py_DECREF(mod);
     } else {
-        // pymol.internal could not be imported (shutdown, corrupted state).
+        // pymol.raymol_keys could not be imported (shutdown, corrupted state).
         // No binding could have fired, so leave fired = 0 so the key falls
         // through to the macOS menus. Print the error and clear it.
         PyErr_Print();

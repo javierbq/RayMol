@@ -69,3 +69,73 @@ def audit_shadowed(has_design=False, _self=None):
         except Exception:
             pass
         return []
+
+
+# ---------------------------------------------------------------------------
+# Key dispatch (RayMol#260)
+#
+# Upstream cmd._special does two things when a special key is pressed: fire the
+# cmd.set_key binding if there is one, and otherwise recall the scene or view
+# NAMED after the key. That second step is what makes the F-key scene workflow
+# work on desktop PyMOL: CTRL-F1 stores "scene F1" (a real default binding), and
+# a bare F1 recalls it (no binding -- the fallthrough does it).
+#
+# RayMol cannot call _special, because PyMOL_Special also grabs the arrow keys
+# for the core's hidden Ortho prompt, which RayMol does not use. So invoke()
+# mirrors just the binding + scene/view part.
+
+# Special-key names that may fall back to a scene or view of the same name.
+# The arrows are excluded on purpose: left/right are movie-frame bindings by
+# default (so they never reach the fallback anyway), and a fallback here would
+# bring back the arrow-grabbing we deliberately bypass _special to avoid.
+_ARROW_KEYS = frozenset(('left', 'right', 'up', 'down'))
+_FALLBACK_KEYS = frozenset(
+    ['F%d' % n for n in range(1, 13)]
+    + ['pgup', 'pgdn', 'home', 'end', 'insert'])
+
+
+def invoke(token, _self=None, _invoke_key=None):
+    '''
+    Fire the cmd.set_key binding for a canonical key token; for a bare
+    special-key name with no binding, recall the scene or view of that name.
+
+    Returns True iff something fired, which is the contract the key monitor
+    depends on: it consumes the event only when this returns True, so an unbound
+    key still falls through to the macOS menus.
+
+    Exceptions from a bound callable or from scene/view recall propagate to the
+    caller (the bridge prints the traceback and still counts the key as fired).
+    '''
+    if _self is None:
+        from pymol import cmd as _self
+    if _invoke_key is None:
+        from pymol import internal
+        _invoke_key = internal._invoke_key
+
+    if _invoke_key(token, 1, _self):
+        return True
+
+    if token in _ARROW_KEYS or token not in _FALLBACK_KEYS:
+        return False
+
+    from pymol.shortcut import Shortcut
+
+    # Same order and same Shortcut-based interpretation as cmd._special: scenes
+    # first, then views; an exact name wins, else a unique "<key>-..." prefix
+    # (so a scene named "F1-intro" answers to F1).
+    view_sc = getattr(getattr(_self, '_pymol', None), '_view_dict_sc', None)
+    for fn, sc in (
+            (_self.scene, Shortcut(_self.get_scene_list())),
+            (_self.view, view_sc),
+    ):
+        if sc is None:
+            continue
+        if token in sc.keywords:
+            fn(token)
+            return True
+        autocomp = sc.interpret(token + '-')
+        if isinstance(autocomp, str):
+            fn(autocomp)
+            return True
+
+    return False

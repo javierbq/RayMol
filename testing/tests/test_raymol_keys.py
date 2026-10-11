@@ -128,5 +128,110 @@ class AuditShadowedTests(unittest.TestCase):
             self.assertEqual(raymol_keys.audit_shadowed(_self=fake), [])
 
 
+class InvokeTests(unittest.TestCase):
+    """raymol_keys.invoke (RayMol#260): binding first, then scene/view recall."""
+
+    class Cmd:
+        """Fake cmd: key_mappings, a scene list, a view dict shortcut."""
+
+        def __init__(self, mappings=None, scenes=(), views=()):
+            from pymol.shortcut import Shortcut
+            self.key_mappings = dict(mappings or {})
+            self._scenes = list(scenes)
+            self._pymol = types.SimpleNamespace(_view_dict_sc=Shortcut(list(views)))
+            self.scene_calls = []
+            self.view_calls = []
+            self.done = []
+
+        def get_scene_list(self):
+            return list(self._scenes)
+
+        def scene(self, name):
+            self.scene_calls.append(name)
+
+        def view(self, name):
+            self.view_calls.append(name)
+
+    @staticmethod
+    def fake_invoke_key(key, quiet=0, _self=None):
+        mapping = _self.key_mappings.get(key)
+        if not mapping:
+            return False
+        _self.done.append(key)
+        return True
+
+    def invoke(self, token, fake):
+        return raymol_keys.invoke(token, _self=fake, _invoke_key=self.fake_invoke_key)
+
+    def test_binding_wins_over_scene(self):
+        fake = self.Cmd({"F1": "ray"}, scenes=["F1"])
+        self.assertTrue(self.invoke("F1", fake))
+        self.assertEqual(fake.done, ["F1"])
+        self.assertEqual(fake.scene_calls, [])
+
+    def test_f_key_recalls_scene(self):
+        fake = self.Cmd(scenes=["F1", "F2"])
+        self.assertTrue(self.invoke("F1", fake))
+        self.assertEqual(fake.scene_calls, ["F1"])
+        self.assertEqual(fake.view_calls, [])
+
+    def test_f_key_recalls_view_when_no_scene(self):
+        fake = self.Cmd(scenes=["other"], views=["F3"])
+        self.assertTrue(self.invoke("F3", fake))
+        self.assertEqual(fake.view_calls, ["F3"])
+        self.assertEqual(fake.scene_calls, [])
+
+    def test_scene_preferred_over_view(self):
+        fake = self.Cmd(scenes=["F4"], views=["F4"])
+        self.assertTrue(self.invoke("F4", fake))
+        self.assertEqual(fake.scene_calls, ["F4"])
+        self.assertEqual(fake.view_calls, [])
+
+    def test_unique_prefix_scene_matches(self):
+        # _special's "<key>-" interpretation: a scene named F5-intro answers F5.
+        fake = self.Cmd(scenes=["F5-intro"])
+        self.assertTrue(self.invoke("F5", fake))
+        self.assertEqual(fake.scene_calls, ["F5-intro"])
+
+    def test_unbound_f_key_without_scene_or_view_is_false(self):
+        fake = self.Cmd(scenes=["F1"])
+        self.assertFalse(self.invoke("F2", fake))
+        self.assertEqual(fake.scene_calls, [])
+        self.assertEqual(fake.view_calls, [])
+
+    def test_unknown_token_is_false(self):
+        fake = self.Cmd(scenes=["zzz", "CTRL-T"], views=["zzz"])
+        self.assertFalse(self.invoke("zzz", fake))
+        self.assertFalse(self.invoke("CTRL-T", fake))
+        self.assertEqual(fake.scene_calls, [])
+        self.assertEqual(fake.view_calls, [])
+
+    def test_arrows_never_fall_back(self):
+        names = ["left", "right", "up", "down"]
+        fake = self.Cmd(scenes=names, views=names)
+        for key in names:
+            self.assertFalse(self.invoke(key, fake), key)
+        self.assertEqual(fake.scene_calls, [])
+        self.assertEqual(fake.view_calls, [])
+
+    def test_bound_arrow_still_fires(self):
+        fake = self.Cmd({"left": "_ backward"})
+        self.assertTrue(self.invoke("left", fake))
+        self.assertEqual(fake.done, ["left"])
+
+    def test_modified_f_key_never_falls_back(self):
+        fake = self.Cmd(scenes=["CTRL-F1", "SHFT-F1"])
+        self.assertFalse(self.invoke("SHFT-F1", fake))
+        self.assertEqual(fake.scene_calls, [])
+
+    def test_scene_error_propagates(self):
+        fake = self.Cmd(scenes=["F1"])
+        def boom(name):
+            raise RuntimeError("bad scene")
+        fake.scene = boom
+        with self.assertRaises(RuntimeError):
+            self.invoke("F1", fake)
+
+
 if __name__ == "__main__":
     unittest.main()
