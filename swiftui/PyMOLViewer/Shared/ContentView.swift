@@ -2907,7 +2907,7 @@ struct ContentView: View {
     // AppShortcuts constant is what fires — and names it in the hover tooltip,
     // the pill's only surface that can show a hint.
     private func railTongue(icon: String?, label: String, shown: Binding<Bool>,
-                            shortcut: KeyboardShortcut? = nil) -> some View {
+                            shortcut: AppShortcuts? = nil) -> some View {
         let on = shown.wrappedValue
         return Button {
             withAnimation(.easeInOut(duration: 0.25)) { shown.wrappedValue.toggle() }
@@ -2940,7 +2940,7 @@ struct ContentView: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .keyboardShortcut(shortcut)
+        .keyboardShortcut(shortcut?.shortcut)
         .help("\(on ? "Hide" : "Show") the \(label) pane"
               + (shortcut.map { " (\(AppShortcuts.hint($0)))" } ?? ""))
         .accessibilityIdentifier("rail-\(label.lowercased())")
@@ -3808,7 +3808,7 @@ struct ContentView: View {
                 Button {
                     macOpenFile()
                 } label: { Label("Open File…", systemImage: "folder") }
-                .keyboardShortcut("o", modifiers: .command)
+                .keyboardShortcut(AppShortcuts.openFile)
                 Button {
                     macFetchID = ""; showMacFetch = true
                 } label: { Label("Fetch from PDB…", systemImage: "arrow.down.circle") }
@@ -3946,7 +3946,7 @@ struct ContentView: View {
         // A toggling MODE with a docked bar, exactly like every item above -- it takes a
         // selection plus options and a Run button, which is the shape Predict already has.
         // Experimental — shown only when RAYMOL_EXPERIMENTAL_BINDER_DESIGN is set.
-        if PyMOLEngine.binderDesignExperimentalEnabled {
+        if AppShortcuts.binderDesignTool.isAvailable {
         Button {
             engine.setBinderDesignMode(!engine.binderDesignMode)
         } label: {
