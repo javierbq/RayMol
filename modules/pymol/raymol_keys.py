@@ -72,6 +72,97 @@ def audit_shadowed(has_design=False, _self=None):
 
 
 # ---------------------------------------------------------------------------
+# ALT-/CTSH- bindings while the command line has focus (RayMol#261)
+#
+# The key monitor yields every ALT-<letter/digit> and CTSH-<letter> event to a
+# focused text field, because Option composes characters on every macOS layout
+# (German "@" is Option-L) and PyMOL's DEFAULT ALT-/CTSH- bindings are
+# structure-mutating. The "Send Key Bindings to Viewport While Typing" menu
+# toggle lets a user opt back in -- but only for bindings THEY defined. A key
+# still on its stock PyMOL binding is never stolen from the text field, so
+# flipping the toggle cannot make a German user's "@script.pml" spawn a "leu"
+# object.
+
+_VIEWPORT_PREFIXES = ('ALT-', 'CTSH-')
+
+
+def _default_bindings():
+    """Stock PyMOL key -> command-string table (what cmd.key_mappings starts as)."""
+    from pymol.shortcut_dict import shortcut_dict_ref
+    return {key: value[0] for key, value in shortcut_dict_ref.items()}
+
+
+def user_bound_keys(_self=None, _defaults=None):
+    """
+    Sorted ALT-/CTSH- tokens whose binding differs from stock PyMOL: keys the
+    user (or their ~/.raymolrc) bound, rebound, or cleared-then-bound. A key
+    still on its default binding, or cleared with set_key(key, ''), is not
+    listed. Never raises.
+    """
+    try:
+        if _self is None:
+            from pymol import cmd as _self
+        mappings = getattr(_self, 'key_mappings', None)
+        if not isinstance(mappings, dict):
+            return []
+        if _defaults is None:
+            _defaults = _default_bindings()
+        keys = []
+        for key, mapping in mappings.items():
+            if not key.startswith(_VIEWPORT_PREFIXES) or not mapping:
+                continue
+            if key in _defaults and mapping == _defaults[key]:
+                continue
+            keys.append(key)
+        return sorted(keys)
+    except Exception:
+        return []
+
+
+def is_user_bound(token, _self=None, _defaults=None):
+    """
+    True iff `token` is an ALT-/CTSH- key with a user-defined binding. This is
+    the question the key monitor asks, with the "send key bindings to viewport
+    while typing" toggle on, before it takes an event away from the text field.
+    Never raises.
+    """
+    try:
+        if not isinstance(token, str) or not token.startswith(_VIEWPORT_PREFIXES):
+            return False
+        return token in user_bound_keys(_self, _defaults)
+    except Exception:
+        return False
+
+
+def audit_viewport_keys(toggle_on=False, _self=None, _defaults=None):
+    """
+    Print one note when the user's startup script binds ALT-/CTSH- keys and the
+    "Send Key Bindings to Viewport While Typing" toggle is off: those keys only
+    fire while the command line is unfocused. Returns the lines printed. Never
+    raises: this runs on the launch path.
+    """
+    try:
+        if toggle_on:
+            return []
+        keys = user_bound_keys(_self, _defaults)
+        if not keys:
+            return []
+        shown = ', '.join(keys[:6]) + (', ...' if len(keys) > 6 else '')
+        line = (" RayMol: your startup script binds %s; ALT-/CTSH- keys only"
+                " fire while the command line is unfocused. To use them while"
+                " typing, turn on View > Send Key Bindings to Viewport While"
+                " Typing." % shown)
+        print(line)
+        return [line]
+    except Exception as e:
+        try:
+            print(' Warning: RayMol key audit failed: %s' % (e,))
+        except Exception:
+            pass
+        return []
+
+
+# ---------------------------------------------------------------------------
 # Key dispatch (RayMol#260)
 #
 # Upstream cmd._special does two things when a special key is pressed: fire the

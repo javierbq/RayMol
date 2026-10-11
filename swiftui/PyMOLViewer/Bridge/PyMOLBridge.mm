@@ -356,6 +356,32 @@ int PyMOLBridge_InvokeKey(const char *key)
     return fired;
 }
 
+int PyMOLBridge_IsUserBoundKey(const char *key)
+{
+    if (!key || !key[0]) return 0;
+    PyMOLGlobals *G = SingletonPyMOLGlobals;
+    if (!G) return 0;
+    int blk = PAutoBlock(G);
+    int bound = 0;
+    // pymol.raymol_keys.is_user_bound(key): true for an ALT-/CTSH- key whose
+    // cmd.key_mappings entry differs from the stock table (#261). It never
+    // raises; a failed import leaves bound = 0 so the text field keeps the key.
+    PyObject *mod = PyImport_ImportModule("pymol.raymol_keys");
+    if (mod) {
+        PyObject *res = PyObject_CallMethod(mod, "is_user_bound", "s", key);
+        if (res) {
+            bound = PyObject_IsTrue(res) == 1 ? 1 : 0;
+            Py_DECREF(res);
+        }
+        if (PyErr_Occurred()) PyErr_Clear();
+        Py_DECREF(mod);
+    } else {
+        PyErr_Clear();
+    }
+    PAutoUnblock(G, blk);
+    return bound;
+}
+
 // --- Context management ---
 
 void PyMOLBridge_PushValidContext(PyMOLHandle h)

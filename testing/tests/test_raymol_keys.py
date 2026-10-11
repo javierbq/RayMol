@@ -10,6 +10,7 @@ the menus.
 """
 
 import contextlib
+import io
 import os
 import sys
 import types
@@ -37,6 +38,12 @@ class FakeCmd:
 class ExplodingMappings(dict):
     """A dict that passes isinstance checks but raises on .get()."""
     def get(self, key, default=None):
+        raise RuntimeError("boom")
+
+
+class ExplodingItems(dict):
+    """A dict that passes isinstance checks but raises when iterated."""
+    def items(self):
         raise RuntimeError("boom")
 
 
@@ -231,6 +238,118 @@ class InvokeTests(unittest.TestCase):
         fake.scene = boom
         with self.assertRaises(RuntimeError):
             self.invoke("F1", fake)
+
+
+class UserBoundViewportKeysTests(unittest.TestCase):
+    """RayMol#261: which ALT-/CTSH- bindings are the user's, and the audit line."""
+
+    DEFAULTS = {
+        "ALT-A": "editor.attach_amino_acid('pk1', 'ala')",
+        "ALT-L": "editor.attach_amino_acid('pk1', 'leu')",
+        "CTSH-A": "redo",
+        "CTRL-T": "bond;unpick",
+    }
+
+    def keys(self, mappings):
+        return raymol_keys.user_bound_keys(
+            _self=FakeCmd(mappings), _defaults=self.DEFAULTS)
+
+    def test_stock_defaults_are_not_user_bound(self):
+        self.assertEqual(self.keys(dict(self.DEFAULTS)), [])
+
+    def test_new_alt_and_ctsh_bindings_are_user_bound(self):
+        m = dict(self.DEFAULTS, **{"ALT-Q": "zoom", "CTSH-Z": "orient"})
+        self.assertEqual(self.keys(m), ["ALT-Q", "CTSH-Z"])
+
+    def test_rebound_default_is_user_bound(self):
+        m = dict(self.DEFAULTS, **{"ALT-A": "ray"})
+        self.assertEqual(self.keys(m), ["ALT-A"])
+
+    def test_callable_binding_is_user_bound(self):
+        m = dict(self.DEFAULTS, **{"ALT-L": (print, ("x",), {})})
+        self.assertEqual(self.keys(m), ["ALT-L"])
+
+    def test_cleared_binding_is_not_user_bound(self):
+        m = dict(self.DEFAULTS, **{"ALT-A": "", "ALT-Q": ""})
+        self.assertEqual(self.keys(m), [])
+
+    def test_other_modifier_classes_are_ignored(self):
+        m = dict(self.DEFAULTS, **{"CTRL-Q": "zoom", "F1": "ray", "SHFT-left": "ray"})
+        self.assertEqual(self.keys(m), [])
+
+    def test_is_user_bound_per_token(self):
+        fake = FakeCmd(dict(self.DEFAULTS, **{"ALT-Q": "zoom", "CTRL-Q": "zoom"}))
+        ask = lambda t: raymol_keys.is_user_bound(t, _self=fake, _defaults=self.DEFAULTS)
+        self.assertTrue(ask("ALT-Q"))
+        self.assertFalse(ask("ALT-L"))     # still the stock binding
+        self.assertFalse(ask("ALT-Z"))     # unbound
+        self.assertFalse(ask("CTRL-Q"))    # not a viewport-while-typing class
+        self.assertFalse(ask(None))
+
+    def test_real_default_table_matches_cmd_defaults(self):
+        # Guards the real shortcut_dict wiring (not the injected table): every
+        # stock ALT-/CTSH- binding in the table is "not user bound".
+        defaults = raymol_keys._default_bindings()
+        alt_ctsh = {k: v for k, v in defaults.items()
+                    if k.startswith(("ALT-", "CTSH-"))}
+        self.assertGreater(len(alt_ctsh), 40)
+        self.assertEqual(raymol_keys.user_bound_keys(
+            _self=FakeCmd(defaults)), [])
+
+    def test_failure_degrades_to_false_and_empty(self):
+        fake = FakeCmd()
+        fake.key_mappings = ExplodingItems({"ALT-Q": "zoom"})
+        self.assertEqual(raymol_keys.user_bound_keys(_self=fake, _defaults={}), [])
+        self.assertFalse(raymol_keys.is_user_bound("ALT-Q", _self=fake, _defaults={}))
+
+
+class AuditViewportKeysTests(unittest.TestCase):
+
+    DEFAULTS = UserBoundViewportKeysTests.DEFAULTS
+
+    def audit(self, mappings, toggle_on=False):
+        return raymol_keys.audit_viewport_keys(
+            toggle_on=toggle_on, _self=FakeCmd(mappings), _defaults=self.DEFAULTS)
+
+    def test_prints_note_for_user_alt_binding_when_toggle_off(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            lines = self.audit(dict(self.DEFAULTS, **{"ALT-Q": "zoom"}))
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(buf.getvalue().strip(), lines[0].strip())
+        self.assertIn("ALT-Q", lines[0])
+        self.assertIn("unfocused", lines[0])
+        self.assertIn("Send Key Bindings to Viewport While Typing", lines[0])
+
+    def test_names_ctsh_bindings_too(self):
+        lines = self.audit(dict(self.DEFAULTS, **{"CTSH-Z": "orient"}))
+        self.assertIn("CTSH-Z", lines[0])
+
+    def test_silent_when_toggle_on(self):
+        self.assertEqual(
+            self.audit(dict(self.DEFAULTS, **{"ALT-Q": "zoom"}), toggle_on=True), [])
+
+    def test_silent_with_only_stock_bindings(self):
+        self.assertEqual(self.audit(dict(self.DEFAULTS)), [])
+
+    def test_silent_for_cleared_and_non_viewport_keys(self):
+        self.assertEqual(self.audit(dict(self.DEFAULTS, **{"ALT-A": "", "CTRL-Q": "zoom"})), [])
+
+    def test_one_line_even_with_many_bindings(self):
+        m = dict(self.DEFAULTS)
+        m.update({"ALT-%s" % c: "zoom" for c in "QWERTYUIOP"})
+        lines = self.audit(m)
+        self.assertEqual(len(lines), 1)
+        self.assertIn("...", lines[0])
+
+    def test_never_raises(self):
+        fake = FakeCmd()
+        fake.key_mappings = ExplodingItems({"ALT-Q": "zoom"})
+        self.assertEqual(raymol_keys.audit_viewport_keys(
+            _self=fake, _defaults={}), [])
+        with contextlib.redirect_stdout(ExplodingStdout()):
+            self.assertEqual(raymol_keys.audit_viewport_keys(
+                _self=FakeCmd({"ALT-Q": "zoom"}), _defaults={}), [])
 
 
 if __name__ == "__main__":

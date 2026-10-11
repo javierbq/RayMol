@@ -413,3 +413,146 @@ final class LightNudgeRoutingTests: XCTestCase {
         for key: UInt16 in [116, 0, 53, 48] { XCTAssertNil(nudge(key)) }
     }
 }
+
+/// "Send Key Bindings to Viewport While Typing" (#261): the toggle × focus ×
+/// user-bound matrix for the ALT-/CTSH- combos that Tier A otherwise yields to
+/// the focused command line. Pure routing only: no real key was pressed and no
+/// engine was consulted (the isUserBound answer is injected).
+final class KeyRoutingViewportKeysWhileTypingTests: XCTestCase {
+
+    private enum Combo: CaseIterable {
+        case altLetter, altDigit, ctshLetter
+
+        var keyCode: UInt16 { switch self { case .altLetter: return 0   // A
+                                            case .altDigit: return 18   // 1
+                                            case .ctshLetter: return 0 } }
+        var chars: String { switch self { case .altLetter: return "a"
+                                          case .altDigit: return "1"
+                                          case .ctshLetter: return "a" } }
+        var mods: NSEvent.ModifierFlags { switch self { case .altLetter, .altDigit: return [.option]
+                                                        case .ctshLetter: return [.control, .shift] } }
+        var token: String { switch self { case .altLetter: return "ALT-A"
+                                          case .altDigit: return "ALT-1"
+                                          case .ctshLetter: return "CTSH-A" } }
+    }
+
+    /// Routes `combo`; `userBound` stands in for the engine's answer and every
+    /// token the router asks about is recorded in `asked`.
+    private func route(_ combo: Combo, toggle: Bool, focused: Bool, userBound: Bool,
+                       editing: Bool = false, asked: UnsafeMutablePointer<[String]>? = nil) -> String? {
+        var seen: [String] = []
+        let result = KeyRouting.token(
+            keyCode: combo.keyCode, charactersIgnoringModifiers: combo.chars,
+            modifiers: combo.mods, textFieldFocused: focused || editing,
+            textEditingActive: editing, viewportKeysWhileTyping: toggle,
+            isUserBound: { seen.append($0); return userBound })
+        asked?.pointee = seen
+        return result
+    }
+
+    /// Every cell of toggle × focused × user-bound × modifier class.
+    func testFullMatrix() {
+        for combo in Combo.allCases {
+            for toggle in [false, true] {
+                for focused in [false, true] {
+                    for bound in [false, true] {
+                        // Only one cell is stolen from the text field: toggle on,
+                        // field focused, and a user-defined binding. Everywhere else
+                        // the old rule stands: an unfocused field always routes,
+                        // a focused one always yields.
+                        let expected: String? = (!focused || (toggle && bound)) ? combo.token : nil
+                        XCTAssertEqual(
+                            route(combo, toggle: toggle, focused: focused, userBound: bound),
+                            expected,
+                            "\(combo) toggle=\(toggle) focused=\(focused) userBound=\(bound)")
+                    }
+                }
+            }
+        }
+    }
+
+    /// An empty focused field and a field mid-edit behave the same for Tier A.
+    func testEditingFieldBehavesLikeFocusedField() {
+        for combo in Combo.allCases {
+            XCTAssertEqual(route(combo, toggle: true, focused: true, userBound: true, editing: true),
+                           combo.token)
+            XCTAssertNil(route(combo, toggle: true, focused: true, userBound: false, editing: true))
+            XCTAssertNil(route(combo, toggle: false, focused: true, userBound: true, editing: true))
+        }
+    }
+
+    /// The default (no toggle argument) is the pre-#261 behaviour.
+    func testDefaultsKeepTheOldYield() {
+        for combo in Combo.allCases {
+            XCTAssertNil(KeyRouting.token(
+                keyCode: combo.keyCode, charactersIgnoringModifiers: combo.chars,
+                modifiers: combo.mods, textFieldFocused: true, textEditingActive: false))
+        }
+    }
+
+    /// The router asks about the exact canonical token, and only when it matters:
+    /// toggle on, field focused. Ordinary typing never reaches the engine.
+    func testBindingTableIsAskedLazilyAboutTheCanonicalToken() {
+        for combo in Combo.allCases {
+            var asked: [String] = []
+            _ = route(combo, toggle: true, focused: true, userBound: false, asked: &asked)
+            XCTAssertEqual(asked, [combo.token])
+            _ = route(combo, toggle: false, focused: true, userBound: true, asked: &asked)
+            XCTAssertEqual(asked, [], "toggle off must not consult the binding table")
+            _ = route(combo, toggle: true, focused: false, userBound: true, asked: &asked)
+            XCTAssertEqual(asked, [], "an unfocused field needs no table lookup")
+        }
+        // Plain typing (no modifiers) never asks either.
+        var asked: [String] = []
+        _ = KeyRouting.token(keyCode: 0, charactersIgnoringModifiers: "a", modifiers: [],
+                             textFieldFocused: true, textEditingActive: true,
+                             viewportKeysWhileTyping: true,
+                             isUserBound: { asked.append($0); return true })
+        XCTAssertEqual(asked, [])
+    }
+
+    /// Text-editing shortcuts keep working with the toggle on, even when the
+    /// user has bound the same token: Tier B is unaffected.
+    func testTextEditingChordsStillYieldWithToggleOn() {
+        func tok(_ keyCode: UInt16, _ chars: String?, _ mods: NSEvent.ModifierFlags) -> String? {
+            KeyRouting.token(keyCode: keyCode, charactersIgnoringModifiers: chars,
+                             modifiers: mods, textFieldFocused: true, textEditingActive: true,
+                             viewportKeysWhileTyping: true, isUserBound: { _ in true })
+        }
+        XCTAssertNil(tok(123, nil, [.option]))            // ⌥← word-left
+        XCTAssertNil(tok(124, nil, [.option]))            // ⌥→ word-right
+        XCTAssertNil(tok(123, nil, [.shift]))             // ⇧← extend selection
+        XCTAssertNil(tok(115, nil, [.shift]))             // ⇧Home
+        XCTAssertNil(tok(0, "a", [.control]))             // ⌃A begin of line
+        XCTAssertNil(tok(14, "e", [.control]))            // ⌃E end of line
+        XCTAssertNil(tok(40, "k", [.control]))            // ⌃K kill line
+    }
+
+    /// Option+Shift and Control+Option letters have no token at all, so the
+    /// toggle never makes them fire, bound or not.
+    func testUnrepresentableCombosStayNilWithToggleOn() {
+        for mods: NSEvent.ModifierFlags in [[.option, .shift], [.control, .option]] {
+            XCTAssertNil(KeyRouting.token(
+                keyCode: 0, charactersIgnoringModifiers: "a", modifiers: mods,
+                textFieldFocused: true, textEditingActive: false,
+                viewportKeysWhileTyping: true, isUserBound: { _ in true }))
+        }
+    }
+
+    /// ⌘ still belongs to the menus.
+    func testCommandStillPassesThroughWithToggleOn() {
+        XCTAssertNil(KeyRouting.token(
+            keyCode: 0, charactersIgnoringModifiers: "a", modifiers: [.option, .command],
+            textFieldFocused: true, textEditingActive: false,
+            viewportKeysWhileTyping: true, isUserBound: { _ in true }))
+    }
+
+    /// The persisted key the menu Toggle, the monitor and the audit share, and
+    /// that an absent key reads as off.
+    func testPreferenceKeyDefaultsToOff() {
+        XCTAssertEqual(KeyRouting.viewportKeysWhileTypingKey, "raymol.keys.viewportWhileTyping")
+        let suite = UserDefaults(suiteName: "KeyRoutingViewportKeysTests")!
+        suite.removePersistentDomain(forName: "KeyRoutingViewportKeysTests")
+        XCTAssertFalse(suite.bool(forKey: KeyRouting.viewportKeysWhileTypingKey))
+    }
+}

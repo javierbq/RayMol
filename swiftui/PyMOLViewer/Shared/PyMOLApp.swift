@@ -250,6 +250,9 @@ struct PyMOLApp: App {
     // tongue all flip one persisted flag and can never disagree.
     @AppStorage(PanelLayout.consoleVisibleKey) private var showCommandPanel = true
     @AppStorage(PanelLayout.objectsVisibleKey) private var showObjectPanel = true
+    // The keys-to-viewport opt-in (#261): same UserDefaults key the key monitor
+    // reads, default off.
+    @AppStorage(KeyRouting.viewportKeysWhileTypingKey) private var viewportKeysWhileTyping = false
 
     /// True while any MLX Design inference is in flight. Mirrors ContentView.isDesignLocked
     /// so the macOS menu commands (⌃M, ⌃D) respect the same lock as toolbar and rail buttons.
@@ -427,6 +430,12 @@ struct PyMOLApp: App {
                     showObjectPanel.toggle()
                 }
                 .keyboardShortcut(AppShortcuts.sidePanel)
+                // Lets the user's ALT-/CTSH- set_key bindings fire while the
+                // command line has focus (#261). Off by default: Option
+                // composes characters on every macOS layout.
+                Divider()
+                Toggle("Send Key Bindings to Viewport While Typing",
+                       isOn: $viewportKeysWhileTyping)
             }
             // Movie: enter/exit the Timeline (movie studio) mode. Carries the
             // keyboard shortcut; the toolbar clapperboard is the primary control.
