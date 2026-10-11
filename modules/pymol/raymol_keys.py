@@ -12,6 +12,8 @@
 # carries ⌘, and the Swift classifier passes ⌘ events straight through to the
 # menus.
 
+import re
+
 # Canonical key token -> the menu command it would shadow.
 #
 # Mirrors the ⌃-letter entries of AppShortcuts in
@@ -83,7 +85,14 @@ def audit_shadowed(has_design=False, _self=None):
 # flipping the toggle cannot make a German user's "@script.pml" spawn a "leu"
 # object.
 
-_VIEWPORT_PREFIXES = ('ALT-', 'CTSH-')
+# The Tier A token shapes KeyRouting.token yields to a focused text field:
+# ALT-<letter/digit> and CTSH-<letter>. Any other prefixed key (ALT-left,
+# CTSH-F1, ...) is never held back, so the toggle neither changes nor audits it.
+_VIEWPORT_TOKEN = re.compile(r'(?:ALT-[A-Z0-9]|CTSH-[A-Z])\Z')
+
+
+def _is_tier_a(token):
+    return isinstance(token, str) and _VIEWPORT_TOKEN.match(token) is not None
 
 
 def _default_bindings():
@@ -94,7 +103,7 @@ def _default_bindings():
 
 def user_bound_keys(_self=None, _defaults=None):
     """
-    Sorted ALT-/CTSH- tokens whose binding differs from stock PyMOL: keys the
+    Sorted Tier A (ALT-<letter/digit>, CTSH-<letter>) tokens whose binding differs from stock PyMOL: keys the
     user (or their ~/.raymolrc) bound, rebound, or cleared-then-bound. A key
     still on its default binding, or cleared with set_key(key, ''), is not
     listed. Never raises.
@@ -109,7 +118,7 @@ def user_bound_keys(_self=None, _defaults=None):
             _defaults = _default_bindings()
         keys = []
         for key, mapping in mappings.items():
-            if not key.startswith(_VIEWPORT_PREFIXES) or not mapping:
+            if not _is_tier_a(key) or not mapping:
                 continue
             if key in _defaults and mapping == _defaults[key]:
                 continue
@@ -127,7 +136,7 @@ def is_user_bound(token, _self=None, _defaults=None):
     Never raises.
     """
     try:
-        if not isinstance(token, str) or not token.startswith(_VIEWPORT_PREFIXES):
+        if not _is_tier_a(token):
             return False
         return token in user_bound_keys(_self, _defaults)
     except Exception:

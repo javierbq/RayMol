@@ -273,6 +273,18 @@ class UserBoundViewportKeysTests(unittest.TestCase):
         m = dict(self.DEFAULTS, **{"ALT-A": "", "ALT-Q": ""})
         self.assertEqual(self.keys(m), [])
 
+    def test_prefixed_special_and_multichar_keys_are_not_tier_a(self):
+        # KeyRouting never holds these back, so the toggle must not claim them.
+        extra = {"ALT-left": "zoom", "CTSH-F1": "orient", "ALT-F2": "zoom",
+                 "CTSH-5": "zoom", "ALT-pgup": "zoom", "ALT-AB": "zoom"}
+        self.assertEqual(self.keys(dict(self.DEFAULTS, **extra)), [])
+        fake = FakeCmd(dict(self.DEFAULTS, **extra))
+        for tok in extra:
+            self.assertFalse(raymol_keys.is_user_bound(
+                tok, _self=fake, _defaults=self.DEFAULTS))
+        self.assertEqual(raymol_keys.audit_viewport_keys(
+            _self=fake, _defaults=self.DEFAULTS), [])
+
     def test_other_modifier_classes_are_ignored(self):
         m = dict(self.DEFAULTS, **{"CTRL-Q": "zoom", "F1": "ray", "SHFT-left": "ray"})
         self.assertEqual(self.keys(m), [])
