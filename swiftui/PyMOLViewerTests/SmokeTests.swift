@@ -810,6 +810,15 @@ final class McpCaptureMetalTests: XCTestCase {
         guard engine.isReady else {
             throw XCTSkip("the PyMOL engine did not come up under the test host")
         }
+        // The hook says no until the Metal renderer exists (a cold launch
+        // before the first live frame, #654): wait for it, as a scripted
+        // export does, rather than fail on a host that is still starting.
+        while !engine.metalRendererReady() && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.metalRendererReady() else {
+            throw XCTSkip("no Metal renderer under the test host")
+        }
     }
 
     private func buildScene() {
