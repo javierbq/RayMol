@@ -2474,7 +2474,8 @@ static bool SceneMetalBgGradient(PyMOLGlobals* G, float* top, float* bottom)
       !SettingGetGlobal_b(G, cSetting_ray_opaque_background))
     return false;
   copy3f(ColorGet(G, SettingGetGlobal_color(G, cSetting_bg_rgb_top)), top);
-  copy3f(ColorGet(G, SettingGetGlobal_color(G, cSetting_bg_rgb_bottom)), bottom);
+  copy3f(
+      ColorGet(G, SettingGetGlobal_color(G, cSetting_bg_rgb_bottom)), bottom);
   return true;
 }
 

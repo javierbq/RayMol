@@ -114,9 +114,9 @@ MASTER_054B525 = {
     'kLabelShaderSrc': 'ca5097bd2ad97d60',  # #736: label_fragment_oit, the OIT pass's variant
     'kMaterialImpostorSrc': 'ad8142cda60dc979',
     'kMaterialSrc': '4f4f1e7f4c703bad',
-    'kPostSrc': '1c9ed490bdeeb9b7',  # #689: post_ssao_fog fades toward the bg_gradient
-    'kRTSrc': 'ab2648bc2c2a682e',  # #689: rt_composite's fog fades toward the bg_gradient
-    'kScreenOverlaySrc': 'deee6ab41d1560e7',  # #689: ramp gadgets drawn after the post chain
+    'kPostSrc': 'a3236d6afc3a38b1',  # #689: post_ssao_fog fades toward the bg_gradient
+    'kRTSrc': 'c434543f02ae5906',  # #689: rt_composite's fog fades toward the bg_gradient
+    'kScreenOverlaySrc': '9f09ecbdd4a9ddfa',  # #689: ramp gadgets drawn after the post chain
     'kSphereImpostorSrc': 'd4db196a0bab087c',
     'kVBOSrc': '834ce9f8e90f5832',
 }

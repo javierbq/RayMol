@@ -758,12 +758,13 @@ private:
   bool _bgGradOn = false;
   float _bgGradTop[3] = {0, 0, 0};
   float _bgGradBottom[3] = {0, 0, 0};
+  float _bgGradSpan[2] = {0, 1};  // first row and rows spanned, post uv
 
   // Screen-space overlays (ramp gadgets, #689)
   bool _screenOverlay = false;
   float _screenOverlayOffset[3] = {0, 0, 0};
   struct ScreenOverlayDraw {
-    id<MTLBuffer> vbo;
+    id<MTLBuffer> vbo;  // retained (MRC) until clearScreenOverlayDraws
     PrimitiveType mode;
     int count;
     size_t stride;
@@ -783,6 +784,8 @@ private:
   id<MTLRenderPipelineState> screenOverlayPipeline(
       const ScreenOverlayDraw& draw, MTLPixelFormat pixelFormat);
   void encodeScreenOverlays(id<MTLTexture> target);
+  void clearScreenOverlayDraws();  // releases the stash's retained buffers
+  id<MTLBuffer> cachedVBOBuffer(const void* data, size_t dataSize);
 
   // --- Real shadow map (light-POV depth pre-pass + PCF in the post pass) ---
   // _shadowDepth is a fixed-resolution single-sample Depth32Float map rendered

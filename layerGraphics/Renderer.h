@@ -613,11 +613,13 @@ public:
   {
   }
 
-  // Draws until false are screen-space overlays (ramp gadgets, RenderContext::UnitWindow):
-  // drawn after the post chain, unlit, above everything (#689).
+  // Draws until false are screen-space overlays (ramp gadgets,
+  // RenderContext::UnitWindow): drawn after the post chain, unlit, above
+  // everything (#689).
   virtual void setScreenOverlay(bool /*on*/) {}
 
-  // The GL ramp shader's offsetPt (RAMP_OFFSETPT) for the following overlay draws (#689).
+  // The GL ramp shader's offsetPt (RAMP_OFFSETPT) for the following overlay
+  // draws (#689).
   virtual void setScreenOverlayOffset(float /*x*/, float /*y*/, float /*z*/) {}
 };
 

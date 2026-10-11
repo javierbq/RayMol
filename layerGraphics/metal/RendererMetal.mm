@@ -558,6 +558,7 @@ RendererMetal::~RendererMetal()
   _vboCache.clear();
   for (auto& kv : _vboPipelineCache) [kv.second release];
   _vboPipelineCache.clear();
+  clearScreenOverlayDraws();
   for (auto& kv : _screenOverlayPipelines) [kv.second release];
   _screenOverlayPipelines.clear();
   [_overlayLib release];              _overlayLib = nil;
@@ -870,20 +871,25 @@ void RendererMetal::setRepClip(float front, float back, float fracFront,
 void RendererMetal::setBackgroundGradient(
     bool on, const float* top, const float* bottom)
 {
-  _bgGradOn = on;
-  if (on && top && bottom) {
-    _bgGradTop[0] = top[0]; _bgGradTop[1] = top[1]; _bgGradTop[2] = top[2];
-    _bgGradBottom[0] = bottom[0]; _bgGradBottom[1] = bottom[1]; _bgGradBottom[2] = bottom[2];
-  } else {
-    _bgGradTop[0] = _bgGradTop[1] = _bgGradTop[2] = 0.0f;
-    _bgGradBottom[0] = _bgGradBottom[1] = _bgGradBottom[2] = 0.0f;
+  _bgGradOn = on && top && bottom;
+  for (int i = 0; i < 3; ++i) {
+    _bgGradTop[i] = _bgGradOn ? top[i] : 0.0f;
+    _bgGradBottom[i] = _bgGradOn ? bottom[i] : 0.0f;
   }
+  // The rows the gradient spans, in post-pass uv (v = 0 at the top): the
+  // current viewport, which is the scene rect the gradient quad covers. The
+  // fog maps a pixel to the gradient through it, so fogged geometry matches
+  // the background next to it in a letterboxed live view too.
+  const double th = _rtH > 0 ? (double)_rtH : 1.0;
+  _bgGradSpan[0] = (float)(_viewport.originY / th);
+  _bgGradSpan[1] = (float)(_viewport.height / th);
 }
 
 void RendererMetal::setScreenOverlay(bool on)
 {
   _screenOverlay = on;
-  _screenOverlayOffset[0] = _screenOverlayOffset[1] = _screenOverlayOffset[2] = 0.0f;
+  for (float& o : _screenOverlayOffset)
+    o = 0.0f;
 }
 
 void RendererMetal::setScreenOverlayOffset(float x, float y, float z)
@@ -1200,7 +1206,7 @@ void RendererMetal::beginFrame()
   _lightAirOn = false;
   // Background gradient (#689)
   _bgGradOn = false;
-  _screenOverlayDraws.clear();
+  clearScreenOverlayDraws();
   _currentGridSlot = 0;
   // Start this frame's geometry record. Only the LIST of contributing cache
   // entries is re-accumulated during the opaque pass; the geometry itself stays
@@ -1857,8 +1863,9 @@ struct PostU {
   float projOrtho;       // >0.5: orthographic projection (linear eye-z / no foreshortening)
   float klx, kly, klz;   // key-light dir (toward light, eye space) = -normalize(cSetting_light)
   float pad0, pad1;      // 16-byte multiple: the C++ mirror must be >= this size
-  float gtR, gtG, gtB, gradOn; // #689 bg_gradient top.rgb, gradOn flag
-  float gbR, gbG, gbB, gradPad; // #689 bg_gradient bottom.rgb, unused pad
+  float gtR, gtG, gtB, gradOn;  // #689 bg_gradient top colour, on flag
+  float gbR, gbG, gbB, gradY0;  // #689 bottom colour, first row (uv)
+  float gradH, gradP0, gradP1, gradP2; // #689 rows spanned (uv); padding
 };
 
 // post_linear_depth / post_eye_pos / post_eye_normal / post_eye_normal_smooth and
@@ -1980,7 +1987,12 @@ fragment float4 post_ssao_fog(PostVOut in [[stage_in]],
     float dist = post_linear_depth(d, u.projA, u.projB, u.projOrtho);
     float fog = clamp((u.fogEnd - dist) / max(u.fogEnd - u.fogStart, 1e-4),
                       0.0, 1.0);
-    float3 fogCol = (u.gradOn > 0.5) ? mix(float3(u.gtR, u.gtG, u.gtB), float3(u.gbR, u.gbG, u.gbB), in.uv.y) : float3(u.bgR, u.bgG, u.bgB);
+    // bg_gradient (#689): fade toward the background at this pixel.
+    float3 fogCol = float3(u.bgR, u.bgG, u.bgB);
+    if (u.gradOn > 0.5) {
+      float t = saturate((in.uv.y - u.gradY0) / max(u.gradH, 1e-6));
+      fogCol = mix(float3(u.gtR, u.gtG, u.gtB), float3(u.gbR, u.gbG, u.gbB), t);
+    }
     color = mix(fogCol, color, fog);
   }
   return float4(color, 1.0);
@@ -3223,8 +3235,9 @@ struct RTU {
   float reflEnv, reflSamples, sphereCount, matCount;
   float lAmbient, lDirect, lReflect, lSpec;
   float lShin, pad4, pad5, pad6;   // -> 24 floats after lightViewProj
-  float4 gradTop;                  // #689 bg_gradient top.rgb, w = gradOn
-  float4 gradBottom;               // #689 bg_gradient bottom.rgb, w = 0
+  float4 gradTop;     // #689 bg_gradient top colour, w = on flag
+  float4 gradBottom;  // #689 bottom colour, w = 0
+  float4 gradSpan;    // #689 x = first row, y = rows spanned (uv); zw = 0
 };
 
 // grid_mode cells (#478). rect = x0,y0,x1,y1 of the cell in scene uv; tri =
@@ -4081,7 +4094,12 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
   if (u.bgFog.w > 0.5) {
     float dist = -pEye.z; // eye distance (pEye.z is the eye-space z, negative)
     float f = clamp((dist - u.fogStart) / max(u.fogEnd - u.fogStart, 1e-3), 0.0, 1.0);
-    float3 fogCol = (u.gradTop.w > 0.5) ? mix(u.gradTop.rgb, u.gradBottom.rgb, in.uv.y) : u.bgFog.rgb;
+    // bg_gradient (#689): fade toward the background at this pixel.
+    float3 fogCol = u.bgFog.rgb;
+    if (u.gradTop.w > 0.5) {
+      float t = saturate((in.uv.y - u.gradSpan.x) / max(u.gradSpan.y, 1e-6));
+      fogCol = mix(u.gradTop.rgb, u.gradBottom.rgb, t);
+    }
     col = mix(col, fogCol, f);
   }
   return float4(col, 1.0);
@@ -5105,8 +5123,9 @@ void RendererMetal::runPostChain()
       float reflEnv, reflSamples, sphereCount, matCount;   // traced reflections (see MSL RTU)
       float lAmbient, lDirect, lReflect, lSpec;
       float lShin, pad4, pad5, pad6;
-      float gradTop[4];
+      float gradTop[4];          // matches MSL RTU (#689)
       float gradBottom[4];
+      float gradSpan[4];
     } u;
     std::memcpy(u.invModelview, _modelviewInv.data(), 16 * sizeof(float));
     simd_float4x4 inv;
@@ -5121,10 +5140,14 @@ void RendererMetal::runPostChain()
     u.lightDirModel[2] = lm.z; u.lightDirModel[3] = 0.0f;
     u.bgFog[0] = _bgR; u.bgFog[1] = _bgG; u.bgFog[2] = _bgB;
     u.bgFog[3] = doFog ? 1.0f : 0.0f;
-    u.gradTop[0] = _bgGradTop[0]; u.gradTop[1] = _bgGradTop[1]; u.gradTop[2] = _bgGradTop[2];
+    for (int i = 0; i < 3; ++i) {
+      u.gradTop[i] = _bgGradTop[i];
+      u.gradBottom[i] = _bgGradBottom[i];
+    }
     u.gradTop[3] = _bgGradOn ? 1.0f : 0.0f;
-    u.gradBottom[0] = _bgGradBottom[0]; u.gradBottom[1] = _bgGradBottom[1]; u.gradBottom[2] = _bgGradBottom[2];
     u.gradBottom[3] = 0.0f;
+    u.gradSpan[0] = _bgGradSpan[0]; u.gradSpan[1] = _bgGradSpan[1];
+    u.gradSpan[2] = u.gradSpan[3] = 0.0f;
     u.projA = _projA; u.projB = _projB; u.projX = _projX; u.projY = _projY;
     u.projOrtho = _projOrtho;
     u.fogStart = _fogStart; u.fogEnd = _fogEnd;
@@ -5368,14 +5391,17 @@ void RendererMetal::runPostChain()
       float projOrtho;         // matches MSL PostU: 1 = orthographic (#139)
       float klx, kly, klz;     // matches MSL PostU: key-light dir (toward light)
       float pad0, pad1;        // matches MSL PostU padding (16-byte multiple)
-      float gtR, gtG, gtB, gradOn; // #689 bg_gradient fog
-      float gbR, gbG, gbB, gradPad;
+      float gtR, gtG, gtB, gradOn;   // matches MSL PostU (#689)
+      float gbR, gbG, gbB, gradY0;
+      float gradH, gradP0, gradP1, gradP2;
     } u;
     u.pad0 = 0.0f; u.pad1 = 0.0f;
     u.gtR = _bgGradTop[0]; u.gtG = _bgGradTop[1]; u.gtB = _bgGradTop[2];
     u.gradOn = _bgGradOn ? 1.0f : 0.0f;
-    u.gbR = _bgGradBottom[0]; u.gbG = _bgGradBottom[1]; u.gbB = _bgGradBottom[2];
-    u.gradPad = 0.0f;
+    u.gbR = _bgGradBottom[0]; u.gbG = _bgGradBottom[1];
+    u.gbB = _bgGradBottom[2];
+    u.gradY0 = _bgGradSpan[0]; u.gradH = _bgGradSpan[1];
+    u.gradP0 = u.gradP1 = u.gradP2 = 0.0f;
     u.klx = _keyLightEye[0]; u.kly = _keyLightEye[1]; u.klz = _keyLightEye[2];
     u.projA = _projA; u.projB = _projB;
     u.fogStart = _fogStart; u.fogEnd = _fogEnd;
@@ -5743,8 +5769,11 @@ void RendererMetal::runPostChain()
   if (_airAlphaDrawn)
     sceneSrc = encodeAirAlphaMerge(sceneSrc);
 
-  // Screen-space overlays (ramp gadgets, #689): drawn after post-processing
-  // and alpha matte, unlit and above everything.
+  // Screen-space overlays (ramp gadgets, #689): after the tonemap, DOF, OIT
+  // resolve and the transparent-export matte, so a gadget keeps its exact
+  // colours, is not fogged or depth-of-field blurred, and stays opaque in a
+  // transparent export. The live view's FXAA / upscale below still apply,
+  // as they do to the whole frame.
   if (!_screenOverlayDraws.empty() && sceneSrc)
     encodeScreenOverlays(sceneSrc);
 
@@ -10107,14 +10136,19 @@ struct OverlayVertexOut {
   float4 color;
 };
 
+static float4 overlay_clip(constant OverlayUniforms& u, float3 p) {
+  float4 pos = u.projection * float4(p + u.offset.xyz, 1.0);
+  pos.z = 0.5 * (pos.z + pos.w);  // GL z [-1,1] -> Metal [0,1]
+  return pos;
+}
+
 vertex OverlayVertexOut overlay_vertex(
     OverlayVertexIn in [[stage_in]],
     constant OverlayUniforms& uniforms [[buffer(1)]])
 {
   OverlayVertexOut out;
-  float4 pos = uniforms.projection * float4(in.position + uniforms.offset.xyz, 1.0);
-  pos.z = 0.5 * (pos.z + pos.w);
-  out.position = pos;
+  out.position = overlay_clip(uniforms, in.position);
+  // ramp.fs: NdotV with V = (0,0,1), so the bevel edges darken.
   out.color = float4(in.color.rgb * in.normal.z, in.color.a);
   return out;
 }
@@ -10124,9 +10158,7 @@ vertex OverlayVertexOut overlay_vertex_nonormal(
     constant OverlayUniforms& uniforms [[buffer(1)]])
 {
   OverlayVertexOut out;
-  float4 pos = uniforms.projection * float4(in.position + uniforms.offset.xyz, 1.0);
-  pos.z = 0.5 * (pos.z + pos.w);
-  out.position = pos;
+  out.position = overlay_clip(uniforms, in.position);
   out.color = in.color;
   return out;
 }
@@ -10142,7 +10174,9 @@ id<MTLRenderPipelineState> RendererMetal::screenOverlayPipeline(
 {
   if (!_overlayLib) {
     NSError* err = nil;
-    _overlayLib = [_device newLibraryWithSource:kScreenOverlaySrc options:nil error:&err];
+    _overlayLib = [_device newLibraryWithSource:kScreenOverlaySrc
+                                        options:nil
+                                          error:&err];
     if (!_overlayLib) {
       static bool warned = false;
       if (!warned) {
@@ -10156,7 +10190,8 @@ id<MTLRenderPipelineState> RendererMetal::screenOverlayPipeline(
     _overlayVtxFunc = [_overlayLib newFunctionWithName:@"overlay_vertex"];
   }
   if (!_overlayVtxNoNormalFunc) {
-    _overlayVtxNoNormalFunc = [_overlayLib newFunctionWithName:@"overlay_vertex_nonormal"];
+    _overlayVtxNoNormalFunc =
+        [_overlayLib newFunctionWithName:@"overlay_vertex_nonormal"];
   }
   if (!_overlayFragFunc) {
     _overlayFragFunc = [_overlayLib newFunctionWithName:@"overlay_fragment"];
@@ -10203,19 +10238,23 @@ id<MTLRenderPipelineState> RendererMetal::screenOverlayPipeline(
   vd.layouts[0].stepFunction = MTLVertexStepFunctionPerVertex;
 
   MTLRenderPipelineDescriptor* pd = [[MTLRenderPipelineDescriptor alloc] init];
-  pd.vertexFunction = (draw.normalOffset >= 0) ? _overlayVtxFunc : _overlayVtxNoNormalFunc;
+  pd.vertexFunction =
+      (draw.normalOffset >= 0) ? _overlayVtxFunc : _overlayVtxNoNormalFunc;
   pd.fragmentFunction = _overlayFragFunc;
   pd.vertexDescriptor = vd;
   pd.colorAttachments[0].pixelFormat = pixelFormat;
   pd.colorAttachments[0].blendingEnabled = YES;
   pd.colorAttachments[0].sourceRGBBlendFactor = MTLBlendFactorSourceAlpha;
-  pd.colorAttachments[0].destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+  pd.colorAttachments[0].destinationRGBBlendFactor =
+      MTLBlendFactorOneMinusSourceAlpha;
   pd.colorAttachments[0].sourceAlphaBlendFactor = MTLBlendFactorOne;
-  pd.colorAttachments[0].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceAlpha;
+  pd.colorAttachments[0].destinationAlphaBlendFactor =
+      MTLBlendFactorOneMinusSourceAlpha;
   pd.rasterSampleCount = 1;
 
   NSError* err = nil;
-  id<MTLRenderPipelineState> pipeline = [_device newRenderPipelineStateWithDescriptor:pd error:&err];
+  id<MTLRenderPipelineState> pipeline =
+      [_device newRenderPipelineStateWithDescriptor:pd error:&err];
   if (!pipeline) {
     NSLog(@"RendererMetal: screen overlay pipeline failed: %@", err);
   }
@@ -10238,7 +10277,8 @@ void RendererMetal::encodeScreenOverlays(id<MTLTexture> target)
   pd.colorAttachments[0].loadAction = MTLLoadActionLoad;
   pd.colorAttachments[0].storeAction = MTLStoreActionStore;
 
-  id<MTLRenderCommandEncoder> enc = [_cmdBuffer renderCommandEncoderWithDescriptor:pd];
+  id<MTLRenderCommandEncoder> enc =
+      [_cmdBuffer renderCommandEncoderWithDescriptor:pd];
   if (!enc) return;
 
   [enc setCullMode:MTLCullModeNone];
@@ -10276,7 +10316,9 @@ void RendererMetal::encodeScreenOverlays(id<MTLTexture> target)
     [enc setVertexBytes:&uniforms length:sizeof(uniforms) atIndex:1];
 
     MTLPrimitiveType primType = toMTL(draw.mode);
-    [enc drawPrimitives:primType vertexStart:0 vertexCount:(NSUInteger)draw.count];
+    [enc drawPrimitives:primType
+            vertexStart:0
+            vertexCount:(NSUInteger)draw.count];
   }
 
   [enc endEncoding];
@@ -10304,6 +10346,28 @@ static float repCapDepth(const float* P, float repClipFront)
   return 0.5f * (cz / cw + 1.0f); // GL NDC [-1,1] -> window [0,1]
 }
 
+// The Metal buffer for a CPU vertex array: the cached one for this pointer,
+// else a new upload, cached. nil only if the upload fails.
+id<MTLBuffer> RendererMetal::cachedVBOBuffer(const void* data, size_t dataSize)
+{
+  auto cacheIt = _vboCache.find(data);
+  if (cacheIt != _vboCache.end())
+    return cacheIt->second;
+  id<MTLBuffer> vbo = [_device newBufferWithBytes:data
+                                           length:dataSize
+                                          options:MTLResourceStorageModeShared];
+  if (vbo)
+    _vboCache[data] = vbo;
+  return vbo;
+}
+
+void RendererMetal::clearScreenOverlayDraws()
+{
+  for (auto& d : _screenOverlayDraws)
+    [d.vbo release];
+  _screenOverlayDraws.clear();
+}
+
 void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
     const void* data, size_t dataSize, size_t stride,
     int posOffset, int normalOffset, int colorOffset, int colorType,
@@ -10316,39 +10380,30 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
   // would land in the OIT pass, which skips unlit geometry, and be fogged,
   // blurred and tone-mapped, and cut out of a transparent export.
   if (_screenOverlay) {
-    if (!_shadowMode && !_peelMode && colorOffset >= 0 && posOffset >= 0) {
-      id<MTLBuffer> vbo = nil;
-      auto cacheIt = _vboCache.find(data);
-      if (cacheIt != _vboCache.end()) {
-        vbo = cacheIt->second;
-      } else {
-        vbo = [_device newBufferWithBytes:data
-                                  length:dataSize
-                                 options:MTLResourceStorageModeShared];
-        if (vbo) {
-          _vboCache[data] = vbo;
-        }
-      }
-      if (vbo) {
-        ScreenOverlayDraw sod;
-        sod.vbo = vbo;
-        sod.mode = mode;
-        sod.count = vertexCount;
-        sod.stride = stride;
-        sod.posOffset = posOffset;
-        sod.normalOffset = normalOffset;
-        sod.colorOffset = colorOffset;
-        sod.colorType = colorType;
-        std::memcpy(sod.projection, _projectionMatrix.data(), 64);
-        sod.offset[0] = _screenOverlayOffset[0];
-        sod.offset[1] = _screenOverlayOffset[1];
-        sod.offset[2] = _screenOverlayOffset[2];
-        sod.viewport = _viewport;
-        sod.scissorOn = _scissorEnabled;
-        sod.scissor = _scissorRect;
-        _screenOverlayDraws.push_back(sod);
-      }
-    }
+    // Points are not drawn: the overlay shaders write no point size.
+    if (_shadowMode || _peelMode || colorOffset < 0 || posOffset < 0 ||
+        mode == PrimitiveType::Points)
+      return;
+    id<MTLBuffer> vbo = cachedVBOBuffer(data, dataSize);
+    if (!vbo) return;
+    ScreenOverlayDraw sod;
+    // Retained until the stash is cleared (MRC): the draw is encoded at the
+    // end of the frame, and _vboCache may drop its entry before then.
+    sod.vbo = [vbo retain];
+    sod.mode = mode;
+    sod.count = vertexCount;
+    sod.stride = stride;
+    sod.posOffset = posOffset;
+    sod.normalOffset = normalOffset;
+    sod.colorOffset = colorOffset;
+    sod.colorType = colorType;
+    std::memcpy(sod.projection, _projectionMatrix.data(), 64);
+    for (int i = 0; i < 3; ++i)
+      sod.offset[i] = _screenOverlayOffset[i];
+    sod.viewport = _viewport;
+    sod.scissorOn = _scissorEnabled;
+    sod.scissor = _scissorRect;
+    _screenOverlayDraws.push_back(sod);
     return;
   }
 
@@ -10368,17 +10423,8 @@ void RendererMetal::drawVBO(PrimitiveType mode, int vertexCount,
   }
 
   // Reuse cached Metal buffer if same data pointer, otherwise create new
-  id<MTLBuffer> vbo = nil;
-  auto cacheIt = _vboCache.find(data);
-  if (cacheIt != _vboCache.end()) {
-    vbo = cacheIt->second;
-  } else {
-    vbo = [_device newBufferWithBytes:data
-                              length:dataSize
-                             options:MTLResourceStorageModeShared];
-    if (!vbo) return;
-    _vboCache[data] = vbo;
-  }
+  id<MTLBuffer> vbo = cachedVBOBuffer(data, dataSize);
+  if (!vbo) return;
 
   // Build a vertex descriptor matching the VBO layout
   MTLVertexDescriptor* vd = [MTLVertexDescriptor vertexDescriptor];

@@ -1349,6 +1349,21 @@ final class BackgroundGradientGadgetExportTests: XCTestCase {
         let botIdx = (299 * 400 + 200) * 4
         XCTAssertEqual(px[topIdx + 3], 0, "top row alpha must be 0")
         XCTAssertEqual(px[botIdx + 3], 0, "bottom row alpha must be 0")
+
+        // The alpha above is the export matte's, whatever the background
+        // colour. That the gradient itself is dropped shows in the fog: it
+        // fades toward bg_rgb (black), not toward the gradient.
+        addFoggedBackdrop()
+        defer { restoreFog() }
+        let fogPng = NSTemporaryDirectory() + "issue_689_trans_fog.png"
+        defer { try? FileManager.default.removeItem(atPath: fogPng) }
+        engine.renderHiResPNG(fogPng, width: 400, height: 300, rayTraced: 0)
+        let fog = try pngPixels(pngPath: fogPng, width: 400, height: 300)
+        for (row, idx) in [("top", (2 * 400 + 200) * 4), ("bottom", (297 * 400 + 200) * 4)] {
+            XCTAssertEqual(fog[idx + 3], 255, "\(row): the backdrop is drawn")
+            XCTAssertLessThan(Int(fog[idx]) + Int(fog[idx + 1]) + Int(fog[idx + 2]), 60,
+                              "\(row): fog fades toward black, not the gradient")
+        }
     }
 
     func testRampGadgetIsDrawn() throws {
@@ -1479,51 +1494,63 @@ final class BackgroundGradientGadgetExportTests: XCTestCase {
         XCTAssertEqual(bytes1, bytes2, "render after toggling gradient and gadget must equal first render")
     }
 
-    /// Depth-cue fog fades distant geometry toward the background AT THAT
-    /// PIXEL, as GL and the CPU ray tracer do with a gradient, not toward
-    /// bg_rgb (black here): the farthest sphere comes out in the gradient's
-    /// light mid tone, not dark.
+    /// A black CGO quad filling the view at the back of the slab, with
+    /// depth-cue fog from the front plane, so it comes out (almost) fully
+    /// fogged: each pixel shows the colour the fog fades toward there.
+    private func addFoggedBackdrop() {
+        engine.runPython("""
+        from pymol import cmd as _c
+        from pymol.cgo import BEGIN, TRIANGLE_STRIP, COLOR, NORMAL, VERTEX, END
+        _bg689_fog = (_c.get_setting_int('depth_cue'), _c.get_setting_float('fog'),
+                      _c.get_setting_float('fog_start'))
+        _c.load_cgo([BEGIN, TRIANGLE_STRIP, COLOR, 0.0, 0.0, 0.0,
+                     NORMAL, 0.0, 0.0, 1.0,
+                     VERTEX, -60.0, -60.0, 0.0, VERTEX, 60.0, -60.0, 0.0,
+                     VERTEX, -60.0, 60.0, 0.0, VERTEX, 60.0, 60.0, 0.0, END],
+                    'bg689w')
+        _c.set('depth_cue', 1)
+        _c.set('fog', 1.0)
+        _c.set('fog_start', 0.0)
+        _c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                     0.0, 0.0, -60.0, 0.0, 0.0, 0.0, 1.0, 61.0, -20.0))
+        """)
+    }
+
+    private func restoreFog() {
+        engine.runPython("""
+        from pymol import cmd as _c
+        _f = globals().pop('_bg689_fog', None)
+        if _f:
+            _c.set('depth_cue', _f[0]); _c.set('fog', _f[1]); _c.set('fog_start', _f[2])
+        """)
+    }
+
+    /// Depth-cue fog fades geometry toward the background AT THAT PIXEL, as
+    /// GL and the CPU ray tracer do with a gradient: the fogged backdrop is
+    /// the top colour at the top and the bottom colour at the bottom, not the
+    /// black bg_rgb, and not upside down.
     func testFogFadesTowardTheGradient() throws {
         try requireEngine()
         prepareScene()
         engine.runPython("""
         from pymol import cmd as _c
-        _bg689_fog = (_c.get_setting_int('depth_cue'), _c.get_setting_float('fog'),
-                      _c.get_setting_float('fog_start'))
         _c.set('bg_gradient', 1)
-        _c.set('bg_rgb_top', [0.9, 0.9, 0.9])
-        _c.set('bg_rgb_bottom', [0.9, 0.9, 0.9])
-        for _i in range(12):
-            _c.pseudoatom('bg689f', pos=[(_i - 6) * 4.0, 0.0, -_i * 8.0], state=1)
-        _c.show_as('spheres', 'bg689f')
-        _c.color('black', 'bg689f')
-        _c.set('sphere_scale', 2.0, 'bg689f')
-        _c.set('depth_cue', 1)
-        _c.set('fog', 1.0)
-        _c.set('fog_start', 0.2)
-        _c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
-                     0.0, 0.0, -50.0, 0.0, 0.0, -30.0, 30.0, 120.0, -20.0))
+        _c.set('bg_rgb_top', [0.9, 0.2, 0.2])
+        _c.set('bg_rgb_bottom', [0.2, 0.2, 0.9])
         """)
-        defer {
-            engine.runPython("""
-            from pymol import cmd as _c
-            _f = globals().pop('_bg689_fog', None)
-            if _f:
-                _c.set('depth_cue', _f[0]); _c.set('fog', _f[1]); _c.set('fog_start', _f[2])
-            """)
-        }
+        addFoggedBackdrop()
+        defer { restoreFog() }
         for rt in [0, 1] {
             let png = NSTemporaryDirectory() + "issue_689_fog_rt\(rt).png"
             defer { try? FileManager.default.removeItem(atPath: png) }
             engine.renderHiResPNG(png, width: 400, height: 300, rayTraced: rt)
             let px = try pngPixels(pngPath: png, width: 400, height: 300)
-            // The nearest black sphere stays dark; the farthest one (right end
-            // of the row) is fogged toward the light gradient, not toward the
-            // black bg_rgb. Without the gradient fog both would be black.
-            let near = (150 * 400 + 70) * 4
-            let far = (150 * 400 + 355) * 4
-            XCTAssertLessThan(Int(px[near]), 90, "near sphere (rt=\(rt))")
-            XCTAssertGreaterThan(Int(px[far]), 120, "far sphere fogs toward the gradient (rt=\(rt))")
+            let top = (2 * 400 + 200) * 4, bottom = (297 * 400 + 200) * 4
+            XCTAssertEqual(px[top + 3], 255, "the backdrop is drawn (rt=\(rt))")
+            XCTAssertGreaterThan(Int(px[top]), 180, "top fogs toward the top colour (rt=\(rt))")
+            XCTAssertLessThan(Int(px[top + 2]), 90, "top fogs toward the top colour (rt=\(rt))")
+            XCTAssertGreaterThan(Int(px[bottom + 2]), 180, "bottom fogs toward the bottom colour (rt=\(rt))")
+            XCTAssertLessThan(Int(px[bottom]), 90, "bottom fogs toward the bottom colour (rt=\(rt))")
         }
     }
 }
