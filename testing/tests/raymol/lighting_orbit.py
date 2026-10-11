@@ -423,6 +423,27 @@ class TestOrbitSource(testing.PyMOLTestCase):
         self.assertIsNotNone(summary, 'OrbitCollapsedSummary not found')
         self.assertRegex(summary, r'@ObservedObject\s+var\s+eye:\s*LightsEyeState')
 
+    def testThePaintersPlaceEveryLabel(self):
+        """Every label the plan and the arc draw is placed by
+        OrbitPlanLabels / PitchArcLabels (#676), which keep labels off each
+        other and off the lamps: the painters draw no text at a bare point,
+        only into a placed frame."""
+        text = self.read(VIEW)
+        for painter, labels in (('struct OrbitPlanPainter', 'OrbitPlanLabels(state: state, layout: layout'),
+                                ('struct PitchArcPainter', 'PitchArcLabels(state: state, layout: layout')):
+            with self.subTest(painter):
+                code = body(text, painter)
+                self.assertIsNotNone(code, '%s not found' % painter)
+                self.assertTrue(labels in code, '%s does not place its labels with %s'
+                                % (painter, labels.split('(')[0]))
+                draws = [m.end() - 1 for m in re.finditer(r'context\.draw\(', code)]
+                texts = [call_arguments(code, i) for i in draws]
+                texts = [t for t in texts if t is not None and t.lstrip().startswith('Text(')]
+                self.assertGreater(len(texts), 0, '%s draws no text' % painter)
+                for args in texts:
+                    self.assertRegex(args, r'\bin:\s*\w*frame\b', 'text drawn outside a placed frame')
+                    self.assertNotRegex(args, r'\bat:', 'text drawn at a bare point')
+
     def testThePlanPinchesBesideItsDrag(self):
         """The plan's pinch is a simultaneous MagnifyGesture beside its
         DragGesture (the gesture wiring is otherwise checked by eye)."""
