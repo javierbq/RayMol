@@ -559,7 +559,15 @@ final class PyMOLEngine: ObservableObject {
     var launchOpenRequested = false {
         // A launch-to-open arriving before the engine is up must also drop the
         // snapshot preloaded in init(), or the old scene shows over the new file.
-        didSet { if launchOpenRequested { clearRestoreSnapshot(animated: false) } }
+        // It also retires a pending #385 "Start with an empty session?" prompt:
+        // the opened file wins, exactly as it does over a normal restore, so
+        // "Try Again" can't load the old session underneath it.
+        didSet {
+            if launchOpenRequested {
+                clearRestoreSnapshot(animated: false)
+                interruptedRestorePrompt = false
+            }
+        }
     }
     // A snapshot of the viewport captured alongside the autosave, shown over the
     // viewport while the session reloads on cold launch so the user sees their
@@ -567,6 +575,9 @@ final class PyMOLEngine: ObservableObject {
     // init() so it is in place for the very FIRST SwiftUI frame (#480), cleared
     // once the restored scene has actually presented (restoreRenderTick).
     @Published var restoreSnapshot: UIImage?
+    // #385: the previous cold-launch restore never finished (killed or crashed
+    // mid-restore). ContentView asks "Start with an empty session?" while true.
+    @Published var interruptedRestorePrompt = false
     // Frames the restored scene still has to present before the snapshot hands
     // off. nil = no handoff armed (nothing restored yet, or already done).
     private var restoreFramesToPresent: Int?
@@ -890,7 +901,7 @@ final class PyMOLEngine: ObservableObject {
         // backgrounded. Skipped when a test affordance scripts the scene
         // (PYMOL_AUTOLOAD/PYMOL_AUTOCMD imply deterministic screenshot content)
         // and when launched to open a specific file (handled by .onOpenURL) —
-        // both checked inside (autosaveIsRestorable).
+        // both checked inside (autosaveRestoreAction).
         restoreAutosaveIfAvailable()
         #endif
 
@@ -958,6 +969,7 @@ final class PyMOLEngine: ObservableObject {
         if let url = autosaveURL { try? FileManager.default.removeItem(at: url) }
         if let img = autosaveImageURL { try? FileManager.default.removeItem(at: img) }
         UserDefaults.standard.set(false, forKey: Self.autosaveDefaultsKey)
+        Self.clearRestoreInProgress(in: .standard)
     }
 
     /// Full reset for the iOS "Clear session" action. clearSession() wipes the
@@ -987,6 +999,10 @@ final class PyMOLEngine: ObservableObject {
     ///   structure was loaded.
     func autosaveSession(keepingNotes: Bool = false) {
         guard isReady, let url = autosaveURL else { return }
+        // While the user has not answered the prompt, the scene is empty only
+        // because the restore was held back, so the empty-scene branch would
+        // delete the autosave the user may still want to retry (#385).
+        guard !interruptedRestorePrompt else { return }
         guard !objects.isEmpty || keepingNotes else { clearAutosave(); return }
 
         let bgTask = UIApplication.shared.beginBackgroundTask(withName: "RayMolAutosave")
@@ -995,6 +1011,9 @@ final class PyMOLEngine: ObservableObject {
         runPython("from pymol import cmd as _c; _c.save(r'''\(url.path)''')")
         let saved = FileManager.default.fileExists(atPath: url.path)
         UserDefaults.standard.set(saved, forKey: Self.autosaveDefaultsKey)
+        if saved {
+            Self.clearRestoreInProgress(in: .standard)
+        }
         // The viewport snapshot is captured separately on `.inactive` (see
         // captureRestoreSnapshot) — iOS forbids GPU/Metal work once the app is
         // already in `.background`, so it must be grabbed while still foreground.
@@ -1027,18 +1046,15 @@ final class PyMOLEngine: ObservableObject {
         renderHiResPNG(img.path, width: w, height: h, rayTraced: 0)
     }
 
-    /// True when this launch will resume the autosave: the flag is set, the .pse
-    /// exists, no test affordance scripts the scene (PYMOL_AUTOLOAD/PYMOL_AUTOCMD
-    /// imply deterministic screenshot content), and the launch isn't opening a
-    /// specific file. Shared by the init()-time snapshot preload and the restore
-    /// itself so the two can't disagree.
-    private var autosaveIsRestorable: Bool {
-        guard !launchOpenRequested else { return false }
-        guard !isScriptedLaunch else { return false }
-        guard UserDefaults.standard.bool(forKey: Self.autosaveDefaultsKey),
-              let url = autosaveURL,
-              FileManager.default.fileExists(atPath: url.path) else { return false }
-        return true
+    /// What this launch will do with the autosaved session (#385): resume it,
+    /// ask whether to start empty (after an interrupted restore), or skip it.
+    private var autosaveRestoreAction: AutosaveRestoreAction {
+        let present = UserDefaults.standard.bool(forKey: Self.autosaveDefaultsKey)
+            && autosaveURL.map { FileManager.default.fileExists(atPath: $0.path) } == true
+        return Self.autosaveRestoreAction(
+            scripted: isScriptedLaunch, openRequested: launchOpenRequested,
+            autosavePresent: present,
+            previousRestoreInterrupted: Self.restoreWasInterrupted(in: .standard))
     }
 
     /// Put the last-scene snapshot in place BEFORE the first SwiftUI body
@@ -1048,8 +1064,13 @@ final class PyMOLEngine: ObservableObject {
     /// which the synchronous restore in initialize() would otherwise freeze on
     /// screen, half laid out, for the whole .pse load. Cheap (one PNG decode).
     private func preloadRestoreSnapshot() {
-        guard restoreSnapshot == nil, autosaveIsRestorable,
-              let img = autosaveImageURL,
+        guard autosaveRestoreAction == .restore else { return }
+        loadRestoreSnapshotImage()
+    }
+
+    /// Show the saved viewport snapshot (no-op if already shown or missing).
+    private func loadRestoreSnapshotImage() {
+        guard restoreSnapshot == nil, let img = autosaveImageURL,
               let data = try? Data(contentsOf: img),
               let snap = UIImage(data: data) else { return }
         restoreSnapshot = snap
@@ -1063,18 +1084,52 @@ final class PyMOLEngine: ObservableObject {
     /// we deliberately do NOT re-assert the active theme here — that would
     /// override the saved scene and the goal is to resume it exactly. Loading
     /// into the empty cold-launch scene reproduces the prior session exactly.
+    /// If the previous restore was interrupted (watchdog kill / crash), #385
+    /// prompts the user rather than retrying blindly.
     func restoreAutosaveIfAvailable() {
         guard isReady, !didRestoreAutosave else { return }
-        guard autosaveIsRestorable, let url = autosaveURL else {
-            // Nothing to resume (or a file open won): drop any preloaded snapshot
-            // so the empty state / opened document shows instead.
+        switch autosaveRestoreAction {
+        case .skip:
+            // Nothing to resume (or a file open / scripted launch won): drop any
+            // preloaded snapshot so the empty state / opened document shows.
             clearRestoreSnapshot(animated: false)
-            return
+        case .askStartEmpty:
+            // #385: the last restore never finished. Don't retry it blindly
+            // (that bricked the app); let the user choose.
+            clearRestoreSnapshot(animated: false)
+            interruptedRestorePrompt = true
+        case .restore:
+            performAutosaveRestore()
         }
+    }
+
+    /// #385 "Start Empty": discard the autosave that failed to restore (this also
+    /// clears the in-progress flag), leaving the empty cold-launch scene.
+    func startEmptyAfterInterruptedRestore() {
+        interruptedRestorePrompt = false
+        clearAutosave()
+    }
+
+    /// #385 "Try Again": run the restore once more. Its in-progress flag is set
+    /// again, so another kill brings the prompt back. Deferred one short hop so
+    /// the alert dismissal and the snapshot commit before the blocking load.
+    func retryInterruptedRestore() {
+        interruptedRestorePrompt = false
+        guard !didRestoreAutosave, !launchOpenRequested else { return }
+        loadRestoreSnapshotImage()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            self?.performAutosaveRestore()
+        }
+    }
+
+    private func performAutosaveRestore() {
+        guard let url = autosaveURL else { return }
         didRestoreAutosave = true
-        preloadRestoreSnapshot()   // no-op when init() already loaded it
-        runCommand("load \(url.path)")
-        refreshAfterRestore()
+        loadRestoreSnapshotImage()
+        Self.withRestoreInProgressFlag(in: .standard) {
+            runCommand("load \(url.path)")
+            refreshAfterRestore()
+        }
         // Hand the snapshot off once the restored scene has actually presented
         // (restoreRenderTick) AND the object list has landed (so the empty-state
         // CTA can't flash in between) — not after a fixed delay, which either
@@ -1741,6 +1796,49 @@ final class PyMOLEngine: ObservableObject {
     /// True when this process was launched with PYMOL_AUTOCMD or PYMOL_AUTOLOAD (#671).
     var isScriptedLaunch: Bool {
         Self.isScriptedLaunch(environment: ProcessInfo.processInfo.environment)
+    }
+
+    // MARK: - Autosave restore escape hatch (#385)
+
+    /// What the iOS cold launch does with the rolling autosave.
+    enum AutosaveRestoreAction: Equatable {
+        /// Nothing to restore, or this launch must not restore (scripted / opening a file).
+        case skip
+        /// Restore the autosave.
+        case restore
+        /// The previous restore never finished (the app was killed or crashed
+        /// mid-restore): ask the user whether to start empty or try again.
+        case askStartEmpty
+    }
+
+    /// The rule (#385). A scripted launch (#671) or a launch-to-open never restores
+    /// and never asks, and neither does a launch with no autosave on disk. Otherwise
+    /// an interrupted previous restore asks instead of retrying blindly.
+    static func autosaveRestoreAction(scripted: Bool, openRequested: Bool,
+                                      autosavePresent: Bool,
+                                      previousRestoreInterrupted: Bool) -> AutosaveRestoreAction {
+        if scripted || openRequested || !autosavePresent { return .skip }
+        return previousRestoreInterrupted ? .askStartEmpty : .restore
+    }
+
+    /// UserDefaults key set while an autosave restore is running. Still set at
+    /// the next launch means that restore never finished.
+    static let restoreInProgressDefaultsKey = "raymol.autosave.restoreInProgress"
+
+    static func restoreWasInterrupted(in defaults: UserDefaults) -> Bool {
+        defaults.bool(forKey: restoreInProgressDefaultsKey)
+    }
+
+    static func clearRestoreInProgress(in defaults: UserDefaults) {
+        defaults.removeObject(forKey: restoreInProgressDefaultsKey)
+    }
+
+    /// Run `restore` with the in-progress flag set around it, so a kill or crash
+    /// inside it leaves the flag set for the next launch to see.
+    static func withRestoreInProgressFlag(in defaults: UserDefaults, _ restore: () -> Void) {
+        defaults.set(true, forKey: restoreInProgressDefaultsKey)
+        restore()
+        clearRestoreInProgress(in: defaults)
     }
 
     // MARK: - Theme

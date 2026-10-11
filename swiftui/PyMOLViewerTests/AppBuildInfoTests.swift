@@ -188,3 +188,122 @@ final class ScriptedLaunchTests: XCTestCase {
                        Plan(applyRenderToggles: false, forceOutlineOff: false))
     }
 }
+
+// MARK: - AutosaveRestoreGuardTests (#385)
+
+/// Covers the cold-launch session restore escape hatch (#385): ensuring that an
+/// interrupted restore prompts the user rather than blindly retrying and bricking
+/// the app on watchdog kills.
+final class AutosaveRestoreGuardTests: XCTestCase {
+
+    private var suiteName: String!
+    private var defaults: UserDefaults!
+
+    override func setUp() {
+        super.setUp()
+        suiteName = "raymol.tests.385.\(UUID().uuidString)"
+        defaults = UserDefaults(suiteName: suiteName)
+    }
+
+    override func tearDown() {
+        defaults.removePersistentDomain(forName: suiteName)
+        defaults = nil
+        super.tearDown()
+    }
+
+    /// Every combination of the four inputs: skip when scripted, opening a file
+    /// or no autosave; otherwise ask after an interrupted restore, else restore.
+    func testDecisionTable() {
+        let bools = [false, true]
+        for scripted in bools {
+            for openRequested in bools {
+                for autosavePresent in bools {
+                    for interrupted in bools {
+                        let action = PyMOLEngine.autosaveRestoreAction(
+                            scripted: scripted,
+                            openRequested: openRequested,
+                            autosavePresent: autosavePresent,
+                            previousRestoreInterrupted: interrupted
+                        )
+                        let expected: PyMOLEngine.AutosaveRestoreAction
+                        if scripted || openRequested || !autosavePresent {
+                            expected = .skip
+                        } else if interrupted {
+                            expected = .askStartEmpty
+                        } else {
+                            expected = .restore
+                        }
+                        XCTAssertEqual(action, expected,
+                            "Mismatch for scripted=\(scripted), openRequested=\(openRequested), present=\(autosavePresent), interrupted=\(interrupted)")
+                    }
+                }
+            }
+        }
+    }
+
+    /// A scripted launch (#671) is never prompted, even after an interrupted restore.
+    func testScriptedLaunchNeverAsksEvenAfterInterruptedRestore() {
+        let action = PyMOLEngine.autosaveRestoreAction(
+            scripted: true,
+            openRequested: false,
+            autosavePresent: true,
+            previousRestoreInterrupted: true
+        )
+        XCTAssertEqual(action, .skip)
+    }
+
+    /// A plain launch after an interrupted restore asks instead of retrying.
+    func testInterruptedRestoreAsks() {
+        let action = PyMOLEngine.autosaveRestoreAction(
+            scripted: false,
+            openRequested: false,
+            autosavePresent: true,
+            previousRestoreInterrupted: true
+        )
+        XCTAssertEqual(action, .askStartEmpty)
+    }
+
+    /// The in-progress flag is set while the restore body runs and cleared after.
+    func testFlagIsSetDuringRestoreAndClearedAfter() {
+        XCTAssertFalse(PyMOLEngine.restoreWasInterrupted(in: defaults))
+        var flagInside = false
+        var executionCount = 0
+        PyMOLEngine.withRestoreInProgressFlag(in: defaults) {
+            executionCount += 1
+            flagInside = PyMOLEngine.restoreWasInterrupted(in: defaults)
+        }
+        XCTAssertEqual(executionCount, 1)
+        XCTAssertTrue(flagInside)
+        XCTAssertFalse(PyMOLEngine.restoreWasInterrupted(in: defaults))
+    }
+
+    /// A kill mid-restore leaves the flag set (the clear never runs), and the
+    /// next launch then asks.
+    func testKilledMidRestoreLeavesFlagForNextLaunch() {
+        defaults.set(true, forKey: PyMOLEngine.restoreInProgressDefaultsKey)
+        XCTAssertTrue(PyMOLEngine.restoreWasInterrupted(in: defaults))
+        let action = PyMOLEngine.autosaveRestoreAction(
+            scripted: false,
+            openRequested: false,
+            autosavePresent: true,
+            previousRestoreInterrupted: PyMOLEngine.restoreWasInterrupted(in: defaults)
+        )
+        XCTAssertEqual(action, .askStartEmpty)
+    }
+
+    /// "Start Empty" (via clearAutosave) and a fresh autosave clear the flag.
+    func testClearRestoreInProgress() {
+        defaults.set(true, forKey: PyMOLEngine.restoreInProgressDefaultsKey)
+        XCTAssertTrue(PyMOLEngine.restoreWasInterrupted(in: defaults))
+        PyMOLEngine.clearRestoreInProgress(in: defaults)
+        XCTAssertFalse(PyMOLEngine.restoreWasInterrupted(in: defaults))
+    }
+
+    /// A "Try Again" restore that completes clears the flag the killed one left.
+    func testSuccessfulRetryClearsLeftoverFlag() {
+        defaults.set(true, forKey: PyMOLEngine.restoreInProgressDefaultsKey)
+        XCTAssertTrue(PyMOLEngine.restoreWasInterrupted(in: defaults))
+        PyMOLEngine.withRestoreInProgressFlag(in: defaults) {}
+        XCTAssertFalse(PyMOLEngine.restoreWasInterrupted(in: defaults))
+    }
+}
