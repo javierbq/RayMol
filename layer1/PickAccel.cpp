@@ -439,9 +439,10 @@ bool PickAccel::testItem(std::uint32_t id, const PickRay& ray, bool cap_on,
             span, m_nub))
       return false;
     rule = cy.rule;
-    // A cut impostor cylinder caps only where Metal keeps its box.
-    if (cap_on && eye && rule == PickRule::Impostor && span.has_in &&
-        span.s_in < ray.smin &&
+    // A cut impostor cylinder caps only where Metal keeps its box (always,
+    // in a frame of unit scale, once its solid reaches behind the plane).
+    if (cap_on && eye && rule == PickRule::Impostor &&
+        span.s_cap_near < ray.smin && span.s_cap_far > ray.smin &&
         !metalCylinderBoxKept(cy.p0, cy.axis, cy.r, *eye))
       cap_on = false;
   }

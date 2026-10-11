@@ -834,11 +834,12 @@ class TestBranchedSticks(PickCase):
                 seen.add(atom)
         return caps
 
-    def grid(self, n, pad=0.3):
-        '''n x n ray NDC points over the junction's projected box, padded.'''
+    def grid(self, n, pad=0.3, hub='CB'):
+        '''n x n ray NDC points over the junction's projected box, padded
+        (pad measured at the hub atom's depth).'''
         ndc = [self.ndc_of(p) for p in self.pos.values()]
-        jx = pad / ((EYE[2] - self.pos['CB'][2]) * T * self.aspect())
-        jy = pad / ((EYE[2] - self.pos['CB'][2]) * T)
+        jx = pad / ((EYE[2] - self.pos[hub][2]) * T * self.aspect())
+        jy = pad / ((EYE[2] - self.pos[hub][2]) * T)
         x0, x1 = min(p[0] for p in ndc) - jx, max(p[0] for p in ndc) + jx
         y0, y1 = min(p[1] for p in ndc) - jy, max(p[1] for p in ndc) + jy
         return [(x0 + (x1 - x0) * (i + 0.5) / n, y0 + (y1 - y0) * (j + 0.5) / n)
@@ -895,57 +896,87 @@ class TestBranchedSticks(PickCase):
                 return True
         return False
 
+    def end_crossing(self, d, bond, atom, leaving):
+        '''Where the ray crosses `bond`'s end at `atom`: its ball if the
+        bond caps it there, else its disc (the open end closed, #641).
+        `leaving` picks the exit over the entry. None on a miss.'''
+        if self.caps()[bond, atom]:
+            ball = sphere_roots(EYE, d, self.pos[atom], self.r)
+            return None if ball is None else ball[1 if leaving else 0]
+        p0, u, h = self.axis(bond)
+        out = u if atom == bond[1] else tuple(-c for c in u)
+        dn = dot(d, out)  # > 0: the ray moves out through this end
+        if dn == 0.0 or (dn > 0.0) != leaving:
+            return None
+        c = self.pos[atom]
+        s = dot(sub(c, EYE), out) / dn
+        q = sub(tuple(EYE[k] + s * d[k] for k in range(3)), c)
+        return s if dot(q, q) <= self.r * self.r else None
+
     def metal_hit(self, d, cap_on, far='solid'):
         '''What Metal's cylinder impostor draws along the ray (cyl_shade and
         cyl_impostor_vertex, RendererMetal.mm): (depth, cap) or None.
         Per bond: the front crossing of the infinite tube; past an end, that
         end's round cap, or nothing if the end is open (caps()). A point in
-        front of the near plane is discarded, unless cap_on and the capped
-        solid's exit (its far wall, #641) is behind the plane: then a flat
-        cap at the plane. The nearest wins.
+        front of the near plane is discarded, unless cap_on and the bond's
+        capped solid straddles the plane (#641): then a flat cap at the
+        plane. For that test an open end is closed by its disc, at the front
+        and at the back. The nearest wins.
 
-        far='solid' (default): where the tube's far crossing lies past an
-        end, use that end's ball far root, whether capped or open (an open
-        end counts as the ball the atom's first bond draws); if the ray
-        misses that ball, the bond has no far wall.
-        far='tube': what Metal did before #641 (the infinite tube's far
-        crossing as is), used only to find rays where the two rules differ.'''
-        caps = self.caps()
+        far='tube': the far wall is the infinite tube's far crossing, as
+        Metal had it before #641; used only to show that the grid reaches
+        rays where the two rules differ.'''
         best = None
         for bond in self.BONDS:
             p0, u, h = self.axis(bond)
             roots = tube_roots(EYE, d, p0, u, self.r)
             if roots is None:
                 continue
+
+            def axial(s):
+                return dot(sub(tuple(EYE[k] + s * d[k] for k in range(3)),
+                                p0), u)
+
+            def past(s):
+                z = axial(s)
+                return bond[0] if z < 0.0 else bond[1] if z > h else None
+
             front, far_root = roots
-            q = sub(tuple(EYE[k] + front * d[k] for k in range(3)), p0)
-            z = dot(q, u)
-            if z < 0.0 or z > h:
-                atom = bond[0] if z < 0.0 else bond[1]
-                if not caps[bond, atom]:
+            drawn = True
+            atom = past(front)
+            if atom is not None:
+                drawn = self.caps()[bond, atom]
+                front = self.end_crossing(d, bond, atom, False)
+                if front is None:
                     continue
-                ball = sphere_roots(EYE, d, self.pos[atom], self.r)
-                if ball is None:
-                    continue
-                front = ball[0]
-            if far == 'solid':
-                q = sub(tuple(EYE[k] + far_root * d[k] for k in range(3)), p0)
-                z = dot(q, u)
-                if z < 0.0 or z > h:
-                    atom = bond[0] if z < 0.0 else bond[1]
-                    ball = sphere_roots(EYE, d, self.pos[atom], self.r)
-                    far_root = ball[1] if ball is not None else float('-inf')
+            atom = past(far_root)
+            if far == 'solid' and atom is not None:
+                far_root = self.end_crossing(d, bond, atom, True)
+                if far_root is None:
+                    far_root = float('-inf')
             if front <= FRONT:
                 if not cap_on or far_root <= FRONT:
                     continue
                 hit = (FRONT, True)
-            elif front >= BACK:
+            elif front >= BACK or not drawn:
                 continue
             else:
                 hit = (front, False)
             if best is None or hit[0] < best[0]:
                 best = hit
         return best
+
+    def inside_union(self, p, margin):
+        '''Is p inside the union of the bonds' capsules (radius r), by at
+        least margin (> 0), or outside it by at least margin (< 0)? 0 when
+        it is too close to the surface to tell.'''
+        depth = -1e30
+        for bond in self.BONDS:
+            p0, u, h = self.axis(bond)
+            z = max(0.0, min(h, dot(sub(p, p0), u)))
+            axis_pt = tuple(p0[k] + z * u[k] for k in range(3))
+            depth = max(depth, self.r - norm(sub(p, axis_pt)))
+        return 1 if depth > margin else -1 if depth < -margin else 0
 
     def assertProxiesStraddle(self):
         '''metal_hit assumes every impostor box survives the near plane
@@ -1031,7 +1062,7 @@ class TestBranchedSticks(PickCase):
         self.assertGreater(open_exits, 15)
 
     def testNearPlaneThroughTheJunction(self):
-        tube_not_solid = 0
+        tube_not_solid = union_inside = 0
         for z0 in (49.6, 50.0, 50.4):
             for cap_on in (0, 1):
                 self.junction(z0=z0)
@@ -1048,6 +1079,18 @@ class TestBranchedSticks(PickCase):
                     hit = self.pick(x, y)
                     where = 'z0 %g cap %d at %r: pick %r, Metal %r' % (
                         z0, cap_on, (x, y), hit, ref)
+                    if cap_on:
+                        # The bonds' caps together are the union's
+                        # cross-section: no hole at the junction, and no
+                        # cap outside the sticks.
+                        inside = self.inside_union(
+                            tuple(EYE[k] + FRONT * d[k] for k in range(3)),
+                            1e-3)
+                        union_inside += inside > 0
+                        if inside:
+                            self.assertEqual(
+                                hit is not None and hit.cap, inside > 0,
+                                where)
                     self.assertEqual(hit is None, ref is None, where)
                     if ref is None:
                         continue
@@ -1067,9 +1110,54 @@ class TestBranchedSticks(PickCase):
                     self.assertEqual(caps, 0)
                     if z0 < 50.2:
                         self.assertGreater(hits, 0, 'z0 %g' % z0)
-        # The grid reaches rays where the old tube rule capped and the solid
-        # does not, so the pick is held to the new rule.
+        # The grid reaches rays where the old tube rule and the solid
+        # disagree, so the pick is held to the new rule, and rays whose
+        # plane point is inside the union.
         self.assertGreater(tube_not_solid, 0)
+        self.assertGreater(union_inside, 30)
+
+    def testNoHoleWhereAnOpenBondLeavesThePlane(self):
+        # B's ball is A-B's round end; B-C, open at B, runs away from the
+        # camera. A ray through B's ball can leave it in front of the plane
+        # and cross the plane inside B-C's body: only B-C can cap it there,
+        # and its front crossing is past its open end. Closing that end with
+        # its disc for the cap test (#641) caps it; a rule that discarded
+        # the open front (or that took B's ball as B-C's far wall without
+        # it) left holes here.
+        self.REL = (('A', (-1.5, 0.0, 0.0)), ('B', (0.0, 0.0, 0.0)),
+                    ('C', (0.6, 0.0, -1.4)))
+        self.BONDS = (('A', 'B'), ('B', 'C'))
+        self.junction(z0=50.2)
+        self.assertProxiesStraddle()
+        cmd.set('metal_interior_cap', 1, 'br')
+        inside_rays = open_front_caps = 0
+        for x, y in self.grid(25, hub='B'):
+            d = self.ray_dir(x, y)
+            hit = self.pick(x, y)
+            ref = self.metal_hit(d, 1)
+            where = 'at %r: pick %r, Metal %r' % ((x, y), hit, ref)
+            self.assertEqual(hit is None, ref is None, where)
+            if ref is not None:
+                self.assertEqual(hit.cap, ref[1], where)
+                self.assertAlmostEqual(hit.depth, ref[0], delta=1e-3,
+                                       msg=where)
+            inside = self.inside_union(
+                tuple(EYE[k] + FRONT * d[k] for k in range(3)), 1e-3)
+            if inside:
+                self.assertEqual(hit is not None and hit.cap, inside > 0,
+                                 where)
+            inside_rays += inside > 0
+            # Rays only B-C caps, entering it past its open end at B.
+            p0, u, h = self.axis(('B', 'C'))
+            roots = tube_roots(EYE, d, p0, u, self.r)
+            if inside > 0 and roots:
+                q = sub(tuple(EYE[k] + roots[0] * d[k] for k in range(3)),
+                        p0)
+                ab = sphere_roots(EYE, d, self.pos['B'], self.r)
+                open_front_caps += (dot(q, u) < 0.0 and
+                                    (ab is None or ab[1] <= FRONT))
+        self.assertGreater(inside_rays, 50)
+        self.assertGreater(open_front_caps, 0)
 
 
 class TestSlab(PickCase):
