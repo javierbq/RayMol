@@ -61,6 +61,9 @@ extension Notification.Name {
     static let raymolPerformToggleNotePreview = Notification.Name("raymol.notes.performTogglePreview")
     static let raymolPerformFontIncrease = Notification.Name("raymol.notes.performFontIncrease")
     static let raymolPerformFontDecrease = Notification.Name("raymol.notes.performFontDecrease")
+    // Posted by the iOS MetalViewport when a viewport touch gesture begins or
+    // ends (userInfo["gestureActive"]: Bool); drives the iPhone chrome fade (#391).
+    static let raymolViewportActivity = Notification.Name("raymol.viewport.activity")
 }
 
 #if os(iOS)
@@ -134,6 +137,13 @@ extension View {
             Color.clear.preference(key: PaneHeightKey.self, value: [tag: g.size.height])
         })
     }
+
+    /// Applies the iPhone chrome fade (#391) to a floating viewport control.
+    func phoneChromeFade(_ appearance: PhoneChromeFade.Appearance) -> some View {
+        opacity(appearance.opacity)
+            .allowsHitTesting(appearance.isHitTestable)
+            .animation(.easeInOut(duration: PhoneChromeFade.fadeDuration), value: appearance.opacity)
+    }
 }
 
 
@@ -165,6 +175,7 @@ struct ContentView: View {
     @EnvironmentObject var engine: PyMOLEngine
     @EnvironmentObject private var themeManager: ThemeManager
     @EnvironmentObject private var notes: AnalysisNotesStore
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
     // "What's New" splash: auto-shows once after a version bump; also opened on
     // demand via the app menu / Settings (see WhatsNewModel / WhatsNewModal).
     @StateObject private var whatsNew = WhatsNewModel()
@@ -1377,6 +1388,12 @@ struct ContentView: View {
     @State private var sceneRenameTarget: String? = nil
     @State private var sceneRenameText: String = ""
     @State private var showCameraPanel = false   // viewport Camera overlay (shared macOS/iOS)
+    // iPhone chrome fade (#391): the last viewport/chrome interaction, whether a
+    // viewport gesture is in progress, and the clock the fade is evaluated at
+    // (bumped by the idle task in viewportView so the dim happens on time).
+    @State private var chromeLastInteraction = Date()
+    @State private var chromeGestureActive = false
+    @State private var chromeFadeNow = Date()
 
     private func openNotesAndPost(_ name: Notification.Name) {
         inspectorTab = .notes
@@ -2323,6 +2340,7 @@ struct ContentView: View {
                                 // full-bleed under the bottom safe area, so without this the
                                 // tappable pill sits on the system gesture bar.
                                 panelTongue(shown: objectsBinding, axis: .horizontal)
+                                    .phoneChromeFade(phoneChromeAppearance)
                                     .padding(.bottom, bottomTongueInset)
                             }
                         }
@@ -2343,6 +2361,7 @@ struct ContentView: View {
                                 .background(themeChromeBg)
                                 .overlay(alignment: .top) {
                                     panelTongue(shown: objectsBinding, axis: .horizontal, seam: true)
+                                        .phoneChromeFade(phoneChromeAppearance)
                                 }
                                 .onPreferenceChange(PaneHeightKey.self) { paneHeights = $0 }
                                 .animation(.easeInOut(duration: 0.25), value: inspectorTab)
@@ -2422,6 +2441,7 @@ struct ContentView: View {
                 // Hidden while the light tools take the slot (#623).
                 if !showThemeStudio && !objectsBinding.wrappedValue && !lightsSidePanelShown {
                     panelTongue(shown: objectsBinding, axis: .vertical)
+                        .phoneChromeFade(phoneChromeAppearance)
                         .padding(.trailing, islandOnRight ? notch : 0)
                 }
             }
@@ -2455,6 +2475,7 @@ struct ContentView: View {
                         // on top; overlay AFTER .clipped() so it isn't clipped away.
                         .overlay(alignment: .leading) {
                             panelTongue(shown: objectsBinding, axis: .vertical, seam: true)
+                                .phoneChromeFade(phoneChromeAppearance)
                         }
                 }
 
@@ -3162,6 +3183,24 @@ struct ContentView: View {
                 }
             }
             .overlay { busyOverlay }
+            // iPhone chrome fade (#391): a viewport gesture edge or tap restarts
+            // the idle clock; a camera / panel toggle or the first structure
+            // loading counts as interaction too; the task bumps the fade clock at
+            // the idle deadline so the controls dim on time.
+            .onReceive(NotificationCenter.default.publisher(for: .raymolViewportActivity)) { note in
+                noteChromeInteraction(gestureActive: note.userInfo?["gestureActive"] as? Bool ?? false)
+            }
+            .onChange(of: showCameraPanel) { _, _ in noteChromeInteraction() }
+            .onChange(of: objectsBinding.wrappedValue) { _, _ in noteChromeInteraction() }
+            .onChange(of: engine.objects.isEmpty) { _, _ in noteChromeInteraction() }
+            .task(id: chromeLastInteraction) {
+                guard let deadline = PhoneChromeFade.nextChange(
+                    now: Date(), lastInteraction: chromeLastInteraction,
+                    gestureActive: chromeGestureActive, pinned: phoneChromePinned) else { return }
+                let wait = max(0, deadline.timeIntervalSinceNow)
+                try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+                if !Task.isCancelled { chromeFadeNow = Date() }
+            }
     }
 
     // The floating transport. iPhone (compact): a rounded peek that expands in
@@ -4760,6 +4799,30 @@ struct ContentView: View {
 
     // MARK: - Initialization
 
+    // iPhone chrome fade (#391): what the camera button and the panel tongue
+    // look like right now. Always fully shown off the iPhone (iPad, macOS), with
+    // VoiceOver on, or while the camera dock is open.
+    private var phoneChromeAppearance: PhoneChromeFade.Appearance {
+        PhoneChromeFade.appearance(now: chromeFadeNow, lastInteraction: chromeLastInteraction,
+                                   gestureActive: chromeGestureActive, pinned: phoneChromePinned)
+    }
+
+    private var phoneChromePinned: Bool {
+        #if os(iOS)
+        return UIDevice.current.userInterfaceIdiom != .phone || voiceOverEnabled || showCameraPanel
+        #else
+        return true
+        #endif
+    }
+
+    // Restart the idle clock (any touch / gesture edge / chrome toggle).
+    private func noteChromeInteraction(gestureActive: Bool? = nil) {
+        let now = Date()
+        if let gestureActive { chromeGestureActive = gestureActive }
+        chromeLastInteraction = now
+        chromeFadeNow = now
+    }
+
     // Bottom-left viewport shortcut to the Camera overlay.
     private var cameraButton: some View {
         Button { withAnimation(.easeOut(duration: 0.22)) { showCameraPanel.toggle() } } label: {
@@ -4776,6 +4839,7 @@ struct ContentView: View {
         .buttonStyle(.plain)
         .accessibilityLabel("Camera settings")
         .accessibilityIdentifier("camera")
+        .phoneChromeFade(phoneChromeAppearance)
     }
 
     // The bottom-left chrome draws something (scene buttons or the camera

@@ -597,6 +597,13 @@ struct MetalViewport: UIViewRepresentable {
         view.addGestureRecognizer(rotation)
         view.addGestureRecognizer(longPress)
 
+        // iPhone chrome fade (#391): every viewport gesture also reports its
+        // begin / end, so the camera button and panel tongue get out of the way
+        // while the molecule is being moved and come back afterwards.
+        for recognizer in [tap, pan, twoPan, clipPan, pinch, rotation, longPress] as [UIGestureRecognizer] {
+            recognizer.addTarget(context.coordinator, action: #selector(Coordinator.noteViewportActivity(_:)))
+        }
+
         // iPad hover pre-selection preview (issue #165): a UIHoverGestureRecognizer
         // fires ONLY for an indirect pointer hover — trackpad (Magic Keyboard),
         // mouse, or Apple Pencil hover — with no button/touch held, mirroring the
@@ -1879,6 +1886,24 @@ extension MetalViewport {
         // MARK: - iPadOS gesture handling
 
         #if os(iOS)
+        /// iPhone chrome fade (#391): reports a viewport gesture's begin and end
+        /// (and a tap or long-press, which are touches but not drags). "Active"
+        /// means a continuous drag / pinch / rotation is still in progress on this
+        /// view, so a pinch that ends while its rotation continues stays active.
+        @objc func noteViewportActivity(_ gesture: UIGestureRecognizer) {
+            switch gesture.state {
+            case .began, .ended, .cancelled: break
+            default: return   // .changed would post every frame
+            }
+            let active = (gesture.view?.gestureRecognizers ?? []).contains { recognizer in
+                (recognizer is UIPanGestureRecognizer || recognizer is UIPinchGestureRecognizer
+                    || recognizer is UIRotationGestureRecognizer)
+                    && (recognizer.state == .began || recognizer.state == .changed)
+            }
+            NotificationCenter.default.post(name: .raymolViewportActivity, object: nil,
+                                            userInfo: ["gestureActive": active])
+        }
+
         /// A tap at `p` in Lights mode (#622): true when it landed on a light
         /// gizmo target. A knob selects its light (the bar and the inspector
         /// follow); any other target takes the tap with no atom pick. An

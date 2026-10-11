@@ -190,3 +190,48 @@ enum PanelLayout {
         return min(max(frac, minPanelFrac), maxPanelFrac)
     }
 }
+
+// MARK: - iPhone viewport chrome auto-fade (#391)
+
+/// The iPhone's camera button and panel tongue float over the molecule, so they
+/// fade out of the way: fully shown for `idleDelay` after the last touch, dimmed
+/// (still tappable) after that, and gone while a viewport gesture is in progress.
+/// Pure so the rule is testable from the macOS test host; ContentView feeds it the
+/// clock and the viewport's gesture state.
+enum PhoneChromeFade {
+    /// Seconds of no interaction before the controls dim.
+    static let idleDelay: TimeInterval = 3
+    /// Opacity once idle: faint but still tappable, so reaching for the button
+    /// never needs a touch on the molecule first (a tap there picks atoms).
+    static let idleOpacity: Double = 0.25
+    /// Opacity while a rotate / pan / pinch is in progress: out of the way.
+    static let gestureOpacity: Double = 0
+    /// Duration of the opacity animation.
+    static let fadeDuration: Double = 0.25
+
+    struct Appearance: Equatable {
+        var opacity: Double
+        var isHitTestable: Bool
+    }
+
+    /// `pinned` keeps the controls fully shown (not an iPhone, VoiceOver on, or
+    /// the camera dock open).
+    static func appearance(now: Date, lastInteraction: Date,
+                           gestureActive: Bool, pinned: Bool) -> Appearance {
+        if pinned { return Appearance(opacity: 1, isHitTestable: true) }
+        if gestureActive { return Appearance(opacity: gestureOpacity, isHitTestable: gestureOpacity > 0) }
+        if now.timeIntervalSince(lastInteraction) < idleDelay {
+            return Appearance(opacity: 1, isHitTestable: true)
+        }
+        return Appearance(opacity: idleOpacity, isHitTestable: idleOpacity > 0)
+    }
+
+    /// When `appearance` will next change with no new input: the idle deadline
+    /// while it is still ahead, nil otherwise (pinned, mid-gesture, or already dim).
+    static func nextChange(now: Date, lastInteraction: Date,
+                           gestureActive: Bool, pinned: Bool) -> Date? {
+        guard !pinned, !gestureActive else { return nil }
+        let deadline = lastInteraction.addingTimeInterval(idleDelay)
+        return deadline > now ? deadline : nil
+    }
+}
