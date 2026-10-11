@@ -10,9 +10,12 @@ options:
   xcodeVersion: "16.0"
   createIntermediateGroups: true
 
+# Base configurations point at Config/Project.xcconfig rather than PyMOLBridge.xcconfig
+# because a root-level config file gets random TEMP_ UUIDs from XcodeGen (#642).
+# All real build settings live in PyMOLBridge.xcconfig (edit that file instead).
 configFiles:
-  Debug: PyMOLBridge.xcconfig
-  Release: PyMOLBridge.xcconfig
+  Debug: Config/Project.xcconfig
+  Release: Config/Project.xcconfig
 
 packages:
   # MPNNKit: on-device ProteinMPNN inference. Linked on both platforms as of
