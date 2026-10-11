@@ -5952,8 +5952,10 @@ int ExecutiveSetSession(
     if (tmp || (!(partial_restore |
                    partial_session))) { /* ignore missing if partial restore */
       // Only apply a view that was actually read from the session. A full
-      // session without a 'view' key leaves the current camera alone.
-      if (tmp && ok)
+      // session without a 'view' key leaves the current camera alone. The
+      // float converter reports a non-numeric entry only through the Python
+      // error state, so check that too.
+      if (tmp && ok && !PyErr_Occurred())
         SceneSetView(G, sv, true, 0, 0);
       if (PyErr_Occurred()) {
         PyErr_Print();
