@@ -1055,3 +1055,85 @@ final class LightsNoCastersHintTests: XCTestCase {
             isShadowed: false, rigOn: true, sceneShadowsOn: true, shadowSlot: -1))
     }
 }
+
+// MARK: - Exposure row (#733)
+
+/// The inspector's rig-level Exposure row edits the SAME setting as
+/// Effects > Exposure: same entry, range and command text.
+final class LightsExposureRowTests: XCTestCase {
+    func testControlWritesTheEffectsSettingAndCommand() {
+        var ran: [String] = []
+        let control = LightsExposureControl.scene(values: ["metal_exposure": 0.6], run: { ran.append($0) })
+        let effects = SceneCatalog.exposure
+        XCTAssertEqual(effects.setting, "metal_exposure")
+        XCTAssertEqual(control.value, 0.6)
+        XCTAssertEqual(control.range, effects.min...effects.max)
+        XCTAssertEqual(control.decimals, effects.decimals)
+        control.set(0.75)
+        control.set(1.2)
+        // Exactly what the Effects slider runs for those values.
+        XCTAssertEqual(ran, ["set metal_exposure, 0.7500", "set metal_exposure, 1.2000"])
+        XCTAssertEqual(ran, [0.75, 1.2].map { SceneCatalog.setCommand(effects, $0) })
+    }
+
+    func testRangeAndDefault() {
+        let control = LightsExposureControl.scene(values: [:], run: { _ in })
+        XCTAssertEqual(control.value, 1.0, "unpolled: neutral")
+        XCTAssertEqual(control.range, 0.2...2.0)
+        XCTAssertEqual(control.text(1.0), "1.00")
+    }
+
+    func testCaptionNamesWhatItScales() {
+        XCTAssertTrue(LightsExposureControl.caption.contains("lit scene"))
+        XCTAssertTrue(LightsExposureControl.caption.contains("air"))
+    }
+
+    /// The row's edit contract: no write during a drag, one on release, an
+    /// immediate write for a step outside a drag, and the written value shown
+    /// until a changed polled value arrives (never mid-drag).
+    func testEditCommitsOnReleaseAndHoldsUntilThePollChanges() {
+        var e = LightsExposureEdit()
+        XCTAssertEqual(e.shown(1.0), 1.0)
+        XCTAssertNil(e.editing(true))
+        XCTAssertNil(e.set(0.5))
+        XCTAssertNil(e.set(0.6), "no write per drag tick")
+        XCTAssertEqual(e.shown(1.0), 0.6)
+        e.polledChanged()
+        XCTAssertEqual(e.shown(1.0), 0.6, "a poll mid-drag does not clear it")
+        XCTAssertEqual(e.editing(false), 0.6, "one write on release")
+        XCTAssertEqual(e.shown(1.0), 0.6, "held after release, before the poll")
+        e.polledChanged()
+        XCTAssertEqual(e.shown(0.6), 0.6)
+        XCTAssertNil(e.pending, "the changed poll releases it")
+        // A VoiceOver step outside a drag writes at once.
+        XCTAssertEqual(e.set(0.65), 0.65)
+        XCTAssertEqual(e.shown(0.6), 0.65)
+    }
+
+    /// The inspector draws the Exposure row only when the app puts a control
+    /// in the environment: the rows presentation is taller by the row (and its
+    /// caption) with one, and its size is unchanged without.
+    @MainActor
+    func testInspectorDrawsTheRowOnlyWithAControl() {
+        let store = FakeRigStore()
+        store.setRig(["key", "fill"])
+        let controller = LightsController(seams: store.seams)
+        controller.begin()
+        let style = LightsInspectorSnapshotTests.style(dark: true)
+        func height(_ control: LightsExposureControl?) -> CGFloat {
+            let host = NSHostingView(rootView:
+                LightsInspector(controller: controller, style: style, presentation: .rows)
+                    .environment(\.lightsExposure, control)
+                    .frame(width: LightsInspectorMetrics.width - 24))
+            host.frame = NSRect(x: 0, y: 0, width: LightsInspectorMetrics.width, height: 600)
+            host.layoutSubtreeIfNeeded()
+            XCTAssertLessThanOrEqual(host.fittingSize.width, LightsInspectorMetrics.width)
+            return host.fittingSize.height
+        }
+        let without = height(nil)
+        let with = height(.scene(values: ["metal_exposure": 1], run: { _ in }))
+        XCTAssertGreaterThan(without, 0)
+        XCTAssertGreaterThan(with, without + 20, "the Exposure row and its caption add height")
+        XCTAssertEqual(height(nil), without, accuracy: 0.5)
+    }
+}

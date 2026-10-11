@@ -492,6 +492,21 @@ enum CameraCommands {
 }
 
 enum SceneCatalog {
+    /// A scene slider's value as the `set` command writes it.
+    static func format(_ v: Double, _ p: SceneParam) -> String {
+        p.decimals == 0 ? String(Int(v.rounded())) : String(format: "%.4f", v)
+    }
+
+    /// The command a scene slider runs for `v` (the Effects sliders and the
+    /// Lights inspector's Exposure row share it: one source of truth).
+    static func setCommand(_ p: SceneParam, _ v: Double) -> String {
+        "set \(p.setting), \(format(v, p))"
+    }
+
+    /// Effects > Exposure (metal_exposure), the setting the Lights inspector's
+    /// Exposure row edits too (#733).
+    static var exposure: SceneParam { params.first { $0.setting == "metal_exposure" }! }
+
     /// Scene settings whose value is a material id, so a `.menu` row for one is
     /// served from the core's material table rather than from its own options.
     /// Named explicitly: `SceneParam` has no optionSource field, and silently
@@ -633,7 +648,7 @@ enum SceneCatalog {
         // pass whenever exposure != 1), so hiding the slider when tone-map is off
         // could strand a dimmed value with no way to fix it in the UI.
         SceneParam(setting: "metal_exposure", label: "Exposure", kind: .slider, min: 0.2, max: 2.0, step: 0.05, decimals: 2, group: "Effects",
-                   help: "Brightness multiplier (1.0 = neutral). Applies whether or not filmic tone-map is on."),
+                   help: "Brightness multiplier (1.0 = neutral). Applies whether or not filmic tone-map is on. Under a light rig it scales the lit scene and the air, not the background, labels or outlines (also in the Lights inspector)."),
         SceneParam(setting: "depth_cue",  label: "Depth cue / fog", kind: .toggle, group: "Effects",
                    help: "Fade distant parts of the scene into the background to convey depth."),
 
@@ -642,6 +657,18 @@ enum SceneCatalog {
                    options: [("0", 0), ("1", 1), ("2", 2)], group: "Quality",
                    help: "Surface mesh detail: 0 = coarse/fast, 2 = fine/slow."),
     ]
+}
+
+extension LightsExposureControl {
+    /// The Lights inspector's Exposure row over the scene's metal_exposure
+    /// (the Effects slider's setting, range and command). `values` is the
+    /// scene poll; `run` the engine's console command (the one Effects uses).
+    static func scene(values: [String: Double], run: @escaping (String) -> Void) -> LightsExposureControl {
+        let p = SceneCatalog.exposure
+        return LightsExposureControl(value: values[p.setting] ?? 1.0, range: p.min...p.max,
+                                     decimals: p.decimals,
+                                     set: { run(SceneCatalog.setCommand(p, $0)) })
+    }
 }
 
 // MARK: - Data Models
@@ -3227,7 +3254,7 @@ private struct LabeledSlider: View {
         HStack(spacing: 6) {
             // Continuous (no `step`): a stepped Slider draws busy tick marks on
             // macOS. Values are rounded for display (fmt) and when applied
-            // (fmtScene / the mm/zoom mappings), so dropping the step only removes
+            // (SceneCatalog.format / the mm/zoom mappings), so dropping the step only removes
             // the ticks, not the effective granularity.
             Slider(value: $local, in: prop.min...prop.max,
                    onEditingChanged: { began in
@@ -4734,8 +4761,8 @@ struct SceneParamRow: View {
                     LabeledSlider(prop: RepProperty(setting: p.setting, label: p.label, kind: .slider,
                                                     min: p.min, max: p.max, step: p.step, decimals: p.decimals),
                                   value: v,
-                                  onLive: { engine.runCommand("set \(p.setting), \(fmtScene($0, p))") },
-                                  onCommit: { engine.runCommand("set \(p.setting), \(fmtScene($0, p))") })
+                                  onLive: { engine.runCommand(SceneCatalog.setCommand(p, $0)) },
+                                  onCommit: { engine.runCommand(SceneCatalog.setCommand(p, $0)) })
                         .disabled(dofAuto)
                         .opacity(dofAuto ? 0.4 : 1.0)
                 }
@@ -4759,10 +4786,6 @@ struct SceneParamRow: View {
                             onSelect: { engine.runCommand("set \(p.setting), \(Int($0))") })
             }
         }
-    }
-
-    private func fmtScene(_ v: Double, _ p: SceneParam) -> String {
-        p.decimals == 0 ? String(Int(v.rounded())) : String(format: "%.4f", v)
     }
 
     // Lens control: map PyMOL's vertical field_of_view (degrees) to a 35mm-

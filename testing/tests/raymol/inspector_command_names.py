@@ -32,7 +32,8 @@ NAME_VARS = ('name', 'objName', 'entry.name', 'entry.target', 'entry.chain',
 # Commands passed in NON-literally (a variable or a builder call) cannot be
 # checked for interpolation at the call site, so each must carry a guard --
 # except these, which build their text from no name at all.
-UNNAMED_BUILDERS = ('CameraCommands.setAutofocus(',)
+# (SceneCatalog.setCommand: a catalog setting name and a number.)
+UNNAMED_BUILDERS = ('CameraCommands.setAutofocus(', 'SceneCatalog.setCommand(')
 
 ENGINE = os.path.join(ROOT, 'swiftui', 'PyMOLViewer', 'Shared',
                       'PyMOLEngine.swift')

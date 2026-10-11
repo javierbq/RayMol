@@ -494,6 +494,116 @@ struct LightAngleDial: View {
     }
 }
 
+// MARK: - Exposure (rig level, #733)
+
+/// The scene's Exposure as the inspector's rig-level row edits it: the same
+/// setting as Effects > Exposure. The app builds it (`.scene(values:run:)`,
+/// in ObjectPanel.swift, beside the Effects entry) so this file names no
+/// setting or command; the environment holds nil where there is none.
+struct LightsExposureControl {
+    var value: Double
+    var range: ClosedRange<Double>
+    var decimals: Int
+    /// Write the value (the row calls it on release, not per drag tick).
+    var set: (Double) -> Void
+
+    static let title = "Exposure"
+    static let caption = "Scales the lit scene and air under the rig."
+    static let identifier = "lights.inspector.exposure"
+
+    func text(_ v: Double) -> String { String(format: "%.\(decimals)f", v) }
+}
+
+private struct LightsExposureKey: EnvironmentKey {
+    static let defaultValue: LightsExposureControl? = nil
+}
+
+extension EnvironmentValues {
+    var lightsExposure: LightsExposureControl? {
+        get { self[LightsExposureKey.self] }
+        set { self[LightsExposureKey.self] = newValue }
+    }
+}
+
+/// The Exposure slider's edit state, apart from the view so it is testable:
+/// nothing is written during a drag, the release writes once, a step outside
+/// a drag (VoiceOver) writes at once, and the written value stays shown until
+/// the scene poll reports a changed one.
+struct LightsExposureEdit: Equatable {
+    private(set) var pending: Double?
+    private(set) var dragging = false
+
+    func shown(_ polled: Double) -> Double { pending ?? polled }
+
+    /// The slider moved to `v`; the value to write now, if any.
+    mutating func set(_ v: Double) -> Double? {
+        pending = v
+        return dragging ? nil : v
+    }
+
+    /// A drag began or ended; the value to write (on release), if any.
+    mutating func editing(_ began: Bool) -> Double? {
+        dragging = began
+        return began ? nil : pending
+    }
+
+    /// The polled value changed (ours caught up, or an outside edit).
+    mutating func polledChanged() {
+        if !dragging { pending = nil }
+    }
+}
+
+/// The rig-level Exposure row: label, slider (committed on release; a
+/// VoiceOver step commits at once), value, and a caption. The committed value
+/// stays shown until the scene poll reports a new one (it lags ~500 ms), as
+/// the Effects slider's local state does, so the thumb does not snap back.
+struct LightExposureRow: View {
+    var control: LightsExposureControl
+    var style: LightsBarStyle
+    /// The value being dragged or just committed, until the poll catches up.
+    @State private var edit = LightsExposureEdit()
+
+    var body: some View {
+        let shown = edit.shown(control.value)
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: InspectorMetrics.rowSpacing) {
+                Text(LightsExposureControl.title)
+                    .font(InspectorMetrics.font)
+                    .foregroundColor(style.text.opacity(0.8))
+                    .frame(width: InspectorMetrics.labelWidth, alignment: .leading)
+                    .accessibilityHidden(true)
+                Slider(value: Binding(get: { shown },
+                                      set: { v in
+                                          if let w = edit.set(v) { control.set(w) }
+                                      }),
+                       in: control.range,
+                       onEditingChanged: { began in
+                           if let w = edit.editing(began) { control.set(w) }
+                       })
+                    .controlSize(.small)
+                    .accessibilityLabel(LightsExposureControl.title)
+                    .accessibilityValue(control.text(shown))
+                    .accessibilityHint(LightsExposureControl.caption)
+                    .accessibilityIdentifier(LightsExposureControl.identifier)
+                Text(verbatim: control.text(shown))
+                    .font(InspectorMetrics.valueFont)
+                    .foregroundColor(style.text)
+                    .lineLimit(1)
+                    .frame(width: InspectorMetrics.valueWidth, alignment: .trailing)
+                    .accessibilityHidden(true)
+            }
+            Text(LightsExposureControl.caption)
+                .font(.system(size: 10))
+                .foregroundColor(style.text.opacity(0.6))
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityHidden(true)
+        }
+        // A changed polled value (ours caught up, or an outside edit) wins;
+        // never while dragging.
+        .onChange(of: control.value) { _ in edit.polledChanged() }
+    }
+}
+
 // MARK: - Rows
 
 /// The inspector's row metrics, shared with the Atmosphere card (#726).
@@ -856,6 +966,7 @@ struct LightsInspector: View {
     @State private var colourWidth: CGFloat = LightsInspector.width - 24
     /// 44 on iOS (every control a 44 pt target, #623), 0 on macOS.
     @Environment(\.lightsTouchMinimum) private var touchMinimum
+    @Environment(\.lightsExposure) private var exposure
 
     static let width: CGFloat = LightsInspectorMetrics.width
     static let estimatedHeight: CGFloat = 480
@@ -1123,6 +1234,17 @@ struct LightsInspector: View {
     // MARK: content
 
     private func content(_ state: LightsInspectorState) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            lightRows(state)
+            // Rig level, not the selected light's: stays editable.
+            if let exposure {
+                Rectangle().fill(style.text.opacity(0.12)).frame(height: 0.5)
+                LightExposureRow(control: exposure, style: style)
+            }
+        }
+    }
+
+    private func lightRows(_ state: LightsInspectorState) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             LightPlacementRows(controller: controller, eye: controller.eye, style: style)
             slider(.intensity, state)
