@@ -690,11 +690,9 @@ extension MetalViewport {
         private let kZoomGain: CGFloat = 1.0
 
         // Trackpad two-finger twist → Z-roll (Trackpad mode only). NSRotationGesture
-        // .rotation is cumulative radians; feed the per-callback delta as `turn z`.
-        // Negated so a clockwise twist rolls the molecule clockwise on screen, to
-        // match the iOS handleRotation sign.
+        // .rotation is cumulative radians; feed the per-callback delta to
+        // rollCamera(byRadians:) (sign: Coordinator.rollSign, shared with iOS).
         private var lastRoll: CGFloat = 0
-        private let kRollSign: Float = -1
 
         // Trackpad two-finger drag (delivered as precise scrollWheel events) →
         // translate. Synthesized as a PyMOL middle-button drag: a MIDDLE-DOWN at
@@ -736,11 +734,9 @@ extension MetalViewport {
         private var pinchLastScale: CGFloat = 1.0
         private let kZoomGain: CGFloat = 1.0
         // Two-finger rotation → Z-axis roll. UIRotationGestureRecognizer.rotation
-        // is cumulative radians; feed the per-callback delta as a `turn z` (deg).
-        // Negated so a clockwise twist rolls the molecule clockwise on screen;
-        // flip kRollSign if it feels inverted.
+        // is cumulative radians; feed the per-callback delta to
+        // rollCamera(byRadians:) (sign: Coordinator.rollSign, shared with macOS).
         private var lastRotation: CGFloat = 0
-        private let kRollSign: Float = -1
         // Last position fed to a multi-finger drag (translate / clip). On release
         // the touches lift unevenly and the pan recognizer's centroid jumps to the
         // remaining finger; replaying that jumped location as the button-UP would
@@ -1159,6 +1155,20 @@ extension MetalViewport {
                 lightGizmoLayout(in: view).flatMap { LightGizmoHitTest.target(at: point, layout: $0) }
             }
             MainActor.assumeIsolated { engine.lightGizmoUI.hovered = target }
+        }
+
+        /// The twist's roll sign on both platforms: negated so a clockwise
+        /// twist rolls the molecule clockwise on screen. Flip it if that feels
+        /// inverted.
+        static let rollSign: Float = -1
+
+        /// One tick of the two-finger twist (#719), shared by the iOS rotation
+        /// recognizer and the macOS trackpad twist: `radians` is the change in the
+        /// recognizer's cumulative rotation since the last tick. Rolls the camera
+        /// about z through the bridge (engine.turnZ), never runPython.
+        func rollCamera(byRadians radians: CGFloat) {
+            let deg = Self.rollSign * Float(radians) * 180.0 / .pi
+            engine?.turnZ(deg)
         }
 
         #if os(macOS)
@@ -1872,8 +1882,8 @@ extension MetalViewport {
 
         // Trackpad two-finger twist → Z-axis roll, mirroring the iOS handleRotation
         // gesture. Gated on engine.trackpadMode so it never disturbs the classic
-        // per-button mouse modes. runPython (not runCommand) to avoid echoing
-        // `turn z` into the feedback log every frame.
+        // per-button mouse modes. The tick rolls through rollCamera(byRadians:)
+        // (a bridge call, no Python, nothing echoed in the log).
         @objc func handleRotationGesture(_ gesture: NSRotationGestureRecognizer) {
             guard engine?.trackpadMode == true, !boxSelectActive else { return }
             switch gesture.state {
@@ -1882,8 +1892,7 @@ extension MetalViewport {
             case .changed:
                 let delta = gesture.rotation - lastRoll
                 lastRoll = gesture.rotation
-                let deg = kRollSign * Float(delta) * 180.0 / .pi
-                engine?.runPython("from pymol import cmd as _c; _c.turn('z', \(deg))")
+                rollCamera(byRadians: delta)
             case .ended, .cancelled:
                 lastRoll = 0
             default:
@@ -2383,17 +2392,17 @@ extension MetalViewport {
             if let view = mtkView, lightGizmoTwoFinger(.rotation, gesture, at: gesture.location(in: view), in: view) {
                 return
             }
-            // Two-finger rotation → Z-axis roll (`turn z`). Per-callback delta of
-            // the cumulative gesture.rotation, in degrees. runPython (not run-
-            // Command) to avoid echoing into the log every frame.
+            // Two-finger rotation → Z-axis roll. Per-callback delta of the
+            // cumulative gesture.rotation (radians); the tick rolls through
+            // rollCamera(byRadians:) (a bridge call, no Python, nothing echoed in
+            // the log).
             switch gesture.state {
             case .began:
                 lastRotation = 0
             case .changed:
                 let delta = gesture.rotation - lastRotation
                 lastRotation = gesture.rotation
-                let deg = kRollSign * Float(delta) * 180.0 / .pi
-                engine?.runPython("from pymol import cmd as _c; _c.turn('z', \(deg))")
+                rollCamera(byRadians: delta)
             case .ended, .cancelled:
                 lastRotation = 0
             default:

@@ -1311,6 +1311,18 @@ final class PyMOLEngine: ObservableObject {
         if restored == 1 { requestViewportRedraw() }
     }
 
+    /// Roll the camera `degrees` about the view's z axis, exactly as
+    /// `cmd.turn('z', degrees)` (same API lock, same modal-draw refusal) but
+    /// with no Python source run (#719): the two-finger twist calls this on
+    /// every tick. The core marks the scene dirty, so the display link
+    /// redraws without a request.
+    func turnZ(_ degrees: Float) {
+        // A zero tick (fingers moving without twisting) changes nothing, so
+        // it takes no lock and leaves no redraw.
+        guard isReady, degrees.isFinite, degrees != 0, let instance else { return }
+        _ = PyMOLBridge_TurnZ(instance, degrees)
+    }
+
     // Synchronous command body. Safe on the main thread (light commands) or on
     // coreQueue (heavy commands): it calls only direct bridge/runPython helpers,
     // never runCommand, so it can't re-enter the heavy-dispatch path.

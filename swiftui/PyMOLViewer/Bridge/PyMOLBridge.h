@@ -84,6 +84,14 @@ void PyMOLBridge_RunCommand(const char *command);
 int PyMOLBridge_GetView(PyMOLHandle instance, float *view, int count);
 int PyMOLBridge_SetView(PyMOLHandle instance, const float *view, int count, float animate);
 
+// Roll the camera `degrees` about the view's z axis: exactly cmd.turn('z',
+// degrees) (PyMOL_CmdTurn: SceneRotate under the API lock, as PyMOL_Drag
+// takes it), with no Python source run, so the two-finger twist can call it
+// once per tick (#719). MAIN THREAD ONLY, like GetView/SetView. Returns 1
+// when it turned, 0 for no instance or while a modal draw owns the core
+// (cmd.turn refuses then too).
+int PyMOLBridge_TurnZ(PyMOLHandle instance, float degrees);
+
 // --- Light rig (#611, spec §4.4) ---
 // Direct C++ on the scene's rig (layer1/SceneLights.h): no Python, so one call
 // per drag tick is cheap. MAIN THREAD ONLY, like GetView/SetView, and never

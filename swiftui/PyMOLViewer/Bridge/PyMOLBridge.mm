@@ -445,6 +445,18 @@ int PyMOLBridge_SetView(PyMOLHandle h, const float *view, int count, float anima
     return 1;
 }
 
+int PyMOLBridge_TurnZ(PyMOLHandle h, float degrees)
+{
+    // PyMOL's C API turn (layer5/PyMOL.cpp): SceneRotate about z under
+    // PYMOL_API_LOCK, the API lock cmd.turn's `with lockcm` holds and the
+    // one-finger rotate (PyMOL_Drag) takes, the same rotation CmdTurn's
+    // SceneRotateAxis does. PYMOL_API_LOCK skips the body during a modal
+    // draw, where cmd.turn refuses (APIEnterNotModal); that is reported as 0
+    // here. SceneRotate invalidates the scene, so the display link redraws.
+    if (!h || PyMOL_GetModalDraw(INST(h))) return 0;
+    return PyMOL_CmdTurn(INST(h), 'z', degrees).status == PyMOLstatus_SUCCESS ? 1 : 0;
+}
+
 // --- Light rig (#611, spec §4.4) ---
 // Main thread only. These call only the scene's light-rig functions
 // (SceneLightsJSON / SceneLightSet / SceneLightsResolve, layer1/SceneLights.h),
