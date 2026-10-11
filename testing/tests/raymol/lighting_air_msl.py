@@ -185,6 +185,26 @@ STATEMENTS_684 = (
                r'encodeAirAlphaMerge\(sceneSrc\)\s*;'),
 )
 
+# #685's (dust tick cache) statements, taken out the same way so the master
+# digests hold.
+STATEMENTS_685 = {
+    'SceneRenderMetal': (
+        re.compile(r'const\s+CScene::MetalAirFrameKey\s+airAtStart\s*\{[^;]*\}\s*;'),
+        re.compile(r'const\s+bool\s+airOnly\s*=\s*'
+                   r'SceneRenderMetalAirOnly\(G,\s*airAtStart\)\s*;'),
+        re.compile(r'if\s*\(\s*airOnly\s*\)\s*return\s*;'),
+    ),
+    'RendererMetal::beginFrame': (
+        re.compile(r'noteSceneFrame\(\)\s*;'),
+    ),
+    'RendererMetal::runPostChain': (
+        re.compile(r'if\s*\(\s*_airOnlyFrame\s*\)\s*\{\s*sceneSrc\s*=\s*_airCacheColor\s*;\s*\}\s*else\s+'),
+        re.compile(r'_rtAOAccumFrames\s*=\s*reset\s*\?\s*1\s*:\s*std::min\(_rtAOAccumFrames\s*\+\s*1,\s*1\s*<<\s*20\)\s*;'),
+        re.compile(r'_rtAOTemporalRan\s*=\s*true\s*;'),
+        re.compile(r'keepPreAirImage\(sceneSrc\)\s*;'),
+    ),
+}
+
 
 def without_air_alpha_684(body):
     """runPostChain's `body` with #684's two statements taken out. Returns
@@ -451,6 +471,11 @@ class TestMasterUnchanged(AirMSLCase):
                 self.assertEqual((choices, builds), (1, 1))
                 body, alpha = without_air_alpha_684(body)
                 self.assertEqual(alpha, [1, 1])
+            # #685's statements, taken out as the air's is
+            if name in STATEMENTS_685:
+                for stmt in STATEMENTS_685[name]:
+                    self.assertEqual(len(stmt.findall(body)), 1, name)
+                    body = stmt.sub('', body, count=1)
             self.assertEqual(digest(body), want, name)
 
 
@@ -1082,6 +1107,8 @@ AIR_DRAW_EDITS = (
                 r'&& airTickDue\(view: view, engine: engine\)'), ''),
     (re.compile(r'redisplayPending: pending \|\| airDue'), 'redisplayPending: pending'),
     (re.compile(r'lastFrameTime = CACurrentMediaTime\(\)'), ''),
+    # #685: draw(in:) hands airDue to renderMetalFrame
+    (re.compile(r',\s*airTick:\s*airDue'), ''),
 )
 AIR_BRIDGE_CALLS = {'INST', 'PyMOL_GetGlobals', 'SceneLightsAirAnimating'}
 
@@ -1393,3 +1420,103 @@ class TestBridgeAndApp(AirMSLCase):
             self.assertEqual(count, 1, pattern.pattern)
         self.assertEqual(digest(draw), MASTER_DRAW,
                          'draw(in:) differs from master beyond the air\'s three edits')
+
+
+class TestDustOnlyTicks(testing.PyMOLTestCase):
+    """#685: animated dust re-renders the whole scene on every tick.
+    On a dust-only tick, keep the last full live frame's pre-air image and
+    re-run only the post chain from the air pass on."""
+
+    def setUp(self):
+        super().setUp()
+        if not os.path.isfile(METAL_MM):
+            self.skipTest('%s not present; not a repo checkout' % METAL_MM)
+        self.mm = read(METAL_MM)
+        self.scene_render = read(SCENE_RENDER)
+        self.cmd_cpp = read(os.path.join(ROOT, 'layer4', 'Cmd.cpp'))
+        self.pymol_h = read(os.path.join(ROOT, 'layer5', 'PyMOL.h'))
+        self.pymol_cpp = read(os.path.join(ROOT, 'layer5', 'PyMOL.cpp'))
+        self.bridge_mm = read(BRIDGE_MM)
+        self.viewport = _bridge.strip_comments(read(VIEWPORT))
+
+    def testRedisplayGeneration(self):
+        self.assertRegex(self.pymol_h, r'unsigned\s+long\s+PyMOL_GetRedisplayGeneration\s*\(\s*CPyMOL\s*\*\s*I\s*\)\s*;')
+        need_redisplay = cpp_function(self.pymol_cpp, 'PyMOL_NeedRedisplay')
+        self.assertIn('RedisplayGeneration++', need_redisplay)
+
+    def testBridgeAndDrawPassAirTick(self):
+        bridge_fn = cpp_function(self.bridge_mm, 'PyMOLBridge_RenderMetalFrame')
+        self.assertEqual(bridge_fn.count('renderer->beginFrame();'), 1)
+        self.assertIn('if (!(airTick && SceneRenderMetalArmAirTick(G)))', bridge_fn)
+        self.assertLess(bridge_fn.index('if (!(airTick && SceneRenderMetalArmAirTick(G)))'),
+                        bridge_fn.index('renderer->beginFrame();'))
+        self.assertLess(bridge_fn.index('renderer->setAirTickFrame(airTick != 0);'),
+                        bridge_fn.index('SceneRenderMetalArmAirTick(G)'))
+        draw = swift_body(self.viewport, 'func draw(in view: MTKView)')
+        self.assertRegex(draw, r'engine\.renderMetalFrame\([\s\S]*?\bairTick:\s*airDue')
+
+    def testSceneRenderMetalPlacement(self):
+        body = cpp_function(self.scene_render, 'SceneRenderMetal')
+        idx_prep = body.index('ScenePrepareMatrix(G, 0);')
+        # the generations are read before the update phase
+        idx_start = body.index('PyMOL_GetRedisplayGeneration(G->PyMOL)')
+        self.assertLess(idx_start, body.index('OrthoExecDeferred(G)'))
+        self.assertLess(idx_start, body.index('SceneUpdate(G, false)'))
+        idx_air_only = body.index('SceneRenderMetalAirOnly(G, airAtStart);')
+        idx_lights = body.index('SceneLightsFrame(')
+        self.assertLess(idx_prep, idx_air_only)
+        self.assertLess(idx_air_only, idx_lights)
+
+        idx_air = body.index('setLightAir(')
+        idx_sample = body.index('setDesiredSampleCount(')
+        idx_ret = body.index('if (airOnly)')
+        idx_render_all = body.index('SceneRenderAll(')
+        idx_shadow_maps = body.index('SceneRenderLightShadowMaps(')
+        self.assertLess(idx_air, idx_ret)
+        self.assertLess(idx_sample, idx_ret)
+        self.assertLess(idx_ret, idx_render_all)
+        self.assertLess(idx_ret, idx_shadow_maps)
+
+    def testSceneMetalAirHelpers(self):
+        air_only = cpp_function(self.scene_render, 'SceneRenderMetalAirOnly')
+        self.assertIn('beginFrame()', air_only)
+        arm_air = cpp_function(self.scene_render, 'SceneRenderMetalArmAirTick')
+        self.assertIn('PyMOL_GetRedisplayGeneration', arm_air)
+        self.assertIn('OrthoDeferredWaiting', arm_air)
+        self.assertIn('ContentGeneration', arm_air)
+        self.assertIn('a.contentGeneration != b.contentGeneration',
+                      cpp_function(self.scene_render, 'SceneMetalAirFrameKeyEqual'))
+
+    def testRunPostChainAirCache(self):
+        post = cpp_function(self.mm, 'RendererMetal::runPostChain')
+        keep_idx = post.index('keepPreAirImage(sceneSrc);')
+        air_stmt = post.index('encodeAirPass(')
+        self.assertLess(keep_idx, air_stmt)
+
+        air_only_idx = post.index('if (_airOnlyFrame) {')
+        dort_idx = post.index('if (doRT) {')
+        self.assertLess(air_only_idx, dort_idx)
+
+        keep_fn = cpp_function(self.mm, 'RendererMetal::keepPreAirImage')
+        self.assertIn('_offscreen', keep_fn)
+        self.assertIn('_contourActive', keep_fn)
+        self.assertIn('!rayTracingCurrent()', keep_fn)
+        self.assertIn('kAirCacheAOFrames', keep_fn)
+        # only a frame rendered for the dust alone pays the copy
+        self.assertIn('!_airTickFrame', keep_fn)
+        # a dust-only frame leaves the kept image valid for the next tick
+        self.assertRegex(keep_fn, r'\{\s*if\s*\(_airOnlyFrame\)\s*return;')
+
+    def testBeginAirOnlyFrameDoesNotResetRigOrAir(self):
+        begin_air = cpp_function(self.mm, 'RendererMetal::beginAirOnlyFrame')
+        for assigned in ('_lightRigOn', '_lightShadowMapsReady', '_lightAirOn', '_oitHasContent'):
+            self.assertNotIn(assigned, begin_air)
+
+    def testCmdRegistersAirCacheStats(self):
+        self.assertIn('"get_metal_air_cache_stats", CmdGetMetalAirCacheStats', self.cmd_cpp)
+
+    def testRuntimeHeadlessHasNoAirCacheStats(self):
+        from pymol import cmd
+        if not hasattr(cmd._cmd, 'get_metal_air_cache_stats'):
+            self.skipTest('get_metal_air_cache_stats not in _cmd yet (needs rebuilt core)')
+        self.assertIsNone(cmd._cmd.get_metal_air_cache_stats(cmd._COb, 0))

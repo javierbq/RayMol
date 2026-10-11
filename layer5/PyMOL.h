@@ -281,6 +281,7 @@ void PyMOL_InitializeCMol(CPyMOL * I);
 /* host query methods */
 
 int PyMOL_GetRedisplay(CPyMOL * I, int reset);
+unsigned long PyMOL_GetRedisplayGeneration(CPyMOL * I);
 int PyMOL_GetPassive(CPyMOL * I, int reset);
 int PyMOL_GetSwap(CPyMOL * I, int reset);
 int PyMOL_GetClickReady(CPyMOL * I, int reset);

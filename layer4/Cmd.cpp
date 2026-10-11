@@ -5876,6 +5876,28 @@ static PyObject* CmdLightAirAnimating(PyObject* self, PyObject* args)
   return PyBool_FromLong(animating);
 }
 
+/// Test-only (#685): the Metal renderer's frame counters since the last
+/// forget, (scene_frames, post_chains, air_frames); forget=1 zeroes them
+/// and drops the kept pre-air image first, so the next frame renders in
+/// full. None with no Metal renderer.
+static PyObject* CmdGetMetalAirCacheStats(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  int forget = 0;
+  API_SETUP_ARGS(G, self, args, "Oi", &self, &forget);
+  int scene_frames = 0, post_chains = 0, air_frames = 0;
+  bool ok = false;
+  APIEnterBlocked(G);
+  if (G->Renderer) {
+    ok = G->Renderer->airCacheStats(
+        scene_frames, post_chains, air_frames, forget != 0);
+  }
+  APIExitBlocked(G);
+  if (!ok)
+    return APIAutoNone(Py_None);
+  return Py_BuildValue("(iii)", scene_frames, post_chains, air_frames);
+}
+
 /* ---- end the air (#618) ------------------------------------------------- */
 
 /* ---- HDR colour (#624) ----------------------------------------------------
@@ -8071,6 +8093,7 @@ static PyMethodDef Cmd_methods[] = {
   {"light_air_resolution", CmdLightAirResolution, METH_VARARGS},
   {"light_air_shadow_filter", CmdLightAirShadowFilter, METH_VARARGS},
   {"light_air_animating", CmdLightAirAnimating, METH_VARARGS},
+  {"get_metal_air_cache_stats", CmdGetMetalAirCacheStats, METH_VARARGS},
   /* HDR colour (#624) */
   {"light_tone", CmdLightTone, METH_VARARGS},
   {"light_tone_scalar", CmdLightToneScalar, METH_VARARGS},

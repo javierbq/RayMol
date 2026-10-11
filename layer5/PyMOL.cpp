@@ -18,6 +18,8 @@
 #include "os_std.h"
 #include "os_gl.h"
 
+#include <atomic>
+
 #include <clocale>
 
 #include "MemoryDebug.h"
@@ -108,6 +110,8 @@ struct CPyMOL {
   PyMOLGlobals *G = nullptr;
   int FakeDragFlag{};
   int RedisplayFlag{};
+  // #685: bumped on every redisplay request, consumed or not
+  std::atomic<unsigned long> RedisplayGeneration{};
   int PassiveFlag{};
   int SwapFlag{};
   int BusyFlag{};
@@ -1976,6 +1980,7 @@ void PyMOL_Start(CPyMOL * I)
 
   I->DrawnFlag = false;
   I->RedisplayFlag = true;
+  I->RedisplayGeneration++;
   G->Ready = true;
 }
 
@@ -2533,6 +2538,7 @@ void PyMOL_NeedFakeDrag(CPyMOL * I)
 void PyMOL_NeedRedisplay(CPyMOL * I)
 {
   I->RedisplayFlag = true;
+  I->RedisplayGeneration++;
 }
 
 void PyMOL_NeedSwap(CPyMOL * I)
@@ -2851,6 +2857,11 @@ int PyMOL_GetRedisplay(CPyMOL * I, int reset)
     }
   }
   PYMOL_API_UNLOCK_NO_FLUSH return (result || I->ModalDraw);    /* always true when ModalDraw is set */
+}
+
+unsigned long PyMOL_GetRedisplayGeneration(CPyMOL * I)
+{
+  return I ? I->RedisplayGeneration.load() : 0UL;
 }
 
 int PyMOL_GetPassive(CPyMOL * I, int reset)

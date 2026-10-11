@@ -164,6 +164,19 @@ class CScene : public Block {
   unsigned ContentGeneration{};
   std::vector<std::uint32_t> LightShadowMapKey;
 
+  // #685: the inputs of the last full live Metal frame, taken by
+  // SceneRenderMetal after its update phase. A dust-only tick may reuse that
+  // frame's image only while all of them still hold.
+  struct MetalAirFrameKey {
+    unsigned long generation = 0;   // PyMOL_GetRedisplayGeneration
+    unsigned contentGeneration = 0; // ContentGeneration (#666)
+    float projection[16]{};
+    float modelview[16]{};
+    int viewport[4]{};              // Renderer::getViewportRect
+    int width = 0, height = 0;      // I->Width, I->Height
+    bool valid = false;
+  } MetalAirFrame;
+
   /* The light rig (#611; SceneLights.h). nullopt = no rig; a rig with
      enabled == false is present but off. One per instance, cleared by
      SceneReinitialize. Not an object: never in Obj, never in an extent. */

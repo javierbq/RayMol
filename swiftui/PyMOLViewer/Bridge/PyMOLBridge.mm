@@ -793,7 +793,7 @@ static void syncClearColor(PyMOLGlobals* G, pymol::RendererMetal* renderer)
 }
 
 int PyMOLBridge_RenderMetalFrame(PyMOLHandle h, void *mtkViewPtr,
-                                 int width, int height)
+                                 int width, int height, int airTick)
 {
     if (!h || !mtkViewPtr) return 0;
     PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
@@ -838,7 +838,11 @@ int PyMOLBridge_RenderMetalFrame(PyMOLHandle h, void *mtkViewPtr,
     renderer->setLetterboxOrigin(ox, oy);
     renderer->viewport(ox, oy, vpW, vpH);
     syncClearColor(G, renderer);
-    renderer->beginFrame();
+    // #685: on a dust-only tick the pre-check armed the renderer, which deferred
+    // beginFrame. SceneRenderMetal makes the final call.
+    renderer->setAirTickFrame(airTick != 0);
+    if (!(airTick && SceneRenderMetalArmAirTick(G)))
+        renderer->beginFrame();
     ImmBatch_SetActiveRenderer(renderer);
     PyMOL_PushValidContext(INST(h));
     SceneRenderMetal(G);

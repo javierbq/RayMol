@@ -956,7 +956,8 @@ extension MetalViewport {
             let size = view.drawableSize
             let presented = engine.renderMetalFrame(view: view,
                                                     width: Int(size.width),
-                                                    height: Int(size.height))
+                                                    height: Int(size.height),
+                                                    airTick: airDue)
             hasRenderedOnce = hasRenderedOnce || presented
             forceRedraw = RenderGate.forceRedrawAfterRender(presented: presented)
             lastFrameTime = CACurrentMediaTime()
