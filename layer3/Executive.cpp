@@ -5721,7 +5721,7 @@ int ExecutiveSetSession(
   int ok = true;
   int incomplete = false;
   PyObject* tmp;
-  SceneViewType sv;
+  SceneViewType sv = {}; // never apply uninitialised data (#636)
   int version = -1, version_full;
   int migrate_sessions = SettingGetGlobal_b(G, cSetting_session_migration);
   char active[WordLength] = "";
@@ -5951,7 +5951,9 @@ int ExecutiveSetSession(
     }
     if (tmp || (!(partial_restore |
                    partial_session))) { /* ignore missing if partial restore */
-      if (ok)
+      // Only apply a view that was actually read from the session. A full
+      // session without a 'view' key leaves the current camera alone.
+      if (tmp && ok)
         SceneSetView(G, sv, true, 0, 0);
       if (PyErr_Occurred()) {
         PyErr_Print();
