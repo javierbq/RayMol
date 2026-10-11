@@ -3032,9 +3032,13 @@ struct ContentView: View {
             // #385: the previous cold-launch restore never finished (the app was
             // killed or crashed mid-restore). Offer to start empty instead of
             // retrying the same restore blindly on every launch.
+            // The setter ignores SwiftUI's dismissals: only the two buttons
+            // (or a file open) retire the prompt. Otherwise a layout swap (iPhone
+            // rotation) that tears down this alert's host would drop the prompt
+            // unanswered, and the next background would delete the session.
             .alert("Start with an empty session?", isPresented: Binding(
                 get: { engine.interruptedRestorePrompt },
-                set: { if !$0 { engine.interruptedRestorePrompt = false } })) {
+                set: { _ in })) {
                 Button("Start Empty", role: .destructive) { engine.startEmptyAfterInterruptedRestore() }
                 Button("Try Again") { engine.retryInterruptedRestore() }
             } message: {

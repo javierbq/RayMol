@@ -211,33 +211,36 @@ final class AutosaveRestoreGuardTests: XCTestCase {
         super.tearDown()
     }
 
-    /// Every combination of the four inputs: skip when scripted, opening a file
-    /// or no autosave; otherwise ask after an interrupted restore, else restore.
+    /// Every combination of the four inputs, against a literal table (not the
+    /// production expression): skip when scripted, opening a file or no
+    /// autosave; otherwise ask after an interrupted restore, else restore.
     func testDecisionTable() {
-        let bools = [false, true]
-        for scripted in bools {
-            for openRequested in bools {
-                for autosavePresent in bools {
-                    for interrupted in bools {
-                        let action = PyMOLEngine.autosaveRestoreAction(
-                            scripted: scripted,
-                            openRequested: openRequested,
-                            autosavePresent: autosavePresent,
-                            previousRestoreInterrupted: interrupted
-                        )
-                        let expected: PyMOLEngine.AutosaveRestoreAction
-                        if scripted || openRequested || !autosavePresent {
-                            expected = .skip
-                        } else if interrupted {
-                            expected = .askStartEmpty
-                        } else {
-                            expected = .restore
-                        }
-                        XCTAssertEqual(action, expected,
-                            "Mismatch for scripted=\(scripted), openRequested=\(openRequested), present=\(autosavePresent), interrupted=\(interrupted)")
-                    }
-                }
-            }
+        typealias A = PyMOLEngine.AutosaveRestoreAction
+        // (scripted, openRequested, autosavePresent, interrupted) -> expected
+        let table: [(Bool, Bool, Bool, Bool, A)] = [
+            (false, false, false, false, .skip),
+            (false, false, false, true,  .skip),
+            (false, false, true,  false, .restore),
+            (false, false, true,  true,  .askStartEmpty),
+            (false, true,  false, false, .skip),
+            (false, true,  false, true,  .skip),
+            (false, true,  true,  false, .skip),
+            (false, true,  true,  true,  .skip),
+            (true,  false, false, false, .skip),
+            (true,  false, false, true,  .skip),
+            (true,  false, true,  false, .skip),
+            (true,  false, true,  true,  .skip),
+            (true,  true,  false, false, .skip),
+            (true,  true,  false, true,  .skip),
+            (true,  true,  true,  false, .skip),
+            (true,  true,  true,  true,  .skip),
+        ]
+        for (scripted, open, present, interrupted, expected) in table {
+            XCTAssertEqual(PyMOLEngine.autosaveRestoreAction(
+                scripted: scripted, openRequested: open,
+                autosavePresent: present, previousRestoreInterrupted: interrupted),
+                expected,
+                "scripted=\(scripted) open=\(open) present=\(present) interrupted=\(interrupted)")
         }
     }
 
@@ -263,18 +266,29 @@ final class AutosaveRestoreGuardTests: XCTestCase {
         XCTAssertEqual(action, .askStartEmpty)
     }
 
-    /// The in-progress flag is set while the restore body runs and cleared after.
-    func testFlagIsSetDuringRestoreAndClearedAfter() {
+    /// The flag is set before the load and survives until the restored scene
+    /// has presented both countdown frames: the rep geometry is built on those
+    /// frames, so a kill there must still read as interrupted next launch.
+    func testFlagClearsOnlyAfterRestoredFramesPresent() {
         XCTAssertFalse(PyMOLEngine.restoreWasInterrupted(in: defaults))
-        var flagInside = false
-        var executionCount = 0
-        PyMOLEngine.withRestoreInProgressFlag(in: defaults) {
-            executionCount += 1
-            flagInside = PyMOLEngine.restoreWasInterrupted(in: defaults)
-        }
-        XCTAssertEqual(executionCount, 1)
-        XCTAssertTrue(flagInside)
+        PyMOLEngine.markRestoreInProgress(in: defaults)
+        XCTAssertTrue(PyMOLEngine.restoreWasInterrupted(in: defaults))
+
+        var left = PyMOLEngine.restoreFlagCountdown(afterPresenting: 2, defaults: defaults)
+        XCTAssertEqual(left, 1)
+        XCTAssertTrue(PyMOLEngine.restoreWasInterrupted(in: defaults),
+                      "first frame (geometry build) must not clear the flag")
+
+        left = PyMOLEngine.restoreFlagCountdown(afterPresenting: left, defaults: defaults)
+        XCTAssertNil(left)
         XCTAssertFalse(PyMOLEngine.restoreWasInterrupted(in: defaults))
+    }
+
+    /// With nothing pending, a presented frame leaves the flag alone.
+    func testCountdownWithNothingPendingIsANoOp() {
+        PyMOLEngine.markRestoreInProgress(in: defaults)
+        XCTAssertNil(PyMOLEngine.restoreFlagCountdown(afterPresenting: nil, defaults: defaults))
+        XCTAssertTrue(PyMOLEngine.restoreWasInterrupted(in: defaults))
     }
 
     /// A kill mid-restore leaves the flag set (the clear never runs), and the
@@ -303,7 +317,11 @@ final class AutosaveRestoreGuardTests: XCTestCase {
     func testSuccessfulRetryClearsLeftoverFlag() {
         defaults.set(true, forKey: PyMOLEngine.restoreInProgressDefaultsKey)
         XCTAssertTrue(PyMOLEngine.restoreWasInterrupted(in: defaults))
-        PyMOLEngine.withRestoreInProgressFlag(in: defaults) {}
+        PyMOLEngine.markRestoreInProgress(in: defaults)
+        var left: Int? = 2
+        while left != nil {
+            left = PyMOLEngine.restoreFlagCountdown(afterPresenting: left, defaults: defaults)
+        }
         XCTAssertFalse(PyMOLEngine.restoreWasInterrupted(in: defaults))
     }
 }

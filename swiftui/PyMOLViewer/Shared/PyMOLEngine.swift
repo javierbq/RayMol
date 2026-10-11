@@ -581,6 +581,12 @@ final class PyMOLEngine: ObservableObject {
     // Frames the restored scene still has to present before the snapshot hands
     // off. nil = no handoff armed (nothing restored yet, or already done).
     private var restoreFramesToPresent: Int?
+    // #385: frames the restored scene still has to present before the
+    // restore-in-progress flag clears. The heavy rep geometry (surfaces,
+    // cartoons) is built on those first frames, not inside `load`, so a kill
+    // there must still count as an interrupted restore. Armed even when no
+    // snapshot is shown. nil = nothing pending.
+    private var restoreFlagFramesToPresent: Int?
     // Backstop that drops a stuck snapshot if the render loop never presents.
     private var restoreBackstop: DispatchWorkItem?
     #endif
@@ -1117,8 +1123,13 @@ final class PyMOLEngine: ObservableObject {
         interruptedRestorePrompt = false
         guard !didRestoreAutosave, !launchOpenRequested else { return }
         loadRestoreSnapshotImage()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-            self?.performAutosaveRestore()
+        // runHeavy paints the busy overlay before the blocking load and holds
+        // it through the geometry-build frames, so a large session doesn't
+        // look hung. Re-check at run time: a file open (onOpenURL) may have
+        // landed during the hop, and the old session must not load under it.
+        runHeavy("Restoring session…") { [weak self] in
+            guard let self, !self.didRestoreAutosave, !self.launchOpenRequested else { return }
+            self.performAutosaveRestore()
         }
     }
 
@@ -1126,10 +1137,14 @@ final class PyMOLEngine: ObservableObject {
         guard let url = autosaveURL else { return }
         didRestoreAutosave = true
         loadRestoreSnapshotImage()
-        Self.withRestoreInProgressFlag(in: .standard) {
-            runCommand("load \(url.path)")
-            refreshAfterRestore()
-        }
+        // #385: set before the blocking load; cleared only once the restored
+        // scene has presented its first frames (restoreRenderTick), since the
+        // rep geometry is built there. A kill anywhere in between leaves the
+        // flag set, and the next launch asks instead of retrying blindly.
+        Self.markRestoreInProgress(in: .standard)
+        runCommand("load \(url.path)")
+        refreshAfterRestore()
+        restoreFlagFramesToPresent = 2
         // Hand the snapshot off once the restored scene has actually presented
         // (restoreRenderTick) AND the object list has landed (so the empty-state
         // CTA can't flash in between) — not after a fixed delay, which either
@@ -1146,6 +1161,8 @@ final class PyMOLEngine: ObservableObject {
     /// restored scene's presented frames down; the handoff itself waits for the
     /// object list too (finishRestoreHandoffIfReady, also polled by the timer).
     private func restoreRenderTick() {
+        restoreFlagFramesToPresent = Self.restoreFlagCountdown(
+            afterPresenting: restoreFlagFramesToPresent, defaults: .standard)
         guard let left = restoreFramesToPresent, left > 0 else { return }
         restoreFramesToPresent = left - 1
         finishRestoreHandoffIfReady()
@@ -1833,12 +1850,23 @@ final class PyMOLEngine: ObservableObject {
         defaults.removeObject(forKey: restoreInProgressDefaultsKey)
     }
 
-    /// Run `restore` with the in-progress flag set around it, so a kill or crash
-    /// inside it leaves the flag set for the next launch to see.
-    static func withRestoreInProgressFlag(in defaults: UserDefaults, _ restore: () -> Void) {
+    /// Set the in-progress flag before a restore. Flushed right away: the
+    /// main thread blocks in the load next, and a watchdog/jetsam SIGKILL there
+    /// must not lose the write (that would restore blindly again next launch).
+    static func markRestoreInProgress(in defaults: UserDefaults) {
         defaults.set(true, forKey: restoreInProgressDefaultsKey)
-        restore()
+        defaults.synchronize()
+    }
+
+    /// One presented frame of the restored scene: count `left` down and clear
+    /// the in-progress flag when the last frame presents. Returns the new
+    /// count (nil = done, or nothing was pending).
+    static func restoreFlagCountdown(afterPresenting left: Int?,
+                                     defaults: UserDefaults) -> Int? {
+        guard let left else { return nil }
+        if left > 1 { return left - 1 }
         clearRestoreInProgress(in: defaults)
+        return nil
     }
 
     // MARK: - Theme
