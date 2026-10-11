@@ -171,7 +171,7 @@ final class MaterialInspectorTests: XCTestCase {
     }
 
     /// The gate that keeps Custom off a layer that has degraded to `default`
-    /// (glass on spheres or ball-and-stick): knobs come from the DRAWN
+    /// (glass on ball-and-stick): knobs come from the DRAWN
     /// material, and only when it is the one the setting names.
     func testCustomIsOfferedOnlyForTheMaterialTheLayerDraws() {
         let rough = MaterialKnobInfo(suffix: "rough", label: "Roughness", min: 0, max: 1)

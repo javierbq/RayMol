@@ -319,17 +319,18 @@ class TestJelly(testing.PyMOLTestCase):
     # -- spheres and ball-and-stick (#526) ------------------------------------
 
     def testJellyDrawsOnSpheres(self):
-        """Jelly is dense enough (implied alpha 0.85) to read as gummy balls,
-        so unlike clear and frosted glass it is NOT degraded on sphere
-        impostors. Asserted on the EFFECTIVE id -- what reaches the shader."""
+        """Jelly draws on sphere impostors (#526), and since #635 so do clear
+        and frosted glass. Asserted on the EFFECTIVE id -- what reaches the
+        shader."""
         by_name = {n: i for i, n in setting.get_material_names(0)}
         jelly = by_name['jelly']
         for rep in ('surface', 'cartoon', 'sticks', 'spheres'):
             self.assertEqual(
                 _cmd.get_effective_material(jelly, repres[rep]), jelly, rep)
         for clear in ('glass', 'frosted_glass'):
+            mat_id = by_name[clear]
             self.assertEqual(_cmd.get_effective_material(
-                by_name[clear], repres['spheres']), 0, clear)
+                mat_id, repres['spheres']), mat_id, clear)
 
     def testAJellySphereRepBuildsWithJellysImpliedAlpha(self):
         """Shading as jelly while building opaque would be a jelly-coloured

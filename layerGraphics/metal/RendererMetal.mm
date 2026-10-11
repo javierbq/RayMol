@@ -7872,9 +7872,8 @@ constant float kMatGlassIor = 1.33;
 constant float kMatGlassRefractStrength = 0.2;
 constant float kOitRefractFar = 60000.0;   // RendererMetal::kOitRefractFar
 // Called from every lit library, for the whole glass family. The sphere rep
-// never draws clear or frosted glass (they degrade to `default` there), but
-// sphere impostors other reps emit -- cartoon ring spheres, surface dots --
-// can, and refract like the rest.
+// draws clear and frosted glass since #635, as do sphere impostors other reps
+// emit -- cartoon ring spheres, surface dots -- and all refract like the rest.
 static float4 mat_glass_refraction(float3 N, float3 posEye, float refrPx,
     int refrOrtho) {
   if (refrPx <= 0.0)
@@ -7907,13 +7906,9 @@ static float4 mat_glass_refraction(float3 N, float3 posEye, float refrPx,
 // and the pixel is the highlight. In between, the transmitted background is
 // dimmed by the highlight's share -- an approximation, but the one that keeps
 // a single colour and coverage per fragment.
-// Marked unused: this block is shared by every material library, and the
-// sphere library never calls it. The sphere rep degrades clear and frosted
-// glass to `default`; the glass spheres other reps emit (cartoon rings,
-// surface dots) shade through mat_impostor_composite's additive body + hi
-// instead, so their reflection is not separated from the coverage.
-// Without the attribute that is a new -Wunused-function in the sphere library
-// (the VBO and cylinder libraries both call it).
+// Marked unused: this block is shared by every material library, and one that
+// does not call it would otherwise get a -Wunused-function. (The VBO, cylinder
+// and, since #635, sphere libraries all call it.)
 __attribute__((unused)) static float4 mat_glass_cover(float3 body, float3 hi, float a) {
   float h = saturate(max(hi.r, max(hi.g, hi.b)));
   float cover = saturate(a + (1.0 - a) * h);
@@ -11367,58 +11362,6 @@ fragment SphereFOut sphere_impostor_fragment(SphereVOut in [[stage_in]],
   return out;
 }
 
-// The light rig (#613) on a glass-family sphere impostor's composite colour
-// `rgb`. Jelly takes light_apply, as on the opaque path. Clear and frosted
-// glass (other reps' glass spheres: cartoon rings, surface dots) split the rig
-// as the VBO and cylinder glass do (orchestrator decision Q1): the rig's
-// diffuse lights the body at the glass's coverage (base x
-// kMatGlassBaseAttenuation), and its highlights join the glints through the
-// classic glint curve, scaled by the Reflection knob. This path folds its
-// glints into the colour (it has no mat_glass_cover), so the rig's are folded
-// the same way: mat_impostor_composite's glass branch is redone with the rig's
-// light inside it, through the rig's seam (light_finish at the frame's
-// exposure: T under HDR, #624; mat_soft_knee, as before, otherwise), then the
-// outlines. Called only under `if (kLightRig)`.
-static float3 sphere_glass_rig(float3 rgb, float3 base, float3 n, float3 pt,
-    constant SphereU& u, constant MaterialU& mat, texturecube<float> envMap,
-    sampler envSmp, constant LightRigU& rig) {
-  if (mat.mode == kMatMode_jelly)
-    return light_apply(rgb, base, n, pt, rig, light_response(mat));
-  int taps = (mat.mode == kMatMode_frosted_glass) ? int(max(1.0, mat.p[5])) : 1;
-  float3 hi;
-  float3 body = mat_glass_shade(base, n, float3(0.0, 0.0, 1.0), mat.rough,
-                                mat.p[0], taps, float3(u.klx, u.kly, u.klz),
-                                envMap, envSmp, hi, mat_classic_light(mat));
-  const LightTerms rigLight = light_terms(rig, base, n, pt, light_response(mat));
-  body += base * kMatGlassBaseAttenuation * rigLight.diffuse;
-  hi += light_glass_glints(rigLight.specular) *
-        (kMatGlassReflection * saturate(mat.p[0]));
-  return light_outline(light_finish(body + hi, rig.tone.x), pt, rig);
-}
-
-// sphere_glass_rig with the studio shadow maps (#616): the maps after `rig`
-// and the _shadowed light calls, nothing else (drift-guarded). Called only
-// under `if (kLightRig && kLightShadow)`.
-static float3 sphere_glass_rig_shadowed(float3 rgb, float3 base, float3 n,
-    float3 pt, constant SphereU& u, constant MaterialU& mat,
-    texturecube<float> envMap, sampler envSmp, constant LightRigU& rig,
-    depth2d_array<float> maps, sampler smp) {
-  if (mat.mode == kMatMode_jelly)
-    return light_apply_shadowed(rgb, base, n, pt, rig, maps, smp,
-                                light_response(mat));
-  int taps = (mat.mode == kMatMode_frosted_glass) ? int(max(1.0, mat.p[5])) : 1;
-  float3 hi;
-  float3 body = mat_glass_shade(base, n, float3(0.0, 0.0, 1.0), mat.rough,
-                                mat.p[0], taps, float3(u.klx, u.kly, u.klz),
-                                envMap, envSmp, hi, mat_classic_light(mat));
-  const LightTerms rigLight = light_terms_shadowed(rig, maps, smp, base, n, pt,
-                                                   light_response(mat));
-  body += base * kMatGlassBaseAttenuation * rigLight.diffuse;
-  hi += light_glass_glints(rigLight.specular) *
-        (kMatGlassReflection * saturate(mat.p[0]));
-  return light_outline(light_finish(body + hi, rig.tone.x), pt, rig);
-}
-
 fragment SphereOITOut sphere_impostor_fragment_oit(SphereVOut in [[stage_in]],
     texturecube<float> envMap [[texture(6)]],
     sampler envSmp [[sampler(6)]],
@@ -11429,11 +11372,45 @@ fragment SphereOITOut sphere_impostor_fragment_oit(SphereVOut in [[stage_in]],
     sampler lightShadowSmp [[sampler(7), function_constant(kLightShadow)]]) {
   float3 rgb; float a; float depth;
   float4 refr = float4(0.0, 0.0, 0.0, kOitRefractFar);
-  if (kMatGlass) {
-    // The glass family on sphere impostors: jelly spheres (#590), and the
-    // clear or frosted glass of spheres another rep emits (cartoon rings,
-    // surface dots; the sphere rep itself degrades those to `default`). All
-    // refract: sphere_shade_material, unrolled for the hit point and normal.
+  if (kMatGlass && mat.mode != kMatMode_jelly) {
+    // Clear and frosted glass spheres -- the sphere rep's own since #635,
+    // and those other reps emit (cartoon rings, surface dots): body at its
+    // coverage, reflection on top (#535, #713); see mat_glass_cover and
+    // cyl_impostor_fragment_oit, which this copies.
+    float3 n = float3(0.0), pt = float3(0.0);
+    float intensity = 0.0, specular = 0.0;
+    bool lit = true;
+    sphere_shade(in, u, rgb, a, depth, n, pt, intensity, specular, lit);
+    if (lit) {
+      const float3 base = in.color.rgb;
+      int taps = (mat.mode == kMatMode_frosted_glass)
+                   ? int(max(1.0, mat.p[5])) : 1;
+      float3 hi;
+      float3 body = mat_glass_shade(base, n, float3(0.0, 0.0, 1.0), mat.rough,
+                                    mat.p[0], taps, float3(u.klx, u.kly, u.klz),
+                                    envMap, envSmp, hi, mat_classic_light(mat));
+      if (kLightRig) {
+        const LightTerms rigLight = kLightShadow
+            ? light_terms_shadowed(rig, lightShadowMaps, lightShadowSmp, base,
+                                   n, pt, light_response(mat))
+            : light_terms(rig, base, n, pt, light_response(mat));
+        body += base * kMatGlassBaseAttenuation * rigLight.diffuse;
+        hi += light_glass_glints(rigLight.specular) *
+              (kMatGlassReflection * saturate(mat.p[0]));
+      }
+      float4 g;
+      if (kLightRig && kLightHdr)
+        g = light_glass_cover(body, hi, a, rig.tone.x);
+      else
+        g = mat_glass_cover(body, hi, a);
+      rgb = g.rgb;
+      if (kLightRig) rgb = light_outline(rgb, pt, rig);
+      a = g.a;
+      refr = mat_glass_refraction(n, pt, mat.refrPx, mat.refrOrtho);
+    }
+  } else if (kMatGlass) {
+    // Jelly spheres (#526, #590): the composite, the rig on top as on the
+    // opaque path, jelly's coverage unchanged; they refract.
     float3 n = float3(0.0), pt = float3(0.0);
     float intensity = 0.0, specular = 0.0;
     bool lit = true;
@@ -11443,17 +11420,12 @@ fragment SphereOITOut sphere_impostor_fragment_oit(SphereVOut in [[stage_in]],
                                    u.lReflect, float3(u.klx, u.kly, u.klz),
                                    mat, intensity, specular, u.lSSSWrap,
                                    envMap, envSmp);
-      // The light rig (#613): jelly takes it on top, as on the opaque path;
-      // clear and frosted glass split it as the VBO and cylinder glass do
-      // (sphere_glass_rig). The coverage is the material's, unchanged.
-      // Studio shadow maps (#616) under kLightShadow.
       if (kLightRig && kLightShadow)
-        rgb = sphere_glass_rig_shadowed(rgb, in.color.rgb, n, pt, u, mat,
-                                        envMap, envSmp, rig, lightShadowMaps,
-                                        lightShadowSmp);
+        rgb = light_apply_shadowed(rgb, in.color.rgb, n, pt, rig,
+                                   lightShadowMaps, lightShadowSmp,
+                                   light_response(mat));
       else if (kLightRig)
-        rgb = sphere_glass_rig(rgb, in.color.rgb, n, pt, u, mat, envMap, envSmp,
-                               rig);
+        rgb = light_apply(rgb, in.color.rgb, n, pt, rig, light_response(mat));
       refr = mat_glass_refraction(n, pt, mat.refrPx, mat.refrOrtho);
     }
   } else {
@@ -11568,9 +11540,9 @@ void RendererMetal::buildImpostorPipelines()
     op.colorAttachments[1].sourceAlphaBlendFactor = MTLBlendFactorZero;
     op.colorAttachments[1].destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceColor;
     // The per-family loop below sets the attachment: the glass family's
-    // sphere pipeline writes it -- jelly spheres, and the clear or frosted
-    // glass of the sphere impostors other reps emit (the sphere rep itself
-    // degrades those to `default`) (#590).
+    // sphere pipeline writes it -- jelly spheres, clear and frosted glass
+    // spheres (since #635), and the glass sphere impostors other reps emit
+    // (#590).
     op.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
     op.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
     for (int f = 0; f < cMaterialFamily_count; ++f) {

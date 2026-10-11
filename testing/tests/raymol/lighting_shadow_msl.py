@@ -129,9 +129,10 @@ SHADOWED_COPIES = {
     'kMaterialSrc': {'light_terms_view_shadowed': 'light_terms_view',
                      'light_terms_shadowed': 'light_terms',
                      'light_apply_shadowed': 'light_apply'},
+    # #635: sphere_glass_rig_shadowed deleted with sphere_glass_rig;
+    # sphere glass coverage split uses the cylinder impostor structure.
     'kSphereImpostorSrc': {
-        'sphere_shade_material_rig_shadowed': 'sphere_shade_material_rig',
-        'sphere_glass_rig_shadowed': 'sphere_glass_rig'},
+        'sphere_shade_material_rig_shadowed': 'sphere_shade_material_rig'},
     'kCylinderImpostorSrc': {
         'cyl_shade_material_rig_shadowed': 'cyl_shade_material_rig'},
 }
@@ -159,12 +160,11 @@ MASTER_613 = {
     ('kVBOSrc', 'vbo_fragment_oit'): ('fa4a6d1608274485', '25ba2c47075b0478'),
     ('kSphereImpostorSrc', 'sphere_impostor_fragment'):
         ('8ff00c9aa8dab448', '3c25a1c606d32503'),
+    # #635: retaken after sphere glass coverage split
     ('kSphereImpostorSrc', 'sphere_impostor_fragment_oit'):
-        ('40c85eabe7e7fbde', 'a82a724bba7fef13'),
+        ('40c85eabe7e7fbde', '89450b8465627663'),
     ('kSphereImpostorSrc', 'sphere_shade_material_rig'):
         ('07c482db02f7600c', '7f29ebf73bd315ca'),
-    ('kSphereImpostorSrc', 'sphere_glass_rig'):
-        ('6febcc0900e0fcd6', '57d962cc7214ad2a'),
     ('kCylinderImpostorSrc', 'cyl_impostor_fragment'):
         ('ece804d6981b5b5c', 'e5df5087332f4379'),
     ('kCylinderImpostorSrc', 'cyl_impostor_fragment_oit'):
@@ -550,11 +550,16 @@ class TestFragments(ShadowMSLCase):
                                                'rig,', 1), rargs, name)
         sphere = squash(fragments(self.msl['kSphereImpostorSrc'])
                         ['sphere_impostor_fragment_oit'][1])
+        # #635: sphere impostor glass branch mirrors cylinder glass branch
         self.assertIn(
-            'if(kLightRig&&kLightShadow)rgb=sphere_glass_rig_shadowed(rgb,'
-            'in.color.rgb,n,pt,u,mat,envMap,envSmp,rig,lightShadowMaps,'
-            'lightShadowSmp);elseif(kLightRig)rgb=sphere_glass_rig(rgb,'
-            'in.color.rgb,n,pt,u,mat,envMap,envSmp,rig);', sphere)
+            'constLightTermsrigLight=kLightShadow?light_terms_shadowed(rig,'
+            'lightShadowMaps,lightShadowSmp,base,n,pt,light_response(mat))'
+            ':light_terms(rig,base,n,pt,light_response(mat));', sphere)
+        self.assertIn(
+            'if(kLightRig&&kLightShadow)rgb=light_apply_shadowed(rgb,in.color.rgb,n,pt,'
+            'rig,lightShadowMaps,lightShadowSmp,light_response(mat));'
+            'elseif(kLightRig)rgb=light_apply(rgb,in.color.rgb,n,pt,rig,'
+            'light_response(mat));', sphere)
         cyl = squash(fragments(self.msl['kCylinderImpostorSrc'])
                      ['cyl_impostor_fragment_oit'][1])
         self.assertIn(

@@ -593,91 +593,61 @@ class TestLitFragments(LightMSLCase):
                                               '', 1), name)
 
     def testImpostorGlassFamilyTakesTheRig(self):
-        """Glass sticks split the rig as the VBO glass does; jelly sticks
-        take light_apply on top of the composite, before the refraction,
-        inside the lit branch. The sphere impostors' glass family goes
-        through sphere_glass_rig (testSphereGlassSplitsTheRig)."""
-        cyl = fragments(self.msl['kCylinderImpostorSrc'])['cyl_impostor_fragment_oit'][1]
-        glass = cyl[:cyl.index('} else if (kMatGlass)')]
-        jelly = cyl[cyl.index('} else if (kMatGlass)'):cyl.index('} else {')]
-        cover = glass.index('mat_glass_cover(')
-        terms = glass.index('light_terms(')
-        self.assertLess(glass.index('mat_glass_shade('), terms)
-        self.assertLess(terms, cover)
-        self.assertRegex(glass[terms:cover],
-                         r'light_terms\(rig,\s*base,\s*n,\s*pt,\s*'
-                         r'light_response\(mat\)\)')
-        self.assertRegex(glass[terms:cover],
-                         r'body\s*\+=\s*base\s*\*\s*'
-                         r'kMatGlassBaseAttenuation\s*\*\s*\w+\.diffuse')
-        self.assertRegex(glass[terms:cover],
-                         r'hi\s*\+=\s*light_glass_glints\(\w+\.specular\)\s*\*\s*'
-                         r'\(kMatGlassReflection\s*\*\s*saturate\(mat\.p\[0\]\)\)')
-        outline = re.search(r'if\s*\(kLightRig\)\s*rgb\s*=\s*'
-                            r'light_outline\(rgb,\s*pt,\s*rig\);', glass)
-        self.assertIsNotNone(outline)
-        self.assertGreater(outline.start(), glass.index('rgb = g.rgb;'))
-        self.assertNotIn('light_apply(', glass)
-        lit = statements_after(jelly, 'if (lit)')
-        apply_ = re.search(r'if\s*\(kLightRig\)\s*rgb\s*=\s*light_apply\('
-                           r'rgb,\s*base,\s*n,\s*pt,\s*rig,\s*'
-                           r'light_response\(mat\)\);', lit)
-        self.assertIsNotNone(apply_)
-        self.assertLess(lit.index('mat_impostor_composite('), apply_.start())
-        self.assertLess(apply_.start(), lit.index('mat_glass_refraction('))
-        self.assertNotIn('light_terms(', jelly)
+        """Glass sticks and (since #635) glass spheres split the rig as the
+        VBO glass does; jelly sticks and spheres take light_apply on top of
+        the composite, before the refraction, inside the lit branch."""
+        for lib, frag_name, base_var in (
+                ('kCylinderImpostorSrc', 'cyl_impostor_fragment_oit', 'base'),
+                ('kSphereImpostorSrc', 'sphere_impostor_fragment_oit', 'base')):
+            frag = fragments(self.msl[lib])[frag_name][1]
+            glass = frag[:frag.index('} else if (kMatGlass)')]
+            jelly = frag[frag.index('} else if (kMatGlass)'):frag.index('} else {')]
+            cover = glass.index('mat_glass_cover(')
+            terms = glass.index('light_terms(')
+            self.assertLess(glass.index('mat_glass_shade('), terms, frag_name)
+            self.assertLess(terms, cover, frag_name)
+            self.assertRegex(glass[terms:cover],
+                             r'light_terms\(rig,\s*%s,\s*n,\s*pt,\s*'
+                             r'light_response\(mat\)\)' % base_var, frag_name)
+            self.assertRegex(glass[terms:cover],
+                             r'body\s*\+=\s*%s\s*\*\s*'
+                             r'kMatGlassBaseAttenuation\s*\*\s*\w+\.diffuse' % base_var, frag_name)
+            self.assertRegex(glass[terms:cover],
+                             r'hi\s*\+=\s*light_glass_glints\(\w+\.specular\)\s*\*\s*'
+                             r'\(kMatGlassReflection\s*\*\s*saturate\(mat\.p\[0\]\)\)', frag_name)
+            outline = re.search(r'if\s*\(kLightRig\)\s*rgb\s*=\s*'
+                                r'light_outline\(rgb,\s*pt,\s*rig\);', glass)
+            self.assertIsNotNone(outline, frag_name)
+            self.assertGreater(outline.start(), glass.index('rgb = g.rgb;'), frag_name)
+            self.assertNotIn('light_apply(', glass, frag_name)
+            lit = statements_after(jelly, 'if (lit)')
+            jelly_base = r'(?:base|in\.color\.rgb)'
+            apply_ = re.search(r'if\s*\(kLightRig\)\s*rgb\s*=\s*light_apply\('
+                               r'rgb,\s*%s,\s*n,\s*pt,\s*rig,\s*'
+                               r'light_response\(mat\)\);' % jelly_base, lit)
+            self.assertIsNotNone(apply_, frag_name)
+            self.assertLess(lit.index('mat_impostor_composite('), apply_.start(), frag_name)
+            self.assertLess(apply_.start(), lit.index('mat_glass_refraction('), frag_name)
+            self.assertNotIn('light_terms(', jelly, frag_name)
 
     def testSphereGlassSplitsTheRig(self):
-        """The sphere impostors' glass family (jelly spheres, and the clear
-        or frosted glass spheres other reps emit) takes the rig through
-        sphere_glass_rig, on top of the composite and before the refraction.
-        Jelly takes light_apply. Clear and frosted glass split it as the VBO
-        and cylinder glass do (Q1): the diffuse into the body at
-        kMatGlassBaseAttenuation, the highlights through the glint curve and
-        the Reflection knob; folded and kneed as mat_impostor_composite folds
-        this path's own glints, with the same glass shading call, then the
-        outlines."""
+        """#635: the sphere impostors' clear and frosted glass branch is the
+        cylinder's (the coverage split through mat_glass_cover), so the old
+        folded helpers sphere_glass_rig / _shadowed are gone."""
         sphere = msl_functions(self.msl['kSphereImpostorSrc'])
-        branch = fragments(self.msl['kSphereImpostorSrc'])[
-            'sphere_impostor_fragment_oit'][1].split('} else {')[0]
-        lit = statements_after(branch, 'if (lit)')
-        call = re.search(r'if\s*\(kLightRig\)\s*rgb\s*=\s*sphere_glass_rig\('
-                         r'rgb,\s*in\.color\.rgb,\s*n,\s*pt,\s*u,\s*mat,\s*'
-                         r'envMap,\s*envSmp,\s*rig\);', lit)
-        self.assertIsNotNone(call)
-        self.assertLess(lit.index('mat_impostor_composite('), call.start())
-        self.assertLess(call.start(), lit.index('mat_glass_refraction('))
-        self.assertNotIn('light_apply(', branch)
-        self.assertNotIn('light_terms(', branch)
-        helper = squash(sphere['sphere_glass_rig'][1])
-        jelly = helper.index('if(mat.mode==kMatMode_jelly)returnlight_apply('
-                             'rgb,base,n,pt,rig,light_response(mat));')
-        for expr in ('constLightTermsrigLight=light_terms(rig,base,n,pt,light_response(mat));',
-                     'body+=base*kMatGlassBaseAttenuation*rigLight.diffuse;',
-                     'hi+=light_glass_glints(rigLight.specular)*'
-                     '(kMatGlassReflection*saturate(mat.p[0]));',
-                     # #624: through the rig's seam at the frame's exposure
-                     # (mat_soft_knee, as before, with kLightHdr false)
-                     'returnlight_outline(light_finish(body+hi,rig.tone.x),pt,rig);'):
-            self.assertGreater(helper.index(expr), jelly, expr)
-        # drift guard: the glass shading is mat_impostor_composite's glass
-        # branch with the fragment's arguments (m -> mat, N -> n, the key
-        # light from SphereU, V = +z)
-        composite = squash(msl_functions(self.msl['kMaterialImpostorSrc'])
-                           ['mat_impostor_composite'][1])
-        self.assertIn('inttaps=(m.mode==kMatMode_frosted_glass)?int(max(1.0,m.p[5])):1;',
-                      composite)
-        # (#615: both glass calls end with the material's classic scale)
-        self.assertIn('float3body=mat_glass_shade(base,N,V,m.rough,m.p[0],taps,keyDir,'
-                      'envMap,envSmp,hi,mat_classic_light(m));'
-                      'returnmat_soft_knee(body+hi);', composite)
-        self.assertIn('inttaps=(mat.mode==kMatMode_frosted_glass)?int(max(1.0,mat.p[5])):1;',
-                      helper)
-        self.assertIn('float3body=mat_glass_shade(base,n,float3(0.0,0.0,1.0),mat.rough,'
-                      'mat.p[0],taps,float3(u.klx,u.kly,u.klz),envMap,envSmp,hi,'
-                      'mat_classic_light(mat));', helper)
-        self.assertIn('mat_impostor_composite(in.color.rgb,n,pt,u.lAmbient,u.lDirect,'
-                      'u.lReflect,float3(u.klx,u.kly,u.klz),mat,', squash(lit))
+        self.assertNotIn('sphere_glass_rig', sphere)
+        self.assertNotIn('sphere_glass_rig_shadowed', sphere)
+        frag = fragments(self.msl['kSphereImpostorSrc'])['sphere_impostor_fragment_oit'][1]
+        glass = frag[:frag.index('} else if (kMatGlass)')]
+        # Key statements from cylinder glass branch appear in sphere glass branch
+        for stmt in ('const float3 base = in.color.rgb;',
+                     'mat_glass_shade(base, n, float3(0.0, 0.0, 1.0), mat.rough,',
+                     'body += base * kMatGlassBaseAttenuation * rigLight.diffuse;',
+                     'hi += light_glass_glints(rigLight.specular) *',
+                     'rgb = g.rgb;',
+                     'if (kLightRig) rgb = light_outline(rgb, pt, rig);',
+                     'mat_glass_refraction(n, pt, mat.refrPx, mat.refrOrtho)'):
+            self.assertIn(squash(stmt), squash(glass), stmt)
 
     def testGlassSplitsTheRig(self):
         """Clear and frosted glass: the rig's diffuse lights the body at its

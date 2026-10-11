@@ -173,11 +173,9 @@ class TestResponseTable(MaterialCase):
                 got = response(params)
                 label = '%s on %s' % (name, rep)
                 self.assertSane(got, label)
-                # default, and clear and frosted glass on sphere impostors
-                # (MaterialResolve's degradation), draw as default
-                degraded = (rep == 'sphere' and name in ('glass', 'frosted_glass'))
-                self.assertEqual(params[0] == 0, name == 'default' or degraded,
-                                 label)
+                # only default draws as default: since #635 clear and frosted
+                # glass draw on sphere impostors too
+                self.assertEqual(params[0] == 0, name == 'default', label)
                 if params[0] == 0:
                     self.assertNeutral(got, label)
                     continue
@@ -265,12 +263,13 @@ class TestSharpness(MaterialCase):
 
 class TestDegradations(MaterialCase):
 
-    def testClearAndFrostedGlassSpheresAreDefault(self):
+    def testClearAndFrostedGlassSpheresKeepTheirs(self):
+        # #635: no longer degraded to default on sphere impostors
         for name in ('glass', 'frosted_glass'):
             self.use(name, 'sphere')
             params = draw_params('p', 'sphere')
-            self.assertEqual(params[:2], (0, 0), name)
-            self.assertNeutral(response(params), name)
+            self.assertEqual(params[1], material_names()[name], name)
+            self.assertResponse(response(params), oracle(name, params), name)
 
     def testJellySpheresKeepJellys(self):
         self.use('jelly', 'sphere')

@@ -119,7 +119,7 @@ struct MaterialLook: Equatable {
 /// A rep's Custom material state, from the rep payload's `material` entry.
 struct MaterialCustomState: Equatable {
     /// The material the layer DRAWS with -- 0 when it has degraded to
-    /// `default` (glass on spheres or ball-and-stick), which has no knobs.
+    /// `default` (glass on ball-and-stick), which has no knobs.
     var drawn: Int = 0
     var knobs: [String: Double] = [:]   // suffix -> the value the draw uses
     var custom: Set<String> = []        // overridden knobs the drawn material has
@@ -407,7 +407,7 @@ enum CustomMaterial {
 
     /// The knobs a layer may offer as Custom: those of the material it DRAWS
     /// with, and only when that is the material its setting names. A layer
-    /// that has degraded to `default` (glass on spheres or ball-and-stick)
+    /// that has degraded to `default` (glass on ball-and-stick)
     /// draws 0 and offers none.
     static func offeredKnobs(base: Int, drawn: Int?,
                              table: [Int: [MaterialKnobInfo]]) -> [MaterialKnobInfo] {

@@ -360,25 +360,29 @@ class TestGlass(testing.PyMOLTestCase):
             cmd.set('surface_material', name, 'm1')
             self.assertEqual(resolved_peel('m1'), 0, name)
 
-    # -- the representations glass cannot draw on -----------------------------
+    # -- the representations glass draws on (#635) ----------------------------
 
-    def testGlassOnSpheresDrawsAsDefault(self):
-        """Sphere impostors have no glass path; they would float as
-        near-invisible discs, so MaterialResolve degrades them.
-
-        Asserted on the EFFECTIVE id -- what reaches the shader -- not on the
-        setting. My first version of this compared `get_rep_material` values,
-        which answer what the SETTING says; both were `glass`, so it could only
-        ever have failed. The degradation was not observable from Python at all
-        until `get_effective_material` was added for exactly this."""
+    def testGlassDrawsOnSpheres(self):
+        """Clear and frosted glass draw on spheres (#635): the effective
+        material id is the material's own, and the sphere rep builds with its
+        implied alpha (transparency 0.85 for glass, 0.8 for frosted glass).
+        A user-set sphere_transparency still wins."""
         by_name = {n: i for i, n in setting.get_material_names(0)}
-        glass = by_name['glass']
-        self.assertEqual(_cmd.get_effective_material(glass, repres['spheres']), 0)
-        # ...and it is NOT degraded where glass does have a path.
-        self.assertEqual(_cmd.get_effective_material(glass, repres['surface']),
-                         glass)
-        self.assertEqual(_cmd.get_effective_material(glass, repres['cartoon']),
-                         glass)
+        for name, transparency in (('glass', 0.85), ('frosted_glass', 0.8)):
+            mat_id = by_name[name]
+            self.assertEqual(
+                _cmd.get_effective_material(mat_id, repres['spheres']), mat_id, name)
+            cmd.hide('everything', 'm1')
+            cmd.set('sphere_material', name, 'm1')
+            build('m1', 'spheres')
+            self.assertAlmostEqual(
+                built_transparency('m1', repres['spheres']), transparency,
+                places=4, msg=name)
+        # the user's slider still wins
+        cmd.set('sphere_transparency', 0.4, 'm1')
+        build('m1', 'spheres')
+        self.assertAlmostEqual(
+            built_transparency('m1', repres['spheres']), 0.4, places=4)
 
     def testStickBallGlassImpliesNoOpacityEither(self):
         """A `stick_ball` stick degrades to `default` because the ball spheres
@@ -448,10 +452,9 @@ class TestGlass(testing.PyMOLTestCase):
                 built_transparency('m1', repres['surface']), 0.85, places=4)
 
     def testGlassIsStillSettableOnSpheresAndRoundTrips(self):
-        """Degrading at DRAW time is not the same as refusing the value: the
-        setting still holds what the user typed, so turning stick_ball off (or
-        opening the .pse in a build that grows a glass sphere path) restores the
-        intent."""
+        """The setting holds what the user typed and round-trips. (Before #635
+        spheres degraded glass to `default` at draw time; this pinned that the
+        value itself was still accepted.)"""
         cmd.set('sphere_material', 'glass', 'm1')
         self.assertEqual(cmd.get('sphere_material', 'm1'), 'glass')
 

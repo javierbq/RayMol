@@ -2527,7 +2527,7 @@ static PyObject *CmdGetType(PyObject * self, PyObject * args)
  */
 /**
  * The material id a representation EFFECTIVELY draws with, after the per-rep
- * degradation (glass on sphere impostors -> default). The SETTING still holds
+ * resolve (an unimplemented id -> default). The SETTING still holds
  * what the user typed; this is what reaches the shader.
  *
  * _cmd.get_effective_material(id, rep_index)

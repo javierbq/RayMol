@@ -115,7 +115,8 @@ MASTER_LITERALS = {
     'kPostSrc': 'a3236d6afc3a38b1',  # #689: post_ssao_fog fades toward the bg_gradient
     'kRTSrc': 'c434543f02ae5906',  # #689: rt_composite's fog fades toward the bg_gradient
     'kScreenOverlaySrc': '9f09ecbdd4a9ddfa',  # #689: ramp gadgets drawn after the post chain
-    'kSphereImpostorSrc': '1ed9ba64205bd960',
+    # #635: retaken after sphere glass coverage split
+    'kSphereImpostorSrc': '370fa7d7d0571acb',
     'kVBOSrc': '728416d46e47293d',
 }
 # #615 (Materials own their response to studio lights) changes kMaterialSrc

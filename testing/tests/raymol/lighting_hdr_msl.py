@@ -117,7 +117,8 @@ MASTER_054B525 = {
     'kPostSrc': 'a3236d6afc3a38b1',  # #689: post_ssao_fog fades toward the bg_gradient
     'kRTSrc': 'c434543f02ae5906',  # #689: rt_composite's fog fades toward the bg_gradient
     'kScreenOverlaySrc': '9f09ecbdd4a9ddfa',  # #689: ramp gadgets drawn after the post chain
-    'kSphereImpostorSrc': 'd4db196a0bab087c',
+    # #635: retaken after sphere glass coverage split
+    'kSphereImpostorSrc': '70122d7482dedf17',
     'kVBOSrc': '834ce9f8e90f5832',
 }
 # The same digests (signature, body) of the material laws #624 leaves alone,
@@ -139,7 +140,8 @@ EDIT_COUNTS = {
                'finish_body': 1, 'hit_exposure': 1},
     'kVBOSrc': {'vbo_cover': 1},
     'kCylinderImpostorSrc': {'cyl_cover': 1},
-    'kSphereImpostorSrc': {'sphere_glass': 2},
+    # #635: sphere glass coverage split uses the same HDR cover statement as cylinder
+    'kSphereImpostorSrc': {'cyl_cover': 1},
     'kAirSrc': {'air_signature': 1, 'air_body': 1, 'air_full': 1,
                 'air_upsample': 1, 'air_upsample_rig': 1,
                 'alpha_functions': 2},   # #684: post_air_alpha, post_air_alpha_merge
@@ -365,12 +367,6 @@ class TestShaders(HdrMSLCase):
         _, hit = self.fn(self.rt, 'rt_rig_hit')
         self.assertIn('returnlight_finish(shaded+base*t.diffuse+t.specular,'
                       'rig.tone.x);', hit)
-        sphere = msl_functions(self.msl['kSphereImpostorSrc'])
-        for name in ('sphere_glass_rig', 'sphere_glass_rig_shadowed'):
-            _, body = self.fn(sphere, name)
-            self.assertTrue(body.endswith(
-                'returnlight_outline(light_finish(body+hi,rig.tone.x),pt,rig);}'), name)
-            self.assertNotIn('mat_soft_knee', body, name)
         # every light_finish call in every library passes the exposure
         for lib, literal in self.msl.items():
             code = squash(strip_comments(literal))
@@ -396,10 +392,18 @@ class TestShaders(HdrMSLCase):
         self.assertIn('float4g;if(kLightRig&&kLightHdr)g=light_glass_cover(body,hi,a,'
                       'rig.tone.x);elseg=mat_glass_cover(body,hi,a);rgb=g.rgb;'
                       'if(kLightRig)rgb=light_outline(rgb,pt,rig);', cyl)
+        sphere = squash(fragments(self.msl['kSphereImpostorSrc'])
+                        ['sphere_impostor_fragment_oit'][1])
+        # #635: sphere impostor glass branch uses the same cover statement
+        self.assertIn('float4g;if(kLightRig&&kLightHdr)g=light_glass_cover(body,hi,a,'
+                      'rig.tone.x);elseg=mat_glass_cover(body,hi,a);rgb=g.rgb;'
+                      'if(kLightRig)rgb=light_outline(rgb,pt,rig);', sphere)
         for lib in self.msl:
             code = squash(strip_comments(self.msl[lib]))
             calls = len(re.findall(r'(?<!static)(?<!float4)light_glass_cover\(', code))
-            self.assertEqual(calls, {'kVBOSrc': 1, 'kCylinderImpostorSrc': 1}.get(lib, 0),
+            # #635: kSphereImpostorSrc now has 1 call to light_glass_cover
+            self.assertEqual(calls, {'kVBOSrc': 1, 'kCylinderImpostorSrc': 1,
+                                     'kSphereImpostorSrc': 1}.get(lib, 0),
                              lib)
         # the classic glints' own curve (mat_glass_shade) is a material law
         _, shade = self.fn(self.material, 'mat_glass_shade')
@@ -432,8 +436,6 @@ class TestShaders(HdrMSLCase):
             (dict(self.material, **self.air), ['post_air_full', 'post_air_upsample',
                                                'post_air_finish']),
             (self.rt, ['rt_rig_hit']),
-            (dict(self.material, **msl_functions(self.msl['kSphereImpostorSrc'])),
-             ['sphere_glass_rig', 'sphere_glass_rig_shadowed']),
         )
         knee = re.compile(r'\bmat_soft_knee\(|\bmat_glass_cover\(')
         for table, roots in tables:
@@ -451,14 +453,15 @@ class TestShaders(HdrMSLCase):
                              if c in table]
                 # the walk follows the HDR arms down to T
                 if root in ('light_apply', 'light_apply_shadowed', 'post_air_full',
-                            'post_air_upsample', 'rt_rig_hit', 'sphere_glass_rig',
-                            'sphere_glass_rig_shadowed'):
+                            'post_air_upsample', 'rt_rig_hit'):
                     self.assertIn('light_tone', seen, root)
         # ...and the false arms do reach them
         self.assertIn('mat_soft_knee', reaches(self.material, 'light_finish',
                                                re.compile(r'\bknee\b')))
+        # #635: sphere impostors join VBO and cylinder glass with light_glass_cover
         for lib, frag in (('kVBOSrc', 'vbo_fragment_oit'),
-                          ('kCylinderImpostorSrc', 'cyl_impostor_fragment_oit')):
+                          ('kCylinderImpostorSrc', 'cyl_impostor_fragment_oit'),
+                          ('kSphereImpostorSrc', 'sphere_impostor_fragment_oit')):
             body = fragments(self.msl[lib])[frag][1]
             self.assertIn('light_glass_cover(', hdr_view(body))
             self.assertNotIn('mat_glass_cover(', hdr_view(body))

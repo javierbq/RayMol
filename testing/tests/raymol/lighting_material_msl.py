@@ -163,8 +163,9 @@ RUBBER_SPEC = ('floatspec=m.p[2]*pow(max(dot(N,H),0.0),kMatRubberHighlightExp)*'
                '(n1>0.0?1.0:0.0)*mat_classic_light(m);')
 RUBBER_SHEEN = 'floatsheen=m.p[3]*pow(1.0-saturate(N.z),3.0);'
 # Every mat_glass_shade call, by library, with the MaterialU it hands over.
+# #635: sphere impostor glass branch has 1 mat_glass_shade call, mirroring cylinder
 GLASS_CALLS = {'kMaterialImpostorSrc': ['m'], 'kVBOSrc': ['mat', 'mat'],
-               'kSphereImpostorSrc': ['mat', 'mat'], 'kCylinderImpostorSrc': ['mat']}
+               'kSphereImpostorSrc': ['mat'], 'kCylinderImpostorSrc': ['mat']}
 
 
 def read(path):
@@ -560,7 +561,8 @@ class TestClassicLight(MaterialMSLCase):
                 self.assertIsNotNone(last, '%s: %s' % (name, args))
                 found.setdefault(name, []).append(last.group(1))
         self.assertEqual(found, GLASS_CALLS)
-        self.assertEqual(sum(len(v) for v in found.values()), 6)
+        # #635: 5 total calls (sphere has 1, matching cylinder)
+        self.assertEqual(sum(len(v) for v in found.values()), 5)
 
     def testBindRepMaterialPassesTheScale(self):
         rep = squash(cpp_function(self.mm, 'RendererMetal::bindRepMaterial'))

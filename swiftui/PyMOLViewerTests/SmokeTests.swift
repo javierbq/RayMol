@@ -1554,3 +1554,179 @@ final class BackgroundGradientGadgetExportTests: XCTestCase {
         }
     }
 }
+
+/// Sphere glass rendering and coverage split tests (issue #635).
+@MainActor
+final class SphereGlassRenderTests: XCTestCase {
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var sceneBuilt = false
+    private var savedView: [Float]?
+
+    override func tearDown() {
+        if sceneBuilt {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.delete('sg635')
+            _c.set('bg_rgb', globals().pop('_sg635_bg', [0.0, 0.0, 0.0]))
+            _c.set('ray_opaque_background', globals().pop('_sg635_ray_bg', 1))
+            for _n in globals().pop('_sg635_enabled', []):
+                _c.enable(_n)
+            """)
+            sceneBuilt = false
+        }
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        super.tearDown()
+    }
+
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            throw XCTSkip("the PyMOL engine did not come up under the test host")
+        }
+    }
+
+    private func setupScene() {
+        savedView = engine.captureView()
+        sceneBuilt = true
+        engine.runPython("""
+        from pymol import cmd as _c
+        _sg635_enabled = _c.get_names('objects', enabled_only=1)
+        _sg635_bg = list(_c.get_setting_tuple('bg_rgb')[1])
+        _sg635_ray_bg = _c.get_setting_int('ray_opaque_background')
+        for _n in _sg635_enabled:
+            _c.disable(_n)
+        _c.pseudoatom('sg635', pos=[0.0, 0.0, 0.0])
+        _c.alter('sg635', 'vdw=1.0')
+        _c.show_as('spheres', 'sg635')
+        _c.color('red', 'sg635')
+        _c.set('sphere_scale', 1.0, 'sg635')
+        _c.set('bg_rgb', [0.0, 0.0, 1.0])
+        _c.set('ray_opaque_background', 1)
+        _c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                     0.0, 0.0, -12.0, 0.0, 0.0, 0.0, 5.0, 100.0, -20.0))
+        """)
+    }
+
+    private func render(_ material: String) throws -> [UInt8] {
+        let w = 400, h = 300
+        engine.runPython("from pymol import cmd as _c\n_c.set('sphere_material', '\(material)', 'sg635')")
+        let png = NSTemporaryDirectory() + "sg635_\(material)_\(UUID().uuidString).png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: w, height: h, rayTraced: 0)
+        guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: png) as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            XCTFail("no export written (\(material))")
+            return []
+        }
+        XCTAssertEqual(image.width, w)
+        XCTAssertEqual(image.height, h)
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return rgba
+    }
+
+    private func centreBoxMeans(_ rgba: [UInt8], width: Int = 400, height: Int = 300) -> (r: Double, g: Double, b: Double) {
+        let boxSize = 40
+        let startX = (width - boxSize) / 2
+        let startY = (height - boxSize) / 2
+        var sumR = 0.0, sumG = 0.0, sumB = 0.0
+        for y in startY..<(startY + boxSize) {
+            for x in startX..<(startX + boxSize) {
+                let idx = (y * width + x) * 4
+                sumR += Double(rgba[idx])
+                sumG += Double(rgba[idx + 1])
+                sumB += Double(rgba[idx + 2])
+            }
+        }
+        let total = Double(boxSize * boxSize)
+        return (sumR / total, sumG / total, sumB / total)
+    }
+
+    func testGlassSphereShowsTheBackgroundThrough() throws {
+        try requireEngine()
+        setupScene()
+
+        let defPixels = try render("default")
+        let defMeans = centreBoxMeans(defPixels)
+        XCTAssertLessThan(defMeans.b, 40, "default centre box mean B should be < 40")
+        XCTAssertGreaterThan(defMeans.r, 120, "default centre box mean R should be > 120")
+
+        let glassPixels = try render("glass")
+        let glassMeans = centreBoxMeans(glassPixels)
+        print("635-centre default \(defMeans) glass \(glassMeans)")
+        XCTAssertGreaterThan(glassMeans.b, defMeans.b + 80, "glass centre box mean B should exceed default + 80")
+        XCTAssertGreaterThan(glassMeans.b, glassMeans.r, "glass centre box mean B should exceed mean R")
+
+        var visiblePixels = 0
+        let totalPixels = 400 * 300
+        for i in 0..<totalPixels {
+            let r = Int(glassPixels[i * 4])
+            let g = Int(glassPixels[i * 4 + 1])
+            let b = Int(glassPixels[i * 4 + 2])
+            if abs(r - 0) > 20 || abs(g - 0) > 20 || abs(b - 255) > 20 {
+                visiblePixels += 1
+            }
+        }
+        XCTAssertGreaterThanOrEqual(visiblePixels, 200, "glass sphere should have at least 200 visible pixels differing from background")
+    }
+
+    func testFrostedGlassDiffersFromClearGlass() throws {
+        try requireEngine()
+        setupScene()
+
+        let clear = try render("glass")
+        let frost = try render("frosted_glass")
+        let totalPixels = 400 * 300
+        var diffCount = 0
+        for i in 0..<totalPixels {
+            let dr = abs(Int(clear[i * 4]) - Int(frost[i * 4]))
+            let dg = abs(Int(clear[i * 4 + 1]) - Int(frost[i * 4 + 1]))
+            let db = abs(Int(clear[i * 4 + 2]) - Int(frost[i * 4 + 2]))
+            let maxDiff = max(dr, max(dg, db))
+            if maxDiff > 6 {
+                diffCount += 1
+            }
+        }
+        print("635-frost-diff \(diffCount)")
+        // Measured 15552 on the #635 branch, 0 on master (both degraded).
+        XCTAssertGreaterThan(diffCount, 1000, "frosted glass should differ from clear glass in > 1000 pixels")
+    }
+
+    /// The printed hashes are compared by hand against the same test run on a
+    /// master core (see PR #833); they are not pinned here, because the exact
+    /// bytes depend on the GPU and OS. What is asserted is that drawing glass
+    /// leaves no state behind: `default` renders the same before and after.
+    func testNonGlassSpheresAreUnchanged() throws {
+        try requireEngine()
+        setupScene()
+
+        var firstDefault: [UInt8] = []
+        for name in ["default", "matte", "metallic", "jelly"] {
+            let px = try render(name)
+            if name == "default" {
+                firstDefault = px
+            }
+            var hash: UInt64 = 0xcbf29ce484222325
+            for byte in px { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
+            print("635-hash \(name) \(String(hash, radix: 16))")
+        }
+
+        _ = try render("glass")
+        let secondDefault = try render("default")
+        XCTAssertEqual(firstDefault, secondDefault, "second default render must be byte-identical to first default render")
+    }
+}
