@@ -20,7 +20,7 @@
 // - a direct-manipulation gesture starts with `beginGesture()` (its owner),
 //   writes every tick with `set(_:_:owner:)` (refused once the owner is no
 //   longer selected), reads a step's base with `freshValue`, and snaps with
-//   `LightSnap` (orbit 15°, radius 0.5×, pitch 1°);
+//   `LightSnap` (orbit and pitch 1°, radius 0.5×; orbit steps 15°);
 // - #622's gizmo reuses that gesture start and that one owner guard
 //   (`ownsGesture`): a knob tick writes orbit and pitch together with
 //   `setPlacement(orbit:pitch:radius:owner:)` (pitch first, one re-read, so
@@ -210,8 +210,9 @@ enum LightAngles {
 
 // MARK: - Snapping
 
-/// The grids the orbit view snaps to (spec §9): orbit every 15° (decision 7),
-/// radius every 0.5×, pitch to the dial's 1°. Values are compared at
+/// The grids the orbit view snaps to (spec §9): a drag rounds orbit and pitch
+/// to the dial's 1° (so a lamp follows the pointer), radius every 0.5×; the
+/// discrete steps (`nextOrbit`: VoiceOver, keyboard) stay on the 15° grid. Values are compared at
 /// `tolerance`, the eye-space drift a pinned light's Float placement carries,
 /// so 104.99999 counts as on 105. Non-finite input gives nil.
 enum LightSnap {
@@ -219,10 +220,12 @@ enum LightSnap {
     static let orbitStep = 15.0
     static let radiusStep = 0.5
 
-    /// The nearest multiple of 15°, wrapped into (-180, 180].
+    /// Rounded to the orbit quantum (1°), wrapped into (-180, 180]. A drag
+    /// uses this, so the light follows the pointer with no 15° stops.
     static func orbit(_ degrees: Double) -> Double? {
         guard degrees.isFinite else { return nil }
-        return LightAngles.wrap((degrees / orbitStep).rounded() * orbitStep)
+        // `+ 0` turns -0 (a small negative rounded) into 0.
+        return LightAngles.wrap(LightParameter.orbit.rounded(degrees)) + 0
     }
 
     /// The nearest multiple of 0.5×, clamped into the core's 0.5...8.
@@ -246,7 +249,7 @@ enum LightSnap {
         return radius(start * magnification)
     }
 
-    /// The next 15° grid value above (`up`) or below `degrees`, wrapped. A
+    /// The next 15° step above (`up`) or below `degrees`, wrapped. A
     /// value within `tolerance` of a grid value counts as on it.
     static func nextOrbit(from degrees: Double, up: Bool) -> Double? {
         guard let n = next(degrees, step: orbitStep, up: up) else { return nil }

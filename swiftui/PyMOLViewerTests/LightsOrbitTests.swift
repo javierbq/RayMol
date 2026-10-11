@@ -141,19 +141,26 @@ final class LightsGestureAPITests: XCTestCase {
 // MARK: - Snapping
 
 final class LightSnapTests: XCTestCase {
-    func testOrbitSnapsTo15Degrees() {
-        let cases: [(Double, Double)] = [(7, 0), (8, 15), (-52, -45), (172, 165), (173, 180),
-                                         (-173, 180), (-180, 180), (180, 180), (0, 0), (-7, 0),
-                                         (104.99999, 105), (365, 0)]
+    func testOrbitRoundsToTheQuantumNotTo15Degrees() {
+        // Drags are continuous to the orbit quantum (1 degree), as pitch is
+        // (#800): 7 stays 7, not 0; 8 stays 8, not 15.
+        XCTAssertEqual(LightParameter.orbit.quantum, 1)
+        let cases: [(Double, Double)] = [(7, 7), (7.4, 7), (7.6, 8), (-52, -52), (172, 172),
+                                         (179.6, 180), (-173, -173), (-180, 180), (180, 180),
+                                         (0, 0), (-0.3, 0), (104.99999, 105), (365, 5), (-47.4, -47)]
         for (input, expected) in cases {
             XCTAssertEqual(LightSnap.orbit(input), expected, "\(input)")
         }
         for x in stride(from: -400.0, through: 400, by: 0.7) {
             let s = LightSnap.orbit(x)!
-            XCTAssertEqual(s.truncatingRemainder(dividingBy: 15), 0, "\(x)")
+            XCTAssertEqual(s, s.rounded(), "\(x) is a whole degree")
+            XCTAssertLessThanOrEqual(abs(LightAngles.wrap(s - x)), 0.5 + 1e-9, "\(x) -> \(s)")
             XCTAssertTrue(s > -180 && s <= 180, "\(x) -> \(s)")
             XCTAssertFalse(s.sign == .minus && s == 0, "never -0")
         }
+        // Some degrees between the old 15 degree stops are reachable.
+        let distinct = Set(stride(from: 0.0, through: 30, by: 1).compactMap(LightSnap.orbit))
+        XCTAssertEqual(distinct.count, 31)
     }
 
     func testRadiusSnapsToHalfSizesInRange() {
@@ -735,24 +742,33 @@ final class OrbitDragSessionTests: XCTestCase {
         XCTAssertNil(s.move(to: p, current: 0))
     }
 
-    func testALampMoveGivesOrbitSnapped() {
+    func testALampFollowsThePointerToTheDegree() {
         var s = lampSession(orbit: 0, radius: 2)
-        let to = plan.point(orbit: 50, distance: plan.ringRadius(2))
-        XCTAssertEqual(s.move(to: to, current: 0), OrbitEdit(parameter: .orbit, value: 45))
+        let ring = plan.ringRadius(2)
+        let to = plan.point(orbit: 50, distance: ring)
+        XCTAssertEqual(s.move(to: to, current: 0), OrbitEdit(parameter: .orbit, value: 50),
+                       "the angle under the pointer, not the nearest 15 degrees")
         XCTAssertEqual(s.parameter, .orbit)
-        // Repeated ticks at one grid value: one edit.
-        XCTAssertNil(s.move(to: plan.point(orbit: 48, distance: plan.ringRadius(2)), current: 45))
-        XCTAssertNil(s.move(to: plan.point(orbit: 52, distance: plan.ringRadius(2)), current: 45))
-        // Even before the mirror shows it.
-        XCTAssertNil(s.move(to: plan.point(orbit: 46, distance: plan.ringRadius(2)), current: 0))
-        XCTAssertEqual(s.move(to: plan.point(orbit: 61, distance: plan.ringRadius(2)), current: 45)?.value, 60)
+        // Every degree of a sweep is written, in order, none skipped or held.
+        var current = 50.0
+        for degrees in 51...120 {
+            let edit = s.move(to: plan.point(orbit: Double(degrees), distance: ring), current: current)
+            XCTAssertEqual(edit, OrbitEdit(parameter: .orbit, value: Double(degrees)), "\(degrees)")
+            current = Double(degrees)
+        }
+        // Sub-degree jitter around a degree: one edit, then nothing (the
+        // duplicate-tick filter), even before the mirror shows it.
+        var j = lampSession(orbit: 0, radius: 2)
+        XCTAssertEqual(j.move(to: plan.point(orbit: 46.2, distance: ring), current: 0)?.value, 46)
+        XCTAssertNil(j.move(to: plan.point(orbit: 45.8, distance: ring), current: 0))
+        XCTAssertNil(j.move(to: plan.point(orbit: 46.4, distance: ring), current: 46))
+        XCTAssertEqual(j.move(to: plan.point(orbit: 47, distance: ring), current: 46)?.value, 47)
         // Back over the start: wraps around the circle.
         var w = lampSession(orbit: 175, radius: 2)
-        XCTAssertEqual(w.move(to: plan.point(orbit: -170, distance: plan.ringRadius(2)), current: 175)?.value,
-                       -165)
+        XCTAssertEqual(w.move(to: plan.point(orbit: -170, distance: ring), current: 175)?.value, -170)
     }
 
-    func testTheGrabOffsetNeverJumpsTheLight() {
+    func testTheGrabOffsetNeverJumpsTheLight() throws {
         // A press 12 pt off a 1x lamp's centre (inside the touch slop), then
         // a 4 pt move along the ring.
         let lamp = plan.lampPoint(orbit: 0, radius: 1)
@@ -762,16 +778,17 @@ final class OrbitDragSessionTests: XCTestCase {
         let r = distance(press, c)
         let a = atan2(Double(press.x - c.x), Double(press.y - c.y)) + 4 / Double(r)
         let moved = CGPoint(x: c.x + r * CGFloat(sin(a)), y: c.y + r * CGFloat(cos(a)))
-        let edit = s.move(to: moved, current: 0)
-        XCTAssertTrue(edit == nil || abs(edit!.value) <= 15, "\(String(describing: edit))")
-        // Without the offset the pointer's own angle would be two steps away.
-        XCTAssertGreaterThan(LightSnap.orbit(plan.orbit(at: moved)!)!, 15)
+        let edit = try XCTUnwrap(s.move(to: moved, current: 0))
+        // The light moves by the pointer's 4 pt of arc and no more.
+        XCTAssertEqual(edit.value, 4 / Double(r) * 180 / .pi, accuracy: 0.5001)
+        // Without the offset the pointer's own angle would be far away.
+        XCTAssertGreaterThan(plan.orbit(at: moved)!, 15)
     }
 
     func testAPressAtTheCentreUsesTheLampsOrbit() {
         var s = lampSession(orbit: 30, radius: 0.5, press: plan.centre)
         XCTAssertEqual(s.pointerAtPress, 30)
-        XCTAssertEqual(s.move(to: plan.point(orbit: 92, distance: 20), current: 30)?.value, 90)
+        XCTAssertEqual(s.move(to: plan.point(orbit: 92, distance: 20), current: 30)?.value, 92)
         XCTAssertNil(s.move(to: CGPoint(x: plan.centre.x + 1, y: plan.centre.y), current: 90),
                      "the centre has no angle")
     }
@@ -779,10 +796,14 @@ final class OrbitDragSessionTests: XCTestCase {
     func testTheCurrentValueIsNotWrittenAgainEvenWithFloatNoise() {
         let pinned = Double(Float(105.00001))
         var s = lampSession(orbit: pinned, radius: 2)
-        XCTAssertNil(s.move(to: plan.point(orbit: 108, distance: plan.ringRadius(2)), current: pinned))
-        XCTAssertNil(s.move(to: plan.point(orbit: 101, distance: plan.ringRadius(2)), current: pinned))
-        XCTAssertEqual(s.move(to: plan.point(orbit: 115, distance: plan.ringRadius(2)), current: pinned)?.value,
-                       120)
+        let ring = plan.ringRadius(2)
+        // Past the drag slop first, then back to within half a degree of the
+        // pinned value: it rounds to the value the light has, so nothing is
+        // written (the last one sent was 115).
+        XCTAssertEqual(s.move(to: plan.point(orbit: 115, distance: ring), current: pinned)?.value, 115)
+        XCTAssertNil(s.move(to: plan.point(orbit: 105.3, distance: ring), current: pinned))
+        XCTAssertNil(s.move(to: plan.point(orbit: 104.6, distance: ring), current: pinned))
+        XCTAssertEqual(s.move(to: plan.point(orbit: 108, distance: ring), current: pinned)?.value, 108)
     }
 
     func testTheSquareGivesRadiusAtTheFrozenScale() {
@@ -921,8 +942,8 @@ final class LightsOrbitInteractionTests: XCTestCase {
         XCTAssertFalse(results.isEmpty)
         XCTAssertTrue(results.allSatisfy { $0 == .ok })
         XCTAssertTrue(store.numberWrites.allSatisfy { $0.field == "orbit" && $0.index == 1 })
-        XCTAssertTrue(store.numberWrites.allSatisfy { $0.value.truncatingRemainder(dividingBy: 15) == 0 })
-        XCTAssertEqual(store.lights[1].orbit, 105)
+        XCTAssertTrue(store.numberWrites.allSatisfy { $0.value == $0.value.rounded() }, "whole degrees")
+        XCTAssertEqual(store.lights[1].orbit, 100)
         XCTAssertEqual(store.lights[1].pitch, 10)
         XCTAssertEqual(store.lights[1].radius, 2)
         XCTAssertEqual(store.lights[0].orbit, -45, "key untouched")
@@ -1052,13 +1073,19 @@ final class LightsOrbitInteractionTests: XCTestCase {
         XCTAssertEqual(store.numberWrites.count, writes)
     }
 
-    func testManyTicksWriteOnlyGridChanges() {
+    func testManyTicksWriteEachNewDegreeOnce() {
         var session = interaction.beginPlan(at: lampPoint("key"), state: state, layout: plan)!
         let loads = store.presetLoads
         let results = dragLamp(&session, radius: 3, from: -45, to: 135, ticks: 120)
-        // -30, -15, ..., 135: twelve new grid values, each written once.
-        XCTAssertEqual(results.count, 12)
-        XCTAssertEqual(store.numberWrites.map { $0.value }, Array(stride(from: -30.0, through: 135, by: 15)))
+        // 1.5 degrees a tick: nearly every tick is a new whole degree and is
+        // written (no 15 degree stops, #800), none twice, none out of order.
+        let values = store.numberWrites.map { $0.value }
+        XCTAssertEqual(results.count, values.count)
+        XCTAssertGreaterThanOrEqual(values.count, 100)
+        XCTAssertTrue(values.allSatisfy { $0 == $0.rounded() }, "whole degrees")
+        XCTAssertEqual(values, values.sorted())
+        XCTAssertEqual(Set(values).count, values.count, "the duplicate-tick filter holds")
+        XCTAssertTrue(zip(values, values.dropFirst()).allSatisfy { $1 - $0 <= 2 }, "no jumps")
         XCTAssertTrue(store.numberWrites.allSatisfy { $0.field == "orbit" })
         XCTAssertTrue(store.performed.isEmpty)
         XCTAssertEqual(store.presetLoads, loads)
@@ -1079,7 +1106,9 @@ final class LightsOrbitInteractionTests: XCTestCase {
         for k in 1...12 {
             interaction.move(&session, to: wide.point(orbit: 150 + 30 * Double(k) / 12, distance: wide.outerRadius))
         }
-        XCTAssertEqual(store.numberWrites.dropFirst(writes).map { $0.field }, ["orbit", "orbit"])
+        let fields = store.numberWrites.dropFirst(writes).map { $0.field }
+        XCTAssertGreaterThan(fields.count, 2, "continuous, not two 15 degree stops")
+        XCTAssertTrue(fields.allSatisfy { $0 == "orbit" })
         XCTAssertEqual(store.currentPlacement(2), LightPlacement(orbit: 180, pitch: -15, radius: 8),
                        "the re-pin clamps the derived radius, as the core does")
     }
@@ -1273,8 +1302,8 @@ final class LightsOrbitMirroringTests: XCTestCase {
     func testPlanEditsShowInTheInspectorInTheSameTurn() {
         var lamp = interaction.beginPlan(at: plan.lampPoint(orbit: -45, radius: 3), state: state, layout: plan)!
         interaction.move(&lamp, to: plan.point(orbit: -100, distance: plan.ringRadius(3)))
-        XCTAssertEqual(inspector.row(.orbit)?.value, -105)
-        XCTAssertEqual(state.selected.orbit, -105)
+        XCTAssertEqual(inspector.row(.orbit)?.value, -100)
+        XCTAssertEqual(state.selected.orbit, -100)
 
         var pitch = interaction.beginArc(at: arc.point(pitch: 35), state: state, layout: arc)!
         interaction.move(&pitch, to: arc.point(pitch: 20))
@@ -1361,10 +1390,10 @@ final class OrbitAutoGestureTests: XCTestCase {
         let lines = ["plan:key:100", "square:2.5", "arc:20", "pinch:1.5", "tap:fill"].map {
             OrbitAutoGesture.apply(OrbitAutoGesture.parse($0)!, to: controller)
         }
-        XCTAssertEqual(lines, ["plan:key:100 -> ok orbit=105", "square:2.5 -> ok radius=2.5",
+        XCTAssertEqual(lines, ["plan:key:100 -> ok orbit=100", "square:2.5 -> ok radius=2.5",
                                "arc:20 -> ok pitch=20", "pinch:1.5 -> ok radius=4",
                                "tap:fill -> ok selected=fill"])
-        XCTAssertEqual(store.lights[0].orbit, 105)
+        XCTAssertEqual(store.lights[0].orbit, 100)
         XCTAssertEqual(store.lights[0].pitch, 20)
         XCTAssertEqual(store.lights[0].radius, 4)
         XCTAssertEqual(store.lights[1].orbit, 60, "the tap wrote nothing")
@@ -1388,10 +1417,10 @@ final class OrbitAutoGestureTests: XCTestCase {
             let lines = ["plan:key:100", "square:2.5", "arc:20", "pinch:1.5", "tap:fill"].map {
                 OrbitAutoGesture.apply(OrbitAutoGesture.parse($0)!, to: controller, planSize: plan, arcSize: arc)
             }
-            XCTAssertEqual(lines, ["plan:key:100 -> ok orbit=105", "square:2.5 -> ok radius=2.5",
+            XCTAssertEqual(lines, ["plan:key:100 -> ok orbit=100", "square:2.5 -> ok radius=2.5",
                                    "arc:20 -> ok pitch=20", "pinch:1.5 -> ok radius=4",
                                    "tap:fill -> ok selected=fill"], name)
-            XCTAssertEqual(store.lights[0].orbit, 105, name)
+            XCTAssertEqual(store.lights[0].orbit, 100, name)
             XCTAssertTrue(store.performed.isEmpty, name)
         }
         // LightsAutoEdit passes the sizes through.

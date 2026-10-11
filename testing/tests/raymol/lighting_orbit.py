@@ -2,8 +2,10 @@
 
 The orbit view (swiftui/PyMOLViewer/Shared/LightsOrbitModel.swift) draws the
 rig as a flat plan seen from above, the camera at the bottom, plus a pitch
-arc, and writes only orbit, pitch or radius of the selected light, snapped to
-LightSnap's grids (orbit every 15 degrees, radius every 0.5 scene sizes),
+arc, and writes only orbit, pitch or radius of the selected light, rounded by
+LightSnap (orbit and pitch to 1 degree, so a lamp follows the pointer, #800;
+radius every 0.5 scene sizes; the 15 degree orbit step is for VoiceOver and
+keyboard steps),
 through the C++ setter the app bridge calls per drag tick (LightRigSet,
 reached here as lighting._light_set). It reads where each light is from the
 eye-space resolver (LightRigResolve, lighting._lights_eye), as the bridge
@@ -41,7 +43,10 @@ PEPTIDE = 'ACDEFG'
 SIZE = 10.0
 
 # LightSnap's grids (LightsEditing.swift; TestOrbitSource reads them back).
+# ORBIT_STEP is the discrete (VoiceOver, keyboard) step; a drag rounds orbit
+# to LightParameter.orbit.quantum (1 degree) instead.
 ORBIT_STEP = 15.0
+ORBIT_QUANTUM = 1.0
 RADIUS_STEP = 0.5
 
 # The 15-degree orbit grid in (-180, 180].
@@ -137,6 +142,15 @@ class TestPlanGrid(OrbitCase):
                  for scope, name, _kind, _default, low, high
                  in lighting._light_fields() if scope == 'light'}
         self.assertEqual((RADIUS_GRID[0], RADIUS_GRID[-1]), table['radius'])
+
+    def testWholeDegreeOrbitsReadBackExactly(self):
+        """A drag writes any whole degree (#800), not only the 15-degree
+        steps; the core holds each exactly (-180 reads back as 180)."""
+        self.rig([{'name': 'key', 'orbit': 0.0, 'pitch': 3.0, 'radius': 2.0}])
+        for orbit in range(-180, 181):
+            lighting._light_set(0, 'orbit', float(orbit))
+            self.assertEqual(lighting._light_get(0, 'orbit'),
+                             180.0 if orbit == -180 else float(orbit), orbit)
 
     def testOrbitAtAPoleLeavesTheLightWhereItIs(self):
         """At pitch +-90 a lamp drag moves the lamp on the plan but not the
@@ -292,11 +306,22 @@ class TestOrbitSource(testing.PyMOLTestCase):
             return strip_comments(handle.read())
 
     def testSnapGridsFitTheCore(self):
-        """LightSnap snaps orbit every 15 degrees and radius every 0.5x
-        (spec §9); both grids hold the core's range ends, so a snapped value
-        is one the core keeps exactly."""
+        """LightSnap rounds a drag's orbit to the orbit quantum (1 degree,
+        spec §9, #800) and its radius to 0.5x; the discrete orbit step
+        (nextOrbit: VoiceOver, keyboard) stays 15 degrees. Both grids hold the
+        core's range ends, so a snapped value is one the core keeps exactly."""
         snap = body(self.read(EDITING), 'enum LightSnap')
         self.assertIsNotNone(snap, 'enum LightSnap not found')
+        drag = body(snap, 'static func orbit(_ degrees: Double)')
+        self.assertIsNotNone(drag, 'LightSnap.orbit not found')
+        self.assertIn('LightParameter.orbit.rounded', drag)
+        self.assertNotIn('orbitStep', drag, 'a drag must not snap to the 15 degree step')
+        step = body(snap, 'static func nextOrbit(')
+        self.assertIsNotNone(step, 'LightSnap.nextOrbit not found')
+        self.assertIn('orbitStep', step)
+        quantum = body(self.read(EDITING), 'var quantum: Double')
+        self.assertIsNotNone(quantum, 'LightParameter.quantum not found')
+        self.assertIsNotNone(re.search(r'case\s+\.orbit\s*,\s*\.pitch\s*:\s*return\s+1\b', quantum))
         steps = dict(re.findall(r'static let (orbitStep|radiusStep)\s*=\s*([0-9.]+)', snap))
         self.assertEqual(float(steps.get('orbitStep', 'nan')), ORBIT_STEP)
         self.assertEqual(float(steps.get('radiusStep', 'nan')), RADIUS_STEP)

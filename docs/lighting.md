@@ -528,7 +528,8 @@ the inspector share it. Every edit shows in all of them, and in the
 the rig seen from above, with the camera at the bottom and +90 to the right,
 beside a pitch arc for the selected light.
 
-- Drag a lamp to change its orbit only, in 15 degree steps. A tap selects a
+- Drag a lamp to change its orbit only; it follows the pointer smoothly, to the
+  degree. VoiceOver and keyboard steps move it 15 degrees. A tap selects a
   light.
 - Drag the square on the selected light's ring, or pinch the plan, to change
   the radius only, in steps of 0.5x. The beam keeps its angle.

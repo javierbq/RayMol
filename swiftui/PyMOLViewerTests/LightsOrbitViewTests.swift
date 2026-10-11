@@ -242,12 +242,12 @@ final class LightsAutoEditGestureTests: XCTestCase {
             "orbit:-30;tap:fill;plan:fill:100;arc:20;square:2.5;pinch:1.5;expand").tokens
         let entries = LightsAutoEdit.apply(tokens, to: controller)
         XCTAssertEqual(entries, ["orbit=-30 -> ok", "tap:fill -> ok selected=fill",
-                                 "plan:fill:100 -> ok orbit=105", "arc:20 -> ok pitch=20",
+                                 "plan:fill:100 -> ok orbit=100", "arc:20 -> ok pitch=20",
                                  "square:2.5 -> ok radius=2.5", "pinch:1.5 -> ok radius=4"])
         XCTAssertEqual(store.lights[0].orbit, -30, "the inspector token wrote key")
         XCTAssertEqual(store.lights[0].pitch, 35)
         XCTAssertEqual(store.lights[0].radius, 3)
-        XCTAssertEqual(store.lights[1].orbit, 105)
+        XCTAssertEqual(store.lights[1].orbit, 100)
         XCTAssertEqual(store.lights[1].pitch, 20)
         XCTAssertEqual(store.lights[1].radius, 4)
         XCTAssertEqual(store.lights[1].beam, 45, "the beam is kept")
@@ -263,7 +263,7 @@ final class LightsAutoEditGestureTests: XCTestCase {
         XCTAssertTrue(store.performed.isEmpty, "no button press, no Python")
         // The log line's plan= field.
         XCTAssertEqual(try XCTUnwrap(LightsOrbitState(controller)).summary,
-                       "fill,orbit:105.0,pitch:20.0,radius:4.00,extent:4,lamps:key|fill|rim")
+                       "fill,orbit:100.0,pitch:20.0,radius:4.00,extent:4,lamps:key|fill|rim")
     }
 
     func testAGestureThatCannotEditWritesNothing() {
@@ -385,7 +385,7 @@ final class LightsOrbitSnapshotTests: XCTestCase {
                      store.lights[0].radius = 0.5
                  }),
             // Mirroring with the bar: fill picked by a tap on its lamp, then
-            // dragged to 105°; the chip, the inspector header and its Orbit
+            // dragged to 100°; the chip, the inspector header and its Orbit
             // row agree.
             Shot(name: "mirror_fill_tapped_light", kind: .withBar, width: 900, height: 900,
                  after: { controller, _ in Self.tapFill(controller) }),
@@ -393,8 +393,8 @@ final class LightsOrbitSnapshotTests: XCTestCase {
                  after: { controller, store in
                      Self.tapFill(controller)
                      Self.dragFill(controller, to: 100)
-                     XCTAssertEqual(store.lights[1].orbit, 105)
-                     XCTAssertEqual(LightsInspectorState(controller)?.row(.orbit)?.value, 105)
+                     XCTAssertEqual(store.lights[1].orbit, 100)
+                     XCTAssertEqual(LightsInspectorState(controller)?.row(.orbit)?.value, 100)
                      XCTAssertEqual(LightsBarState(controller).chips.first(where: \.isSelected)?.name, "fill")
                  }),
             // #623: the iOS profile, every target hit within at least 22 pt.
