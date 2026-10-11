@@ -223,7 +223,7 @@ final class OrbitLabelLayoutTests: XCTestCase {
             XCTAssertTrue(bounds.contains(frame),
                           "label '\(label.text)' frame \(frame) is not inside bounds \(bounds)",
                           file: file, line: line)
-            for obstacle in obstacles {
+            for obstacle in obstacles where obstacle.hidesReferences || label.kind != .reference {
                 XCTAssertFalse(obstacle.overlaps(frame),
                                "label '\(label.text)' overlaps the circle at \(obstacle.centre), r \(obstacle.radius)",
                                file: file, line: line)
@@ -351,6 +351,15 @@ final class OrbitLabelLayoutTests: XCTestCase {
                 XCTAssertEqual(label.candidates.first, expectedLampPlacement)
             }
 
+            // Before #676 the ring and tick labels were drawn at a bare
+            // point, unclamped: here clamping moves none of them.
+            for label in planLabels.references {
+                let size = measure(label), at = label.candidates[0]
+                XCTAssertEqual(label.frame?.origin, CGPoint(x: at.point.x - at.anchor.x * size.width,
+                                                            y: at.point.y - at.anchor.y * size.height),
+                               "[\(selectionName)] '\(label.text)' is where it was drawn")
+            }
+
             // Every label of OrbitPlanLabels is shown and equals today's frame
             for (i, label) in planLabels.all.enumerated() {
                 XCTAssertNotNil(label.frame, "[\(selectionName)] plan label '\(label.text)' should be shown")
@@ -410,13 +419,20 @@ final class OrbitLabelLayoutTests: XCTestCase {
         let ref = OrbitLabel(text: "Ref", kind: .reference, candidates: [spotObstacle])
         let d = OrbitLabel(text: "D", kind: .lamp, candidates: [spot1, spotObstacle])
 
-        let labels = [a, b, ref, d]
+        // Every place covered: E takes the one covering the fewest (the
+        // obstacle alone, not A, B and D).
+        let spotBoth = OrbitLabelPlacement(point: CGPoint(x: 25, y: 10), anchor: .topLeading)
+        let e = OrbitLabel(text: "E", kind: .lamp, candidates: [spotBoth, spotObstacle])
+
+        let labels = [a, b, ref, d, e]
         let placed1 = OrbitLabelLayout.place(labels, obstacles: [obstacle], in: bounds, size: size)
 
         XCTAssertEqual(placed1[0].frame, CGRect(origin: spot1.origin(for: labelSize, in: bounds), size: labelSize))
         XCTAssertEqual(placed1[1].frame, CGRect(origin: spot2.origin(for: labelSize, in: bounds), size: labelSize))
         XCTAssertNil(placed1[2].frame)
         XCTAssertEqual(placed1[3].frame, CGRect(origin: spot1.origin(for: labelSize, in: bounds), size: labelSize))
+        XCTAssertEqual(placed1[4].frame,
+                       CGRect(origin: spotObstacle.origin(for: labelSize, in: bounds), size: labelSize))
 
         let placed2 = OrbitLabelLayout.place(labels, obstacles: [obstacle], in: bounds, size: size)
         XCTAssertEqual(placed1, placed2)
