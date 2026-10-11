@@ -1335,7 +1335,7 @@ class TestSceneRender(LightMSLCase):
         self.assertEqual(body.count('SceneLightsFrame('), 1)
         self.assertEqual(body.count('setLightRig('), 1)
         self.assertEqual(body.count('setLightingParams('), 1)
-        shadow_pass = body.index('beginShadowPass()')
+        shadow_pass = body.index('beginShadowPass(')
         for call in ('SceneLightsFrame(', 'setLightingParams(', 'setLightRig('):
             self.assertLess(body.index(call), shadow_pass, call)
             self.assertLess(body.index(call), body.index('SceneRenderAll('), call)

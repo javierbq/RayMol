@@ -2194,15 +2194,18 @@ bool SceneGetLightShadowExtent(PyMOLGlobals* G, float* mn, float* mx)
   return I->LightShadowExtentFlag;
 }
 
-// Build the directional key light's view*projection in EYE space, so the post
-// pass can reuse its existing eye-space position reconstruction (no camera
-// inverse needed). The light dir matches the shading key light (eye-space
-// normalize(0.4,0.4,1)). We look down -Ldir at the scene center (transformed to
-// eye space by the camera modelview), with an orthographic frustum sized to the
-// scene radius. Loaded as the renderer's PROJECTION while MODELVIEW stays the
-// camera modelview, so vbo_vertex's projection*(modelview*model) yields light
-// clip for model-space vertices.
-static glm::mat4 SceneBuildLightViewProjEye(PyMOLGlobals* G, float* outRadius = nullptr)
+// Build the directional key light's view and its orthographic projection, both
+// in EYE space (the view maps camera eye space to the light's eye space), so
+// the post pass can reuse its existing eye-space position reconstruction (no
+// camera inverse needed) when sampling with lightProj * lightView. The light
+// dir matches the shading key light (eye-space normalize(0.4,0.4,1)). We look
+// down -Ldir at the scene center (transformed to eye space by the camera
+// modelview), with an orthographic frustum sized to the scene radius. The
+// classic pre-pass hands the view to beginShadowPass, which premultiplies it
+// onto every modelview, and loads the projection, so impostor casters face the
+// light (#665).
+static void SceneBuildLightViewProjEye(PyMOLGlobals* G, glm::mat4& lightView,
+    glm::mat4& lightProj, float* outRadius = nullptr)
 {
   float mn[3], mx[3];
   glm::vec3 centerEye(0.0f);
@@ -2229,13 +2232,11 @@ static glm::mat4 SceneBuildLightViewProjEye(PyMOLGlobals* G, float* outRadius = 
   glm::vec3 up = (Ldir.z * Ldir.z < 0.81f) ? glm::vec3(0, 1, 0)
                                            : glm::vec3(1, 0, 0);
   glm::vec3 lightPos = centerEye + Ldir * (radius * 2.0f);
-  glm::mat4 lightView = glm::lookAt(lightPos, centerEye, up);
-  glm::mat4 lightProj =
-      glm::ortho(-radius, radius, -radius, radius, 0.05f, radius * 4.0f);
+  lightView = glm::lookAt(lightPos, centerEye, up);
+  lightProj = glm::ortho(-radius, radius, -radius, radius, 0.05f, radius * 4.0f);
   if (outRadius)
     *outRadius = radius; // world half-extent of the ortho box; the renderer
                          // turns this into a scale-aware shadow bias (Angstroms)
-  return lightProj * lightView;
 }
 
 /*
@@ -2927,8 +2928,10 @@ void SceneRenderMetal(PyMOLGlobals* G)
 
   // --- Shadow map pre-pass: render the opaque geometry from the light's POV
   // into the depth map, so the post pass can PCF-sample real cast shadows. The
-  // light VP is loaded as PROJECTION (camera MODELVIEW kept), the renderer
-  // routes draws to depth-only pipelines, then restores the scene pass. ---
+  // pass opens with the light's view, which the renderer premultiplies onto the
+  // camera MODELVIEW, and the light's orthographic projection is loaded as
+  // PROJECTION (#665); the renderer routes draws to depth-only pipelines, then
+  // restores the scene pass. ---
   // Skipped in grid mode: the shadow map is a single global texture, so it
   // can't be made per-cell, and a shared map would leak shadows between cells
   // (an object visible only in cell B darkening an object in cell A). Grid mode
@@ -2945,18 +2948,24 @@ void SceneRenderMetal(PyMOLGlobals* G)
   } else if (!lights.studioShadows && !I->grid.active &&
              SettingGetGlobal_b(G, cSetting_metal_shadows)) {
     float shadowRadius = 1.0f;
-    glm::mat4 lightVP_eye = SceneBuildLightViewProjEye(G, &shadowRadius);
+    glm::mat4 lightView(1.0f), lightProj(1.0f);
+    SceneBuildLightViewProjEye(G, lightView, lightProj, &shadowRadius);
+    const glm::mat4 lightVP_eye = lightProj * lightView;
     const float* mvp = SceneGetModelViewMatrixPtr(G);
     G->Renderer->setLightViewProjEye(glm::value_ptr(lightVP_eye));
     G->Renderer->setShadowFrustum(shadowRadius);
     G->Renderer->setShadowBias(SettingGetGlobal_f(G, cSetting_metal_shadow_bias));
-    G->Renderer->matrixMode(0x1701); // PROJECTION = light VP (eye space)
-    G->Renderer->loadMatrixf(glm::value_ptr(lightVP_eye));
-    G->Renderer->matrixMode(0x1700); // MODELVIEW = camera modelview
-    G->Renderer->loadMatrixf(mvp);
     const std::vector<pymol::CObject*> overlays = SceneLightShadowOverlays(G);
     // No pass (the map could not be made): no replay, the frame is unshadowed.
-    if (G->Renderer->beginShadowPass()) {
+    // The pass opens first, with the light's view (#665): until endShadowPass
+    // the renderer premultiplies it onto every modelview, as for a studio map
+    // (#616), so sphere and cylinder impostors face the light and ray-cast
+    // along it instead of standing as camera-facing billboards.
+    if (G->Renderer->beginShadowPass(glm::value_ptr(lightView))) {
+      G->Renderer->matrixMode(0x1701); // PROJECTION = the light's ortho box
+      G->Renderer->loadMatrixf(glm::value_ptr(lightProj));
+      G->Renderer->matrixMode(0x1700); // MODELVIEW = camera (x the light's view)
+      G->Renderer->loadMatrixf(mvp);
       SceneRenderAll(G, &context, normal, nullptr, RenderPass::Opaque, false,
           0.0f, &I->grid, 0, SceneRenderWhich::All,
           SceneRenderOrder::GadgetsLast, nullptr, &overlays);

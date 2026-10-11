@@ -292,12 +292,13 @@ public:
   void setScreenOverlay(bool on) override;
   void setScreenOverlayOffset(float x, float y, float z) override;
 
-  // Shadow map: SceneRenderMetal replays the opaque geometry a second time
-  // between begin/endShadowPass with the LIGHT view-projection loaded via
-  // matrixMode/loadMatrixf. Draws route to depth-only pipelines that write
-  // into _shadowDepth (the light-POV depth map). setLightViewProjEye hands the
-  // renderer the eye-space light VP so the post pass can sample the map.
-  bool beginShadowPass() override;
+  // Shadow map: SceneRenderMetal opens the pass with beginShadowPass(view)
+  // (the light's eye-space view, premultiplied onto every modelview) and loads
+  // the light's orthographic projection, then replays the opaque geometry.
+  // Draws route to depth-only pipelines that write into _shadowDepth (the
+  // light-POV depth map). setLightViewProjEye hands the renderer the eye-space
+  // light VP so the post pass can sample the map.
+  bool beginShadowPass(const float* view) override;
   void endShadowPass() override;
   void setLightViewProjEye(const float* m) override;
   void setShadowFrustum(float radius) override;
@@ -1097,10 +1098,23 @@ private:
   // the attachment (-1 outside the pass); while it is >= 0, loadMatrixf and
   // loadIdentity store _lightShadowView x M in modelview mode (light-facing
   // impostor casters) and the impostor draws use u.ortho = 0.
+  // _lightShadowView holds the view of whichever shadow map is open (a studio
+  // slice, or the classic map, #665).
   // _lightShadowPassActive: the scene encoder was ended for the pass, so
   // endLightShadowMaps must reopen it. The maps are ready only when every
   // planned slice (head.w) was opened and nothing failed.
   int _lightShadowSlotOpen = -1;
+  // #665: the classic pre-pass is open (beginShadowPass to endShadowPass) with
+  // its light's view in _lightShadowView: the same premultiply as a studio
+  // slice, but its impostors ray-cast with u.ortho = 1, since the classic
+  // map's projection is orthographic.
+  bool _classicShadowViewOpen = false;
+  // A shadow map is being drawn with its light's view premultiplied onto
+  // every modelview: a studio slice (#616) or the classic map (#665).
+  bool shadowCasterViewOpen() const
+  {
+    return _lightShadowSlotOpen >= 0 || _classicShadowViewOpen;
+  }
   float _lightShadowView[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
   bool _lightShadowPassActive = false;
   int _lightShadowSlicesOpened = 0;

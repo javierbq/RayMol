@@ -32,8 +32,9 @@ L1, the regression renders against master and L3 prove on a Mac:
   on a size change; beginLightShadowMap chains the slices (depth-only, the
   full slice, never the classic map's validity or the camera viewport) and
   endLightShadowMaps reopens the scene pass once with endShadowPass's own
-  statements; the modelview premultiply and u.ortho = 0 only while a slice
-  is open; the maps bound with the rig only when ready; the whole-pixel
+  statements; the modelview premultiply while a studio slice or the classic
+  map is open, u.ortho = 0 for a slice and 1 for the classic map (#665);
+  the maps bound with the rig only when ready; the whole-pixel
   shadow off, raster and traced, while studio shadows are on;
 * SceneRenderMetal: the frame read once, the studio maps only under
   lights.shadows with every caster but the overlays, the classic pre-pass
@@ -49,7 +50,8 @@ L1, the regression renders against master and L3 prove on a Mac:
   cell before its early returns; bindLightRig gives each draw its cell's
   tile (zero outside every cell); today's grid loops are master's (sha);
   the classic pass (beginShadowPass, endShadowPass, SceneBuildLightViewProjEye,
-  the pre-pass body) pinned by sha against master aea4e74c6;
+  the pre-pass body) pinned by sha against master aea4e74c6 (re-pinned for #665,
+  whose casters face the light);
 * the GPU-time readout (Part 6): SceneRenderMetal hands metal_gpu_timing to
   the renderer every frame; endFrame adds its completed handler only while
   the mode is above 0 (the store and the frame's maps captured by value),
@@ -841,11 +843,14 @@ SCENE_RENDER = os.path.join(ROOT, 'layer1', 'SceneRender.cpp')
 # overlays (SceneLightShadowOverlays and SceneGetLightShadowExtent).
 # Updated for #667: beginShadowPass makes the shadow map lazily (ensureShadowMap)
 # and reports whether the pass opened; the pre-pass replays only when it did.
+# Updated for #665: the classic pass opens with the light's view (premultiplied
+# onto every modelview) and SceneBuildLightViewProjEye returns the view and the
+# projection apart.
 MASTER_CLASSIC = {
-    'RendererMetal::beginShadowPass': '1b34be8859274632',
-    'RendererMetal::endShadowPass': '5dd9374e7be0fb2f',
-    'SceneBuildLightViewProjEye': 'c969b5d7bcc919d7',
-    'classic pre-pass body': 'ddda139e03990989',
+    'RendererMetal::beginShadowPass': '5eb1721676008f76',
+    'RendererMetal::endShadowPass': 'e7cc6973c0584cd7',
+    'SceneBuildLightViewProjEye': 'b2392fd547957ddb',
+    'classic pre-pass body': '2a3fc69cf0876da4',
 }
 # The statements both passes end with: the scene pass reopened with CLEAR.
 # Today's grid code on master (aea4e74c6), hashed as MASTER_CLASSIC is: the
@@ -888,6 +893,76 @@ class TestClassicShadowUnchanged(ShadowMSLCase):
             'classic pre-pass body': digest(classic_pre_pass_body(scene_render)),
         }
         self.assertEqual(found, MASTER_CLASSIC)
+
+
+class TestClassicShadowCastersFaceTheLight(ShadowMSLCase):
+    """#665: the classic pre-pass opens with its light's view, premultiplied
+    onto every modelview until endShadowPass (as a studio map), so impostor
+    casters face the light; they ray-cast orthographically (u.ortho = 1).
+    The GPU side is ClassicShadowImpostorCasterTests
+    (LightsAtmosphereLiveTests.swift)."""
+
+    def testBeginShadowPassStoresTheViewOnceOpen(self):
+        body = strip_comments(cpp_function(self.mm, 'RendererMetal::beginShadowPass'))
+        self.assertIn('if (!view ||', body)
+        self.assertIn('ensureShadowMap()', body)
+        self.assertLess(body.index('if (!view ||'), body.index('ensureShadowMap()'))
+        store = 'std::memcpy(_lightShadowView, view, sizeof(_lightShadowView));'
+        open_flag = '_classicShadowViewOpen = true;'
+        self.assertIn(store, body)
+        self.assertIn(open_flag, body)
+        early_exit = 'if (!_encoder) { _passDesc = _scenePassDesc; return false; }'
+        self.assertIn(early_exit, body)
+        self.assertIn('_shadowMode = true;', body)
+        self.assertLess(body.index('_shadowMode = true;'), body.index(store))
+        self.assertLess(body.index('_shadowMode = true;'), body.index(open_flag))
+        self.assertLess(body.index(early_exit), body.index(store))
+        self.assertLess(body.index(early_exit), body.index(open_flag))
+
+    def testEndShadowPassClosesItBeforeTheReopen(self):
+        end = cpp_function(self.mm, 'RendererMetal::endShadowPass')
+        self.assertIn('_classicShadowViewOpen = false;', end)
+        self.assertIn(REOPEN_MARKER, end)
+        self.assertLess(end.index('_classicShadowViewOpen = false;'), end.index(REOPEN_MARKER))
+        begin = cpp_function(self.mm, 'RendererMetal::beginFrame')
+        self.assertIn('_classicShadowViewOpen = false;', begin)
+        header = read(METAL_H)
+        self.assertIn('bool _classicShadowViewOpen = false;', header)
+
+    def testPrePassLoadsTheLightAfterOpening(self):
+        scene_render = read(SCENE_RENDER)
+        prepass = classic_pre_pass_body(scene_render)
+        self.assertIn('SceneBuildLightViewProjEye(G, lightView, lightProj, &shadowRadius);', prepass)
+        self.assertIn('const glm::mat4 lightVP_eye = lightProj * lightView;', prepass)
+        self.assertIn('setLightViewProjEye(glm::value_ptr(lightVP_eye));', prepass)
+        open_pass = 'beginShadowPass(glm::value_ptr(lightView))'
+        load_proj = 'loadMatrixf(glm::value_ptr(lightProj))'
+        load_mvp1 = 'loadMatrixf(mvp)'
+        render_all = 'SceneRenderAll('
+        close_pass = 'endShadowPass()'
+        load_cam_proj = 'loadMatrixf(SceneGetProjectionMatrixPtr(G))'
+
+        idx_open = prepass.index(open_pass)
+        idx_proj = prepass.index(load_proj)
+        idx_mvp1 = prepass.index(load_mvp1)
+        idx_render = prepass.index(render_all)
+        idx_close = prepass.index(close_pass)
+        idx_cam_proj = prepass.index(load_cam_proj)
+        idx_mvp2 = prepass.rindex(load_mvp1)
+
+        self.assertLess(idx_open, idx_proj)
+        self.assertLess(idx_proj, idx_mvp1)
+        self.assertLess(idx_mvp1, idx_render)
+        self.assertLess(idx_render, idx_close)
+        self.assertLess(idx_close, idx_cam_proj)
+        self.assertLess(idx_cam_proj, idx_mvp2)
+
+        self.assertNotIn('loadMatrixf(glm::value_ptr(lightVP_eye))', prepass)
+
+        fn = cpp_function(scene_render, 'SceneBuildLightViewProjEye')
+        self.assertIn('lightView = glm::lookAt(', fn)
+        self.assertIn('lightProj = glm::ortho(', fn)
+        self.assertNotIn('return lightProj', fn)
 
 
 class TestLazyClassicShadowMap(ShadowMSLCase):
@@ -945,10 +1020,14 @@ class TestLazyClassicShadowMap(ShadowMSLCase):
         self.assertNotIn('!_shadowPassDesc', body)
         # no map, no replay (the pass would draw into the scene targets)
         scene = squash(strip_comments(read(SCENE_RENDER)))
-        self.assertIn('if(G->Renderer->beginShadowPass()){SceneRenderAll(', scene)
+        self.assertIn('if(G->Renderer->beginShadowPass(glm::value_ptr(lightView))){'
+                      'G->Renderer->matrixMode(0x1701);'
+                      'G->Renderer->loadMatrixf(glm::value_ptr(lightProj));'
+                      'G->Renderer->matrixMode(0x1700);'
+                      'G->Renderer->loadMatrixf(mvp);SceneRenderAll(', scene)
         self.assertRegex(scene, r'SceneRenderAll\([^;]*&overlays\);'
                                 r'G->Renderer->endShadowPass\(\);\}')
-        self.assertIn('virtual bool beginShadowPass() { return true; }',
+        self.assertIn('virtual bool beginShadowPass(const float* /*view*/) { return true; }',
                       read(os.path.join(ROOT, 'layerGraphics', 'Renderer.h')))
 
     def testEveryPostReaderToleratesNoMap(self):
@@ -1265,9 +1344,12 @@ class TestMapPass(ShadowMSLCase):
         self.assertRegex(self.header, r'int _lightShadowSlotOpen = -1;')
         self.assertRegex(self.header, r'bool _lightStudioShadows = false;')
 
-    def testPremultiplyOnlyWhileASliceIsOpen(self):
+    def testPremultiplyOnlyWhileAMapIsOpen(self):
+        header = strip_comments(read(METAL_H))
+        self.assertIn('boolshadowCasterViewOpen()const{return_lightShadowSlotOpen>=0||_classicShadowViewOpen;}',
+                      squash(header))
         load = self.body('RendererMetal::loadMatrixf')
-        block = re.search(r'if\s*\(\s*_matrixMode == 0 && _lightShadowSlotOpen >= 0\s*\)\s*\{',
+        block = re.search(r'if\s*\(\s*_matrixMode == 0 && shadowCasterViewOpen\(\)\s*\)\s*\{',
                           load)
         self.assertIsNotNone(block)
         inside = load[block.end():match_brace(load, block.end() - 1)]
@@ -1276,10 +1358,11 @@ class TestMapPass(ShadowMSLCase):
         self.assertIn('mat = multiplyMatrices(lightView, mat);', inside)
         # before the inverse is taken, so the inverse is the stored matrix's
         self.assertLess(block.start(), load.index('simd_inverse'))
-        self.assertEqual(load.count('_lightShadowSlotOpen'), 1)
+        self.assertEqual(load.count('shadowCasterViewOpen'), 1)
+        self.assertNotIn('_lightShadowSlotOpen', load)
         identity = self.body('RendererMetal::loadIdentity')
         self.assertRegex(identity, r'_modelviewMatrix = identityMatrix\(\);\s*'
-                                   r'if\s*\(\s*_lightShadowSlotOpen >= 0\s*\)\s*'
+                                   r'if\s*\(\s*shadowCasterViewOpen\(\)\s*\)\s*'
                                    r'std::memcpy\(_modelviewMatrix\.data\(\), _lightShadowView,')
         # the slot opens only in beginLightShadowMap and closes at its end and
         # at every frame start
@@ -1290,17 +1373,32 @@ class TestMapPass(ShadowMSLCase):
             owners.setdefault(owner, []).append(m.group(1).strip())
         self.assertEqual(owners, {'beginFrame': ['-1'], 'beginLightShadowMap': ['slot'],
                                   'endLightShadowMaps': ['-1']})
+        classic_owners = {}
+        for m in re.finditer(r'\b_classicShadowViewOpen\s*=(?!=)\s*([^;]*);', self.code):
+            owner = re.findall(r'^[\w<>:\*\s]*RendererMetal::(\w+)\s*\(',
+                               self.code[:m.start()], re.M)[-1]
+            classic_owners.setdefault(owner, []).append(m.group(1).strip())
+        self.assertEqual(classic_owners, {'beginFrame': ['false'], 'beginShadowPass': ['true'],
+                                          'endShadowPass': ['false']})
+        view_owners = []
+        for m in re.finditer(r'std::memcpy\(_lightShadowView,\s*view,', self.code):
+            owner = re.findall(r'^[\w<>:\*\s]*RendererMetal::(\w+)\s*\(',
+                               self.code[:m.start()], re.M)[-1]
+            view_owners.append(owner)
+        self.assertEqual(sorted(view_owners), ['beginLightShadowMap', 'beginShadowPass'])
         # the other matrix calls post-multiply, as before
         for fn in ('RendererMetal::multMatrixf', 'RendererMetal::translatef',
                    'RendererMetal::scalef', 'RendererMetal::popMatrix'):
             self.assertNotIn('_lightShadow', self.body(fn), fn)
+            self.assertNotIn('shadowCasterViewOpen', self.body(fn), fn)
+            self.assertNotIn('_classicShadowView', self.body(fn), fn)
 
     def testImpostorsRayCastFromTheLight(self):
         for fn in ('RendererMetal::drawSphereImpostors',
                    'RendererMetal::drawCylinderImpostors'):
             body = self.body(fn)
             self.assertEqual(re.findall(r'\bu\.ortho\s*=\s*([^;]*);', body),
-                             ['_lightShadowSlotOpen >= 0 ? 0.0f : (float)call.ortho'], fn)
+                             ['_lightShadowSlotOpen >= 0 ? 0.0f : _classicShadowViewOpen ? 1.0f : (float)call.ortho'], fn)
 
     def testMapsBoundOnlyWithTheRigWhenReady(self):
         bind = self.body('RendererMetal::bindLightRig')
@@ -1362,7 +1460,7 @@ class TestSceneRenderPass(ShadowMSLCase):
                       r'cSetting_metal_shadows\)\s*\)\s*\{\s*float shadowRadius', body)
         self.assertIsNotNone(m)
         self.assertEqual(body.count('SceneRenderLightShadowMaps('), 1)
-        self.assertEqual(body.count('beginShadowPass()'), 1)
+        self.assertEqual(body.count('beginShadowPass('), 1)
         # the studio maps run before every scene pass
         self.assertLess(m.start(), body.index('SceneRenderAll('))
         self.assertLess(m.start(), body.index('SceneRenderTransparentMetal('))
