@@ -55,6 +55,14 @@ struct SceneRenderInfo
 
 void SceneRender(PyMOLGlobals* G, const SceneRenderInfo& renderInfo);
 void SceneRenderMetal(PyMOLGlobals* G);
+/**
+ * #685: a live frame that only the moving dust asked for. True when the
+ * renderer armed it as a candidate dust-only frame (the bridge then does NOT
+ * call beginFrame): the last full live frame's key is valid, no redisplay was
+ * requested since it was taken, nothing is deferred, and the renderer still
+ * holds that frame's pre-air image. SceneRenderMetal makes the final call.
+ */
+bool SceneRenderMetalArmAirTick(PyMOLGlobals* G);
 void SceneRenderMetalSelections(PyMOLGlobals* G);
 
 namespace pymol { struct CObject; }

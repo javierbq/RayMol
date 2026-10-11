@@ -283,3 +283,449 @@ final class LightsAtmosphereLiveTests: XCTestCase {
         XCTAssertEqual(commands.lines, ["atmosphere haze=0.2, dust=0.5"], "On uses the start look")
     }
 }
+
+#if os(macOS)
+import AppKit
+import CoreGraphics
+import ImageIO
+import MetalKit
+
+/// #685: on a dust-only tick, keep the last full live frame's pre-air image
+/// and re-run only the post chain from the air pass on.
+@MainActor
+final class AirDustTickCacheTests: XCTestCase {
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var mtkView: MTKView!
+    private var testWindow: NSWindow?
+    private var savedExportRenderActive = false
+    private var savedView: [Float]?
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        try LightsLive.requireEngine()
+        savedExportRenderActive = engine.exportRenderActive
+        engine.exportRenderActive = true
+        savedView = engine.captureView()
+        engine.runPython("""
+        from pymol import cmd as _c
+        _adt685_settings = {_n: _c.get_setting_tuple(_n)[1][0] for _n in (
+            'metal_light_air_time', 'metal_raytrace', 'metal_temporal_ao',
+            'metal_exposure', 'metal_gpu_timing')}
+        # Raster unless a test asks for ray tracing: with metal_raytrace and
+        # metal_temporal_ao (both may be on in the host) the image is kept
+        # only once the AO has settled (kAirCacheAOFrames).
+        _c.set('metal_raytrace', 0)
+        """)
+        LightsLive.addPeptide()
+        LightsLive.setRig(LightsLive.threeLights(enabled: true))
+
+        let view = MTKView(frame: CGRect(x: 0, y: 0, width: 200, height: 150),
+                           device: MTLCreateSystemDefaultDevice())
+        view.framebufferOnly = false
+        view.isPaused = true
+        view.enableSetNeedsDisplay = true
+        view.drawableSize = CGSize(width: 400, height: 300)
+        self.mtkView = view
+
+        let presented = engine.renderMetalFrame(view: view, width: 400, height: 300, airTick: false)
+        if !presented {
+            let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 150),
+                               styleMask: .borderless,
+                               backing: .buffered,
+                               defer: false)
+            win.contentView = view
+            win.orderBack(nil)
+            self.testWindow = win
+            let retried = engine.renderMetalFrame(view: view, width: 400, height: 300, airTick: false)
+            XCTAssertTrue(retried, "frame must present in hosted window")
+        }
+        waitForInFlight()
+    }
+
+    override func tearDown() {
+        if let win = testWindow {
+            win.orderOut(nil)
+            win.contentView = nil
+            testWindow = nil
+        }
+        mtkView = nil
+        engine.runPython("""
+        from pymol import cmd as _c
+        for _n, _v in globals().pop('_adt685_settings', {}).items():
+            _c.set(_n, _v)
+        """)
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        engine.exportRenderActive = savedExportRenderActive
+        LightsLive.tearDown()
+        super.tearDown()
+    }
+
+    private func waitForInFlight() {
+        let deadline = Date().addingTimeInterval(5.0)
+        while engine.metalFramesInFlight > 0 && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTAssertEqual(engine.metalFramesInFlight, 0, "frames in flight did not retire within 5 s")
+    }
+
+    @discardableResult
+    private func frame(airTick: Bool, width: Int = 400, height: Int = 300) -> Bool {
+        let targetSize = CGSize(width: width, height: height)
+        if mtkView.drawableSize != targetSize {
+            mtkView.drawableSize = targetSize
+        }
+        let presented = engine.renderMetalFrame(view: mtkView, width: width, height: height, airTick: airTick)
+        XCTAssertTrue(presented, "every frame the tests count must return presented == true")
+        waitForInFlight()
+        return presented
+    }
+
+    private func stats(forget: Bool = false) throws -> (scene: Int, post: Int, air: Int) {
+        let out = NSTemporaryDirectory() + "issue_685_stats.txt"
+        defer { try? FileManager.default.removeItem(atPath: out) }
+        engine.runPython("""
+        from pymol import cmd as _c
+        res = _c._cmd.get_metal_air_cache_stats(_c._COb, \(forget ? 1 : 0))
+        open(r'\(out)', 'w').write(f'{res[0]},{res[1]},{res[2]}' if res else 'none')
+        """)
+        let text = try XCTUnwrap(FileManager.default.contents(atPath: out)
+            .flatMap { String(data: $0, encoding: .utf8) }, "no stats written")
+        let parts = text.split(separator: ",")
+        guard parts.count == 3,
+              let s = Int(parts[0]),
+              let p = Int(parts[1]),
+              let a = Int(parts[2]) else {
+            XCTFail("invalid stats format: \(text)")
+            return (0, 0, 0)
+        }
+        return (s, p, a)
+    }
+
+    private func capture(_ name: String, airTick: Bool) throws -> [UInt8] {
+        let path = NSTemporaryDirectory() + "issue_685_\(name).png"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        engine.capturePNG(path)
+        frame(airTick: airTick)
+        let deadline = Date().addingTimeInterval(5.0)
+        while !FileManager.default.fileExists(atPath: path) && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: path), "capturePNG file \(path) not created")
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(
+            URL(fileURLWithPath: path) as CFURL, nil), "no image source")
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        let w = image.width, h = image.height
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return rgba
+    }
+
+    private func settle() throws {
+        var settled = false
+        for _ in 0..<6 {
+            let before = try stats().air
+            frame(airTick: true)
+            let after = try stats().air
+            if after > before {
+                settled = true
+                break
+            }
+        }
+        if !settled {
+            XCTFail("settle failed: no dust-only frame within 6 frames")
+        }
+    }
+
+    private func fnv1a(_ bytes: [UInt8]) -> UInt64 {
+        var hash: UInt64 = 1469598103934665603
+        for b in bytes {
+            hash ^= UInt64(b)
+            hash &*= 1099511628211
+        }
+        return hash
+    }
+
+    private func isNonUniform(_ bytes: [UInt8]) -> Bool {
+        guard bytes.count >= 4 else { return false }
+        let first = (bytes[0], bytes[1], bytes[2], bytes[3])
+        for i in stride(from: 4, to: bytes.count, by: 4) {
+            if (bytes[i], bytes[i+1], bytes[i+2], bytes[i+3]) != first {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func readGpuMedian() throws -> Double {
+        let out = NSTemporaryDirectory() + "issue_685_gpu_stats.txt"
+        defer { try? FileManager.default.removeItem(atPath: out) }
+        engine.runPython("""
+        from pymol import cmd as _c
+        stats = _c._cmd.get_gpu_frame_stats(_c._COb)
+        med = stats.get('median', 0.0) if stats else 0.0
+        open(r'\(out)', 'w').write(str(med))
+        """)
+        let text = try XCTUnwrap(FileManager.default.contents(atPath: out)
+            .flatMap { String(data: $0, encoding: .utf8) }, "no gpu stats written")
+        return Double(text.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0.0
+    }
+
+    func testDustTickRunsOnlyThePostChain() throws {
+        try settle()
+        let s0 = try stats()
+        frame(airTick: true)
+        let s1 = try stats()
+        XCTAssertEqual(s1.scene - s0.scene, 0)
+        XCTAssertEqual(s1.post - s0.post, 1)
+        XCTAssertEqual(s1.air - s0.air, 1)
+
+        frame(airTick: false)
+        let s2 = try stats()
+        XCTAssertEqual(s2.scene - s1.scene, 1)
+        XCTAssertEqual(s2.air - s1.air, 0)
+    }
+
+    func testChangesRenderAFullFrame() throws {
+        try settle()
+
+        let verifyChange: (@escaping () -> Void) throws -> Void = { [weak self] changeAction in
+            guard let self = self else { return }
+            changeAction()
+            let s0 = try self.stats()
+            self.frame(airTick: true)
+            let s1 = try self.stats()
+            XCTAssertEqual(s1.scene - s0.scene, 1, "change must force full frame")
+            XCTAssertEqual(s1.air - s0.air, 0, "change must not be dust-only")
+            try self.settle()
+        }
+
+        // Camera turn
+        try verifyChange {
+            self.engine.runPython("from pymol import cmd as _c\n_c.turn('y', 10)")
+        }
+
+        // Object move
+        try verifyChange {
+            self.engine.runPython("from pymol import cmd as _c\n_c.translate([1, 0, 0], 'lmt_pep')")
+        }
+
+        // Rep change
+        try verifyChange {
+            self.engine.runPython("from pymol import cmd as _c\n_c.show('sticks')")
+        }
+        try verifyChange {
+            self.engine.runPython("from pymol import cmd as _c\n_c.hide('sticks')")
+        }
+
+        // Setting change
+        try verifyChange {
+            self.engine.runPython("from pymol import cmd as _c\n_c.set('metal_exposure', 1.2)")
+        }
+
+        // Light change
+        try verifyChange {
+            self.engine.runPython("""
+            from pymol import cmd as _c, lighting as _l
+            rig = _l.get_lights(_self=_c)
+            if rig and 'lights' in rig and len(rig['lights']) > 0:
+                rig['lights'][0]['orbit'] = (rig['lights'][0].get('orbit', 0.0) + 15.0)
+                _l.set_lights(rig, _self=_c)
+            """)
+        }
+
+        // Resize
+        let s0 = try stats()
+        frame(airTick: true, width: 420, height: 300)
+        let s1 = try stats()
+        XCTAssertEqual(s1.scene - s0.scene, 1, "resize must force full frame")
+        XCTAssertEqual(s1.air - s0.air, 0, "resize must not be dust-only")
+        try settle()
+    }
+
+    func testDustTickMatchesAFullFrame() throws {
+        engine.runPython("from pymol import cmd as _c\n_c.set('metal_light_air_time', 1.25)")
+        try settle()
+
+        let s0 = try stats()
+        let a = try capture("cached", airTick: true)
+        let s1 = try stats()
+        XCTAssertEqual(s1.air - s0.air, 1, "A must be dust-only")
+        XCTAssertEqual(s1.scene - s0.scene, 0, "A must be dust-only")
+
+        _ = try stats(forget: true)
+        let b = try capture("full", airTick: true)
+        let s2 = try stats()
+        XCTAssertEqual(s2.scene, 1, "B must be full frame")
+
+        XCTAssertEqual(a, b, "cached and full frame bytes must match byte for byte")
+        XCTAssertTrue(isNonUniform(a), "the scene must have drawn (non-uniform)")
+        let h = fnv1a(a)
+        print(String(format: "685-dust-hash %016llx", h))
+    }
+
+    func testDustTickMatchesAFullFrameRayTraced() throws {
+        guard engine.rayTracingSupported else {
+            throw XCTSkip("Hardware ray tracing is not supported on this device")
+        }
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set('metal_raytrace', 1)
+        _c.set('metal_temporal_ao', 0)
+        _c.set('metal_light_air_time', 1.25)
+        """)
+        try settle()
+
+        let s0 = try stats()
+        let a = try capture("cached_rt", airTick: true)
+        let s1 = try stats()
+        XCTAssertEqual(s1.air - s0.air, 1, "A must be dust-only")
+        XCTAssertEqual(s1.scene - s0.scene, 0, "A must be dust-only")
+
+        _ = try stats(forget: true)
+        let b = try capture("full_rt", airTick: true)
+        let s2 = try stats()
+        XCTAssertEqual(s2.scene, 1, "B must be full frame")
+
+        XCTAssertEqual(a, b, "cached and full RT frame bytes must match")
+        XCTAssertTrue(isNonUniform(a), "the scene must have drawn (non-uniform)")
+        let h = fnv1a(a)
+        print(String(format: "685-dust-hash rt %016llx", h))
+    }
+
+    func testTemporalAOSettlesBeforeTheImageIsKept() throws {
+        guard engine.rayTracingSupported else {
+            throw XCTSkip("Hardware ray tracing is not supported on this device")
+        }
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set('metal_raytrace', 1)
+        _c.set('metal_temporal_ao', 1)
+        _c.set('metal_light_air_time', 1.25)
+        _c.turn('y', 15)
+        """)
+        _ = try stats(forget: true)
+
+        // The first 20 airTick frames must all be full (air +0)
+        for _ in 0..<20 {
+            let sBefore = try stats()
+            frame(airTick: true)
+            let sAfter = try stats()
+            XCTAssertEqual(sAfter.air - sBefore.air, 0, "temporal AO must not cache during first 20 frames")
+            XCTAssertEqual(sAfter.scene - sBefore.scene, 1, "frame must be full")
+        }
+
+        // Within 40 more airTick frames, a dust-only frame happens
+        var settled = false
+        for _ in 0..<40 {
+            let sBefore = try stats()
+            frame(airTick: true)
+            let sAfter = try stats()
+            if sAfter.air > sBefore.air {
+                settled = true
+                break
+            }
+        }
+        XCTAssertTrue(settled, "temporal AO must settle and cache within 40 frames")
+    }
+
+    func testExportsRenderInFull() throws {
+        engine.runPython("from pymol import cmd as _c\n_c.set('metal_light_air_time', 1.25)")
+        try settle()
+
+        let p1 = NSTemporaryDirectory() + "issue_685_exp1.png"
+        let p2 = NSTemporaryDirectory() + "issue_685_exp2.png"
+        defer {
+            try? FileManager.default.removeItem(atPath: p1)
+            try? FileManager.default.removeItem(atPath: p2)
+        }
+
+        let s0 = try stats()
+        engine.renderHiResPNG(p1, width: 400, height: 300, rayTraced: 0)
+        let s1 = try stats()
+        XCTAssertEqual(s1.scene - s0.scene, 1, "export must render scene")
+        XCTAssertEqual(s1.air - s0.air, 0, "export is not an air-only frame")
+
+        // The next frame(airTick: true) is full (scene +1)
+        frame(airTick: true)
+        let s2 = try stats()
+        XCTAssertEqual(s2.scene - s1.scene, 1, "frame after export must be full")
+
+        // Settle again so cache is valid
+        try settle()
+        let d1 = try XCTUnwrap(FileManager.default.contents(atPath: p1))
+
+        _ = try stats(forget: true)
+        engine.renderHiResPNG(p2, width: 400, height: 300, rayTraced: 0)
+        let d2 = try XCTUnwrap(FileManager.default.contents(atPath: p2))
+
+        XCTAssertEqual(d1, d2, "exports with and without valid cache must be byte-identical")
+    }
+
+    func testMovingDustChangesTheImageWithoutAScenePass() throws {
+        engine.runPython("from pymol import cmd as _c\n_c.set('metal_light_air_time', -1.0)")
+        try settle()
+
+        let s0 = try stats()
+        let a = try capture("dust1", airTick: true)
+        let s1 = try stats()
+        XCTAssertEqual(s1.air - s0.air, 1, "frame 1 must be dust-only")
+        XCTAssertEqual(s1.scene - s0.scene, 0, "frame 1 must skip scene")
+
+        Thread.sleep(forTimeInterval: 0.15)
+
+        let b = try capture("dust2", airTick: true)
+        let s2 = try stats()
+        XCTAssertEqual(s2.air - s1.air, 1, "frame 2 must be dust-only")
+        XCTAssertEqual(s2.scene - s1.scene, 0, "frame 2 must skip scene")
+
+        XCTAssertNotEqual(a, b, "dust movement must change image bytes")
+    }
+
+    func testGpuTimePerTick() throws {
+        guard engine.rayTracingSupported else {
+            throw XCTSkip("Hardware ray tracing is not supported on this device")
+        }
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set('metal_raytrace', 1)
+        _c.set('metal_temporal_ao', 0)
+        _c.set('metal_gpu_timing', 1)
+        """)
+
+        // Render 20 full ticks
+        for _ in 0..<20 {
+            _ = try stats(forget: true)
+            frame(airTick: true)
+        }
+        let fullMedian = try readGpuMedian()
+
+        // Clear the store: the renderer takes the mode per frame, so a frame
+        // must see 0 before the next one sees 1 again.
+        engine.runPython("from pymol import cmd as _c\n_c.set('metal_gpu_timing', 0)")
+        frame(airTick: false)
+        engine.runPython("from pymol import cmd as _c\n_c.set('metal_gpu_timing', 1)")
+        try settle()
+
+        // Render 20 dust-only ticks
+        for _ in 0..<20 {
+            frame(airTick: true)
+        }
+        let dustMedian = try readGpuMedian()
+
+        print("685-gpu-ms full=\(fullMedian) dust=\(dustMedian)")
+        XCTAssertGreaterThan(fullMedian, 0.0, "full median must be > 0")
+        XCTAssertGreaterThan(dustMedian, 0.0, "dust median must be > 0")
+    }
+}
+#endif

@@ -148,10 +148,14 @@ void PyMOLBridge_SetupMetalRenderer(PyMOLHandle instance, void *mtkView);
 // writes to the drawable, so asking for it earlier just parked the main thread
 // in `currentDrawable` (and stalled input) for as long as the GPU was behind.
 //
+// airTick = 1 when the frame renders only because the dust moves (MetalViewport's
+// airDue); such a frame may re-run only the post chain from the kept pre-air
+// image (#685).
+//
 // Returns 1 if a frame was presented, 0 if the drawable never arrived (the
 // offscreen work is still committed; the caller should render again) or if
 // there is no renderer yet.
-int PyMOLBridge_RenderMetalFrame(PyMOLHandle instance, void *mtkView, int width, int height);
+int PyMOLBridge_RenderMetalFrame(PyMOLHandle instance, void *mtkView, int width, int height, int airTick);
 
 // Live Metal frames committed but not yet completed on the GPU. The render loop
 // skips a tick above a small cap so the late currentDrawable wait stays short.

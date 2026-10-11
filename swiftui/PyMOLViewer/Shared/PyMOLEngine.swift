@@ -4695,10 +4695,10 @@ final class PyMOLEngine: ObservableObject {
     // the final post pass writes to it (#396). Returns false when no drawable
     // arrived, i.e. nothing was presented and the caller should render again.
     @discardableResult
-    func renderMetalFrame(view: MTKView, width: Int, height: Int) -> Bool {
+    func renderMetalFrame(view: MTKView, width: Int, height: Int, airTick: Bool = false) -> Bool {
         guard let inst = instance else { return false }
         let vPtr = Unmanaged.passUnretained(view).toOpaque()
-        return PyMOLBridge_RenderMetalFrame(inst, vPtr, Int32(width), Int32(height)) != 0
+        return PyMOLBridge_RenderMetalFrame(inst, vPtr, Int32(width), Int32(height), airTick ? 1 : 0) != 0
     }
 
     /// Live Metal frames committed but not yet completed on the GPU. The render

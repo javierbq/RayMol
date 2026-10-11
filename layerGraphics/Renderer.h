@@ -269,7 +269,7 @@ public:
   // RGB of the 3D selection indicator squares (SceneRenderMetalSelections).
   // Driven by the active RayMol theme's selection color; defaults to pink.
   float selColor[3] = {1.0f, 0.2f, 0.6f};
-  void setSelectionColor(float r, float g, float b) {
+  virtual void setSelectionColor(float r, float g, float b) {
     selColor[0] = r; selColor[1] = g; selColor[2] = b;
   }
 
@@ -277,7 +277,7 @@ public:
   // SceneDrawMetalPreselection at a smaller point size BEFORE the committed
   // selColor pass so pink wins on overlap. Fixed light-cyan by default.
   float preselColor[3] = {0.40f, 0.85f, 1.0f};
-  void setPreselectionColor(float r, float g, float b) {
+  virtual void setPreselectionColor(float r, float g, float b) {
     preselColor[0] = r; preselColor[1] = g; preselColor[2] = b;
   }
 
@@ -516,6 +516,20 @@ public:
   // frame before a traced one): the air's dust clock then follows the movie
   // frame (SceneLightsAir). Default: false.
   virtual bool offscreenFrame() const { return false; }
+
+  // #685, dust-only ticks: when the light rig's dust animates and nothing else
+  // in the scene changed, a frame may skip the scene passes and pass 1,
+  // re-running only the post chain from the kept pre-air image.
+  // Defaults: never armed, never dust-only.
+  virtual bool armAirOnlyFrame() { return false; }
+  virtual bool airOnlyArmed() const { return false; }
+  virtual bool beginAirOnlyFrame() { return false; }
+  // Test-only (#685, _cmd.get_metal_air_cache_stats): frames that ran the
+  // scene passes (beginFrame), post chains run by endFrame, and dust-only
+  // frames, since the last forget. forget zeroes them and drops the kept
+  // pre-air image first. Default: false (no counters).
+  virtual bool airCacheStats(int& sceneFrames, int& postChains,
+                             int& airFrames, bool forget) { return false; }
 
   // PyMOL key-light direction (cSetting_light). The direction toward the light
   // used for shading and shadow casting is -normalize(light). Default: no-op

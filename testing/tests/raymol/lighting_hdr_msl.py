@@ -916,6 +916,10 @@ class TestFrame(HdrMSLCase):
         # #684: the air alpha's two statements, taken out
         body, alpha = _air.without_air_alpha_684(body)
         self.assertEqual(alpha, [1, 1])
+        # #685: the dust tick cache's statements, taken out
+        for stmt in _air.STATEMENTS_685['RendererMetal::runPostChain']:
+            self.assertEqual(len(stmt.findall(body)), 1)
+            body = stmt.sub('', body, count=1)
         self.assertEqual(digest(body),
                          _air.MASTER_FUNCTIONS[('RendererMetal.mm',
                                                 'RendererMetal::runPostChain')])

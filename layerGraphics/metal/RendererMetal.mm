@@ -613,6 +613,7 @@ RendererMetal::~RendererMetal()
   [_airAlphaPipeline release];
   [_airAlphaMergePipeline release];
   [_airAlphaTex release];
+  [_airCacheColor release];
   [_airTerm release];
   [_blitPipeline release];            [_ssaoPipeline release];
   [_fxaaPipeline release];            [_outlinePipeline release];
@@ -1127,6 +1128,7 @@ bool RendererMetal::renderAOExemptMask()
 
 void RendererMetal::beginFrame()
 {
+  noteSceneFrame();
   // Ray tracing: (re)build the atom-sphere acceleration structure from the
   // PREVIOUS frame's accumulated geometry, BEFORE this frame's command buffer
   // exists — building (with its own cmd buffer + wait) must not happen while a
@@ -1227,6 +1229,7 @@ void RendererMetal::endFrame()
   // any pending PNG capture stays pending (runPostChain owns _capturePath), so
   // the caller re-renders — see the forced redraw in MetalViewport's RenderGate.
   if (_drawable && _cmdBuffer && _screenPassDesc && _sceneColor) {
+    ++_statPostChains;
     runPostChain();
     [_cmdBuffer presentDrawable:_drawable];
   } else if (_drawable && _cmdBuffer) {
@@ -1295,6 +1298,8 @@ void RendererMetal::endFrame()
   _drawable = nil;
   _passDesc = nil;
   _screenPassDesc = nil;
+  _airOnlyFrame = false;
+  _airOnlyArmed = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -2643,6 +2648,7 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   // The air's alpha (#684) is a full-size target too: made again, at the new
   // size, by the next transparent export that asks for it.
   [_airAlphaTex release];   _airAlphaTex = nil;   _airAlphaW = _airAlphaH = 0;
+  [_airCacheColor release]; _airCacheColor = nil; _airCacheValid = false;
   _sceneColor = _postColor = _sceneDepth = nil;
   _sceneColorMS = _sceneDepthMS = nil;
   _oitAccum = _oitReveal = _oitRefract = nil;
@@ -5042,7 +5048,10 @@ void RendererMetal::runPostChain()
 
   // Pass 1-RT: real ray-traced AO + shadow (+ fog), replacing the SSAO/shadow
   // pass when metal_raytrace is on. Traces against the atom-sphere instance AS.
-  if (doRT) {
+  // A dust-only frame (#685) reuses the kept pre-air image from pass 1:
+  if (_airOnlyFrame) {
+    sceneSrc = _airCacheColor;
+  } else if (doRT) {
     struct RTU {
       float invModelview[16];
       float lightDirModel[4];
@@ -5218,6 +5227,8 @@ void RendererMetal::runPostChain()
       _rtAOHistoryValid = true;
       _rtAOHashPrev = aoHash;
       _modelviewInvPrev = _modelviewInv;
+      _rtAOAccumFrames = reset ? 1 : std::min(_rtAOAccumFrames + 1, 1 << 20);
+      _rtAOTemporalRan = true;
     }
 
     // Pass B: depth-aware-blur the AO + shadow/fog composite -> _postColor.
@@ -5365,6 +5376,8 @@ void RendererMetal::runPostChain()
   // (both read the same raster depth, rig and maps, so they get the same air),
   // and before the OIT resolve, so glass and transparent surfaces composite
   // over it. Only while the frame has air and the rig is on.
+  // Keep the pre-air image for dust-only ticks (#685).
+  keepPreAirImage(sceneSrc);
   _airAlphaDrawn = false;
   if (_lightAirOn && _lightRigOn && _postColor && _sceneDepth &&
       ensureAirPipelines())
@@ -13020,6 +13033,126 @@ bool RendererMetal::ensureAirAlpha(NSUInteger w, NSUInteger h)
     NSLog(@"RendererMetal: air alpha %lux%lu failed; the export keeps the depth matte",
           (unsigned long) w, (unsigned long) h);
   return _airAlphaTex != nil;
+}
+
+// ---------------------------------------------------------------------------
+#pragma mark - Animated Dust Tick Cache (#685)
+// ---------------------------------------------------------------------------
+
+void RendererMetal::noteSceneFrame()
+{
+  _airOnlyArmed = false;
+  _airOnlyFrame = false;
+  _airCacheValid = false;
+  _rtAOTemporalRan = false;
+  ++_statSceneFrames;
+}
+
+bool RendererMetal::airCacheUsable() const
+{
+  return _airCacheValid && !_offscreen && !_cmdBuffer && !_encoder &&
+         _airCacheColor && _sceneColor && _postColor && _sceneDepth &&
+         _airCacheColor.width == _sceneColor.width &&
+         _airCacheColor.height == _sceneColor.height &&
+         _lbOriginX == _airCacheLbX && _lbOriginY == _airCacheLbY;
+}
+
+bool RendererMetal::armAirOnlyFrame()
+{
+  _airOnlyArmed = airCacheUsable();
+  return _airOnlyArmed;
+}
+
+bool RendererMetal::airOnlyArmed() const
+{
+  return _airOnlyArmed;
+}
+
+bool RendererMetal::beginAirOnlyFrame()
+{
+  if (!_airOnlyArmed)
+    return false;
+  _airOnlyArmed = false;
+  if (!airCacheUsable())
+    return false;
+  _cmdBuffer = [_queue commandBuffer];
+  _encoder = nil;
+  _airOnlyFrame = true;
+  ++_statAirFrames;
+  return true;
+}
+
+bool RendererMetal::airCacheStats(int& sceneFrames, int& postChains,
+                                  int& airFrames, bool forget)
+{
+  if (forget) {
+    _statSceneFrames = 0;
+    _statPostChains = 0;
+    _statAirFrames = 0;
+    _airCacheValid = false;
+  }
+  sceneFrames = _statSceneFrames;
+  postChains = _statPostChains;
+  airFrames = _statAirFrames;
+  return true;
+}
+
+bool RendererMetal::rayTracingCurrent() const
+{
+  if (!_rtEnabled || !_rtSupported) return true;
+  const bool opaque = _rtFrameKeys.empty()
+      ? !_rtReady
+      : (_rtReady && _rtInstanceAS && !_rtGeomDirty && _rtFrameSig == _rtSphereHash &&
+         _rtFrameMat == _rtBuiltMat);
+  if (!opaque) return false;
+  if (!_rtTransparent || _rtTFrameKeys.empty() || _rtFrameKeys.empty())
+    return _rtTransAS == nil;
+  return ((_rtTReady && _rtTransAS) || _rtTBuiltEmpty) && !_rtTGeomDirty &&
+         _rtTFrameSig == _rtTBuiltSig;
+}
+
+void RendererMetal::keepPreAirImage(id<MTLTexture> src)
+{
+  // A dust-only frame reads the kept image (sceneSrc is _airCacheColor):
+  // it stays valid for the next tick.
+  if (_airOnlyFrame)
+    return;
+  // A full frame: keep its image only when nothing would make the next
+  // frame differ but the dust. Otherwise the next tick renders in full.
+  if (_offscreen || !src ||
+      !(_lightAirOn && _lightRigOn && _postColor && _sceneDepth) ||
+      _contourActive || !rayTracingCurrent() ||
+      (_rtAOTemporalRan && _rtAOAccumFrames < kAirCacheAOFrames)) {
+    _airCacheValid = false;
+    return;
+  }
+
+  if (!_airCacheColor || _airCacheColor.width != src.width ||
+      _airCacheColor.height != src.height ||
+      _airCacheColor.pixelFormat != src.pixelFormat) {
+    [_airCacheColor release];
+    _airCacheColor = nil;
+    MTLTextureDescriptor* d = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:src.pixelFormat
+                                     width:src.width
+                                    height:src.height
+                                 mipmapped:NO];
+    d.usage = MTLTextureUsageShaderRead;
+    d.storageMode = MTLStorageModePrivate;
+    _airCacheColor = [_device newTextureWithDescriptor:d];
+    if (!_airCacheColor) {
+      _airCacheValid = false;
+      return;
+    }
+  }
+
+  id<MTLBlitCommandEncoder> blit = [_cmdBuffer blitCommandEncoder];
+  [blit copyFromTexture:src toTexture:_airCacheColor];
+  [blit endEncoding];
+
+  _airCacheValid = true;
+  _airCacheLbX = _lbOriginX;
+  _airCacheLbY = _lbOriginY;
 }
 
 // half-float bit pattern for a tessellation factor

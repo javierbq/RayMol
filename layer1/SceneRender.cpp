@@ -34,6 +34,7 @@
 #include "pymol/utility.h"
 #include "ImmediateHelper.h"
 #include "Renderer.h"
+#include "PyMOL.h"
 
 // Bridge function for main_appkit.mm which cannot include GLEW headers.
 void ImmBatch_SetActiveRenderer(pymol::Renderer* r) {
@@ -2434,6 +2435,82 @@ static void SceneSetMetalGridCell(
       static_cast<std::uint32_t>(cw), static_cast<std::uint32_t>(ch)};
 }
 
+// #685: fills `key` from the frame being set up (call after
+// ScenePrepareMatrix).
+static void SceneMetalAirFrameKeyNow(PyMOLGlobals* G, CScene::MetalAirFrameKey& key)
+{
+  CScene* I = G->Scene;
+  key.generation = PyMOL_GetRedisplayGeneration(G->PyMOL);
+  const float* proj = SceneGetProjectionMatrixPtr(G);
+  const float* mv = SceneGetModelViewMatrixPtr(G);
+  if (proj) {
+    for (int i = 0; i < 16; ++i) key.projection[i] = proj[i];
+  } else {
+    for (int i = 0; i < 16; ++i) key.projection[i] = 0.0f;
+  }
+  if (mv) {
+    for (int i = 0; i < 16; ++i) key.modelview[i] = mv[i];
+  } else {
+    for (int i = 0; i < 16; ++i) key.modelview[i] = 0.0f;
+  }
+  if (G->Renderer) {
+    G->Renderer->getViewportRect(key.viewport[0], key.viewport[1], key.viewport[2], key.viewport[3]);
+  } else {
+    for (int i = 0; i < 4; ++i) key.viewport[i] = 0;
+  }
+  key.width = I->Width;
+  key.height = I->Height;
+  key.valid = true;
+}
+
+static bool SceneMetalAirFrameKeyEqual(const CScene::MetalAirFrameKey& a, const CScene::MetalAirFrameKey& b)
+{
+  if (!a.valid || !b.valid)
+    return false;
+  if (a.generation != b.generation || a.width != b.width || a.height != b.height)
+    return false;
+  for (int i = 0; i < 4; ++i) {
+    if (a.viewport[i] != b.viewport[i])
+      return false;
+  }
+  for (int i = 0; i < 16; ++i) {
+    if (a.projection[i] != b.projection[i] || a.modelview[i] != b.modelview[i])
+      return false;
+  }
+  return true;
+}
+
+bool SceneRenderMetalArmAirTick(PyMOLGlobals* G)
+{
+  if (!G || !G->Renderer || !G->Scene || !G->PyMOL)
+    return false;
+  CScene* I = G->Scene;
+  if (!I->MetalAirFrame.valid)
+    return false;
+  if (PyMOL_GetRedisplayGeneration(G->PyMOL) != I->MetalAirFrame.generation)
+    return false;
+  if (OrthoDeferredWaiting(G))
+    return false;
+  return G->Renderer->armAirOnlyFrame();
+}
+
+static bool SceneRenderMetalAirOnly(PyMOLGlobals* G)
+{
+  CScene* I = G->Scene;
+  CScene::MetalAirFrameKey key;
+  SceneMetalAirFrameKeyNow(G, key);
+  const bool armed = G->Renderer->airOnlyArmed();
+  if (armed && I->MetalAirFrame.valid &&
+      SceneMetalAirFrameKeyEqual(key, I->MetalAirFrame) &&
+      G->Renderer->beginAirOnlyFrame())
+    return true;   // the setup still runs: it hands the renderer this tick's dust
+  if (armed)
+    G->Renderer->beginFrame();   // the full frame the bridge deferred
+  key.valid = !G->Renderer->offscreenFrame();
+  I->MetalAirFrame = key;
+  return false;
+}
+
 void SceneRenderMetal(PyMOLGlobals* G)
 {
   if (!G->Renderer)
@@ -2517,6 +2594,10 @@ void SceneRenderMetal(PyMOLGlobals* G)
   SceneProjectionMatrix(
       G, I->m_view.m_clipSafe().m_front, I->m_view.m_clipSafe().m_back, aspRat);
   ScenePrepareMatrix(G, 0);
+
+  // A dust-only tick (#685) stops after the setup below: the setup still runs
+  // to hand the renderer this tick's dust, but the scene passes are skipped.
+  const bool airOnly = SceneRenderMetalAirOnly(G);
 
   // This frame's lighting, read once in the block below (SceneLightsFrame).
   SceneLightFrame lights;
@@ -2717,6 +2798,11 @@ void SceneRenderMetal(PyMOLGlobals* G)
     G->Renderer->setDesiredSampleCount(
         SettingGetGlobal_b(G, cSetting_metal_msaa) ? 4 : 1);
   }
+
+  // A dust-only tick (#685) stops here: the post chain re-runs from the kept
+  // pre-air image.
+  if (airOnly)
+    return;
 
   // --- Scene state needed by RenderInfo ---
   I->VertexScale = SceneGetScreenVertexScale(G, nullptr);

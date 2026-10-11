@@ -226,12 +226,36 @@ public:
 
   // Letterbox: render the scene into a centered sub-rect of the given aspect
   // (W/H) so a loaded .pse reproduces its saved-viewport framing. 0 = fill.
-  void setLetterboxAspect(float a) { _letterboxAspect = a; }
+  void setLetterboxAspect(float a) {
+    if (_letterboxAspect != a) {
+      _letterboxAspect = a;
+      _airCacheValid = false;
+    }
+  }
   float letterboxAspect() const { return _letterboxAspect; }
   // Letterbox origin in backing px (for mouse-coordinate offsetting).
   int letterboxOriginX() const { return _lbOriginX; }
   int letterboxOriginY() const { return _lbOriginY; }
   void setLetterboxOrigin(int x, int y) { _lbOriginX = x; _lbOriginY = y; }
+  void setSelectionColor(float r, float g, float b) override {
+    if (selColor[0] != r || selColor[1] != g || selColor[2] != b) {
+      Renderer::setSelectionColor(r, g, b);
+      _airCacheValid = false;
+    }
+  }
+  void setPreselectionColor(float r, float g, float b) override {
+    if (preselColor[0] != r || preselColor[1] != g || preselColor[2] != b) {
+      Renderer::setPreselectionColor(r, g, b);
+      _airCacheValid = false;
+    }
+  }
+
+  // #685: dust-only ticks
+  bool armAirOnlyFrame() override;
+  bool airOnlyArmed() const override;
+  bool beginAirOnlyFrame() override;
+  bool airCacheStats(int& sceneFrames, int& postChains,
+                     int& airFrames, bool forget) override;
 
   // Request a PNG capture of the next RENDERED frame (png ray=0). The Metal
   // app has no GL framebuffer for PyMOL's ScenePNG to read, so we grab the
@@ -977,6 +1001,19 @@ private:
   // SceneRenderMetal sets it again.
   bool _lightAirOn = false;
   LightAirBlock _lightAirBlock{};
+  id<MTLTexture> _airCacheColor = nil;   // the last full live frame's pre-air colour (#685)
+  bool _airCacheValid = false;           // _airCacheColor is reusable (keepPreAirImage)
+  int _airCacheLbX = 0, _airCacheLbY = 0;// its letterbox origin
+  bool _airOnlyArmed = false;            // armAirOnlyFrame; cleared by beginFrame/endFrame
+  bool _airOnlyFrame = false;            // this frame re-runs the post chain only
+  bool _rtAOTemporalRan = false;         // pass A.5 ran this frame
+  int _rtAOAccumFrames = 0;              // temporal AO frames since its last reset
+  int _statSceneFrames = 0, _statPostChains = 0, _statAirFrames = 0;  // test-only
+  static constexpr int kAirCacheAOFrames = 32;
+  bool airCacheUsable() const;
+  void noteSceneFrame();
+  void keepPreAirImage(id<MTLTexture> src);
+  bool rayTracingCurrent() const;
   // A rig pipeline that cannot be built draws classic instead; this logs it
   // once per renderer rather than once per draw.
   bool _lightRigWarned = false;
