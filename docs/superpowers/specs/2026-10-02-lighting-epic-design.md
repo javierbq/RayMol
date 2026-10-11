@@ -287,8 +287,8 @@ the tickets carry permalinks.
   - display-referred (never lit): the background, labels, lines and dots;
   - measurement dashes (the DistSet dash representation) are lit geometry
     like sticks, not overlays, by owner decision (#738): on Metal they are
-    cylinder impostors and take the rig. Only with `dash_as_cylinders` off
-    are they lines, and unlit.
+    cylinder impostors and take the rig. Only with `dash_as_cylinders` or
+    `render_as_cylinders` off are they lines, and unlit.
 
 ## 8. Performance budget
 

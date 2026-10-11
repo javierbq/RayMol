@@ -774,7 +774,8 @@ Open follow-ups of the lighting work (#610) that you may notice:
   are cylinder geometry, so under a rig they take its lighting like sticks
   do, not display-referred like labels and lines (owner decision). A
   pure-green dash reads as a lit green, not (0, 255, 0). With
-  `dash_as_cylinders` off they are lines and stay unlit.
+  `dash_as_cylinders` or `render_as_cylinders` off they are lines and stay
+  unlit.
 - **Scenes and movies.** The loop-wrap of a looping movie (#656) and an
   animated scene recall in the live view (#661) do not blend the rig.
 - **Placement.** A highlight placed on a small patch can fit the beam to a
