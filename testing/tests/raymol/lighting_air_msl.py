@@ -104,7 +104,7 @@ depth_at = _msl.depth_at
 # literal, comments stripped and whitespace removed, the first 16 hex digits.
 # Taken from master with these parsers, never from this branch.
 MASTER_LITERALS = {
-    'kBezierTubeRigSrc': 'c15ddac6015e66dc',
+    'kBezierTubeRigSrc': '8b5d47b1b8b9d31b',  # #663: bezier_tube_fragment_rig_shadow
     'kBezierTubeSrc': '0085bdbf88964ab4',
     'kConnectorShaderSrc': '40ef57a0e535d985',
     'kCylinderImpostorSrc': 'd884d25157282af9',  # #641: cyl_shade caps from the capped solid's exit

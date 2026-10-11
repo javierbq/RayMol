@@ -106,7 +106,7 @@ HDR_CONSTANT = re.compile(r'\bkLightHdr\b')
 # Taken from master with these parsers, never from this branch.
 MASTER_054B525 = {
     'kAirSrc': 'bb28757fec4568af',
-    'kBezierTubeRigSrc': 'c15ddac6015e66dc',
+    'kBezierTubeRigSrc': '8b5d47b1b8b9d31b',  # #663: bezier_tube_fragment_rig_shadow
     'kBezierTubeSrc': '0085bdbf88964ab4',
     'kConnectorShaderSrc': '40ef57a0e535d985',
     'kCylinderImpostorSrc': '40ff878f5a16a0e9',  # #641: cyl_shade caps from the capped solid's exit
@@ -566,7 +566,7 @@ class TestSpecialisers(HdrMSLCase):
         # the tube's two variants, from its one builder
         tube = re.findall(r'bezierTubeRigFunction\(([^;]*)\);', code)
         self.assertEqual(sorted(squash(t).split(',')[-1] for t in tube),
-                         ['false', 'h==1'])
+                         ['false', 'h==1', 'h==1'])
         # Part 5: the air's functions come from newAirPipeline, which hands
         # airFunction its hdr choice, and the vertex function (no constant);
         # ensureAirPipelines asks for both composite variants and one march
@@ -605,6 +605,8 @@ class TestSpecialisers(HdrMSLCase):
         tube = dict(self.material, **msl_functions(self.msl['kBezierTubeRigSrc']))
         self.assertEqual(reaches(tube, 'bezier_tube_fragment_rig', HDR_CONSTANT),
                          {'light_finish'})
+        self.assertEqual(reaches(tube, 'bezier_tube_fragment_rig_shadow', HDR_CONSTANT),
+                         {'light_finish'})
         self.assertFalse(reaches(tube, 'bezier_tube_vertex_rig', HDR_CONSTANT))
         air = dict(self.material, **self.air)
         for name in ('post_air_full', 'post_air_upsample'):
@@ -637,6 +639,8 @@ class TestCaches(HdrMSLCase):
         self.assertRegex(h, r'std::map<std::tuple<NSUInteger,\s*int,\s*int,\s*bool,'
                             r'\s*bool,\s*bool>,\s*CylinderPipelines>')
         self.assertRegex(h, r'id<MTLRenderPipelineState> _bezierTubeRigPipeline\[2\]'
+                            r' = \{\};')
+        self.assertRegex(h, r'id<MTLRenderPipelineState> _bezierTubeRigShadowPipeline\[2\]'
                             r' = \{\};')
         # one tried flag for both tube variants
         self.assertRegex(h, r'bool _bezierTubeRigTried = false;')

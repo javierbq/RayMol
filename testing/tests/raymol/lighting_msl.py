@@ -49,6 +49,7 @@ from pymol import testing
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.normpath(os.path.join(HERE, os.pardir, os.pardir, os.pardir))
 METAL_MM = os.path.join(ROOT, 'layerGraphics', 'metal', 'RendererMetal.mm')
+METAL_H = os.path.join(ROOT, 'layerGraphics', 'metal', 'RendererMetal.h')
 SCENE_RENDER = os.path.join(ROOT, 'layer1', 'SceneRender.cpp')
 BLOCK_H = os.path.join(ROOT, 'layer1', 'LightRigBlock.h')
 SHADING_H = os.path.join(ROOT, 'layer1', 'LightShading.h')
@@ -354,13 +355,14 @@ class TestLightBlock(LightMSLCase):
                                 '%s binds something other than the rig at '
                                 'buffer(9): %r' % (lib, m.group(0).strip()))
         # The tube's rig library: buffer(9) is the rig, as a plain argument,
-        # and it declares no function constant of its own. The classic tube
-        # uses neither.
+        # in the rig fragment and its studio-shadow copy (#663), and it declares
+        # no function constant of its own. The classic tube uses neither.
         code = strip_comments(self.msl['kBezierTubeRigSrc'])
         self.assertNotIn('function_constant', code)
         nines = re.findall(r'[^\n,(]*\[\[\s*buffer\(9\)[^\]]*\]\]', code)
-        self.assertEqual(len(nines), 1, nines)
-        self.assertRegex(nines[0], TUBE_RIG_ARGUMENT)
+        self.assertEqual(len(nines), 2, nines)
+        for arg in nines:
+            self.assertRegex(arg, TUBE_RIG_ARGUMENT)
         code = strip_comments(self.msl['kBezierTubeSrc'])
         self.assertNotIn('function_constant', code)
         self.assertNotRegex(code, r'buffer\(9\)')
@@ -1038,7 +1040,7 @@ class TestBezierTube(LightMSLCase):
                                 if 'kBezierTube' in lib),
                          ['[[kMaterialSrcstringByAppendingString:kBezierTubeSrc]'
                           'stringByAppendingString:kBezierTubeRigSrc]',
-                          'kBezierTubeSrc'])
+                          'kBezierTubeSrc', 'kBezierTubeSrc'])
 
     def testTubeRigCopiesMatch(self):
         """Drift guards: each rig function is the classic one plus exactly
@@ -1089,6 +1091,27 @@ class TestBezierTube(LightMSLCase):
                          ';returnfloat4(rgb,in.color.a);}')
         stripped = re.sub(r'\n[ \t]*rgb\s*=\s*light_apply\([^;]*\);', '', body)
         self.assertEqual(squash(stripped), squash(classic_body))
+        # the studio-shadow copy (#663): the rig fragment plus the maps
+        # arguments, light_apply_shadowed, and nothing else
+        shadow_sig, shadow_body = self.rig['bezier_tube_fragment_rig_shadow']
+        self.assertEqual(
+            squash(sig).replace('bezier_tube_fragment_rig(',
+                                'bezier_tube_fragment_rig_shadow(')[:-1]
+            + ',depth2d_array<float>lightShadowMaps[[texture(7)]],samplerlightShadowSmp[[sampler(7)]])',
+            squash(shadow_sig))
+        shadow_light = re.findall(
+            r'\n[ \t]*rgb\s*=\s*light_apply_shadowed\(([^;]*)\);', shadow_body)
+        self.assertEqual(len(shadow_light), 1)
+        self.assertEqual(
+            squash(shadow_light[0]),
+            squash('rgb, in.color.rgb, nrm, in.posEye, rig, lightShadowMaps, '
+                   'lightShadowSmp, light_response_neutral()'))
+        shadow_tail = shadow_body[shadow_body.index('light_apply_shadowed('):]
+        self.assertEqual(squash(shadow_tail[shadow_tail.index(';'):]),
+                         ';returnfloat4(rgb,in.color.a);}')
+        shadow_stripped = re.sub(
+            r'\n[ \t]*rgb\s*=\s*light_apply_shadowed\([^;]*\);', '', shadow_body)
+        self.assertEqual(squash(shadow_stripped), squash(stripped))
 
     def testTubeRigReadsNoFunctionConstant(self):
         """Neither tube rig function nor any helper they reach reads a
@@ -1103,14 +1126,17 @@ class TestBezierTube(LightMSLCase):
         material = msl_functions(self.msl['kMaterialSrc'])
         constant = re.compile(r'\bkLightRig\b|\bkLightShadow\b|\bkMat[A-Z]\w*'
                               r'|function_constant')
-        for name in ('bezier_tube_vertex_rig', 'bezier_tube_fragment_rig'):
+        for name in ('bezier_tube_vertex_rig', 'bezier_tube_fragment_rig',
+                     'bezier_tube_fragment_rig_shadow'):
             sig, body = self.rig[name]
             self.assertNotRegex(sig + body, constant, name)
         seen = set()
         readers = set()
         todo = re.findall(r'\b((?:light|mat)_\w+)\s*\(',
-                          self.rig['bezier_tube_fragment_rig'][1])
+                          self.rig['bezier_tube_fragment_rig'][1] +
+                          self.rig['bezier_tube_fragment_rig_shadow'][1])
         self.assertIn('light_apply', todo)
+        self.assertIn('light_apply_shadowed', todo)
         while todo:
             name = todo.pop()
             if name in seen:
@@ -1161,6 +1187,9 @@ class TestBezierTube(LightMSLCase):
                               r'\s*/\*lightHdr\*/ false\)')
         self.assertRegex(rig, r'bezierTubeRigFunction\(\s*lib, @"bezier_tube_fragment_rig",'
                               r'\s*/\*lightHdr\*/ h == 1\)')
+        # the shadow variant built in the loop (#663)
+        self.assertRegex(rig, r'bezierTubeRigFunction\(\s*lib, @"bezier_tube_fragment_rig_shadow",'
+                              r'\s*/\*lightHdr\*/ h == 1\)')
         # the classic descriptor, tessellation included, field for field
         lines = descriptor_lines(rig)
         self.assertEqual(lines, descriptor_lines(classic))
@@ -1171,35 +1200,49 @@ class TestBezierTube(LightMSLCase):
             self.assertIn('psd.fragmentFunction = ffn;', body)
         self.assertRegex(rig, r'_bezierTubeRigPipeline\[h\] =\s*\[_device '
                               r'newRenderPipelineStateWithDescriptor:psd error:&err\];')
+        self.assertRegex(rig, r'_bezierTubeRigShadowPipeline\[h\] =\s*\[_device '
+                              r'newRenderPipelineStateWithDescriptor:psd error:&err\];')
         # only the pipeline state is kept
         for released in ('[psd release];', '[vfn release];', '[ffn release];',
-                         '[lib release];'):
+                         '[sfn release];', '[lib release];'):
             self.assertIn(released, rig)
         # released with the classic tube, and retried, at every rebuild
         rebuild = cpp_function(self.mm, 'RendererMetal::rebuildDrawPipelines')
         self.assertIn('[_bezierTubeRigPipeline[h] release];', rebuild)
         self.assertIn('_bezierTubeRigPipeline[h] = nil;', rebuild)
+        self.assertIn('[_bezierTubeRigShadowPipeline[h] release];', rebuild)
+        self.assertIn('_bezierTubeRigShadowPipeline[h] = nil;', rebuild)
         self.assertIn('for (int h = 0; h < 2; ++h)', rebuild)
         self.assertIn('_bezierTubeRigTried = false;', rebuild)
         dtor = cpp_function(self.mm, 'RendererMetal::~RendererMetal')
         self.assertIn('[_bezierTubeRigPipeline[0] release];', dtor)
         self.assertIn('[_bezierTubeRigPipeline[1] release];', dtor)
+        self.assertIn('[_bezierTubeRigShadowPipeline[0] release];', dtor)
+        self.assertIn('[_bezierTubeRigShadowPipeline[1] release];', dtor)
 
     def testTubeDrawPicksTheRigOnlyWhenOn(self):
         body = cpp_function(self.mm, 'RendererMetal::drawBezierTubes')
         # today's guards, before anything rig-related
         build = body.index('buildBezierTubeRigPipeline();')
-        for guard in (r'if\s*\(\s*_shadowMode\s*\)\s*return\s*;',
-                      r'if\s*\(\s*_peelMode\s*\)\s*return\s*;',
-                      r'if\s*\(\s*!_bezierTubePipeline\s*\)\s*return\s*;'):
-            m = re.search(guard, body)
-            self.assertIsNotNone(m, guard)
-            self.assertLess(m.start(), build, guard)
-        # starts as the classic pipeline: with the rig off, today's draw
-        self.assertRegex(body, r'id<MTLRenderPipelineState>\s+tubePipeline\s*='
-                               r'\s*_bezierTubePipeline\s*;')
+        # #488 peel guard before everything
+        peel = re.search(r'if\s*\(\s*_peelMode\s*\)\s*return\s*;', body)
+        self.assertIsNotNone(peel)
+        self.assertLess(peel.start(), build)
+        # #663: depth-only shadow branch before the classic pipeline
+        shadow_branch = re.search(
+            r'if\s*\(\s*_shadowMode\s*\)\s*\{\s*'
+            r'buildBezierTubeShadowPipeline\(\);\s*'
+            r'if\s*\(\s*!_bezierTubeShadowPipeline\s*\)\s*return\s*;\s*\}'
+            r'\s*else\s*\{\s*'
+            r'buildBezierTubePipeline\(\);\s*'
+            r'if\s*\(\s*!_bezierTubePipeline\s*\)\s*return\s*;\s*\}', body)
+        self.assertIsNotNone(shadow_branch)
+        self.assertLess(shadow_branch.start(), build)
+        self.assertRegex(body, r'id<MTLRenderPipelineState>\s+tubePipeline\s*=\s*'
+                               r'_shadowMode\s*\?\s*_bezierTubeShadowPipeline\s*:\s*_bezierTubePipeline\s*;')
         self.assertRegex(body, r'bool\s+tubeRig\s*=\s*false\s*;')
-        block = re.search(r'if\s*\(\s*_lightRigOn\s*\)\s*\{', body)
+        # #663: rig block guarded by _lightRigOn && !_shadowMode
+        block = re.search(r'if\s*\(\s*_lightRigOn\s*&&\s*!_shadowMode\s*\)\s*\{', body)
         self.assertIsNotNone(block)
         end = match_brace(body, block.end() - 1)
         inside = body[block.end():end]
@@ -1210,9 +1253,22 @@ class TestBezierTube(LightMSLCase):
         self.assertIn('tubePipeline = rigTube;', inside)
         self.assertIn('tubeRig = true;', inside)
         self.assertIn('_lightRigWarned = true;', inside)
+        # #663: shadow variant only on the rig tube, under lightShadowsReady(), inside the rig block
+        shadow_rig = re.search(r'if\s*\(\s*tubeRig\s*&&\s*lightShadowsReady\(\)\s*\)\s*\{', inside)
+        self.assertIsNotNone(shadow_rig)
+        shadow_inside = inside[shadow_rig.end():match_brace(inside, shadow_rig.end() - 1)]
+        self.assertRegex(shadow_inside,
+                         r'id<MTLRenderPipelineState>\s+shadowTube\s*=\s*'
+                         r'_bezierTubeRigShadowPipeline\[_lightHdrOn\s*\?\s*1\s*:\s*0\];')
+        self.assertIn('tubePipeline = shadowTube;', shadow_inside)
         self.assertEqual(len(re.findall(r'tubeRig\s*=\s*true', body)), 1)
         self.assertEqual(re.findall(r'setRenderPipelineState:(\w+)\]', body),
                          ['tubePipeline'])
+        # #663: _shadowDepthState only under _shadowMode
+        self.assertRegex(body, r'if\s*\(\s*_shadowMode\s*\)\s*'
+                               r'\[_encoder\s+setDepthStencilState:_shadowDepthState\];\s*'
+                               r'else\s*'
+                               r'\[_encoder\s+setDepthStencilState:bezierDepthState\(\)\];')
         # the rig is bound after the classic lighting and before the draw
         bind = re.search(r'if\s*\(\s*tubeRig\s*\)\s*bindLightRig\(', body)
         self.assertIsNotNone(bind)
@@ -1222,6 +1278,42 @@ class TestBezierTube(LightMSLCase):
         code = strip_comments(self.mm)
         self.assertEqual(len(re.findall(r'(?<!::)buildBezierTubeRigPipeline\(\);',
                                         code)), 1)
+
+    def testTubeShadowPipelineIsDepthOnly(self):
+        """#663: the tube's depth-only pipeline for casting studio shadows
+        and the classic shadow pre-pass."""
+        build = cpp_function(self.mm, 'RendererMetal::buildBezierTubeShadowPipeline')
+        # tried once
+        self.assertRegex(build, r'^\{\s*if\s*\(\s*_bezierTubeShadowTried\s*\)\s*'
+                                r'return\s*;\s*_bezierTubeShadowTried\s*=\s*true\s*;')
+        self.assertRegex(build, r'newLibraryWithSource:kBezierTubeSrc\s+options:')
+        self.assertIn('newFunctionWithName:@"bezier_tube_vertex"]', build)
+        self.assertNotIn('fragmentFunction', build)
+        self.assertNotIn('bezier_tube_fragment', build)
+        # depth-only attachments: rasterSampleCount 1, Depth32Float, no stencil, no color
+        self.assertIn('psd.rasterSampleCount = 1;', build)
+        self.assertIn('psd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;', build)
+        self.assertNotIn('stencilAttachmentPixelFormat', build)
+        self.assertNotIn('colorAttachments', build)
+        # vertex descriptor and tessellation fields match classic
+        self.assertIn('psd.maxTessellationFactor = 64;', build)
+        self.assertIn('psd.tessellationFactorStepFunction = MTLTessellationFactorStepFunctionConstant;', build)
+        self.assertIn('psd.tessellationFactorFormat = MTLTessellationFactorFormatHalf;', build)
+        self.assertIn('psd.tessellationOutputWindingOrder = MTLWindingClockwise;', build)
+        self.assertIn('psd.tessellationPartitionMode = MTLTessellationPartitionModeInteger;', build)
+        self.assertIn('psd.vertexDescriptor = vd;', build)
+        self.assertIn('psd.vertexFunction = vfn;', build)
+        self.assertIn('[psd release];', build)
+        self.assertIn('[vfn release];', build)
+        self.assertIn('[lib release];', build)
+        # header members
+        header = strip_comments(read(METAL_H))
+        self.assertRegex(header, r'id<MTLRenderPipelineState>\s+_bezierTubeShadowPipeline\s*=\s*nil;')
+        self.assertRegex(header, r'bool\s+_bezierTubeShadowTried\s*=\s*false;')
+        self.assertRegex(header, r'void\s+buildBezierTubeShadowPipeline\(\);')
+        # destructor release
+        dtor = cpp_function(self.mm, 'RendererMetal::~RendererMetal')
+        self.assertIn('[_bezierTubeShadowPipeline release];', dtor)
 
 
 class TestMeasurementDashes(LightMSLCase):
