@@ -20,6 +20,7 @@ import contextlib
 import io
 import json
 import os
+import sys
 import tempfile
 import threading
 import traceback
@@ -80,6 +81,33 @@ def _run_pymol_command(args):
         return _error(traceback.format_exc())
 
 
+class _TeeStdout:
+    """Write to the real stdout AND capture into ``buf``.
+
+    The core's feedback sink reads the app's real stdout, and the Swift host
+    acts on marker lines printed there (``PREDICT:submit:<job>`` from
+    predictors/host.py, ...). A bare ``redirect_stdout(buf)`` swallowed them,
+    so a job submitted through run_python was never started (#596).
+    """
+
+    def __init__(self, real, buf):
+        self._real = real
+        self._buf = buf
+
+    def write(self, s):
+        self._buf.write(s)
+        if self._real is not None:
+            self._real.write(s)
+        return len(s)
+
+    def flush(self):
+        if self._real is not None:
+            self._real.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
 def _run_python(args):
     code = args.get("code", "")
     if not code:
@@ -89,7 +117,7 @@ def _run_python(args):
         ns = _namespace()
         buf = io.StringIO()
         try:
-            with contextlib.redirect_stdout(buf):
+            with contextlib.redirect_stdout(_TeeStdout(sys.stdout, buf)):
                 exec(code, ns)
             from pymol import cmd
             cmd.sync()
