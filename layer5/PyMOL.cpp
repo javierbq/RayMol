@@ -129,6 +129,7 @@ struct CPyMOL {
   bool done_ConfigureShaders{};
 
   PyMOLModalDrawFn *ModalDraw = nullptr;
+  PyMOLHiResPNGFn *HiResPNG = nullptr;
 
   PyMOLSwapBuffersFn *SwapFn = nullptr;
 
@@ -2870,6 +2871,20 @@ int PyMOL_GetModalDraw(CPyMOL * I)
 void PyMOL_SetModalDraw(CPyMOL * I, PyMOLModalDrawFn * fn)
 {
   I->ModalDraw = fn;
+}
+
+void PyMOL_SetHiResPNGRenderer(CPyMOL * I, PyMOLHiResPNGFn * fn)
+{
+  if(I)
+    I->HiResPNG = fn;
+}
+
+int PyMOL_RenderHiResPNG(CPyMOL * I, const char *path, int width,
+                         int height, int rayTraced)
+{
+  if(!I || !I->HiResPNG || !path || !path[0] || width < 1 || height < 1)
+    return 0;
+  return I->HiResPNG(I, path, width, height, rayTraced) ? 1 : 0;
 }
 
 int PyMOL_GetSwap(CPyMOL * I, int reset)

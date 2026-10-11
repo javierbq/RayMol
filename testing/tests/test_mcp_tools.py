@@ -1,6 +1,10 @@
+import base64
 import io
 import json
+import os
+import struct
 import sys
+import tempfile
 import threading
 import time
 import types
@@ -211,6 +215,195 @@ class TestMcpToolsRegistry(unittest.TestCase):
         res = tools.call("nope", {})
         self.assertTrue(res["isError"])
         self.assertEqual(res["content"][0]["type"], "text")
+
+
+class TestCaptureViewportRoute(unittest.TestCase):
+    """capture_viewport tries the app's Metal render first (#643) and falls
+    back to the CPU tracer, with the rig's note, when it does not render.
+    Fakes stand in for pymol, so this runs without a built PyMOL."""
+
+    def setUp(self):
+        claim_main_thread(self)
+        self._saved_pymol = sys.modules.get("pymol")
+        self._saved_exporting = sys.modules.get("pymol.exporting")
+        self._saved_lighting = sys.modules.get("pymol.lighting")
+        self._saved_cmd = sys.modules.get("pymol.cmd")
+
+        self.metal_returns = True
+        self.metal_writes = True
+        self.metal_calls = []
+
+        self.cpu_calls = []
+        self.cpu_writes = True
+
+        self.rig_notice = None
+
+        testcase = self
+
+        class FakeExporting:
+            @staticmethod
+            def _metal_png(path, width, height):
+                testcase.metal_calls.append({
+                    "path": path,
+                    "width": width,
+                    "height": height,
+                })
+                if testcase.metal_writes:
+                    with open(path, "wb") as f:
+                        f.write(b"\x89PNG\r\n\x1a\nMETAL")
+                return testcase.metal_returns
+
+        class FakeCmd:
+            @staticmethod
+            def png(path, width=0, height=0, ray=0):
+                testcase.cpu_calls.append({
+                    "path": path,
+                    "width": width,
+                    "height": height,
+                    "ray": ray,
+                })
+                if testcase.cpu_writes:
+                    with open(path, "wb") as f:
+                        f.write(b"\x89PNG\r\n\x1a\nCPU")
+
+        class FakeLighting:
+            @staticmethod
+            def _lights_ray_notice():
+                return testcase.rig_notice
+
+        fake = types.ModuleType("pymol")
+        fake.exporting = FakeExporting()
+        fake.cmd = FakeCmd()
+        fake.lighting = FakeLighting()
+
+        sys.modules["pymol"] = fake
+        sys.modules["pymol.exporting"] = fake.exporting
+        sys.modules["pymol.cmd"] = fake.cmd
+        sys.modules["pymol.lighting"] = fake.lighting
+
+    def tearDown(self):
+        for name, saved in [
+            ("pymol", self._saved_pymol),
+            ("pymol.exporting", self._saved_exporting),
+            ("pymol.lighting", self._saved_lighting),
+            ("pymol.cmd", self._saved_cmd),
+        ]:
+            if saved is not None:
+                sys.modules[name] = saved
+            else:
+                sys.modules.pop(name, None)
+
+    def test_metal_path_used_when_available(self):
+        self.metal_returns = True
+        self.metal_writes = True
+        self.rig_notice = "rig on"
+        res = tools._capture_viewport({})
+        self.assertFalse(res.get("isError"))
+        content = res["content"]
+        self.assertEqual(len(content), 1)
+        self.assertEqual(content[0]["type"], "image")
+        data = base64.b64decode(content[0]["data"])
+        self.assertTrue(data.endswith(b"METAL"))
+        self.assertEqual(len(self.cpu_calls), 0)
+        self.assertEqual(len(self.metal_calls), 1)
+        self.assertEqual(
+            (self.metal_calls[0]["width"], self.metal_calls[0]["height"]),
+            (640, 480),
+        )
+
+    def test_falls_back_to_cpu_when_no_metal(self):
+        self.metal_returns = False
+        self.metal_writes = False
+        self.rig_notice = "rig on"
+        res = tools._capture_viewport({})
+        self.assertFalse(res.get("isError"))
+        content = res["content"]
+        self.assertEqual(len(content), 2)
+        self.assertEqual(content[0]["type"], "image")
+        data = base64.b64decode(content[0]["data"])
+        self.assertTrue(data.endswith(b"CPU"))
+        self.assertEqual(len(self.cpu_calls), 1)
+        self.assertEqual(self.cpu_calls[0]["ray"], 1)
+        self.assertEqual(self.cpu_calls[0]["width"], 640)
+        self.assertEqual(self.cpu_calls[0]["height"], 480)
+        self.assertEqual(content[1], {"type": "text", "text": "Note: rig on"})
+
+    def test_falls_back_when_metal_wrote_nothing(self):
+        self.metal_returns = True
+        self.metal_writes = False
+        res = tools._capture_viewport({})
+        self.assertFalse(res.get("isError"))
+        data = base64.b64decode(res["content"][0]["data"])
+        self.assertTrue(data.endswith(b"CPU"))
+        self.assertEqual(len(self.cpu_calls), 1)
+
+    def test_size_is_clamped_for_metal(self):
+        tools._capture_viewport({"width": 99999, "height": 0})
+        self.assertEqual(len(self.metal_calls), 1)
+        self.assertEqual(
+            (self.metal_calls[0]["width"], self.metal_calls[0]["height"]),
+            (2048, 1),
+        )
+
+    def test_tempfile_removed(self):
+        tools._capture_viewport({})
+        self.assertEqual(len(self.metal_calls), 1)
+        self.assertFalse(os.path.exists(self.metal_calls[0]["path"]))
+
+
+class TestCaptureViewportGlutBuild(unittest.TestCase):
+    """On the pip/GLUT build no Metal renderer is registered: _cmd.metal_png
+    says False without writing, and capture_viewport falls back to the CPU
+    tracer cleanly (#643)."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            from pymol import cmd, _cmd, exporting
+        except ImportError as e:
+            raise unittest.SkipTest(f"PyMOL not built: {e}")
+
+    def setUp(self):
+        claim_main_thread(self)
+        from pymol import cmd
+        cmd.reinitialize()
+        cmd.fragment("ala")
+
+    def tearDown(self):
+        from pymol import cmd
+        cmd.set_lights(None)
+        cmd.reinitialize()
+
+    def test_metal_png_returns_false_without_metal(self):
+        from pymol import cmd, _cmd, exporting
+        fd, path = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        self.addCleanup(lambda: os.path.exists(path) and os.remove(path))
+        self.assertFalse(exporting._metal_png(path, 24, 18))
+        self.assertEqual(os.path.getsize(path), 0)
+        self.assertFalse(_cmd.metal_png(cmd._COb, path, 24, 18, -1))
+
+    def test_capture_viewport_falls_back_to_cpu(self):
+        res = tools._capture_viewport({"width": 24, "height": 18})
+        self.assertFalse(res.get("isError"))
+        content = res["content"]
+        self.assertEqual(len(content), 1)
+        self.assertEqual(content[0]["type"], "image")
+        data = base64.b64decode(content[0]["data"])
+        self.assertTrue(data.startswith(b"\x89PNG\r\n\x1a\n"))
+        w, h = struct.unpack(">II", data[16:24])
+        self.assertEqual((w, h), (24, 18))
+
+    def test_capture_viewport_cpu_note_with_rig_on(self):
+        from pymol import cmd
+        cmd.set_lights({"enabled": True, "lights": [{"name": "key"}]})
+        res = tools._capture_viewport({"width": 24, "height": 18})
+        self.assertFalse(res.get("isError"))
+        content = res["content"]
+        self.assertEqual(len(content), 2)
+        self.assertEqual(content[0]["type"], "image")
+        self.assertEqual(content[1]["type"], "text")
+        self.assertTrue(content[1]["text"].startswith("Note: "))
 
 
 if __name__ == "__main__":

@@ -8,11 +8,12 @@ only thread where the embedded core is safe to touch (it races
 ``SceneRenderMetal`` otherwise; see mainthread.py). Never call the C bridge
 (PyMOLBridge_*) from here; only the Python ``cmd`` API.
 
-``capture_viewport`` renders with the CPU ray-tracer (cmd.png ray=1) because
-cmd.png without ray reads a GL framebuffer the Metal app does not have.
-It uses PyMOL's lights: studio lights (set_lights) are drawn only by the Metal
-renderer, so they are not in this image, and a text note follows the image
-when a rig is on (#626).
+In the app it renders through the Metal Save Image path (`exporting._metal_png`
+-> `_cmd.metal_png` -> the bridge's registered `PyMOLBridge_RenderHiResPNG`, on
+the main thread), so the image is what the user sees, studio lights included;
+with no Metal renderer (pip/GLUT build, headless) it falls back to the CPU ray
+tracer (cmd.png ray=1), which uses PyMOL's lights, and a text note follows the
+image when a rig is on (#626, #643).
 """
 
 import base64
@@ -167,20 +168,28 @@ def _capture_viewport(args):
     path = None
     try:
         # Clamp to a sane maximum: width/height come straight from the caller and
-        # feed a CPU ray-trace, so an unbounded size is a multi-minute / OOM DoS.
+        # bound the render (GPU or CPU), so an unbounded size is a DoS.
         width = max(1, min(int(args.get("width", 640)), 2048))
         height = max(1, min(int(args.get("height", 480)), 2048))
         fd, path = tempfile.mkstemp(suffix=".png", prefix="raymol_mcp_capture_")
         os.close(fd)
 
-        # ray=1 ray-traces and writes the PNG in one synchronous call. A separate
-        # cmd.ray + cmd.png(prior=1) fails with "no prior image available" when
-        # driven from the MCP server thread. Runs on the main thread (touches the
-        # scene/renderer); the tempfile create/read/cleanup stay off-main.
-        # The CPU tracer keeps PyMOL's lights, so the rig's notice (#626) is
-        # read in the same main-thread call: the rig cannot change in between.
+        # Runs on the main thread (touches the scene/renderer); the tempfile
+        # create/read/cleanup stay off-main.
         def _render():
-            from pymol import cmd, lighting
+            from pymol import cmd, exporting, lighting
+            # In the app: the Metal Save Image render, i.e. what the user sees
+            # (studio lights, shadows, air, Metal ray tracing). WYSIWYG: ray=-1.
+            if exporting._metal_png(path, width, height) and \
+                    os.path.getsize(path) > 0:
+                return None
+            # No Metal renderer (pip/GLUT, headless, or the app before its
+            # first frame): the CPU tracer, which keeps PyMOL's lights.
+            # ray=1 ray-traces and writes the PNG in one synchronous call; a
+            # separate cmd.ray + cmd.png(prior=1) fails with "no prior image
+            # available" when driven from the MCP server thread. The rig's
+            # notice (#626) is read in the same main-thread call, so the rig
+            # cannot change in between.
             cmd.png(path, width=width, height=height, ray=1)
             return lighting._lights_ray_notice()
         notice = run_on_main(_render)
@@ -261,13 +270,15 @@ TOOLS = [
     },
     {
         "name": "capture_viewport",
-        "description": ("Ray-trace the current view and return it as a PNG image "
+        "description": ("Render the current view and return it as a PNG image "
                         "so you can see the structure. Optional width/height "
-                        "(default 640x480). CPU ray-tracing may take a moment. "
-                        "It uses PyMOL's lights: studio lights (set_lights) "
-                        "are drawn only by the Metal renderer, so they are not "
-                        "in this image, and a text note follows the image when "
-                        "a rig is on."),
+                        "(default 640x480). In the RayMol app it uses the "
+                        "app's Metal renderer, so the image is what the user "
+                        "sees, studio lights (set_lights) included. Without a "
+                        "Metal view (headless) it falls back to the CPU ray "
+                        "tracer, which may take a moment and uses PyMOL's "
+                        "lights; a text note then follows the image when a "
+                        "rig is on."),
         "inputSchema": {
             "type": "object",
             "properties": {

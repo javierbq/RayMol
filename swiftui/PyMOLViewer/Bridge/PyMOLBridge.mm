@@ -53,6 +53,8 @@ extern void ImmBatch_SetActiveRenderer(pymol::Renderer *r);
 // names and the link fails.
 extern "C" {
 
+static int bridgeRenderHiResPNG(CPyMOL *I, const char *path, int width, int height, int rayTraced);
+
 // --- Lifecycle ---
 
 PyMOLHandle PyMOLBridge_New(void)
@@ -67,6 +69,8 @@ PyMOLHandle PyMOLBridge_New(void)
 
     CPyMOL *instance = PyMOL_NewWithOptions(options);
     PyMOLOptions_Free(options);
+    if (instance)
+        PyMOL_SetHiResPNGRenderer(instance, bridgeRenderHiResPNG);
     return static_cast<PyMOLHandle>(instance);
 }
 
@@ -948,6 +952,23 @@ void PyMOLBridge_RenderHiResPNG(PyMOLHandle h, const char* path,
     G->Option->winX = savedW;
     G->Option->winY = savedH;
     PyMOL_Reshape(INST(h), savedW, savedH, 0);
+}
+
+// #643: the core's _cmd.metal_png (the MCP capture_viewport tool) renders
+// through this, so it gets exactly the Save Image / Export render. Main
+// thread only, like every other core access in the app; and no renderer
+// means a cold launch before the first live frame. Either way say no, so
+// the caller falls back to the CPU tracer.
+static int bridgeRenderHiResPNG(CPyMOL *I, const char *path, int width,
+                                int height, int rayTraced)
+{
+    if (![NSThread isMainThread]) return 0;
+    if (!I || !path || width < 1 || height < 1) return 0;
+    PyMOLGlobals *G = PyMOL_GetGlobals(I);
+    if (!G || !G->Renderer) return 0;
+    PyMOLBridge_RenderHiResPNG(static_cast<PyMOLHandle>(I), path, width,
+                               height, rayTraced);
+    return 1;
 }
 
 // Rebuild any dirty object representations for the current frame/state on the

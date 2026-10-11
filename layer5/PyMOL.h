@@ -328,6 +328,18 @@ void PyMOL_SetInterrupt(CPyMOL * I, int value);
 int PyMOL_GetModalDraw(CPyMOL * I);
 void PyMOL_SetModalDraw(CPyMOL * I, PyMOLModalDrawFn * fn);     /* for internal use only */
 
+/* #643: the host app's offscreen image render (the RayMol app registers
+   its Metal Save Image path). Writes a PNG of the current view at
+   width x height to path; rayTraced -1 = the live metal_raytrace setting,
+   0 = off, 1 = on. Returns 1 when it rendered, 0 when it could not. */
+typedef int PyMOLHiResPNGFn(CPyMOL * I, const char *path, int width,
+                            int height, int rayTraced);
+void PyMOL_SetHiResPNGRenderer(CPyMOL * I, PyMOLHiResPNGFn * fn);
+/* Calls the registered renderer; 0 when none is registered (pip/GLUT and
+   headless builds) or it failed. */
+int PyMOL_RenderHiResPNG(CPyMOL * I, const char *path, int width,
+                         int height, int rayTraced);
+
 
 /* developer/transient privates */
 
