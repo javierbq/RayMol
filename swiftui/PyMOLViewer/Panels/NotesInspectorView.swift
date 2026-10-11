@@ -1299,6 +1299,8 @@ struct NotesInspectorView: View {
             Image(systemName: isFullscreenCover
                   ? "arrow.down.right.and.arrow.up.left"
                   : "arrow.up.left.and.arrow.down.right")
+                .frame(width: 44, height: 44)   // HIG minimum touch target
+                .contentShape(Rectangle())
         }
         .accessibilityLabel(isFullscreenCover ? "Collapse notes" : "Expand notes to fullscreen")
         .accessibilityIdentifier("notes-fullscreen-toggle")
