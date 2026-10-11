@@ -431,8 +431,10 @@ final class AppShortcutsTests: XCTestCase {
                 calls += 1
                 guard let r = Range(match.range(at: 1), in: text) else { continue }
                 let arg = text[r].trimmingCharacters(in: .whitespacesAndNewlines)
-                XCTAssertTrue(arg.hasPrefix("AppShortcuts.")
-                              || [".cancelAction", ".defaultAction", "shortcut?.shortcut"].contains(arg),
+                // The one forwarded case: railTongue's `shortcut: AppShortcuts?`.
+                let forwarded = file == "ContentView.swift" && arg == "shortcut?.shortcut"
+                XCTAssertTrue(arg.hasPrefix("AppShortcuts.") || forwarded
+                              || [".cancelAction", ".defaultAction"].contains(arg),
                               "\(file):\(lineOf(match.range)) registers a shortcut outside AppShortcuts: \(arg)")
             }
         }
@@ -523,7 +525,13 @@ final class AppShortcutsTests: XCTestCase {
         XCTAssertEqual(panel.title, "Keyboard Shortcuts")
         XCTAssertTrue(panel.contentViewController is NSHostingController<KeyboardShortcutsView>)
 
-        panel.cancelOperation(nil)
+        // A real Esc key-down through the panel's event path, not a direct
+        // cancelOperation call: the hosted SwiftUI view is first responder.
+        let esc = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: panel.windowNumber, context: nil, characters: "\u{1b}",
+            charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
+        panel.sendEvent(esc)
         XCTAssertFalse(panel.isVisible, "Esc should close the panel")
 
         KeyboardShortcutsPanel.show()

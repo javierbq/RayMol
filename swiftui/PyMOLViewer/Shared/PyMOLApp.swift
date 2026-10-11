@@ -77,7 +77,7 @@ final class RayMolAppDelegate: NSObject, NSApplicationDelegate {
 /// warns when ~/.raymolrc binds over a menu shortcut. Entries carrying ⌘
 /// (including ⌃⌘M) need no mirror: KeyRouting passes ⌘ events straight through
 /// to the menus, so a user binding can never shadow them.
-enum AppShortcuts: CaseIterable, Identifiable {
+enum AppShortcuts: CaseIterable {
     // File menu (plus ⌘O on the toolbar's Open menu). Case order is the order
     // the Keyboard Shortcuts sheet lists them in.
     case openFile
@@ -139,8 +139,6 @@ enum AppShortcuts: CaseIterable, Identifiable {
             }
         }
     }
-
-    var id: Self { self }
 
     var shortcut: KeyboardShortcut {
         switch self {
@@ -366,10 +364,13 @@ struct KeyboardShortcutsView: View {
                         }
                     }
 
-                    Text("Your own set_key bindings from ~/.raymolrc fire in the viewport, "
-                         + "and one on a ⌃-letter overrides that Tools shortcut (RayMol warns "
-                         + "at launch). To let them fire while you type in the command line, "
-                         + "turn on View ▸ Send Key Bindings to Viewport While Typing.")
+                    Text("Viewport keys work while the command line is empty. PyMOL's other "
+                         + "stock keys (⌃Z undo, ⌃PgUp/⌃PgDn scenes, …) work too: type "
+                         + "`help keyboard` for the full list. Your own set_key bindings from "
+                         + "~/.raymolrc fire in the viewport, and one on a ⌃-letter overrides "
+                         + "that Tools shortcut (RayMol warns at launch). To let your ALT- and "
+                         + "CTSH- bindings fire while you type, turn on View ▸ Send Key "
+                         + "Bindings to Viewport While Typing.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -401,13 +402,21 @@ struct KeyboardShortcutsView: View {
 ///   * it can stay open beside the viewport as a reference.
 @MainActor
 enum KeyboardShortcutsPanel {
-    static let title = "Keyboard Shortcuts"
-
     /// The one panel, created on first `show()` and reused after it closes.
     private(set) static var panel: NSPanel?
 
-    /// Esc closes the panel (NSWindow's default cancelOperation does nothing).
+    /// Esc closes the panel. Caught in sendEvent because the hosted SwiftUI
+    /// view is first responder and swallows a bare Esc key-down, so neither
+    /// cancelOperation nor keyDown would reach the window. The panel holds no
+    /// text field, so there is nothing else Esc could mean here.
     private final class Panel: NSPanel {
+        override func sendEvent(_ event: NSEvent) {
+            if event.type == .keyDown, event.keyCode == 53 {  // 53 = Esc
+                performClose(nil)
+                return
+            }
+            super.sendEvent(event)
+        }
         override func cancelOperation(_ sender: Any?) { performClose(sender) }
     }
 
@@ -416,7 +425,7 @@ enum KeyboardShortcutsPanel {
             let p = Panel(contentRect: NSRect(x: 0, y: 0, width: 440, height: 560),
                           styleMask: [.titled, .closable],
                           backing: .buffered, defer: false)
-            p.title = title
+            p.title = AppShortcuts.keyboardShortcuts.title
             p.isReleasedWhenClosed = false
             p.hidesOnDeactivate = false   // an ordinary window when the app is in the background
             p.contentViewController = NSHostingController(
@@ -424,6 +433,10 @@ enum KeyboardShortcutsPanel {
             p.center()
             panel = p
         }
+        // Follow the RayMol theme, not the system appearance, like the main
+        // window does (read on each show; a theme change while open is not tracked).
+        panel?.appearance = NSAppearance(
+            named: ThemeManager.shared.active.resolvedColorScheme == .dark ? .darkAqua : .aqua)
         panel?.makeKeyAndOrderFront(nil)
     }
 }
@@ -706,7 +719,7 @@ struct PyMOLApp: App {
                 // The item names the TOOL; what it produces is a designed backbone
                 // until a refold and an interface gate say otherwise (#342).
                 // Experimental — offered only when RAYMOL_EXPERIMENTAL_BINDER_DESIGN is set.
-                if PyMOLEngine.binderDesignExperimentalEnabled {
+                if AppShortcuts.binderDesignTool.isAvailable {
                     Button(engine.binderDesignMode ? "Exit Binder Design" : "Binder Design…") {
                         engine.setBinderDesignMode(!engine.binderDesignMode)
                     }

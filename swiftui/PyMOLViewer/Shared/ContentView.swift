@@ -3892,7 +3892,7 @@ struct ContentView: View {
         // A toggling MODE with a docked bar, exactly like every item above -- it takes a
         // selection plus options and a Run button, which is the shape Predict already has.
         // Experimental — shown only when RAYMOL_EXPERIMENTAL_BINDER_DESIGN is set.
-        if PyMOLEngine.binderDesignExperimentalEnabled {
+        if AppShortcuts.binderDesignTool.isAvailable {
         Button {
             engine.setBinderDesignMode(!engine.binderDesignMode)
         } label: {
