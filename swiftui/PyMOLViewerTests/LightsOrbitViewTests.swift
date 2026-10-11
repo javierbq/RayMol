@@ -309,7 +309,7 @@ final class LightsOrbitSnapshotTests: XCTestCase {
         var name: String
         var kind: Kind
         var dark = false
-        var width: CGFloat = LightsSideColumn.width + 24
+        var width: CGFloat = LightsInspectorMetrics.width + 24
         var height: CGFloat = 290
         var setUp: (FakeRigStore) -> Void = sketchTwo
         var after: (LightsController, FakeRigStore) -> Void = { _, _ in }

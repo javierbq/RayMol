@@ -803,6 +803,13 @@ struct LightsFieldFocusKey: PreferenceKey {
     }
 }
 
+/// The card's width as a plain constant: `LightsInspector` is a main-actor View,
+/// so nonisolated readers (the snapshot test's `Shot` default) cannot read its
+/// statics.
+enum LightsInspectorMetrics {
+    static let width: CGFloat = 284
+}
+
 /// What part of the inspector a view draws:
 /// - `card`: the whole card (#620: the side column, the iPad float);
 /// - `header`: the identity dot, the light menu, the status line, Shadow and
@@ -850,7 +857,7 @@ struct LightsInspector: View {
     /// 44 on iOS (every control a 44 pt target, #623), 0 on macOS.
     @Environment(\.lightsTouchMinimum) private var touchMinimum
 
-    static let width: CGFloat = 284
+    static let width: CGFloat = LightsInspectorMetrics.width
     static let estimatedHeight: CGFloat = 480
 
     init(controller: LightsController, style: LightsBarStyle, initiallyCollapsed: Bool = false,

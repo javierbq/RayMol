@@ -772,7 +772,7 @@ final class LightsInspectorSnapshotTests: XCTestCase {
     private struct Shot {
         var name: String
         var dark = false
-        var width: CGFloat = LightsInspector.width + 24
+        var width: CGFloat = LightsInspectorMetrics.width + 24
         var height: CGFloat = 520
         var collapsed = false
         var withBar = false
