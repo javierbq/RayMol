@@ -314,6 +314,7 @@ final class MaterialInspectorTests: XCTestCase {
 /// the classic glints are toggled the way the rig scales them, by its
 /// `classic` (1 vs 0) with every rig light dark, and a light's glint by its
 /// `highlight`.
+@MainActor
 final class SphereGlassGlintTests: XCTestCase {
     private var engine: PyMOLEngine { PyMOLEngine.shared }
     private var sceneBuilt = false
@@ -325,10 +326,11 @@ final class SphereGlassGlintTests: XCTestCase {
             engine.runPython("""
             from pymol import cmd as _c
             _c.delete('gg713')
-            _c.set('bg_rgb', globals().pop('_gg713_bg', [0.0, 0.0, 0.0]))
-            _c.set_lights(globals().pop('_gg713_rig', None))
             for _n in globals().pop('_gg713_enabled', []):
                 _c.enable(_n)
+            _c.set('bg_rgb', globals().pop('_gg713_bg', [0.0, 0.0, 0.0]))
+            _c.set('ray_opaque_background', globals().pop('_gg713_ray_bg', 1))
+            _c.set_lights(globals().pop('_gg713_rig', None))
             """)
             sceneBuilt = false
         }
@@ -373,6 +375,7 @@ final class SphereGlassGlintTests: XCTestCase {
         from pymol import cmd as _c
         _gg713_enabled = _c.get_names('objects', enabled_only=1)
         _gg713_bg = list(_c.get_setting_tuple('bg_rgb')[1])
+        _gg713_ray_bg = _c.get_setting_int('ray_opaque_background')
         _gg713_rig = _c.get_lights()
         for _n in _gg713_enabled:
             _c.disable(_n)
@@ -381,6 +384,7 @@ final class SphereGlassGlintTests: XCTestCase {
         \(rep)
         _c.color('red', 'gg713')
         _c.set('bg_rgb', [0.0, 0.0, 0.0])
+        _c.set('ray_opaque_background', 1)
         _c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
                      0.0, 0.0, -\(dots ? "20.0" : "12.0"), 0.0, 0.0, 0.0, 5.0, 100.0, -20.0))
         """)
@@ -404,13 +408,13 @@ final class SphereGlassGlintTests: XCTestCase {
         let png = NSTemporaryDirectory() + "gg713_\(tag)_\(UUID().uuidString).png"
         defer { try? FileManager.default.removeItem(atPath: png) }
         engine.renderHiResPNG(png, width: w, height: h, rayTraced: 0)
-        guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: png) as CFURL, nil),
-              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
-            XCTFail("no export written (\(tag))")
-            return []
-        }
-        XCTAssertEqual(image.width, w)
-        XCTAssertEqual(image.height, h)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(URL(fileURLWithPath: png) as CFURL, nil),
+                                   "no export written (\(tag))")
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil),
+                                  "export unreadable (\(tag))")
+        XCTAssertEqual(image.width, w, tag)
+        XCTAssertEqual(image.height, h, tag)
+        guard image.width == w, image.height == h else { throw CocoaError(.fileReadCorruptFile) }
         var rgba = [UInt8](repeating: 0, count: w * h * 4)
         let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
             guard let context = CGContext(
@@ -424,16 +428,17 @@ final class SphereGlassGlintTests: XCTestCase {
         return rgba
     }
 
-    /// The largest per-channel difference between two renders, and how many
-    /// pixels have every channel >= `floor` in `on` but not in `off`.
+    /// The largest green or blue difference between two renders -- the glints'
+    /// channels; red also carries the body, whose lighting the classic toggle
+    /// changes too -- and how many pixels have every channel >= `floor` in
+    /// `on` but not in `off`.
     private func compare(_ on: [UInt8], _ off: [UInt8], floor: Int) -> (maxDelta: Int, onOnly: Int) {
-        guard on.count == w * h * 4, off.count == on.count else { return (0, 0) }
         var maxDelta = 0, onOnly = 0
         for i in 0..<(w * h) {
             var onBright = true, offBright = true
             for c in 0..<3 {
                 let a = Int(on[i * 4 + c]), b = Int(off[i * 4 + c])
-                maxDelta = max(maxDelta, abs(a - b))
+                if c > 0 { maxDelta = max(maxDelta, abs(a - b)) }
                 if a < floor { onBright = false }
                 if b < floor { offBright = false }
             }
@@ -449,9 +454,9 @@ final class SphereGlassGlintTests: XCTestCase {
     /// both clear 60. Also checked without a rig, the classic pipeline proper.
     private func assertClassicGlints(dots: Bool) throws {
         let what = dots ? "glass dots" : "glass sphere"
-        setRig(classic: 0.0, intensity: 0.0, highlight: 0.5)
+        setRig(classic: 0.0, intensity: 0.0, highlight: 0.0)
         let off = try render("c0")
-        setRig(classic: 1.0, intensity: 0.0, highlight: 0.5)
+        setRig(classic: 1.0, intensity: 0.0, highlight: 0.0)
         let onRig = try render("c1")
         engine.runPython("from pymol import cmd as _c\n_c.set_lights(None)")
         let onClassic = try render("norig")
