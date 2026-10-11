@@ -1088,6 +1088,28 @@ final class LightsExposureRowTests: XCTestCase {
         XCTAssertTrue(LightsExposureControl.caption.contains("air"))
     }
 
+    /// The row's edit contract: no write during a drag, one on release, an
+    /// immediate write for a step outside a drag, and the written value shown
+    /// until a changed polled value arrives (never mid-drag).
+    func testEditCommitsOnReleaseAndHoldsUntilThePollChanges() {
+        var e = LightsExposureEdit()
+        XCTAssertEqual(e.shown(1.0), 1.0)
+        XCTAssertNil(e.editing(true))
+        XCTAssertNil(e.set(0.5))
+        XCTAssertNil(e.set(0.6), "no write per drag tick")
+        XCTAssertEqual(e.shown(1.0), 0.6)
+        e.polledChanged()
+        XCTAssertEqual(e.shown(1.0), 0.6, "a poll mid-drag does not clear it")
+        XCTAssertEqual(e.editing(false), 0.6, "one write on release")
+        XCTAssertEqual(e.shown(1.0), 0.6, "held after release, before the poll")
+        e.polledChanged()
+        XCTAssertEqual(e.shown(0.6), 0.6)
+        XCTAssertNil(e.pending, "the changed poll releases it")
+        // A VoiceOver step outside a drag writes at once.
+        XCTAssertEqual(e.set(0.65), 0.65)
+        XCTAssertEqual(e.shown(0.6), 0.65)
+    }
+
     /// The inspector draws the Exposure row only when the app puts a control
     /// in the environment: the rows presentation is taller by the row (and its
     /// caption) with one, and its size is unchanged without.

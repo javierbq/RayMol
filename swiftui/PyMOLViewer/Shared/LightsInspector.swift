@@ -525,6 +525,34 @@ extension EnvironmentValues {
     }
 }
 
+/// The Exposure slider's edit state, apart from the view so it is testable:
+/// nothing is written during a drag, the release writes once, a step outside
+/// a drag (VoiceOver) writes at once, and the written value stays shown until
+/// the scene poll reports a changed one.
+struct LightsExposureEdit: Equatable {
+    private(set) var pending: Double?
+    private(set) var dragging = false
+
+    func shown(_ polled: Double) -> Double { pending ?? polled }
+
+    /// The slider moved to `v`; the value to write now, if any.
+    mutating func set(_ v: Double) -> Double? {
+        pending = v
+        return dragging ? nil : v
+    }
+
+    /// A drag began or ended; the value to write (on release), if any.
+    mutating func editing(_ began: Bool) -> Double? {
+        dragging = began
+        return began ? nil : pending
+    }
+
+    /// The polled value changed (ours caught up, or an outside edit).
+    mutating func polledChanged() {
+        if !dragging { pending = nil }
+    }
+}
+
 /// The rig-level Exposure row: label, slider (committed on release; a
 /// VoiceOver step commits at once), value, and a caption. The committed value
 /// stays shown until the scene poll reports a new one (it lags ~500 ms), as
@@ -533,11 +561,10 @@ struct LightExposureRow: View {
     var control: LightsExposureControl
     var style: LightsBarStyle
     /// The value being dragged or just committed, until the poll catches up.
-    @State private var pending: Double?
-    @State private var dragging = false
+    @State private var edit = LightsExposureEdit()
 
     var body: some View {
-        let shown = pending ?? control.value
+        let shown = edit.shown(control.value)
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: InspectorMetrics.rowSpacing) {
                 Text(LightsExposureControl.title)
@@ -547,13 +574,11 @@ struct LightExposureRow: View {
                     .accessibilityHidden(true)
                 Slider(value: Binding(get: { shown },
                                       set: { v in
-                                          pending = v
-                                          if !dragging { control.set(v) }
+                                          if let w = edit.set(v) { control.set(w) }
                                       }),
                        in: control.range,
                        onEditingChanged: { began in
-                           dragging = began
-                           if !began, let v = pending { control.set(v) }
+                           if let w = edit.editing(began) { control.set(w) }
                        })
                     .controlSize(.small)
                     .accessibilityLabel(LightsExposureControl.title)
@@ -575,9 +600,7 @@ struct LightExposureRow: View {
         }
         // A changed polled value (ours caught up, or an outside edit) wins;
         // never while dragging.
-        .onChange(of: control.value) { _ in
-            if !dragging { pending = nil }
-        }
+        .onChange(of: control.value) { _ in edit.polledChanged() }
     }
 }
 
