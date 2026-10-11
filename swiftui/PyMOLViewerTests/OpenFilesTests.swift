@@ -85,3 +85,94 @@ final class OpenFilesTests: XCTestCase {
         XCTAssertFalse(openWouldReplaceSession(pdb, hasObjects: true))
     }
 }
+
+// Issue #220: Save Structure used to write every object. The picker's pure logic:
+// which formats it applies to, ticks -> selection expression, the save call, and the
+// candidate list it is built from.
+final class SaveStructureSelectionTests: XCTestCase {
+    private let all = ["2kpo", "lig", "1abc"]
+
+    func testAllObjectsIsTheOldUnqualifiedSave() {
+        XCTAssertEqual(SaveStructureSelection.choice(selectedObjects: Set(all), allObjects: all,
+                                                     includeSelection: false), .everything)
+        // sele is a subset of the objects, so ticking it too changes nothing.
+        XCTAssertEqual(SaveStructureSelection.choice(selectedObjects: Set(all), allObjects: all,
+                                                     includeSelection: true), .everything)
+        let code = SaveStructureSelection.saveCommand(path: "/tmp/s.pdb", choice: .everything)
+        XCTAssertEqual(code, "from pymol import cmd as _c\n_c.save(r'''/tmp/s.pdb''')")
+    }
+
+    func testSubsetBuildsExpressionInObjectOrder() {
+        // Ticked in a different order than listed: the expression follows the list.
+        XCTAssertEqual(SaveStructureSelection.choice(selectedObjects: ["lig", "2kpo"], allObjects: all,
+                                                     includeSelection: false),
+                       .subset("%2kpo or %lig"))
+        XCTAssertEqual(SaveStructureSelection.choice(selectedObjects: ["lig"], allObjects: all,
+                                                     includeSelection: false),
+                       .subset("%lig"))
+    }
+
+    func testSelectionRowAloneAndCombined() {
+        XCTAssertEqual(SaveStructureSelection.choice(selectedObjects: [], allObjects: all,
+                                                     includeSelection: true), .subset("%sele"))
+        XCTAssertEqual(SaveStructureSelection.choice(selectedObjects: ["lig"], allObjects: all,
+                                                     includeSelection: true),
+                       .subset("%lig or %sele"))
+    }
+
+    func testNamesWithSpecialCharactersUseTheExplicitReference() {
+        // Digit-leading, '+', '-', '.' would otherwise parse as atom keywords/operators.
+        let odd = ["1abc", "p+q", "a-b", "x.y", "and_"]
+        let choice = SaveStructureSelection.choice(selectedObjects: ["p+q", "a-b", "x.y"],
+                                                   allObjects: odd, includeSelection: false)
+        XCTAssertEqual(choice, .subset("%p+q or %a-b or %x.y"))
+        XCTAssertTrue(odd.allSatisfy(SaveStructureSelection.isSelectorSafe))
+    }
+
+    func testNamesThatCouldBreakTheExpressionOrLiteralAreNotSelectorSafe() {
+        for bad in ["", "a b", "a)b", "a'''b", "a\\b", "a;b", "a\nb", "é"] {
+            XCTAssertFalse(SaveStructureSelection.isSelectorSafe(bad), "\(bad.debugDescription)")
+        }
+    }
+
+    func testNothingTickedIsDisallowed() {
+        let choice = SaveStructureSelection.choice(selectedObjects: [], allObjects: all,
+                                                   includeSelection: false)
+        XCTAssertEqual(choice, .nothing)
+        XCTAssertNil(SaveStructureSelection.saveCommand(path: "/tmp/s.pdb", choice: choice))
+    }
+
+    func testSubsetSaveCommandPassesTheSelection() {
+        let code = SaveStructureSelection.saveCommand(path: "/tmp/s.cif",
+                                                      choice: .subset("%2kpo or %lig"))
+        XCTAssertEqual(code, "from pymol import cmd as _c\n_c.save(r'''/tmp/s.cif''', r'''%2kpo or %lig''')")
+    }
+
+    func testSceneFormatsSkipThePicker() {
+        XCTAssertFalse(SaveStructureSelection.supportsSelection(ext: "wrl"))
+        XCTAssertFalse(SaveStructureSelection.supportsSelection(ext: "pov"))
+        for ext in ["pdb", "cif", "sdf", "mol", "mol2", "xyz", "pqr"] {
+            XCTAssertTrue(SaveStructureSelection.supportsSelection(ext: ext), ext)
+        }
+    }
+
+    func testOnlyMolAndXyzMergeObjects() {
+        XCTAssertTrue(SaveStructureSelection.mergesObjects(ext: "mol"))
+        XCTAssertTrue(SaveStructureSelection.mergesObjects(ext: "xyz"))
+        for ext in ["pdb", "cif", "sdf", "mol2", "pqr"] {
+            XCTAssertFalse(SaveStructureSelection.mergesObjects(ext: ext), ext)
+        }
+    }
+
+    func testCandidatesParseAndSkipModalWhenNothingToChoose() {
+        let json = #"{"objects": ["2kpo", "lig", "bad name"], "sele": false}"#.data(using: .utf8)!
+        let parsed = SaveStructureCandidates.parse(json)
+        XCTAssertEqual(parsed, SaveStructureCandidates(objects: ["2kpo", "lig"], hasSelection: false))
+        XCTAssertEqual(parsed?.needsPicker, true)
+
+        XCTAssertFalse(SaveStructureCandidates(objects: ["2kpo"], hasSelection: false).needsPicker)
+        XCTAssertFalse(SaveStructureCandidates(objects: [], hasSelection: false).needsPicker)
+        XCTAssertTrue(SaveStructureCandidates(objects: ["2kpo"], hasSelection: true).needsPicker)
+        XCTAssertNil(SaveStructureCandidates.parse(Data("not json".utf8)))
+    }
+}

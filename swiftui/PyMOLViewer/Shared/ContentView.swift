@@ -254,6 +254,11 @@ struct ContentView: View {
     // Transparent background for exported images (sets ray_opaque_background=0
     // just before the offscreen render). Persists across launches.
     @AppStorage("exportTransparent") private var exportTransparent = false
+    // Save Structure object picker (#220): the open request (drives the sheet) and
+    // the choice confirmed in it, held until the sheet has finished dismissing so
+    // the save panel / share sheet doesn't present over a sheet that is going away.
+    @State private var saveStructureRequest: SaveStructureRequest?
+    @State private var saveStructureConfirmed: (ext: String, choice: SaveStructureChoice)?
     @State private var showCustomSizeSheet = false
     @State private var customWidth = "3840"
     @State private var customHeight = "2160"
@@ -344,6 +349,19 @@ struct ContentView: View {
                               versionLabel: whatsNew.currentVersion) {
                     whatsNew.isPresented = false
                 }
+            }
+            .sheet(item: $saveStructureRequest, onDismiss: {
+                if let done = saveStructureConfirmed {
+                    saveStructureConfirmed = nil
+                    performSaveStructure(ext: done.ext, choice: done.choice)
+                }
+            }) { request in
+                SaveStructurePicker(request: request,
+                                    onCancel: { saveStructureRequest = nil },
+                                    onConfirm: { choice in
+                    saveStructureConfirmed = (request.ext, choice)
+                    saveStructureRequest = nil
+                })
             }
             #if RAYMOL_MPNN
             // Single lifecycle observer for Design mode, shared by macOS and iOS:
@@ -3401,16 +3419,16 @@ struct ContentView: View {
         #endif
         Divider()
         Menu {
-            Button("PDB (.pdb)") { iosShareStructure(ext: "pdb") }
-            Button("mmCIF (.cif)") { iosShareStructure(ext: "cif") }
-            Button("SDF (.sdf)") { iosShareStructure(ext: "sdf") }
-            Button("MOL (.mol)") { iosShareStructure(ext: "mol") }
-            Button("MOL2 (.mol2)") { iosShareStructure(ext: "mol2") }
-            Button("XYZ (.xyz)") { iosShareStructure(ext: "xyz") }
-            Button("PQR (.pqr)") { iosShareStructure(ext: "pqr") }
+            Button("PDB (.pdb)") { beginSaveStructure(ext: "pdb") }
+            Button("mmCIF (.cif)") { beginSaveStructure(ext: "cif") }
+            Button("SDF (.sdf)") { beginSaveStructure(ext: "sdf") }
+            Button("MOL (.mol)") { beginSaveStructure(ext: "mol") }
+            Button("MOL2 (.mol2)") { beginSaveStructure(ext: "mol2") }
+            Button("XYZ (.xyz)") { beginSaveStructure(ext: "xyz") }
+            Button("PQR (.pqr)") { beginSaveStructure(ext: "pqr") }
             Divider()
-            Button("VRML (.wrl)") { iosShareStructure(ext: "wrl") }
-            Button("POV-Ray (.pov)") { iosShareStructure(ext: "pov") }
+            Button("VRML (.wrl)") { beginSaveStructure(ext: "wrl") }
+            Button("POV-Ray (.pov)") { beginSaveStructure(ext: "pov") }
         } label: {
             Label("Share Structure", systemImage: "atom")
         }
@@ -3419,13 +3437,15 @@ struct ContentView: View {
         }
     }
 
-    // Write the whole scene to a structure/3D file in the requested format and
-    // hand it to the share sheet. cmd.save infers the format from the extension.
-    private func iosShareStructure(ext: String) {
+    // Write the chosen objects (everything by default) to a structure/3D file in
+    // the requested format and hand it to the share sheet. cmd.save infers the
+    // format from the extension.
+    private func iosShareStructure(ext: String, choice: SaveStructureChoice) {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("RayMol_structure.\(ext)")
         try? FileManager.default.removeItem(at: url)
-        engine.runPython("from pymol import cmd as _c\n_c.save(r'''\(url.path)''')")
+        guard let code = SaveStructureSelection.saveCommand(path: url.path, choice: choice) else { return }
+        engine.runPython(code)
         if FileManager.default.fileExists(atPath: url.path) { presentShareSheet(url) }
     }
 
@@ -3968,16 +3988,16 @@ struct ContentView: View {
 
                 // Per-format structure submenu (mirrors the mobile export menu).
                 Menu {
-                    Button("PDB (.pdb)") { saveStructure(ext: "pdb") }
-                    Button("mmCIF (.cif)") { saveStructure(ext: "cif") }
-                    Button("SDF (.sdf)") { saveStructure(ext: "sdf") }
-                    Button("MOL (.mol)") { saveStructure(ext: "mol") }
-                    Button("MOL2 (.mol2)") { saveStructure(ext: "mol2") }
-                    Button("XYZ (.xyz)") { saveStructure(ext: "xyz") }
-                    Button("PQR (.pqr)") { saveStructure(ext: "pqr") }
+                    Button("PDB (.pdb)") { beginSaveStructure(ext: "pdb") }
+                    Button("mmCIF (.cif)") { beginSaveStructure(ext: "cif") }
+                    Button("SDF (.sdf)") { beginSaveStructure(ext: "sdf") }
+                    Button("MOL (.mol)") { beginSaveStructure(ext: "mol") }
+                    Button("MOL2 (.mol2)") { beginSaveStructure(ext: "mol2") }
+                    Button("XYZ (.xyz)") { beginSaveStructure(ext: "xyz") }
+                    Button("PQR (.pqr)") { beginSaveStructure(ext: "pqr") }
                     Divider()
-                    Button("VRML (.wrl)") { saveStructure(ext: "wrl") }
-                    Button("POV-Ray (.pov)") { saveStructure(ext: "pov") }
+                    Button("VRML (.wrl)") { beginSaveStructure(ext: "wrl") }
+                    Button("POV-Ray (.pov)") { beginSaveStructure(ext: "pov") }
                 } label: {
                     Label("Save Structure", systemImage: "atom")
                 }
@@ -4110,19 +4130,21 @@ struct ContentView: View {
         engine.saveSession(to: url)
     }
 
-    // Save the whole scene to a molecular or 3D file. cmd.save infers the format
-    // from the extension; the user types the extension (.pdb/.cif/.mol2/.sdf/.xyz
-    // /.mae/.pqr molecular, or .wrl/.pov 3D — glTF/COLLADA/STL aren't available
-    // on this libxml-off / NO_OPENGL build).
-    private func saveStructure(ext: String) {
+    // Save the chosen objects (everything by default) to a molecular or 3D file.
+    // cmd.save infers the format from the extension; the user types the extension
+    // (.pdb/.cif/.mol2/.sdf/.xyz/.mae/.pqr molecular, or .wrl/.pov 3D — glTF/COLLADA/STL
+    // aren't available on this libxml-off / NO_OPENGL build).
+    private func saveStructure(ext: String, choice: SaveStructureChoice) {
         let panel = NSSavePanel()
         if let t = UTType(filenameExtension: ext) { panel.allowedContentTypes = [t] }
         panel.allowsOtherFileTypes = true
         panel.nameFieldStringValue = "structure.\(ext)"
         panel.canCreateDirectories = true
         panel.title = "Save Structure (.\(ext))"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        engine.runPython("from pymol import cmd as _c\n_c.save(r'''\(url.path)''')")
+        guard panel.runModal() == .OK, let url = panel.url,
+              let code = SaveStructureSelection.saveCommand(path: url.path, choice: choice)
+        else { return }
+        engine.runPython(code)
     }
 
     private func shareImage() {
@@ -4152,6 +4174,30 @@ struct ContentView: View {
         picker.show(relativeTo: .zero, of: anchor, preferredEdge: .minY)
     }
     #endif
+
+    // MARK: - Save Structure object picker (#220, shared)
+
+    /// Entry point for every Save Structure / Share Structure menu item. Opens the
+    /// object picker when there is a real choice to make; otherwise saves straight
+    /// away, exactly as it always did.
+    private func beginSaveStructure(ext: String) {
+        guard SaveStructureSelection.supportsSelection(ext: ext),
+              let candidates = SaveStructureCandidates.query(engine: engine),
+              candidates.needsPicker
+        else {
+            performSaveStructure(ext: ext, choice: .everything)
+            return
+        }
+        saveStructureRequest = SaveStructureRequest(ext: ext, candidates: candidates)
+    }
+
+    private func performSaveStructure(ext: String, choice: SaveStructureChoice) {
+        #if os(macOS)
+        saveStructure(ext: ext, choice: choice)
+        #else
+        iosShareStructure(ext: ext, choice: choice)
+        #endif
+    }
 
     // MARK: - Measurement overlay (shared)
 
@@ -4895,6 +4941,211 @@ struct ContentView: View {
         Text("RayMol found an existing ~/.pymolrc and can copy it to ~/.raymolrc, RayMol's own startup script, so your customizations still run here.")
     }
     #endif
+}
+
+// MARK: - Save Structure object picker (#220)
+
+/// What a Save Structure should write, decided in the picker.
+enum SaveStructureChoice: Equatable {
+    /// Every object: the original `cmd.save(path)` with no selection argument.
+    case everything
+    /// A PyMOL selection expression naming just the chosen objects.
+    case subset(String)
+    /// Nothing is chosen. Never saved; the picker disables its confirm button.
+    case nothing
+}
+
+/// Pure helpers behind the picker: which formats it applies to, how a set of ticks
+/// becomes a selection expression, and the Python that saves it. Kept free of the
+/// engine so they can be unit tested.
+enum SaveStructureSelection {
+    /// VRML and POV-Ray export the rendered scene, not a selection, so a picker would
+    /// offer a choice the file ignores.
+    static func supportsSelection(ext: String) -> Bool {
+        !["wrl", "pov"].contains(ext.lowercased())
+    }
+
+    /// MOL and XYZ hold one molecule: several chosen objects are merged into it.
+    static func mergesObjects(ext: String) -> Bool {
+        ["mol", "xyz"].contains(ext.lowercased())
+    }
+
+    /// Names the `%name` selector can carry. PyMOL itself strips whitespace and
+    /// punctuation from object names, so this only keeps a stray odd name from
+    /// breaking the generated expression (or the Python literal it is embedded in).
+    static func isSelectorSafe(_ name: String) -> Bool {
+        !name.isEmpty && name.unicodeScalars.allSatisfy {
+            ("a"..."z").contains($0) || ("A"..."Z").contains($0) || ("0"..."9").contains($0)
+                || "_.-+".unicodeScalars.contains($0)
+        }
+    }
+
+    /// The choice for the ticked objects. Each name is written as `%name`, the
+    /// explicit object/selection reference, so names that start with a digit, or that
+    /// hold `+`, `-` or `.`, are not read as operators or atom keywords.
+    /// - Every object ticked gives `.everything` (the historical `cmd.save(path)`),
+    ///   whether or not `sele` is also ticked, since `sele` is a subset of them.
+    /// - Order follows `allObjects`, not the order of ticking, so the result is stable.
+    static func choice(selectedObjects: Set<String>, allObjects: [String],
+                       includeSelection: Bool) -> SaveStructureChoice {
+        let chosen = allObjects.filter { selectedObjects.contains($0) }
+        if !allObjects.isEmpty && chosen.count == allObjects.count { return .everything }
+        var parts = chosen.map { "%" + $0 }
+        if includeSelection { parts.append("%sele") }
+        return parts.isEmpty ? .nothing : .subset(parts.joined(separator: " or "))
+    }
+
+    /// The Python that writes `path`, or nil for `.nothing`.
+    static func saveCommand(path: String, choice: SaveStructureChoice) -> String? {
+        switch choice {
+        case .nothing:
+            return nil
+        case .everything:
+            return "from pymol import cmd as _c\n_c.save(r'''\(path)''')"
+        case .subset(let expression):
+            return "from pymol import cmd as _c\n_c.save(r'''\(path)''', r'''\(expression)''')"
+        }
+    }
+}
+
+/// What the picker can offer: the molecular objects (no measurements, CGO, maps or
+/// groups) and whether `sele` currently holds atoms.
+struct SaveStructureCandidates: Equatable {
+    var objects: [String]
+    var hasSelection: Bool
+
+    /// With only one thing to save there is nothing to choose; skip the modal.
+    var needsPicker: Bool { objects.count + (hasSelection ? 1 : 0) > 1 }
+
+    /// Parses the JSON the query script writes. Returns nil if it is unusable, and the
+    /// caller then saves everything, as before the picker existed.
+    static func parse(_ data: Data) -> SaveStructureCandidates? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let names = json["objects"] as? [String] else { return nil }
+        return SaveStructureCandidates(
+            objects: names.filter(SaveStructureSelection.isSelectorSafe),
+            hasSelection: (json["sele"] as? Bool) ?? false)
+    }
+
+    /// Asks the core. `runPython` is synchronous, so the file is written by the time it
+    /// returns. Nil when the core is not up.
+    static func query(engine: PyMOLEngine) -> SaveStructureCandidates? {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("raymol_save_candidates_\(ProcessInfo.processInfo.processIdentifier).json")
+        try? FileManager.default.removeItem(at: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        engine.runPython("""
+        import json
+        from pymol import cmd as _c
+        _o = [n for n in (_c.get_names('public_objects') or []) if _c.get_type(n) == 'object:molecule']
+        try:
+            _s = 'sele' in (_c.get_names('selections') or []) and _c.count_atoms('sele') > 0
+        except Exception:
+            _s = False
+        open(r'''\(url.path)''', 'w').write(json.dumps({'objects': _o, 'sele': bool(_s)}))
+        """)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return parse(data)
+    }
+}
+
+struct SaveStructureRequest: Identifiable {
+    let id = UUID()
+    let ext: String
+    let candidates: SaveStructureCandidates
+}
+
+/// The modal: a checklist of the molecular objects (all ticked), an optional row for
+/// the active selection, Select All / None, and a Save button that stays disabled
+/// until something is ticked.
+struct SaveStructurePicker: View {
+    let request: SaveStructureRequest
+    let onCancel: () -> Void
+    let onConfirm: (SaveStructureChoice) -> Void
+
+    @State private var selected: Set<String>
+    @State private var includeSelection = false
+
+    init(request: SaveStructureRequest, onCancel: @escaping () -> Void,
+         onConfirm: @escaping (SaveStructureChoice) -> Void) {
+        self.request = request
+        self.onCancel = onCancel
+        self.onConfirm = onConfirm
+        _selected = State(initialValue: Set(request.candidates.objects))
+    }
+
+    private var choice: SaveStructureChoice {
+        SaveStructureSelection.choice(selectedObjects: selected,
+                                      allObjects: request.candidates.objects,
+                                      includeSelection: includeSelection)
+    }
+
+    private var checkedCount: Int { selected.count + (includeSelection ? 1 : 0) }
+
+    private func row(_ title: String, isOn: Binding<Bool>) -> some View {
+        Button { isOn.wrappedValue.toggle() } label: {
+            HStack(spacing: 8) {
+                Image(systemName: isOn.wrappedValue ? "checkmark.square.fill" : "square")
+                    .foregroundStyle(isOn.wrappedValue ? Color.accentColor : Color.secondary)
+                Text(title).lineLimit(1).truncationMode(.middle)
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isOn.wrappedValue ? .isSelected : [])
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Save Structure (.\(request.ext))").font(.headline)
+            Text("Choose the objects to include in the file.")
+                .font(.callout).foregroundStyle(.secondary)
+            HStack {
+                Button("Select All") {
+                    selected = Set(request.candidates.objects)
+                    includeSelection = request.candidates.hasSelection
+                }
+                Button("None") { selected = []; includeSelection = false }
+                Spacer()
+            }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(request.candidates.objects, id: \.self) { name in
+                        row(name, isOn: Binding(
+                            get: { selected.contains(name) },
+                            set: { on in
+                                if on { selected.insert(name) } else { selected.remove(name) }
+                            }))
+                    }
+                    if request.candidates.hasSelection {
+                        Divider()
+                        row("Current selection (sele)", isOn: $includeSelection)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .frame(maxHeight: 280)
+            if SaveStructureSelection.mergesObjects(ext: request.ext) && checkedCount > 1 {
+                Text(".\(request.ext) files hold a single molecule, so the chosen objects will be merged into one.")
+                    .font(.caption).foregroundStyle(.orange)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel", action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Save…") { onConfirm(choice) }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(choice == .nothing)
+            }
+        }
+        .padding(20)
+        #if os(macOS)
+        .frame(width: 380)
+        #else
+        .presentationDetents([.medium, .large])
+        #endif
+    }
 }
 
 // MARK: - UI-test probe (#623)
