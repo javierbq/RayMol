@@ -954,6 +954,13 @@ def poll_panel():
         sels = list(cmd.get_names('public_selections') or [])
         enabled = set(cmd.get_names('public_objects', enabled_only=1) or [])
         enabled |= set(cmd.get_names('public_selections', enabled_only=1) or [])
+        # Objects that actually draw: enabled_only=1 checks only the object's own
+        # flag, so a member of a disabled group would still pass it. Gates the
+        # badge scan (#271) only; `enabled` keeps driving the panel toggle.
+        try:
+            in_scene = set(cmd.get_names('public_objects', enabled_only=2) or [])
+        except Exception:
+            in_scene = set(enabled)
         # Group tree (#255). Kept in its own try so a failure here degrades to a
         # flat list rather than aborting the whole poll — the single except below
         # writes NO file, and Swift only routes lines prefixed 'OBJPANEL:', so an
@@ -992,7 +999,7 @@ def poll_panel():
             'nstate': {o: cmd.count_states('?' + o) for o in objs},
             # A disabled object draws nothing, so its badge is skipped (False) rather
             # than paying a per-atom scan per tick for hidden objects (#271).
-            'has_transp': {o: (o in enabled and object_has_atom_transp(o))
+            'has_transp': {o: (o in in_scene and object_has_atom_transp(o))
                            for o in objs},
             'groups': groups,
             'parent': parents,

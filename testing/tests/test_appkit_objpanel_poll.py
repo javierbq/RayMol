@@ -383,6 +383,24 @@ class TestTranspBadgeScanIsGated(testing.PyMOLTestCase):
         self.assertIn('other', payload['has_transp'])
         self.assertEqual(len(scans), 1, 'only the enabled object is scanned')
 
+    def testPollPanelSkipsMembersOfDisabledGroup(self):
+        # A member keeps its own enabled flag when its parent group is disabled,
+        # but it does not draw, so it must not be scanned either.
+        self._session()
+        cmd.hide('everything', 'mol')
+        cmd.show('cartoon', 'mol')
+        cmd.group('grp', 'mol')
+        _, scans = self._scans(ai.poll_panel)
+        with open(PANEL_JSON) as f:
+            self.assertTrue(json.load(f)['has_transp']['mol'])
+        cmd.disable('grp')
+        self.assertIn('mol', cmd.get_names('public_objects', enabled_only=1))
+        _, scans = self._scans(ai.poll_panel)
+        with open(PANEL_JSON) as f:
+            payload = json.load(f)
+        self.assertFalse(payload['has_transp']['mol'])
+        self.assertEqual(scans, [])
+
     def testMeasurementsAndGroupsKeepBadgeSemantics(self):
         # #219: a measurement is never probed; #256: a group describes members.
         cmd.delete('all')
