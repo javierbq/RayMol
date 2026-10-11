@@ -588,15 +588,29 @@ class TestTouchSource(testing.PyMOLTestCase):
         self.assertIsNotNone(grabber, 'grabber not found')
         self.assertIn('.accessibilityAdjustableAction', grabber)
         self.assertIn('.accessibilityIdentifier(LightsSheetState.grabberIdentifier)', grabber)
-        # The header's Atmosphere button (#726; a 44 pt target, checked in
-        # testInspectorControlsAndSwatches): it expands a compact sheet, then
-        # asks the rows to scroll to the Atmosphere section.
+        # The Atmosphere entry (#726; a 44 pt target, checked in
+        # testInspectorControlsAndSwatches) is not in the selected light's
+        # header (#795: atmosphere is scene-wide). The Lights bar carries it;
+        # it reaches the sheet through the owner's reveal request, which
+        # expands a compact sheet and scrolls the rows to the section.
         header = body(text, 'private var headerRow: some View')
         self.assertIsNotNone(header, 'headerRow not found')
-        self.assertIn('LightsSheetAtmosphereButton(controller: controller, style: style) { revealAtmosphere() }',
-                      header)
-        self.assertLess(header.find('LightsSheetAtmosphereButton('), header.find('moreButton'),
-                        'the Atmosphere button sits before More')
+        self.assertNotIn('LightsSheetAtmosphereButton', header,
+                         'nothing scene-wide in the light\'s header')
+        self.assertIn('moreButton', header)
+        bar = self.read(BAR)
+        self.assertIn('LightsSheetAtmosphereButton(controller: controller, style: style, action: onAtmosphere)',
+                      bar, 'the wide bar (iPhone landscape)')
+        overflow = body(bar, 'private func overflowMenu(')
+        self.assertIsNotNone(overflow, 'overflowMenu not found')
+        self.assertIn('if let onAtmosphere', overflow, 'the portrait menu item')
+        self.assertLess(overflow.find('onAtmosphere'), overflow.find('controller.setEnabled'),
+                        'Atmosphere before On/Off in the menu')
+        content = self.read(CONTENT_VIEW)
+        entry = body(content, 'private var lightsAtmosphereEntry: (() -> Void)?')
+        self.assertIsNotNone(entry, 'lightsAtmosphereEntry not found')
+        self.assertIn('LightsBarState.showsAtmosphereEntry(placement: lightsPlacement)', entry)
+        self.assertIn('lightsAtmosphereRevealRequest += 1', entry)
         reveal = body(text, 'private func revealAtmosphere()')
         self.assertIsNotNone(reveal, 'revealAtmosphere not found')
         self.assertIn('if placement == .bottom, detent == .compact { setDetent(.expanded) }', reveal)

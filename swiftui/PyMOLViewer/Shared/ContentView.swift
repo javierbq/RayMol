@@ -174,10 +174,10 @@ struct ContentView: View {
     @State private var lightsInspectorExpandOverride = false
     // Debug hook only (PYMOL_AUTOLIGHTS_EDIT `air`, #726): the Atmosphere
     // card starts expanded (macOS, iPad), and the phone sheet starts
-    // expanded and reveals its Atmosphere section through the header
-    // button's path: the request is 1 for each mode entry under the token,
-    // else 0 (LightsSheet's atmosphereRevealRequest). Always false and 0 in
-    // normal runs.
+    // expanded and reveals its Atmosphere section through the Lights bar
+    // entry's path: the request is 1 for each mode entry under the token,
+    // else 0 (LightsSheet's atmosphereRevealRequest; the Lights bar's
+    // Atmosphere entry bumps the same request). Always false in normal runs.
     @State private var lightsAtmosphereExpandOverride = false
     @State private var lightsAtmosphereRevealRequest = 0
     // The phone light tools (#623). The sheet's height is seeded compact each
@@ -4278,7 +4278,19 @@ struct ContentView: View {
     private var lightsBar: some View {
         LightsBar(controller: engine.lightsController,
                   style: lightsStyle,
+                  onAtmosphere: lightsAtmosphereEntry,
                   onDone: { engine.setInteractionMode(.viewing) })
+    }
+
+    // The phone's Atmosphere entry on the Lights bar (#795): haze and dust
+    // are scene-wide, so the entry sits with the other rig-wide controls,
+    // not in the selected light's header. It asks the phone sheet or side
+    // panel to reveal its Atmosphere section (LightsSheet's
+    // atmosphereRevealRequest). nil on macOS and the iPad float, whose
+    // Atmosphere card is always in view.
+    private var lightsAtmosphereEntry: (() -> Void)? {
+        guard LightsBarState.showsAtmosphereEntry(placement: lightsPlacement) else { return nil }
+        return { lightsAtmosphereRevealRequest += 1 }
     }
 
     // The Lights tools' colours (the bar, the side column), from the theme.
@@ -4518,6 +4530,12 @@ struct ContentView: View {
             .onChange(of: lightsPlacement, initial: true) { old, placement in
                 lightsPlacementSeen = placement
                 if old != placement { endLightsSheetMotion() }
+            }
+            .onChange(of: lightsPlacement) {
+                // A rotation builds a new sheet, which would act on the
+                // reveal the last bar tap asked for (#795; the DEBUG `air`
+                // token keeps its own).
+                if !lightsAtmosphereExpandOverride { lightsAtmosphereRevealRequest = 0 }
             }
         #if DEBUG
         observed.onChange(of: lightsLayoutLogKey) { _, key in logLightsLayout(key) }

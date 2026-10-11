@@ -211,6 +211,61 @@ final class LightsBarModelTests: XCTestCase {
 
         XCTAssertEqual(LightsBar.revertConfirmLabel(2), "Revert 2 edits")
     }
+
+    // MARK: the Atmosphere entry (#795)
+
+    func testAtmosphereEntryIsOnTheBarOnPhonesOnly() {
+        // Atmosphere is scene-wide: a phone's bar carries it (the bottom
+        // sheet's portrait overflow menu, the side panel's landscape bar),
+        // while the macOS column and the iPad float have a card of their own.
+        XCTAssertTrue(LightsBarState.showsAtmosphereEntry(placement: .bottomSheet))
+        XCTAssertTrue(LightsBarState.showsAtmosphereEntry(placement: .sidePanel))
+        XCTAssertFalse(LightsBarState.showsAtmosphereEntry(placement: .column))
+        XCTAssertFalse(LightsBarState.showsAtmosphereEntry(placement: .floating))
+        for placement in LightsToolsPlacement.allCases {
+            let phone = placement == .bottomSheet || placement == .sidePanel
+            XCTAssertEqual(LightsBarState.showsAtmosphereEntry(placement: placement), phone, "\(placement)")
+        }
+    }
+
+    func testAtmosphereEntryStateDoesNotDependOnTheSelectedLight() {
+        // Same entry, same state, whichever light is selected and with none.
+        _ = begin(with: ["key", "fill", "rim"])
+        store.air = atmosphereOnAir
+        controller.refresh()
+        var seen = Set<Bool>()
+        for name in ["key", "fill", "rim"] {
+            controller.select(name: name)
+            seen.insert(LightsBarState(controller).atmosphereIsOn)
+        }
+        XCTAssertEqual(seen, [true], "on for every selected light")
+        // No light at all (the air-only sheet's case): the state is the same.
+        let emptyStore = FakeRigStore()
+        emptyStore.setRig([], enabled: true)
+        emptyStore.air = atmosphereOnAir
+        let empty = LightsController(seams: emptyStore.seams)
+        empty.begin()
+        XCTAssertNil(empty.selectedLight)
+        XCTAssertTrue(LightsBarState(empty).atmosphereIsOn, "and with no light selected")
+    }
+
+    func testAtmosphereMenuItemShowsTheState() {
+        XCTAssertEqual(LightsBarState.atmosphereMenuTitle(isOn: true), "Atmosphere: On")
+        XCTAssertEqual(LightsBarState.atmosphereMenuTitle(isOn: false), "Atmosphere: Off")
+        XCTAssertEqual(LightsBarState.atmosphereMenuImage(isOn: true), "cloud.fog.fill")
+        XCTAssertEqual(LightsBarState.atmosphereMenuImage(isOn: false), "cloud.fog")
+        let off = begin(with: ["key", "fill", "rim"])
+        XCTAssertFalse(off.atmosphereIsOn, "the default air is off")
+        store.air = atmosphereOnAir
+        controller.refresh()
+        XCTAssertTrue(LightsBarState(controller).atmosphereIsOn)
+    }
+
+    func testAtmosphereEntryIsNamedAsASceneSetting() {
+        XCTAssertEqual(AtmosphereCardIDs.sheetButtonLabel, "Scene atmosphere")
+        XCTAssertEqual(AtmosphereCardIDs.menuItem, "lights.atmosphere.menu")
+        XCTAssertNotEqual(AtmosphereCardIDs.menuItem, AtmosphereCardIDs.sheetButton)
+    }
 }
 
 // MARK: - Pictures

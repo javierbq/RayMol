@@ -148,7 +148,7 @@ final class AtmosphereCardViewTests: XCTestCase {
         XCTAssertEqual(AtmosphereCardIDs.scatterValue("0.55", shown: true), "0.55, shown")
         XCTAssertEqual(AtmosphereCardIDs.collapseLabel(collapsed: true), "Show the atmosphere settings")
         XCTAssertEqual(AtmosphereCardIDs.collapseLabel(collapsed: false), "Hide the atmosphere settings")
-        XCTAssertEqual(AtmosphereCardIDs.sheetButtonHint, "Shows the haze and dust settings")
+        XCTAssertEqual(AtmosphereCardIDs.sheetButtonHint, "Shows the scene's haze and dust settings")
         XCTAssertEqual(LightsSheetState.atmosphereAnchor, "lights.sheet.atmosphere.section")
         XCTAssertNotEqual(LightsSheetState.atmosphereAnchor, LightsSheetState.rowsAnchor)
     }
@@ -207,7 +207,7 @@ final class AtmosphereCardViewTests: XCTestCase {
         }
     }
 
-    /// The phone header's button draws only in Lights mode.
+    /// The phone's Atmosphere button (on the Lights bar, #795) draws only in Lights mode.
     func testSheetButtonDrawsOnlyInLightsMode() {
         let store = FakeRigStore()
         lightsFloatThreePoint(store)

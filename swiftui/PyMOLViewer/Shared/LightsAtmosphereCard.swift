@@ -76,6 +76,8 @@ enum AtmosphereCardIDs {
     static let header = "lights.atmosphere.header"
     static let rows = "lights.atmosphere.rows"
     static let sheetButton = "lights.sheet.atmosphere"
+    /// The same entry as an item of the Lights bar's overflow menu (#795).
+    static let menuItem = "lights.atmosphere.menu"
 
     static func slider(_ p: AirParameter) -> String { "lights.atmosphere.\(p.field)" }
     static func field(_ p: AirParameter) -> String { "lights.atmosphere.\(p.field).field" }
@@ -94,8 +96,10 @@ enum AtmosphereCardIDs {
     static func fieldLabel(_ p: AirParameter) -> String { "\(p.label) value" }
     static let seedFieldLabel = "Dust seed value"
 
-    static let sheetButtonLabel = "Atmosphere"
-    static let sheetButtonHint = "Shows the haze and dust settings"
+    /// VoiceOver's name for the phone's Atmosphere entry (#795): a scene
+    /// setting, not one of the selected light's.
+    static let sheetButtonLabel = "Scene atmosphere"
+    static let sheetButtonHint = "Shows the scene's haze and dust settings"
 }
 
 private struct AtmosphereContentHeightKey: PreferenceKey {
@@ -517,13 +521,14 @@ struct AtmosphereSeedRow: View {
     }
 }
 
-// MARK: - The phone sheet's Atmosphere button
+// MARK: - The phone's Atmosphere entry
 
-/// The phone sheet header's Atmosphere button (a 44 pt glyph target): the
-/// fog glyph, filled in the accent while the air is on, with a small badge
-/// while a hint applies. `action` expands the sheet and scrolls to the
-/// Atmosphere section (LightsSheet). Draws nothing unless Lights mode is
-/// active.
+/// The phone's Atmosphere entry on the Lights bar (a 44 pt glyph target; the
+/// overflow menu carries the same entry in portrait, #795): the fog glyph,
+/// filled in the accent while the air is on, with a small badge while a hint
+/// applies. `action` expands the sheet and scrolls to the Atmosphere section
+/// (LightsSheet, via ContentView's reveal request). Draws nothing unless
+/// Lights mode is active.
 struct LightsSheetAtmosphereButton: View {
     @ObservedObject var controller: LightsController
     @ObservedObject var facing: LightsFacingState
