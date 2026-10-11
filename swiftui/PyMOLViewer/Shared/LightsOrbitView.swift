@@ -4,7 +4,7 @@
 // A card in the Lights side column, above the inspector: a flat plan of the
 // rig seen from above (the camera at the bottom, +90° to the right) beside a
 // pitch arc for the selected light.
-// - Drag a lamp: orbit only, every 15°; a press on another lamp selects it
+// - Drag a lamp: orbit only, smoothly to 1° (VoiceOver steps 15°); a press on another lamp selects it
 //   (a tap only selects).
 // - Drag the square on the selected light's ring, or pinch the plan: radius
 //   only, every 0.5× (the core keeps the beam).

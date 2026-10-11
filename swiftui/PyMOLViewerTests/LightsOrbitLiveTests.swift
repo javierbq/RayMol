@@ -269,22 +269,22 @@ final class LightsOrbitLiveTests: XCTestCase {
         try enterWithThreeLights()
         let entry = try XCTUnwrap(controller.entryRig)
 
-        // Key's lamp dragged towards +100° (snaps to 105), the pitch handle to
+        // Key's lamp dragged towards +100°, the pitch handle to
         // +20°, the square to 2.5×: each writes only its own field.
         let lamp = try dragLamp("key", to: 100)
         XCTAssertFalse(lamp.isEmpty)
         XCTAssertTrue(lamp.allSatisfy { $0 == .ok })
-        XCTAssertEqual(try coreRig().lights[0].orbit, 105, "the lamp snaps to the 15° grid")
+        XCTAssertEqual(try coreRig().lights[0].orbit, 100, "the lamp follows the pointer to the degree")
         XCTAssertEqual(try coreRig().lights[0].pitch, 3, "a lamp drag writes orbit only")
         XCTAssertEqual(try coreRig().lights[0].radius, 2, "a lamp drag writes orbit only")
 
         XCTAssertFalse(try dragArc(to: 20).isEmpty)
-        XCTAssertEqual(try coreRig().lights[0].orbit, 105, "the arc writes pitch only")
+        XCTAssertEqual(try coreRig().lights[0].orbit, 100, "the arc writes pitch only")
         XCTAssertFalse(try dragSquare(to: 2.5).isEmpty)
 
         // The core's JSON.
         let key = try coreRig().lights[0]
-        XCTAssertEqual(key.orbit, 105)
+        XCTAssertEqual(key.orbit, 100)
         XCTAssertEqual(key.pitch, 20)
         XCTAssertEqual(key.radius, 2.5)
         XCTAssertEqual(key.anchor, .camera)
@@ -296,15 +296,15 @@ final class LightsOrbitLiveTests: XCTestCase {
 
         // The inspector's rows and the plan show the same, from the one mirror.
         let inspector = try XCTUnwrap(LightsInspectorState(controller))
-        XCTAssertEqual(inspector.row(.orbit)?.value, 105)
+        XCTAssertEqual(inspector.row(.orbit)?.value, 100)
         XCTAssertEqual(inspector.row(.pitch)?.value, 20)
         XCTAssertEqual(inspector.row(.radius)?.value, 2.5)
         let card = try card()
-        XCTAssertEqual(card.state.selected.orbit, 105)
+        XCTAssertEqual(card.state.selected.orbit, 100)
         XCTAssertEqual(card.state.selected.pitch, 20)
         XCTAssertEqual(card.state.selected.radius, 2.5)
         XCTAssertEqual(card.state.radiusText, inspector.row(.radius)?.text)
-        XCTAssertTrue(card.state.summary.hasPrefix("key,orbit:105.0,pitch:20.0,radius:2.50,"),
+        XCTAssertTrue(card.state.summary.hasPrefix("key,orbit:100.0,pitch:20.0,radius:2.50,"),
                       card.state.summary)
 
         // Eye space (the renderer's LightRigResolve): d = p - c decomposes as
@@ -317,8 +317,8 @@ final class LightsOrbitLiveTests: XCTestCase {
         XCTAssertGreaterThan(size, 0)
         assertNear(length / size, 2.5, 2.5e-4, "|d| / size is the radius")
         assertNear(asin(d.y / length) * 180 / .pi, 20, 1e-2, "asin(d.y / |d|) is the pitch")
-        assertSameOrbit(atan2(d.x, d.z) * 180 / .pi, 105, 1e-2, "atan2(d.x, d.z) is the orbit")
-        assertSameOrbit(Double(light.orbit), 105, 1e-3, "eye orbit")
+        assertSameOrbit(atan2(d.x, d.z) * 180 / .pi, 100, 1e-2, "atan2(d.x, d.z) is the orbit")
+        assertSameOrbit(Double(light.orbit), 100, 1e-3, "eye orbit")
         assertNear(Double(light.pitch), 20, 1e-3, "eye pitch")
         assertNear(Double(light.radius), 2.5, 1e-4, "eye radius")
 
@@ -487,9 +487,9 @@ final class LightsOrbitLiveTests: XCTestCase {
         assertSameOrbit(Double(try coreEye(2).orbit), shown, 1e-6, "core")
         let json = engine.lightRigJSON()
 
-        // A new drag that stays inside the 105 bucket (±7.5°): nothing reaches
+        // A new drag that stays within 0.4° of 105 (it rounds to 105): nothing reaches
         // the core, so no needless re-pin.
-        let offsets: [Double] = [4, -2, 6, -6, 7, 0, -7, 3]
+        let offsets: [Double] = [0.4, -0.2, 0.3, -0.4, 0.35, 0, -0.35, 0.2]
         func wiggle(on c: LightsController) throws -> [LightSetResult] {
             let card = try card(c)
             let lamp = try XCTUnwrap(card.state.lamp(named: "rim"))
@@ -503,7 +503,7 @@ final class LightsOrbitLiveTests: XCTestCase {
                 return card.plan.point(orbit: lamp.orbit + offsets[k], distance: distance)
             }
         }
-        XCTAssertEqual(try wiggle(on: controller), [], "a drag inside the 105 bucket wrote")
+        XCTAssertEqual(try wiggle(on: controller), [], "a drag that rounds to 105 wrote")
         XCTAssertEqual(engine.lightRigJSON(), json, "no light_set may reach the core")
 
         // The same on a controller that counts the bridge setter calls.

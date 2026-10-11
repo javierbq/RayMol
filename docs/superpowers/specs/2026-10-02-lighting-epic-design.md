@@ -333,8 +333,9 @@ The target, on an iPhone with an A16 or newer and an M-series iPad, with a
 - **Orbit mini viewer (#621):** a flat plan drawn from the camera, plus a
   pitch arc.
   - **Plan rings:** radius in scene sizes, 1× at the edge captured at centring.
-  - **Lamp:** dragging a lamp changes orbit only, snapping every 15°. Tapping
-    selects a light.
+  - **Lamp:** dragging a lamp changes orbit only, following the pointer to the
+    orbit quantum (1°, as pitch does; #800). VoiceOver and keyboard steps stay
+    15°. Tapping selects a light.
   - **Radius:** drag the square on the selected light's ring, or pinch;
     snapping every 0.5×, beam angle kept.
   - **Pitch arc:** −90° to +90°; orbit and radius are kept.
