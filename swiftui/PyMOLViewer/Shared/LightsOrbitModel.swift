@@ -572,8 +572,11 @@ struct LightsOrbitState: Equatable {
     struct Lamp: Equatable, Identifiable {
         var name: String
         var index: Int
-        /// The identity colour slot (the bar chip's colour).
+        /// The identity colour slot.
         var slot: Int
+        /// What the lamp is drawn in: the light's own colour (#798), the
+        /// bar chip's too.
+        var marker = LightMarkerColour.neutral
         /// The current placement: eye space for a pinned light.
         var orbit: Double
         var pitch: Double
@@ -643,7 +646,7 @@ struct LightsOrbitState: Equatable {
             let p = placements[i]
             let out = OrbitPlanLayout.isOutOfRange(radius: p.radius, extent: extent)
             return Lamp(name: light.name, index: i, slot: controller.identitySlot(for: light.name),
-                        orbit: p.orbit, pitch: p.pitch, radius: p.radius,
+                        marker: LightMarkerColour(light), orbit: p.orbit, pitch: p.pitch, radius: p.radius,
                         isSelected: i == index, isPinned: light.anchor == .pinned,
                         isOutOfRange: out,
                         aimOffset: Self.aimOffset(eyeSpace, at: i),

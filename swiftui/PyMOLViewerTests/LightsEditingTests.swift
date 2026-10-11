@@ -211,6 +211,96 @@ final class WarmthScaleTests: XCTestCase {
     }
 }
 
+// MARK: - Marker colour (#798)
+
+final class LightMarkerColourTests: XCTestCase {
+    private func assertClose(_ a: SIMD3<Double>, _ b: SIMD3<Double>, accuracy: Double = 1e-6,
+                             _ message: String = "", file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(a.x, b.x, accuracy: accuracy, message, file: file, line: line)
+        XCTAssertEqual(a.y, b.y, accuracy: accuracy, message, file: file, line: line)
+        XCTAssertEqual(a.z, b.z, accuracy: accuracy, message, file: file, line: line)
+    }
+
+    /// The core's `LightWarmthRGB` (layer1/LightShading.cpp) at these kelvin,
+    /// read through `_cmd.light_warmth_rgb`: the Swift port matches it.
+    func testWarmthMatchesTheCoreMultiplier() {
+        let expected: [(Double, SIMD3<Double>)] = [
+            (1500, SIMD3(1.0, 0.1409107271911322, 0.0)),
+            (3200, SIMD3(1.0, 0.5478253071294921, 0.19497042289172284)),
+            (4000, SIMD3(1.0, 0.6933918041687563, 0.3806952436981582)),
+            (6500, SIMD3(1, 1, 1)),
+            (9000, SIMD3(0.6684866233620943, 0.7811022362987741, 1.0)),
+            (15000, SIMD3(0.45554114435783977, 0.6119333497326922, 1.0)),
+        ]
+        for (kelvin, rgb) in expected {
+            assertClose(LightColour.warmthRGB(kelvin: kelvin), rgb, "\(kelvin) K")
+        }
+    }
+
+    func testWarmthClampsAndTreatsNaNAsNeutral() {
+        assertClose(LightColour.warmthRGB(kelvin: 100), LightColour.warmthRGB(kelvin: 1500))
+        assertClose(LightColour.warmthRGB(kelvin: 1e9), LightColour.warmthRGB(kelvin: 15000))
+        assertClose(LightColour.warmthRGB(kelvin: .nan), SIMD3(1, 1, 1))
+    }
+
+    func testNeutralWhiteIsWhite() {
+        let m = LightMarkerColour(color: SIMD3(1, 1, 1), warmth: 6500)
+        assertClose(m.fill, SIMD3(1, 1, 1))
+        XCTAssertEqual(m, .neutral)
+    }
+
+    func testColourIsShownAsTheRigSendsIt() {
+        // Red stays red at any warmth (the warm multiplier leads with red).
+        assertClose(LightMarkerColour(color: SIMD3(1, 0, 0), warmth: 6500).fill, SIMD3(1, 0, 0))
+        assertClose(LightMarkerColour(color: SIMD3(1, 0, 0), warmth: 2000).fill, SIMD3(1, 0, 0))
+        // A mid colour is the channel-wise product with the warmth multiplier.
+        let tint = LightColour.warmthRGB(kelvin: 3200)
+        assertClose(LightMarkerColour(color: SIMD3(0.5, 0.8, 0.4), warmth: 3200).fill,
+                    SIMD3(0.5 * tint.x, 0.8 * tint.y, 0.4 * tint.z))
+        // A white light at 3200 K is the warm tint itself: orange.
+        assertClose(LightMarkerColour(color: SIMD3(1, 1, 1), warmth: 3200).fill, tint)
+        XCTAssertGreaterThan(tint.x, tint.y)
+        XCTAssertGreaterThan(tint.y, tint.z)
+        // Cool light leans blue.
+        let cool = LightMarkerColour(color: SIMD3(1, 1, 1), warmth: 12000).fill
+        XCTAssertEqual(cool.z, 1, accuracy: 1e-9)
+        XCTAssertLessThan(cool.x, cool.z)
+    }
+
+    func testOutOfRangeColoursAreClamped() {
+        let m = LightMarkerColour(color: SIMD3(2, -1, .nan), warmth: 6500)
+        assertClose(m.fill, SIMD3(1, 0, 0))
+        for c in [m.fill.x, m.fill.y, m.fill.z] { XCTAssertTrue((0...1).contains(c)) }
+    }
+
+    func testOutlineContrastsWithTheFill() {
+        let white = LightMarkerColour(color: SIMD3(1, 1, 1), warmth: 6500)
+        XCTAssertEqual(white.outline, SIMD3(0, 0, 0), "a white light gets a dark outline")
+        let black = LightMarkerColour(color: SIMD3(0, 0, 0), warmth: 6500)
+        XCTAssertEqual(black.outline, SIMD3(1, 1, 1), "a black one a light outline")
+        XCTAssertEqual(LightMarkerColour(color: SIMD3(1, 1, 0), warmth: 6500).outline, SIMD3(0, 0, 0))
+        XCTAssertEqual(LightMarkerColour(color: SIMD3(0, 0, 1), warmth: 6500).outline, SIMD3(1, 1, 1))
+        // Every swatch and a spread of warmths reaches a usable contrast
+        // (WCAG 3:1, the threshold for graphics) against its own outline.
+        for swatch in LightColour.swatches {
+            for kelvin in [1500.0, 3200, 6500, 9000, 15000] {
+                let m = LightMarkerColour(color: swatch.rgb, warmth: kelvin)
+                let ratio = LightMarkerColour.contrastRatio(LightMarkerColour.luminance(m.fill),
+                                                            LightMarkerColour.luminance(m.outline))
+                XCTAssertGreaterThanOrEqual(ratio, 3, "\(swatch.name) at \(kelvin) K")
+            }
+        }
+    }
+
+    func testLuminanceAndContrastRatio() {
+        XCTAssertEqual(LightMarkerColour.luminance(SIMD3(0, 0, 0)), 0, accuracy: 1e-12)
+        XCTAssertEqual(LightMarkerColour.luminance(SIMD3(1, 1, 1)), 1, accuracy: 1e-9)
+        XCTAssertEqual(LightMarkerColour.contrastRatio(1, 0), 21, accuracy: 1e-9)
+        XCTAssertEqual(LightMarkerColour.contrastRatio(0, 1), 21, accuracy: 1e-9)
+        XCTAssertEqual(LightMarkerColour.contrastRatio(0.3, 0.3), 1, accuracy: 1e-12)
+    }
+}
+
 // MARK: - The typed edits
 
 @MainActor

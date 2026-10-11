@@ -227,6 +227,8 @@ struct LightsInspectorState: Equatable {
     var name: String
     var index: Int
     var slot: Int
+    /// What the header dot is drawn in: the light's own colour (#798).
+    var marker: LightMarkerColour
     var menu: [MenuItem]
     var isPinned: Bool
     var isShadowed: Bool
@@ -262,6 +264,7 @@ struct LightsInspectorState: Equatable {
         name = light.name
         self.index = index
         slot = controller.identitySlot(for: light.name)
+        marker = LightMarkerColour(light)
         menu = lights.enumerated().map { i, l in
             MenuItem(name: l.name, index: i, slot: controller.identitySlot(for: l.name),
                      isSelected: i == index)
@@ -1084,9 +1087,7 @@ struct LightsInspector: View {
             // leave room for any light name and `Lights off`.
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
-                    Circle()
-                        .fill(LightPalette.color(state.slot))
-                        .frame(width: 10, height: 10)
+                    LightMarkerDot(marker: state.marker, size: 10)
                         .opacity(state.isOn ? 1 : 0.45)
                         .accessibilityHidden(true)
                     lightMenu(state)

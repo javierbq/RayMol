@@ -508,7 +508,8 @@ struct LightGizmoChipLayout: Layout {
 
 /// Draws one frame of the gizmo from its layout and the UI state. White
 /// strokes on a dark halo, so the gizmo reads over any background colour;
-/// knobs in their identity colours (the bar chip's).
+/// knobs in the colour their light casts (#798; the bar chip's too), with a
+/// contrasting outline.
 struct LightGizmoPainter {
     var layout: LightGizmoLayout
     var ui: LightGizmoUIState.Values
@@ -566,30 +567,48 @@ struct LightGizmoPainter {
     private func drawKnob(_ context: inout GraphicsContext, _ knob: LightGizmoLayout.Knob) {
         var c = context
         c.opacity = knob.opacity
-        let colour = LightPalette.color(knob.slot)
+        let colour = knob.marker.fillColor
         let isActive = ui.active == .knob(knob.name)
         // A dragged knob turns hollow (or filled) the moment the band flips it.
         let behind = isActive && ui.hemisphere != nil ? ui.hemisphere == .behind : knob.isBehind
         let r = knob.radius
         if behind {
             c.fill(circle(knob.centre, r), with: .color(Self.halo.opacity(0.4)))
-            stroke(&c, circle(knob.centre, r - 1), colour, 2, dash: [3, 2])
+            // The dashed ring carries the marker's contrasting outline too, so a black light still reads
+            // over a dark viewport (#798).
+            let ring = circle(knob.centre, r - 1)
+            c.stroke(ring, with: .color(knob.marker.outlineColor),
+                     style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round, dash: [3, 2]))
+            c.stroke(ring, with: .color(colour),
+                     style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round, dash: [3, 2]))
             if knob.isSelected {
                 c.stroke(circle(knob.centre, r + 1.5), with: .color(Self.ink), lineWidth: 1.5)
             }
         } else {
             c.fill(circle(knob.centre, r + 1), with: .color(Self.halo))
             c.fill(circle(knob.centre, r), with: .color(colour))
-            c.stroke(circle(knob.centre, r), with: .color(Self.ink), lineWidth: knob.isSelected ? 2 : 1)
+            // The marker's contrasting outline: a white light still reads over a light background (#798).
+            c.stroke(circle(knob.centre, r), with: .color(knob.marker.outlineColor),
+                     lineWidth: knob.isSelected ? 2 : 1)
         }
         if knob.isShadowed {
             // A dark crescent along the knob's lower edge.
             var crescent = Path()
             crescent.addArc(center: knob.centre, radius: r * 0.55, startAngle: .degrees(25),
                             endAngle: .degrees(155), clockwise: false)
-            let ink: Color = behind ? colour : .black
-            c.stroke(crescent, with: .color(ink.opacity(knob.isShadowDimmed ? 0.3 : 0.8)),
-                     style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+            // Front: the marker's contrasting colour, so it shows on a black fill too (#798). Behind: that
+            // colour under a fill-coloured crescent, so both dark and light lights stay visible.
+            let opacity = knob.isShadowDimmed ? 0.3 : 0.8
+            let outline = knob.marker.outlineColor
+            if behind {
+                c.stroke(crescent, with: .color(outline.opacity(opacity)),
+                         style: StrokeStyle(lineWidth: 4.5, lineCap: .round))
+                c.stroke(crescent, with: .color(colour.opacity(opacity)),
+                         style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+            } else {
+                c.stroke(crescent, with: .color(outline.opacity(opacity)),
+                         style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+            }
         }
         if isActive {
             stroke(&c, circle(knob.centre, r + 4), Self.ink, 2.5)
@@ -619,7 +638,7 @@ struct LightGizmoPainter {
     }
 
     private func drawRings(_ context: inout GraphicsContext, _ s: LightGizmoLayout.Selected) {
-        let colour = layout.knobs.indices.contains(s.index) ? LightPalette.color(layout.knobs[s.index].slot) : Self.ink
+        let colour = layout.knobs.indices.contains(s.index) ? layout.knobs[s.index].marker.fillColor : Self.ink
         // The aim line, under everything else.
         if let line = layout.aimLine {
             var path = Path()
@@ -639,7 +658,8 @@ struct LightGizmoPainter {
     }
 
     private func drawAim(_ context: inout GraphicsContext, _ s: LightGizmoLayout.Selected) {
-        let colour = layout.knobs.indices.contains(s.index) ? LightPalette.color(layout.knobs[s.index].slot) : Self.ink
+        let marker = layout.knobs.indices.contains(s.index) ? layout.knobs[s.index].marker : nil
+        let colour = marker?.fillColor ?? Self.ink
         let half = layout.metrics.handleHalfSide
         for (handle, target, filled) in [(s.innerHandle, LightGizmoTarget.innerHandle, false),
                                          (s.outerHandle, LightGizmoTarget.outerHandle, true)] {
@@ -654,7 +674,8 @@ struct LightGizmoPainter {
             context.fill(Path(CGRect(x: h.point.x - half - 1, y: h.point.y - half - 1,
                                      width: 2 * half + 2, height: 2 * half + 2)), with: .color(Self.halo))
             context.fill(square, with: .color(filled ? colour : Self.ink))
-            context.stroke(square, with: .color(filled ? Self.ink : colour), lineWidth: filled ? 1 : 1.5)
+            context.stroke(square, with: .color(filled ? (marker?.outlineColor ?? Self.ink) : colour),
+                           lineWidth: filled ? 1 : 1.5)
             let extra = emphasis([target])
             if extra > 0 {
                 let ring = Path(CGRect(x: h.point.x - half - 3, y: h.point.y - half - 3,

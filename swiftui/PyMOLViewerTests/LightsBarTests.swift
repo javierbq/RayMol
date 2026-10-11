@@ -184,12 +184,37 @@ final class LightsBarModelTests: XCTestCase {
         XCTAssertFalse(state.canPickPreset)
     }
 
-    func testPaletteHasSixDistinctColoursThatWrap() {
-        XCTAssertEqual(LightPalette.rgb.count, LightPalette.count)
-        let keys = LightPalette.rgb.map { "\($0.0),\($0.1),\($0.2)" }
-        XCTAssertEqual(Set(keys).count, LightPalette.count)
-        XCTAssertEqual(LightPalette.color(LightPalette.count), LightPalette.color(0))
-        XCTAssertEqual(LightPalette.color(-1), LightPalette.color(LightPalette.count - 1))
+    /// #798: every surface draws a light in its own colour, and one edit of
+    /// Colour or Warmth moves them all together (the markers are rebuilt from
+    /// the controller, so there is nothing to go stale).
+    func testEverySurfaceShowsTheLightsOwnColourAndFollowsEdits() {
+        _ = begin(with: ["key", "fill", "rim"])
+        controller.select(name: "fill")
+        func markers() -> [[LightMarkerColour]] {
+            let gizmo = LightGizmoInputs(controller: controller, viewSize: CGSize(width: 400, height: 300),
+                                         gridMode: false, sceneShadowsOn: nil)
+            return [LightsBarState(controller).chips.map(\.marker),
+                    LightsOrbitState(controller)!.lamps.map(\.marker),
+                    gizmo.lights.map(\.marker),
+                    [LightsInspectorState(controller)!.marker]]
+        }
+        // Untouched lights are white at 6500 K.
+        for surface in markers() {
+            XCTAssertEqual(surface.first, .neutral)
+        }
+        _ = controller.setColour(SIMD3(1, 0, 0))
+        _ = controller.set(.warmth, 3200)
+        let red = LightMarkerColour(color: SIMD3(1, 0, 0), warmth: 3200)
+        let white = LightMarkerColour(color: SIMD3(1, 1, 1), warmth: 6500)
+        let all = markers()
+        XCTAssertEqual(all[0], [white, red, white], "chips")
+        XCTAssertEqual(all[1], [white, red, white], "orbit lamps")
+        XCTAssertEqual(all[2], [white, red, white], "gizmo knobs")
+        XCTAssertEqual(all[3].first, red, "the inspector's dot is the selected light's")
+        XCTAssertEqual(red.fill, SIMD3(1, 0, 0), "red at 3200 K: warmth never lifts a zero channel")
+        // Selection does not change a marker's colour.
+        controller.select(name: "key")
+        XCTAssertEqual(LightsBarState(controller).chips.map(\.marker), [white, red, white])
     }
 
     func testRevertAsksOnlyForMoreThanOneEdit() {

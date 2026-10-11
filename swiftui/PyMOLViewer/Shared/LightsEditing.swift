@@ -337,6 +337,88 @@ enum LightColour {
     static func swatchIndex(of rgb: SIMD3<Double>) -> Int? {
         swatches.firstIndex { matches($0.rgb, rgb) }
     }
+
+    /// A light's warmth as an RGB multiplier on its colour: layer1's
+    /// `LightWarmthRGB` (LightShading.cpp) in Swift. The colour of a black
+    /// body at `kelvin` (Krystek's 1985 rational fit of the Planckian locus,
+    /// then CIE 1960 (u, v) to xy to XYZ to linear sRGB), divided by the
+    /// colour at 6500 K and by its largest channel, so 6500 K is exactly
+    /// (1, 1, 1). `kelvin` is clamped into the warmth range; NaN is neutral.
+    static func warmthRGB(kelvin: Double) -> SIMD3<Double> {
+        let range = LightParameter.warmth.range
+        let neutral = 6500.0
+        let k = kelvin.isNaN ? neutral : min(max(kelvin, range.lowerBound), range.upperBound)
+        func planck(_ t: Double) -> SIMD3<Double> {
+            let t2 = t * t
+            let u = (0.860117757 + 1.54118254e-4 * t + 1.28641212e-7 * t2)
+                / (1.0 + 8.42420235e-4 * t + 7.08145163e-7 * t2)
+            let v = (0.317398726 + 4.22806245e-5 * t + 4.20481691e-8 * t2)
+                / (1.0 - 2.89741816e-5 * t + 1.61456053e-7 * t2)
+            let d = 2.0 * u - 8.0 * v + 4.0
+            let x = 3.0 * u / d
+            let y = 2.0 * v / d
+            let bigX = x / y
+            let bigZ = (1.0 - x - y) / y
+            return SIMD3(3.2404542 * bigX - 1.5371385 - 0.4985314 * bigZ,
+                         -0.9692660 * bigX + 1.8760108 + 0.0415560 * bigZ,
+                         0.0556434 * bigX - 0.2040259 + 1.0572252 * bigZ)
+        }
+        let reference = planck(neutral)
+        var c = planck(k) / reference
+        c = SIMD3(max(c.x, 0), max(c.y, 0), max(c.z, 0))
+        let top = max(c.x, max(c.y, c.z))
+        return top > 0 ? c / top : SIMD3(1, 1, 1)
+    }
+}
+
+// MARK: - Marker colour
+
+/// The colour a light's markers (the bar chip dot, the orbit lamp, the
+/// gizmo knob, the inspector dot) are drawn in (#798): the colour the light
+/// casts, and an outline that contrasts with it. Pure, so the tests check it
+/// without drawing.
+struct LightMarkerColour: Equatable {
+    /// The light's Colour tinted by its Warmth, in display sRGB, 0...1: the
+    /// RGB `LightRigPack` sends to the shader before Intensity scales it (it
+    /// multiplies the two directly, so this does too). Intensity is left out
+    /// on purpose: a dim light keeps its hue, and the rig-off dimming is the
+    /// views' opacity.
+    var fill: SIMD3<Double>
+    /// Black or white, whichever contrasts more with `fill` (WCAG contrast
+    /// ratio): a thin stroke round the marker, so a white light reads on a
+    /// light background and a dark one on a dark dial.
+    var outline: SIMD3<Double>
+
+    /// A neutral white light (the default rig light): the marker before the
+    /// rig is read.
+    static let neutral = LightMarkerColour(color: SIMD3(1, 1, 1), warmth: 6500)
+
+    init(color: SIMD3<Double>, warmth: Double) {
+        func clamp(_ x: Double) -> Double { x.isFinite ? min(max(x, 0), 1) : 0 }
+        let tint = LightColour.warmthRGB(kelvin: warmth)
+        let f = SIMD3(clamp(color.x) * tint.x, clamp(color.y) * tint.y, clamp(color.z) * tint.z)
+        fill = SIMD3(clamp(f.x), clamp(f.y), clamp(f.z))
+        outline = Self.contrastRatio(Self.luminance(fill), 0) >= Self.contrastRatio(Self.luminance(fill), 1)
+            ? SIMD3(0, 0, 0) : SIMD3(1, 1, 1)
+    }
+
+    /// The marker for `light`.
+    init(_ light: LightRigSnapshot.Light) {
+        self.init(color: light.color, warmth: light.warmth)
+    }
+
+    /// WCAG relative luminance of an sRGB colour: 0 black, 1 white.
+    static func luminance(_ rgb: SIMD3<Double>) -> Double {
+        func linear(_ c: Double) -> Double {
+            c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4)
+        }
+        return 0.2126 * linear(rgb.x) + 0.7152 * linear(rgb.y) + 0.0722 * linear(rgb.z)
+    }
+
+    /// WCAG contrast ratio between two luminances, 1...21.
+    static func contrastRatio(_ a: Double, _ b: Double) -> Double {
+        (max(a, b) + 0.05) / (min(a, b) + 0.05)
+    }
 }
 
 // MARK: - Warmth track

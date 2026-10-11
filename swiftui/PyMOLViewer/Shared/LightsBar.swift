@@ -1,8 +1,8 @@
 // LightsBar.swift — the Lights mode bar (#619, spec §9).
 //
 // The bar shows the rig as a row of chips, one per light, each with the
-// light's identity dot (the colour the orbit view #621 and the gizmo #622 use
-// for it too; hollow while the light is behind the molecule, the gizmo's
+// light's dot (the colour the light casts, #798, which the orbit view #621 and
+// the gizmo #622 use for it too; hollow while the light is behind the molecule, the gizmo's
 // front/behind rule), and the rig-wide actions: add, remove, a preset, Re-centre,
 // on/off, Revert and Done. On a phone the bar also carries the scene's
 // Atmosphere entry (#795): a button on the wide bar, an item in the overflow
@@ -18,27 +18,36 @@
 
 import SwiftUI
 
-// MARK: - Identity colours
+// MARK: - Marker colours
 
-extension LightPalette {
-    /// The identity colour of a slot (LightPalette.assign): blue, orange,
-    /// green, purple, pink, gold, in the order of the design sketches. Fixed
-    /// sRGB values, so a light reads the same on every platform and theme.
-    /// Out-of-range slots wrap.
-    static func color(_ slot: Int) -> Color {
-        let rgb = Self.rgb[((slot % count) + count) % count]
-        return Color(.sRGB, red: rgb.0, green: rgb.1, blue: rgb.2, opacity: 1)
+extension LightMarkerColour {
+    /// The marker's fill: the colour the light casts (#798), opaque sRGB.
+    var fillColor: Color { Color(.sRGB, red: fill.x, green: fill.y, blue: fill.z, opacity: 1) }
+
+    /// The marker's thin outline: black or white, whichever contrasts with the fill.
+    var outlineColor: Color { Color(.sRGB, red: outline.x, green: outline.y, blue: outline.z, opacity: 1) }
+}
+
+/// A light's dot (the chip's, the orbit card's and the inspector's header):
+/// the light's own colour with a hairline outline, so a white light still
+/// reads on a light or dark bar. `hollow` is the chip's "behind the
+/// molecule" ring.
+struct LightMarkerDot: View {
+    var marker: LightMarkerColour
+    var size: CGFloat
+    var hollow = false
+
+    var body: some View {
+        ZStack {
+            if hollow {
+                Circle().strokeBorder(marker.fillColor, lineWidth: 1.5)
+            } else {
+                Circle().fill(marker.fillColor)
+            }
+        }
+        .overlay(Circle().strokeBorder(marker.outlineColor.opacity(0.7), lineWidth: 0.75))
+        .frame(width: size, height: size)
     }
-
-    /// sRGB of each slot, in slot order.
-    static let rgb: [(Double, Double, Double)] = [
-        (0.23, 0.51, 0.96),   // blue
-        (0.96, 0.55, 0.15),   // orange
-        (0.24, 0.73, 0.36),   // green
-        (0.62, 0.38, 0.92),   // purple
-        (0.93, 0.36, 0.62),   // pink
-        (0.86, 0.69, 0.13),   // gold
-    ]
 }
 
 // MARK: - Style
@@ -60,6 +69,8 @@ struct LightsBarState: Equatable {
         var name: String
         var index: Int
         var slot: Int
+        /// What the dot is drawn in: the light's own colour (#798).
+        var marker = LightMarkerColour.neutral
         var isSelected: Bool
         /// The light is behind the molecule (`LightsController.isBehind`)
         /// when the state was made. The chip itself observes
@@ -138,6 +149,7 @@ struct LightsBarState: Equatable {
         chips = lights.enumerated().map { index, light in
             Chip(name: light.name, index: index,
                  slot: controller.identitySlot(for: light.name),
+                 marker: LightMarkerColour(light),
                  isSelected: index == selected,
                  isBehind: controller.isBehind(light.name))
         }
@@ -515,17 +527,9 @@ struct LightChipButton: View {
 
     var body: some View {
         let behind = facing.isBehind(chip.name)
-        let colour = LightPalette.color(chip.slot)
         Button(action: onSelect) {
             HStack(spacing: 4) {
-                ZStack {
-                    if behind {
-                        Circle().strokeBorder(colour, lineWidth: 1.5)
-                    } else {
-                        Circle().fill(colour)
-                    }
-                }
-                .frame(width: 8, height: 8)
+                LightMarkerDot(marker: chip.marker, size: 8, hollow: behind)
                 .opacity(rigOn ? 1 : 0.45)
                 Text(chip.name)
                     .font(.system(size: 12, weight: chip.isSelected ? .semibold : .regular))
