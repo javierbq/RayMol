@@ -495,3 +495,130 @@ final class LabelColorExportTests: XCTestCase {
         }
     }
 }
+
+/// Issue #639: the Metal renderer ignored per-state matrices (matrix_mode >= 1)
+/// because ObjectStatePushAndApplyMatrix never loaded the matrix into the
+/// renderer's modelview. A red sphere is stored at local (5, 0, 0); its state
+/// matrix turns it 90 degrees about z and lifts it by 10, to world (0, 5, 10).
+@MainActor
+final class StateMatrixRenderTests: XCTestCase {
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var sceneBuilt = false
+    private var savedView: [Float]?
+
+    override func tearDown() {
+        if sceneBuilt {
+            engine.runPython(
+                "from pymol import cmd as _c\n"
+                + "_c.delete('sm639')\n"
+                + "_c.set('bg_rgb', globals().pop('_sm639_bg', [0.0, 0.0, 0.0]))\n"
+                + "for _n in globals().pop('_sm639_enabled', []):\n"
+                + "    _c.enable(_n)\n")
+            sceneBuilt = false
+        }
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        super.tearDown()
+    }
+
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            throw XCTSkip("the PyMOL engine did not come up under the test host")
+        }
+    }
+
+    private func buildScene() {
+        savedView = engine.captureView()
+        sceneBuilt = true
+        engine.runPython("""
+        from pymol import cmd as _c
+        _sm639_enabled = _c.get_names('objects', enabled_only=1)
+        _sm639_bg = list(_c.get_setting_tuple('bg_rgb')[1])
+        for _n in _sm639_enabled:
+            _c.disable(_n)
+        _c.pseudoatom('sm639', pos=[5.0, 0.0, 0.0])
+        _c.alter('sm639', 'vdw=1.0')
+        _c.show_as('spheres', 'sm639')
+        _c.color('red', 'sm639')
+        _c.set('sphere_scale', 1.0, 'sm639')
+        _c.set('bg_rgb', [0.0, 0.0, 0.0])
+        _c.transform_object('sm639', [0.0, -1.0, 0.0, 0.0,
+                                      1.0, 0.0, 0.0, 0.0,
+                                      0.0, 0.0, 1.0, 10.0,
+                                      0.0, 0.0, 0.0, 1.0], homogenous=1)
+        _c.alter_state(1, 'sm639', '(x, y, z) = (5.0, 0.0, 0.0)')
+        _c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                     0.0, 0.0, -40.0, 0.0, 0.0, 0.0, 5.0, 100.0, -20.0))
+        """)
+    }
+
+    /// Count and centroid (pixels, origin top-left) of the red pixels of an
+    /// offscreen Metal export.
+    private func redBlob(_ tag: String) throws -> (count: Int, x: Double, y: Double) {
+        let w = 400, h = 300
+        let png = NSTemporaryDirectory() + "issue_639_\(tag).png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: w, height: h, rayTraced: 0)
+        guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: png) as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            XCTFail("no export written (\(tag))")
+            return (0, 0, 0)
+        }
+        XCTAssertEqual(image.width, w)
+        XCTAssertEqual(image.height, h)
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        var count = 0, sx = 0.0, sy = 0.0
+        for i in 0..<(w * h) {
+            let r = Int(rgba[i * 4]), g = Int(rgba[i * 4 + 1]), b = Int(rgba[i * 4 + 2])
+            if r > 60 && r - g > 40 && r - b > 40 {
+                count += 1
+                sx += Double(i % w)
+                sy += Double(i / w)
+            }
+        }
+        guard count > 0 else { return (0, 0, 0) }
+        return (count, sx / Double(count), sy / Double(count))
+    }
+
+    func testStateMatrixMovesTheSphereOnlyUnderMatrixMode() throws {
+        try requireEngine()
+        buildScene()
+
+        // Default (matrix_mode -1): the state matrix is not applied; the sphere
+        // sits at local (5, 0, 0), right of the view centre.
+        let plain = try redBlob("default")
+        XCTAssertGreaterThan(plain.count, 500, "the sphere is not drawn")
+        XCTAssertGreaterThan(plain.x, 260, "default render: sphere should be right of centre")
+        XCTAssertEqual(plain.y, 150, accuracy: 25, "default render: sphere should be vertically centred")
+
+        // matrix_mode 0 is the same as the default.
+        engine.runPython("from pymol import cmd as _c\n_c.set('matrix_mode', 0, 'sm639')")
+        let zero = try redBlob("mode0")
+        XCTAssertEqual(zero.count, plain.count, accuracy: 20)
+        XCTAssertEqual(zero.x, plain.x, accuracy: 2)
+        XCTAssertEqual(zero.y, plain.y, accuracy: 2)
+
+        // matrix_mode 1: the state matrix moves it to world (0, 5, 10): over
+        // the view centre, in the upper half of the image.
+        engine.runPython("from pymol import cmd as _c\n_c.set('matrix_mode', 1, 'sm639')")
+        let moved = try redBlob("mode1")
+        XCTAssertGreaterThan(moved.count, 300, "the moved sphere is not drawn")
+        XCTAssertEqual(moved.x, 200, accuracy: 30, "matrix_mode 1: sphere should be over the centre")
+        XCTAssertLessThan(moved.y, 110, "matrix_mode 1: sphere should be in the upper half")
+    }
+}
