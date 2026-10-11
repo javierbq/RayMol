@@ -112,8 +112,9 @@ MASTER_LITERALS = {
     'kLabelShaderSrc': 'ca5097bd2ad97d60',  # #736: label_fragment_oit, the OIT pass's variant
     'kMaterialImpostorSrc': '5da7ac9fc2e8eb42',
     'kMaterialSrc': 'da47cac063348d43',
-    'kPostSrc': 'f55a914833611313',
-    'kRTSrc': 'd74464e842d20aa4',
+    'kPostSrc': '1c9ed490bdeeb9b7',  # #689: post_ssao_fog fades toward the bg_gradient
+    'kRTSrc': 'ab2648bc2c2a682e',  # #689: rt_composite's fog fades toward the bg_gradient
+    'kScreenOverlaySrc': 'deee6ab41d1560e7',  # #689: ramp gadgets drawn after the post chain
     'kSphereImpostorSrc': '1ed9ba64205bd960',
     'kVBOSrc': '728416d46e47293d',
 }
@@ -138,9 +139,9 @@ CLASSIC_LIGHT_LITERALS = ('kVBOSrc', 'kSphereImpostorSrc', 'kCylinderImpostorSrc
 # included, comments stripped); on this branch with the air's statement
 # taken out (AIR_STATEMENTS).
 MASTER_FUNCTIONS = {
-    ('RendererMetal.mm', 'RendererMetal::runPostChain'): 'c42d120c10365bb3',
-    ('RendererMetal.mm', 'RendererMetal::beginFrame'): '5e8f5b413ca93cd4',  # #736: clears the labels deferred out of a peel pass
-    ('SceneRender.cpp', 'SceneRenderMetal'): '9482b56f62c6a513',  # #433/#662: classic pre-pass excludes overlays
+    ('RendererMetal.mm', 'RendererMetal::runPostChain'): 'b4fd8c912dacfcf9',  # #689: gradient fog uniforms, screen overlays after the matte
+    ('RendererMetal.mm', 'RendererMetal::beginFrame'): 'd10230b748dfced7',  # #736: clears the labels deferred out of a peel pass; #689: the gradient and the screen overlays
+    ('SceneRender.cpp', 'SceneRenderMetal'): 'f7b38ed4c8367063',  # #433/#662: classic pre-pass excludes overlays; #689: draws the bg_gradient
     ('SceneLights.cpp', 'SceneLightsFrame'): '5fb060d63ab0d96b',
 }
 AIR_STATEMENTS = {

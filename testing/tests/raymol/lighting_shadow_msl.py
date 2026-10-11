@@ -851,7 +851,7 @@ MASTER_CLASSIC = {
 # taken out.
 MASTER_GRID = {
     'SceneRenderMetal grid and scene passes': '2f21cf55fa47c5af',
-    'SceneSetMetalGridCell': '034aaa521b356a8c',
+    'SceneSetMetalGridCell': '628b235ead556ae9',  # #689: sets the cell's unit context for gadgets
     'SceneRenderMetalSelections': '37c869d18ac858bd',
 }
 MASTER_SET_GRID_SLOT = 'bd39d8b8d26168bd'

@@ -1670,13 +1670,18 @@ static void CGO_gl_draw_trilines(CCGORenderer* I, CGO_op_data pc)
 static void CGO_gl_uniform3f(CCGORenderer* I, CGO_op_data pc)
 {
   int uniform_id = CGO_get_int(*pc);
+  const float* pcp = *pc + 1;
+  if (I->G->Renderer) {
+    if (uniform_id == RAMP_OFFSETPT)
+      I->G->Renderer->setScreenOverlayOffset(pcp[0], pcp[1], pcp[2]);
+    return;
+  }
   auto shaderPrg = I->G->ShaderMgr->Get_Current_Shader();
   if (!shaderPrg) {
     return;
   }
   int loc = shaderPrg->GetUniformLocation(
       shaderPrg->uniformLocations[uniform_id].c_str());
-  const float* pcp = *pc + 1;
   glUniform3f(loc, pcp[0], pcp[1], pcp[2]);
 }
 

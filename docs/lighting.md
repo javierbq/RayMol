@@ -795,8 +795,6 @@ Open follow-ups of the lighting work (#610) that you may notice:
   steppers are under 44 pt (#720), and on small rings the 44 pt ring band
   covers the whole interior (#721). The Scene panel's Exposure help text does
   not say what exposure scales under a rig (#733).
-- **Exports and MCP.** Metal exports, and with them the MCP
-  `capture_viewport` image, do not draw ramp gadgets or `bg_gradient` (#689).
 
 ## Regenerating the gallery
 
