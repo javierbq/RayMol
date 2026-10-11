@@ -542,12 +542,20 @@ int MaterialSourceRep(PyMOLGlobals* G, const CSetting* set1,
   return cRepCartoon;
 }
 
+/* What `repType` draws with once its source layer is known: the one
+   definition both MaterialResolveForDraw and MaterialDrawParams use. */
+static MaterialParams MaterialResolveFromSource(PyMOLGlobals* G,
+    const CSetting* set1, const CSetting* set2, int repType, int source)
+{
+  return MaterialResolve(
+      MaterialResolveSettingId(G, set1, set2, source), repType);
+}
+
 MaterialParams MaterialResolveForDraw(PyMOLGlobals* G, const CSetting* set1,
     const CSetting* set2, int repType, const CoordSet* cs)
 {
-  int const id = MaterialResolveSettingId(G, set1, set2,
+  return MaterialResolveFromSource(G, set1, set2, repType,
       MaterialSourceRep(G, set1, set2, repType, cs ? cs->Obj : nullptr));
-  return MaterialResolve(id, repType);
 }
 
 static MaterialParams MaterialFinalizeParams(
@@ -559,13 +567,12 @@ static MaterialParams MaterialFinalizeParams(
 MaterialParams MaterialDrawParams(PyMOLGlobals* G, const CSetting* set1,
     const CSetting* set2, int repType, const CoordSet* cs)
 {
-  // MaterialResolveForDraw inlined, so the source layer is found once per call:
-  // the Metal path calls this per draw op, per pass, per frame.
+  // The source layer is found once: the Metal path calls this per draw op,
+  // per pass, per frame.
   int const source =
       MaterialSourceRep(G, set1, set2, repType, cs ? cs->Obj : nullptr);
-  int const id = MaterialResolveSettingId(G, set1, set2, source);
-  return MaterialFinalizeParams(
-      G, set1, set2, source, MaterialResolve(id, repType));
+  return MaterialFinalizeParams(G, set1, set2, source,
+      MaterialResolveFromSource(G, set1, set2, repType, source));
 }
 
 /* The Custom material's per-layer overrides (#568): for each material-bearing
@@ -884,15 +891,15 @@ bool MaterialObjectWantsPeel(PyMOLGlobals* G, const CSetting* set1,
      pair of table lookups per rep; the VETO costs atom scans. An object with no
      material set -- every object in a default session -- must not pay the
      second, and this runs once per object per FRAME. */
+  /* Resolved once per rep, the way the draw path resolves it, and reused by
+     the second loop: no rule depends on the coordinate set any more (#834). */
+  constexpr size_t kRepCount = sizeof(kReps) / sizeof(kReps[0]);
+  bool repWantsPeel[kRepCount] = {};
   bool maybeWantsPeel = false;
-  for (size_t i = 0; i < sizeof(kReps) / sizeof(kReps[0]); ++i) {
-    if (MaterialResolve(MaterialResolveSettingId(G, set1, set2,
-                            MaterialSourceRep(G, set1, set2, kReps[i], obj)),
-            kReps[i])
-            .wantsPeel) {
-      maybeWantsPeel = true;
-      break;
-    }
+  for (size_t i = 0; i < kRepCount; ++i) {
+    repWantsPeel[i] = MaterialResolveFromSource(G, set1, set2, kReps[i],
+        MaterialSourceRep(G, set1, set2, kReps[i], obj)).wantsPeel;
+    maybeWantsPeel = maybeWantsPeel || repWantsPeel[i];
   }
   if (!maybeWantsPeel) {
     return false;
@@ -905,10 +912,9 @@ bool MaterialObjectWantsPeel(PyMOLGlobals* G, const CSetting* set1,
      step, and a range-for gives a copy whose address says nothing about which
      element it came from. */
   bool wantsPeel = false;
-  for (size_t i = 0; i < sizeof(kReps) / sizeof(kReps[0]); ++i) {
+  for (size_t i = 0; i < kRepCount; ++i) {
     int const rep = kReps[i];
-    // Through the DRAW path, matching the rep's shading.
-    if (MaterialResolveForDraw(G, set1, set2, rep, cs).wantsPeel) {
+    if (repWantsPeel[i]) {
       // ...but only if the object actually DRAWS it. `set surface_material,
       // glass` on an object showing nothing but an opaque cartoon would
       // otherwise turn peel on for geometry that does not exist -- a depth blit

@@ -617,20 +617,25 @@ final class StickBallGlassRenderTests: XCTestCase {
         return rgba
     }
 
-    private func centreBoxMeans(_ rgba: [UInt8], width: Int = 400, height: Int = 300) -> (r: Double, g: Double, b: Double) {
-        let boxSize = 40
-        let startX = (width - boxSize) / 2
-        let startY = (height - boxSize) / 2
+    /// Mean RGB over the 40x40 box at the image centre.
+    private func centreBoxMeans(_ rgba: [UInt8]) -> (r: Double, g: Double, b: Double) {
+        boxMeans(rgba, x0: 180, y0: 130, size: 40)
+    }
+
+    /// Mean RGB over the `size` x `size` box with top-left corner `x0`, `y0`
+    /// in a 400x300 image.
+    private func boxMeans(_ rgba: [UInt8], x0: Int, y0: Int, size: Int,
+                          width: Int = 400) -> (r: Double, g: Double, b: Double) {
         var sumR = 0.0, sumG = 0.0, sumB = 0.0
-        for y in startY..<(startY + boxSize) {
-            for x in startX..<(startX + boxSize) {
+        for y in y0..<(y0 + size) {
+            for x in x0..<(x0 + size) {
                 let idx = (y * width + x) * 4
                 sumR += Double(rgba[idx])
                 sumG += Double(rgba[idx + 1])
                 sumB += Double(rgba[idx + 2])
             }
         }
-        let total = Double(boxSize * boxSize)
+        let total = Double(size * size)
         return (sumR / total, sumG / total, sumB / total)
     }
 
@@ -671,22 +676,10 @@ final class StickBallGlassRenderTests: XCTestCase {
         XCTAssertGreaterThan(diffCount, 1000, "frosted glass should differ from clear glass in > 1000 pixels")
     }
 
-    /// Mean RGB over a 20x20 box whose corner is `dx`, `dy` pixels from the
-    /// image centre: inside the ball but clear of the sticks along the axes.
-    private func offAxisBoxMeans(_ rgba: [UInt8], dx: Int = 20, dy: Int = 20,
-                                 width: Int = 400, height: Int = 300) -> (r: Double, g: Double, b: Double) {
-        let size = 20
-        var sumR = 0.0, sumG = 0.0, sumB = 0.0
-        for y in (height / 2 + dy)..<(height / 2 + dy + size) {
-            for x in (width / 2 + dx)..<(width / 2 + dx + size) {
-                let idx = (y * width + x) * 4
-                sumR += Double(rgba[idx])
-                sumG += Double(rgba[idx + 1])
-                sumB += Double(rgba[idx + 2])
-            }
-        }
-        let total = Double(size * size)
-        return (sumR / total, sumG / total, sumB / total)
+    /// Mean RGB over a 20x20 box 20 px right of and below the image centre:
+    /// inside the ball but clear of the sticks along the axes.
+    private func offAxisBoxMeans(_ rgba: [UInt8]) -> (r: Double, g: Double, b: Double) {
+        boxMeans(rgba, x0: 220, y0: 170, size: 20)
     }
 
     /// Gives the centre atom A1 three more bonds (four in all), in the image

@@ -315,6 +315,8 @@ class TestCustomMaterial(testing.PyMOLTestCase):
         `default`: the layer draws material 0, so the Inspector must not offer
         Custom there. Glass with stick_ball 1 draws glass (#834)."""
         cmd.set('stick_material', 99, 'm1')
+        self.assertEqual(cmd.get_setting_int('stick_material', 'm1'), 99)
+        self.assertNotIn(99, [i for i, _n in setting.get_material_names(0)])
         cmd.set('stick_material_rough', 0.5, 'm1')
         m = self.rep()['material']
         self.assertEqual(m['drawn'], 0)

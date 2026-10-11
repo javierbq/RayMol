@@ -354,11 +354,10 @@ float MaterialLightSharpness(float exponent, float shininess);
 
 /**
  * The material id `ray` stamps on a representation's primitives: the
- * representation's material after the draw-time degradations
+ * representation's material as the draw path resolves it
  * (MaterialResolveForDraw), so `ray` and the viewport agree about what the
- * rep is made of. 0 for reps that take no material. Resolved ONCE per rep and
- * handed to MaterialRayWobble, because for a glass stick rep the resolve scans
- * every atom for `stick_ball`.
+ * rep is made of. 0 for reps that take no material. Resolved once per rep and
+ * handed to MaterialRayWobble.
  */
 int MaterialRayId(PyMOLGlobals* G, const CSetting* set1,
     const CSetting* set2, int repType, const CoordSet* cs = nullptr);
