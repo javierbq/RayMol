@@ -10172,12 +10172,15 @@ fragment float4 overlay_fragment(OverlayVertexOut in [[stage_in]])
 id<MTLRenderPipelineState> RendererMetal::screenOverlayPipeline(
     const ScreenOverlayDraw& draw, MTLPixelFormat pixelFormat)
 {
+  // A library that failed to compile stays failed: no recompile per draw.
+  if (_overlayLibFailed) return nil;
   if (!_overlayLib) {
     NSError* err = nil;
     _overlayLib = [_device newLibraryWithSource:kScreenOverlaySrc
                                         options:nil
                                           error:&err];
     if (!_overlayLib) {
+      _overlayLibFailed = true;
       static bool warned = false;
       if (!warned) {
         NSLog(@"RendererMetal: screen overlay library failed: %@", err);

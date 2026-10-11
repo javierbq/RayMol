@@ -778,6 +778,7 @@ private:
   std::vector<ScreenOverlayDraw> _screenOverlayDraws;
   std::map<uint64_t, id<MTLRenderPipelineState>> _screenOverlayPipelines;
   id<MTLLibrary> _overlayLib = nil;
+  bool _overlayLibFailed = false;
   id<MTLFunction> _overlayVtxFunc = nil;
   id<MTLFunction> _overlayVtxNoNormalFunc = nil;
   id<MTLFunction> _overlayFragFunc = nil;

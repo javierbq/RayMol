@@ -2470,6 +2470,12 @@ static bool SceneMetalBgGradient(PyMOLGlobals* G, float* top, float* bottom)
 {
   if (SettingGet<BgGradient>(G, cSetting_bg_gradient) != BgGradient::Vertical)
     return false;
+  // A background image wins over the gradient in GL's bg_grad and in the CPU
+  // ray tracer. Metal draws no image, but it must not paint the gradient
+  // either.
+  const char* bg_image = SettingGetGlobal_s(G, cSetting_bg_image_filename);
+  if ((bg_image && bg_image[0]) || OrthoBackgroundDataIsSet(*G->Ortho))
+    return false;
   if (G->Renderer->offscreenFrame() &&
       !SettingGetGlobal_b(G, cSetting_ray_opaque_background))
     return false;
