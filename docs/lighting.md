@@ -769,7 +769,12 @@ Open follow-ups of the lighting work (#610) that you may notice:
   before the rig's curve (#731); the traced rig composite keeps some classic
   terms in display units (#729); ambient occlusion is composited after the
   tone curve (#732). Bloom, EDR output, 16-bit export and ACES in scene units
-  are not done (#735). Measurement dashes take the rig's lighting (#738).
+  are not done (#735).
+- **Measurement dashes are lit (#738).** Distance, angle and dihedral dashes
+  are cylinder geometry, so under a rig they take its lighting like sticks
+  do, not display-referred like labels and lines (owner decision). A
+  pure-green dash reads as a lit green, not (0, 255, 0). With
+  `dash_as_cylinders` off they are lines and stay unlit.
 - **Scenes and movies.** The loop-wrap of a looping movie (#656) and an
   animated scene recall in the live view (#661) do not blend the rig.
 - **Placement.** A highlight placed on a small patch can fit the beam to a
