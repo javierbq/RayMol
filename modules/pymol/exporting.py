@@ -256,8 +256,10 @@ NOTES
     other non-polymer entities are not included; unknown residues are
     written as "?".
 
-    The FASTA text is also returned, so from Python
-    "cmd.fasta(quiet=1)" gives the same string as "cmd.get_fastastr".
+    The FASTA text is also returned. Given the same selection, state and
+    chains, "cmd.fasta(quiet=1)" returns the same string as
+    "cmd.get_fastastr"; with no selection the two differ, because
+    "get_fastastr" defaults to all objects.
 
 SEE ALSO
 
