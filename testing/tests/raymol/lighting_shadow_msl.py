@@ -829,8 +829,9 @@ SCENE_RENDER = os.path.join(ROOT, 'layer1', 'SceneRender.cpp')
 # its `if`, from `float shadowRadius` to the restore of the camera matrices).
 # Updated for #433 / #662: the classic pre-pass and light frustum exclude
 # overlays (SceneLightShadowOverlays and SceneGetLightShadowExtent).
+# Updated for #667: beginShadowPass makes the shadow map lazily (ensureShadowMap).
 MASTER_CLASSIC = {
-    'RendererMetal::beginShadowPass': 'c421447f5f77a489',
+    'RendererMetal::beginShadowPass': '9273a338bb56bfea',
     'RendererMetal::endShadowPass': '5dd9374e7be0fb2f',
     'SceneBuildLightViewProjEye': 'c969b5d7bcc919d7',
     'classic pre-pass body': 'fb70b8ac2adbcad8',
@@ -876,6 +877,95 @@ class TestClassicShadowUnchanged(ShadowMSLCase):
             'classic pre-pass body': digest(classic_pre_pass_body(scene_render)),
         }
         self.assertEqual(found, MASTER_CLASSIC)
+
+
+class TestLazyClassicShadowMap(ShadowMSLCase):
+    """The classic shadow map is allocated by the first classic pre-pass, not
+    with the post targets (#667). Source-level pins; the GPU side is the
+    ClassicShadowMapLazyTests XCTest (SmokeTests.swift)."""
+
+    def setUp(self):
+        super().setUp()
+        self.header = strip_comments(read(METAL_H))
+
+    def testPostTargetsDoNotAllocateIt(self):
+        body = cpp_function(self.mm, 'RendererMetal::ensurePostTargets')
+        code = strip_comments(body)
+        self.assertNotIn('_shadowDepth', code)
+        self.assertNotIn('_shadowPassDesc', code)
+        self.assertNotIn('kShadowDim', code)
+
+    def testOnlyEnsureShadowMapAllocatesIt(self):
+        for name in ('_shadowDepth', '_shadowPassDesc'):
+            sites = [m.start() for m in re.finditer(
+                r'\b%s\s*=\s*(?!=)' % name, self.code)]
+            body_start = self.code.index('bool RendererMetal::ensureShadowMap()')
+            body = cpp_function(self.mm, 'RendererMetal::ensureShadowMap')
+            body_end = body_start + len(strip_comments(body)) + 400
+            # every assignment sits in ensureShadowMap (the release in the
+            # destructor is a message send, not an assignment)
+            for at in sites:
+                self.assertTrue(body_start <= at <= body_end,
+                                '%s assigned outside ensureShadowMap' % name)
+            self.assertTrue(sites, name)
+        body = squash(strip_comments(
+            cpp_function(self.mm, 'RendererMetal::ensureShadowMap')))
+        self.assertIn('newTextureWithDescriptor:sd', body)
+        self.assertIn('_shadowMapFailed=true', body)
+
+    def testFirstPrePassMakesIt(self):
+        body = squash(strip_comments(
+            cpp_function(self.mm, 'RendererMetal::beginShadowPass')))
+        self.assertIn('if(!ensureShadowMap())return;', body)
+        self.assertLess(body.index('ensureShadowMap()'),
+                        body.index('renderCommandEncoderWithDescriptor:_shadowPassDesc'))
+        self.assertNotIn('!_shadowPassDesc', body)
+
+    def testEveryPostReaderToleratesNoMap(self):
+        # No post pass binds _shadowDepth raw (nil without shadows): they
+        # bind shadowTextureForBind(), the map or a 1x1 stand-in.
+        binds = re.findall(r'setFragmentTexture:(\S[^;]*?) atIndex:2\]',
+                           self.code)
+        self.assertEqual([x for x in binds if x == '_shadowDepth'], [])
+        self.assertEqual(binds.count('shadowTextureForBind()'), 2)
+        body = squash(strip_comments(
+            cpp_function(self.mm, 'RendererMetal::shadowTextureForBind')))
+        self.assertIn('if(_shadowDepth)return_shadowDepth;', body)
+        # the debug blit (texture index 1) is already gated on the map
+        self.assertIn('shadowDebug && _shadowDebugPipeline && _shadowDepth',
+                      self.code)
+        # and the composite samples only after this frame's pre-pass ran
+        self.assertIn('bool doShadowMap = doShadow && _shadowMapValid;', self.code)
+        self.assertIn('u.shadowEnabled = doShadowMap ? 1.0f : 0.0f;', self.code)
+
+    def testSmallerOnIOS(self):
+        self.assertRegex(squash(self.header),
+                         r'#ifTARGET_OS_IPHONEstaticconstexprNSUIntegerkShadowDim=2048;'
+                         r'#elsestaticconstexprNSUIntegerkShadowDim=4096;#endif')
+
+    def testCompositeScalesByTheMapsWidth(self):
+        post = strip_comments(self.msl['kPostSrc'])
+        self.assertNotIn('4096', post)
+        self.assertIn('float shadowDim = float(shadowTex.get_width());', post)
+        self.assertIn('2.0 * u.shadowRadius / shadowDim', post)
+        self.assertIn('1.0 / shadowDim', post)
+        # the ray tracer's shadow-map fallback does the same
+        rt = strip_comments(self.msl['kRTSrc'])
+        self.assertNotIn('4096', rt)
+        self.assertIn('float shadowDim = float(shadowTex.get_width());', rt)
+        self.assertIn('2.0 * u.shadowRadius / shadowDim', rt)
+        self.assertIn('1.0 / shadowDim', rt)
+
+    def testTestOnlyReadout(self):
+        self.assertIn('size_t classicShadowMapBytes() const override',
+                      self.header)
+        self.assertIn('void releaseClassicShadowMap() override;', self.header)
+        self.assertIn('[_shadowDepth release];     _shadowDepth = nil;',
+                      strip_comments(cpp_function(
+                          self.mm, 'RendererMetal::releaseClassicShadowMap')))
+        cmd_cpp = read(os.path.join(ROOT, 'layer4', 'Cmd.cpp'))
+        self.assertIn('{"get_classic_shadow_map_bytes", CmdGetClassicShadowMapBytes',
+                      cmd_cpp)
 
 
 class TestOverlayShadowExclusion(ShadowMSLCase):

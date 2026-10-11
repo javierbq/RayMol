@@ -4,6 +4,7 @@
 #import <Metal/Metal.h>
 #import <MetalKit/MetalKit.h>
 #include <simd/simd.h>
+#include <TargetConditionals.h>  // TARGET_OS_IPHONE (kShadowDim)
 
 #include <array>
 #include <atomic>
@@ -754,9 +755,24 @@ private:
   // light space and PCF-compares against it. Depth-only pipelines mirror the
   // opaque ones but write no color and stay single-sample (the scene pass is
   // 4x MSAA; the shadow pass is not). _shadowMode is true during the replay.
+  // The map is LAZY (#667): ensureShadowMap makes it, and _shadowPassDesc, on
+  // the first classic pre-pass (beginShadowPass), so a renderer that never
+  // shadows holds none of it (64 MB at 4096^2). It is then kept: a toggle
+  // would otherwise re-allocate it on every flip. Until then _shadowDepth is
+  // nil and the post passes bind the 1x1 _shadowNone stand-in, which the
+  // composite never samples (shadowEnabled follows _shadowMapValid).
+  // iOS gets 2048^2 (16 MB); the composite scales its texel by the map's width.
+#if TARGET_OS_IPHONE
+  static constexpr NSUInteger kShadowDim = 2048;
+#else
   static constexpr NSUInteger kShadowDim = 4096;
+#endif
   id<MTLTexture> _shadowDepth = nil;
+  id<MTLTexture> _shadowNone = nil;   // 1x1 stand-in bound while _shadowDepth is nil
   MTLRenderPassDescriptor* _shadowPassDesc = nil;
+  bool _shadowMapFailed = false;      // allocation failed once: not retried
+  bool ensureShadowMap();
+  id<MTLTexture> shadowTextureForBind();
   id<MTLDepthStencilState> _shadowDepthState = nil;
   id<MTLSamplerState> _shadowSampler = nil;
   id<MTLFunction> _vboFragmentShadowFunc = nil;  // depth-only VBO fragment
@@ -1011,6 +1027,13 @@ private:
   // runs on Metal's thread and may outlive this renderer (as _inFlight).
   std::shared_ptr<GpuFrameTimes> _gpuTiming;
   int _gpuTimingMode = 0;
+  // Test-only (#667, _cmd.get_classic_shadow_map_bytes): the classic shadow
+  // map's size in bytes, 0 while it has not been allocated.
+  size_t classicShadowMapBytes() const override
+  {
+    return _shadowDepth ? (size_t)kShadowDim * kShadowDim * 4 : 0;
+  }
+  void releaseClassicShadowMap() override;
   // This frame's studio shadow maps for the readout: the slices the map pass
   // rendered, and their size (0 without maps).
   int gpuFrameShadowMaps() const { return _lightShadowSlicesOpened; }

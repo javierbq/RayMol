@@ -484,6 +484,13 @@ public:
   virtual void setGpuTiming(int /*mode*/) {}
   virtual bool getGpuFrameStats(GpuFrameReport* /*out*/) const { return false; }
 
+  // Test-only (#667, _cmd.get_classic_shadow_map_bytes): the classic shadow
+  // map's size in bytes, 0 while it is not allocated (it is made lazily by the
+  // first classic shadow pre-pass) or with no such map.
+  virtual size_t classicShadowMapBytes() const { return 0; }
+  // Test-only: drops the classic shadow map so the next pre-pass makes it again.
+  virtual void releaseClassicShadowMap() {}
+
   // The air (#618, haze and dust): this frame's air block, or nullptr when
   // the frame draws no air. SceneRenderMetal calls it once per frame, after
   // setGpuTiming() and before any draw. The block is only valid during the
