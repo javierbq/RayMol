@@ -1555,7 +1555,10 @@ KEYWORDS
               a name it takes the first unused of key, fill, rim, light4,
               light5, light6 (name= works too). A rig holds at most 6
               lights. The first light captures the frame and turns the
-              rig on; adding to a rig that is off leaves it off.
+              rig on; adding to a rig that is off leaves it off. The new
+              light casts a shadow (shadow=1) while fewer than 3 lights
+              do; after that it casts none and says so. shadow= given to
+              "add" wins either way.
     remove    remove a light: lights remove, name
     presets   list the presets
     recenter  capture the rig's centre and size again from what is shown
@@ -1616,7 +1619,9 @@ LIGHT FIELDS
     falloff          exponent, 0 to 2, default 2: brightness goes as (aim
                      distance / distance)^falloff; 2 is inverse square, 0
                      is none
-    shadow           boolean, default 0. At most 3 lights cast shadows.
+    shadow           boolean, default 0, but "lights add" gives a new light
+                     1 while fewer than 3 lights cast shadows. At most 3
+                     lights cast shadows.
     outline (cue)    boolean, default 0: draw the beam's outline on the
                      geometry
     aim              centre or center (default), a world point x/y/z or
@@ -1927,6 +1932,16 @@ def _kw_add(old, table, light, fields, _self):
         rig['lights'].append(new_light)
     change = _Change(rig)
     index = len(rig['lights']) - 1
+    if 'shadow' not in spec.values:
+        # A new light casts a shadow by default while the rig has room for
+        # one (#799); an explicit shadow= (either way) is left alone.
+        casting = [l['name'] for l in lights_now if l['shadow']]
+        if len(casting) < MAX_SHADOWS:
+            new_light['shadow'] = True
+        else:
+            change.notes.append(
+                " lights: the new light casts no shadow: at most %d lights "
+                "do (%s already do)" % (MAX_SHADOWS, ', '.join(casting)))
     _apply_light(where, rig, index, spec, change, _self, name or 'add')
 
     def header(added, rig_now):

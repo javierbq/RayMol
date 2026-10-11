@@ -120,7 +120,9 @@ chains with `;`. Keywords, presets and light names match ignoring case.
 
 - `lights add` adds a light. Without a name it takes the first unused of
   key, fill, rim, light4, light5, light6. The first light captures the frame
-  and turns the rig on.
+  and turns the rig on. The new light casts a shadow (`shadow=1`) while fewer
+  than 3 lights do; after that it casts none and the command says why. An
+  explicit `shadow=` wins. Presets and saved rigs are not changed.
 - `lights remove, <name>` removes one light. Removing the last turns the rig
   off.
 - `lights presets` lists the presets with their descriptions.
@@ -200,7 +202,7 @@ field, still accepted.
 | `intensity` | `int` | 0 to 4 | 1 | Brightness. Bright rigs roll off without whitening (see [Exposure and HDR](#exposure-and-hdr)). |
 | `highlight` | `spec` | 0 to 1 | 0.5 | Strength of the light's coloured specular highlight. |
 | `falloff` | | 0 to 2 | 2 | Brightness goes as (aim distance / distance)^falloff: 2 is inverse square, 0 none. |
-| `shadow` | | 0 or 1 | 0 | The light casts its own shadow (at most 3 lights do). |
+| `shadow` | | 0 or 1 | 0 | The light casts its own shadow (at most 3 lights do). `lights add` and the + button give a new light `shadow=1` while fewer than 3 lights cast shadows; `shadow=0` on `lights add` wins. |
 | `outline` | `cue` | 0 or 1 | 0 | Draw the beam's edge on the molecules. |
 | `aim` | | `centre`, a point or a selection | centre | Where the light points: the rig centre, a world point `x/y/z` in Å, or a selection's centroid (resolved once). |
 | `anchor` | | `camera` or `pinned` | camera | Whether the light follows the camera or stays put in the scene. |
@@ -424,7 +426,9 @@ set metal_exposure, 1
 
 Any light can cast its own shadow (`shadow=1`, or **Shadow** in the
 inspector), in its own colour: a red light's shadow is where the red light
-does not reach.
+does not reach. A light added with `lights add` or the + button casts a
+shadow from the start while fewer than 3 lights do, whatever `metal_shadows`
+is (see below).
 
 - Each shadowed light gets its own shadow map, for the first three shadowed
   lights in rig order (a rig holds at most 3), filtered over 3x3 texels.

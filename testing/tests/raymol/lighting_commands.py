@@ -582,7 +582,8 @@ class TestKeywords(CommandsCase):
         self.assertIn("added 'rim'", text)
         rig = cmd.get_lights()
         self.assertIs(rig['enabled'], True)
-        self.assertEqual(rig['lights'], [dict(DEFAULT_LIGHT, name='rim')])
+        self.assertEqual(rig['lights'],
+                         [dict(DEFAULT_LIGHT, name='rim', shadow=True)])
         centre, size = closed_frame()
         for got, want in zip(rig['centre'], centre):
             self.assertAlmostEqual(got, want, places=5)
@@ -1004,7 +1005,7 @@ class TestAddEditRemove(CommandsCase):
         rig = cmd.get_lights()
         self.assertIs(rig['enabled'], True)
         self.assertEqual(rig['lights'], [dict(
-            DEFAULT_LIGHT, name='rim', orbit=160.0, pitch=30.0,
+            DEFAULT_LIGHT, name='rim', orbit=160.0, pitch=30.0, shadow=True,
             color=list(cmd.get_color_tuple('cyan')), intensity=2.0)])
         centre, size = closed_frame()
         self.assertVec(rig['centre'], centre)
@@ -1022,6 +1023,70 @@ class TestAddEditRemove(CommandsCase):
         self.assertEqual(rig['lights'][0]['beam'], 20.0)
         self.assertIs(rig['lights'][1]['shadow'], True)
         self.assertEqual(rig['lights'][2]['softness'], 0.1)
+
+    def testAddCastsShadowByDefault(self):
+        # #799: a new light casts a shadow while fewer than 3 lights do
+        names = [cmd.lights('add') for i in range(3)]
+        self.assertEqual(names, ['key', 'fill', 'rim'])
+        self.assertEqual([l['shadow'] for l in cmd.get_lights()['lights']],
+                         [True, True, True])
+        # the fourth does not, says why, and is not an error
+        result, text = output(cmd.lights, 'add', quiet=0)
+        self.assertEqual(result, 'light4')
+        self.assertIn('casts no shadow', text)
+        self.assertIn('at most 3 lights do (key, fill, rim already do)', text)
+        lights = cmd.get_lights()['lights']
+        self.assertEqual([l['shadow'] for l in lights],
+                         [True, True, True, False])
+        self.assertIn('shadow off', text)
+        # quiet stays quiet
+        self.assertEqual(output(cmd.lights, 'add')[1], '')
+
+    def testAddShadowCountsEveryCastingLight(self):
+        cmd.lights('add', shadow=0)
+        cmd.lights('add', shadow=1)
+        cmd.lights('add', shadow=1)
+        cmd.lights('add')                       # the third caster
+        self.assertEqual([l['shadow'] for l in cmd.get_lights()['lights']],
+                         [False, True, True, True])
+        cmd.lights('add')                       # no room
+        self.assertIs(cmd.get_lights()['lights'][4]['shadow'], False)
+        cmd.lights('remove', 'fill')            # room again
+        cmd.lights('add')
+        self.assertIs(cmd.get_lights()['lights'][-1]['shadow'], True)
+
+    def testAddExplicitShadowWins(self):
+        cmd.lights('add', 'a', shadow=0)
+        cmd.lights('add', 'b')
+        do('lights add, c, shadow=0')
+        self.assertEqual([l['shadow'] for l in cmd.get_lights()['lights']],
+                         [False, True, False])
+        # an explicit shadow=1 at the cap is still the error it was
+        for name in ('d', 'e'):
+            cmd.lights('add', name)
+        self.assertError(r'lights: add: shadow=1: at most 3 lights cast '
+                         r'shadows', cmd.lights, 'add', shadow=1)
+
+    def testAddShadowLeavesOtherThingsAlone(self):
+        # presets, edits of existing lights and metal_shadows are unchanged
+        cmd.lights('three_point')
+        before = cmd.get_lights()
+        self.assertEqual([l['shadow'] for l in before['lights']],
+                         [True, False, False])
+        cmd.lights('fill', beam=30)
+        self.assertIs(cmd.get_lights()['lights'][1]['shadow'], False)
+        shadows = cmd.get('metal_shadows')
+        cmd.lights('add')
+        self.assertEqual(cmd.get('metal_shadows'), shadows)
+        self.assertEqual(
+            [l['shadow'] for l in cmd.get_lights()['lights']],
+            [True, False, False, True])
+
+    def testSetLightsKeepsAMissingShadow(self):
+        # a stored light without a shadow field keeps the old meaning (off)
+        cmd.set_lights({'version': 1, 'enabled': True,
+                        'lights': [{'name': 'key'}]})
+        self.assertIs(cmd.get_lights()['lights'][0]['shadow'], False)
 
     def testEdit(self):
         cmd.lights('three_point')
@@ -1650,7 +1715,7 @@ class TestErrors(CommandsCase):
 
     def testCaps(self):
         for i in range(3):
-            cmd.lights('add', beam=10 + i)
+            cmd.lights('add', beam=10 + i, shadow=0)
         self.assertError(r'add: the rig already has 6 lights', cmd.lights,
                          'add', shadow=1)
         cmd.lights('fill', shadow=1)
