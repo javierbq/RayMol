@@ -1026,11 +1026,36 @@ struct NotesInspectorView: View {
     @State private var pageName = ""
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.dismiss) private var dismiss
     @FocusState private var noteEditorFocused: Bool
+    @State private var showingFullscreen = false
     #endif
     #if os(macOS)
     @Environment(\.openWindow) private var openWindow
     #endif
+
+    /// True for the copy of this view shown inside the iOS fullscreen cover. The
+    /// cover hosts a second instance bound to the same `AnalysisNotesStore`, so
+    /// the text, pages and view links are shared; only transient UI state (mode,
+    /// search, prompts) is per-instance.
+    var isFullscreenCover = false
+
+    /// App-wide note commands (insert view link, toggle preview, font size) are
+    /// delivered by NotificationCenter to every live instance. While the cover is
+    /// up, the covered instance must stay quiet or each command would be handled
+    /// twice (two view-name prompts, preview toggled back off, font stepping by 2).
+    static func handlesExternalCommands(isFullscreenCover: Bool, fullscreenPresented: Bool) -> Bool {
+        isFullscreenCover || !fullscreenPresented
+    }
+
+    private var acceptsExternalCommands: Bool {
+        #if os(iOS)
+        return Self.handlesExternalCommands(isFullscreenCover: isFullscreenCover,
+                                            fullscreenPresented: showingFullscreen)
+        #else
+        return true
+        #endif
+    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -1071,6 +1096,9 @@ struct NotesInspectorView: View {
                 .fixedSize(horizontal: true, vertical: false)
                 .help("Named note documents")
                 saveStatus
+                #if os(iOS)
+                fullscreenToggleButton
+                #endif
             }
 
 
@@ -1229,15 +1257,19 @@ struct NotesInspectorView: View {
                       contentType: exportContentType,
                       defaultFilename: exportFilename) { _ in }
         .onReceive(NotificationCenter.default.publisher(for: .raymolPerformInsertNoteView)) { _ in
+            guard acceptsExternalCommands else { return }
             beginViewLink(.camera)
         }
         .onReceive(NotificationCenter.default.publisher(for: .raymolPerformToggleNotePreview)) { _ in
+            guard acceptsExternalCommands else { return }
             isPreviewing.toggle()
         }
         .onReceive(NotificationCenter.default.publisher(for: .raymolPerformFontIncrease)) { _ in
+            guard acceptsExternalCommands else { return }
             fontSize = min(28, fontSize + 1)
         }
         .onReceive(NotificationCenter.default.publisher(for: .raymolPerformFontDecrease)) { _ in
+            guard acceptsExternalCommands else { return }
             fontSize = max(12, fontSize - 1)
         }
         #if os(iOS)
@@ -1247,8 +1279,31 @@ struct NotesInspectorView: View {
                 Button("Done") { noteEditorFocused = false }
             }
         }
+        .background { if isFullscreenCover { Color(.systemBackground).ignoresSafeArea() } }
+        .fullScreenCover(isPresented: $showingFullscreen) {
+            NotesInspectorView(isFullscreenCover: true)
+                .environmentObject(notes)
+                .environmentObject(engine)
+        }
         #endif
     }
+
+    #if os(iOS)
+    /// Expand the Notes panel to a fullscreen cover (and collapse it back). The
+    /// panel is small on iPhone and in the iPad side column; this gives the editor
+    /// the whole screen without a second copy of the data.
+    private var fullscreenToggleButton: some View {
+        Button {
+            if isFullscreenCover { dismiss() } else { showingFullscreen = true }
+        } label: {
+            Image(systemName: isFullscreenCover
+                  ? "arrow.down.right.and.arrow.up.left"
+                  : "arrow.up.left.and.arrow.down.right")
+        }
+        .accessibilityLabel(isFullscreenCover ? "Collapse notes" : "Expand notes to fullscreen")
+        .accessibilityIdentifier("notes-fullscreen-toggle")
+    }
+    #endif
 
     private func editor(compactLayout: Bool) -> some View {
         TextEditor(text: $notes.text)
