@@ -209,6 +209,7 @@ public:
   bool beginLightShadowMap(int slot, const float* view) override;
   void setLightShadowViewport(int x, int y, int w, int h) override;
   void endLightShadowMaps() override;
+  bool reuseLightShadowMaps(int count) override;
   // GPU frame times (#616): see Renderer.h. setGpuTiming takes
   // metal_gpu_timing every frame (SceneRenderMetal); a mode change starts a
   // fresh readout. getGpuFrameStats is false at mode 0.
@@ -981,10 +982,10 @@ private:
   bool _lightRigWarned = false;
   // The studio shadow maps (#616). _lightShadowMapsReady: this frame's maps
   // were rendered (cleared at every beginFrame; set by the map pass, Part 4
-  // of #616). lightShadowsReady() is the one predicate that chooses the
-  // shadow variants of the rig pipelines and, with them, binds the maps.
-  // A shadow variant that cannot be built draws the rig without its maps,
-  // logged once (_lightShadowWarned).
+  // of #616; also set by reuseLightShadowMaps, #666). lightShadowsReady() is
+  // the one predicate that chooses the shadow variants of the rig pipelines
+  // and, with them, binds the maps. A shadow variant that cannot be built
+  // draws the rig without its maps, logged once (_lightShadowWarned).
   bool _lightShadowMapsReady = false;
   bool _lightShadowWarned = false;
   bool lightShadowsReady() const;
@@ -1015,6 +1016,14 @@ private:
   bool _lightShadowPassActive = false;
   int _lightShadowSlicesOpened = 0;
   bool _lightShadowFailed = false;
+
+  // #666: the maps the last map pass left complete (endLightShadowMaps), kept
+  // across frames until a slice is opened again, the array is reallocated or
+  // a test forgets them; their count. _lightShadowSlicesRendered
+  // counts every slice opened (test-only readout).
+  bool _lightShadowMapsKept = false;
+  int _lightShadowMapsKeptCount = 0;
+  unsigned long long _lightShadowSlicesRendered = 0;
   // The grid cell the following draws belong to (grid_mode): stored by
   // setGridSlot before anything else, 0 outside the grid loops (beginFrame
   // and the loops' setGridSlot(0)). bindLightRig picks that cell's tile of
@@ -1036,8 +1045,14 @@ private:
                         : 0;
   }
   void releaseClassicShadowMap() override;
+  unsigned long long lightShadowMapSlicesRendered() const override
+  {
+    return _lightShadowSlicesRendered;
+  }
+  void forgetLightShadowMaps() override;
   // This frame's studio shadow maps for the readout: the slices the map pass
-  // rendered, and their size (0 without maps).
+  // rendered, and their size (0 without maps; a frame that reuses its maps
+  // reports 0 maps rendered this frame).
   int gpuFrameShadowMaps() const { return _lightShadowSlicesOpened; }
   int gpuFrameShadowSize() const
   {

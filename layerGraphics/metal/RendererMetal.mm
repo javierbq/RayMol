@@ -1155,7 +1155,9 @@ void RendererMetal::beginFrame()
   _lightRigOn = false;
   // So is its HDR colour (#624), derived from it by setLightRig.
   _lightHdrOn = false;
-  // So are its studio shadow maps (#616): no frame reads another's.
+  // So is whether its studio shadow maps (#616) are this frame's: the map
+  // pass or reuseLightShadowMaps (#666, the last pass's maps, kept across
+  // frames) sets it again.
   _lightShadowMapsReady = false;
   _lightStudioShadows = false;
   _lightShadowSlotOpen = -1;
@@ -2873,6 +2875,13 @@ void RendererMetal::releaseClassicShadowMap()
   [_shadowPassDesc release];  _shadowPassDesc = nil;
   _shadowMapFailed = false;
   _shadowMapValid = false;
+}
+
+// Test-only (#666): forgets the kept studio maps, so the next shadowed frame
+// renders them again (an uncached reference frame).
+void RendererMetal::forgetLightShadowMaps()
+{
+  _lightShadowMapsKept = false;
 }
 
 // What the post passes bind at the shadow-map slot: the map once it exists,
@@ -6205,6 +6214,7 @@ bool RendererMetal::ensureLightShadowArray()
     return false;
   // A size change: the old maps go (an in-flight command buffer keeps its own
   // reference until it completes).
+  _lightShadowMapsKept = false;
   [_lightShadowArray release];
   _lightShadowArray = nil;
   _lightShadowArraySize = 0;
@@ -6239,6 +6249,7 @@ bool RendererMetal::ensureLightShadowArray()
 
 bool RendererMetal::beginLightShadowMap(int slot, const float* view)
 {
+  _lightShadowMapsKept = false;
   if (slot < 0 || slot >= kLightRigBlockShadowSlots || !view)
     return false;
   if (!_cmdBuffer || !_lightRigOn || !_lightStudioShadows)
@@ -6285,6 +6296,7 @@ bool RendererMetal::beginLightShadowMap(int slot, const float* view)
     return false;
   }
   ++_lightShadowSlicesOpened;
+  ++_lightShadowSlicesRendered;
   const double side = (double)_lightShadowArraySize;
   MTLViewport vp = {0.0, 0.0, side, side, 0.0, 1.0};
   [_encoder setViewport:vp];
@@ -6339,6 +6351,8 @@ void RendererMetal::endLightShadowMaps()
   _lightShadowMapsReady = _lightRigOn && !_lightShadowFailed &&
                           _lightShadowSlicesOpened > 0 &&
                           _lightShadowSlicesOpened == (int)_lightRigBlock.head[3];
+  _lightShadowMapsKept = _lightShadowMapsReady;
+  _lightShadowMapsKeptCount = _lightShadowSlicesOpened;
   // Re-open the scene pass with a fresh CLEAR, as endShadowPass does (the
   // statements below are its own, copied verbatim; CI compares them).
   _passDesc = _scenePassDesc;
@@ -6364,6 +6378,28 @@ void RendererMetal::endLightShadowMaps()
     applyDepthStencilState();
     [_encoder setCullMode:_cullFaceEnabled ? MTLCullModeBack : MTLCullModeNone];
   }
+}
+
+// #666: this frame samples the maps the last pass left, instead of drawing
+// them again. Only the maps of one complete pass, of this frame's planned
+// count (head.w) and size, in the array that pass drew into; never inside a
+// slice. Nothing is encoded: the scene encoder stays the frame's own, as
+// when no slice opens.
+bool RendererMetal::reuseLightShadowMaps(int count)
+{
+  if (!_lightShadowMapsKept || !_cmdBuffer || !_lightRigOn ||
+      !_lightStudioShadows || _lightShadowSlotOpen >= 0 ||
+      _lightShadowPassActive)
+    return false;
+  if (count <= 0 || count != _lightShadowMapsKeptCount ||
+      count != (int)_lightRigBlock.head[3])
+    return false;
+  // (A reallocation clears _lightShadowMapsKept, so kept maps are the
+  // array's own.)
+  if (!_lightShadowArray || _lightShadowArraySize != _lightShadowSize)
+    return false;
+  _lightShadowMapsReady = true;
+  return true;
 }
 
 // ---------------------------------------------------------------------------

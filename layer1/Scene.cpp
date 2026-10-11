@@ -2235,7 +2235,7 @@ void SceneSetFrame(PyMOLGlobals * G, int mode, int frame)
 
 
 /*========================================================================*/
-void SceneDirty(PyMOLGlobals * G)
+static void SceneDirtyView(PyMOLGlobals * G)
 
 /* This means that the current image on the screen (and/or in the buffer)
 
@@ -2254,6 +2254,13 @@ void SceneDirty(PyMOLGlobals * G)
     }
   }
 
+}
+
+void SceneDirty(PyMOLGlobals * G)
+{
+  if (G->Scene)
+    ++G->Scene->ContentGeneration;
+  SceneDirtyView(G);
 }
 
 void SceneRovingPostpone(PyMOLGlobals * G)
@@ -2284,6 +2291,7 @@ void SceneInvalidateExtentCache(PyMOLGlobals * G)
 {
   CScene *I = G->Scene;
   if(I) {
+    ++I->ContentGeneration;
     I->ShadowExtentValid = false;
     I->LightShadowExtentValid = false;
     I->DofExtentValid = false;
@@ -4335,7 +4343,9 @@ void CScene::reshape(int width, int height)
     I->Height = height;
     I->rect.bottom = I->rect.top - I->Height;
   }
-  SceneDirty(G);
+  // A reshape changes only the viewport, which the studio shadow-map key holds
+  // itself (#666).
+  SceneDirtyView(G);
 
   if(I->CopyType && (!I->CopyForced)) {
     SceneInvalidateCopy(G, false);
@@ -4727,6 +4737,9 @@ void SceneUpdate(PyMOLGlobals * G, int force)
 
   if(force || I->ChangedFlag || ((cur_state != I->LastStateBuilt) &&
                                  (defer_builds_mode > 0))) {
+
+    // A rebuild changes what the scene draws (#666).
+    ++I->ContentGeneration;
 
     SceneCountFrames(G);
 
