@@ -1162,7 +1162,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -e\nLABEL=\"$(bash \"$SRCROOT/../scripts/check_core_fresh.sh\" sha || true)\"\n[ -n \"$LABEL\" ] || { echo \"RayMolCoreSHA skipped (no core_sha.txt stamp)\"; exit 0; }\nPLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n[ -f \"$PLIST\" ] || { echo \"no Info.plist at $PLIST\"; exit 0; }\n/usr/bin/plutil -replace RayMolCoreSHA -string \"$LABEL\" \"$PLIST\"\necho \"RayMolCoreSHA -> $LABEL ($PLIST)\"\n";
+			shellScript = "set -e\nLABEL=\"$(bash \"$SRCROOT/../scripts/check_core_fresh.sh\" sha || true)\"\nPLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n[ -f \"$PLIST\" ] || { echo \"no Info.plist at $PLIST\"; exit 0; }\n# This phase edits the BUILT plist in place and Xcode does not always\n# regenerate it between builds, so an unstamped core must also drop a\n# RayMolCoreSHA left behind by an earlier stamped build.\nif [ -z \"$LABEL\" ]; then\n  /usr/bin/plutil -remove RayMolCoreSHA \"$PLIST\" 2>/dev/null || true\n  echo \"RayMolCoreSHA removed/skipped (no core_sha.txt stamp)\"\n  exit 0\nfi\n/usr/bin/plutil -replace RayMolCoreSHA -string \"$LABEL\" \"$PLIST\"\necho \"RayMolCoreSHA -> $LABEL ($PLIST)\"\n";
 		};
 		1C6F80E717BFF4DB64E10103 /* iOS: Prepare Python binary modules */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -1201,7 +1201,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -e\nLABEL=\"$(bash \"$SRCROOT/../scripts/check_core_fresh.sh\" sha || true)\"\n[ -n \"$LABEL\" ] || { echo \"RayMolCoreSHA skipped (no core_sha.txt stamp)\"; exit 0; }\nPLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n[ -f \"$PLIST\" ] || { echo \"no Info.plist at $PLIST\"; exit 0; }\n/usr/bin/plutil -replace RayMolCoreSHA -string \"$LABEL\" \"$PLIST\"\necho \"RayMolCoreSHA -> $LABEL ($PLIST)\"\n";
+			shellScript = "set -e\nLABEL=\"$(bash \"$SRCROOT/../scripts/check_core_fresh.sh\" sha || true)\"\nPLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n[ -f \"$PLIST\" ] || { echo \"no Info.plist at $PLIST\"; exit 0; }\n# This phase edits the BUILT plist in place and Xcode does not always\n# regenerate it between builds, so an unstamped core must also drop a\n# RayMolCoreSHA left behind by an earlier stamped build.\nif [ -z \"$LABEL\" ]; then\n  /usr/bin/plutil -remove RayMolCoreSHA \"$PLIST\" 2>/dev/null || true\n  echo \"RayMolCoreSHA removed/skipped (no core_sha.txt stamp)\"\n  exit 0\nfi\n/usr/bin/plutil -replace RayMolCoreSHA -string \"$LABEL\" \"$PLIST\"\necho \"RayMolCoreSHA -> $LABEL ($PLIST)\"\n";
 		};
 		20F6E2447B7743E74607108B /* Brand: register molecular document types */ = {
 			isa = PBXShellScriptBuildPhase;

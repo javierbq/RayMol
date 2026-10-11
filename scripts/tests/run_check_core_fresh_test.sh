@@ -7,8 +7,10 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SCRIPT="$ROOT/scripts/check_core_fresh.sh"
 FAILED=0
-TMPS=()
-trap 'rm -rf "${TMPS[@]}"' EXIT
+# Every fixture lives under one parent that THIS shell owns: make_fixture runs
+# inside $(...) subshells, so tracking paths in an array there would be lost.
+FIXROOT="$(mktemp -d)"
+trap 'rm -rf "$FIXROOT"' EXIT
 
 ok ()   { echo "  ok: $1"; }
 fail () { echo "  FAIL: $1"; FAILED=1; }
@@ -29,7 +31,7 @@ lacks () {
 # A throwaway git repo holding the script under test (it derives its root from
 # its own location), a few core sources, a Swift file and a built lib + stamp.
 make_fixture () {
-  local d; d="$(mktemp -d)"; TMPS+=("$d")
+  local d; d="$(mktemp -d "$FIXROOT/fx.XXXXXX")"
   mkdir -p "$d/scripts" "$d/layer1" "$d/layer4" "$d/include" "$d/data/shaders" \
            "$d/swiftui" "$d/docs" "$d/build_macos_swiftui" "$d/build_ios" "$d/build_ios_device"
   cp "$SCRIPT" "$d/scripts/check_core_fresh.sh"
@@ -138,7 +140,7 @@ rm "$D/build_macos_swiftui/libpymol_core.a"
 expect "missing lib fails" 1 chk "$D" "$D/build_macos_swiftui"
 contains "missing lib message" "is missing: run"
 
-N="$(mktemp -d)"; TMPS+=("$N"); mkdir -p "$N/scripts" "$N/build_macos_swiftui"
+N="$(mktemp -d "$FIXROOT/nogit.XXXXXX")"; mkdir -p "$N/scripts" "$N/build_macos_swiftui"
 cp "$SCRIPT" "$N/scripts/"; echo lib > "$N/build_macos_swiftui/libpymol_core.a"
 printf 'git_sha=unknown\ndirty=0\nsource_fingerprint=abc\n' > "$N/build_macos_swiftui/core_sha.txt"
 expect "no git work tree only warns" 0 chk "$N" "$N/build_macos_swiftui"
@@ -157,6 +159,12 @@ echo '// edit' >> "$E/layer1/Scene.cpp"; stamp "$E"
 grep -qx "dirty=1" "$S" && ok "edited tree stamps dirty=1" || fail "stamp dirty: $(cat "$S")"
 OUT="$(bash "$E/scripts/check_core_fresh.sh" sha "$E/build_macos_swiftui")"
 [ "$OUT" = "${HEAD_SHA:0:9}-dirty" ] && ok "sha prints -dirty" || fail "sha dirty output '$OUT'"
+# The root-level generator is matched by an anchored regex alternative; the
+# dirty check must still see it through porcelain's status-column prefix.
+G="$(make_fixture)"; echo '# edit' >> "$G/create_shadertext.py"; stamp "$G"
+grep -qx "dirty=1" "$G/build_macos_swiftui/core_sha.txt" && ok "edited create_shadertext.py stamps dirty=1" || fail "create_shadertext.py dirty: $(cat "$G/build_macos_swiftui/core_sha.txt")"
+G="$(make_fixture)"; echo 'doc' >> "$G/docs/readme.md"; stamp "$G"
+grep -qx "dirty=0" "$G/build_macos_swiftui/core_sha.txt" && ok "doc-only edit stamps dirty=0" || fail "doc dirty: $(cat "$G/build_macos_swiftui/core_sha.txt")"
 OUT="$(bash "$E/scripts/check_core_fresh.sh" sha "$E/build_ios")"
 [ -z "$OUT" ] && ok "sha is empty without a stamp" || fail "sha without stamp: '$OUT'"
 

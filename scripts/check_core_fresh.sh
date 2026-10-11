@@ -106,7 +106,9 @@ cmd_stamp() {
   local sha="unknown" dirty=0
   if in_git; then
     sha="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
-    if [ -n "$(cd "$ROOT" && git status --porcelain -- "${PATHSPECS[@]}" 2>/dev/null | grep -E "$EXT_RE")" ]; then dirty=1; fi
+    # `cut -c4-` drops porcelain's two status columns + space, so EXT_RE's
+    # anchored create_shadertext.py alternative sees a bare path.
+    if [ -n "$(cd "$ROOT" && git status --porcelain -- "${PATHSPECS[@]}" 2>/dev/null | cut -c4- | grep -E "$EXT_RE")" ]; then dirty=1; fi
   fi
   [ -n "$fp" ] || fp="$(fingerprint || true)"
   # Write-then-rename so a reader never sees a half-written stamp.

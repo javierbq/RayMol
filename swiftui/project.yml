@@ -377,9 +377,16 @@ targets:
         script: |
           set -e
           LABEL="$(bash "$SRCROOT/../scripts/check_core_fresh.sh" sha || true)"
-          [ -n "$LABEL" ] || { echo "RayMolCoreSHA skipped (no core_sha.txt stamp)"; exit 0; }
           PLIST="${TARGET_BUILD_DIR}/${INFOPLIST_PATH}"
           [ -f "$PLIST" ] || { echo "no Info.plist at $PLIST"; exit 0; }
+          # This phase edits the BUILT plist in place and Xcode does not always
+          # regenerate it between builds, so an unstamped core must also drop a
+          # RayMolCoreSHA left behind by an earlier stamped build.
+          if [ -z "$LABEL" ]; then
+            /usr/bin/plutil -remove RayMolCoreSHA "$PLIST" 2>/dev/null || true
+            echo "RayMolCoreSHA removed/skipped (no core_sha.txt stamp)"
+            exit 0
+          fi
           /usr/bin/plutil -replace RayMolCoreSHA -string "$LABEL" "$PLIST"
           echo "RayMolCoreSHA -> $LABEL ($PLIST)"
       # Sparkle auto-update keys. macOS only (Sparkle is not linked on iOS), and
