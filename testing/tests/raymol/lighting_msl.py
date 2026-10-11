@@ -52,6 +52,8 @@ METAL_MM = os.path.join(ROOT, 'layerGraphics', 'metal', 'RendererMetal.mm')
 SCENE_RENDER = os.path.join(ROOT, 'layer1', 'SceneRender.cpp')
 BLOCK_H = os.path.join(ROOT, 'layer1', 'LightRigBlock.h')
 SHADING_H = os.path.join(ROOT, 'layer1', 'LightShading.h')
+DIST_DASH = os.path.join(ROOT, 'layer2', 'RepDistDash.cpp')
+CGO_GL = os.path.join(ROOT, 'layer1', 'CGOGL.cpp')
 
 
 def _load_shader_sources():
@@ -1250,6 +1252,50 @@ class TestBezierTube(LightMSLCase):
         code = strip_comments(self.mm)
         self.assertEqual(len(re.findall(r'(?<!::)buildBezierTubeRigPipeline\(\);',
                                         code)), 1)
+
+
+class TestMeasurementDashes(LightMSLCase):
+    """#738: measurement dashes (the DistSet dash representation) are lit
+    geometry under a rig, by owner decision, not display-referred overlays.
+    On Metal a dash is a cylinder impostor, so it takes the rig through the
+    cylinder pipelines pinned in TestImpostorPipelines; these pin the chain
+    that puts it there."""
+
+    def testDashIsACylinderByDefault(self):
+        for path in (DIST_DASH, CGO_GL):
+            if not os.path.isfile(path):
+                self.fail('%s is missing from the checkout' % path)
+        code = strip_comments(read(DIST_DASH))
+        # dash_as_cylinders and render_as_cylinders both default on
+        info = read(os.path.join(ROOT, 'layer1', 'SettingInfo.h'))
+        self.assertRegex(info, r'REC_b\(\s*684,\s*dash_as_cylinders\s*,\s*global\s*,\s*1\s*\)')
+        self.assertRegex(info, r'REC_b\(\s*691,\s*render_as_cylinders\s*,\s*global\s*,\s*1\s*\)')
+        self.assertRegex(code, r'dash_as_cylinders\s*=\s*SettingGet<bool>\(G,\s*cSetting_render_as_cylinders\)'
+                               r'\s*&&\s*SettingGet<bool>\(G,\s*cSetting_dash_as_cylinders\)')
+        # the cylinder arm wraps the dashes in the cylinder shader, with no
+        # CGO_GL_LIGHTING disable (that is the line arm's)
+        arm = code[code.index('if (dash_as_cylinders) {\n      CGO* tmpCGO'):]
+        arm = arm[:arm.index('} else {')]
+        self.assertIn('GL_CYLINDER_SHADER', arm)
+        self.assertIn('CGOConvertShaderCylindersToCylinderShader', arm)
+        self.assertNotIn('CGO_GL_LIGHTING', arm)
+
+    def testDashReachesTheRigCylinderPipeline(self):
+        via = cpp_function(read(CGO_GL), 'drawCylinderImpostorsViaMetal')
+        self.assertIn('G->Renderer->drawCylinderImpostors(call);', via)
+        # the dash's radius is a uniform; nothing here switches the rig off
+        self.assertIn('call.uniRadius = I->metalCylUniRadius;', via)
+        self.assertNotRegex(via, r'(?i)light|rig|unlit')
+        # drawCylinderImpostors picks the rig by the frame alone, not by the
+        # draw call, so a dash (uniRadius > 0) is lit exactly like a stick
+        body = cpp_function(self.mm, 'RendererMetal::drawCylinderImpostors')
+        self.assertRegex(body, r'const bool cylRig\s*=\s*_lightRigOn\s*&&\s*'
+                               r'!_shadowMode\s*&&\s*!_peelMode;')
+        self.assertNotRegex(re.search(r'const bool cylRig[^;]*;', body).group(0),
+                            r'uniRadius')
+        # and the cylinder fragment they run is a lit, rig-taking one
+        self.assertIn('cyl_impostor_fragment',
+                      EXPECTED_RIG_FRAGMENTS['kCylinderImpostorSrc'])
 
 
 class TestLayout(LightMSLCase):
