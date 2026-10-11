@@ -313,9 +313,7 @@ final class OrbitLabelLayoutTests: XCTestCase {
         let zeroIndex = arcLabels.all.firstIndex { $0.text == "0°" }!
         let zeroFrame = arcTodays[zeroIndex]
         let handleObstacle = try XCTUnwrap(arcObstacles.first)
-        let valueFrameToday = arcTodays[0]
-        XCTAssertTrue(handleObstacle.overlaps(zeroFrame) || OrbitLabelLayout.overlap(valueFrameToday, zeroFrame),
-                      "0° tick label overlaps the handle obstacle or the value's frame")
+        XCTAssertTrue(handleObstacle.overlaps(zeroFrame), "today: the handle covers the arc's 0° label")
         assertClear(arcLabels.all, obstacles: arcObstacles, bounds: arcBounds)
         let zeroRef = try XCTUnwrap(arcLabels.references.first { $0.text == "0°" })
         XCTAssertNil(zeroRef.frame, "0° reference is hidden")

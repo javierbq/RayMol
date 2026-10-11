@@ -576,13 +576,6 @@ struct OrbitLabel: Equatable {
 
     /// The font the label is measured and drawn in.
     var font: Font { kind == .value ? Self.valueFont : Self.labelFont }
-
-    init(text: String, kind: Kind, candidates: [OrbitLabelPlacement], frame: CGRect? = nil) {
-        self.text = text
-        self.kind = kind
-        self.candidates = candidates
-        self.frame = frame
-    }
 }
 
 /// Places labels so none covers another or a lamp (#676). Pure and
@@ -592,15 +585,16 @@ struct OrbitLabel: Equatable {
 /// or lamp label with no clear candidate takes the one that covers the fewest
 /// (the first of those); a reference label with none is hidden.
 enum OrbitLabelLayout {
-    /// How far a label may spill past its canvas (inside OrbitCanvas.bleed).
-    static let bleed: CGFloat = 4
+    /// How far a label may spill past its canvas: half of what the canvas
+    /// allows its drawing (OrbitCanvas.bleed).
+    static let bleed: CGFloat = OrbitCanvas.bleed / 2
 
     /// The rect labels stay inside for a canvas of `size`.
     static func bounds(for size: CGSize) -> CGRect {
         CGRect(origin: .zero, size: size).insetBy(dx: -bleed, dy: -bleed)
     }
 
-    /// Two label rects overlap (touching does not count).
+    /// Two label rects overlap: share some area (touching edges do not).
     static func overlap(_ a: CGRect, _ b: CGRect) -> Bool {
         a.minX < b.maxX && b.minX < a.maxX && a.minY < b.maxY && b.minY < a.maxY
     }
@@ -639,9 +633,12 @@ struct OrbitPlanLabels: Equatable {
     var orbit: OrbitLabel
     /// The other lamps' labels, in rig order (`state.others`).
     var lamps: [OrbitLabel]
-    /// The ring labels (inner to outer), then `±180°`, `90°`, `−90°`, `0°`.
-    var references: [OrbitLabel]
+    /// The ring labels, inner to outer (one per `layout.rings`).
+    var rings: [OrbitLabel]
+    /// The tick labels: `±180°`, `90°`, `−90°`, `0°`.
+    var ticks: [OrbitLabel]
 
+    var references: [OrbitLabel] { rings + ticks }
     var all: [OrbitLabel] { [radius, orbit] + lamps + references }
 
     /// The selected lamp's halo ring. Obstacles are the drawn circles'
@@ -724,7 +721,7 @@ struct OrbitPlanLabels: Equatable {
 
         let c = layout.centre
         let outer = layout.outerRadius
-        var unplacedReferences: [OrbitLabel] = layout.rings.map { ring in
+        let unplacedRings = layout.rings.map { ring in
             OrbitLabel(
                 text: String(format: "%.0f×", ring),
                 kind: .reference,
@@ -732,7 +729,7 @@ struct OrbitPlanLabels: Equatable {
                                                  anchor: .topTrailing)]
             )
         }
-        unplacedReferences.append(contentsOf: [
+        let unplacedTicks = [
             OrbitLabel(text: "±180°", kind: .reference,
                        candidates: [OrbitLabelPlacement(point: CGPoint(x: c.x + 3, y: c.y - outer + 2),
                                                         anchor: .topLeading)]),
@@ -745,18 +742,19 @@ struct OrbitPlanLabels: Equatable {
             OrbitLabel(text: "0°", kind: .reference,
                        candidates: [OrbitLabelPlacement(point: CGPoint(x: c.x + 5, y: c.y + outer - 3),
                                                         anchor: .bottomLeading)])
-        ])
+        ]
 
-        let unplacedAll = [unplacedRadius, unplacedOrbit] + unplacedLamps + unplacedReferences
+        let unplacedAll = [unplacedRadius, unplacedOrbit] + unplacedLamps + unplacedRings + unplacedTicks
         let bounds = OrbitLabelLayout.bounds(for: layout.size)
         let obstacles = Self.obstacles(state: state, layout: layout, squareAngle: squareAngle)
         let placed = OrbitLabelLayout.place(unplacedAll, obstacles: obstacles, in: bounds, size: size)
 
         radius = placed[0]
         orbit = placed[1]
-        let lampCount = state.others.count
-        lamps = Array(placed[2..<(2 + lampCount)])
-        references = Array(placed[(2 + lampCount)...])
+        let ringsAt = 2 + unplacedLamps.count, ticksAt = ringsAt + unplacedRings.count
+        lamps = Array(placed[2..<ringsAt])
+        rings = Array(placed[ringsAt..<ticksAt])
+        ticks = Array(placed[ticksAt...])
     }
 }
 
@@ -842,10 +840,9 @@ struct OrbitPlanPainter {
         context.fill(circle(c, disc), with: .color(style.text.opacity(0.08)))
         context.stroke(circle(c, disc), with: .color(style.text.opacity(0.25)), lineWidth: 0.75)
         // The rings, labelled just inside their tops, left of the axis.
-        for (i, ring) in layout.rings.enumerated() {
-            let r = layout.ringRadius(ring)
-            context.stroke(circle(c, r), with: .color(grey), lineWidth: 1)
-            ink.draw(labels.references[i], colour: muted, in: &context)
+        for (ring, label) in zip(layout.rings, labels.rings) {
+            context.stroke(circle(c, layout.ringRadius(ring)), with: .color(grey), lineWidth: 1)
+            ink.draw(label, colour: muted, in: &context)
         }
         // The angle ticks across the outer ring and their labels inside it.
         for orbit in [0.0, 90, 180, -90] {
@@ -854,8 +851,8 @@ struct OrbitPlanPainter {
             tick.addLine(to: layout.point(orbit: orbit, distance: outer + 3))
             context.stroke(tick, with: .color(style.text.opacity(0.35)), lineWidth: 1)
         }
-        for ref in labels.references.dropFirst(layout.rings.count) {
-            ink.draw(ref, colour: muted, in: &context)
+        for tick in labels.ticks {
+            ink.draw(tick, colour: muted, in: &context)
         }
         // The camera, under the bottom of the outer ring.
         var camera = Path()
