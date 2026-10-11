@@ -137,6 +137,11 @@ final class LightsFloatLayoutTests: XCTestCase {
         XCTAssertEqual(f.atmosphere, CGRect(x: 834 - 8 - w, y: 8 + M.inspectorHeaderHeight + M.gap, width: w,
                                             height: M.atmosphereHeaderHeight))
         XCTAssertEqual(f.all, [f.card, f.inspector, f.atmosphere])
+        // #673: the "No casters" line grows the collapsed inspector and moves the Atmosphere card down.
+        let h = L.frames(corner: .bottomLeading, container: size, inspectorCollapsed: true, chrome: chrome,
+                         inspectorHintLines: 1)
+        XCTAssertEqual(h.inspector.height, M.inspectorHeaderHeight + M.inspectorHintHeight)
+        XCTAssertEqual(h.atmosphere.minY, f.atmosphere.minY + M.inspectorHintHeight)
         // tl: top-leading, beside the inspector.
         f = L.frames(corner: .topLeading, container: size, inspectorCollapsed: true, chrome: chrome)
         XCTAssertEqual(f.card.origin, CGPoint(x: 8, y: 8))
@@ -606,12 +611,18 @@ final class LightsFloatSnapshotTests: XCTestCase {
 
         // The view lays the card out where the pure layout says.
         let frames = try XCTUnwrap(reported.frames, "\(shot.name): no frames reported")
+        // #673: the key light is shadowed, the scene's Shadows are on (the
+        // host) and the fake plan gives it no map, so the inspector shows its
+        // "No casters" line under the header, collapsed or not.
+        let hintLines = LightsInspectorState(controller, sceneShadowsOn: true)?.showsNoCastersHint == true ? 1 : 0
+        XCTAssertEqual(hintLines, shot.noLights ? 0 : 1, "\(shot.name): the casters hint")
         let atmosphereCollapsed = !shot.atmosphereStart.startsExpanded(airIsOn: controller.airIsOn)
         let want = LightsFloatLayout.frames(corner: shot.corner, container: shot.size,
                                             inspectorCollapsed: shot.inspectorCollapsed, chrome: shot.chrome,
                                             atmosphereHeight: atmosphereCollapsed
                                                 ? LightsFloatMetrics.atmosphereHeaderHeight : frames.atmosphere.height,
-                                            showsCard: !shot.noLights, showsInspector: !shot.noLights)
+                                            showsCard: !shot.noLights, showsInspector: !shot.noLights,
+                                            inspectorHintLines: hintLines)
         // #726: the Atmosphere card under the inspector (or alone at the
         // top inset), its header 44 pt while collapsed, in every hint state.
         XCTAssertEqual(frames.atmosphere.minX, want.atmosphere.minX, accuracy: 0.5, "\(shot.name) atmosphere")

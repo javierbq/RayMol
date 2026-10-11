@@ -100,6 +100,10 @@ enum LightsFloatMetrics {
     /// The inspector card collapsed to its header on iOS (44 pt targets): a
     /// test pins it to the rendered card.
     static let inspectorHeaderHeight: CGFloat = 44
+    /// A hint line under the inspector's header (the #673 "No casters" line:
+    /// an 11 pt line plus its 8 pt bottom padding). It shows while collapsed
+    /// too, so the collapsed inspector is the header plus this.
+    static let inspectorHintHeight: CGFloat = 22
     /// The Atmosphere card collapsed to its header on iOS, whatever its hint
     /// (a header glyph): a test pins it to the rendered card.
     static let atmosphereHeaderHeight: CGFloat = 44
@@ -200,13 +204,16 @@ enum LightsFloatLayout {
     /// the room left above the Atmosphere card (nil: all of it). A card that
     /// is not drawn (`showsCard`: no light; `showsInspector`: no selected
     /// light) is `.zero` and leaves no room behind: the Atmosphere card then
-    /// moves up to the top inset.
+    /// moves up to the top inset. `inspectorHintLines` counts the hint lines
+    /// under the header (0 or 1: `LightsInspectorState.showsNoCastersHint`),
+    /// which add to the collapsed inspector's height.
     static func frames(corner: LightsFloatCorner, container: CGSize, inspectorCollapsed: Bool,
                        chrome: ViewportChromeHeights = ViewportChromeHeights(),
                        cardSize: CGSize = LightsFloatMetrics.orbitCardSize,
                        inspectorHeight: CGFloat? = nil,
                        atmosphereHeight: CGFloat = LightsFloatMetrics.atmosphereHeaderHeight,
-                       showsCard: Bool = true, showsInspector: Bool = true) -> Frames {
+                       showsCard: Bool = true, showsInspector: Bool = true,
+                       inspectorHintLines: Int = 0) -> Frames {
         let inset = LightsFloatMetrics.inset, gap = LightsFloatMetrics.gap
         let width = LightsInspector.width
         let trailingBottom = container.height - inset - bottomClearance(trailing: true, chrome: chrome)
@@ -224,7 +231,8 @@ enum LightsFloatLayout {
         if showsInspector {
             let room = max(0, limit - top - atmosphereHeight - gap)
             let height = inspectorCollapsed
-                ? min(LightsFloatMetrics.inspectorHeaderHeight, room)
+                ? min(LightsFloatMetrics.inspectorHeaderHeight
+                        + CGFloat(inspectorHintLines) * LightsFloatMetrics.inspectorHintHeight, room)
                 : min(inspectorHeight ?? room, room)
             inspector = CGRect(x: x, y: top, width: width, height: height)
             atmosphereTop = inspector.maxY + gap
