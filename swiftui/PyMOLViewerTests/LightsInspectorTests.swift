@@ -1055,3 +1055,50 @@ final class LightsNoCastersHintTests: XCTestCase {
             isShadowed: false, rigOn: true, sceneShadowsOn: true, shadowSlot: -1))
     }
 }
+
+// MARK: - Exposure row (#733)
+
+/// The inspector's rig-level Exposure row edits the SAME setting as
+/// Effects > Exposure: same entry, range and command text.
+final class LightsExposureRowTests: XCTestCase {
+    func testControlWritesTheEffectsSettingAndCommand() {
+        var ran: [String] = []
+        let control = LightsExposureControl.scene(values: ["metal_exposure": 0.6], run: { ran.append($0) })
+        let effects = SceneCatalog.exposure
+        XCTAssertEqual(effects.setting, "metal_exposure")
+        XCTAssertEqual(control.value, 0.6)
+        XCTAssertEqual(control.range, effects.min...effects.max)
+        XCTAssertEqual(control.decimals, effects.decimals)
+        control.set(0.75)
+        control.set(1.2)
+        // Exactly what the Effects slider runs for those values.
+        XCTAssertEqual(ran, ["set metal_exposure, 0.7500", "set metal_exposure, 1.2000"])
+        XCTAssertEqual(ran, [0.75, 1.2].map { SceneCatalog.setCommand(effects, $0) })
+    }
+
+    func testRangeAndDefault() {
+        let control = LightsExposureControl.scene(values: [:], run: { _ in })
+        XCTAssertEqual(control.value, 1.0, "unpolled: neutral")
+        XCTAssertEqual(control.range, 0.2...2.0)
+        XCTAssertEqual(control.text(1.0), "1.00")
+    }
+
+    func testCaptionNamesWhatItScales() {
+        XCTAssertTrue(LightsExposureControl.caption.contains("lit scene"))
+        XCTAssertTrue(LightsExposureControl.caption.contains("air"))
+    }
+
+    /// With no control in the environment the card draws no Exposure row; with
+    /// one, the row and its caption are in the view tree at the card width.
+    @MainActor
+    func testRowDrawsOnlyWithAControl() {
+        let style = LightsInspectorSnapshotTests.style(dark: true)
+        let control = LightsExposureControl.scene(values: ["metal_exposure": 1], run: { _ in })
+        let host = NSHostingView(rootView: LightExposureRow(control: control, style: style)
+            .frame(width: LightsInspectorMetrics.width - 24))
+        host.frame = NSRect(x: 0, y: 0, width: LightsInspectorMetrics.width, height: 80)
+        host.layoutSubtreeIfNeeded()
+        XCTAssertGreaterThan(host.fittingSize.height, 0)
+        XCTAssertLessThanOrEqual(host.fittingSize.width, LightsInspectorMetrics.width)
+    }
+}

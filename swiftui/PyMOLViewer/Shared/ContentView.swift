@@ -305,6 +305,10 @@ struct ContentView: View {
 
     var body: some View {
         layout
+            // The Lights inspector's Exposure row (#733): the same setting the
+            // Effects slider edits.
+            .environment(\.lightsExposure,
+                         .scene(values: engine.sceneState.values, run: { engine.runCommand($0) }))
             // What's New splash (both platforms, single hook): once-per-launch
             // auto-show, the manual-open notification, and the sheet itself.
             .onAppear {
