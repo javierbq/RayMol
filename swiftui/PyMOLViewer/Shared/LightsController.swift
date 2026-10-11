@@ -181,6 +181,10 @@ enum LightsAction: Equatable {
     /// Aim light `name` back at the rig centre (#699: a double-click or
     /// double-tap on the gizmo's aim dot), the `aim=centre` the console takes.
     case aimAtCentre(String)
+    /// Rename light `old` to `new` (#797), the `name=` the console takes:
+    /// one edit. Both are names the core's rule accepts; the unique-name and
+    /// preset/keyword checks are `nameCheck`'s, and the core makes them again.
+    case rename(old: String, new: String)
     /// The Atmosphere card's Off (#726): every air field back to its table
     /// default (`atmosphere off`).
     case atmosphereOff
@@ -703,6 +707,65 @@ final class LightsController: ObservableObject {
         let mirrorBefore = mirrorJSON
         refresh()
         noteEdit(nil, ifChangedFrom: mirrorBefore)
+    }
+
+    /// What `text` comes to as the new name of the selected light (#797), by
+    /// the core's rules against the rig's other lights and the preset menu.
+    /// `.refused` with nothing selected, or when `target` is given and is not
+    /// the selected light (ignoring case): a popover opened on one light never
+    /// checks or renames another.
+    func renameCheck(_ text: String, of target: String? = nil) -> LightsAction.NameCheck {
+        guard let current = selectedLight?.name ?? selection.name else {
+            return .refused("No light is selected")
+        }
+        if let target, target.lowercased() != current.lowercased() {
+            return .refused("That light is gone")
+        }
+        return LightsAction.nameCheck(text, renaming: current,
+                                      among: rig?.lights.map(\.name) ?? [],
+                                      presets: presets.map(\.name))
+    }
+
+    /// Rename the selected light (#797): one `lights <old>, name=<new>`
+    /// command and one counted edit. The selection and the identity colour
+    /// follow the light. True when the rig now has the new name. False, and
+    /// nothing run, unless the light can be edited and `renameCheck` accepts
+    /// `text` (for `target`, when given, re-checked after a stale re-read);
+    /// also false when the core refused it (the rig is unchanged).
+    @discardableResult
+    func renameSelected(to text: String, of target: String? = nil) -> Bool {
+        guard canEdit else { return false }
+        refreshIfStale()
+        guard let light = selectedLight, case .ok = renameCheck(text, of: target) else {
+            return false
+        }
+        let new = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let action = LightsAction.rename(old: light.name, new: new)
+        guard action.invocation != nil else { return false }
+        // The light keeps its colour: move its slot to the new name before the
+        // read that assigns slots (a new name would otherwise take the default
+        // or lowest free one). A refusal gives them back.
+        let slotsBefore = identitySlots
+        if let slot = identitySlots[light.name.lowercased()] {
+            identitySlots[light.name.lowercased()] = nil
+            identitySlots[new.lowercased()] = slot
+        }
+        seams.perform(action)
+        let mirrorBefore = mirrorJSON
+        refresh()
+        // Done when the rig has the new spelling and no other light answers to
+        // the old name (a light the console added meanwhile may hold `new`).
+        let now = rig?.lights.map(\.name) ?? []
+        let oldKey = light.name.lowercased()
+        guard now.contains(new),
+              oldKey == new.lowercased() || !now.contains(where: { $0.lowercased() == oldKey })
+        else {
+            identitySlots = LightPalette.assign(names: now, previous: slotsBefore)
+            return false
+        }
+        noteEdit(nil, ifChangedFrom: mirrorBefore)
+        select(name: new)
+        return true
     }
 
     /// Apply the preset called `name` and select its first light.

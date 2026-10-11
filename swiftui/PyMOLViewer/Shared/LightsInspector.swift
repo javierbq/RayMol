@@ -180,6 +180,8 @@ struct LightsInspectorState: Equatable {
     static let rigOffText = "Lights off"
     static let revertTitle = "Revert this light"
     static let deleteTitle = "Delete"
+    static let renameTitle = "Rename\u{2026}"
+    static let renameHelp = "Rename this light"
 
     /// An Orbit or Pitch stepper press, in degrees (Up/Down arrows: 1°).
     static let stepperStep = 5.0
@@ -242,6 +244,8 @@ struct LightsInspectorState: Equatable {
     var canEdit: Bool
     var canRevertLight: Bool
     var canDelete: Bool
+    /// Rename can be used (the light can be edited).
+    var canRename: Bool
     var color: SIMD3<Double>
     var swatches: [Swatch]
     var swatchIndex: Int?
@@ -276,6 +280,7 @@ struct LightsInspectorState: Equatable {
         canEdit = controller.canEdit
         canRevertLight = controller.canRevertLight
         canDelete = controller.canRemove
+        canRename = controller.canEdit
         color = light.color
         let selectedSwatch = LightColour.swatchIndex(of: light.color)
         swatchIndex = selectedSwatch
@@ -964,6 +969,11 @@ struct LightsInspector: View {
     /// The colour row's measured width: how many columns of 44 pt swatches
     /// it lays out on iOS (`LightsTouch.swatchColumns`).
     @State private var colourWidth: CGFloat = LightsInspector.width - 24
+    /// The Rename popover (#797) is open.
+    @State private var renaming = false
+    /// The light Rename was tapped on: frozen when the popover opens, so a
+    /// selection change while it is open never retargets it.
+    @State private var renameTarget = ""
     /// 44 on iOS (every control a 44 pt target, #623), 0 on macOS.
     @Environment(\.lightsTouchMinimum) private var touchMinimum
     @Environment(\.lightsExposure) private var exposure
@@ -1207,6 +1217,19 @@ struct LightsInspector: View {
                     }
                 }
             }
+            Divider()
+            Button(LightsInspectorState.renameTitle) {
+                let target = state.name
+                // After the menu has closed: a popover opened while the menu is
+                // still dismissing is dropped.
+                DispatchQueue.main.async {
+                    renameTarget = target
+                    renaming = true
+                }
+            }
+            .disabled(!state.canRename)
+            .help(LightsInspectorState.renameHelp)
+            .accessibilityIdentifier("lights.inspector.rename")
         } label: {
             HStack(spacing: 3) {
                 Text(verbatim: state.name)
@@ -1229,6 +1252,12 @@ struct LightsInspector: View {
         .accessibilityValue(state.name)
         .accessibilityHint(LightsInspectorState.menuHint)
         .accessibilityIdentifier("lights.inspector.menu")
+        .popover(isPresented: $renaming, arrowEdge: .bottom) {
+            LightRenameForm(controller: controller, style: style, current: renameTarget) {
+                renaming = false
+            }
+            .presentationCompactAdaptation(.popover)
+        }
     }
 
     // MARK: content
@@ -1395,6 +1424,94 @@ struct LightsInspector: View {
                 .accessibilityIdentifier("lights.inspector.delete")
         }
         .padding(.top, 2)
+    }
+}
+
+// MARK: - Rename (#797)
+
+/// The Rename popover: a text field with the light's current name. The name
+/// is checked on every keystroke with the core's rules (`LightsAction.nameCheck`)
+/// and the reason shows under the field; a refused name is never sent.
+struct LightRenameForm: View {
+    @ObservedObject var controller: LightsController
+    var style: LightsBarStyle
+    /// The selected light's name when the popover opened.
+    let current: String
+    var onDone: () -> Void
+
+    @State private var text: String
+    /// The core refused a name the check accepted (it changed under us).
+    @State private var coreRefused = false
+    @FocusState private var focused: Bool
+
+    static let title = "Rename light"
+    static let fieldLabel = "Light name"
+    static let coreRefusedReason = "That name was not accepted"
+
+    init(controller: LightsController, style: LightsBarStyle, current: String,
+         onDone: @escaping () -> Void) {
+        self.controller = controller
+        self.style = style
+        self.current = current
+        self.onDone = onDone
+        _text = State(initialValue: current)
+    }
+
+    private var check: LightsAction.NameCheck { controller.renameCheck(text, of: current) }
+
+    /// The reason to show: nothing while the text is the light's own name.
+    private var reason: String? {
+        if coreRefused { return Self.coreRefusedReason }
+        if case .refused(let why) = check { return why }
+        return nil
+    }
+
+    private func commit() {
+        guard case .ok = check else { return }
+        if controller.renameSelected(to: text, of: current) { onDone() } else { coreRefused = true }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(Self.title).font(.system(size: 13, weight: .semibold))
+            TextField(Self.fieldLabel, text: $text)
+                .textFieldStyle(.roundedBorder)
+                .focused($focused)
+                .autocorrectionDisabled()
+                #if os(iOS)
+                .textInputAutocapitalization(.never)
+                #endif
+                .onSubmit(commit)
+                .onChange(of: text) { _, _ in coreRefused = false }
+                .accessibilityLabel(Self.fieldLabel)
+                .accessibilityIdentifier("lights.rename.field")
+            Text(verbatim: reason ?? " ")
+                .font(.system(size: 11))
+                .foregroundColor(reason == nil ? .clear : .red)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityHidden(reason == nil)
+                .accessibilityIdentifier("lights.rename.reason")
+            HStack {
+                Spacer()
+                Button("Cancel", action: onDone)
+                    .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("lights.rename.cancel")
+                Button("Rename", action: commit)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled({ if case .ok = check { return false } else { return true } }())
+                    .accessibilityIdentifier("lights.rename.confirm")
+            }
+        }
+        .padding(12)
+        .frame(width: 260)
+        .tint(style.accent)
+        .onAppear { focused = true }
+        // The light this popover was opened on went away or is no longer the
+        // selected one (a console or MCP change, another chip): close it.
+        .onChange(of: controller.selectedLight?.name.lowercased()) { _, now in
+            if now != current.lowercased() { onDone() }
+        }
     }
 }
 

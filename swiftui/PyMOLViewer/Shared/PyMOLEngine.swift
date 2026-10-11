@@ -5056,7 +5056,8 @@ extension LightsAction {
     /// pinned by LightsActionInvocationTests and, run through the core, by
     /// testing/tests/raymol/lighting_mode.py TestBarCommands (the highlight
     /// strings by lighting_gizmo.py TestHighlightCommand, the aim=centre
-    /// string by lighting_gizmo.py TestAimCentreCommand, the Atmosphere
+    /// string by lighting_gizmo.py TestAimCentreCommand, the rename string by
+    /// lighting_mode.py TestBarCommands, the Atmosphere
     /// card's by lighting_atmosphere.py TestCardCommands): change them
     /// together.
     var invocation: Invocation? {
@@ -5098,6 +5099,10 @@ extension LightsAction {
         case .aimAtCentre(let name):
             // #699's double-click or double-tap on the aim dot, run once.
             return Self.isValidName(name) ? .command("lights \(name), aim=centre") : nil
+        case .rename(let old, let new):
+            // #797: the inspector's Rename, checked first with `nameCheck`.
+            guard Self.isValidName(old), Self.isValidName(new) else { return nil }
+            return .command("lights \(old), name=\(new)")
         case .atmosphereOff:
             return .command("atmosphere off")
         case .setAir(let values):
@@ -5134,6 +5139,50 @@ extension LightsAction {
         let degrees = value.rounded()
         guard degrees >= 1, degrees <= 179 else { return nil }
         return Int(degrees)
+    }
+
+    /// The words a light cannot be named after: the `lights` command's
+    /// keywords (lighting_commands.KEYWORDS, which lighting_mode.py checks
+    /// this list against); the preset names come from the core's menu.
+    static let reservedNames = ["add", "remove", "presets", "recenter", "on", "off", "clear"]
+
+    /// What a typed light name comes to (#797).
+    enum NameCheck: Equatable {
+        /// A name Rename can send.
+        case ok
+        /// The light already has exactly this name: nothing to send.
+        case unchanged
+        /// Refused, with the reason to show beside the field.
+        case refused(String)
+    }
+
+    /// Check `text` as the new name of the light called `current`, with the
+    /// core's rules: letters, digits and `_`, not starting with a digit, at
+    /// most 32 characters, not a keyword or a preset, and unique among the
+    /// lights ignoring case (the light's own name may change case). `text`
+    /// is trimmed first, as the command trims it. Checked in the Swift side
+    /// so that a refused name is never sent.
+    static func nameCheck(_ text: String, renaming current: String, among names: [String],
+                          presets: [String]) -> NameCheck {
+        let name = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.isEmpty { return .refused("Enter a name") }
+        if name.count > 32 { return .refused("At most 32 characters") }
+        if !isValidName(name) {
+            if let first = name.unicodeScalars.first, first.value >= 48, first.value <= 57 {
+                return .refused("A name can't start with a digit")
+            }
+            return .refused("Use letters, digits and _ only")
+        }
+        let key = name.lowercased()
+        if reservedNames.contains(key) { return .refused("\"\(name)\" is a command word") }
+        if presets.contains(where: { $0.lowercased() == key }) {
+            return .refused("\"\(name)\" is a preset name")
+        }
+        let own = current.lowercased()
+        if key != own, let clash = names.first(where: { $0.lowercased() == key }) {
+            return .refused("A light named \"\(clash)\" already exists")
+        }
+        return name == current ? .unchanged : .ok
     }
 
     /// The core's light-name rule (LightNameValid; lighting_commands.NAME_RE):

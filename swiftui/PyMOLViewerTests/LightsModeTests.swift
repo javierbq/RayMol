@@ -68,6 +68,61 @@ final class LightsActionInvocationTests: XCTestCase {
         XCTAssertEqual(LightsAction.aimAtCentre("Light4").invocation, .command("lights Light4, aim=centre"))
     }
 
+    /// #797's Rename. lighting_mode.py TestBarCommands runs this string
+    /// through the core.
+    func testRenameStrings() {
+        XCTAssertEqual(LightsAction.rename(old: "fill", new: "rim_light").invocation,
+                       .command("lights fill, name=rim_light"))
+        XCTAssertEqual(LightsAction.rename(old: "Light4", new: "KEY2").invocation,
+                       .command("lights Light4, name=KEY2"))
+        for (old, new) in [("", "a"), ("a", ""), ("a b", "c"), ("a", "9"), ("a", "b,c"),
+                           ("a", "x=1"), ("a", String(repeating: "a", count: 33))] {
+            XCTAssertNil(LightsAction.rename(old: old, new: new).invocation, "\(old) -> \(new)")
+        }
+    }
+
+    private func check(_ text: String, current: String = "key",
+                       names: [String] = ["key", "fill", "rim"],
+                       presets: [String] = ["three_point", "neon"]) -> LightsAction.NameCheck {
+        LightsAction.nameCheck(text, renaming: current, among: names, presets: presets)
+    }
+
+    /// #797: the core's rules, checked before anything is sent.
+    func testNameCheck() {
+        XCTAssertEqual(check("main"), .ok)
+        XCTAssertEqual(check("  main\n"), .ok, "trimmed, as the command trims it")
+        XCTAssertEqual(check("_x9"), .ok)
+        XCTAssertEqual(check(String(repeating: "a", count: 32)), .ok)
+        XCTAssertEqual(check("key"), .unchanged)
+        XCTAssertEqual(check("KEY"), .ok, "a light may change the case of its own name")
+        XCTAssertEqual(check("", current: "key"), .refused("Enter a name"))
+        XCTAssertEqual(check("   "), .refused("Enter a name"))
+        XCTAssertEqual(check(String(repeating: "a", count: 33)), .refused("At most 32 characters"))
+        XCTAssertEqual(check("9lives"), .refused("A name can't start with a digit"))
+        XCTAssertEqual(check("a b"), .refused("Use letters, digits and _ only"))
+        XCTAssertEqual(check("a-b"), .refused("Use letters, digits and _ only"))
+        XCTAssertEqual(check(String(repeating: "é", count: 17)), .refused("Use letters, digits and _ only"),
+                       "34 bytes, 17 characters: the character set is what is wrong")
+        XCTAssertEqual(check("naïve"), .refused("Use letters, digits and _ only"))
+        XCTAssertEqual(check("Fill"), .refused("A light named \"fill\" already exists"))
+        XCTAssertEqual(check("rim", current: "fill"), .refused("A light named \"rim\" already exists"))
+        XCTAssertEqual(check("Neon"), .refused("\"Neon\" is a preset name"))
+        XCTAssertEqual(check("three_point"), .refused("\"three_point\" is a preset name"))
+        for word in LightsAction.reservedNames {
+            XCTAssertEqual(check(word.uppercased()), .refused("\"\(word.uppercased())\" is a command word"))
+        }
+    }
+
+    /// Whatever the check accepts, the action sends; nothing refused is sent.
+    func testNameCheckAgreesWithTheAction() {
+        for text in ["main", "a", "A_b", "x9", "9x", "", "a b", "fill", "off", "naïve",
+                     String(repeating: "a", count: 33)] {
+            if check(text) == .ok {
+                XCTAssertNotNil(LightsAction.rename(old: "key", new: text).invocation, text)
+            }
+        }
+    }
+
     /// #622's ⌥-click: #612's click= helper, run once. lighting_gizmo.py
     /// TestHighlightCommand runs these exact strings through the core.
     func testHighlightStrings() {
