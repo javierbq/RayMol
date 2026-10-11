@@ -341,6 +341,46 @@ class TestNothingLeaksPastTheRep(_RayCase):
                             name)
 
 
+class TestGlassBallAndStickUnderRay(_RayCase):
+    """#834: a glass stick_ball is ONE translucent ball, whatever the atom's
+    bond count. RepCylBond used to emit a coincident copy of the ball per bond;
+    Metal's OIT stacked them (StickBallGlassRenderTests pins that), while `ray`
+    already showed one -- this pins that it still does."""
+
+    def centre_redness(self, nbonds, material='glass'):
+        fresh()
+        cmd.pseudoatom('m', name='C', pos=[0.0, 0.0, 0.0])
+        ends = ((5.0, 0.0), (-5.0, 0.0), (0.0, 5.0), (0.0, -5.0))
+        for i, (x, y) in enumerate(ends[:nbonds]):
+            cmd.pseudoatom('m', name='E%d' % i, pos=[x, y, 0.0])
+            cmd.bond('m and name C', 'm and name E%d' % i)
+        cmd.show_as('sticks', 'm')
+        cmd.color('grey80', 'm')
+        cmd.set('stick_radius', 0.05, 'm')
+        cmd.set('stick_ball', 1, 'm')
+        cmd.set('stick_ball_ratio', 20.0, 'm')     # a 1 A ball
+        cmd.set('stick_material', material, 'm')
+        # a big red ball behind, filling the frame
+        cmd.pseudoatom('ball', pos=[0.0, 0.0, -30.0])
+        cmd.show_as('spheres', 'ball')
+        cmd.set('sphere_scale', 30.0, 'ball')
+        cmd.color('red', 'ball')
+        cmd.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                      0.0, 0.0, -12.0, 0.0, 0.0, 0.0, 5.0, 100.0, -20.0))
+        img = trace(self.tmp, 'bonds_%s_%d' % (material, nbonds))
+        cy, cx = H // 2, W // 2
+        box = img[cy - 6:cy + 6, cx - 6:cx + 6]   # well inside the ball
+        return float((box[..., 0] - (box[..., 1] + box[..., 2]) / 2).mean())
+
+    def testABallIsAsClearWhateverItsBondCount(self):
+        opaque = self.centre_redness(4, 'default')
+        one = self.centre_redness(1)
+        four = self.centre_redness(4)
+        self.assertLess(opaque, 5)
+        self.assertGreater(one, opaque + 40)
+        self.assertLess(abs(one - four), 0.1 * one, (one, four))
+
+
 class TestGlassSurfaceUnderRay(_RayCase):
     """#524: a glass surface traced opaque when uniformly coloured -- the ray
     path read the RAW transparency, while a multi-coloured surface took the

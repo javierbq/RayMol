@@ -843,7 +843,12 @@ Rep *RepCylBondNew(CoordSet * cs, int state)
             float vdw1 = (vdw >= 0) ? vdw : -ati1->vdw * vdw;
 
             // only draw cap if larger than any previously drawn (PYMOL-2527)
-            if (vdw1 < capdrawn[b1])
+            // -- strictly larger: an atom's ball comes up once per bond, and
+            // a repeat of the same radius drew a coincident second ball. Opaque
+            // that is invisible; translucent (glass, jelly, stick_transparency)
+            // the copies stack under OIT, so a 4-bond atom's glass ball was
+            // about half opaque where a 1-bond atom's is 15% (#834).
+            if (vdw1 <= capdrawn[b1])
               return;
 
             int sbc1 = (stick_ball_color == cColorDefault) ? c1 : stick_ball_color;

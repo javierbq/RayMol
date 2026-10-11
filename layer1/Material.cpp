@@ -559,10 +559,13 @@ static MaterialParams MaterialFinalizeParams(
 MaterialParams MaterialDrawParams(PyMOLGlobals* G, const CSetting* set1,
     const CSetting* set2, int repType, const CoordSet* cs)
 {
+  // MaterialResolveForDraw inlined, so the source layer is found once per call:
+  // the Metal path calls this per draw op, per pass, per frame.
   int const source =
       MaterialSourceRep(G, set1, set2, repType, cs ? cs->Obj : nullptr);
-  return MaterialFinalizeParams(G, set1, set2, source,
-      MaterialResolveForDraw(G, set1, set2, repType, cs));
+  int const id = MaterialResolveSettingId(G, set1, set2, source);
+  return MaterialFinalizeParams(
+      G, set1, set2, source, MaterialResolve(id, repType));
 }
 
 /* The Custom material's per-layer overrides (#568): for each material-bearing
@@ -857,11 +860,8 @@ bool MaterialObjectWantsPeel(PyMOLGlobals* G, const CSetting* set1,
   if (peel >= 0) {
     return peel != 0;   // an explicit on/off, at any level, wins outright
   }
-  // Auto: on when a representation resolves to a material whose row asks for
-  // peeling, resolved the same way the DRAW path resolves it -- so a glass
-  // stick that degrades to `default` on a stick_ball object does not turn on a
-  // peel that would cost a depth blit and two encoder boundaries per grid cell
-  // for geometry with no transparent fragments.
+  // Auto: on when a representation the object DRAWS resolves, the same way
+  // the draw path resolves it, to a material whose row asks for peeling.
   //
   // But peeling is OBJECT-scoped: the pre-pass records the nearest transparent
   // depth across ALL of the object's transparent reps, and anything behind it
@@ -897,22 +897,17 @@ bool MaterialObjectWantsPeel(PyMOLGlobals* G, const CSetting* set1,
   if (!maybeWantsPeel) {
     return false;
   }
-  /* MAYBE, not "does": the gate reads the material row BEFORE the per-rep
-     degradations, because seeing them needs the coordinate set this pass exists
-     to avoid touching. It is a sound over-approximation -- degradation can only
-     ever clear wantsPeel -- so the answer still has to come from the second
-     loop. Returning true here on the strength of the gate turned peel ON for a
-     ball-and-stick glass object, whose sticks degrade to `default` and have no
-     transparent fragments at all: a depth blit and two encoder boundaries per
-     grid cell for nothing, and enough to evict a real glass object from the
-     three-slot peel cap. */
+  /* MAYBE, not "does": the gate does not know which reps the object DRAWS,
+     nor whether another transparent rep vetoes the peel; both need the
+     coordinate set this pass exists to avoid touching, so the answer still
+     comes from the second loop. */
   /* Indexed, not range-for: the rep and its visibility BIT have to stay in
      step, and a range-for gives a copy whose address says nothing about which
      element it came from. */
   bool wantsPeel = false;
   for (size_t i = 0; i < sizeof(kReps) / sizeof(kReps[0]); ++i) {
     int const rep = kReps[i];
-    // Re-resolved through the DRAW path, matching the rep's shading.
+    // Through the DRAW path, matching the rep's shading.
     if (MaterialResolveForDraw(G, set1, set2, rep, cs).wantsPeel) {
       // ...but only if the object actually DRAWS it. `set surface_material,
       // glass` on an object showing nothing but an opaque cartoon would

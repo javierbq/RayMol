@@ -671,26 +671,83 @@ final class StickBallGlassRenderTests: XCTestCase {
         XCTAssertGreaterThan(diffCount, 1000, "frosted glass should differ from clear glass in > 1000 pixels")
     }
 
+    /// Mean RGB over a 20x20 box whose corner is `dx`, `dy` pixels from the
+    /// image centre: inside the ball but clear of the sticks along the axes.
+    private func offAxisBoxMeans(_ rgba: [UInt8], dx: Int = 20, dy: Int = 20,
+                                 width: Int = 400, height: Int = 300) -> (r: Double, g: Double, b: Double) {
+        let size = 20
+        var sumR = 0.0, sumG = 0.0, sumB = 0.0
+        for y in (height / 2 + dy)..<(height / 2 + dy + size) {
+            for x in (width / 2 + dx)..<(width / 2 + dx + size) {
+                let idx = (y * width + x) * 4
+                sumR += Double(rgba[idx])
+                sumG += Double(rgba[idx + 1])
+                sumB += Double(rgba[idx + 2])
+            }
+        }
+        let total = Double(size * size)
+        return (sumR / total, sumG / total, sumB / total)
+    }
+
+    /// Gives the centre atom A1 three more bonds (four in all), in the image
+    /// plane, so RepCylBond meets its ball once per bond.
+    private func addThreeBondsToTheCentre() {
+        engine.runPython("""
+        from pymol import cmd as _c
+        for _i, _p in enumerate(([-3.5, 0.0, 0.0], [0.0, 3.5, 0.0], [0.0, -3.5, 0.0])):
+            _c.pseudoatom('sb834', name='E%d' % _i, pos=_p)
+            _c.bond('sb834 and name A1', 'sb834 and name E%d' % _i)
+        _c.show_as('sticks', 'sb834')
+        _c.color('red', 'sb834')
+        """)
+    }
+
+    /// RepCylBond emits an atom's ball once per bond and skipped a repeat only
+    /// when it was strictly smaller, so an atom with four bonds drew four
+    /// coincident glass balls: under OIT they stack to about 1 - 0.85^4, half
+    /// opaque, where a one-bond atom's ball is 15%. A glass ball has to look
+    /// the same whatever its bond count.
+    func testAGlassBallLooksTheSameWhateverItsBondCount() throws {
+        try requireEngine()
+        setupScene()
+
+        let one = offAxisBoxMeans(try render("glass"))
+        addThreeBondsToTheCentre()
+        let four = offAxisBoxMeans(try render("glass"))
+        print("834-bonds one \(one) four \(four)")
+        XCTAssertGreaterThan(one.b, one.r, "the one-bond glass ball shows the background")
+        XCTAssertEqual(four.r, one.r, accuracy: 8, "a four-bond ball is no redder")
+        XCTAssertEqual(four.b, one.b, accuracy: 8, "a four-bond ball is no less clear")
+    }
+
     /// The printed hashes are compared by hand against the same test run on a
     /// master core (see the PR); they are not pinned here, because the exact
-    /// bytes depend on the GPU.
+    /// bytes depend on the GPU. Jelly is hashed with one bond only: it is
+    /// translucent, so its four-bond ball changes on purpose (one ball, not
+    /// four stacked).
     func testNonGlassStickBallsAreUnchanged() throws {
         try requireEngine()
         setupScene()
 
-        var firstDefault: [UInt8] = []
-        for name in ["default", "matte", "plastic", "metallic", "jelly"] {
-            let px = try render(name)
-            if name == "default" {
-                firstDefault = px
+        // One bond on the centre atom, then four: the four-bond scene covers
+        // the opaque balls RepCylBond no longer emits twice (#834).
+        for bonds in [1, 4] {
+            if bonds == 4 { addThreeBondsToTheCentre() }
+            var firstDefault: [UInt8] = []
+            let opaque = ["default", "matte", "plastic", "metallic"]
+            for name in bonds == 1 ? opaque + ["jelly"] : opaque {
+                let px = try render(name)
+                if name == "default" {
+                    firstDefault = px
+                }
+                var hash: UInt64 = 0xcbf29ce484222325
+                for byte in px { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
+                print("834-hash \(bonds)-bond \(name) \(String(hash, radix: 16))")
             }
-            var hash: UInt64 = 0xcbf29ce484222325
-            for byte in px { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
-            print("834-hash \(name) \(String(hash, radix: 16))")
-        }
 
-        _ = try render("glass")
-        let secondDefault = try render("default")
-        XCTAssertEqual(firstDefault, secondDefault, "second default render must be byte-identical to first default render")
+            _ = try render("glass")
+            let secondDefault = try render("default")
+            XCTAssertEqual(firstDefault, secondDefault, "second default render must be byte-identical to first default render (\(bonds) bonds)")
+        }
     }
 }
