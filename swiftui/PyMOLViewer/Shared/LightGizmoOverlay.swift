@@ -508,7 +508,8 @@ struct LightGizmoChipLayout: Layout {
 
 /// Draws one frame of the gizmo from its layout and the UI state. White
 /// strokes on a dark halo, so the gizmo reads over any background colour;
-/// knobs in their identity colours (the bar chip's).
+/// knobs in the colour their light casts (#798; the bar chip's too), with a
+/// contrasting outline.
 struct LightGizmoPainter {
     var layout: LightGizmoLayout
     var ui: LightGizmoUIState.Values
@@ -566,7 +567,7 @@ struct LightGizmoPainter {
     private func drawKnob(_ context: inout GraphicsContext, _ knob: LightGizmoLayout.Knob) {
         var c = context
         c.opacity = knob.opacity
-        let colour = LightPalette.color(knob.slot)
+        let colour = knob.marker.fillColor
         let isActive = ui.active == .knob(knob.name)
         // A dragged knob turns hollow (or filled) the moment the band flips it.
         let behind = isActive && ui.hemisphere != nil ? ui.hemisphere == .behind : knob.isBehind
@@ -580,7 +581,9 @@ struct LightGizmoPainter {
         } else {
             c.fill(circle(knob.centre, r + 1), with: .color(Self.halo))
             c.fill(circle(knob.centre, r), with: .color(colour))
-            c.stroke(circle(knob.centre, r), with: .color(Self.ink), lineWidth: knob.isSelected ? 2 : 1)
+            // The marker's contrasting outline: a white light still reads over a light background (#798).
+            c.stroke(circle(knob.centre, r), with: .color(knob.marker.outlineColor),
+                     lineWidth: knob.isSelected ? 2 : 1)
         }
         if knob.isShadowed {
             // A dark crescent along the knob's lower edge.
@@ -619,7 +622,7 @@ struct LightGizmoPainter {
     }
 
     private func drawRings(_ context: inout GraphicsContext, _ s: LightGizmoLayout.Selected) {
-        let colour = layout.knobs.indices.contains(s.index) ? LightPalette.color(layout.knobs[s.index].slot) : Self.ink
+        let colour = layout.knobs.indices.contains(s.index) ? layout.knobs[s.index].marker.fillColor : Self.ink
         // The aim line, under everything else.
         if let line = layout.aimLine {
             var path = Path()
@@ -639,7 +642,8 @@ struct LightGizmoPainter {
     }
 
     private func drawAim(_ context: inout GraphicsContext, _ s: LightGizmoLayout.Selected) {
-        let colour = layout.knobs.indices.contains(s.index) ? LightPalette.color(layout.knobs[s.index].slot) : Self.ink
+        let marker = layout.knobs.indices.contains(s.index) ? layout.knobs[s.index].marker : nil
+        let colour = marker?.fillColor ?? Self.ink
         let half = layout.metrics.handleHalfSide
         for (handle, target, filled) in [(s.innerHandle, LightGizmoTarget.innerHandle, false),
                                          (s.outerHandle, LightGizmoTarget.outerHandle, true)] {
@@ -654,7 +658,8 @@ struct LightGizmoPainter {
             context.fill(Path(CGRect(x: h.point.x - half - 1, y: h.point.y - half - 1,
                                      width: 2 * half + 2, height: 2 * half + 2)), with: .color(Self.halo))
             context.fill(square, with: .color(filled ? colour : Self.ink))
-            context.stroke(square, with: .color(filled ? Self.ink : colour), lineWidth: filled ? 1 : 1.5)
+            context.stroke(square, with: .color(filled ? (marker?.outlineColor ?? Self.ink) : colour),
+                           lineWidth: filled ? 1 : 1.5)
             let extra = emphasis([target])
             if extra > 0 {
                 let ring = Path(CGRect(x: h.point.x - half - 3, y: h.point.y - half - 3,

@@ -510,8 +510,9 @@ and [Known limits](#known-limits).
 like Move and Measure: entering it leaves the others.
 
 **The Lights bar.** It floats at the top of the viewport and shows a chip per
-light (with the light's identity colour, hollow while the light is behind
-the molecule), add and remove buttons, **Presets**, **Re-centre**, the
+light (a dot in the colour the light casts, its Colour tinted by its Warmth,
+with a thin outline so a white light still reads; hollow while the light is
+behind the molecule), add and remove buttons, **Presets**, **Re-centre**, the
 **Lights on** / **Lights off** switch, **Revert** and **Done**.
 
 - **Re-centre** captures the centre and 1x size from the molecules again,

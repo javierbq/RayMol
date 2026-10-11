@@ -904,7 +904,7 @@ private struct GizmoHitRegions: View {
                     let colour: Color
                     switch LightGizmoHitTest.target(at: CGPoint(x: x + 1, y: y + 1), layout: layout) {
                     case .knob(let name)?:
-                        colour = LightPalette.color(layout.knob(named: name)?.slot ?? 0)
+                        colour = layout.knob(named: name)?.marker.fillColor ?? .white
                     case .aimDot?: colour = .white
                     case .outerHandle?, .innerHandle?: colour = .yellow
                     case .outerRing?, .innerRing?: colour = .cyan

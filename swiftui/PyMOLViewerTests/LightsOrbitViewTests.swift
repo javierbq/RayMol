@@ -558,7 +558,7 @@ private struct OrbitHitRegions: View {
                 OrbitPlanPainter(state: state, layout: plan, squareAngle: nil, style: style).draw(in: &context)
                 Self.tint(&context, size: plan.size) { p in
                     switch OrbitHitTest.plan(at: p, layout: plan, state: state) {
-                    case .lamp(_, let index): return LightPalette.color(state.lamps[index].slot)
+                    case .lamp(_, let index): return state.lamps[index].marker.fillColor
                     case .radiusSquare: return .black
                     default: return nil
                     }
@@ -568,7 +568,7 @@ private struct OrbitHitRegions: View {
                 PitchArcPainter(state: state, layout: arc, style: style).draw(in: &context)
                 Self.tint(&context, size: arc.size) { p in
                     switch OrbitHitTest.pitch(at: p, layout: arc, pitch: state.selected.pitch) {
-                    case .pitchHandle: return LightPalette.color(state.selected.slot)
+                    case .pitchHandle: return state.selected.marker.fillColor
                     case .pitchTrack: return .gray
                     default: return nil
                     }

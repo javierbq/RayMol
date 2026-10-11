@@ -65,11 +65,10 @@ struct LightSelection: Equatable {
 
 // MARK: - Identity colours
 
-/// Identity colour slots: the colour that stands for a light in the bar's
-/// chips, the orbit view's lamps and the gizmo's knobs. It is the light's
-/// identity, not its own colour (the inspector shows that). Slots are stable
-/// by name, so removing one light never recolours the others. The colour of
-/// each slot (blue, orange, green, purple, pink, gold) lives with the views.
+/// Identity slots: a stable number per light name. The markers no longer
+/// draw them (#798: they show the light's own colour, LightMarkerColour), so
+/// the slots only tell the lights apart. Slots are stable by name, so
+/// removing one light never changes the others'.
 enum LightPalette {
     static let count = 6
 

@@ -95,9 +95,7 @@ struct LightsOrbitView: View {
         HStack(spacing: 0) {
             HStack(spacing: 0) {
                 HStack(spacing: 6) {
-                    Circle()
-                        .fill(LightPalette.color(state.selected.slot))
-                        .frame(width: 10, height: 10)
+                    LightMarkerDot(marker: state.selected.marker, size: 10)
                         .opacity(state.isOn ? 1 : 0.45)
                         .accessibilityHidden(true)
                     title(LightsOrbitState.orbitTitle)
@@ -614,7 +612,7 @@ struct OrbitPlanPainter {
             var path = Path()
             path.move(to: tick.from)
             path.addLine(to: tick.to)
-            context.stroke(path, with: .color(LightPalette.color(lamp.slot).opacity(state.isOn ? 0.55 : 0.25)),
+            context.stroke(path, with: .color(lamp.marker.fillColor.opacity(state.isOn ? 0.55 : 0.25)),
                            style: StrokeStyle(lineWidth: 2, lineCap: .round))
         }
 
@@ -637,20 +635,24 @@ struct OrbitPlanPainter {
         context.stroke(square, with: .color(style.text.opacity(0.85)), lineWidth: 1)
 
         // The selected lamp, haloed, and its radius label.
+        context.stroke(circle(selectedPoint, r + 4), with: .color(s.marker.outlineColor.opacity(state.isOn ? 0.35 : 0.15)),
+                       lineWidth: 2.5)
         context.stroke(circle(selectedPoint, r + 4), with: .color(colour), lineWidth: 1)
         drawLamp(&context, s, at: selectedPoint, radius: r)
         draw(&context, radiusLabel)
     }
 
     private func lampColour(_ lamp: LightsOrbitState.Lamp) -> Color {
-        LightPalette.color(lamp.slot).opacity(state.isOn ? 1 : 0.45)
+        lamp.marker.fillColor.opacity(state.isOn ? 1 : 0.45)
     }
 
     private func drawLamp(_ context: inout GraphicsContext, _ lamp: LightsOrbitState.Lamp, at p: CGPoint,
                           radius r: CGFloat) {
         context.fill(circle(p, r), with: .color(lampColour(lamp)))
+        // The marker's contrasting outline, so a white lamp still reads on
+        // the dial (#798).
         context.stroke(circle(p, r),
-                       with: .color(lamp.isSelected ? style.text.opacity(0.85) : style.background),
+                       with: .color(lamp.marker.outlineColor.opacity(state.isOn ? 0.85 : 0.4)),
                        lineWidth: lamp.isSelected ? 1.5 : 1)
         if layout.isClamped(radius: lamp.radius) {
             // Beyond the extent: an outward arrowhead past the lamp (and its
@@ -671,7 +673,7 @@ struct OrbitPlanPainter {
         if lamp.isPinned {
             // A pin mark inside the lamp.
             var pin = context.resolve(Image(systemName: "pin.fill"))
-            pin.shading = .color(style.background)
+            pin.shading = .color(lamp.marker.outlineColor)
             let side = r * 1.1
             context.draw(pin, in: CGRect(x: p.x - side / 2, y: p.y - side / 2, width: side, height: side))
         }
@@ -758,7 +760,7 @@ struct PitchArcPainter {
 
         // The selected light: a dashed line to its handle, the handle, its value.
         let s = state.selected
-        let colour = LightPalette.color(s.slot).opacity(state.isOn ? 1 : 0.45)
+        let colour = s.marker.fillColor.opacity(state.isOn ? 1 : 0.45)
         let h = layout.point(pitch: s.pitch)
         var spoke = Path()
         spoke.move(to: c)
@@ -766,7 +768,8 @@ struct PitchArcPainter {
         context.stroke(spoke, with: .color(colour), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
         let hr = LightsOrbitMetrics.handleRadius
         context.fill(circle(h, hr), with: .color(colour))
-        context.stroke(circle(h, hr), with: .color(style.text.opacity(0.85)), lineWidth: 1.5)
+        context.stroke(circle(h, hr), with: .color(s.marker.outlineColor.opacity(state.isOn ? 0.85 : 0.4)),
+                       lineWidth: 1.5)
         // The value sits away from the level line's 0° label and the ends'
         // labels: above the handle from 0° to +60° and near −90°, below it
         // otherwise.

@@ -170,8 +170,11 @@ struct LightGizmoInputs: Equatable {
     /// One rig light, in rig order.
     struct Light: Equatable {
         var name: String
-        /// The identity colour slot (the bar chip's colour).
+        /// The identity colour slot.
         var slot: Int
+        /// What the knob is drawn in: the light's own colour (#798), the bar
+        /// chip's too.
+        var marker = LightMarkerColour.neutral
         var beam: Double
         var softness: Double
         var shadow: Bool
@@ -223,7 +226,8 @@ struct LightGizmoInputs: Equatable {
         self.init(
             isActive: controller.isActive, isBusy: controller.isBusy, isOn: controller.isOn,
             lights: (controller.rig?.lights ?? []).map {
-                Light(name: $0.name, slot: controller.identitySlot(for: $0.name), beam: $0.beam,
+                Light(name: $0.name, slot: controller.identitySlot(for: $0.name),
+                      marker: LightMarkerColour($0), beam: $0.beam,
                       softness: $0.softness, shadow: $0.shadow)
             },
             selection: controller.selection, rigSize: controller.rig?.size,
@@ -242,6 +246,7 @@ struct LightGizmoLayout: Equatable {
         var name: String
         var index: Int
         var slot: Int
+        var marker = LightMarkerColour.neutral
         var centre: CGPoint
         /// The drawn radius (larger when selected).
         var radius: CGFloat
@@ -393,7 +398,7 @@ struct LightGizmoLayout: Equatable {
                 ? light.name + " " + LightInspectorFormat.radius(placement.radius, frameSize: nil)
                 : light.name
             knobs.append(Knob(
-                name: light.name, index: i, slot: light.slot, centre: point, radius: radius,
+                name: light.name, index: i, slot: light.slot, marker: light.marker, centre: point, radius: radius,
                 direction: d, placement: placement, isSelected: isSelected,
                 isBehind: LightDepth.isBehind(placement), isShadowed: light.shadow,
                 isShadowDimmed: light.shadow && shadowDimmed,
