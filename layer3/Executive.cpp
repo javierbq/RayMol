@@ -14264,6 +14264,7 @@ static void ExecutiveSetAllRepVisMask(PyMOLGlobals* G, int repmask, int state)
           ObjectSetRepVisMask(rec->obj, repmask, state);
           fInvalidateRepMask(rec->obj, repmask, -1);
           SceneInvalidate(G);
+          SceneInvalidateExtentCache(G); // light shadow extent (#690)
           break;
         }
       }
