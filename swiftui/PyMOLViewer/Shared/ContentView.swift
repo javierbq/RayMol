@@ -1091,12 +1091,20 @@ struct ContentView: View {
                 engine.lightsController.nudge(nudge)
                 return nil  // consume: in Lights mode the arrows move the light, not the frame
             }
+            // "Send Key Bindings to Viewport While Typing" (#261): read live from
+            // UserDefaults (the menu Toggle writes it), default off. With it on,
+            // KeyRouting asks the engine whether the user defined an ALT-/CTSH-
+            // token before taking it from the focused field.
+            let viewportKeys = UserDefaults.standard.bool(
+                forKey: KeyRouting.viewportKeysWhileTypingKey)
             guard let token = KeyRouting.token(
                     keyCode: event.keyCode,
                     charactersIgnoringModifiers: event.charactersIgnoringModifiers,
                     modifiers: event.modifierFlags,
                     textFieldFocused: focus.focused,
-                    textEditingActive: focus.editing) else { return event }
+                    textEditingActive: focus.editing,
+                    viewportKeysWhileTyping: viewportKeys,
+                    isUserBound: { engine.isUserBoundKey($0) }) else { return event }
             return engine.invokeKeyBinding(token) ? nil : event
         }
     }
@@ -4870,9 +4878,13 @@ struct ContentView: View {
             "from pymol import raymolrc as _raymolrc; "
             + migrate
             + "_raymolrc.load()")
+        // The ALT-/CTSH- note (#261) depends on the View-menu toggle, so pass it.
+        let viewportKeys = UserDefaults.standard.bool(
+            forKey: KeyRouting.viewportKeysWhileTypingKey) ? "True" : "False"
         engine.runPython(
             "from pymol import raymol_keys as _raymol_keys; "
-            + "_raymol_keys.audit_shadowed(has_design=\(hasDesign))")
+            + "_raymol_keys.audit_shadowed(has_design=\(hasDesign)); "
+            + "_raymol_keys.audit_viewport_keys(toggle_on=\(viewportKeys))")
     }
 
     private func declineRaymolrcMigration() {

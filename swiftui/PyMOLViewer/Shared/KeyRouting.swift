@@ -14,6 +14,11 @@ import AppKit
 /// CTRL-, CTSH- and ALT-. Special names are lowercase; function keys are not.
 enum KeyRouting {
 
+    /// UserDefaults key of the "Send Key Bindings to Viewport While Typing" menu
+    /// toggle (#261). Absent means off. The View-menu Toggle, the key monitor and
+    /// the startup audit all read this one key.
+    static let viewportKeysWhileTypingKey = "raymol.keys.viewportWhileTyping"
+
     /// macOS virtual key codes for the keys PyMOL calls "special".
     private static let specialKeys: [UInt16: String] = [
         123: "left", 124: "right", 125: "down", 126: "up",
@@ -52,6 +57,12 @@ enum KeyRouting {
     ///     ⌃⇧A/E/F/B/N/P are macOS extend-selection chords; PyMOL binds many of
     ///     those (`CTSH-A` → `redo`, `CTSH-N` → `replace N,4,3`, etc.).
     ///
+    ///   • Opt-out (#261): with `viewportKeysWhileTyping` on (the menu toggle) a
+    ///     Tier A combo is NOT yielded when `isUserBound` says the user defined
+    ///     that exact token (a binding that differs from stock PyMOL). Stock
+    ///     bindings still yield, so the toggle cannot make `@` (⌥L on German)
+    ///     spawn a `leu` object. Tier B is untouched: ⌥←/→ stay word-movement.
+    ///
     /// **Tier B — yield when `textEditingActive` (field focused AND non-empty):**
     ///   • ANY arrow key regardless of modifiers → nil.
     ///     ⌥← / ⌥→ are word-movement, ⇧← extends selection; every modified
@@ -67,13 +78,20 @@ enum KeyRouting {
     /// - Parameters:
     ///   - textFieldFocused: An editable text field (or its field editor) is
     ///     currently first responder, regardless of content. Drives Tier A.
+    ///   - viewportKeysWhileTyping: the "Send Key Bindings to Viewport While
+    ///     Typing" toggle. Default false, which is the behaviour before #261.
+    ///   - isUserBound: asked only when the toggle is on and a Tier A combo is
+    ///     about to be yielded; true means the user defined this token. Evaluated
+    ///     lazily so the engine is never consulted for ordinary typing.
     ///   - textEditingActive: `textFieldFocused` AND the field is non-empty.
     ///     Drives Tier B. Always false when `textFieldFocused` is false.
     static func token(keyCode: UInt16,
                       charactersIgnoringModifiers: String?,
                       modifiers: NSEvent.ModifierFlags,
                       textFieldFocused: Bool,
-                      textEditingActive: Bool) -> String? {
+                      textEditingActive: Bool,
+                      viewportKeysWhileTyping: Bool = false,
+                      isUserBound: (String) -> Bool = { _ in false }) -> String? {
         // 1. ⌘ belongs to the macOS menus. set_key has no CMD modifier, so an
         //    event carrying ⌘ can never be ours.
         if modifiers.contains(.command) { return nil }
@@ -87,18 +105,22 @@ enum KeyRouting {
         //    OR map to destructive PyMOL commands (see doc-comment above).
         if textFieldFocused {
             // ALT-<letter> / ALT-<digit>: compose modifier on non-US keyboards.
-            if alt, !ctrl, !shift,
-               let ch = charactersIgnoringModifiers, ch.count == 1,
-               let scalar = ch.unicodeScalars.first,
-               scalar.isASCII, CharacterSet.alphanumerics.contains(scalar) {
-                return nil
-            }
             // CTSH-<letter>: extend-selection chords on macOS (⌃⇧A, ⌃⇧E, …).
-            if ctrl, !alt, shift,
-               let ch = charactersIgnoringModifiers, ch.count == 1,
-               let scalar = ch.unicodeScalars.first, scalar.isASCII,
-               CharacterSet.letters.contains(scalar) {
-                return nil
+            if let ch = charactersIgnoringModifiers, ch.count == 1,
+               let scalar = ch.unicodeScalars.first, scalar.isASCII {
+                let altKey = alt && !ctrl && !shift
+                    && CharacterSet.alphanumerics.contains(scalar)
+                let ctshKey = ctrl && !alt && shift
+                    && CharacterSet.letters.contains(scalar)
+                if altKey || ctshKey {
+                    // The toggle's opt-in (#261): only a binding the user
+                    // defined is taken from the text field, so a stock default
+                    // (or an unbound key) still types its character.
+                    let token = (altKey ? "ALT-" : "CTSH-") + ch.uppercased()
+                    if !(viewportKeysWhileTyping && isUserBound(token)) {
+                        return nil
+                    }
+                }
             }
         }
 

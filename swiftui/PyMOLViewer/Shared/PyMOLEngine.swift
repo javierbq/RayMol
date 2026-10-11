@@ -4498,6 +4498,15 @@ final class PyMOLEngine: ObservableObject {
         return PyMOLBridge_InvokeKey(token) == 1
     }
 
+    /// True iff `token` is an ALT-/CTSH- key whose binding the user defined (it
+    /// differs from stock PyMOL's). The key monitor asks before taking such an
+    /// event from the focused command line, when the "Send Key Bindings to
+    /// Viewport While Typing" toggle is on (#261). Invokes nothing.
+    func isUserBoundKey(_ token: String) -> Bool {
+        guard isReady, !token.isEmpty else { return false }
+        return PyMOLBridge_IsUserBoundKey(token) == 1
+    }
+
     func renderMetal() {
         guard let inst = instance else { return }
         PyMOLBridge_RenderMetal(inst)

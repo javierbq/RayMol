@@ -65,6 +65,12 @@ int PyMOLBridge_SupportsRayTracing(PyMOLHandle instance);
 // in that case no binding could have run, so the key falls through to macOS
 // menus and RayMol's own ⌃M / ⌃D shortcuts keep working (#258).
 int PyMOLBridge_InvokeKey(const char *key);
+// 1 iff `key` is an ALT-/CTSH- token whose binding the user defined (it differs
+// from stock PyMOL's), else 0 — including when pymol.raymol_keys cannot be
+// imported. The key monitor asks this, with "Send Key Bindings to Viewport While
+// Typing" on, before it takes an ALT-/CTSH- event away from the focused command
+// line (#261). Does not invoke anything.
+int PyMOLBridge_IsUserBoundKey(const char *key);
 
 // --- Context management ---
 void PyMOLBridge_PushValidContext(PyMOLHandle instance);
