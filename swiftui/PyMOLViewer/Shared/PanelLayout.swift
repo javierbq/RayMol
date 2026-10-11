@@ -197,7 +197,8 @@ enum PanelLayout {
 /// fade out of the way: fully shown for `idleDelay` after the last touch, dimmed
 /// (still tappable) after that, and gone while a viewport gesture is in progress.
 /// Pure so the rule is testable from the macOS test host; ContentView feeds it the
-/// clock and the viewport's gesture state.
+/// clock and the viewport's gesture state. Times are seconds on a MONOTONIC clock
+/// (`ProcessInfo.systemUptime`), so a wall-clock change can't stall the dim.
 enum PhoneChromeFade {
     /// Seconds of no interaction before the controls dim.
     static let idleDelay: TimeInterval = 3
@@ -216,11 +217,11 @@ enum PhoneChromeFade {
 
     /// `pinned` keeps the controls fully shown (not an iPhone, VoiceOver on, or
     /// the camera dock open).
-    static func appearance(now: Date, lastInteraction: Date,
+    static func appearance(now: TimeInterval, lastInteraction: TimeInterval,
                            gestureActive: Bool, pinned: Bool) -> Appearance {
         if pinned { return Appearance(opacity: 1, isHitTestable: true) }
         if gestureActive { return Appearance(opacity: gestureOpacity, isHitTestable: gestureOpacity > 0) }
-        if now.timeIntervalSince(lastInteraction) < idleDelay {
+        if now - lastInteraction < idleDelay {
             return Appearance(opacity: 1, isHitTestable: true)
         }
         return Appearance(opacity: idleOpacity, isHitTestable: idleOpacity > 0)
@@ -228,10 +229,10 @@ enum PhoneChromeFade {
 
     /// When `appearance` will next change with no new input: the idle deadline
     /// while it is still ahead, nil otherwise (pinned, mid-gesture, or already dim).
-    static func nextChange(now: Date, lastInteraction: Date,
-                           gestureActive: Bool, pinned: Bool) -> Date? {
+    static func nextChange(now: TimeInterval, lastInteraction: TimeInterval,
+                           gestureActive: Bool, pinned: Bool) -> TimeInterval? {
         guard !pinned, !gestureActive else { return nil }
-        let deadline = lastInteraction.addingTimeInterval(idleDelay)
+        let deadline = lastInteraction + idleDelay
         return deadline > now ? deadline : nil
     }
 }

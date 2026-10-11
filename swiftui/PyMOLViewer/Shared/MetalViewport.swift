@@ -600,6 +600,8 @@ struct MetalViewport: UIViewRepresentable {
         // iPhone chrome fade (#391): every viewport gesture also reports its
         // begin / end, so the camera button and panel tongue get out of the way
         // while the molecule is being moved and come back afterwards.
+        // Only the drags (not the tap / long-press) count as "in progress".
+        context.coordinator.fadeDragRecognizers = [pan, twoPan, clipPan, pinch, rotation]
         for recognizer in [tap, pan, twoPan, clipPan, pinch, rotation, longPress] as [UIGestureRecognizer] {
             recognizer.addTarget(context.coordinator, action: #selector(Coordinator.noteViewportActivity(_:)))
         }
@@ -631,6 +633,13 @@ extension MetalViewport {
         weak var mtkView: MTKView?
         #if os(macOS)
         var modeCursorSink: AnyCancellable?
+        #endif
+        #if os(iOS)
+        // iPhone chrome fade (#391): the viewport's own drag recognizers (set in
+        // makeUIView) and the last "in progress" state posted, so a two-finger
+        // gesture's pan + pinch + rotation report one begin and one end.
+        var fadeDragRecognizers: [UIGestureRecognizer] = []
+        private var fadeLastPostedActive = false
         #endif
         private var viewportSize: CGSize = .zero
         // Set when the app/display wakes (unlock, system wake, re-activate). The
@@ -1890,16 +1899,19 @@ extension MetalViewport {
         /// (and a tap or long-press, which are touches but not drags). "Active"
         /// means a continuous drag / pinch / rotation is still in progress on this
         /// view, so a pinch that ends while its rotation continues stays active.
+        /// Only the iPhone fades, so nothing is posted elsewhere; a drag edge is
+        /// posted only when the in-progress state flips, while a tap or
+        /// long-press always posts (it is a touch that brings the controls back).
         @objc func noteViewportActivity(_ gesture: UIGestureRecognizer) {
+            guard UIDevice.current.userInterfaceIdiom == .phone else { return }
             switch gesture.state {
             case .began, .ended, .cancelled: break
             default: return   // .changed would post every frame
             }
-            let active = (gesture.view?.gestureRecognizers ?? []).contains { recognizer in
-                (recognizer is UIPanGestureRecognizer || recognizer is UIPinchGestureRecognizer
-                    || recognizer is UIRotationGestureRecognizer)
-                    && (recognizer.state == .began || recognizer.state == .changed)
-            }
+            let active = fadeDragRecognizers.contains { $0.state == .began || $0.state == .changed }
+            let isDrag = fadeDragRecognizers.contains { $0 === gesture }
+            guard !isDrag || active != fadeLastPostedActive else { return }
+            fadeLastPostedActive = active
             NotificationCenter.default.post(name: .raymolViewportActivity, object: nil,
                                             userInfo: ["gestureActive": active])
         }

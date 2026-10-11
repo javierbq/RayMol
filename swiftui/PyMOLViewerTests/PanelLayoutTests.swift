@@ -309,12 +309,12 @@ final class PanelLayoutTests: XCTestCase {
 // MARK: - iPhone chrome fade (#391)
 
 final class PhoneChromeFadeTests: XCTestCase {
-    private let t0 = Date(timeIntervalSinceReferenceDate: 1_000_000)
+    private let t0: TimeInterval = 1_000_000
 
     func testJustAfterInteractionControlsAreFullyVisibleAndHitTestable() {
         for dt in [0.0, 1.0, 2.9] {
             let app = PhoneChromeFade.appearance(
-                now: t0.addingTimeInterval(dt),
+                now: t0 + dt,
                 lastInteraction: t0,
                 gestureActive: false,
                 pinned: false
@@ -327,7 +327,7 @@ final class PhoneChromeFadeTests: XCTestCase {
     func testIdleControlsAreDimmedAndHitTestable() {
         for dt in [PhoneChromeFade.idleDelay, 10.0] {
             let app = PhoneChromeFade.appearance(
-                now: t0.addingTimeInterval(dt),
+                now: t0 + dt,
                 lastInteraction: t0,
                 gestureActive: false,
                 pinned: false
@@ -340,7 +340,7 @@ final class PhoneChromeFadeTests: XCTestCase {
     func testGestureActiveHidesControlsAndDisablesHitTesting() {
         for dt in [0.0, 10.0] {
             let app = PhoneChromeFade.appearance(
-                now: t0.addingTimeInterval(dt),
+                now: t0 + dt,
                 lastInteraction: t0,
                 gestureActive: true,
                 pinned: false
@@ -353,7 +353,7 @@ final class PhoneChromeFadeTests: XCTestCase {
     func testPinnedBeatsBothGestureAndIdle() {
         // Pinned while idle
         let idlePinned = PhoneChromeFade.appearance(
-            now: t0.addingTimeInterval(10.0),
+            now: t0 + 10.0,
             lastInteraction: t0,
             gestureActive: false,
             pinned: true
@@ -363,7 +363,7 @@ final class PhoneChromeFadeTests: XCTestCase {
 
         // Pinned during active gesture
         let gesturePinned = PhoneChromeFade.appearance(
-            now: t0.addingTimeInterval(0.0),
+            now: t0 + 0.0,
             lastInteraction: t0,
             gestureActive: true,
             pinned: true
@@ -373,7 +373,7 @@ final class PhoneChromeFadeTests: XCTestCase {
 
         // Pinned during active gesture and after idle timeout
         let gestureAndIdlePinned = PhoneChromeFade.appearance(
-            now: t0.addingTimeInterval(10.0),
+            now: t0 + 10.0,
             lastInteraction: t0,
             gestureActive: true,
             pinned: true
@@ -385,7 +385,7 @@ final class PhoneChromeFadeTests: XCTestCase {
     func testLastInteractionInTheFutureShowsFully() {
         let app = PhoneChromeFade.appearance(
             now: t0,
-            lastInteraction: t0.addingTimeInterval(10.0),
+            lastInteraction: t0 + 10.0,
             gestureActive: false,
             pinned: false
         )
@@ -396,16 +396,16 @@ final class PhoneChromeFadeTests: XCTestCase {
     func testNextChange() {
         // Within the delay -> t0 + idleDelay
         let next = PhoneChromeFade.nextChange(
-            now: t0.addingTimeInterval(1.0),
+            now: t0 + 1.0,
             lastInteraction: t0,
             gestureActive: false,
             pinned: false
         )
-        XCTAssertEqual(next, t0.addingTimeInterval(PhoneChromeFade.idleDelay))
+        XCTAssertEqual(next, t0 + PhoneChromeFade.idleDelay)
 
         // At the deadline -> nil
         XCTAssertNil(PhoneChromeFade.nextChange(
-            now: t0.addingTimeInterval(PhoneChromeFade.idleDelay),
+            now: t0 + PhoneChromeFade.idleDelay,
             lastInteraction: t0,
             gestureActive: false,
             pinned: false
@@ -413,7 +413,7 @@ final class PhoneChromeFadeTests: XCTestCase {
 
         // After the deadline -> nil
         XCTAssertNil(PhoneChromeFade.nextChange(
-            now: t0.addingTimeInterval(10.0),
+            now: t0 + 10.0,
             lastInteraction: t0,
             gestureActive: false,
             pinned: false
@@ -421,7 +421,7 @@ final class PhoneChromeFadeTests: XCTestCase {
 
         // Gesture active -> nil
         XCTAssertNil(PhoneChromeFade.nextChange(
-            now: t0.addingTimeInterval(1.0),
+            now: t0 + 1.0,
             lastInteraction: t0,
             gestureActive: true,
             pinned: false
@@ -429,11 +429,19 @@ final class PhoneChromeFadeTests: XCTestCase {
 
         // Pinned -> nil
         XCTAssertNil(PhoneChromeFade.nextChange(
-            now: t0.addingTimeInterval(1.0),
+            now: t0 + 1.0,
             lastInteraction: t0,
             gestureActive: false,
             pinned: true
         ))
+    }
+
+    /// A last interaction ahead of `now` (it can't happen on the monotonic clock,
+    /// but the rule must stay sane): shown, and the dim is due idleDelay after it.
+    func testNextChangeWithAFutureLastInteraction() {
+        XCTAssertEqual(PhoneChromeFade.nextChange(now: t0, lastInteraction: t0 + 10,
+                                                  gestureActive: false, pinned: false),
+                       t0 + 10 + PhoneChromeFade.idleDelay)
     }
 
     func testSequence() {
@@ -448,7 +456,7 @@ final class PhoneChromeFadeTests: XCTestCase {
         XCTAssertTrue(atT0.isHitTestable)
 
         // Gesture begins at t0+5 (gestureActive true, lastInteraction t0+5) -> 0
-        let tGestureBegin = t0.addingTimeInterval(5.0)
+        let tGestureBegin = t0 + 5.0
         let atGestureBegin = PhoneChromeFade.appearance(
             now: tGestureBegin,
             lastInteraction: tGestureBegin,
@@ -459,7 +467,7 @@ final class PhoneChromeFadeTests: XCTestCase {
         XCTAssertFalse(atGestureBegin.isHitTestable)
 
         // Gesture ends at t0+8 (lastInteraction t0+8, false) -> 1 at t0+8 and t0+10.9, 0.25 at t0+11
-        let tGestureEnd = t0.addingTimeInterval(8.0)
+        let tGestureEnd = t0 + 8.0
         let atGestureEnd = PhoneChromeFade.appearance(
             now: tGestureEnd,
             lastInteraction: tGestureEnd,
@@ -470,7 +478,7 @@ final class PhoneChromeFadeTests: XCTestCase {
         XCTAssertTrue(atGestureEnd.isHitTestable)
 
         let atT10_9 = PhoneChromeFade.appearance(
-            now: t0.addingTimeInterval(10.9),
+            now: t0 + 10.9,
             lastInteraction: tGestureEnd,
             gestureActive: false,
             pinned: false
@@ -479,7 +487,7 @@ final class PhoneChromeFadeTests: XCTestCase {
         XCTAssertTrue(atT10_9.isHitTestable)
 
         let atT11 = PhoneChromeFade.appearance(
-            now: t0.addingTimeInterval(11.0),
+            now: t0 + 11.0,
             lastInteraction: tGestureEnd,
             gestureActive: false,
             pinned: false

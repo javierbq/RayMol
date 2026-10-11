@@ -1391,9 +1391,10 @@ struct ContentView: View {
     // iPhone chrome fade (#391): the last viewport/chrome interaction, whether a
     // viewport gesture is in progress, and the clock the fade is evaluated at
     // (bumped by the idle task in viewportView so the dim happens on time).
-    @State private var chromeLastInteraction = Date()
+    // Seconds on the monotonic clock (ProcessInfo.systemUptime), see PhoneChromeFade.
+    @State private var chromeLastInteraction = ProcessInfo.processInfo.systemUptime
     @State private var chromeGestureActive = false
-    @State private var chromeFadeNow = Date()
+    @State private var chromeFadeNow = ProcessInfo.processInfo.systemUptime
 
     private func openNotesAndPost(_ name: Notification.Name) {
         inspectorTab = .notes
@@ -2340,7 +2341,6 @@ struct ContentView: View {
                                 // full-bleed under the bottom safe area, so without this the
                                 // tappable pill sits on the system gesture bar.
                                 panelTongue(shown: objectsBinding, axis: .horizontal)
-                                    .phoneChromeFade(phoneChromeAppearance)
                                     .padding(.bottom, bottomTongueInset)
                             }
                         }
@@ -2361,7 +2361,6 @@ struct ContentView: View {
                                 .background(themeChromeBg)
                                 .overlay(alignment: .top) {
                                     panelTongue(shown: objectsBinding, axis: .horizontal, seam: true)
-                                        .phoneChromeFade(phoneChromeAppearance)
                                 }
                                 .onPreferenceChange(PaneHeightKey.self) { paneHeights = $0 }
                                 .animation(.easeInOut(duration: 0.25), value: inspectorTab)
@@ -2441,7 +2440,6 @@ struct ContentView: View {
                 // Hidden while the light tools take the slot (#623).
                 if !showThemeStudio && !objectsBinding.wrappedValue && !lightsSidePanelShown {
                     panelTongue(shown: objectsBinding, axis: .vertical)
-                        .phoneChromeFade(phoneChromeAppearance)
                         .padding(.trailing, islandOnRight ? notch : 0)
                 }
             }
@@ -2475,7 +2473,6 @@ struct ContentView: View {
                         // on top; overlay AFTER .clipped() so it isn't clipped away.
                         .overlay(alignment: .leading) {
                             panelTongue(shown: objectsBinding, axis: .vertical, seam: true)
-                                .phoneChromeFade(phoneChromeAppearance)
                         }
                 }
 
@@ -2791,8 +2788,12 @@ struct ContentView: View {
                 tab.frame(maxHeight: .infinity).padding(.horizontal, 1)
             }
         }
+        // iPhone chrome fade (#391): every tongue site, so a Plus/Pro Max in
+        // landscape (regular width → the iPad-style layout) fades too; pinned
+        // (fully shown) on iPad and macOS.
         return strip.offset(x: seam && axis == .vertical ? -9 : 0,
                             y: seam && axis == .horizontal ? -9 : 0)
+            .phoneChromeFade(phoneChromeAppearance)
     }
 
     #if os(iOS)
@@ -3184,22 +3185,27 @@ struct ContentView: View {
             }
             .overlay { busyOverlay }
             // iPhone chrome fade (#391): a viewport gesture edge or tap restarts
-            // the idle clock; a camera / panel toggle or the first structure
-            // loading counts as interaction too; the task bumps the fade clock at
-            // the idle deadline so the controls dim on time.
+            // the idle clock; a camera / panel toggle, a structure loading or
+            // VoiceOver turning off counts as interaction too; the task bumps the
+            // fade clock at the idle deadline so the controls dim on time.
             .onReceive(NotificationCenter.default.publisher(for: .raymolViewportActivity)) { note in
                 noteChromeInteraction(gestureActive: note.userInfo?["gestureActive"] as? Bool ?? false)
             }
             .onChange(of: showCameraPanel) { _, _ in noteChromeInteraction() }
             .onChange(of: objectsBinding.wrappedValue) { _, _ in noteChromeInteraction() }
-            .onChange(of: engine.objects.isEmpty) { _, _ in noteChromeInteraction() }
+            .onChange(of: engine.objects.count) { _, _ in noteChromeInteraction() }
+            .onChange(of: voiceOverEnabled) { _, _ in noteChromeInteraction() }
             .task(id: chromeLastInteraction) {
-                guard let deadline = PhoneChromeFade.nextChange(
-                    now: Date(), lastInteraction: chromeLastInteraction,
-                    gestureActive: chromeGestureActive, pinned: phoneChromePinned) else { return }
-                let wait = max(0, deadline.timeIntervalSinceNow)
-                try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
-                if !Task.isCancelled { chromeFadeNow = Date() }
+                // Re-checked after each sleep, so the dim lands even if a wake-up
+                // comes early.
+                while let deadline = PhoneChromeFade.nextChange(
+                    now: ProcessInfo.processInfo.systemUptime, lastInteraction: chromeLastInteraction,
+                    gestureActive: chromeGestureActive, pinned: phoneChromePinned) {
+                    let wait = max(0, deadline - ProcessInfo.processInfo.systemUptime)
+                    try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+                    if Task.isCancelled { return }
+                    chromeFadeNow = ProcessInfo.processInfo.systemUptime
+                }
             }
     }
 
@@ -4817,7 +4823,7 @@ struct ContentView: View {
 
     // Restart the idle clock (any touch / gesture edge / chrome toggle).
     private func noteChromeInteraction(gestureActive: Bool? = nil) {
-        let now = Date()
+        let now = ProcessInfo.processInfo.systemUptime
         if let gestureActive { chromeGestureActive = gestureActive }
         chromeLastInteraction = now
         chromeFadeNow = now
