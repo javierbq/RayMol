@@ -379,7 +379,7 @@ def takes_atom_selection(obj):
         return False
 
 
-def transp_summary(obj):
+def transp_summary(obj, settings=None):
     """One pass over `obj`'s atoms → {setting: (min, max, over)} for the atom-level
     transparency settings, where min/max are the EFFECTIVE per-atom transparency
     (the atom-level value if set, else the object-level value) and `over` is True
@@ -393,28 +393,37 @@ def transp_summary(obj):
     Objects the selector won't take are rejected up front (see
     takes_atom_selection): they cannot carry per-atom transparency anyway, so
     probing them is both wrong and noisy.
+
+    `settings` narrows the scan to a subset of TRANSP_SETTINGS (default: all).
+    Every `s.<setting>` that misses an atom-level override raises and formats an
+    AttributeError inside iterate, so a caller that only needs some settings
+    should not pay for the others (#271).
     """
     if not takes_atom_selection(obj):
         return {}
-    objlv = {s: _num(s, obj) for s in TRANSP_SETTINGS}
-    mn = {s: None for s in TRANSP_SETTINGS}
-    mx = {s: None for s in TRANSP_SETTINGS}
+    settings = list(TRANSP_SETTINGS if settings is None else settings)
+    if not settings:
+        return {}
+    objlv = {s: _num(s, obj) for s in settings}
+    mn = {s: None for s in settings}
+    mx = {s: None for s in settings}
 
     def _visit(vals):
-        for i, s in enumerate(TRANSP_SETTINGS):
+        for i, s in enumerate(settings):
             e = objlv[s] if vals[i] is None else float(vals[i])
             if mn[s] is None or e < mn[s]:
                 mn[s] = e
             if mx[s] is None or e > mx[s]:
                 mx[s] = e
 
-    expr = '_visit((%s))' % ', '.join('s.%s' % s for s in TRANSP_SETTINGS)
+    # Trailing comma: a single setting must still be a 1-tuple, not a bare value.
+    expr = '_visit((%s,))' % ', '.join('s.%s' % s for s in settings)
     try:
         cmd.iterate(obj, expr, space={'_visit': _visit})
     except Exception:
         return {}
     out = {}
-    for s in TRANSP_SETTINGS:
+    for s in settings:
         if mn[s] is None:
             continue
         over = (round(mn[s], 4) != round(objlv[s], 4)) or (round(mx[s], 4) != round(objlv[s], 4))
@@ -426,17 +435,25 @@ def object_has_atom_transp(obj):
     """True when any ACTIVE rep of `obj` has a per-atom transparency override — the
     signal for the collapsed-row badge. Rep-gated so an override on a hidden rep
     (which the user can't see and the expanded card wouldn't show) doesn't flag.
-    The count_atoms probe runs only when an override exists (cheap short-circuit).
+
+    The shown reps are probed FIRST (one cheap core call, #398) and the per-atom
+    iterate is skipped outright when no transparency-capable rep is shown (the
+    answer is then always False), and otherwise narrowed to the settings of the
+    reps that are shown (#271).
     """
-    summ = transp_summary(obj)
-    for rep, setting in REP_TRANSP.items():
-        entry = summ.get(setting)
+    if not takes_atom_selection(obj):
+        return False
+    shown = _shown_reps(obj)
+    reps = [r for r in REP_TRANSP if r in shown]
+    if not reps:
+        return False
+    settings = [s for s in TRANSP_SETTINGS
+                if s in {REP_TRANSP[r] for r in reps}]
+    summ = transp_summary(obj, settings)
+    for r in reps:
+        entry = summ.get(REP_TRANSP[r])
         if entry and entry[2]:
-            try:
-                if cmd.count_atoms('(%s) & rep %s' % (obj, rep)) > 0:
-                    return True
-            except Exception:
-                pass
+            return True
     return False
 
 
@@ -973,7 +990,10 @@ def poll_panel():
             'enabled': list(enabled),
             'sel_counts': {s: cmd.count_atoms(s) for s in sels},
             'nstate': {o: cmd.count_states('?' + o) for o in objs},
-            'has_transp': {o: object_has_atom_transp(o) for o in objs},
+            # A disabled object draws nothing, so its badge is skipped (False) rather
+            # than paying a per-atom scan per tick for hidden objects (#271).
+            'has_transp': {o: (o in enabled and object_has_atom_transp(o))
+                           for o in objs},
             'groups': groups,
             'parent': parents,
             'pending': dict(pending_details, **design_details),

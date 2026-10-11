@@ -24,6 +24,7 @@ import json
 import os
 import sys
 import tempfile
+from unittest import mock
 
 from pymol import cmd, testing
 from pymol import appkit_inspector as ai
@@ -296,6 +297,104 @@ class TestNonMolecularObjectsAreNotProbed(testing.PyMOLTestCase):
         detail = ai._build(['mol', 'dist01'])['detail']
         self.assertEqual(detail['dist01'], [])
         self.assertTrue(detail['mol'], 'the molecule must still describe its reps')
+
+
+class TestTranspBadgeScanIsGated(testing.PyMOLTestCase):
+    """Coverage for issue #271: the badge's per-atom `cmd.iterate` scan used to run
+    for every object on every poll, even when no transparency-capable rep was
+    shown and for disabled objects. It must now run only when it can change the
+    answer, over only the settings of the shown reps, with the badge unchanged.
+    """
+
+    def _scans(self, fn):
+        """Run fn(), returning (result, [iterate expressions issued])."""
+        with mock.patch.object(cmd, 'iterate', wraps=cmd.iterate) as it:
+            result = fn()
+        return result, [c.args[1] for c in it.call_args_list]
+
+    def _session(self):
+        cmd.delete('all')
+        cmd.fab('ACDEFG', 'mol')
+        cmd.alter('mol and resi 1-2', 's.cartoon_transparency = 0.5')
+        cmd.alter('mol and resi 1-2', 's.sphere_transparency = 0.5')
+
+    def testHiddenRepsSkipTheScan(self):
+        self._session()
+        cmd.hide('everything', 'mol')
+        cmd.show('lines', 'mol')       # lines cannot be transparent
+        result, scans = self._scans(lambda: ai.object_has_atom_transp('mol'))
+        self.assertFalse(result)
+        self.assertEqual(scans, [], 'no iterate when no transparent rep is shown')
+
+    def testNothingShownSkipsTheScan(self):
+        self._session()
+        cmd.hide('everything', 'mol')
+        result, scans = self._scans(lambda: ai.object_has_atom_transp('mol'))
+        self.assertFalse(result)
+        self.assertEqual(scans, [])
+
+    def testOverrideOnShownRepStillBadges(self):
+        self._session()
+        cmd.hide('everything', 'mol')
+        cmd.show('cartoon', 'mol')
+        result, scans = self._scans(lambda: ai.object_has_atom_transp('mol'))
+        self.assertTrue(result)
+        self.assertEqual(len(scans), 1)
+
+    def testScanIsNarrowedToShownRepSettings(self):
+        self._session()
+        cmd.hide('everything', 'mol')
+        cmd.show('cartoon', 'mol')
+        _, scans = self._scans(lambda: ai.object_has_atom_transp('mol'))
+        self.assertIn('cartoon_transparency', scans[0])
+        self.assertNotIn('sphere_transparency', scans[0])
+        self.assertNotIn('s.transparency', scans[0])
+
+    def testOverrideOnHiddenRepDoesNotBadge(self):
+        # Spheres carry the override but only cartoon is shown (semantics of #122).
+        cmd.delete('all')
+        cmd.fab('ACDEFG', 'mol')
+        cmd.hide('everything', 'mol')
+        cmd.alter('mol and resi 1-2', 's.sphere_transparency = 0.9')
+        cmd.show('cartoon', 'mol')
+        self.assertFalse(ai.object_has_atom_transp('mol'))
+        cmd.show('spheres', 'mol')
+        self.assertTrue(ai.object_has_atom_transp('mol'))
+
+    def testSummaryDefaultStillCoversAllSettings(self):
+        self._session()
+        summ = ai.transp_summary('mol')
+        self.assertEqual(sorted(summ), sorted(ai.TRANSP_SETTINGS))
+        self.assertEqual(sorted(ai.transp_summary('mol', ['sphere_transparency'])),
+                         ['sphere_transparency'])
+
+    def testPollPanelSkipsDisabledObjects(self):
+        self._session()
+        cmd.hide('everything', 'mol')
+        cmd.show('cartoon', 'mol')
+        cmd.fab('ACDEFG', 'other')
+        cmd.show('cartoon', 'other')
+        cmd.disable('other')
+        _, scans = self._scans(ai.poll_panel)
+        with open(PANEL_JSON) as f:
+            payload = json.load(f)
+        self.assertTrue(payload['has_transp']['mol'])
+        self.assertFalse(payload['has_transp']['other'])
+        self.assertIn('other', payload['has_transp'])
+        self.assertEqual(len(scans), 1, 'only the enabled object is scanned')
+
+    def testMeasurementsAndGroupsKeepBadgeSemantics(self):
+        # #219: a measurement is never probed; #256: a group describes members.
+        cmd.delete('all')
+        cmd.fab('ACDEFG', 'mol')
+        cmd.show('cartoon', 'mol')
+        cmd.alter('mol and resi 1-2', 's.cartoon_transparency = 0.5')
+        cmd.distance('dist01', 'mol and i. 1 and n. CA', 'mol and i. 3 and n. CA')
+        cmd.group('grp', 'mol')
+        with capture_console() as out:
+            self.assertFalse(ai.object_has_atom_transp('dist01'))
+        self.assertNotIn(b'Invalid selection name', out.read())
+        self.assertTrue(ai.object_has_atom_transp('grp'))
 
 
 class TestGroupTreePayload(testing.PyMOLTestCase):
