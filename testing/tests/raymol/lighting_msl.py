@@ -1229,17 +1229,21 @@ class TestBezierTube(LightMSLCase):
         self.assertIsNotNone(peel)
         self.assertLess(peel.start(), build)
         # #663: depth-only shadow branch before the classic pipeline
+        # (with the rig off, a colour draw is today's classic tube)
+        code_body = strip_comments(body)
         shadow_branch = re.search(
+            r'id<MTLRenderPipelineState>\s+tubePipeline\s*=\s*nil\s*;\s*'
             r'if\s*\(\s*_shadowMode\s*\)\s*\{\s*'
             r'buildBezierTubeShadowPipeline\(\);\s*'
-            r'if\s*\(\s*!_bezierTubeShadowPipeline\s*\)\s*return\s*;\s*\}'
+            r'if\s*\(\s*!_bezierTubeShadowPipeline\s*\)\s*return\s*;\s*'
+            r'tubePipeline\s*=\s*_bezierTubeShadowPipeline\s*;\s*\}'
             r'\s*else\s*\{\s*'
             r'buildBezierTubePipeline\(\);\s*'
-            r'if\s*\(\s*!_bezierTubePipeline\s*\)\s*return\s*;\s*\}', body)
+            r'if\s*\(\s*!_bezierTubePipeline\s*\)\s*return\s*;\s*'
+            r'tubePipeline\s*=\s*_bezierTubePipeline\s*;\s*\}', code_body)
         self.assertIsNotNone(shadow_branch)
-        self.assertLess(shadow_branch.start(), build)
-        self.assertRegex(body, r'id<MTLRenderPipelineState>\s+tubePipeline\s*=\s*'
-                               r'_shadowMode\s*\?\s*_bezierTubeShadowPipeline\s*:\s*_bezierTubePipeline\s*;')
+        self.assertLess(shadow_branch.start(),
+                        code_body.index('buildBezierTubeRigPipeline();'))
         self.assertRegex(body, r'bool\s+tubeRig\s*=\s*false\s*;')
         # #663: rig block guarded by _lightRigOn && !_shadowMode
         block = re.search(r'if\s*\(\s*_lightRigOn\s*&&\s*!_shadowMode\s*\)\s*\{', body)
@@ -1303,6 +1307,16 @@ class TestBezierTube(LightMSLCase):
         self.assertIn('psd.tessellationPartitionMode = MTLTessellationPartitionModeInteger;', build)
         self.assertIn('psd.vertexDescriptor = vd;', build)
         self.assertIn('psd.vertexFunction = vfn;', build)
+        # field for field the classic tube's descriptor (vertex layout and
+        # tessellation), but for the depth-only pass's attachments: the map
+        # depth comes from the same tessellation as the lit tube
+        classic = cpp_function(self.mm, 'RendererMetal::buildBezierTubePipeline')
+        attachments = ('psd.colorAttachments[', 'psd.rasterSampleCount=',
+                       'psd.depthAttachmentPixelFormat=',
+                       'psd.stencilAttachmentPixelFormat=')
+        self.assertEqual(
+            [l for l in descriptor_lines(build) if not l.startswith(attachments)],
+            [l for l in descriptor_lines(classic) if not l.startswith(attachments)])
         self.assertIn('[psd release];', build)
         self.assertIn('[vfn release];', build)
         self.assertIn('[lib release];', build)
