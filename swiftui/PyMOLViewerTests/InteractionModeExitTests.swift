@@ -291,6 +291,30 @@ final class InteractionModeExitTests: XCTestCase {
         }
     }
 
+    /// #648: `leaveViewportTool()` left Move and Lights only, so entering Measure,
+    /// Design, Predict or Binder Design from Box Select left `interactionMode` at
+    /// `.boxSelect` with the other mode on, and the rectangle and its preview
+    /// highlight stayed up. Every other mode's entry must now end Box Select.
+    func testEveryOtherModeLeavesBoxSelect() {
+        for mode in otherModes where mode.name != "Box Select" {
+            engine.setInteractionMode(.boxSelect)
+            XCTAssertEqual(engine.interactionMode, .boxSelect, "precondition for \(mode.name)")
+            XCTAssertNotNil(engine.boxRect, "precondition for \(mode.name)")
+
+            mode.enter()
+            XCTAssertTrue(mode.isOn(), "\(mode.name) did not enter")
+            XCTAssertNotEqual(engine.interactionMode, .boxSelect,
+                              "entering \(mode.name) must leave Box Select")
+            XCTAssertNil(engine.boxRect, "the box must go with the tool: \(mode.name)")
+            resetToViewing()
+        }
+        // Lights enters through setInteractionMode, which already replaced the tool.
+        engine.setInteractionMode(.boxSelect)
+        engine.setInteractionMode(.lights)
+        XCTAssertEqual(engine.interactionMode, .lights)
+        XCTAssertNil(engine.boxRect)
+    }
+
     // MARK: - No-op when nothing is active
 
     func testNoOpWhenNoModeIsActive() {

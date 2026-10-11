@@ -2855,11 +2855,13 @@ final class PyMOLEngine: ObservableObject {
     }
 
     /// Leave the viewport tool a docked-bar mode cannot share the screen with: Move
-    /// (its gizmo takes the drags) and Lights (its bar takes the strip above the
+    /// (its gizmo takes the drags), Box Select (its box takes the drags, and its
+    /// preview highlight would stay lit) and Lights (its bar takes the strip above the
     /// viewport). Used by the Measure, Design, Predict and Binder Design setters on
-    /// entry. Box Select is left alone, as it was before Lights joined.
+    /// entry. Leaving goes through `setInteractionMode(.viewing)`, the same path Esc
+    /// uses, so Box Select's rectangle and session are torn down too (#648).
     private func leaveViewportTool() {
-        if interactionMode == .move || interactionMode == .lights { setInteractionMode(.viewing) }
+        if interactionMode != .viewing { setInteractionMode(.viewing) }
     }
 
     // MARK: - Exclusive interaction modes
