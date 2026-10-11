@@ -156,10 +156,12 @@ bool LightAirAnimating(const LightAir& air, double pinned, bool playing,
 /**
  * The air block for the source, with the dust clock `clock` (s, before
  * dust_speed), `resolution` (LightAirResolution) and `shadowFilter`
- * (LightAirShadowFilter). nullopt when the air shows nothing or its range is
+ * (LightAirShadowFilter); `alpha` (metal_light_air_alpha, #684) sets view.z
+ * to 1 so a transparent-background export keeps the air in its alpha (0 else).
+ * nullopt when the air shows nothing or its range is
  * empty (the rig is behind the camera). The renderer fills view.y and proj.
  */
 std::optional<LightAirBlock> LightAirPack(const LightAirSource& source,
-    double clock, int resolution, int shadowFilter);
+    double clock, int resolution, int shadowFilter, bool alpha = false);
 
 } // namespace pymol

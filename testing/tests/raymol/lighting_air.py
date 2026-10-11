@@ -43,7 +43,8 @@ BLOCK_FLOATS = 20
 
 SETTINGS = ((884, 'metal_light_air_resolution', 'i', 0),
             (885, 'metal_light_air_time', 'f', -1.0),
-            (886, 'metal_light_air_shadow_filter', 'i', 0))
+            (886, 'metal_light_air_shadow_filter', 'i', 0),
+            (888, 'metal_light_air_alpha', 'i', 0))
 
 # Decoded fields at their block offsets (LightAirBlock.h).
 OFFSETS = {'haze_density': 0, 'dust_occupancy': 1, 'scatter': 2,
@@ -509,6 +510,21 @@ class TestPack(AirCase):
             self.assertEqual(got['shadow_filter'], filt, value)
             self.assertIsInstance(got['shadow_filter'], int)
 
+    def testAirAlphaFlag(self):
+        # #684: view.z (block[14]) is 1 only for metal_light_air_alpha 1; off
+        # (the default) the block is what it was
+        self.rig()
+        self.assertEqual(cmd.get_setting_int('metal_light_air_alpha'), 0)
+        base = self.frame()['block']
+        self.assertEqual(base[14], 0.0)
+        for value, flag in ((1, 1.0), (0, 0.0), (2, 0.0), (-1, 0.0)):
+            cmd.set('metal_light_air_alpha', value)
+            block = self.frame()['block']
+            self.assertEqual(block[14], flag, value)
+            # nothing else moves with it
+            self.assertEqual(block[:14] + block[15:],
+                             base[:14] + base[15:], value)
+
     def testRendererFieldsAreZero(self):
         self.rig()
         block = self.frame()['block']
@@ -723,6 +739,7 @@ class TestSource(testing.PyMOLTestCase):
         for token in ('cSetting_metal_light_air_time',
                       'cSetting_metal_light_air_resolution',
                       'cSetting_metal_light_air_shadow_filter',
+                      'cSetting_metal_light_air_alpha',
                       'cSetting_movie_fps', 'SceneGetFrame(', 'SceneCountFrames(',
                       'MoviePlaying(', 'UtilGetSeconds(', 'offscreenFrame('):
             self.assertEqual(body.count(token), 1, token)

@@ -551,6 +551,17 @@ private:
   id<MTLRenderPipelineState> _airFullPipeline[2] = {};
   id<MTLRenderPipelineState> _airMarchPipeline = nil;
   id<MTLRenderPipelineState> _airUpsamplePipeline[2] = {};
+  // metal_light_air_alpha (#684): what the air added, as an alpha, for a
+  // transparent-background export's matte. _airAlphaPipeline is made in the
+  // air's one attempt; _airAlphaTex (R8Unorm, w x h, made on the first export
+  // that asks, _airAlphaW/_airAlphaH the size made or tried for);
+  // _airAlphaDrawn is true only on a frame whose air pass drew it.
+  id<MTLRenderPipelineState> _airAlphaPipeline = nil;
+  id<MTLRenderPipelineState> _airAlphaMergePipeline = nil;
+  id<MTLTexture> _airAlphaTex = nil;
+  NSUInteger _airAlphaW = 0;
+  NSUInteger _airAlphaH = 0;
+  bool _airAlphaDrawn = false;
   bool _airPipelinesTried = false;
   id<MTLTexture> _airNoMaps = nil;
   id<MTLTexture> _airTerm = nil;
@@ -560,6 +571,9 @@ private:
   bool ensureAirPipelines();
   id<MTLTexture> ensureAirNoMaps();
   bool ensureAirTerm(NSUInteger w, NSUInteger h);
+  bool ensureAirAlpha(NSUInteger w, NSUInteger h);
+  void encodeAirAlpha(id<MTLTexture> before, id<MTLTexture> after, bool wanted);
+  id<MTLTexture> encodeAirAlphaMerge(id<MTLTexture> matte);
   // Encodes the air over sceneSrc into the other ping-pong target, on
   // _cmdBuffer, and returns that target (sceneSrc when it cannot draw).
   id<MTLTexture> encodeAirPass(id<MTLTexture> sceneSrc);

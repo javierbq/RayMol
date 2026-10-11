@@ -22,6 +22,7 @@ A feature release built around **studio lights**: spot lights you place around t
 - **Bright lights keep their colour.** Under a rig, light is kept in high dynamic range and rolled off once at the end, so a bright coloured light rolls off towards white keeping its hue instead of whitening early, up to `intensity` 4. With a rig on, **Exposure** (`metal_exposure`) now scales what the lights light and the air, not the background or labels, which makes it the way to tame a bright rig or backlit haze. `set metal_light_hdr, 2` brings back the 8-bit look.
 - **Saved with your work.** Sessions save the rig and its air. Each scene stores its own rig, recalling a scene brings it back, and scene movies blend the lights and the air from scene to scene with the camera.
 - **Exports keep the look.** Image exports from the app, **Ray-traced (AO + shadows)** included, render with Metal and keep the studio lights. PyMOL's CPU `ray` command (and `png ..., ray=1`) keeps PyMOL's own lights and prints a one-line note saying so.
+- **Haze in transparent exports.** `set metal_light_air_alpha, 1` keeps haze and dust over empty background in a transparent-background PNG, instead of cutting them out with the background. It is off by default, so existing exports are unchanged.
 - **No rig, no change.** Without a rig every image is exactly the one the previous version drew, so existing sessions look the same.
 
 See [docs/lighting.md](../../lighting.md) for every command, field and setting, the Lights mode controls, performance switches and the known limits.

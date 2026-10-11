@@ -378,6 +378,12 @@ atmosphere off
   (`lights recenter` does). It needs something shown: with nothing enabled,
   or only overlays such as the Move gizmo, there is no air. It is not drawn
   in `grid_mode` (#686).
+- A transparent-background export (`ray_opaque_background` 0) takes its
+  alpha from depth, so by default haze and dust over empty background are
+  cut out with it. `set metal_light_air_alpha, 1` keeps them: alpha there is
+  the larger of the depth matte and the air's luminance (what the air added to
+  the pixel). The colour in the PNG is the air's own light, not divided by
+  that alpha. Off by default, so exports are unchanged unless you ask (#684).
 - Haze alone is still: only dust moves. The live view redraws for the dust
   only while the rig is on with dust and `dust_speed` above 0, the dust clock
   is not pinned, no movie plays, nothing is in grid mode and something is
@@ -683,6 +689,7 @@ until #623's device run.
 | `metal_light_air_resolution` | The air pass's resolution: 1 full, 2 half; anything else reads as 0. | `0`: half on the Mac, half on iOS | no |
 | `metal_light_air_time` | Below 0 the dust follows its clock; 0 or more pins the clock to that many seconds, for repeatable renders. | `-1` | no |
 | `metal_light_air_shadow_filter` | The haze's shadow lookup per step: 1 one tap, 2 the 3x3 lookup; anything else reads as 0. Dust motes always use the 3x3. | `0`: one tap on the Mac, one tap on iOS | no |
+| `metal_light_air_alpha` | Whether the air counts toward alpha in a transparent-background export: 1 on, so haze and dust over empty background stay in the PNG; anything else is off and the matte is depth only, which cuts the air out there. | `0`: off | no |
 | `metal_light_hdr` | The rig's colour: 1 HDR (exposure and a hue-preserving tone curve), 2 the 8-bit soft knee as before HDR; anything else reads as 0. | `0`: HDR on the Mac, HDR on iOS | no |
 | `metal_gpu_timing` | Debug readout of GPU frame times: 0 off, 1 a summary about once a second, 2 every frame (see [Performance and iOS](#performance-and-ios)). | `0` | no |
 | `metal_shadows` | The scene's Shadows switch; studio shadows need it on. | `on` | yes |

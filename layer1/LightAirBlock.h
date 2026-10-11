@@ -46,7 +46,8 @@ struct LightAirBlock {
   /// x dust time (s), y mote radius (Å, before the per-mote factor),
   /// z defocus gain (per Å), w haze shadow filter (1 | 2)
   float motion[4];
-  /// x resolution scale (1 | 0.5), y orthographic 0|1 (renderer), z, w 0
+  /// x resolution scale (1 | 0.5), y orthographic 0|1 (renderer), z air counts toward
+  /// a transparent export's alpha 0|1 (metal_light_air_alpha), w 0
   float view[4];
   /// The renderer's projection terms A, B, X, Y (renderer; 0 here)
   float proj[4];
