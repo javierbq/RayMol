@@ -125,8 +125,22 @@ final class AppBuildInfoTests: XCTestCase {
     // The live property must go through the same formatter as the tested one.
     func testLiveConsoleBannerMatchesDisplayVersion() {
         XCTAssertEqual(AppBuildInfo.consoleBanner,
-                       AppBuildInfo.consoleBanner(displayVersion: AppBuildInfo.displayVersion))
+                       AppBuildInfo.consoleBanner(displayVersion: AppBuildInfo.displayVersion,
+                                                  coreSHA: AppBuildInfo.coreSHA))
         XCTAssertTrue(AppBuildInfo.consoleBanner.hasPrefix(" [build] RayMol "))
+    }
+
+    // The stamped core commit makes a stale-core link visible in the console
+    // (#400). Blank/absent stamps must not leave a dangling " core ".
+    func testConsoleBannerShowsCoreSHAWhenStamped() {
+        XCTAssertEqual(AppBuildInfo.consoleBanner(displayVersion: "1.10.0 (27)", coreSHA: "1fc5fc983"),
+                       " [build] RayMol 1.10.0 (27) core 1fc5fc983")
+        XCTAssertEqual(AppBuildInfo.consoleBanner(displayVersion: "1.10.0 (27)", coreSHA: "1fc5fc983-dirty"),
+                       " [build] RayMol 1.10.0 (27) core 1fc5fc983-dirty")
+        XCTAssertEqual(AppBuildInfo.consoleBanner(displayVersion: "1.10.0 (27)", coreSHA: nil),
+                       " [build] RayMol 1.10.0 (27)")
+        XCTAssertEqual(AppBuildInfo.consoleBanner(displayVersion: "1.10.0 (27)", coreSHA: "  "),
+                       " [build] RayMol 1.10.0 (27)")
     }
 }
 

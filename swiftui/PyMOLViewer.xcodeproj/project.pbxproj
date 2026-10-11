@@ -891,11 +891,13 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 882466131FAA9C59212EA9BC /* Build configuration list for PBXNativeTarget "PyMOLViewer_macOS" */;
 			buildPhases = (
+				996A24FE4976ABEB368739C9 /* Core: check libpymol_core.a is fresh */,
 				CF1A74B0524F06E570BF6DF9 /* Sources */,
 				D61D47B2F441B27E03C9023B /* Resources */,
 				4E6246238783B0F1F0B91508 /* Frameworks */,
 				E9A5181B8D4750082E0C0F2C /* Brand: set CFBundleName = RayMol */,
 				7227265B2801BD14276EC727 /* Beta: set RayMolBetaLabel from RAYMOL_BETA_LABEL */,
+				1812BBAEA158A62BB3945D55 /* Core: set RayMolCoreSHA from core_sha.txt */,
 				B07CD62C5BBE02F19894A460 /* Sparkle: inject auto-update Info.plist keys (macOS, non-MAS) */,
 				7AD50FCE7EA1A86486FE1AA6 /* Brand: register molecular document types */,
 				D6E180B4CFF12A0215D1E81F /* iOS: Embed Python.framework */,
@@ -927,11 +929,13 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 706EC407223177C273587127 /* Build configuration list for PBXNativeTarget "PyMOLViewer_iOS" */;
 			buildPhases = (
+				133BC7BEE53F8E3630DE1796 /* Core: check libpymol_core.a is fresh */,
 				CA0704A170D844CE72B9AB3E /* Sources */,
 				61D7B61F4D5ACB99F6B7EA8D /* Resources */,
 				FB23646F44642041FD58D674 /* Frameworks */,
 				2A8B25C9FABB5F43C64A3B4F /* Brand: set CFBundleName = RayMol */,
 				2A47BF2FE69ED02355B5F8B5 /* Beta: set RayMolBetaLabel from RAYMOL_BETA_LABEL */,
+				1FFBFDC0E3184328381CD676 /* Core: set RayMolCoreSHA from core_sha.txt */,
 				2AC63EBF7745B988799768CA /* Sparkle: inject auto-update Info.plist keys (macOS, non-MAS) */,
 				20F6E2447B7743E74607108B /* Brand: register molecular document types */,
 				674165941FEA5412EAD0F21B /* iOS: Embed Python.framework */,
@@ -1121,6 +1125,45 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		133BC7BEE53F8E3630DE1796 /* Core: check libpymol_core.a is fresh */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Core: check libpymol_core.a is fresh";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "bash \"$SRCROOT/../scripts/check_core_fresh.sh\" check\n";
+		};
+		1812BBAEA158A62BB3945D55 /* Core: set RayMolCoreSHA from core_sha.txt */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)",
+			);
+			name = "Core: set RayMolCoreSHA from core_sha.txt";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nLABEL=\"$(bash \"$SRCROOT/../scripts/check_core_fresh.sh\" sha || true)\"\nPLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n[ -f \"$PLIST\" ] || { echo \"no Info.plist at $PLIST\"; exit 0; }\n# This phase edits the BUILT plist in place and Xcode does not always\n# regenerate it between builds, so an unstamped core must also drop a\n# RayMolCoreSHA left behind by an earlier stamped build.\nif [ -z \"$LABEL\" ]; then\n  /usr/bin/plutil -remove RayMolCoreSHA \"$PLIST\" 2>/dev/null || true\n  echo \"RayMolCoreSHA removed/skipped (no core_sha.txt stamp)\"\n  exit 0\nfi\n/usr/bin/plutil -replace RayMolCoreSHA -string \"$LABEL\" \"$PLIST\"\necho \"RayMolCoreSHA -> $LABEL ($PLIST)\"\n";
+		};
 		1C6F80E717BFF4DB64E10103 /* iOS: Prepare Python binary modules */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -1139,6 +1182,26 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "case \"$PLATFORM_NAME\" in iphone*) ;; *) exit 0 ;; esac\nset -e\nTEMPLATE=\"$SRCROOT/PyMOLViewer/Resources/dylib-Info-template.plist\"\nOSSL_PRIVACY=\"$SRCROOT/PyMOLViewer/Resources/openssl-PrivacyInfo.xcprivacy\"\ninstall_dylib () {\n  INSTALL_BASE=$1; FULL_EXT=$2\n  RELATIVE_EXT=${FULL_EXT#$CODESIGNING_FOLDER_PATH/}\n  PYTHON_EXT=${RELATIVE_EXT/$INSTALL_BASE/}\n  FULL_MODULE_NAME=$(echo $PYTHON_EXT | cut -d \".\" -f 1 | tr \"/\" \".\")\n  # tr maps '_'→'-' (underscores are illegal in bundle IDs); the sed then\n  # strips any leading dashes a segment picked up (e.g. Python C-ext\n  # modules like `_pcg64` or `numpy._core` → `.-pcg64` / `.-core`), which\n  # Apple rejects as invalid bundle identifiers. Folder/executable names\n  # (FULL_MODULE_NAME) keep their underscores — only the ID is sanitized.\n  FRAMEWORK_BUNDLE_ID=$(echo $PRODUCT_BUNDLE_IDENTIFIER.$FULL_MODULE_NAME | tr \"_\" \"-\" | sed -E 's/\\.-+/./g')\n  FRAMEWORK_FOLDER=\"Frameworks/$FULL_MODULE_NAME.framework\"\n  if [ ! -d \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER\" ]; then\n    mkdir -p \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER\"\n    cp \"$TEMPLATE\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    plutil -replace CFBundleExecutable -string \"$FULL_MODULE_NAME\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    plutil -replace CFBundleIdentifier -string \"$FRAMEWORK_BUNDLE_ID\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n    # Each embedded framework's declared MinimumOSVersion must be one its\n    # binary can actually run on. The template ships a low floor (12.0),\n    # but the module .so's are built for the app's deployment target (or\n    # 16.0 for numpy) — a lower declared value trips ITMS-90208 (\"does not\n    # support the minimum OS Version\"). Pin it to the app's deployment\n    # target; every embedded binary supports that.\n    plutil -replace MinimumOSVersion -string \"${IPHONEOS_DEPLOYMENT_TARGET:-16.0}\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/Info.plist\"\n  fi\n  # _ssl and _hashlib statically link OpenSSL/BoringSSL, which Apple's\n  # \"commonly used third-party SDK\" list requires to carry a privacy\n  # manifest (ITMS-91061). Drop one into those two frameworks; it gets\n  # signed with the framework in the codesign pass below.\n  # Deliberately OUTSIDE the `! -d` guard above: that guard only fires\n  # when the framework folder is created, so on an incremental build\n  # over build products predating this fix the manifest would never be\n  # copied and the app would ship without it. Copying every time is\n  # idempotent and cheap.\n  case \"$FULL_MODULE_NAME\" in\n    _ssl|_hashlib) cp \"$OSSL_PRIVACY\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/PrivacyInfo.xcprivacy\" ;;\n  esac\n  mv \"$FULL_EXT\" \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/$FULL_MODULE_NAME\"\n  echo \"$FRAMEWORK_FOLDER/$FULL_MODULE_NAME\" > \"${FULL_EXT%.so}.fwork\"\n  echo \"${RELATIVE_EXT%.so}.fwork\" > \"$CODESIGNING_FOLDER_PATH/$FRAMEWORK_FOLDER/$FULL_MODULE_NAME.origin\"\n}\nPYTHON_VER=$(ls -1 \"$CODESIGNING_FOLDER_PATH/python/lib\")\n\n# Cross-compiled numpy (best-effort): copy the SDK-correct slice into\n# site-packages, then framework-wrap each numpy .so exactly like the\n# stdlib lib-dynload modules above (iOS forbids dlopen of loose .so in\n# the bundle; the .fwork redirect points the import at the framework).\n# numpy ships no iOS wheels — these slices are built by\n# scripts/build_numpy_ios.sh (meson cross-compile, no external BLAS).\n# Guarded: if the slice is absent the app still builds + runs WITHOUT\n# numpy (Task 1 / on-device Vertex minting does not depend on it).\nif [ \"$EFFECTIVE_PLATFORM_NAME\" = \"-iphonesimulator\" ]; then NP_SLICE=simulator; else NP_SLICE=device; fi\nNP_SRC=\"$SRCROOT/../deps_ios/numpy-ios/$NP_SLICE/numpy\"\nif [ -d \"$NP_SRC\" ]; then\n  SP=\"$CODESIGNING_FOLDER_PATH/python/lib/$PYTHON_VER/site-packages\"\n  mkdir -p \"$SP\"\n  rsync -a --delete \"$NP_SRC/\" \"$SP/numpy/\"\n  find \"$SP/numpy\" -name \"*.so\" | while read FULL_EXT; do\n    install_dylib \"python/lib/$PYTHON_VER/site-packages/\" \"$FULL_EXT\"\n  done\n  echo \"numpy ($NP_SLICE) bundled + framework-wrapped\"\nelse\n  echo \"numpy slice $NP_SLICE not found ($NP_SRC) — app builds without numpy\"\nfi\n\nfind \"$CODESIGNING_FOLDER_PATH/python/lib/$PYTHON_VER/lib-dynload\" -name \"*.so\" | while read FULL_EXT; do\n  install_dylib \"python/lib/$PYTHON_VER/lib-dynload/\" \"$FULL_EXT\"\ndone\n\n# Fail the build rather than ship a binary App Review will reject.\n# iOS 1.8.1 (build 24) was cut from the v1.8.0 tag, which predates the\n# privacy-manifest fix by 15 minutes — the manifests were silently\n# absent and Apple returned ITMS-91061, leaving the version stuck in\n# \"Invalid Binary\". A missing manifest must break the build loudly.\nfor OSSL_MOD in _ssl _hashlib; do\n  OSSL_FW=\"$CODESIGNING_FOLDER_PATH/Frameworks/$OSSL_MOD.framework\"\n  if [ -d \"$OSSL_FW\" ] && [ ! -f \"$OSSL_FW/PrivacyInfo.xcprivacy\" ]; then\n    echo \"error: $OSSL_MOD.framework is missing PrivacyInfo.xcprivacy — App Review rejects this with ITMS-91061 (OpenSSL/BoringSSL is a 'commonly used third-party SDK'). Expected source: $OSSL_PRIVACY\" >&2\n    exit 1\n  fi\ndone\n\nif [ -n \"$EXPANDED_CODE_SIGN_IDENTITY\" ]; then\n  find \"$CODESIGNING_FOLDER_PATH/Frameworks\" -name \"*.framework\" -exec /usr/bin/codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" ${OTHER_CODE_SIGN_FLAGS:-} -o runtime --timestamp=none --preserve-metadata=identifier,entitlements,flags \"{}\" \\; || true\nfi\n";
+		};
+		1FFBFDC0E3184328381CD676 /* Core: set RayMolCoreSHA from core_sha.txt */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)",
+			);
+			name = "Core: set RayMolCoreSHA from core_sha.txt";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\nLABEL=\"$(bash \"$SRCROOT/../scripts/check_core_fresh.sh\" sha || true)\"\nPLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n[ -f \"$PLIST\" ] || { echo \"no Info.plist at $PLIST\"; exit 0; }\n# This phase edits the BUILT plist in place and Xcode does not always\n# regenerate it between builds, so an unstamped core must also drop a\n# RayMolCoreSHA left behind by an earlier stamped build.\nif [ -z \"$LABEL\" ]; then\n  /usr/bin/plutil -remove RayMolCoreSHA \"$PLIST\" 2>/dev/null || true\n  echo \"RayMolCoreSHA removed/skipped (no core_sha.txt stamp)\"\n  exit 0\nfi\n/usr/bin/plutil -replace RayMolCoreSHA -string \"$LABEL\" \"$PLIST\"\necho \"RayMolCoreSHA -> $LABEL ($PLIST)\"\n";
 		};
 		20F6E2447B7743E74607108B /* Brand: register molecular document types */ = {
 			isa = PBXShellScriptBuildPhase;
@@ -1373,6 +1436,25 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "set -e\nDEST=\"${BUILT_PRODUCTS_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\"\nmkdir -p \"$DEST\"\nrm -rf \"$DEST/MPNN.mpnnpack\"\ncp -R \"${SRCROOT}/resources_mpnn/MPNN.mpnnpack\" \"$DEST/MPNN.mpnnpack\"\n";
+		};
+		996A24FE4976ABEB368739C9 /* Core: check libpymol_core.a is fresh */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Core: check libpymol_core.a is fresh";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "bash \"$SRCROOT/../scripts/check_core_fresh.sh\" check\n";
 		};
 		A73548739A42EBACCE231E7E /* Bundle MPNN.mpnnpack */ = {
 			isa = PBXShellScriptBuildPhase;
