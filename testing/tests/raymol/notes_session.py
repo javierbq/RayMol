@@ -50,4 +50,4 @@ class NotesSessionTest(testing.PyMOLTestCase):
         self.stage('live')
         for path in (empty, other):
             cmd.load(path, partial=1)
-            self.assertEqual(raymol_notes._payload['markdown'], 'live')
+            self.assertEqual((raymol_notes._payload or {}).get('markdown'), 'live')
