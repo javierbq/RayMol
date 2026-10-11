@@ -596,9 +596,19 @@ struct LightGizmoPainter {
             var crescent = Path()
             crescent.addArc(center: knob.centre, radius: r * 0.55, startAngle: .degrees(25),
                             endAngle: .degrees(155), clockwise: false)
-            let ink: Color = behind ? colour : .black
-            c.stroke(crescent, with: .color(ink.opacity(knob.isShadowDimmed ? 0.3 : 0.8)),
-                     style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+            // Front: the marker's contrasting colour, so it shows on a black fill too (#798). Behind: that
+            // colour under a fill-coloured crescent, so both dark and light lights stay visible.
+            let opacity = knob.isShadowDimmed ? 0.3 : 0.8
+            let outline = knob.marker.outlineColor
+            if behind {
+                c.stroke(crescent, with: .color(outline.opacity(opacity)),
+                         style: StrokeStyle(lineWidth: 4.5, lineCap: .round))
+                c.stroke(crescent, with: .color(colour.opacity(opacity)),
+                         style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+            } else {
+                c.stroke(crescent, with: .color(outline.opacity(opacity)),
+                         style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+            }
         }
         if isActive {
             stroke(&c, circle(knob.centre, r + 4), Self.ink, 2.5)
