@@ -39,7 +39,7 @@ struct LightsSideColumn: View {
     /// lose inspector room to an unused card).
     var atmosphereStart: LightsAtmosphereStart = .expandedIfOn
 
-    static let width: CGFloat = LightsInspector.width
+    static let width: CGFloat = LightsInspectorMetrics.width
     /// The coordinate space the reported frames are in.
     static let space = "lights.column"
 

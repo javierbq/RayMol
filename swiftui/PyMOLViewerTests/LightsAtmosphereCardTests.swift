@@ -360,7 +360,7 @@ final class AtmosphereCardSnapshotTests: XCTestCase {
     private struct Shot {
         var name: String
         var dark = false
-        var width: CGFloat = LightsInspector.width + 24
+        var width: CGFloat = LightsInspectorMetrics.width + 24
         var height: CGFloat = 340
         var touch: CGFloat = 0
         var presentation: LightsAtmospherePresentation = .card
