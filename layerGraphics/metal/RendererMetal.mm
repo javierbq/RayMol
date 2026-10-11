@@ -483,6 +483,7 @@ void RendererMetal::rebuildDrawPipelines()
   }
   _bezierTubeRigTried = false;
   [_labelPipeline release];            _labelPipeline = nil;
+  [_labelOitPipeline release];         _labelOitPipeline = nil;
   [_connectorPipeline release];        _connectorPipeline = nil;
   _connectorStride = 0;
   [_vboLinePipeline release];          _vboLinePipeline = nil;  // lazy; rebuilt on next line draw
@@ -627,6 +628,7 @@ RendererMetal::~RendererMetal()
   [_rtLib release];
   releaseRayTracingTransAS();
   [_rtAOAccumPipeline release];       [_labelPipeline release];
+  [_labelOitPipeline release];
   [_connectorPipeline release];
 
   // Shader functions (newFunctionWithName, +1).
@@ -656,6 +658,7 @@ RendererMetal::~RendererMetal()
   [_depthStencilState release];  [_shadowDepthState release];
   [_capMarkDSS release];         [_capFillDSS release];
   [_oitDepthState release];      [_bezierDepthState release];
+  [_labelOitNoDepthState release];
   [_peelWriteState release];     [_peelTestState release];
 
   // Real-time ray-tracing buffers + acceleration structures (+1).
@@ -1145,6 +1148,8 @@ void RendererMetal::beginFrame()
   // few frames. Which is exactly what it did.
   _oitCleared = false;
   _oitRefractCleared = false;
+  // Labels deferred out of a peeled object's pass belong to their frame.
+  _peelDeferredLabels.clear();
   // The light rig (#613) is per frame: SceneRenderMetal sets it again before
   // any draw, so a frame that never reaches it draws without the rig.
   _lightRigOn = false;
@@ -5728,6 +5733,21 @@ id<MTLDepthStencilState> RendererMetal::oitDepthPeelAwareState()
   return _oitPeelTest ? peelTestState() : oitDepthState();
 }
 
+id<MTLDepthStencilState> RendererMetal::labelOitNoDepthState()
+{
+  // float_labels in the OIT pass (#736): no depth test and, like every
+  // transparent draw, no depth write. Built once (MRC: +1, released in the
+  // destructor).
+  if (!_labelOitNoDepthState) {
+    MTLDepthStencilDescriptor* dsd = [[MTLDepthStencilDescriptor alloc] init];
+    dsd.depthCompareFunction = MTLCompareFunctionAlways;
+    dsd.depthWriteEnabled = NO;
+    _labelOitNoDepthState = [_device newDepthStencilStateWithDescriptor:dsd];
+    [dsd release];
+  }
+  return _labelOitNoDepthState;
+}
+
 id<MTLDepthStencilState> RendererMetal::oitDepthState()
 {
   // Transparent/OIT draws: depth-test vs opaque (LessEqual), never write depth.
@@ -5987,6 +6007,15 @@ void RendererMetal::beginTransparentOIT(bool peel)
   _oitActive = true;
   _oitPeelTest = peel;
   _oitHasContent = true;
+  // Labels of the objects peeled before this pass (#736, see drawLabels).
+  if (!peel && !_peelDeferredLabels.empty()) {
+    std::vector<PeelDeferredLabels> deferred;
+    deferred.swap(_peelDeferredLabels);
+    for (const auto& d : deferred)
+      encodeLabels(d.call, d.modelview, d.projection, d.depthTest);
+    [_encoder setDepthStencilState:oitDepthState()];
+    [_encoder setCullMode:MTLCullModeNone];
+  }
 }
 
 void RendererMetal::endTransparentOIT()
@@ -13026,6 +13055,13 @@ void RendererMetal::drawBezierTubes(const void* cp, size_t dataSize,
 // textured glyph quads; the atlas RGBA already carries the baked label color
 // (RGB = color, A = glyph coverage). Picking/fog/background-color effects from
 // the full GL label shader are intentionally omitted here.
+//
+// Labels draw in the TRANSPARENT pass (RepLabel::render), which on Metal is the
+// weighted-blended OIT pass: RGBA16F accum + R16F reveal (+ the glass
+// refraction target), single-sample. label_fragment's BGRA8/MSAA pipeline does
+// not match those targets, and drawing with it there wrote undefined values
+// into accum/reveal -- every label resolved to the same magenta, or not at all,
+// whatever its colour (#736). label_fragment_oit is the OIT pass's variant.
 static NSString* const kLabelShaderSrc = @R"(
 #include <metal_stdlib>
 using namespace metal;
@@ -13122,11 +13158,36 @@ fragment float4 label_fragment(LabelVtxOut in [[stage_in]],
     discard_fragment();
   return c;
 }
+
+// The OIT pass's variant: the same glyph, written as every other transparent
+// fragment is (vbo_fragment_oit's OITFragOut and weight). A glyph pixel no
+// transparent surface overlaps resolves to exactly its atlas colour.
+struct LabelOITOut {
+  float4 accum  [[color(0)]];
+  float  reveal [[color(1)]];
+  float4 refr   [[color(2)]];   // glass refraction (#588): masked off here
+};
+fragment LabelOITOut label_fragment_oit(LabelVtxOut in [[stage_in]],
+    texture2d<float> atlas [[texture(0)]],
+    sampler smp [[sampler(0)]]) {
+  float4 c = atlas.sample(smp, in.texcoords);
+  if (c.a < 0.05)
+    discard_fragment();
+  float w = clamp(pow(min(1.0, c.a * 10.0) + 0.01, 3.0) * 1e8 *
+                  pow(1.0 - in.position.z * 0.9, 3.0), 1e-2, 3e3);
+  LabelOITOut o;
+  o.accum = float4(c.rgb * c.a, c.a) * w;
+  o.reveal = c.a;
+  o.refr = float4(0.0);
+  return o;
+}
 )";
 
 void RendererMetal::buildLabelPipeline()
 {
-  if (_labelPipeline)
+  // The OIT variant is dropped on its own when the OIT passes gain the glass
+  // refraction target (rebuildDrawPipelines), so build whichever is missing.
+  if (_labelPipeline && _labelOitPipeline && _labelSampler)
     return;
 
   NSError* error = nil;
@@ -13139,8 +13200,10 @@ void RendererMetal::buildLabelPipeline()
   }
   id<MTLFunction> vfn = [lib newFunctionWithName:@"label_vertex"];
   id<MTLFunction> ffn = [lib newFunctionWithName:@"label_fragment"];
-  if (!vfn || !ffn) {
+  id<MTLFunction> ofn = [lib newFunctionWithName:@"label_fragment_oit"];
+  if (!vfn || !ffn || !ofn) {
     NSLog(@"RendererMetal: label shader functions not found");
+    [vfn release]; [ffn release]; [ofn release]; [lib release];
     return;
   }
 
@@ -13177,19 +13240,52 @@ void RendererMetal::buildLabelPipeline()
   psd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
   psd.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
 
-  _labelPipeline = [_device newRenderPipelineStateWithDescriptor:psd
-                                                           error:&error];
   if (!_labelPipeline) {
-    NSLog(@"RendererMetal: failed to create label pipeline: %@", error);
-    return;
+    _labelPipeline = [_device newRenderPipelineStateWithDescriptor:psd
+                                                             error:&error];
+    if (!_labelPipeline)
+      NSLog(@"RendererMetal: failed to create label pipeline: %@", error);
   }
 
-  MTLSamplerDescriptor* sd = [[MTLSamplerDescriptor alloc] init];
-  sd.minFilter = MTLSamplerMinMagFilterNearest;
-  sd.magFilter = MTLSamplerMinMagFilterNearest;
-  sd.sAddressMode = MTLSamplerAddressModeClampToEdge;
-  sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
-  _labelSampler = [_device newSamplerStateWithDescriptor:sd];
+  // The OIT pass's targets, blended as oitPipelineForVD blends them. Its
+  // passes are single-sample, so the rasterSampleCount goes back to 1.
+  if (!_labelOitPipeline) {
+    psd.fragmentFunction = ofn;
+    psd.rasterSampleCount = 1;
+    MTLRenderPipelineColorAttachmentDescriptor* a0 = psd.colorAttachments[0];
+    a0.pixelFormat = MTLPixelFormatRGBA16Float;
+    a0.blendingEnabled = YES;
+    a0.sourceRGBBlendFactor = MTLBlendFactorOne;
+    a0.destinationRGBBlendFactor = MTLBlendFactorOne;
+    a0.sourceAlphaBlendFactor = MTLBlendFactorOne;
+    a0.destinationAlphaBlendFactor = MTLBlendFactorOne;
+    MTLRenderPipelineColorAttachmentDescriptor* a1 = psd.colorAttachments[1];
+    a1.pixelFormat = MTLPixelFormatR16Float;
+    a1.blendingEnabled = YES;
+    a1.sourceRGBBlendFactor = MTLBlendFactorZero;
+    a1.destinationRGBBlendFactor = MTLBlendFactorOneMinusSourceColor;
+    a1.sourceAlphaBlendFactor = MTLBlendFactorZero;
+    a1.destinationAlphaBlendFactor = MTLBlendFactorOneMinusSourceColor;
+    setOitRefractAttachment(psd.colorAttachments[2], _oitRefractEnabled, false);
+    _labelOitPipeline = [_device newRenderPipelineStateWithDescriptor:psd
+                                                                error:&error];
+    if (!_labelOitPipeline)
+      NSLog(@"RendererMetal: failed to create label OIT pipeline: %@", error);
+  }
+  // MRC: the descriptor, functions and library (+1) are consumed by the
+  // pipelines.
+  [psd release];
+  [vfn release]; [ffn release]; [ofn release]; [lib release];
+
+  if (!_labelSampler) {
+    MTLSamplerDescriptor* sd = [[MTLSamplerDescriptor alloc] init];
+    sd.minFilter = MTLSamplerMinMagFilterNearest;
+    sd.magFilter = MTLSamplerMinMagFilterNearest;
+    sd.sAddressMode = MTLSamplerAddressModeClampToEdge;
+    sd.tAddressMode = MTLSamplerAddressModeClampToEdge;
+    _labelSampler = [_device newSamplerStateWithDescriptor:sd];
+    [sd release];
+  }
 }
 
 void RendererMetal::ensureLabelAtlas(const unsigned char* pixels, int w, int h,
@@ -13237,14 +13333,33 @@ void RendererMetal::drawLabels(const LabelDrawCall& call)
   // vanish wherever a label sits in front of it.
   if (_peelMode)
     return;
+  // Upload the atlas now: its CPU copy can be reallocated later in the frame,
+  // so a deferred draw must not read call.atlasPixels again.
+  ensureLabelAtlas(call.atlasPixels, call.atlasW, call.atlasH, call.atlasGen);
+  // A peeled object's OIT pass tests against the depth of that object's own
+  // front shell, which would hide every label anchored inside it (an atom
+  // centre). Defer them to the frame's ordinary OIT pass, which tests against
+  // the opaque depth like every other label (beginTransparentOIT flushes).
+  if (_oitActive && _oitPeelTest) {
+    _peelDeferredLabels.push_back(
+        {call, _modelviewMatrix, _projectionMatrix, _depthTestEnabled});
+    return;
+  }
+  encodeLabels(call, _modelviewMatrix, _projectionMatrix, _depthTestEnabled);
+}
+
+void RendererMetal::encodeLabels(const LabelDrawCall& call, const Mat4& mv,
+    const Mat4& proj, bool depthTest)
+{
   ensureEncoder();
   if (!_encoder)
     return;
   buildLabelPipeline();
-  if (!_labelPipeline || !_labelSampler)
-    return;
-  ensureLabelAtlas(call.atlasPixels, call.atlasW, call.atlasH, call.atlasGen);
-  if (!_labelAtlas)
+  // Labels draw in the transparent pass, which is the OIT pass whenever one is
+  // open (#736): its targets need the OIT variant.
+  id<MTLRenderPipelineState> pipeline =
+      _oitActive ? _labelOitPipeline : _labelPipeline;
+  if (!pipeline || !_labelSampler || !_labelAtlas)
     return;
 
   // Upload (or reuse cached) the interleaved label vertex data.
@@ -13261,10 +13376,16 @@ void RendererMetal::drawLabels(const LabelDrawCall& call)
     _vboCache[call.data] = vbo;
   }
 
-  [_encoder setRenderPipelineState:_labelPipeline];
+  [_encoder setRenderPipelineState:pipeline];
   applyDepthStencilState();
-  if (_depthStencilState)
+  if (_oitActive) {
+    // Test against the opaque depth but never write it, as every transparent
+    // draw does; float_labels (depth test off) still draws over everything.
+    [_encoder setDepthStencilState:depthTest ? oitDepthState()
+                                             : labelOitNoDepthState()];
+  } else if (_depthStencilState) {
     [_encoder setDepthStencilState:_depthStencilState];
+  }
 
   [_encoder setVertexBuffer:vbo offset:0 atIndex:0];
 
@@ -13279,8 +13400,8 @@ void RendererMetal::drawLabels(const LabelDrawCall& call)
     float clipRange;
     float _pad;
   } U;
-  std::memcpy(U.modelview, _modelviewMatrix.data(), 64);
-  std::memcpy(U.projection, _projectionMatrix.data(), 64);
+  std::memcpy(U.modelview, mv.data(), 64);
+  std::memcpy(U.projection, proj.data(), 64);
   U.screenSize[0] = call.screenW;
   U.screenSize[1] = call.screenH;
   U.screenOriginVertexScale = call.screenOriginVertexScale;

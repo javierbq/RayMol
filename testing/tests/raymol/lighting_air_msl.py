@@ -109,7 +109,7 @@ MASTER_LITERALS = {
     'kConnectorShaderSrc': '40ef57a0e535d985',
     'kCylinderImpostorSrc': '637f7d7546fb17e3',
     'kEyeReconSrc': '34e775c149c8b075',
-    'kLabelShaderSrc': 'e9739e2374962609',
+    'kLabelShaderSrc': 'ca5097bd2ad97d60',  # #736: label_fragment_oit, the OIT pass's variant
     'kMaterialImpostorSrc': '5da7ac9fc2e8eb42',
     'kMaterialSrc': 'da47cac063348d43',
     'kPostSrc': 'c13f90740b5420b8',
@@ -139,7 +139,7 @@ CLASSIC_LIGHT_LITERALS = ('kVBOSrc', 'kSphereImpostorSrc', 'kCylinderImpostorSrc
 # taken out (AIR_STATEMENTS).
 MASTER_FUNCTIONS = {
     ('RendererMetal.mm', 'RendererMetal::runPostChain'): '4f0c6097ac77fcb0',
-    ('RendererMetal.mm', 'RendererMetal::beginFrame'): 'a943ed9e4b89cda5',
+    ('RendererMetal.mm', 'RendererMetal::beginFrame'): '5e8f5b413ca93cd4',  # #736: clears the labels deferred out of a peel pass
     ('SceneRender.cpp', 'SceneRenderMetal'): '555f9bb27d8c8aee',  # #433/#662: classic pre-pass excludes overlays
     ('SceneLights.cpp', 'SceneLightsFrame'): '5fb060d63ab0d96b',
 }
