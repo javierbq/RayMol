@@ -97,8 +97,13 @@ def session_save(session, **_kwargs):
     return 1
 
 
-def session_restore(session, **_kwargs):
+def session_restore(session, *, _self=None, **_kwargs):
+    """Replace the staged notes with the session's, except on a partial restore
+    (`load x.pse, partial=1`), which leaves the live notes alone (#658)."""
     global _payload
+    from pymol import cmd, raymol_scenes
+    if raymol_scenes.restoring_partial(cmd if _self is None else _self):
+        return 1
     value = session.get(SESSION_KEY)
     _payload = value if isinstance(value, dict) else None
     return 1

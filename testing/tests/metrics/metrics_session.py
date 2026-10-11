@@ -88,6 +88,27 @@ class RoundTripTest(MetricSessionTestCase):
         store.session_restore({})
         self.assertEqual(store.ids(), [])
 
+    def testPartialRestoreLeavesTheStoreAlone(self):
+        # `load x.pse, partial=1` brings in objects, not extras (#658): neither a
+        # session with no metrics nor one with its own replaces the live store.
+        name, index, run = self.scored()
+        scored = self.pse()
+        cmd.save(scored)
+        store.clear()
+        cmd.delete(name)
+        empty = self.pse()
+        cmd.save(empty)
+        name, index, live = self.scored('live')
+        for path in (empty, scored):
+            cmd.load(path, partial=1)
+            self.assertEqual(store.ids(), [live.id])
+            self.assertIs(store.get(live.id), live)
+        # A full restore still replaces it.
+        cmd.load(scored)
+        self.assertEqual(store.ids(), [run.id])
+        cmd.load(empty)
+        self.assertEqual(store.ids(), [])
+
     def testNothingIsWrittenWhenNothingIsRecorded(self):
         session = {}
         store.session_save(session)
