@@ -26,8 +26,11 @@
 //
 // The Atmosphere section (#726): the rig's haze and dust
 // (LightsAtmosphereCard, `.section`) follow the inspector rows in the
-// expanded body. An Atmosphere button in the header expands a compact sheet
-// and scrolls to it (`revealAtmosphere()`).
+// expanded body. The Atmosphere entry is scene-wide, so it is not in the
+// light's header (#795): the Lights bar carries it (a bar button in landscape,
+// an overflow menu item in portrait), and ContentView's reveal request
+// (`atmosphereRevealRequest`) expands a compact sheet and scrolls to the
+// section (`revealAtmosphere()`).
 //
 // With no light (no rig, or a rig with no light) the sheet shows the air
 // alone (`showsAirOnly`): at `.bottom` the compact height whatever the
@@ -99,8 +102,10 @@ enum LightsSheetMetrics {
     static let minimumHeader: CGFloat = 44
     /// Between the header and the body.
     static let headerGap: CGFloat = 8
-    /// Above the Atmosphere section, under the inspector rows.
-    static let sectionGap: CGFloat = 8
+    /// Above the Atmosphere section, under the inspector rows: a break wide
+    /// enough that the section does not read as one more of the light's rows
+    /// (#795; its own hairline and header follow).
+    static let sectionGap: CGFloat = 20
     /// The compact body: the plan (164 x 164) beside two 48 pt two-line
     /// sliders and a 44 pt Colour button with 8 pt gaps (156).
     static let compactBody: CGFloat = 164
@@ -126,8 +131,8 @@ enum LightsSheetMetrics {
     static let keyboardRows: CGFloat = 96
     /// The rows' height before they are first measured: the three_point
     /// key's inspector rows plus the Atmosphere section in the 44 pt profile
-    /// (measured 603; LightsSheetSnapshotTests keeps it within 40 pt).
-    static let estimatedRows: CGFloat = 600
+    /// (measured 647; LightsSheetSnapshotTests keeps it within 40 pt).
+    static let estimatedRows: CGFloat = 640
     /// The top corners' radius.
     static let cornerRadius: CGFloat = 12
     /// Above the side panel's header.
@@ -385,7 +390,7 @@ enum LightsSheetState {
     /// The rows' top, scrolled into view when a field with no row of its own
     /// (the inspector's) takes the keyboard.
     static let rowsAnchor = "lights.sheet.rows.top"
-    /// The Atmosphere section (#726): what the header's Atmosphere button
+    /// The Atmosphere section (#726): what the Lights bar's Atmosphere entry
     /// scrolls to.
     static let atmosphereAnchor = "lights.sheet.atmosphere.section"
 
@@ -495,8 +500,8 @@ struct LightsSheet: View {
     /// A field in the rows (Orbit, Pitch, an Atmosphere value) took or lost
     /// the keyboard.
     var onFieldFocus: (Bool) -> Void
-    /// Asks the full sheet to reveal the Atmosphere section, as the header's
-    /// Atmosphere button does (`revealAtmosphere()`): each change asks once,
+    /// Asks the full sheet to reveal the Atmosphere section, as the Lights
+    /// bar's Atmosphere entry does (`revealAtmosphere()`): each change asks once,
     /// and a non-zero value when the full sheet appears asks once too (an
     /// owner resets it to 0 for each mode entry). 0: nothing asked.
     var atmosphereRevealRequest: Int
@@ -562,6 +567,10 @@ struct LightsSheet: View {
                 case .side: airOnlyPanel
                 }
             })
+            // The air is all there is to see, so a reveal asked here is
+            // already done; marking it seen keeps it from firing later, when
+            // a light is added and the full sheet appears.
+            .onChange(of: atmosphereRevealRequest, initial: true) { _, request in revealSeen = request }
         }
     }
 
@@ -597,8 +606,8 @@ struct LightsSheet: View {
         revealAtmosphere()
     }
 
-    /// The header's Atmosphere button: a compact sheet expands, then the
-    /// rows scroll to the Atmosphere section (the side panel, always
+    /// The Lights bar's Atmosphere entry (through the owner's reveal request):
+    /// a compact sheet expands, then the rows scroll to the Atmosphere section (the side panel, always
     /// expanded, only scrolls).
     private func revealAtmosphere() {
         if placement == .bottom, detent == .compact { setDetent(.expanded) }
@@ -716,13 +725,12 @@ struct LightsSheet: View {
 
     // MARK: header
 
-    /// The inspector's header, the Atmosphere button (expands a compact
-    /// sheet and scrolls to the section) and, on the bottom sheet, More/Less.
+    /// The inspector's header and, on the bottom sheet, More/Less. Nothing
+    /// scene-wide sits here (#795): the Atmosphere entry is on the Lights bar.
     private var headerRow: some View {
         HStack(alignment: .top, spacing: 4) {
             LightsInspector(controller: controller, style: style, sceneShadowsOn: sceneShadowsOn,
                             onEnableSceneShadows: onEnableSceneShadows, presentation: .header)
-            LightsSheetAtmosphereButton(controller: controller, style: style) { revealAtmosphere() }
             if placement == .bottom {
                 moreButton
             }
@@ -850,7 +858,7 @@ struct LightsSheet: View {
     /// The air alone at the compact height whatever the detent: the
     /// Atmosphere header (title and switch) under an empty grabber strip
     /// (there is no other height to drag to), and the air rows scrolling in
-    /// the compact body. No More and no Atmosphere button. The keyboard rule
+    /// the compact body. No More, and no reveal to make. The keyboard rule
     /// holds as in the full sheet.
     private var airOnlySheet: some View {
         let frame = LightsSheetModel.airOnlyFrame(heights: heights)

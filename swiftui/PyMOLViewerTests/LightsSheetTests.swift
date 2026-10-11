@@ -627,9 +627,9 @@ final class LightsSheetSnapshotTests: XCTestCase {
             Shot(name: "colour_palette_light", kind: .palette, width: 220, room: 230),
             // The macOS profile (no 44 pt frames) for comparison.
             Shot(name: "compact_375_mac_profile_light", touch: 0),
-            // The Atmosphere section (#726). The header's Atmosphere button
-            // path from compact: the sheet expands and the rows scroll to
-            // the section (the air on, so the button is lit).
+            // The Atmosphere section (#726). The Lights bar's Atmosphere entry
+            // path (#795, the owner's reveal request) from compact: the
+            // sheet expands and the rows scroll to the section.
             Shot(name: "atmosphere_revealed_852_light", width: 393, room: 663, bottomInset: 34, reveal: 1,
                  setUp: { store in
                      Self.sketchKey(store)

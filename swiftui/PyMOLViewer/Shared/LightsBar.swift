@@ -4,7 +4,9 @@
 // light's identity dot (the colour the orbit view #621 and the gizmo #622 use
 // for it too; hollow while the light is behind the molecule, the gizmo's
 // front/behind rule), and the rig-wide actions: add, remove, a preset, Re-centre,
-// on/off, Revert and Done. It floats at the top of the viewport on macOS and
+// on/off, Revert and Done. On a phone the bar also carries the scene's
+// Atmosphere entry (#795): a button on the wide bar, an item in the overflow
+// menu on the compact one. It floats at the top of the viewport on macOS and
 // docks at the bottom of the top stack on iOS (ContentView places it).
 //
 // Everything it shows comes from LightsController, and every press goes to
@@ -103,6 +105,31 @@ struct LightsBarState: Equatable {
     var powerLabel: String
     var powerHelp: String
     var presets: [LightPreset]
+    /// The scene's haze or dust draws (#795): lights the Atmosphere entry's
+    /// glyph, and its checkmark in the overflow menu.
+    var atmosphereIsOn: Bool
+
+    /// Whether the bar carries the Atmosphere entry point (#795). Atmosphere
+    /// is scene-wide, so on a phone it sits here with the other rig-wide
+    /// controls and not in the selected light's header. macOS and the iPad
+    /// float show it as a card of their own, so the bar carries nothing there.
+    static func showsAtmosphereEntry(placement: LightsToolsPlacement) -> Bool {
+        switch placement {
+        case .bottomSheet, .sidePanel: return true
+        case .column, .floating: return false
+        }
+    }
+
+    /// The overflow menu's item: the title carries the state a checkmark
+    /// would (a Button in a menu has no mark of its own).
+    static func atmosphereMenuTitle(isOn: Bool) -> String {
+        isOn ? "Atmosphere: On" : "Atmosphere: Off"
+    }
+
+    /// The menu item's glyph: the filled fog cloud while the air is on.
+    static func atmosphereMenuImage(isOn: Bool) -> String {
+        isOn ? "cloud.fog.fill" : AtmosphereCardState.systemImage
+    }
 
     @MainActor
     init(_ controller: LightsController) {
@@ -125,6 +152,7 @@ struct LightsBarState: Equatable {
         editCount = controller.editCount
         revertNeedsConfirmation = controller.revertNeedsConfirmation
         presets = controller.presets
+        atmosphereIsOn = controller.airIsOn
         addHelp = lights.count >= LightsController.maxLights
             ? "A rig holds at most \(LightsController.maxLights) lights"
             : "Add a light"
@@ -148,6 +176,11 @@ struct LightsBar: View {
     @ObservedObject var controller: LightsController
     var style: LightsBarStyle
     var onDone: () -> Void
+    /// Reveals the Atmosphere section of the phone sheet or side panel
+    /// (#795); nil where the bar carries no such entry (macOS, iPad). The
+    /// scene's haze and dust belong to the rig, so the entry is here with the
+    /// other rig-wide controls and not in the selected light's header.
+    var onAtmosphere: (() -> Void)?
     /// 44 on iOS (every control a 44 pt target, #623), 0 on macOS.
     @Environment(\.lightsTouchMinimum) private var touchMinimum
 
@@ -161,9 +194,11 @@ struct LightsBar: View {
     static let presetsHelp = "Replace the lights with a preset"
     static let doneHelp = "Keep these lights and leave Lights mode (Esc)"
 
-    init(controller: LightsController, style: LightsBarStyle, onDone: @escaping () -> Void) {
+    init(controller: LightsController, style: LightsBarStyle, onAtmosphere: (() -> Void)? = nil,
+         onDone: @escaping () -> Void) {
         self.controller = controller
         self.style = style
+        self.onAtmosphere = onAtmosphere
         self.onDone = onDone
     }
 
@@ -203,14 +238,15 @@ struct LightsBar: View {
             removeButton(state)
             presetsMenu(state)
             recentreButton(state)
+            atmosphereButton
             powerButton(state)
             revertButton(state, showsRevertWord: true)
             doneButton
         }
     }
 
-    // iPhone portrait: no title; Presets, Re-centre and On/Off in one overflow
-    // menu. +, −, Revert and Done stay on the bar. With 44 pt targets (iOS)
+    // iPhone portrait: no title; Presets, Re-centre, Atmosphere (phones only)
+    // and On/Off in one overflow menu. +, −, Revert and Done stay on the bar. With 44 pt targets (iOS)
     // the frames carry the gaps, so the spacing drops to 2 and a 375 pt phone
     // still shows about two chips.
     private func compact(_ state: LightsBarState) -> some View {
@@ -345,6 +381,16 @@ struct LightsBar: View {
             .accessibilityIdentifier("lights.recentre")
     }
 
+    /// The phone's Atmosphere entry on the wide bar (iPhone landscape): the
+    /// fog glyph, filled while the air is on. Draws nothing without
+    /// `onAtmosphere`, or outside Lights mode.
+    @ViewBuilder
+    private var atmosphereButton: some View {
+        if let onAtmosphere {
+            LightsSheetAtmosphereButton(controller: controller, style: style, action: onAtmosphere)
+        }
+    }
+
     private func powerButton(_ state: LightsBarState) -> some View {
         Button { controller.setEnabled(!state.isOn) } label: { icon("power", on: state.isOn).lightsTouchTarget() }
             .buttonStyle(.plain)
@@ -364,6 +410,17 @@ struct LightsBar: View {
             }
             .disabled(!state.canRecentre)
             .help(Self.recentreHelp)
+            if let onAtmosphere {
+                Button(action: onAtmosphere) {
+                    Label(LightsBarState.atmosphereMenuTitle(isOn: state.atmosphereIsOn),
+                          systemImage: LightsBarState.atmosphereMenuImage(isOn: state.atmosphereIsOn))
+                }
+                .help(AtmosphereCardIDs.sheetButtonHint)
+                .accessibilityLabel(AtmosphereCardIDs.sheetButtonLabel)
+                .accessibilityValue(state.atmosphereIsOn ? "On" : "Off")
+                .accessibilityHint(AtmosphereCardIDs.sheetButtonHint)
+                .accessibilityIdentifier(AtmosphereCardIDs.menuItem)
+            }
             Button { controller.setEnabled(!state.isOn) } label: {
                 Label(state.isOn ? "Turn Lights Off" : "Turn Lights On", systemImage: "power")
             }
@@ -376,7 +433,7 @@ struct LightsBar: View {
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
-        .help("Presets, Re-centre and On/Off")
+        .help(onAtmosphere == nil ? "Presets, Re-centre and On/Off" : "Presets, Re-centre, Atmosphere and On/Off")
         .accessibilityLabel("More light actions")
         .accessibilityValue(state.powerLabel)
         .accessibilityIdentifier("lights.more")
