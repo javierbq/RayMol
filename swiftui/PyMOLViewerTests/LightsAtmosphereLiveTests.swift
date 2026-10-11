@@ -895,18 +895,18 @@ final class ClassicShadowImpostorCasterTests: XCTestCase {
             }
         }
         if L != -1 && R == -1 {
-            R = w
+            R = steps
         }
         guard L != -1, R != -1 else {
-            XCTFail("the big sphere was not found on the middle row")
+            XCTFail("the big sphere was not found on the scanned line")
             return (0.0, 0.0)
         }
-        XCTAssertGreaterThan(R - L, 80, "the big sphere is not on the middle row")
+        XCTAssertGreaterThan(R - L, 80, "the big sphere is not on the scanned line")
         let k = Double(R - L) / 12.0
         let centre = Double(L + R) / 2.0  // along the scan
         let colRange: Range<Int>, rowRange: Range<Int>
         if overhead {
-            let cx = Double(w) / 2.0, cy = Double(h) - centre  // rows run down
+            let cx = Double(w) / 2.0, cy = Double(h - 1) - centre  // scan i is row h - 1 - i
             colRange = Int(cx + across.0 * k)..<Int(cx + across.1 * k)
             rowRange = Int(cy - along.1 * k)..<Int(cy - along.0 * k)
         } else {

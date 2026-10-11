@@ -2969,7 +2969,7 @@ void SceneRenderMetal(PyMOLGlobals* G)
     if (G->Renderer->beginShadowPass(glm::value_ptr(lightView))) {
       G->Renderer->matrixMode(0x1701); // PROJECTION = the light's ortho box
       G->Renderer->loadMatrixf(glm::value_ptr(lightProj));
-      G->Renderer->matrixMode(0x1700); // MODELVIEW = camera (x the light's view)
+      G->Renderer->matrixMode(0x1700); // MODELVIEW = camera (x light view)
       G->Renderer->loadMatrixf(mvp);
       SceneRenderAll(G, &context, normal, nullptr, RenderPass::Opaque, false,
           0.0f, &I->grid, 0, SceneRenderWhich::All,
