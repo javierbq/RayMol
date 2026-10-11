@@ -141,8 +141,8 @@ CLASSIC_LIGHT_LITERALS = ('kVBOSrc', 'kSphereImpostorSrc', 'kCylinderImpostorSrc
 # taken out (AIR_STATEMENTS).
 MASTER_FUNCTIONS = {
     ('RendererMetal.mm', 'RendererMetal::runPostChain'): '5209a4dc0f3a9090',  # #689: gradient fog uniforms, screen overlays after the matte
-    ('RendererMetal.mm', 'RendererMetal::beginFrame'): '6bfd75683c183eb0',  # #736: clears the labels deferred out of a peel pass; #689: the gradient and the screen overlays
-    ('SceneRender.cpp', 'SceneRenderMetal'): 'f7b38ed4c8367063',  # #433/#662: classic pre-pass excludes overlays; #689: draws the bg_gradient
+    ('RendererMetal.mm', 'RendererMetal::beginFrame'): 'c4c22f37453efc02',  # #665: closes the classic pass's caster view; #736: clears the labels deferred out of a peel pass; #689: the gradient and the screen overlays
+    ('SceneRender.cpp', 'SceneRenderMetal'): '0a1d6df2f4b2383e',  # #665: the classic pre-pass opens with the light's view; #433/#662: classic pre-pass excludes overlays; #689: draws the bg_gradient
     ('SceneLights.cpp', 'SceneLightsFrame'): '5fb060d63ab0d96b',
 }
 AIR_STATEMENTS = {

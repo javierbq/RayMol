@@ -577,15 +577,18 @@ public:
   virtual void endPeelPrepass() {}
   virtual bool peelSupported() const { return false; }
 
-  // Real shadow map. SceneRenderMetal sets the light's eye-space view-projection
-  // via setLightViewProjEye, then replays the opaque geometry between
-  // beginShadowPass/endShadowPass with the light VP loaded (matrixMode/
-  // loadMatrixf); draws route to depth-only pipelines writing the light-POV
-  // depth map, which the post pass PCF-samples. beginShadowPass returns false
-  // when the pass did not open (no map, no pipelines): the caller then skips
-  // the replay and endShadowPass, and the frame draws unshadowed (#667).
+  // Real shadow map. SceneRenderMetal opens the pass with
+  // beginShadowPass(view), view = the light's eye-space view (camera eye
+  // space -> the light's, column-major), which the renderer premultiplies onto
+  // every modelview until endShadowPass, as beginLightShadowMap does (#616),
+  // so impostor casters face the light (#665); the caller then loads the
+  // light's orthographic projection. Draws route to depth-only pipelines
+  // writing the light-POV depth map, which the post pass PCF-samples.
+  // beginShadowPass returns false when the pass did not open (no map, no
+  // pipelines): the caller then skips the replay and endShadowPass, and the
+  // frame draws unshadowed (#667).
   // Default: no-op, true (GL unaffected).
-  virtual bool beginShadowPass() { return true; }
+  virtual bool beginShadowPass(const float* /*view*/) { return true; }
   virtual void endShadowPass() {}
   virtual void setLightViewProjEye(const float* m) {}
   // World half-extent of the shadow ortho box, so the receiver can express its

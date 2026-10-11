@@ -1,3 +1,5 @@
+import CoreGraphics
+import ImageIO
 import XCTest
 @testable import RayMol
 
@@ -950,3 +952,241 @@ final class BezierTubeStudioShadowTests: XCTestCase {
     }
 }
 #endif
+
+/// Classic shadow-map impostor casters face the light (#665). The classic
+/// pre-pass used to draw sphere and cylinder impostors as billboards facing the
+/// camera, so with the key light (`light`) far from the view axis they cast a
+/// sliver or nothing. Here the light comes from +x, nearly perpendicular to the
+/// view: a sphere, or a stick, on the light's side of a big sphere must darken
+/// the big sphere's light-facing side. Source pins: lighting_shadow_msl.py,
+/// TestClassicShadowCastersFaceTheLight.
+final class ClassicShadowImpostorCasterTests: XCTestCase {
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var sceneBuilt = false
+    private var savedView: [Float]?
+
+    override func tearDown() {
+        if sceneBuilt {
+            engine.runPython(
+                "from pymol import cmd as _c\n"
+                + "_c.delete('cs665r or cs665c')\n"
+                + "_c.set('metal_shadows', globals().pop('_cs665_shadows', 1))\n"
+                + "_c.set('bg_rgb', globals().pop('_cs665_bg', [0.0, 0.0, 0.0]))\n"
+                + "_c.set('light', globals().pop('_cs665_light', [-0.4, -0.4, -1.0]))\n"
+                + "_c.set('orthoscopic', globals().pop('_cs665_ortho', 0))\n"
+                + "_cs665_rig = globals().pop('_cs665_rig', None)\n"
+                + "if _cs665_rig is not None:\n"
+                + "    _c.set_lights(_cs665_rig)\n"
+                + "for _n in globals().pop('_cs665_enabled', []):\n"
+                + "    _c.enable(_n)\n")
+            sceneBuilt = false
+        }
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        super.tearDown()
+    }
+
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            throw XCTSkip("the PyMOL engine did not come up under the test host")
+        }
+    }
+
+    /// A big sphere (radius 6 A at x = -6) and a caster of radius 5 at x = 8:
+    /// a sphere, or a stick nearly along the view axis. `light` [-1, 0, 0.1]
+    /// puts the light at +x, slightly behind the view plane, so the caster
+    /// shadows the big sphere's visible light-facing side. `overhead` turns
+    /// the sphere scene a quarter turn: the big sphere at the origin, the
+    /// caster at y = 14 and the light straight above (`light` [0, -1, 0]).
+    /// Shadows start OFF, as in ClassicShadowMapLazyTests.
+    private func buildScene(stick: Bool, overhead: Bool = false) {
+        savedView = engine.captureView()
+        sceneBuilt = true
+        var py = "from pymol import cmd as _c\n"
+        py += "_cs665_enabled = _c.get_names('objects', enabled_only=1)\n"
+        py += "_cs665_bg = list(_c.get_setting_tuple('bg_rgb')[1])\n"
+        py += "_cs665_shadows = _c.get_setting_int('metal_shadows')\n"
+        py += "_cs665_light = list(_c.get_setting_tuple('light')[1])\n"
+        py += "_cs665_ortho = _c.get_setting_int('orthoscopic')\n"
+        py += "_cs665_rig = _c.get_lights()\n"
+        py += "_c.set_lights(None)\n"
+        py += "_c.set('metal_shadows', 0)\n"
+        py += "for _n in _cs665_enabled:\n"
+        py += "    _c.disable(_n)\n"
+        py += "_c.pseudoatom('cs665r', pos=\(overhead ? "[0.0, 0.0, 0.0]" : "[-6.0, 0.0, 0.0]"), vdw=1.0)\n"
+        py += "_c.show_as('spheres', 'cs665r')\n"
+        py += "_c.set('sphere_scale', 6.0, 'cs665r')\n"
+        if stick {
+            py += "_c.pseudoatom('cs665c', name='A', pos=[8.0, -1.5, -8.0], vdw=1.0)\n"
+            py += "_c.pseudoatom('cs665c', name='B', pos=[8.0, 1.5, 8.0], vdw=1.0)\n"
+            py += "_c.bond('cs665c and name A', 'cs665c and name B')\n"
+            py += "_c.show_as('sticks', 'cs665c')\n"
+            py += "_c.set('stick_radius', 5.0, 'cs665c')\n"
+        } else {
+            py += "_c.pseudoatom('cs665c', pos=\(overhead ? "[0.0, 14.0, 0.0]" : "[8.0, 0.0, 0.0]"), vdw=1.0)\n"
+            py += "_c.show_as('spheres', 'cs665c')\n"
+            py += "_c.set('sphere_scale', 5.0, 'cs665c')\n"
+        }
+        py += "_c.color('white', 'cs665r or cs665c')\n"
+        py += "_c.set('bg_rgb', [0.0, 0.0, 0.0])\n"
+        py += "_c.set('light', \(overhead ? "[0.0, -1.0, 0.0]" : "[-1.0, 0.0, 0.1]"))\n"
+        py += "_c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -60.0, 0.0, 0.0, 0.0, 40.0, 100.0, -20.0))\n"
+        if stick {
+            // After set_view, which carries the projection: the orthographic
+            // camera's rays run nearly along the stick.
+            py += "_c.set('orthoscopic', 1)\n"
+        }
+        engine.runPython(py)
+    }
+
+    private func render(shadows: Bool) throws -> (rgba: [UInt8], width: Int, height: Int) {
+        engine.runPython("from pymol import cmd as _c\n_c.set('metal_shadows', \(shadows ? 1 : 0))")
+        let png = NSTemporaryDirectory() + "issue_665_\(shadows ? "on" : "off").png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: 400, height: 300, rayTraced: 0)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(
+            URL(fileURLWithPath: png) as CFURL, nil), "no export written")
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        let w = image.width, h = image.height
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return (rgba, w, h)
+    }
+
+    /// The mean of (r + g + b) / 3 over a box on the big sphere, in each image:
+    /// `along` (toward the light) and `across` in Angstrom from its centre.
+    /// The sphere is the first lit run (black background, 12 A wide) of the
+    /// shadows-off image's middle row from the left, or with `overhead` (the
+    /// light above) of its middle column from the bottom.
+    private func lightFacingSide(
+        _ off: (rgba: [UInt8], width: Int, height: Int),
+        _ on: (rgba: [UInt8], width: Int, height: Int),
+        along: (Double, Double) = (3.5, 5.0), across: (Double, Double) = (-1.5, 1.5),
+        overhead: Bool = false
+    ) throws -> (off: Double, on: Double) {
+        let w = off.width, h = off.height
+        let steps = overhead ? h : w
+        // The scan's i-th pixel: left to right on the middle row, or bottom to
+        // top on the middle column.
+        let pixel = { (i: Int) -> Int in
+            overhead ? ((h - 1 - i) * w + w / 2) * 4 : ((h / 2) * w + i) * 4
+        }
+        var L = -1
+        var R = -1
+        for x in 0..<steps {
+            let offset = pixel(x)
+            let r = off.rgba[offset]
+            let g = off.rgba[offset + 1]
+            let b = off.rgba[offset + 2]
+            let maxVal = max(r, max(g, b))
+            if L == -1 {
+                if maxVal > 4 {
+                    L = x
+                }
+            } else {
+                if maxVal <= 4 {
+                    R = x
+                    break
+                }
+            }
+        }
+        if L != -1 && R == -1 {
+            R = steps
+        }
+        guard L != -1, R != -1 else {
+            XCTFail("the big sphere was not found on the scanned line")
+            return (0.0, 0.0)
+        }
+        XCTAssertGreaterThan(R - L, 80, "the big sphere is not on the scanned line")
+        let k = Double(R - L) / 12.0
+        let centre = Double(L + R) / 2.0  // along the scan
+        let colRange: Range<Int>, rowRange: Range<Int>
+        if overhead {
+            let cx = Double(w) / 2.0, cy = Double(h - 1) - centre  // scan i is row h - 1 - i
+            colRange = Int(cx + across.0 * k)..<Int(cx + across.1 * k)
+            rowRange = Int(cy - along.1 * k)..<Int(cy - along.0 * k)
+        } else {
+            let cx = centre, cy = Double(h) / 2.0
+            colRange = Int(cx + along.0 * k)..<Int(cx + along.1 * k)
+            rowRange = Int(cy - across.1 * k)..<Int(cy - across.0 * k)  // +y is up
+        }
+
+        func meanBrightness(in img: (rgba: [UInt8], width: Int, height: Int)) -> Double {
+            var sum = 0.0
+            var count = 0
+            for y in rowRange {
+                guard y >= 0 && y < img.height else { continue }
+                for x in colRange {
+                    guard x >= 0 && x < img.width else { continue }
+                    let idx = (y * img.width + x) * 4
+                    let r = Double(img.rgba[idx])
+                    let g = Double(img.rgba[idx + 1])
+                    let b = Double(img.rgba[idx + 2])
+                    sum += (r + g + b) / 3.0
+                    count += 1
+                }
+            }
+            return count > 0 ? sum / Double(count) : 0.0
+        }
+
+        let offMean = meanBrightness(in: off)
+        let onMean = meanBrightness(in: on)
+        return (off: offMean, on: onMean)
+    }
+
+    func testSphereCasterShadowsTheLightFacingSide() throws {
+        try requireEngine()
+        buildScene(stick: false)
+        let offImg = try render(shadows: false)
+        let onImg = try render(shadows: true)
+        let (off, on) = try lightFacingSide(offImg, onImg)
+        print("665-sphere lit=\(off) shadowed=\(on)")
+        XCTAssertGreaterThan(off, 60, "the box is not on the lit side of the big sphere")
+        XCTAssertGreaterThanOrEqual(off - on, 30, "the sphere casts no shadow on the light-facing side")
+    }
+
+    /// The stick runs nearly along the (orthographic) view axis. Cast with
+    /// the camera's rays, it darkened only a ragged strip of the big sphere
+    /// around y = 0; from the light it shadows a band about 10 A wide, so the
+    /// boxes 2 to 3 A above and below the middle row are in its shadow.
+    func testStickCasterShadowsTheLightFacingSide() throws {
+        try requireEngine()
+        buildScene(stick: true)
+        let offImg = try render(shadows: false)
+        let onImg = try render(shadows: true)
+        for ys in [(2.0, 3.0), (-3.0, -2.0)] {
+            let (off, on) = try lightFacingSide(offImg, onImg, along: (3.5, 4.5), across: ys)
+            print("665-stick y=\(ys) lit=\(off) shadowed=\(on)")
+            XCTAssertGreaterThan(off, 60, "the box at y=\(ys) is not on the lit side of the big sphere")
+            XCTAssertGreaterThanOrEqual(off - on, 30, "the stick casts no shadow on the light-facing side at y=\(ys)")
+        }
+    }
+
+    /// A light straight above (`light` [0, -1, 0]) made the classic light
+    /// view NaN: lookAt's up (+y) was parallel to the light. The caster above
+    /// the big sphere must shadow its top.
+    func testOverheadLightCastsTheSphereShadow() throws {
+        try requireEngine()
+        buildScene(stick: false, overhead: true)
+        let offImg = try render(shadows: false)
+        let onImg = try render(shadows: true)
+        let (off, on) = try lightFacingSide(offImg, onImg, overhead: true)
+        print("665-overhead lit=\(off) shadowed=\(on)")
+        XCTAssertGreaterThan(off, 60, "the box is not on the lit top of the big sphere")
+        XCTAssertGreaterThanOrEqual(off - on, 30, "a light straight above casts no shadow")
+    }
+}

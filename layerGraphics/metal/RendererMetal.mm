@@ -1206,6 +1206,7 @@ void RendererMetal::beginFrame()
   _lightShadowMapsReady = false;
   _lightStudioShadows = false;
   _lightShadowSlotOpen = -1;
+  _classicShadowViewOpen = false;
   _lightShadowPassActive = false;
   _lightShadowSlicesOpened = 0;
   _lightShadowFailed = false;
@@ -6232,9 +6233,9 @@ void RendererMetal::setShadowBias(float bias)
   _shadowBias = (bias > 0.0f) ? bias : 0.0f;
 }
 
-bool RendererMetal::beginShadowPass()
+bool RendererMetal::beginShadowPass(const float* view)
 {
-  if (!_cmdBuffer || !_vboShadowPipelineUByte) return false;
+  if (!view || !_cmdBuffer || !_vboShadowPipelineUByte) return false;
   if (!ensureShadowMap()) return false;  // the lazy 4096^2 map (#667)
   buildShadowPipelines();  // no-op if already built
   // End the scene encoder opened by beginFrame (it has only the pending clear;
@@ -6262,6 +6263,10 @@ bool RendererMetal::beginShadowPass()
   [_encoder setDepthStencilState:_shadowDepthState];
   [_encoder setCullMode:MTLCullModeNone];
   _shadowMode = true;
+  // #665: until endShadowPass every modelview is seen from the light
+  // (loadMatrixf, loadIdentity) and the impostors ray-cast orthographically.
+  std::memcpy(_lightShadowView, view, sizeof(_lightShadowView));
+  _classicShadowViewOpen = true;
   return true;
 }
 
@@ -6270,6 +6275,7 @@ void RendererMetal::endShadowPass()
   if (!_shadowMode) return;
   if (_encoder) { [_encoder endEncoding]; _encoder = nil; }
   _shadowMode = false;
+  _classicShadowViewOpen = false;
   _shadowMapValid = true;
   // Re-open the scene pass with a fresh CLEAR — the shadow pre-pass runs BEFORE
   // the opaque loop, so the scene starts empty (mirrors beginFrame's clear; the
@@ -7305,9 +7311,10 @@ void RendererMetal::loadIdentity()
 {
   if (_matrixMode == 0) {
     _modelviewMatrix = identityMatrix();
-    // While a studio shadow map is open (#616) every modelview is seen from
-    // its light: the map's eye-space view, premultiplied (see loadMatrixf).
-    if (_lightShadowSlotOpen >= 0)
+    // While a shadow map is open (a studio slice, #616, or the classic map,
+    // #665) every modelview is seen from its light: the map's eye-space view,
+    // premultiplied (see loadMatrixf).
+    if (shadowCasterViewOpen())
       std::memcpy(_modelviewMatrix.data(), _lightShadowView, 16 * sizeof(float));
   } else {
     _projectionMatrix = identityMatrix();
@@ -7319,13 +7326,14 @@ void RendererMetal::loadMatrixf(const float* m)
   if (!m) return;
   Mat4& mat = (_matrixMode == 0) ? _modelviewMatrix : _projectionMatrix;
   std::memcpy(mat.data(), m, 16 * sizeof(float));
-  // While a studio shadow map is open (#616), the modelview is premultiplied
-  // by the map's view (camera eye space -> the light's view): every reload --
-  // the scene's camera, an object's TTT, a matrix pop -- comes through here,
-  // so VBO geometry lands in the light's clip space and sphere and cylinder
-  // impostors face the light and ray-cast from it, with no new shaders. The
-  // view is rigid, so the impostors' radius scale holds.
-  if (_matrixMode == 0 && _lightShadowSlotOpen >= 0) {
+  // While a shadow map is open (a studio slice, #616, or the classic map,
+  // #665), the modelview is premultiplied by the map's view (camera eye
+  // space -> the light's view): every reload -- the scene's camera, an
+  // object's TTT, a matrix pop -- comes through here, so VBO geometry lands
+  // in the light's clip space and sphere and cylinder impostors face the
+  // light and ray-cast from it, with no new shaders. The view is rigid, so
+  // the impostors' radius scale holds.
+  if (_matrixMode == 0 && shadowCasterViewOpen()) {
     Mat4 lightView;
     std::memcpy(lightView.data(), _lightShadowView, 16 * sizeof(float));
     mat = multiplyMatrices(lightView, mat);
@@ -11863,9 +11871,12 @@ void RendererMetal::drawSphereImpostors(const SphereImpostorDrawCall& call)
   u.lSSSWrap = _sssWrap;
   u.klx = _keyLightEye[0]; u.kly = _keyLightEye[1]; u.klz = _keyLightEye[2];
   u.sphere_size_scale = call.sphereSizeScale;
-  // A studio shadow map (#616) is a perspective view from its light: the
-  // impostors ray-cast from the light, whatever the camera's projection.
-  u.ortho = _lightShadowSlotOpen >= 0 ? 0.0f : (float)call.ortho;
+  // A shadow map ray-casts the impostors from its light, whatever the camera's
+  // projection: perspective for a studio slice (#616), orthographic for the
+  // classic map (#665).
+  u.ortho = _lightShadowSlotOpen >= 0 ? 0.0f
+            : _classicShadowViewOpen ? 1.0f
+                                     : (float)call.ortho;
   // Projection is GL-convention ([-1,1] clip Z): remap to [0,1] for Metal's
   // fragment depth (matches the GL sphere.fs `0.5 + 0.5 * clipZ/clipW`).
   u.depthZeroToOne = 0.0f;
@@ -12729,8 +12740,12 @@ void RendererMetal::drawCylinderImpostors(const CylinderImpostorDrawCall& call)
   u.lSSSWrap = _sssWrap;
   u.klx = _keyLightEye[0]; u.kly = _keyLightEye[1]; u.klz = _keyLightEye[2];
   u.uni_radius = call.uniRadius;
-  // A studio shadow map (#616): ray-cast from its light (as the spheres).
-  u.ortho = _lightShadowSlotOpen >= 0 ? 0.0f : (float)call.ortho;
+  // A shadow map ray-casts the impostors from its light, whatever the camera's
+  // projection: perspective for a studio slice (#616), orthographic for the
+  // classic map (#665).
+  u.ortho = _lightShadowSlotOpen >= 0 ? 0.0f
+            : _classicShadowViewOpen ? 1.0f
+                                     : (float)call.ortho;
   u.depthZeroToOne = 0.0f; // GL-convention clip Z (matches the sphere path)
   u.no_flat_caps = (float)call.noFlatCaps;
   // Negative tells the shader to read a_cap per-vertex (attribute 6) instead.
