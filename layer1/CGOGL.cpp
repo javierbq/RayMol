@@ -78,14 +78,13 @@ static void metalApplyRepMaterial(CCGORenderer* I)
   // emits, which arrive here as cRepCyl. Object value first, then the rep's
   // global value, then material_default.
   int const repType = I->rep ? I->rep->type() : cRepNone;
-  // Every rule -- the per-rep degradations, the stick_ball one, and which
-  // families carry reflect/tint/rough -- lives in MaterialDrawParams, so this
-  // is a thin caller and the rules stay testable from Python without a Metal
-  // context.
+  // Every rule -- which ids resolve to `default` and which families carry
+  // reflect/tint/rough -- lives in MaterialDrawParams, so this is a thin caller
+  // and the rules stay testable from Python without a Metal context.
   // A side-chain stick or sphere with no material of its own follows the
-  // object's cartoon (MaterialSourceRep), hence the object.
-  MaterialParams params = MaterialDrawParamsCached(G, s1, s2, repType,
-      (I->rep && I->rep->emitsStickBalls()), I->rep ? I->rep->obj : nullptr);
+  // object's cartoon (MaterialSourceRep), hence the coord set.
+  MaterialParams params = MaterialDrawParams(G, s1, s2, repType,
+      I->rep ? I->rep->cs : nullptr);
   G->Renderer->setRepMaterial(params);
 }
 

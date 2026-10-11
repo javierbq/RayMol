@@ -148,10 +148,10 @@ def _custom_state(rep_name, obj, explicit):
     whether the layer draws with the cartoon's material} -- `set` is what a
     pick, Inherit or Reset unsets.
 
-    `drawn` is the draw's own answer, not the setting: glass on
-    ball-and-stick degrades to `default` (0), which has no knobs, so Custom
-    must not be offered there. `custom` counts only the knobs `drawn` has --
-    an override left over from another material (the core ignores it) must
+    `drawn` is the draw's own answer, not the setting: a material id this build
+    does not implement (from a newer build's session) draws `default` (0),
+    which has no knobs, so Custom must not be offered there. `custom` counts
+    only the knobs `drawn` has -- an override left over from another material (the core ignores it) must
     not make the row read Custom. `explicit` is the set of setting indices the
     object itself carries (cmd.get_object_settings), so a global value never
     reads as an override; the core does not treat it as one either."""

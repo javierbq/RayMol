@@ -101,7 +101,7 @@
   },
   "comment_colour": "colour and extra are Python statements run with cmd and util in scope.",
   "degrades_to_default": {
-    "comment": "Per representation, the materials that draw as default there and are not flagged for it. Empty since #635: clear and frosted glass draw on sphere impostors (ball-and-stick glass degrades, but the gallery has no stick_ball row)."
+    "comment": "Per representation, the materials that draw as default there and are not flagged for it. Empty since #635: clear and frosted glass draw on sphere impostors (and on ball-and-stick since #834)."
   },
   "rt_invariant": {
     "materials": [

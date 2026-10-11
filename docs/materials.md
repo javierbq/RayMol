@@ -89,9 +89,8 @@ cartoon-plus-side-chains, the side chains match the backbone they hang from.
 - The rule is per object, not per atom. A ligand shown as sticks in the same
   object follows too. "Shows a cartoon" means a polymer atom has it, so an
   object with no polymer, such as a docked ligand, never follows.
-- The layer still degrades as its own representation: sticks following a
-  glass cartoon on a ball-and-stick (`stick_ball`) draw `default`, as glass
-  ball-and-stick always does. Spheres following a glass cartoon draw glass.
+- Sticks (ball-and-stick included) and spheres following a glass cartoon
+  draw glass.
 
 **Object-scoped, never per atom.** A selection-scoped `set` of one of the four
 `*_material` settings (`set cartoon_material, marble, chain A`) is rejected
@@ -126,12 +125,9 @@ reach them.
 | `rubber` | procedural | all | A mottled, low-sheen skin. |
 
 **Glass on spheres and ball-and-stick.** Clear and frosted glass draw on the
-sphere representation (since #635), with their rim, glints and refraction, at
-their implied alpha. On a stick representation that draws `stick_ball`
-spheres they still degrade to `default`. The degradation applies to the whole
-rep, so a ball-and-stick is never half glass, and both the shading and the
-implied alpha degrade, so the rep draws exactly as `default`. **Jelly is the
-exception:** it draws on ball-and-stick too, with its implied alpha.
+sphere representation (since #635) and on the `stick_ball` spheres of a
+ball-and-stick (since #834), with their rim, glints and refraction, at their
+implied alpha; jelly does too.
 
 **Procedural patterns are locked to the object** in the viewport. They don't
 slide when you rotate, pan or zoom.
@@ -159,8 +155,8 @@ is ignored:
 
 In the **Inspector**, a layer's Material menu has **Custom…** under the
 materials whenever the material the layer draws with has knobs (not, for
-example, glass on a ball-and-stick, which draws as `default`). Choosing it keeps that
-material and shows its knobs as sliders at the values it draws with; moving
+example, `default`, or a material id from a newer build, which this one draws
+as `default`). Choosing it keeps that material and shows its knobs as sliders at the values it draws with; moving
 one tunes that layer only, and the menu then reads **Custom (metallic)**.
 Glass's and frosted glass's **Reflection** and **Distortion**, and jelly's
 **Distortion**, are on/off toggles instead of sliders (#590). Each is still an

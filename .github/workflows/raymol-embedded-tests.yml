@@ -115,7 +115,6 @@ jobs:
               testing/tests/raymol/line_stick_helper.py \
               testing/tests/raymol/material_custom.py \
               testing/tests/raymol/material_docs.py \
-              testing/tests/raymol/material_draw_params_cache.py \
               testing/tests/raymol/material_env.py \
               testing/tests/raymol/material_follow.py \
               testing/tests/raymol/material_glass.py \

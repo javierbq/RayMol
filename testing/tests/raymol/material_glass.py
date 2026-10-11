@@ -312,22 +312,15 @@ class TestGlass(testing.PyMOLTestCase):
         self.assertEqual(cmd.get_setting_float('cartoon_transparency', 'm1'), 0.0)
         self.assertEqual(resolved_peel('m1'), 1)
 
-    def testBallAndStickGlassDoesNotTurnPeelOn(self):
-        """A glass stick on a stick_ball object degrades to `default` and builds
-        fully opaque, so it has no transparent fragments to peel.
-
-        Turning peel on for it costs a depth blit and two encoder boundaries per
-        grid cell for nothing -- and with only three peel slots it can evict a
-        genuinely glass object from the set, which is visible, not just waste.
-        The cheap gate that decides whether to look at all reads the material
-        row BEFORE the degradations, so the answer has to come from the second
-        pass; returning the gate's own verdict got this wrong."""
+    def testBallAndStickGlassTurnsPeelOn(self):
+        """#834: ball-and-stick glass is glass, so it asks for peel like any
+        glass stick rep."""
         cmd.set('stick_ball', 1, 'm1')
         cmd.set('stick_material', 'glass', 'm1')
         build('m1', 'sticks')
         self.assertAlmostEqual(
-            built_transparency('m1', repres['sticks']), 0.0, places=4)
-        self.assertEqual(resolved_peel('m1'), 0)
+            built_transparency('m1', repres['sticks']), 0.85, places=4)
+        self.assertEqual(resolved_peel('m1'), 1)
 
     def testAGlassMaterialOnAnUNSHOWNRepDoesNotTurnPeelOn(self):
         """Peel must be asked for by geometry that EXISTS.
@@ -384,56 +377,66 @@ class TestGlass(testing.PyMOLTestCase):
         self.assertAlmostEqual(
             built_transparency('m1', repres['spheres']), 0.4, places=4)
 
-    def testStickBallGlassImpliesNoOpacityEither(self):
-        """A `stick_ball` stick degrades to `default` because the ball spheres
-        have no glass path -- and the implied alpha has to degrade WITH it.
-
-        Shading and alpha resolved separately at first, so ball-and-stick shaded
-        as `default` while still building 85% transparent: a see-through
-        `default`, which is not "renders default". The render probe caught it;
-        this pins it."""
-        cmd.set('stick_ball', 1, 'm1')
-        cmd.set('stick_material', 'glass', 'm1')
+    def testStickBallGlassKeepsItsMaterial(self):
+        """Clear and frosted glass on a stick rep with stick_ball keep their
+        material (#834): the draw params, the implied alpha the rep builds
+        with and the id `ray` stamps on the rep, balls included. Before #834
+        all three degraded to `default`."""
+        for name, mat_id, transp in (('glass', 4, 0.85),
+                                     ('frosted_glass', 5, 0.8)):
+            cmd.set('stick_ball', 1, 'm1')
+            cmd.set('stick_material', name, 'm1')
+            build('m1', 'sticks')
+            self.assertAlmostEqual(
+                built_transparency('m1', repres['sticks']), transp, places=4)
+            params = _cmd.get_material_draw_params(
+                cmd._COb, 'm1', repres['sticks'])
+            self.assertEqual(params[:2], (3, mat_id))
+            ray_p = _cmd.get_material_ray_params(
+                cmd._COb, 'm1', repres['sticks'])
+            self.assertEqual(ray_p[1], mat_id)
+        # the user's slider still wins
+        cmd.set('stick_transparency', 0.4, 'm1')
         build('m1', 'sticks')
         self.assertAlmostEqual(
-            built_transparency('m1', repres['sticks']), 0.0, places=4)
-        # ...and with stick_ball off the same material does imply its opacity,
-        # so this is a degradation and not glass being inert on sticks.
-        cmd.set('stick_ball', 0, 'm1')
-        build('m1', 'sticks')
-        self.assertAlmostEqual(
-            built_transparency('m1', repres['sticks']), 0.85, places=4)
+            built_transparency('m1', repres['sticks']), 0.4, places=4)
 
-    def testAtomLevelStickBallDegradesGlassToo(self):
-        """`stick_ball` is an ATOM-level setting and RepCylBond reads it per
-        atom, so asking only the object value answers the wrong question.
-
-        An atom-level `stick_ball 1` under an object-level 0 left the rep glass:
-        the ball sphere then drew through the glass impostor path at alpha 0.15
-        -- the near-invisible disc the rule exists to prevent, and reachable now
-        that the glass-family sphere pipelines are built."""
+    def testAtomLevelStickBallKeepsGlassToo(self):
+        """`stick_ball` is atom-level; one atom with a ball under an
+        object-level 0 still draws glass (#834)."""
         cmd.set('stick_ball', 1, 'index 1')
         cmd.set('stick_material', 'glass', 'm1')
         build('m1', 'sticks')
-        self.assertEqual(cmd.get_setting_boolean('stick_ball', 'm1'), 0)
-        self.assertAlmostEqual(
-            built_transparency('m1', repres['sticks']), 0.0, places=4)
-
-    def testEveryAtomOptingOutDoesNotDegrade(self):
-        """The mirror case: an object-level `stick_ball 1` that every visible
-        atom overrides back to 0 emits no balls at all, so glass should still
-        apply rather than silently doing nothing."""
-        cmd.set('stick_ball', 1, 'm1')          # object level
-        # ...overridden per ATOM. `cmd.set(..., 'm1')` is an OBJECT name and
-        # would just overwrite the object value, which is what made the first
-        # version of this test vacuous: it could not fail if the per-atom scan
-        # were reverted. A selection routes to the atom-level branch.
-        cmd.set('stick_ball', 0, 'm1 and all')
-        self.assertEqual(cmd.get_setting_boolean('stick_ball', 'm1'), 1)
-        cmd.set('stick_material', 'glass', 'm1')
-        build('m1', 'sticks')
         self.assertAlmostEqual(
             built_transparency('m1', repres['sticks']), 0.85, places=4)
+        params = _cmd.get_material_draw_params(
+            cmd._COb, 'm1', repres['sticks'])
+        self.assertEqual(params[0], 3)
+
+    def testStickBallNeverChangesTheDrawnMaterial(self):
+        """Before #834 the draw params of a glass stick depended on stick_ball,
+        which needed an atom scan and a per-rep cache (#530); now no state of
+        stick_ball changes them."""
+        cmd.fragment('trp', 'm')
+        cmd.hide('everything')
+        cmd.show('sticks', 'm')
+        cmd.set('stick_material', 'glass', 'm')
+        cmd.set('stick_ball', 0)
+
+        def drawn():
+            return _cmd.get_material_draw_params(
+                cmd._COb, 'm', repres['sticks'])[:2]
+
+        self.assertEqual(drawn(), (3, 4))           # not built yet
+        cmd.set('stick_ball', 1, 'm and name CA')   # a ball, still not built
+        self.assertEqual(drawn(), (3, 4))
+        cmd.rebuild('m')
+        cmd.refresh()
+        self.assertEqual(drawn(), (3, 4))           # built and valid
+        cmd.set('stick_ball', 1, 'm')               # invalidated, no refresh
+        self.assertEqual(drawn(), (3, 4))
+        cmd.hide('sticks', 'm')                     # hidden
+        self.assertEqual(drawn(), (3, 4))
 
     def testGlassSurvivesAPseRoundTrip(self):
         """The stated reason implied alpha is never written back as a setting is

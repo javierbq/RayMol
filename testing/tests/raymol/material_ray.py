@@ -190,21 +190,21 @@ class TestTheMapping(_RayCase):
         cmd.set('ray_texture', 0)
         self.assertEqual(ray_params('m', 'surface')[0], 2)
 
-    def testRayFollowsTheDrawDegradations(self):
+    def testRayStampsGlassOnBallAndStick(self):
         # #635: glass draws on spheres, so frosted_glass spheres trace with
         # the frosted_glass ray params (Matte 1 texture and implied alpha).
         peptide(rep='spheres', material='frosted_glass')
         self.assertEqual(ray_params('m', 'spheres'), EXPECTED['frosted_glass'])
-        # glass on a stick rep that emits stick_ball spheres: the whole rep
-        # degrades.
+        # #834: ball-and-stick glass is no longer degraded.
         cmd.show('sticks', 'm')
         cmd.set('stick_material', 'frosted_glass', 'm')
-        self.assertEqual(ray_params('m', 'sticks')[:2], (1, 5))
         cmd.set('stick_ball', 1, 'm')
-        self.assertEqual(ray_params('m', 'sticks')[:2], (0, 0))
+        self.assertEqual(ray_params('m', 'sticks'), EXPECTED['frosted_glass'])
+        cmd.set('stick_material', 'glass', 'm')
+        self.assertEqual(ray_params('m', 'sticks'), EXPECTED['glass'])
 
     def testJellyOnSpheresAndBallAndStickTracesAsJelly(self):
-        # Jelly is the exception to the stick_ball degradation above (#526).
+        # Jelly on spheres and ball-and-stick (#526).
         peptide(rep='spheres', material='jelly')
         self.assertEqual(ray_params('m', 'spheres'), EXPECTED['jelly'])
         cmd.show('sticks', 'm')
@@ -346,9 +346,12 @@ class TestGlassSurfaceUnderRay(_RayCase):
     path read the RAW transparency, while a multi-coloured surface took the
     per-vertex array the build had already baked the implied alpha into."""
 
-    def red_behind(self, material, multi, rep='surface'):
+    def red_behind(self, material, multi, rep='surface', stick_ball=False):
         fresh()
         peptide(rep=rep, material=material, colour='grey80')
+        if stick_ball:
+            cmd.set('stick_ball', 1, 'm')
+            cmd.set('stick_ball_ratio', 3.0, 'm')
         if multi:
             cmd.color('grey70', 'm and elem N')
         self.frame()
@@ -362,11 +365,12 @@ class TestGlassSurfaceUnderRay(_RayCase):
         cmd.translate([0, 0, -60], 'ball', camera=1)
         # keep the front clip, push the back one past the ball
         cmd.set_view(v[:16] + (v[16] + 120.0,) + v[17:])
-        img = trace(self.tmp, 'behind_%s_%s_%d' % (rep, material, multi))
+        sb = '_sb' if stick_ball else ''
+        img = trace(self.tmp, 'behind_%s_%s_%d%s' % (rep, material, multi, sb))
         # redness where the SUBJECT is: red above the other two channels.
         cmd.disable('ball')
-        mask = subject(trace(self.tmp, 'mask_%s_%s_%d' % (rep, material,
-                                                          multi)))
+        mask = subject(trace(self.tmp, 'mask_%s_%s_%d%s' % (rep, material,
+                                                            multi, sb)))
         red = img[..., 0] - (img[..., 1] + img[..., 2]) / 2
         return float(red[mask].mean())
 
@@ -396,4 +400,15 @@ class TestGlassSurfaceUnderRay(_RayCase):
         self.assertLess(opaque, 5)
         for name in ('glass', 'frosted_glass'):
             val = self.red_behind(name, 0, rep='spheres')
+            self.assertGreater(val, opaque + 40, name)
+
+    def testGlassBallAndStickTracesTranslucent(self):
+        # #834: clear and frosted glass ball-and-stick trace translucent under
+        # ray, balls included (stick_ball_ratio 3 makes the balls most of the
+        # subject)
+        opaque = self.red_behind('default', 0, rep='sticks', stick_ball=True)
+        self.assertLess(opaque, 5)
+        for name in ('glass', 'frosted_glass'):
+            # measured ~189 (glass) and ~179 (frosted) against ~2
+            val = self.red_behind(name, 0, rep='sticks', stick_ball=True)
             self.assertGreater(val, opaque + 40, name)

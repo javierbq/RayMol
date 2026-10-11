@@ -2733,33 +2733,8 @@ static PyObject* CmdGetMaterialDrawParams(PyObject* self, PyObject* args)
     int const resolved =
         (state == 0) ? objmol->getCurrentState() : (state < 0 ? 0 : state - 1);
     CoordSet* cs = objmol->getCoordSet(resolved);
-    /* A BUILT rep carries the stick_ball answer it was built with, which is
-       what the draw path uses (CGOGL.cpp -> MaterialDrawParamsCached). Read it
-       rather than rescanning every atom: the Inspector polls this about twice
-       a second (#530), and for a glass stick rep the scan is O(atoms).
-
-       Only a rep that is built, VALID and shown is trusted. An invalidated one
-       (MaxInvalid set -- e.g. `stick_ball` just changed on some atoms) still
-       holds the answer it was built with, which the next frame's rebuild will
-       replace. For that, and for a rep not built yet, fall back to the scan:
-       the answer the next build would cache. So the two paths agree.
-
-       The Active[] check is defensive. Today hiding a rep invalidates it, so
-       the MaxInvalid test already catches a hidden one (mutation-tested:
-       dropping Active[] alone changes no result); it stays so that a future
-       change that keeps a valid rep around while hidden cannot make this
-       report atoms nothing draws. */
-    const ::Rep* rep = (cs && repType >= 0 && repType < cRepCnt &&
-                        cs->Active[repType])
-                           ? cs->Rep[repType] : nullptr;
-    if (rep && rep->isInvalidated()) {
-      rep = nullptr;
-    }
-    MaterialParams const p = rep
-        ? MaterialDrawParamsCached(G, cs->Setting.get(), objmol->Setting.get(),
-              repType, rep->emitsStickBalls(), objmol)
-        : MaterialDrawParams(G, cs ? cs->Setting.get() : nullptr,
-              objmol->Setting.get(), repType, cs);
+    MaterialParams const p = MaterialDrawParams(G,
+        cs ? cs->Setting.get() : nullptr, objmol->Setting.get(), repType, cs);
     /* The per-material KNOBS are part of "what this draw uses" too, and until
        #496 nothing could see them from Python. They are the half of a material
        that fails QUIETLY: zeroing jelly's absorption renders a white body,

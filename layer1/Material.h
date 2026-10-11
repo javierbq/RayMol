@@ -199,8 +199,8 @@ MaterialParams MaterialResolve(int id, int repType);
 
 /**
  * The parameters a representation actually DRAWS with: the resolved material id
- * put through MaterialResolve, plus the degradation rules that depend on a
- * SETTING rather than on the rep alone (glass on `stick_ball` sticks).
+ * (from the source layer, see MaterialSourceRep; `cs` supplies the object) put
+ * through MaterialResolve.
  *
  * The single definition of "what this rep is made of". Shading and implied
  * alpha both go through it, because they have to agree: a rep that shades as
@@ -255,25 +255,6 @@ int MaterialKnobs(int id, const MaterialKnob** knobs);
  */
 MaterialParams MaterialDrawParams(PyMOLGlobals* G, const CSetting* set1,
     const CSetting* set2, int repType, const CoordSet* cs = nullptr);
-
-/**
- * MaterialDrawParams for the DRAW path, taking the `stick_ball` answer that the
- * rep cached at build time (Rep::emitsStickBalls) instead of rescanning atoms.
- *
- * metalApplyRepMaterial runs per draw op, per pass, per frame; the scan is
- * O(atoms) and its worst case -- a full scan, no early out -- is exactly the
- * configuration the rule targets, glass sticks with no balls.
- */
-MaterialParams MaterialDrawParamsCached(PyMOLGlobals* G, const CSetting* set1,
-    const CSetting* set2, int repType, bool emitsStickBalls,
-    const pymol::CObject* obj = nullptr);
-
-/**
- * Does this stick rep emit any `stick_ball` sphere? Atom-level, so this scans.
- * Call once at rep-build time and cache on the rep.
- */
-bool MaterialRepEmitsStickBalls(PyMOLGlobals* G, const CoordSet* cs,
-    const CSetting* set1, const CSetting* set2);
 
 /**
  * What the CPU ray tracer (`ray`) does with a material (#499).

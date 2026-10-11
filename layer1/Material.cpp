@@ -254,10 +254,9 @@ MaterialParams MaterialResolve(int id, int repType)
     return MaterialParams{};
   }
   /* Clear and frosted glass draw on sphere impostors since #635 (through the
-     OIT glass path with the coverage split), so no rule here depends on
-     repType any more; it stays in the signature for the callers. The only
-     remaining glass degradation is the ball-and-stick one in
-     MaterialResolveForDraw, which needs the settings. */
+     OIT glass path with the coverage split), and on ball-and-stick since #834,
+     so no rule here depends on repType and no glass degradation remains;
+     repType stays in the signature for the callers. */
   return row->params;
 }
 
@@ -513,44 +512,6 @@ const char* MaterialGetName(int id)
   return row ? row->name : nullptr;
 }
 
-/* Does this stick rep emit any stick_ball sphere?
- *
- * `stick_ball` is an ATOM-level setting (SettingInfo.h: REC_b(276, stick_ball,
- * atom)) and RepCylBond reads it per atom via AtomSettingGetWD. Asking only the
- * object/global value therefore answers the wrong question in both directions:
- * an atom-level `stick_ball 1` under an object-level 0 drew glass balls the
- * rule exists to keep off, while every atom overriding an object-level 1 back
- * to 0 degraded a rep that emits no balls at all.
- *
- * Scanned only for a glass stick rep, which is rare and already expensive; the
- * default path never reaches this.
- */
-bool MaterialRepEmitsStickBalls(
-    PyMOLGlobals* G, const CoordSet* cs, const CSetting* set1,
-    const CSetting* set2)
-{
-  /* int, not bool: AtomSettingGetWD deduces V from this argument, and its
-     `bool` instantiation declares an uninitialised `V out;` that the bool
-     overload then reads -- UB, and a UBSan -fsanitize=bool trap. Every other
-     call site in the tree passes an int, RepCylBond's included. */
-  int const objLevel = SettingGet_b(G, set1, set2, cSetting_stick_ball);
-  if (!cs) {
-    return objLevel; // no atoms to consult; the object value is all there is
-  }
-  /* Indexed directly rather than through CoordSetAtomIterator: that lives in
-     layer3 and this is layer1. */
-  for (int idx = 0; idx < cs->getNIndex(); ++idx) {
-    const AtomInfoType* ai = cs->getAtomInfo(idx);
-    if (!ai || !(ai->visRep & cRepCylBit)) {
-      continue;
-    }
-    if (AtomSettingGetWD(G, ai, cSetting_stick_ball, objLevel)) {
-      return true;
-    }
-  }
-  return false;
-}
-
 bool MaterialLayerHasOwnMaterial(PyMOLGlobals* G, const CSetting* set1,
     const CSetting* set2, int repType)
 {
@@ -581,50 +542,12 @@ int MaterialSourceRep(PyMOLGlobals* G, const CSetting* set1,
   return cRepCartoon;
 }
 
-static MaterialParams MaterialResolveForDrawCached(PyMOLGlobals* G,
-    const CSetting* set1, const CSetting* set2, int repType,
-    bool emitsStickBalls, const pymol::CObject* obj)
-{
-  // The SETTING comes from the source layer (a side chain following its
-  // cartoon reads cartoon_material); the degradations below stay keyed on the
-  // rep that actually draws -- stick_ball glass.
-  int const id = MaterialResolveSettingId(
-      G, set1, set2, MaterialSourceRep(G, set1, set2, repType, obj));
-  MaterialParams params = MaterialResolve(id, repType);
-  // stick_ball spheres are emitted by the STICK rep, so they arrive as cRepCyl
-  // and take stick_material -- including clear or frosted glass. The sphere
-  // rep draws those since #635 (MaterialResolve), but ball-and-stick keeps
-  // degrading the WHOLE rep to `default` until that case is checked on its own
-  // (many small OIT balls beside the sticks: look and cost). Jelly is exempt
-  // (#526): its balls read as gummy balls.
-  //
-  // This rule depends on a setting, not on the rep alone, so MaterialResolve
-  // cannot express it. It lives here rather than at the draw site because
-  // implied alpha has to obey it too: a ball-and-stick that shades as `default`
-  // while still building 85% transparent is not "rendering default".
-  if (params.family == cMaterialFamily_glass && repType == cRepCyl &&
-      params.mode != cMaterial_jelly && emitsStickBalls) {
-    return MaterialParams{};
-  }
-  return params;
-}
-
 MaterialParams MaterialResolveForDraw(PyMOLGlobals* G, const CSetting* set1,
     const CSetting* set2, int repType, const CoordSet* cs)
 {
   int const id = MaterialResolveSettingId(G, set1, set2,
       MaterialSourceRep(G, set1, set2, repType, cs ? cs->Obj : nullptr));
-  MaterialParams params = MaterialResolve(id, repType);
-  /* LAZY on purpose: resolve first, and walk atoms only when the answer can
-     change something. Computing it eagerly for every cRepCyl call -- as this
-     briefly did -- put an O(atoms) pass back on the `default` path, which is
-     the exact cost the cached variant exists to remove. */
-  if (params.family == cMaterialFamily_glass && repType == cRepCyl &&
-      params.mode != cMaterial_jelly &&
-      MaterialRepEmitsStickBalls(G, cs, set1, set2)) {
-    return MaterialParams{};
-  }
-  return params;
+  return MaterialResolve(id, repType);
 }
 
 static MaterialParams MaterialFinalizeParams(
@@ -640,16 +563,6 @@ MaterialParams MaterialDrawParams(PyMOLGlobals* G, const CSetting* set1,
       MaterialSourceRep(G, set1, set2, repType, cs ? cs->Obj : nullptr);
   return MaterialFinalizeParams(G, set1, set2, source,
       MaterialResolveForDraw(G, set1, set2, repType, cs));
-}
-
-MaterialParams MaterialDrawParamsCached(PyMOLGlobals* G, const CSetting* set1,
-    const CSetting* set2, int repType, bool emitsStickBalls,
-    const pymol::CObject* obj)
-{
-  return MaterialFinalizeParams(G, set1, set2,
-      MaterialSourceRep(G, set1, set2, repType, obj),
-      MaterialResolveForDrawCached(
-          G, set1, set2, repType, emitsStickBalls, obj));
 }
 
 /* The Custom material's per-layer overrides (#568): for each material-bearing
@@ -821,9 +734,9 @@ float MaterialEffectiveTransparency(PyMOLGlobals* G, const CSetting* set1,
   // so the conversion has to happen exactly here. Returning the alpha unchanged
   // makes clear glass 85% OPAQUE instead of 85% clear, which still shades like
   // glass and so looks plausible rather than broken.
-  // Through MaterialResolveForDraw, so a material that DEGRADES on this rep
-  // implies nothing either -- `mode` carries the row's own id, and the neutral
-  // MaterialParams{} carries 0 (= default, which implies no opacity).
+  // Through MaterialResolveForDraw, so an id that resolves to `default` (one
+  // this build does not implement) implies nothing either -- the neutral
+  // MaterialParams{} carries mode 0.
   float const impliedAlpha =
       MaterialImpliedAlpha(
           MaterialResolveForDraw(G, set1, set2, repType, cs).mode);
@@ -999,9 +912,7 @@ bool MaterialObjectWantsPeel(PyMOLGlobals* G, const CSetting* set1,
   bool wantsPeel = false;
   for (size_t i = 0; i < sizeof(kReps) / sizeof(kReps[0]); ++i) {
     int const rep = kReps[i];
-    // Re-resolved through the DRAW path, so a glass stick that degrades to
-    // `default` on a stick_ball object is not treated as asking for a peel it
-    // will never use.
+    // Re-resolved through the DRAW path, matching the rep's shading.
     if (MaterialResolveForDraw(G, set1, set2, rep, cs).wantsPeel) {
       // ...but only if the object actually DRAWS it. `set surface_material,
       // glass` on an object showing nothing but an opaque cartoon would
