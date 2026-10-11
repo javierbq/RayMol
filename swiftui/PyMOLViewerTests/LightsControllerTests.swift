@@ -440,6 +440,15 @@ final class FakeRigStore {
             let key = name.lowercased()
             guard let index = lights.firstIndex(where: { $0.name.lowercased() == key }) else { return }
             lights[index].aimPoint = nil
+        case .rename(let old, let new):
+            // `lights <old>, name=<new>`: the core refuses a duplicate (ignoring
+            // case, but a light may change the case of its own name).
+            let key = old.lowercased()
+            guard let index = lights.firstIndex(where: { $0.name.lowercased() == key }),
+                  !lights.enumerated().contains(where: { $0.offset != index
+                      && $0.element.name.lowercased() == new.lowercased() }) else { return }
+            if let eye = eyePlacements.removeValue(forKey: key) { eyePlacements[new.lowercased()] = eye }
+            lights[index].name = new
         case .atmosphereOff:
             // `atmosphere off`: with no rig it prints a line and changes
             // nothing.
@@ -1371,5 +1380,90 @@ final class LightsControllerTests: XCTestCase {
         store.clock += 2
         XCTAssertEqual(controller.set(.pitch, 20, owner: owner), .ok)
         XCTAssertEqual(controller.editCount, 3)
+    }
+
+    // MARK: rename (#797)
+
+    func testRenameSelectedLight() {
+        begin(with: ["key", "fill", "rim"])
+        controller.select(name: "fill")
+        let slot = controller.identitySlot(for: "fill")
+        XCTAssertTrue(controller.renameSelected(to: "  main "))
+        XCTAssertEqual(store.performed, [.rename(old: "fill", new: "main")])
+        XCTAssertEqual(names, ["key", "main", "rim"])
+        // The selection follows the light, and so does its identity colour.
+        XCTAssertEqual(controller.selection, LightSelection(name: "main", index: 1))
+        XCTAssertEqual(controller.identitySlot(for: "main"), slot)
+        XCTAssertEqual(controller.identitySlots, ["key": 0, "main": 1, "rim": 2])
+        // One counted edit.
+        XCTAssertEqual(controller.editCount, 1)
+        XCTAssertTrue(controller.canRevert)
+    }
+
+    func testRenameKeepsTheColourWhenTheNewNameHasADefaultSlot() {
+        begin(with: ["key", "fill", "rim"])
+        controller.select(name: "key")
+        // "rim" is taken; "light4" would take slot 3 if the colour did not follow.
+        XCTAssertTrue(controller.renameSelected(to: "light4"))
+        XCTAssertEqual(controller.identitySlot(for: "light4"), 0)
+        XCTAssertEqual(controller.identitySlots, ["light4": 0, "fill": 1, "rim": 2])
+    }
+
+    func testRenameChangingOnlyTheCase() {
+        begin(with: ["key", "fill"])
+        XCTAssertTrue(controller.renameSelected(to: "KEY"))
+        XCTAssertEqual(names, ["KEY", "fill"])
+        XCTAssertEqual(controller.selection, LightSelection(name: "KEY", index: 0))
+        XCTAssertEqual(controller.identitySlots, ["key": 0, "fill": 1])
+    }
+
+    func testRefusedNamesSendNothing() {
+        begin(with: ["key", "fill", "rim"])
+        for text in ["", "  ", "fill", "FILL", "three_point", "off", "Add", "9lives", "a b", "a-b",
+                     "é", String(repeating: "a", count: 33), "key"] {
+            XCTAssertFalse(controller.renameSelected(to: text), "\(text)")
+        }
+        XCTAssertTrue(store.performed.isEmpty)
+        XCTAssertEqual(names, ["key", "fill", "rim"])
+        XCTAssertEqual(controller.editCount, 0)
+        XCTAssertEqual(controller.identitySlots, ["key": 0, "fill": 1, "rim": 2])
+        XCTAssertEqual(controller.renameCheck("key"), .unchanged)
+        XCTAssertEqual(controller.renameCheck("fill"), .refused("A light named \"fill\" already exists"))
+    }
+
+    func testRenameIsRefusedWhenNothingCanBeEdited() {
+        begin(with: nil)
+        XCTAssertFalse(controller.renameSelected(to: "main"))
+        XCTAssertEqual(controller.renameCheck("main"), .refused("No light is selected"))
+        store = FakeRigStore()
+        controller = LightsController(seams: store.seams)
+        begin(with: ["key"])
+        store.busy = true
+        XCTAssertFalse(controller.renameSelected(to: "main"))
+        XCTAssertTrue(store.performed.isEmpty)
+    }
+
+    func testRenameRefusedByTheCoreRestoresTheColours() {
+        begin(with: ["key", "fill"])
+        controller.select(name: "key")
+        // A light added from the console after the last read: the check passes
+        // against the stale mirror, the core refuses.
+        store.lights.append(.init(name: "main"))
+        XCTAssertFalse(controller.renameSelected(to: "main"))
+        XCTAssertEqual(store.performed, [.rename(old: "key", new: "main")])
+        XCTAssertEqual(controller.identitySlots["key"], 0)
+        XCTAssertEqual(controller.selection.name, "key")
+        XCTAssertEqual(controller.editCount, 0)
+    }
+
+    func testRevertBringsTheOldNamesBack() {
+        begin(with: ["key", "fill", "rim"])
+        controller.select(name: "key")
+        XCTAssertTrue(controller.renameSelected(to: "main"))
+        controller.revert()
+        XCTAssertEqual(names, ["key", "fill", "rim"])
+        XCTAssertEqual(controller.editCount, 0)
+        XCTAssertEqual(controller.selection.name, "key")
+        XCTAssertEqual(controller.identitySlots, ["key": 0, "fill": 1, "rim": 2])
     }
 }
