@@ -478,6 +478,10 @@ final class LightsInspectorLiveTests: XCTestCase {
         controller.add()                               // a 4th light (a button press)
         let fourth = try XCTUnwrap(controller.selectedLight?.name)
         XCTAssertEqual(controller.rig?.lights.count, 4)
+        // A new light casts a shadow while fewer than 3 do (#799), so key and
+        // the 4th cast; one more reaches the cap.
+        XCTAssertEqual(try coreRig().lights.filter(\.shadow).map(\.name), ["key", fourth],
+                       "a light added under the cap casts a shadow")
 
         let python = Lines(), commands = Lines()
         engine.pythonTap = { python.lines.append($0) }
@@ -491,12 +495,10 @@ final class LightsInspectorLiveTests: XCTestCase {
         XCTAssertEqual(controller.setShadow(true), .ok)
         XCTAssertEqual(try coreRig().lights[1].shadow, true, "the toggle reached the core")
         assertMirrorIsCurrent("shadow on")
-        controller.select(name: "rim")
-        XCTAssertEqual(controller.setShadow(true), .ok)
-        XCTAssertEqual(try coreRig().lights.filter(\.shadow).map(\.name), ["key", "fill", "rim"])
+        XCTAssertEqual(try coreRig().lights.filter(\.shadow).map(\.name), ["key", "fill", fourth])
 
-        // A 4th is refused by the core; nothing changes; the card says why.
-        controller.select(name: fourth)
+        // A 4th caster is refused by the core; nothing changes; the card says why.
+        controller.select(name: "rim")
         let json = engine.lightRigJSON()
         XCTAssertEqual(controller.setShadow(true), .refused)
         XCTAssertEqual(engine.lightRigJSON(), json, "the core keeps its cap of 3")
@@ -509,7 +511,8 @@ final class LightsInspectorLiveTests: XCTestCase {
         XCTAssertNil(LightsInspectorState(controller)?.notice)
         controller.select(name: "key")
         XCTAssertEqual(controller.setShadow(false), .ok)
-        controller.select(name: fourth)
+        XCTAssertEqual(try coreRig().lights[0].shadow, false, "turning one off reached the core")
+        controller.select(name: "rim")
         XCTAssertEqual(controller.setShadow(true), .ok)
         XCTAssertEqual(try coreRig().lights.filter(\.shadow).map(\.name), ["fill", "rim", fourth])
         assertMirrorIsCurrent("after the swap")
