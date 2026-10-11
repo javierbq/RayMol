@@ -514,6 +514,304 @@ struct OrbitLabelPlacement: Equatable {
         return CGPoint(x: min(max(x, bounds.minX), max(bounds.maxX - size.width, bounds.minX)),
                        y: min(max(y, bounds.minY), max(bounds.maxY - size.height, bounds.minY)))
     }
+
+    /// At `point` with `anchor` (a fixed reference label).
+    init(point: CGPoint, anchor: UnitPoint) {
+        self.point = point
+        self.anchor = anchor
+    }
+
+    /// The four places beside a mark at `p` of radius `clear`, in the order
+    /// tried after a label's preferred one: below, above, right, left.
+    static func sides(of p: CGPoint, clear: CGFloat) -> [OrbitLabelPlacement] {
+        [OrbitLabelPlacement(beside: p, dx: 0, dy: 1, clear: clear),
+         OrbitLabelPlacement(beside: p, dx: 0, dy: -1, clear: clear),
+         OrbitLabelPlacement(beside: p, dx: 1, dy: 0, clear: clear),
+         OrbitLabelPlacement(beside: p, dx: -1, dy: 0, clear: clear)]
+    }
+
+    /// `preferred`, then the sides of `p` it is not.
+    static func candidates(_ preferred: OrbitLabelPlacement, around p: CGPoint,
+                           clear: CGFloat) -> [OrbitLabelPlacement] {
+        [preferred] + sides(of: p, clear: clear).filter { $0 != preferred }
+    }
+}
+
+/// A circle a label must not cover: a lamp, the selected lamp's halo, the
+/// pitch handle; the radius square or an arrowhead.
+struct OrbitLabelObstacle: Equatable {
+    var centre: CGPoint
+    var radius: CGFloat
+    /// It hides a ring or tick label it covers. False for the square and the
+    /// arrowheads: they are drawn over those labels (as before #676), and
+    /// only keep a label that moves from moving onto them.
+    var hidesReferences = true
+
+    /// The rect covers some of the circle (touching does not count).
+    func overlaps(_ rect: CGRect) -> Bool {
+        let x = min(max(centre.x, rect.minX), rect.maxX)
+        let y = min(max(centre.y, rect.minY), rect.maxY)
+        return hypot(x - centre.x, y - centre.y) < radius
+    }
+}
+
+/// A label on the plan or the arc: its text and kind, where it may go in order
+/// of preference, and where OrbitLabelLayout put it (nil: hidden).
+struct OrbitLabel: Equatable {
+    enum Kind: Equatable {
+        /// The selected light's radius, orbit or pitch: value font, its colour.
+        case value
+        /// Another lamp's pitch label.
+        case lamp
+        /// A ring's or a tick's label: hidden when its one place is covered.
+        case reference
+    }
+    var text: String
+    var kind: Kind
+    var candidates: [OrbitLabelPlacement]
+    var frame: CGRect?
+
+    static let labelFont = Font.system(size: 9).monospacedDigit()
+    static let valueFont = Font.system(size: 10, weight: .medium).monospacedDigit()
+
+    /// The font the label is measured and drawn in.
+    var font: Font { kind == .value ? Self.valueFont : Self.labelFont }
+}
+
+/// Places labels so none covers another or a lamp (#676). Pure and
+/// deterministic: labels are placed in order, each at its first candidate
+/// whose rect (kept inside `bounds`) misses every label placed before it and
+/// every obstacle (for a reference label, every one that hides it). A value
+/// or lamp label with no clear candidate takes the one that covers the fewest
+/// (the first of those); a reference label with none is hidden.
+enum OrbitLabelLayout {
+    /// How far a label may spill past its canvas: half of what the canvas
+    /// allows its drawing (OrbitCanvas.bleed).
+    static let bleed: CGFloat = OrbitCanvas.bleed / 2
+
+    /// The rect labels stay inside for a canvas of `size`.
+    static func bounds(for size: CGSize) -> CGRect {
+        CGRect(origin: .zero, size: size).insetBy(dx: -bleed, dy: -bleed)
+    }
+
+    /// Two label rects overlap: share some area (touching edges do not).
+    static func overlap(_ a: CGRect, _ b: CGRect) -> Bool {
+        a.minX < b.maxX && b.minX < a.maxX && a.minY < b.maxY && b.minY < a.maxY
+    }
+
+    /// `labels` with their frames set, measured by `size`.
+    static func place(_ labels: [OrbitLabel], obstacles: [OrbitLabelObstacle], in bounds: CGRect,
+                      size: (OrbitLabel) -> CGSize) -> [OrbitLabel] {
+        var placed: [CGRect] = []
+        return labels.map { label in
+            var label = label
+            let s = size(label)
+            let rects = label.candidates.map { CGRect(origin: $0.origin(for: s, in: bounds), size: s) }
+            let blocking = label.kind == .reference ? obstacles.filter(\.hidesReferences) : obstacles
+            let covered = rects.map { r in
+                placed.filter { overlap($0, r) }.count + blocking.filter { $0.overlaps(r) }.count
+            }
+            if let clear = covered.firstIndex(of: 0) {
+                label.frame = rects[clear]
+            } else if label.kind != .reference, let fewest = covered.min(),
+                      let best = covered.firstIndex(of: fewest) {
+                label.frame = rects[best]
+            } else {
+                label.frame = nil
+            }
+            if let f = label.frame { placed.append(f) }
+            return label
+        }
+    }
+}
+
+/// Every label the plan draws (#676), placed by OrbitLabelLayout in priority
+/// order: the selected light's radius, then its orbit, then the other lamps'
+/// labels in rig order, then the ring and tick labels.
+struct OrbitPlanLabels: Equatable {
+    var radius: OrbitLabel
+    var orbit: OrbitLabel
+    /// The other lamps' labels, in rig order (`state.others`).
+    var lamps: [OrbitLabel]
+    /// The ring labels, inner to outer (one per `layout.rings`).
+    var rings: [OrbitLabel]
+    /// The tick labels: `±180°`, `90°`, `−90°`, `0°`.
+    var ticks: [OrbitLabel]
+
+    var references: [OrbitLabel] { rings + ticks }
+    var all: [OrbitLabel] { [radius, orbit] + lamps + references }
+
+    /// The selected lamp's halo ring. Obstacles are the drawn circles'
+    /// nominal radii, not their outer stroke edges: a label's rect already
+    /// runs a point or two past its glyphs (line height), so a rect that only
+    /// grazes a stroke leaves its text clear.
+    static let haloRadius = LightsOrbitMetrics.selectedLampRadius + 4
+
+    /// The radius of the selected light's orbit wedge (its value sits just
+    /// outside or inside it).
+    static func wedgeRadius(_ layout: OrbitPlanLayout) -> CGFloat {
+        max(layout.ringRadius(1) + 9, 20)
+    }
+
+    /// What a label must not cover: every lamp with its outline, the
+    /// selected lamp's halo with its stroke; and, for a label that moves,
+    /// the radius square (at `squareAngle`, or its resting angle) and a
+    /// clamped lamp's outward arrowhead.
+    static func obstacles(state: LightsOrbitState, layout: OrbitPlanLayout,
+                          squareAngle: Double? = nil) -> [OrbitLabelObstacle] {
+        var obstacles = state.lamps.map { lamp in
+            OrbitLabelObstacle(centre: layout.lampPoint(orbit: lamp.orbit, radius: lamp.radius),
+                               radius: lamp.isSelected ? haloRadius : LightsOrbitMetrics.lampRadius)
+        }
+        let s = state.selected
+        let angle = squareAngle ?? layout.squareAngle(radius: s.radius)
+        obstacles.append(OrbitLabelObstacle(
+            centre: layout.squarePoint(orbit: s.orbit, radius: s.radius, angle: angle),
+            radius: LightsOrbitMetrics.squareHalfSide * 2.squareRoot(), hidesReferences: false))
+        for lamp in state.lamps where layout.isClamped(radius: lamp.radius) {
+            // OrbitPlanPainter's arrowhead: from `base` to `base + 5` along
+            // the orbit, 3.5 either side.
+            let p = layout.lampPoint(orbit: lamp.orbit, radius: lamp.radius)
+            let o = LightAngles.offset(orbit: lamp.orbit)
+            let base = (lamp.isSelected ? LightsOrbitMetrics.selectedLampRadius + 6
+                                        : LightsOrbitMetrics.lampRadius + 2) + 2.5
+            obstacles.append(OrbitLabelObstacle(
+                centre: CGPoint(x: p.x + base * CGFloat(o.dx), y: p.y + base * CGFloat(o.dy)), radius: 4.5,
+                hidesReferences: false))
+        }
+        return obstacles
+    }
+
+    init(state: LightsOrbitState, layout: OrbitPlanLayout, squareAngle: Double? = nil,
+         size: (OrbitLabel) -> CGSize) {
+        let s = state.selected
+        let p = layout.lampPoint(orbit: s.orbit, radius: s.radius)
+        let clear = Self.haloRadius
+        let radiusPreferred = OrbitLabelPlacement(selectedLampAt: p, layout: layout, clear: clear)
+        let unplacedRadius = OrbitLabel(
+            text: state.radiusText,
+            kind: .value,
+            candidates: OrbitLabelPlacement.candidates(radiusPreferred, around: p, clear: clear)
+        )
+
+        // Its value outside the wedge, or inside it when the lamp or the
+        // lamp's radius label is there.
+        let wedge = Self.wedgeRadius(layout)
+        let unplacedOrbit = OrbitLabel(
+            text: state.orbitText,
+            kind: .value,
+            candidates: [
+                OrbitLabelPlacement(centre: layout.point(orbit: s.orbit / 2, distance: wedge + 9)),
+                OrbitLabelPlacement(centre: layout.point(orbit: s.orbit / 2, distance: max(wedge - 10, 4)))
+            ]
+        )
+
+        let unplacedLamps = state.others.map { lamp -> OrbitLabel in
+            let lp = layout.lampPoint(orbit: lamp.orbit, radius: lamp.radius)
+            let lClear = LightsOrbitMetrics.lampRadius
+            let preferred = OrbitLabelPlacement(lampAt: lp, orbit: lamp.orbit,
+                                                distance: layout.drawnDistance(radius: lamp.radius),
+                                                layout: layout, clear: lClear)
+            return OrbitLabel(
+                text: lamp.labelText,
+                kind: .lamp,
+                candidates: OrbitLabelPlacement.candidates(preferred, around: lp, clear: lClear)
+            )
+        }
+
+        let c = layout.centre
+        let outer = layout.outerRadius
+        let unplacedRings = layout.rings.map { ring in
+            OrbitLabel(
+                text: String(format: "%.0f×", ring),
+                kind: .reference,
+                candidates: [OrbitLabelPlacement(point: CGPoint(x: c.x - 3, y: c.y - layout.ringRadius(ring) + 2),
+                                                 anchor: .topTrailing)]
+            )
+        }
+        let unplacedTicks = [
+            OrbitLabel(text: "±180°", kind: .reference,
+                       candidates: [OrbitLabelPlacement(point: CGPoint(x: c.x + 3, y: c.y - outer + 2),
+                                                        anchor: .topLeading)]),
+            OrbitLabel(text: "90°", kind: .reference,
+                       candidates: [OrbitLabelPlacement(point: CGPoint(x: c.x + outer - 5, y: c.y - 2),
+                                                        anchor: .bottomTrailing)]),
+            OrbitLabel(text: "\(LightInspectorFormat.minus)90°", kind: .reference,
+                       candidates: [OrbitLabelPlacement(point: CGPoint(x: c.x - outer + 5, y: c.y - 2),
+                                                        anchor: .bottomLeading)]),
+            OrbitLabel(text: "0°", kind: .reference,
+                       candidates: [OrbitLabelPlacement(point: CGPoint(x: c.x + 5, y: c.y + outer - 3),
+                                                        anchor: .bottomLeading)])
+        ]
+
+        let unplacedAll = [unplacedRadius, unplacedOrbit] + unplacedLamps + unplacedRings + unplacedTicks
+        let bounds = OrbitLabelLayout.bounds(for: layout.size)
+        let obstacles = Self.obstacles(state: state, layout: layout, squareAngle: squareAngle)
+        let placed = OrbitLabelLayout.place(unplacedAll, obstacles: obstacles, in: bounds, size: size)
+
+        radius = placed[0]
+        orbit = placed[1]
+        let ringsAt = 2 + unplacedLamps.count, ticksAt = ringsAt + unplacedRings.count
+        lamps = Array(placed[2..<ringsAt])
+        rings = Array(placed[ringsAt..<ticksAt])
+        ticks = Array(placed[ticksAt...])
+    }
+}
+
+/// Every label the pitch arc draws (#676): the selected light's pitch, then
+/// `+90°`, `−90°` and `0°`, hidden when the value or the handle covers them.
+struct PitchArcLabels: Equatable {
+    var value: OrbitLabel
+    var references: [OrbitLabel]
+    var all: [OrbitLabel] { [value] + references }
+
+    /// The handle.
+    static func obstacles(state: LightsOrbitState, layout: PitchArcLayout) -> [OrbitLabelObstacle] {
+        [OrbitLabelObstacle(centre: layout.point(pitch: state.selected.pitch),
+                            radius: LightsOrbitMetrics.handleRadius)]
+    }
+
+    init(state: LightsOrbitState, layout: PitchArcLayout, size: (OrbitLabel) -> CGSize) {
+        let s = state.selected
+        let h = layout.point(pitch: s.pitch)
+        let hr = LightsOrbitMetrics.handleRadius
+        let x = min(h.x, layout.size.width - 2)
+
+        // The value sits away from the level line's 0° label and the ends'
+        // labels: above the handle from 0° to +60° and near −90°, below it
+        // otherwise.
+        let aboveFirst = (s.pitch >= 0 && s.pitch < 60) || s.pitch < -60
+        let above = OrbitLabelPlacement(point: CGPoint(x: x, y: h.y - hr - 3), anchor: .bottomTrailing)
+        let below = OrbitLabelPlacement(point: CGPoint(x: x, y: h.y + hr + 3), anchor: .topTrailing)
+        let unplacedValue = OrbitLabel(
+            text: state.pitchText,
+            kind: .value,
+            candidates: aboveFirst ? [above, below] : [below, above]
+        )
+
+        let top = layout.point(pitch: 90)
+        let bottom = layout.point(pitch: -90)
+        let zero = layout.point(pitch: 0)
+        let unplacedReferences = [
+            OrbitLabel(text: "+90°", kind: .reference,
+                       candidates: [OrbitLabelPlacement(point: CGPoint(x: top.x, y: top.y - 5),
+                                                        anchor: .bottomLeading)]),
+            OrbitLabel(text: "\(LightInspectorFormat.minus)90°", kind: .reference,
+                       candidates: [OrbitLabelPlacement(point: CGPoint(x: bottom.x, y: bottom.y + 5),
+                                                        anchor: .topLeading)]),
+            OrbitLabel(text: "0°", kind: .reference,
+                       candidates: [OrbitLabelPlacement(point: CGPoint(x: zero.x - 4, y: zero.y - 3),
+                                                        anchor: .bottomTrailing)])
+        ]
+
+        let unplacedAll = [unplacedValue] + unplacedReferences
+        let bounds = OrbitLabelLayout.bounds(for: layout.size)
+        let obstacles = Self.obstacles(state: state, layout: layout)
+        let placed = OrbitLabelLayout.place(unplacedAll, obstacles: obstacles, in: bounds, size: size)
+
+        value = placed[0]
+        references = Array(placed.dropFirst())
+    }
 }
 
 /// Draws the plan (sketch 2): rings in scene sizes with the 1× disc, the
@@ -528,25 +826,23 @@ struct OrbitPlanPainter {
     var squareAngle: Double?
     var style: LightsBarStyle
 
-    static let labelFont = Font.system(size: 9).monospacedDigit()
-    static let valueFont = Font.system(size: 10, weight: .medium).monospacedDigit()
-
     func draw(in context: inout GraphicsContext) {
         let c = layout.centre
         let outer = layout.outerRadius
         let grey = style.text.opacity(0.2)
         let muted = style.text.opacity(0.55)
 
+        var ink = OrbitLabelInk(context)
+        let labels = OrbitPlanLabels(state: state, layout: layout, squareAngle: squareAngle) { ink.measure($0) }
+
         // The 1× disc: the edge of the molecules when the rig was centred.
         let disc = layout.ringRadius(1)
         context.fill(circle(c, disc), with: .color(style.text.opacity(0.08)))
         context.stroke(circle(c, disc), with: .color(style.text.opacity(0.25)), lineWidth: 0.75)
         // The rings, labelled just inside their tops, left of the axis.
-        for ring in layout.rings {
-            let r = layout.ringRadius(ring)
-            context.stroke(circle(c, r), with: .color(grey), lineWidth: 1)
-            text(&context, String(format: "%.0f×", ring), at: CGPoint(x: c.x - 3, y: c.y - r + 2),
-                 anchor: .topTrailing, colour: muted)
+        for (ring, label) in zip(layout.rings, labels.rings) {
+            context.stroke(circle(c, layout.ringRadius(ring)), with: .color(grey), lineWidth: 1)
+            ink.draw(label, colour: muted, in: &context)
         }
         // The angle ticks across the outer ring and their labels inside it.
         for orbit in [0.0, 90, 180, -90] {
@@ -555,11 +851,9 @@ struct OrbitPlanPainter {
             tick.addLine(to: layout.point(orbit: orbit, distance: outer + 3))
             context.stroke(tick, with: .color(style.text.opacity(0.35)), lineWidth: 1)
         }
-        text(&context, "±180°", at: CGPoint(x: c.x + 3, y: c.y - outer + 2), anchor: .topLeading, colour: muted)
-        text(&context, "90°", at: CGPoint(x: c.x + outer - 5, y: c.y - 2), anchor: .bottomTrailing, colour: muted)
-        text(&context, "\(LightInspectorFormat.minus)90°", at: CGPoint(x: c.x - outer + 5, y: c.y - 2),
-             anchor: .bottomLeading, colour: muted)
-        text(&context, "0°", at: CGPoint(x: c.x + 5, y: c.y + outer - 3), anchor: .bottomLeading, colour: muted)
+        for tick in labels.ticks {
+            ink.draw(tick, colour: muted, in: &context)
+        }
         // The camera, under the bottom of the outer ring.
         var camera = Path()
         camera.move(to: CGPoint(x: c.x, y: c.y + outer - 1))
@@ -575,28 +869,10 @@ struct OrbitPlanPainter {
 
         // The selected light's ring, its orbit wedge from 0° and its value.
         context.stroke(circle(c, selectedDistance), with: .color(colour.opacity(0.9)), lineWidth: 1.5)
-        let wedge = max(layout.ringRadius(1) + 9, 20)
+        let wedge = OrbitPlanLabels.wedgeRadius(layout)
         context.stroke(arcPath(from: 0, to: s.orbit, radius: wedge), with: .color(colour), lineWidth: 1.5)
-        // Its value outside the wedge, or inside it when the lamp or the
-        // lamp's radius label is there.
-        let r = LightsOrbitMetrics.selectedLampRadius
-        let radiusLabel = label(&context, state.radiusText,
-                                placed: OrbitLabelPlacement(selectedLampAt: selectedPoint, layout: layout,
-                                                            clear: r + 4),
-                                colour: colour, font: Self.valueFont)
-        let lampBox = CGRect(x: selectedPoint.x - r - 4, y: selectedPoint.y - r - 4, width: 2 * r + 8,
-                             height: 2 * r + 8)
-        var orbitLabel = label(&context, state.orbitText,
-                               placed: OrbitLabelPlacement(centre: layout.point(orbit: s.orbit / 2,
-                                                                                distance: wedge + 9)),
-                               colour: colour, font: Self.valueFont)
-        if orbitLabel.frame.intersects(lampBox) || orbitLabel.frame.intersects(radiusLabel.frame) {
-            orbitLabel = label(&context, state.orbitText,
-                               placed: OrbitLabelPlacement(centre: layout.point(orbit: s.orbit / 2,
-                                                                                distance: max(wedge - 10, 4))),
-                               colour: colour, font: Self.valueFont)
-        }
-        draw(&context, orbitLabel)
+        ink.draw(labels.orbit, colour: colour, in: &context)
+
         // The dashed line from the centre to the lamp.
         var spoke = Path()
         spoke.move(to: c)
@@ -617,13 +893,10 @@ struct OrbitPlanPainter {
         }
 
         // The other lamps, in rig order, with their pitch labels.
-        for lamp in state.lamps where !lamp.isSelected {
+        for (lamp, label) in zip(state.others, labels.lamps) {
             let p = layout.lampPoint(orbit: lamp.orbit, radius: lamp.radius)
             drawLamp(&context, lamp, at: p, radius: LightsOrbitMetrics.lampRadius)
-            let label = OrbitLabelPlacement(lampAt: p, orbit: lamp.orbit,
-                                            distance: layout.drawnDistance(radius: lamp.radius),
-                                            layout: layout, clear: LightsOrbitMetrics.lampRadius)
-            draw(&context, self.label(&context, lamp.labelText, placed: label, colour: style.text.opacity(0.8)))
+            ink.draw(label, colour: style.text.opacity(0.8), in: &context)
         }
 
         // The radius square on the selected ring.
@@ -635,11 +908,13 @@ struct OrbitPlanPainter {
         context.stroke(square, with: .color(style.text.opacity(0.85)), lineWidth: 1)
 
         // The selected lamp, haloed, and its radius label.
-        context.stroke(circle(selectedPoint, r + 4), with: .color(s.marker.outlineColor.opacity(state.isOn ? 0.35 : 0.15)),
-                       lineWidth: 2.5)
-        context.stroke(circle(selectedPoint, r + 4), with: .color(colour), lineWidth: 1)
+        let r = LightsOrbitMetrics.selectedLampRadius
+        let halo = OrbitPlanLabels.haloRadius
+        context.stroke(circle(selectedPoint, halo),
+                       with: .color(s.marker.outlineColor.opacity(state.isOn ? 0.35 : 0.15)), lineWidth: 2.5)
+        context.stroke(circle(selectedPoint, halo), with: .color(colour), lineWidth: 1)
         drawLamp(&context, s, at: selectedPoint, radius: r)
-        draw(&context, radiusLabel)
+        ink.draw(labels.radius, colour: colour, in: &context)
     }
 
     private func lampColour(_ lamp: LightsOrbitState.Lamp) -> Color {
@@ -689,30 +964,6 @@ struct OrbitPlanPainter {
         }
         return path
     }
-
-    private func text(_ context: inout GraphicsContext, _ string: String, at p: CGPoint, anchor: UnitPoint,
-                      colour: Color, font: Font = OrbitPlanPainter.labelFont) {
-        context.draw(Text(verbatim: string).font(font).foregroundColor(colour), at: p, anchor: anchor)
-    }
-
-    /// A label at `placed`, measured and kept inside the canvas (plus a
-    /// little of its bleed), so a label near an edge is never cut off.
-    private func label(_ context: inout GraphicsContext, _ string: String, placed: OrbitLabelPlacement,
-                       colour: Color, font: Font = OrbitPlanPainter.labelFont) -> PlacedLabel {
-        let resolved = context.resolve(Text(verbatim: string).font(font).foregroundColor(colour))
-        let size = resolved.measure(in: CGSize(width: 1000, height: 1000))
-        let bounds = CGRect(origin: .zero, size: layout.size).insetBy(dx: -4, dy: -4)
-        return PlacedLabel(text: resolved, frame: CGRect(origin: placed.origin(for: size, in: bounds), size: size))
-    }
-
-    private func draw(_ context: inout GraphicsContext, _ label: PlacedLabel) {
-        context.draw(label.text, in: label.frame)
-    }
-
-    private struct PlacedLabel {
-        var text: GraphicsContext.ResolvedText
-        var frame: CGRect
-    }
 }
 
 /// Draws the pitch arc (sketch 2): a half circle from −90° (below) to +90°
@@ -727,7 +978,9 @@ struct PitchArcPainter {
         let c = layout.centre
         let rx = layout.radiusX, ry = layout.radiusY
         let muted = style.text.opacity(0.55)
-        let font = Font.system(size: 9).monospacedDigit()
+
+        var ink = OrbitLabelInk(context)
+        let labels = PitchArcLabels(state: state, layout: layout) { ink.measure($0) }
 
         // The subject, and the level line to 0°.
         context.fill(circle(c, 6), with: .color(style.text.opacity(0.08)))
@@ -749,14 +1002,9 @@ struct PitchArcPainter {
             tick.addLine(to: CGPoint(x: c.x + (rx + 3) * CGFloat(o.dx), y: c.y + (ry + 3) * CGFloat(o.dy)))
             context.stroke(tick, with: .color(style.text.opacity(0.35)), lineWidth: 1)
         }
-        let top = layout.point(pitch: 90), bottom = layout.point(pitch: -90)
-        context.draw(Text(verbatim: "+90°").font(font).foregroundColor(muted),
-                     at: CGPoint(x: top.x, y: top.y - 5), anchor: .bottomLeading)
-        context.draw(Text(verbatim: "\(LightInspectorFormat.minus)90°").font(font).foregroundColor(muted),
-                     at: CGPoint(x: bottom.x, y: bottom.y + 5), anchor: .topLeading)
-        let zero = layout.point(pitch: 0)
-        context.draw(Text(verbatim: "0°").font(font).foregroundColor(muted),
-                     at: CGPoint(x: zero.x - 4, y: zero.y - 3), anchor: .bottomTrailing)
+        for ref in labels.references {
+            ink.draw(ref, colour: muted, in: &context)
+        }
 
         // The selected light: a dashed line to its handle, the handle, its value.
         let s = state.selected
@@ -770,14 +1018,39 @@ struct PitchArcPainter {
         context.fill(circle(h, hr), with: .color(colour))
         context.stroke(circle(h, hr), with: .color(s.marker.outlineColor.opacity(state.isOn ? 0.85 : 0.4)),
                        lineWidth: 1.5)
-        // The value sits away from the level line's 0° label and the ends'
-        // labels: above the handle from 0° to +60° and near −90°, below it
-        // otherwise.
-        let above = (s.pitch >= 0 && s.pitch < 60) || s.pitch < -60
-        context.draw(Text(verbatim: state.pitchText).font(.system(size: 10, weight: .medium).monospacedDigit())
-                        .foregroundColor(colour),
-                     at: CGPoint(x: min(h.x, layout.size.width - 2), y: above ? h.y - hr - 3 : h.y + hr + 3),
-                     anchor: above ? .bottomTrailing : .topTrailing)
+        ink.draw(labels.value, colour: colour, in: &context)
+    }
+}
+
+/// Measures the orbit card's labels for OrbitLabelLayout and draws each into
+/// its placed frame (a hidden one not at all), resolving each text once in
+/// the label's own font.
+private struct OrbitLabelInk {
+    private let context: GraphicsContext
+    private var resolved: [String: GraphicsContext.ResolvedText] = [:]
+
+    init(_ context: GraphicsContext) {
+        self.context = context
+    }
+
+    private static func key(_ label: OrbitLabel) -> String { "\(label.kind)|\(label.text)" }
+
+    private mutating func text(_ label: OrbitLabel) -> GraphicsContext.ResolvedText {
+        if let text = resolved[Self.key(label)] { return text }
+        let text = context.resolve(Text(verbatim: label.text).font(label.font))
+        resolved[Self.key(label)] = text
+        return text
+    }
+
+    mutating func measure(_ label: OrbitLabel) -> CGSize {
+        text(label).measure(in: CGSize(width: 1000, height: 1000))
+    }
+
+    mutating func draw(_ label: OrbitLabel, colour: Color, in context: inout GraphicsContext) {
+        guard let frame = label.frame else { return }
+        var text = text(label)
+        text.shading = .color(colour)
+        context.draw(text, in: frame)
     }
 }
 

@@ -201,6 +201,242 @@ final class LightsOrbitViewTests: XCTestCase {
     }
 }
 
+// MARK: - Label collisions (#676)
+
+@MainActor
+final class OrbitLabelLayoutTests: XCTestCase {
+    private func measure(_ label: OrbitLabel) -> CGSize {
+        let font: NSFont = label.kind == .value
+            ? .monospacedDigitSystemFont(ofSize: 10, weight: .medium)
+            : .monospacedDigitSystemFont(ofSize: 9, weight: .regular)
+        let s = NSAttributedString(string: label.text, attributes: [.font: font]).size()
+        return CGSize(width: ceil(s.width), height: ceil(s.height))
+    }
+
+    private func assertClear(_ labels: [OrbitLabel], obstacles: [OrbitLabelObstacle], bounds: CGRect,
+                             file: StaticString = #filePath, line: UInt = #line) {
+        let shown = labels.compactMap { label -> (OrbitLabel, CGRect)? in
+            guard let frame = label.frame else { return nil }
+            return (label, frame)
+        }
+        for (label, frame) in shown {
+            XCTAssertTrue(bounds.contains(frame),
+                          "label '\(label.text)' frame \(frame) is not inside bounds \(bounds)",
+                          file: file, line: line)
+            for obstacle in obstacles where obstacle.hidesReferences || label.kind != .reference {
+                XCTAssertFalse(obstacle.overlaps(frame),
+                               "label '\(label.text)' overlaps the circle at \(obstacle.centre), r \(obstacle.radius)",
+                               file: file, line: line)
+            }
+        }
+        for i in 0..<shown.count {
+            for j in (i + 1)..<shown.count {
+                let (a, frameA) = shown[i]
+                let (b, frameB) = shown[j]
+                XCTAssertFalse(OrbitLabelLayout.overlap(frameA, frameB),
+                               "label '\(a.text)' overlaps label '\(b.text)'",
+                               file: file, line: line)
+            }
+        }
+    }
+
+    private func todaysFrames(_ labels: [OrbitLabel], bounds: CGRect,
+                              size: (OrbitLabel) -> CGSize) -> [CGRect] {
+        labels.map { label in
+            let s = size(label)
+            let first = label.candidates.first!
+            return CGRect(origin: first.origin(for: s, in: bounds), size: s)
+        }
+    }
+
+    func testTheRimOnThePhoneClearsTheRingLabels() throws {
+        let store = FakeRigStore()
+        store.setRig(["key", "fill", "rim"])
+        store.lights[0].orbit = -45
+        store.lights[0].pitch = 35
+        store.lights[0].radius = 4
+        store.lights[1].orbit = 55
+        store.lights[1].pitch = 5
+        store.lights[1].radius = 4
+        store.lights[2].pinned = true
+        store.eyePlacements["rim"] = LightPlacement(orbit: -155, pitch: -30, radius: 4)
+        let controller = LightsController(seams: store.seams)
+        controller.begin()
+        controller.select(name: "rim")
+        var state = try XCTUnwrap(LightsOrbitState(controller))
+        state.radiusText = LightInspectorFormat.radius(4, frameSize: 28.5)
+        XCTAssertEqual(state.radiusText, "4.0× · 114 Å")
+        let layout = OrbitPlanLayout(extent: state.extent, slop: 14, minimumTarget: 44)
+        let bounds = OrbitLabelLayout.bounds(for: layout.size)
+        let obstacles = OrbitPlanLabels.obstacles(state: state, layout: layout)
+        let labels = OrbitPlanLabels(state: state, layout: layout, size: measure)
+        let todays = todaysFrames(labels.all, bounds: bounds, size: measure)
+        let radiusIndex = labels.all.firstIndex { $0.text == state.radiusText }!
+        let threeXIndex = labels.all.firstIndex { $0.text == "3×" }!
+        XCTAssertTrue(OrbitLabelLayout.overlap(todays[radiusIndex], todays[threeXIndex]),
+                      "today's radius label overlaps the 3× ring label")
+        assertClear(labels.all, obstacles: obstacles, bounds: bounds)
+        XCTAssertEqual(labels.radius.frame, todays[radiusIndex],
+                       "the value keeps its place")
+        let threeX = try XCTUnwrap(labels.references.first { $0.text == "3×" })
+        XCTAssertNil(threeX.frame, "the 3× label is hidden")
+    }
+
+    func testFillAt105ClearsTheTickLabels() throws {
+        let (store, controller) = sketchTwoController()
+        controller.select(name: "fill")
+        store.lights[1].orbit = 105
+        controller.refresh()
+        let state = try XCTUnwrap(LightsOrbitState(controller))
+        XCTAssertEqual(state.selected.name, "fill")
+        XCTAssertEqual(state.selected.orbit, 105)
+        XCTAssertEqual(state.selected.pitch, 5)
+
+        // Plan
+        let planLayout = OrbitPlanLayout(extent: state.extent)
+        let planBounds = OrbitLabelLayout.bounds(for: planLayout.size)
+        let planObstacles = OrbitPlanLabels.obstacles(state: state, layout: planLayout)
+        let planLabels = OrbitPlanLabels(state: state, layout: planLayout, size: measure)
+        let planTodays = todaysFrames(planLabels.all, bounds: planBounds, size: measure)
+        let ninetyIndex = planLabels.all.firstIndex { $0.text == "90°" }!
+        let ninetyFrame = planTodays[ninetyIndex]
+        let fillHalo = try XCTUnwrap(planObstacles.first { $0.centre == planLayout.lampPoint(orbit: 105, radius: 4) })
+        XCTAssertTrue(fillHalo.overlaps(ninetyFrame), "fill's halo covers 90° tick label")
+        assertClear(planLabels.all, obstacles: planObstacles, bounds: planBounds)
+
+        // Arc
+        let arcLayout = PitchArcLayout()
+        let arcBounds = OrbitLabelLayout.bounds(for: arcLayout.size)
+        let arcObstacles = PitchArcLabels.obstacles(state: state, layout: arcLayout)
+        let arcLabels = PitchArcLabels(state: state, layout: arcLayout, size: measure)
+        let arcTodays = todaysFrames(arcLabels.all, bounds: arcBounds, size: measure)
+        let zeroIndex = arcLabels.all.firstIndex { $0.text == "0°" }!
+        let zeroFrame = arcTodays[zeroIndex]
+        let handleObstacle = try XCTUnwrap(arcObstacles.first)
+        XCTAssertTrue(handleObstacle.overlaps(zeroFrame), "today: the handle covers the arc's 0° label")
+        assertClear(arcLabels.all, obstacles: arcObstacles, bounds: arcBounds)
+        let zeroRef = try XCTUnwrap(arcLabels.references.first { $0.text == "0°" })
+        XCTAssertNil(zeroRef.frame, "0° reference is hidden")
+        XCTAssertNotNil(arcLabels.value.frame, "pitch value is shown")
+    }
+
+    func testALayoutWithNoConflictsIsUnchanged() throws {
+        // Sketch two with key (the default) or fill selected: nothing
+        // collides, so every label is where it was before #676.
+        let (_, controller) = sketchTwoController()
+        for selectionName in ["key", "fill"] {
+            controller.select(name: selectionName)
+            let state = try XCTUnwrap(LightsOrbitState(controller))
+
+            let planLayout = OrbitPlanLayout(extent: state.extent)
+            let planBounds = OrbitLabelLayout.bounds(for: planLayout.size)
+            let planLabels = OrbitPlanLabels(state: state, layout: planLayout, size: measure)
+            let planTodays = todaysFrames(planLabels.all, bounds: planBounds, size: measure)
+
+            // Radius first candidate equals legacy placement
+            let s = state.selected
+            let sp = planLayout.lampPoint(orbit: s.orbit, radius: s.radius)
+            let expectedRadiusPlacement = OrbitLabelPlacement(
+                selectedLampAt: sp, layout: planLayout, clear: LightsOrbitMetrics.selectedLampRadius + 4)
+            XCTAssertEqual(planLabels.radius.candidates.first, expectedRadiusPlacement)
+
+            // Each lamp first candidate equals legacy placement
+            for (lamp, label) in zip(state.others, planLabels.lamps) {
+                let lp = planLayout.lampPoint(orbit: lamp.orbit, radius: lamp.radius)
+                let expectedLampPlacement = OrbitLabelPlacement(
+                    lampAt: lp, orbit: lamp.orbit, distance: planLayout.drawnDistance(radius: lamp.radius),
+                    layout: planLayout, clear: LightsOrbitMetrics.lampRadius)
+                XCTAssertEqual(label.candidates.first, expectedLampPlacement)
+            }
+
+            // Before #676 the ring and tick labels were drawn at a bare
+            // point, unclamped: here clamping moves none of them.
+            for label in planLabels.references {
+                let size = measure(label), at = label.candidates[0]
+                XCTAssertEqual(label.frame?.origin, CGPoint(x: at.point.x - at.anchor.x * size.width,
+                                                            y: at.point.y - at.anchor.y * size.height),
+                               "[\(selectionName)] '\(label.text)' is where it was drawn")
+            }
+
+            // Every label of OrbitPlanLabels is shown and equals today's frame
+            for (i, label) in planLabels.all.enumerated() {
+                XCTAssertNotNil(label.frame, "[\(selectionName)] plan label '\(label.text)' should be shown")
+                XCTAssertEqual(label.frame, planTodays[i],
+                               "[\(selectionName)] plan label '\(label.text)' frame matches today's")
+            }
+
+            // The arc: key's +35° is clear of 0° (fill's +5° is not, see
+            // testFillAt105ClearsTheTickLabels).
+            guard selectionName == "key" else { continue }
+            let arcLayout = PitchArcLayout()
+            let arcBounds = OrbitLabelLayout.bounds(for: arcLayout.size)
+            let arcLabels = PitchArcLabels(state: state, layout: arcLayout, size: measure)
+            let arcTodays = todaysFrames(arcLabels.all, bounds: arcBounds, size: measure)
+
+            for (i, label) in arcLabels.all.enumerated() {
+                XCTAssertNotNil(label.frame, "[\(selectionName)] arc label '\(label.text)' should be shown")
+                XCTAssertEqual(label.frame, arcTodays[i],
+                               "[\(selectionName)] arc label '\(label.text)' frame matches today's")
+            }
+        }
+    }
+
+    func testTheSelectedRimHidesOnlyTheRingLabelItCovers() throws {
+        // Sketch two with rim selected (+165°, 3×): its radius label, below
+        // the lamp, used to run over the 2× ring label. Now 2× is hidden and
+        // every other label is where it was.
+        let (_, controller) = sketchTwoController()
+        controller.select(name: "rim")
+        let state = try XCTUnwrap(LightsOrbitState(controller))
+        let layout = OrbitPlanLayout(extent: state.extent)
+        let bounds = OrbitLabelLayout.bounds(for: layout.size)
+        let labels = OrbitPlanLabels(state: state, layout: layout, size: measure)
+        let todays = todaysFrames(labels.all, bounds: bounds, size: measure)
+        let twoX = try XCTUnwrap(labels.all.firstIndex { $0.text == "2×" })
+        XCTAssertTrue(OrbitLabelLayout.overlap(todays[0], todays[twoX]), "today: rim's radius label covers 2×")
+        assertClear(labels.all, obstacles: OrbitPlanLabels.obstacles(state: state, layout: layout), bounds: bounds)
+        for (i, label) in labels.all.enumerated() {
+            XCTAssertEqual(label.frame, i == twoX ? nil : todays[i], "label '\(label.text)'")
+        }
+    }
+
+    func testThePlacementIsOrderedAndDeterministic() {
+        let bounds = CGRect(x: 0, y: 0, width: 100, height: 100)
+        let labelSize = CGSize(width: 20, height: 10)
+        let size: (OrbitLabel) -> CGSize = { _ in labelSize }
+
+        let spot1 = OrbitLabelPlacement(point: CGPoint(x: 10, y: 10), anchor: .topLeading)
+        let spot2 = OrbitLabelPlacement(point: CGPoint(x: 40, y: 10), anchor: .topLeading)
+
+        let a = OrbitLabel(text: "A", kind: .value, candidates: [spot1, spot2])
+        let b = OrbitLabel(text: "B", kind: .lamp, candidates: [spot1, spot2])
+
+        let obstacle = OrbitLabelObstacle(centre: CGPoint(x: 70, y: 70), radius: 10)
+        let spotObstacle = OrbitLabelPlacement(point: CGPoint(x: 65, y: 65), anchor: .topLeading)
+
+        let ref = OrbitLabel(text: "Ref", kind: .reference, candidates: [spotObstacle])
+        let d = OrbitLabel(text: "D", kind: .lamp, candidates: [spot1, spotObstacle])
+
+        // Every place covered: E takes the one covering the fewest (the
+        // obstacle alone, not A, B and D).
+        let spotBoth = OrbitLabelPlacement(point: CGPoint(x: 25, y: 10), anchor: .topLeading)
+        let e = OrbitLabel(text: "E", kind: .lamp, candidates: [spotBoth, spotObstacle])
+
+        let labels = [a, b, ref, d, e]
+        let placed1 = OrbitLabelLayout.place(labels, obstacles: [obstacle], in: bounds, size: size)
+
+        XCTAssertEqual(placed1[0].frame, CGRect(origin: spot1.origin(for: labelSize, in: bounds), size: labelSize))
+        XCTAssertEqual(placed1[1].frame, CGRect(origin: spot2.origin(for: labelSize, in: bounds), size: labelSize))
+        XCTAssertNil(placed1[2].frame)
+        XCTAssertEqual(placed1[3].frame, CGRect(origin: spot1.origin(for: labelSize, in: bounds), size: labelSize))
+        XCTAssertEqual(placed1[4].frame,
+                       CGRect(origin: spotObstacle.origin(for: labelSize, in: bounds), size: labelSize))
+
+        let placed2 = OrbitLabelLayout.place(labels, obstacles: [obstacle], in: bounds, size: size)
+        XCTAssertEqual(placed1, placed2)
+    }
+}
+
 // MARK: - The DEBUG gesture tokens
 
 #if DEBUG
