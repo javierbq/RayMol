@@ -357,4 +357,21 @@ final class AnalysisNotesStoreTests: XCTestCase {
                        [.code(lines: ["# not a heading", "- not a bullet"])])
     }
 
+    // MARK: Notes fullscreen cover command routing (#631)
+
+    @MainActor
+    func testNotesCommandsHandledByInlineViewWhenNoCoverIsUp() {
+        XCTAssertTrue(NotesInspectorView.handlesExternalCommands(isFullscreenCover: false, fullscreenPresented: false))
+    }
+
+    @MainActor
+    func testNotesCommandsSuppressedOnCoveredInlineView() {
+        XCTAssertFalse(NotesInspectorView.handlesExternalCommands(isFullscreenCover: false, fullscreenPresented: true))
+    }
+
+    @MainActor
+    func testNotesCommandsHandledByFullscreenCoverCopy() {
+        XCTAssertTrue(NotesInspectorView.handlesExternalCommands(isFullscreenCover: true, fullscreenPresented: false))
+        XCTAssertTrue(NotesInspectorView.handlesExternalCommands(isFullscreenCover: true, fullscreenPresented: true))
+    }
 }
