@@ -107,7 +107,7 @@ MASTER_LITERALS = {
     'kBezierTubeRigSrc': 'c15ddac6015e66dc',
     'kBezierTubeSrc': '0085bdbf88964ab4',
     'kConnectorShaderSrc': '40ef57a0e535d985',
-    'kCylinderImpostorSrc': '6a7902ed88a702a9',  # #641: cyl_shade caps from the capped solid's exit
+    'kCylinderImpostorSrc': 'd884d25157282af9',  # #641: cyl_shade caps from the capped solid's exit
     'kEyeReconSrc': '34e775c149c8b075',
     'kLabelShaderSrc': 'ca5097bd2ad97d60',  # #736: label_fragment_oit, the OIT pass's variant
     'kMaterialImpostorSrc': '5da7ac9fc2e8eb42',

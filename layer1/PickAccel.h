@@ -178,12 +178,11 @@ public:
    *
    * With `eye`, impostors follow what Metal rasterizes at the slab's
    * planes. A sphere's quad sits at its centre's depth, so a sphere whose
-   * centre is outside the slab draws nothing. With `cap_on`, a cylinder's
-   * box follows cyl_impostor_vertex's near-plane clamp: one wholly in front
-   * of the plane still caps it where its infinite tube runs on behind the
-   * plane, provided Metal keeps its box (the walk starts early enough to
-   * meet such cylinders). Without `eye`, every impostor proxy counts as
-   * drawn.
+   * centre is outside the slab draws nothing. With `cap_on`, a cylinder
+   * caps the plane where its capped solid straddles it (#641), provided
+   * Metal keeps its box (cyl_impostor_vertex's near-plane clamp, which in a
+   * frame of unit scale always holds then). Without `eye`, every impostor
+   * proxy counts as drawn.
    */
   bool intersect(const PickRay& ray, bool cap_on, PickRayHit& hit,
       const PickTriFilter* filter = nullptr,

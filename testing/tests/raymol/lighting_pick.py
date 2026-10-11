@@ -1272,15 +1272,11 @@ class TestSlab(PickCase):
         self.assertLess(ball[1], FRONT, 'test setup')
         self.assertGreater(tube[1], FRONT, 'test setup')
         self.assertIsNone(self.pick(x, y))
-        cmd.set('metal_interior_cap', 0, 'cut')
-        self.assertIsNone(self.pick(x, y))
         # 0.4 A further back the far ball reaches behind the plane.
-        cmd.set('metal_interior_cap', 1, 'cut')
         cmd.translate([0.0, 0.0, -0.4], 'cut', camera=0)
-        p0_pos, p1_pos = (0.0, 0.0, 51.6), (0.0, 1.0, 49.9)
         x, y = self.ndc_of((0.0, 1.15, 49.9))
         d = self.ray_dir(x, y)
-        tube = tube_roots(EYE, d, p0_pos, u, r)
+        tube = tube_roots(EYE, d, (0.0, 0.0, 51.6), u, r)
         ball = sphere_roots(EYE, d, (0.0, 1.0, 49.9), r)
         self.assertGreater(ball[1], FRONT, 'test setup: ball exit')
         self.assertLess(tube[0], FRONT, 'test setup: body entry')
@@ -1289,6 +1285,8 @@ class TestSlab(PickCase):
         self.assertTrue(hit.cap)
         self.assertAlmostEqual(hit.depth, FRONT, delta=1e-3)
         self.assertOnRay(hit, x, y)
+        cmd.set('metal_interior_cap', 0, 'cut')
+        self.assertIsNone(self.pick(x, y))
 
     def testStickWhollyInFrontOfThePlaneNeverCaps(self):
         # A stick caps only where its solid reaches behind the plane, and

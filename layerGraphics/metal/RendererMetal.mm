@@ -12040,7 +12040,7 @@ static bool cyl_end_hit(float3 origin, float3 dir, float3 c, float3 outAxis,
   float dNV = dot(outAxis, dir);           // > 0: the disc faces the camera
   if (leaving ? (dNV >= 0.0) : (dNV < 0.0)) return false;
   p = origin + dir * (dot(outAxis, c - origin) / dNV);
-  return leaving || dot(p - c, p - c) <= radius2;
+  return dot(p - c, p - c) <= radius2;     // as the pick's resolve()
 }
 
 // Shared ray-cylinder intersection (caps + two-color interp) + PyMOL shading.
