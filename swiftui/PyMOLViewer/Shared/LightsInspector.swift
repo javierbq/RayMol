@@ -526,15 +526,18 @@ extension EnvironmentValues {
 }
 
 /// The rig-level Exposure row: label, slider (committed on release; a
-/// VoiceOver step commits at once), value, and a caption.
+/// VoiceOver step commits at once), value, and a caption. The committed value
+/// stays shown until the scene poll reports a new one (it lags ~500 ms), as
+/// the Effects slider's local state does, so the thumb does not snap back.
 struct LightExposureRow: View {
     var control: LightsExposureControl
     var style: LightsBarStyle
-    @State private var drag: Double?
+    /// The value being dragged or just committed, until the poll catches up.
+    @State private var pending: Double?
     @State private var dragging = false
 
     var body: some View {
-        let shown = drag ?? control.value
+        let shown = pending ?? control.value
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: InspectorMetrics.rowSpacing) {
                 Text(LightsExposureControl.title)
@@ -544,12 +547,13 @@ struct LightExposureRow: View {
                     .accessibilityHidden(true)
                 Slider(value: Binding(get: { shown },
                                       set: { v in
-                                          if dragging { drag = v } else { control.set(v) }
+                                          pending = v
+                                          if !dragging { control.set(v) }
                                       }),
                        in: control.range,
                        onEditingChanged: { began in
                            dragging = began
-                           if !began, let v = drag { control.set(v); drag = nil }
+                           if !began, let v = pending { control.set(v) }
                        })
                     .controlSize(.small)
                     .accessibilityLabel(LightsExposureControl.title)
@@ -568,6 +572,11 @@ struct LightExposureRow: View {
                 .foregroundColor(style.text.opacity(0.6))
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityHidden(true)
+        }
+        // A changed polled value (ours caught up, or an outside edit) wins;
+        // never while dragging.
+        .onChange(of: control.value) { _ in
+            if !dragging { pending = nil }
         }
     }
 }

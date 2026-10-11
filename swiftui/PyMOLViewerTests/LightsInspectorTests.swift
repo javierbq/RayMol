@@ -1088,17 +1088,30 @@ final class LightsExposureRowTests: XCTestCase {
         XCTAssertTrue(LightsExposureControl.caption.contains("air"))
     }
 
-    /// With no control in the environment the card draws no Exposure row; with
-    /// one, the row and its caption are in the view tree at the card width.
+    /// The inspector draws the Exposure row only when the app puts a control
+    /// in the environment: the rows presentation is taller by the row (and its
+    /// caption) with one, and its size is unchanged without.
     @MainActor
-    func testRowDrawsOnlyWithAControl() {
+    func testInspectorDrawsTheRowOnlyWithAControl() {
+        let store = FakeRigStore()
+        store.setRig(["key", "fill"])
+        let controller = LightsController(seams: store.seams)
+        controller.begin()
         let style = LightsInspectorSnapshotTests.style(dark: true)
-        let control = LightsExposureControl.scene(values: ["metal_exposure": 1], run: { _ in })
-        let host = NSHostingView(rootView: LightExposureRow(control: control, style: style)
-            .frame(width: LightsInspectorMetrics.width - 24))
-        host.frame = NSRect(x: 0, y: 0, width: LightsInspectorMetrics.width, height: 80)
-        host.layoutSubtreeIfNeeded()
-        XCTAssertGreaterThan(host.fittingSize.height, 0)
-        XCTAssertLessThanOrEqual(host.fittingSize.width, LightsInspectorMetrics.width)
+        func height(_ control: LightsExposureControl?) -> CGFloat {
+            let host = NSHostingView(rootView:
+                LightsInspector(controller: controller, style: style, presentation: .rows)
+                    .environment(\.lightsExposure, control)
+                    .frame(width: LightsInspectorMetrics.width - 24))
+            host.frame = NSRect(x: 0, y: 0, width: LightsInspectorMetrics.width, height: 600)
+            host.layoutSubtreeIfNeeded()
+            XCTAssertLessThanOrEqual(host.fittingSize.width, LightsInspectorMetrics.width)
+            return host.fittingSize.height
+        }
+        let without = height(nil)
+        let with = height(.scene(values: ["metal_exposure": 1], run: { _ in }))
+        XCTAssertGreaterThan(without, 0)
+        XCTAssertGreaterThan(with, without + 20, "the Exposure row and its caption add height")
+        XCTAssertEqual(height(nil), without, accuracy: 0.5)
     }
 }
