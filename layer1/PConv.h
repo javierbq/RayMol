@@ -358,6 +358,12 @@ inline bool PConvFromPyObject(PyMOLGlobals *, PyObject * obj, std::string &out) 
   // segfault if `obj` is not of type `str`)
   out = PyString_AsSomeString(obj);
 #else
+  if (PyBytes_Check(obj)) {
+    // the legacy (pse_export_version < 1.9) pickler returns non-ASCII text
+    // as UTF-8 bytes
+    out.assign(PyBytes_AsString(obj), PyBytes_Size(obj));
+    return true;
+  }
   const char* buffer = PyUnicode_AsUTF8(obj);
   if (!buffer) {
     return false;

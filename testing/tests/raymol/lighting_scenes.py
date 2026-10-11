@@ -577,21 +577,25 @@ class TestSceneRigSession(_SceneRigCase):
 
     def testLegacyPicklerRoundTrip(self):
         """pse_export_version < 1.9 gives non-ASCII text back as bytes: the
-        per-scene rigs still read. (A non-ASCII scene NAME does not survive
-        the legacy pickler in the core's own scene settings, so the name is
-        ASCII here; testBytesKeysAndValues reads a bytes key.)"""
+        scene name, its string settings and the per-scene rigs all still
+        read (#660)."""
         rig = copy.deepcopy(RIG_A)
         rig['lights'][2]['aim_selection'] = 'name Cé'
-        a = self.store('Scene1', rig)
+        a = self.store('Scène', rig)
+        self.assertEqual(cmd.get('scene_current_name'), 'Scène')
         with testing.mktemp('.pse') as filename:
             cmd.set('pse_export_version', 1.8)
             cmd.save(filename)
             cmd.set('pse_export_version', 0)
+            cmd.scene('*', 'clear')
+            cmd.set('scene_current_name', '')
             reset_module_state()
             with warnings_collected() as lines:
                 cmd.load(filename)
         self.assertEqual(lines, [])
-        self.assertEqual(raymol_scenes._scene_lights, {'Scene1': a})
+        self.assertEqual(cmd.get_scene_list(), ['Scène'])
+        self.assertEqual(cmd.get('scene_current_name'), 'Scène')
+        self.assertEqual(raymol_scenes._scene_lights, {'Scène': a})
 
     def testBytesKeysAndValues(self):
         """The legacy pickler's UTF-8 bytes keys and values read as text;
