@@ -365,6 +365,7 @@
 		0C3FB5B53174F8E55104705A /* whatsnew-170-homebrew.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-170-homebrew.png"; sourceTree = "<group>"; };
 		0C47FBC551127AB2D73BC6CE /* MetalViewportResponderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalViewportResponderTests.swift; sourceTree = "<group>"; };
 		0C4E3216DAFC42C515FD0C3E /* WeightsFetchStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeightsFetchStateTests.swift; sourceTree = "<group>"; };
+		0DBFD1FF07FFAD4B8029FA48 /* Project.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Project.xcconfig; sourceTree = "<group>"; };
 		0ED5BFF3FEE9D6621BB40AE5 /* MovieBuilderSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MovieBuilderSheet.swift; sourceTree = "<group>"; };
 		0F340621635D0C4E9159141A /* BinderDesignController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BinderDesignController.swift; sourceTree = "<group>"; };
 		104B50C66BDEB03C41A1CE47 /* CameraOverlayUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CameraOverlayUITests.swift; sourceTree = "<group>"; };
@@ -559,7 +560,6 @@
 		FEE394EC8EC4DF566360104C /* LightGizmoGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightGizmoGeometry.swift; sourceTree = "<group>"; };
 		FF4FB7F151982A2927D612F0 /* DesignController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignController.swift; sourceTree = "<group>"; };
 		FFD9E3092D310E443F7CD546 /* DesignTargetSelectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignTargetSelectionTests.swift; sourceTree = "<group>"; };
-		"TEMP_EDD84068-517B-461C-BDE0-73E905351476" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = PyMOLBridge.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -673,9 +673,18 @@
 			path = PyMOLViewerUITests;
 			sourceTree = "<group>";
 		};
+		2B65A102B7D7E59747B39655 /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				0DBFD1FF07FFAD4B8029FA48 /* Project.xcconfig */,
+			);
+			path = Config;
+			sourceTree = "<group>";
+		};
 		3EBD6226DB025AF86B7A30A2 = {
 			isa = PBXGroup;
 			children = (
+				2B65A102B7D7E59747B39655 /* Config */,
 				52FC8256B867D42D45933E18 /* PyMOLViewer */,
 				7CDEA29979CAC7C794816FCF /* PyMOLViewerTests */,
 				22F2EFCF4CDD52CF747B834A /* PyMOLViewerUITests */,
@@ -876,14 +885,6 @@
 			path = Bridge;
 			sourceTree = "<group>";
 		};
-		"TEMP_15D071A7-6EBD-4C98-87F9-8E40D402B8C9" /* swiftui */ = {
-			isa = PBXGroup;
-			children = (
-				"TEMP_EDD84068-517B-461C-BDE0-73E905351476" /* PyMOLBridge.xcconfig */,
-			);
-			path = swiftui;
-			sourceTree = "<group>";
-		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -1037,10 +1038,10 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				BFFDF4CBA2B92A93CDBB24E7 /* PyMOLViewerTests */,
-				A8AA9F6242B9A29B6AAA26F7 /* PyMOLViewerUITests */,
 				5C02477A5F60954358D0D615 /* PyMOLViewer_iOS */,
 				403C29EE7864FF79CFA77A80 /* PyMOLViewer_macOS */,
+				BFFDF4CBA2B92A93CDBB24E7 /* PyMOLViewerTests */,
+				A8AA9F6242B9A29B6AAA26F7 /* PyMOLViewerUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -2093,7 +2094,7 @@
 		};
 		76B7E9DB75E073D1E60928FA /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_EDD84068-517B-461C-BDE0-73E905351476" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = 0DBFD1FF07FFAD4B8029FA48 /* Project.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -2200,7 +2201,7 @@
 		};
 		D8F44FDFF036013D2F03BA83 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_EDD84068-517B-461C-BDE0-73E905351476" /* PyMOLBridge.xcconfig */;
+			baseConfigurationReference = 0DBFD1FF07FFAD4B8029FA48 /* Project.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
