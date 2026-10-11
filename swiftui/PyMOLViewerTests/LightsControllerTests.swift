@@ -1456,6 +1456,25 @@ final class LightsControllerTests: XCTestCase {
         XCTAssertEqual(controller.editCount, 0)
     }
 
+    func testRenameOfAStaleTargetRenamesNothing() {
+        begin(with: ["key", "fill", "rim"])
+        controller.select(name: "key")
+        // The popover was opened on "key"; the selection moved to another light.
+        controller.select(name: "fill")
+        XCTAssertEqual(controller.renameCheck("main", of: "key"), .refused("That light is gone"))
+        XCTAssertFalse(controller.renameSelected(to: "main", of: "key"))
+        // Or the light was removed from the console and the selection repaired.
+        controller.select(name: "key")
+        store.removeLight("key")
+        store.clock += 1
+        XCTAssertFalse(controller.renameSelected(to: "main", of: "key"))
+        XCTAssertTrue(store.performed.isEmpty)
+        XCTAssertEqual(store.lights.map(\.name), ["fill", "rim"])
+        // The target's case does not matter.
+        controller.select(name: "fill")
+        XCTAssertTrue(controller.renameSelected(to: "main", of: "FILL"))
+    }
+
     func testRevertBringsTheOldNamesBack() {
         begin(with: ["key", "fill", "rim"])
         controller.select(name: "key")

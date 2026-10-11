@@ -101,6 +101,8 @@ final class LightsActionInvocationTests: XCTestCase {
         XCTAssertEqual(check("9lives"), .refused("A name can't start with a digit"))
         XCTAssertEqual(check("a b"), .refused("Use letters, digits and _ only"))
         XCTAssertEqual(check("a-b"), .refused("Use letters, digits and _ only"))
+        XCTAssertEqual(check(String(repeating: "é", count: 17)), .refused("Use letters, digits and _ only"),
+                       "34 bytes, 17 characters: the character set is what is wrong")
         XCTAssertEqual(check("naïve"), .refused("Use letters, digits and _ only"))
         XCTAssertEqual(check("Fill"), .refused("A light named \"fill\" already exists"))
         XCTAssertEqual(check("rim", current: "fill"), .refused("A light named \"rim\" already exists"))

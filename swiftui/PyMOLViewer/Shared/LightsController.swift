@@ -709,12 +709,17 @@ final class LightsController: ObservableObject {
         noteEdit(nil, ifChangedFrom: mirrorBefore)
     }
 
-    /// What `text` comes to as the selected light's new name (#797), by the
-    /// core's rules against the rig's other lights and the preset menu.
-    /// `.refused` with nothing selected.
-    func renameCheck(_ text: String) -> LightsAction.NameCheck {
+    /// What `text` comes to as the new name of the selected light (#797), by
+    /// the core's rules against the rig's other lights and the preset menu.
+    /// `.refused` with nothing selected, or when `target` is given and is not
+    /// the selected light (ignoring case): a popover opened on one light never
+    /// checks or renames another.
+    func renameCheck(_ text: String, of target: String? = nil) -> LightsAction.NameCheck {
         guard let current = selectedLight?.name ?? selection.name else {
             return .refused("No light is selected")
+        }
+        if let target, target.lowercased() != current.lowercased() {
+            return .refused("That light is gone")
         }
         return LightsAction.nameCheck(text, renaming: current,
                                       among: rig?.lights.map(\.name) ?? [],
@@ -725,12 +730,15 @@ final class LightsController: ObservableObject {
     /// command and one counted edit. The selection and the identity colour
     /// follow the light. True when the rig now has the new name. False, and
     /// nothing run, unless the light can be edited and `renameCheck` accepts
-    /// `text`; also false when the core refused it (the rig is unchanged).
+    /// `text` (for `target`, when given, re-checked after a stale re-read);
+    /// also false when the core refused it (the rig is unchanged).
     @discardableResult
-    func renameSelected(to text: String) -> Bool {
+    func renameSelected(to text: String, of target: String? = nil) -> Bool {
         guard canEdit else { return false }
         refreshIfStale()
-        guard let light = selectedLight, case .ok = renameCheck(text) else { return false }
+        guard let light = selectedLight, case .ok = renameCheck(text, of: target) else {
+            return false
+        }
         let new = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let action = LightsAction.rename(old: light.name, new: new)
         guard action.invocation != nil else { return false }

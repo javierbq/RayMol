@@ -5166,7 +5166,7 @@ extension LightsAction {
                           presets: [String]) -> NameCheck {
         let name = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if name.isEmpty { return .refused("Enter a name") }
-        if name.utf8.count > 32 { return .refused("At most 32 characters") }
+        if name.count > 32 { return .refused("At most 32 characters") }
         if !isValidName(name) {
             if let first = name.unicodeScalars.first, first.value >= 48, first.value <= 57 {
                 return .refused("A name can't start with a digit")

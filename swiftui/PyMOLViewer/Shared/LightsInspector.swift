@@ -1450,7 +1450,7 @@ struct LightRenameForm: View {
         _text = State(initialValue: current)
     }
 
-    private var check: LightsAction.NameCheck { controller.renameCheck(text) }
+    private var check: LightsAction.NameCheck { controller.renameCheck(text, of: current) }
 
     /// The reason to show: nothing while the text is the light's own name.
     private var reason: String? {
@@ -1461,7 +1461,7 @@ struct LightRenameForm: View {
 
     private func commit() {
         guard case .ok = check else { return }
-        if controller.renameSelected(to: text) { onDone() } else { coreRefused = true }
+        if controller.renameSelected(to: text, of: current) { onDone() } else { coreRefused = true }
     }
 
     var body: some View {
@@ -1500,6 +1500,11 @@ struct LightRenameForm: View {
         .frame(width: 260)
         .tint(style.accent)
         .onAppear { focused = true }
+        // The light this popover was opened on went away or is no longer the
+        // selected one (a console or MCP change, another chip): close it.
+        .onChange(of: controller.selectedLight?.name.lowercased()) { _, now in
+            if now != current.lowercased() { onDone() }
+        }
     }
 }
 
