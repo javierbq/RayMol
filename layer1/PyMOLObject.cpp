@@ -1378,6 +1378,15 @@ int ObjectStatePushAndApplyMatrix(CObjectState * I, RenderInfo * info)
       auto mvm = SceneGetModelViewMatrixPtr(G);
       MatrixMultiplyC44f(matrix, mvm);
 
+      // Metal backend: draws read the renderer's cached modelview and the
+      // glLoadMatrixf below is a no-op, so without this the state matrix
+      // (matrix_mode >= 1) would never render. Same as the TTT branch of
+      // ObjectPrepareContext; ScenePopModelViewMatrix re-syncs on pop.
+      if (G->Renderer) {
+        G->Renderer->matrixMode(0); // modelview
+        G->Renderer->loadMatrixf(mvm);
+      }
+
 #ifndef PURE_OPENGL_ES_2
       if (ALWAYS_IMMEDIATE_OR(!info->use_shaders)) {
         glLoadMatrixf(mvm);
