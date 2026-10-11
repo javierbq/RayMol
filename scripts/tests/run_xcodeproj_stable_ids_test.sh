@@ -8,9 +8,10 @@
 #   2. the committed project.pbxproj has no TEMP_ object ids;
 #   3. no configFiles entry in project.yml (project- or target-level) points at
 #      a file in the project root;
-#   4. when xcodegen is installed: regenerating a copy of swiftui/ twice gives
-#      byte-identical output with no TEMP_ ids, and, with xcodegen >= 2.46.0
-#      (project.yml's minimumXcodeGenVersion), output identical to the committed
+#   4. when xcodegen >= 2.46.0 is installed (older versions order the targets
+#      list differently, see project.yml): regenerating a clean copy of swiftui/
+#      (tracked + unignored files, as in a fresh checkout) twice gives
+#      byte-identical output with no TEMP_ ids, identical to the committed
 #      project.pbxproj (i.e. `xcodegen generate` leaves `git diff` empty).
 # CI's runner has no xcodegen, so there checks 1-3 are what is enforced.
 set -uo pipefail
@@ -57,7 +58,16 @@ root_config_files () {
         while (line ~ /^\.\//) sub(/^\.\//, "", line)
         if (line != "" && line !~ /\//) print $0
       }
-      if ($0 ~ /^[[:space:]]*configFiles:[[:space:]]*$/) { inblock = 1; blockind = ind }
+      if ($0 ~ /^[[:space:]]*configFiles:[[:space:]]*(#.*)?$/) { inblock = 1; blockind = ind }
+      else if ($0 ~ /^[[:space:]]*configFiles:[[:space:]]*\{/) {   # flow mapping
+        flow = $0; sub(/^[^{]*\{/, "", flow); sub(/\}.*$/, "", flow)
+        n = split(flow, items, ",")
+        for (k = 1; k <= n; k++) {
+          v = items[k]; sub(/^[^:]*:[[:space:]]*/, "", v); gsub(/["\047[:space:]]/, "", v)
+          while (v ~ /^\.\//) sub(/^\.\//, "", v)
+          if (v != "" && v !~ /\//) print $0
+        }
+      }
     }' "$1"
 }
 
@@ -88,7 +98,7 @@ YML_FX="$TMP/fixture.yml"
 cat > "$YML_FX" <<'EOF'
 options:
   createIntermediateGroups: true
-configFiles:
+configFiles:   # project base
   Debug: Config/Project.xcconfig    # fine
   Release: ./Root.xcconfig
   Profile: "Root2.xcconfig"
@@ -100,11 +110,14 @@ targets:
     settings:
       base:
         X: y.xcconfig
+  Other:
+    configFiles: {Debug: Sub/Ok.xcconfig, Release: FlowRoot.xcconfig}
 EOF
 OUT="$(root_config_files "$YML_FX")"
 if [[ "$OUT" == *Root.xcconfig* && "$OUT" == *Root2.xcconfig* && "$OUT" == *TargetRoot.xcconfig* \
+      && "$OUT" == *FlowRoot.xcconfig* && "$(grep -c . <<<"$OUT")" = 4 \
       && "$OUT" != *Project.xcconfig* && "$OUT" != *App.xcconfig* && "$OUT" != *y.xcconfig* ]]; then
-  ok "root_config_files flags root-level entries (./, any config name, target-level) only"
+  ok "root_config_files flags root-level entries (./, any config name, target-level, flow mapping) only"
 else
   fail "root_config_files fixture output wrong: $OUT"
 fi
@@ -124,7 +137,7 @@ PROJECT_YML="$ROOT/swiftui/project.yml"
 if [ ! -f "$PROJECT_YML" ]; then
   fail "project.yml missing: $PROJECT_YML"
 elif ! grep -qE '^[[:space:]]*configFiles:' "$PROJECT_YML"; then
-  fail "no configFiles block found in $PROJECT_YML"
+  ok "project.yml has no configFiles (nothing can get a root-level TEMP_ id)"
 elif OUT="$(root_config_files "$PROJECT_YML")" && [ -n "$OUT" ]; then
   fail "configFiles entries in the project root (XcodeGen gives them TEMP_ ids; put them in a subdirectory, see swiftui/Config/Project.xcconfig): $OUT"
 else
@@ -141,10 +154,16 @@ gen () {
   fi
 }
 
-if command -v xcodegen >/dev/null 2>&1; then
-  # Copy only tracked and untracked-but-not-ignored files: the gitignored
-  # DerivedData dirs under swiftui/ are gigabytes, and local overrides such as
-  # PyMOLBridge.local.xcconfig must not leak into the generated project.
+MIN="2.46.0"
+VER="$(command -v xcodegen >/dev/null 2>&1 && xcodegen --version 2>/dev/null | sed -n 's/^Version: *//p')"
+if [ -z "$VER" ]; then
+  echo "  skip: xcodegen not installed (regeneration checks)"
+elif [ "$(printf '%s\n%s\n' "$MIN" "$VER" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)" != "$MIN" ]; then
+  echo "  skip: xcodegen $VER < $MIN (regeneration checks; older versions order targets differently)"
+else
+  # Copy only tracked and untracked-but-not-ignored files, as in a fresh
+  # checkout: the gitignored DerivedData dirs under swiftui/ are gigabytes, and
+  # local overrides such as PyMOLBridge.local.xcconfig must not leak in.
   mkdir -p "$TMP/swiftui"
   if ! ( cd "$ROOT" && git ls-files -z -co --exclude-standard -- swiftui \
            | while IFS= read -r -d '' f; do [ -e "$f" ] && printf '%s\0' "$f"; done \
@@ -166,22 +185,13 @@ if command -v xcodegen >/dev/null 2>&1; then
           fail "two regenerations produced different pbxproj files"
         fi
       fi
-
-      VER="$(xcodegen --version 2>/dev/null | sed -n 's/^Version: *//p')"
-      MIN="2.46.0"
-      if [ -n "$VER" ] && [ "$(printf '%s\n%s\n' "$MIN" "$VER" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)" = "$MIN" ]; then
-        if cmp -s "$TMP/pbxproj.run1" "$COMMITTED_PBX"; then
-          ok "regeneration matches the committed project.pbxproj"
-        else
-          fail "committed project.pbxproj is stale or was made by another xcodegen; run 'cd swiftui && xcodegen generate' and commit. Diff: $(diff "$COMMITTED_PBX" "$TMP/pbxproj.run1" | head -20)"
-        fi
+      if cmp -s "$TMP/pbxproj.run1" "$COMMITTED_PBX"; then
+        ok "regeneration matches the committed project.pbxproj"
       else
-        echo "  skip: xcodegen ${VER:-unknown} < $MIN (committed-project comparison)"
+        fail "committed project.pbxproj is stale; run 'cd swiftui && xcodegen generate' and commit. Diff: $(diff "$COMMITTED_PBX" "$TMP/pbxproj.run1" | head -20)"
       fi
     fi
   fi
-else
-  echo "  skip: xcodegen not installed (determinism check)"
 fi
 
 if [ "$FAILED" = 0 ]; then echo "PASS"; else echo "FAILED"; exit 1; fi
