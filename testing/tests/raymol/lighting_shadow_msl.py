@@ -38,6 +38,11 @@ L1, the regression renders against master and L3 prove on a Mac:
 * SceneRenderMetal: the frame read once, the studio maps only under
   lights.shadows with every caster but the overlays, the classic pre-pass
   as the else branch, the camera matrices restored;
+* studio shadow-map reuse (#666): the map pass skipped when the key of
+  everything the maps depend on matches the last frame and the renderer
+  still holds complete maps (reuseLightShadowMaps); ContentGeneration
+  tracks scene content changes; kept maps dropped on slice start, size
+  change or forget;
 * grid_mode (Part 5): the map pass draws each cell into its own tile of the
   atlas (setLightShadowViewport, I->grid.slot per cell, reset after) and
   never calls SceneSetMetalGridCell or setGridSlot; setGridSlot stores the
@@ -988,6 +993,111 @@ class TestLazyClassicShadowMap(ShadowMSLCase):
                       cmd_cpp)
 
 
+class TestStudioShadowMapReuse(ShadowMSLCase):
+    """Studio shadow-map reuse across frames (#666). Source-level pins; the
+    GPU side is the StudioShadowMapCacheTests XCTest (SmokeTests.swift)."""
+
+    def setUp(self):
+        super().setUp()
+        self.header = strip_comments(read(METAL_H))
+        self.scene_render = read(SCENE_RENDER)
+        self.renderer_h = read(
+            os.path.join(ROOT, 'layerGraphics', 'Renderer.h'))
+        self.scene_cpp = read(os.path.join(ROOT, 'layer1', 'Scene.cpp'))
+        self.cmd_cpp = read(os.path.join(ROOT, 'layer4', 'Cmd.cpp'))
+
+    def body(self, name):
+        return strip_block_comments(cpp_function(self.mm, name))
+
+    def testSceneRenderPassReuse(self):
+        maps = cpp_function(self.scene_render, 'SceneRenderLightShadowMaps')
+        self.assertIn('I->LightShadowMapKey', maps)
+        self.assertIn('reuseLightShadowMaps(shadows.count)', maps)
+        loop_idx = maps.index('for (int slot = 0;')
+        reuse_idx = maps.index('reuseLightShadowMaps(shadows.count)')
+        self.assertLess(reuse_idx, loop_idx)
+        self.assertLess(maps.index('I->LightShadowMapKey'), loop_idx)
+        early_return_idx = maps.index('return;')
+        first_load_matrix = maps.index('loadMatrixf')
+        self.assertLess(early_return_idx, first_load_matrix)
+        end_maps_idx = maps.index('G->Renderer->endLightShadowMaps();')
+        move_key_idx = maps.index('I->LightShadowMapKey = std::move(key);')
+        self.assertLess(end_maps_idx, move_key_idx)
+
+    def testSceneLightShadowMapKey(self):
+        key_fn = cpp_function(self.scene_render, 'SceneLightShadowMapKey')
+        for token in ('ContentGeneration', 'SceneGetState(G)',
+                      'SceneGetFrame(G)', 'SceneGetProjectionMatrixPtr(G)',
+                      'm_front', 'm_back', 'VertexScale', 'shadows.view[',
+                      '.proj', 'TTT', 'I->Obj'):
+            self.assertIn(token, key_fn)
+
+    def testSceneRenderMetalClearsKeyWithoutShadows(self):
+        render = cpp_function(self.scene_render, 'SceneRenderMetal')
+        clear_idx = render.index(
+            'if (!lights.shadows)\n    I->LightShadowMapKey.clear();')
+        branch_idx = render.index('if (lights.shadows) {')
+        self.assertLess(clear_idx, branch_idx)
+
+    def testSceneCounter(self):
+        dirty = cpp_function(self.scene_cpp, 'SceneDirty')
+        self.assertIn('++G->Scene->ContentGeneration;', dirty)
+        self.assertIn('SceneDirtyView(G);', dirty)
+        self.assertLess(dirty.index('++G->Scene->ContentGeneration;'),
+                        dirty.index('SceneDirtyView(G);'))
+
+        reshape = cpp_function(self.scene_cpp, 'CScene::reshape')
+        self.assertIn('SceneDirtyView(G);', reshape)
+        self.assertNotIn('SceneDirty(G);', reshape)
+
+        extent = cpp_function(self.scene_cpp, 'SceneInvalidateExtentCache')
+        self.assertIn('++I->ContentGeneration;', extent)
+
+    def testRendererMetalKeptLogic(self):
+        begin = self.body('RendererMetal::beginLightShadowMap')
+        self.assertRegex(begin, r'^\{\s*_lightShadowMapsKept\s*=\s*false\s*;')
+
+        end = self.body('RendererMetal::endLightShadowMaps')
+        self.assertIn('_lightShadowMapsKept = _lightShadowMapsReady;', end)
+        self.assertLess(end.index('_lightShadowMapsReady ='),
+                        end.index('_lightShadowMapsKept = _lightShadowMapsReady;'))
+        self.assertLess(
+            end.index('_lightShadowMapsKept = _lightShadowMapsReady;'),
+            end.index('_passDesc = _scenePassDesc;'))
+
+        ensure = self.body('RendererMetal::ensureLightShadowArray')
+        self.assertIn('_lightShadowMapsKept = false;', ensure)
+
+        self.assertNotRegex(self.code, r'\b_lightShadowMapsKept\s*=\s*true\b')
+        self.assertNotIn(
+            '_lightShadowMapsKept', self.body('RendererMetal::beginFrame'))
+
+        reuse = self.body('RendererMetal::reuseLightShadowMaps')
+        self.assertIn('_lightShadowMapsKept', reuse)
+        self.assertIn('head[3]', reuse)
+        self.assertIn('_lightShadowArraySize != _lightShadowSize', reuse)
+        self.assertIn('_lightShadowMapsReady = true;', reuse)
+        self.assertLess(reuse.index('_lightShadowMapsKept'),
+                        reuse.index('_lightShadowMapsReady = true;'))
+        self.assertLess(reuse.index('head[3]'),
+                        reuse.index('_lightShadowMapsReady = true;'))
+        self.assertLess(reuse.index('_lightShadowArraySize != _lightShadowSize'),
+                        reuse.index('_lightShadowMapsReady = true;'))
+
+    def testCmdAndRendererDeclarations(self):
+        self.assertIn(
+            '{"get_light_shadow_map_passes", CmdGetLightShadowMapPasses, '
+            'METH_VARARGS},', self.cmd_cpp)
+        self.assertIn(
+            'virtual bool reuseLightShadowMaps(int /*count*/) { return false; }',
+            self.renderer_h)
+        self.assertIn(
+            'virtual unsigned long long lightShadowMapSlicesRendered() const '
+            '{ return 0; }', self.renderer_h)
+        self.assertIn('virtual void forgetLightShadowMaps() {}',
+                      self.renderer_h)
+
+
 class TestOverlayShadowExclusion(ShadowMSLCase):
     """Overlays (Move gizmo, gadgets, gizmos) must not cast shadows in the
     classic pre-pass, widen the classic light frustum, or enter the ray
@@ -1138,7 +1248,7 @@ class TestMapPass(ShadowMSLCase):
         for m in re.finditer(r'\b_lightShadowMapsReady\s*=(?!=)', self.code):
             owners.append(re.findall(r'^[\w<>:\*\s]*RendererMetal::(\w+)\s*\(',
                                      self.code[:m.start()], re.M)[-1])
-        self.assertEqual(sorted(owners), ['beginFrame', 'endLightShadowMaps'])
+        self.assertEqual(sorted(owners), ['beginFrame', 'endLightShadowMaps', 'reuseLightShadowMaps'])
         self.assertIn('_lightShadowMapsReady = false;', self.body('RendererMetal::beginFrame'))
 
     def testBeginFrameResets(self):

@@ -5739,6 +5739,23 @@ static PyObject* CmdGetClassicShadowMapBytes(PyObject* self, PyObject* args)
   return PyLong_FromSize_t(bytes);
 }
 
+/// Test-only (#666): the studio shadow-map slices rendered since the Metal
+/// renderer was made; 0 with no Metal renderer. With forget=1 the kept maps
+/// are dropped first, so a test can watch the next frame render them again.
+static PyObject* CmdGetLightShadowMapPasses(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  int forget = 0;
+  API_SETUP_ARGS(G, self, args, "Oi", &self, &forget);
+  APIEnterBlocked(G);
+  if (G->Renderer && forget)
+    G->Renderer->forgetLightShadowMaps();
+  const unsigned long long passes =
+      G->Renderer ? G->Renderer->lightShadowMapSlicesRendered() : 0;
+  APIExitBlocked(G);
+  return PyLong_FromUnsignedLongLong(passes);
+}
+
 /* ---- end per-light shadows (#616) -------------------------------------- */
 
 /* ---- the air (#618) ------------------------------------------------------
@@ -8045,6 +8062,7 @@ static PyMethodDef Cmd_methods[] = {
   {"gpu_time_summary", CmdGpuTimeSummary, METH_VARARGS},
   {"get_gpu_frame_stats", CmdGetGpuFrameStats, METH_VARARGS},
   {"get_classic_shadow_map_bytes", CmdGetClassicShadowMapBytes, METH_VARARGS},
+  {"get_light_shadow_map_passes", CmdGetLightShadowMapPasses, METH_VARARGS},
   {"gpu_time_replay", CmdGpuTimeReplay, METH_VARARGS},
   /* the air (#618) */
   {"get_light_air_frame", CmdGetLightAirFrame, METH_VARARGS},

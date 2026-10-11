@@ -168,6 +168,13 @@ STATEMENTS_624 = {
     # beginFrame clears the frame's HDR colour with the rig (Part 4)
     'RendererMetal::beginFrame': re.compile(r'_lightHdrOn\s*=\s*false\s*;'),
 }
+# #666's statement, taken out the same way (exactly one match):
+# SceneRenderMetal forgets the studio maps' key in a frame without them.
+STATEMENTS_666 = {
+    'SceneRenderMetal': re.compile(
+        r'(?://[^\n]*\(#666\)\.\s*)?if\s*\(\s*!lights\.shadows\s*\)\s*'
+        r'I->LightShadowMapKey\.clear\(\);'),
+}
 # #684's (metal_light_air_alpha) statements in runPostChain, taken out the same
 # way (exactly one match each): the frame's flag is cleared before the air,
 # and the export's matte takes the air's alpha right after the export pass.
@@ -431,6 +438,10 @@ class TestMasterUnchanged(AirMSLCase):
             if name in STATEMENTS_624:
                 self.assertEqual(len(STATEMENTS_624[name].findall(body)), 1, name)
                 body = STATEMENTS_624[name].sub('', body, count=1)
+            # #666's statement, taken out as the air's is
+            if name in STATEMENTS_666:
+                self.assertEqual(len(STATEMENTS_666[name].findall(body)), 1, name)
+                body = STATEMENTS_666[name].sub('', body, count=1)
             # #624's exposure hand-off and RT rig composite choice, put back
             if name == 'RendererMetal::runPostChain':
                 body, declarations, uses = without_post_exposure_624(body)

@@ -33,6 +33,7 @@ Z* -------------------------------------------------------------------
 #include "LightRig.h"
 #include<list>
 #include<vector>
+#include <cstdint>
 
 #include <glm/mat4x4.hpp>
 
@@ -153,6 +154,15 @@ class CScene : public Block {
   bool DofExtentValid{};
   bool DofExtentFlag{}; /* false = 'dof_focus' is empty/undefined */
   float DofExtentCenter[3]{};
+
+  /* Studio shadow-map reuse (#666). ContentGeneration is bumped by
+     everything that can change what the scene draws (SceneDirty, and with it
+     SceneInvalidate and SceneChanged; SceneInvalidateExtentCache; a
+     SceneUpdate rebuild), but not by a reshape: the viewport is part of the
+     key itself. LightShadowMapKey is the key of the last frame whose map
+     pass ran (empty: none); see SceneRenderLightShadowMaps. */
+  unsigned ContentGeneration{};
+  std::vector<std::uint32_t> LightShadowMapKey;
 
   /* The light rig (#611; SceneLights.h). nullopt = no rig; a rig with
      enabled == false is present but off. One per instance, cleared by

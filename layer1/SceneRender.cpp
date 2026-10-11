@@ -3,6 +3,8 @@
  */
 
 #include <algorithm>
+#include <cstdint>
+#include <cstring>
 #include <vector>
 
 #include <glm/gtc/type_ptr.hpp>
@@ -2216,6 +2218,97 @@ static glm::mat4 SceneBuildLightViewProjEye(PyMOLGlobals* G, float* outRadius = 
 }
 
 /*
+ * The key of everything a studio shadow pass draws (#666), as 32-bit words
+ * compared exactly: the scene's content counter, the state and frame, the
+ * camera (modelview, projection, clip, vertex scale, viewport), the grid
+ * layout, the plan (each map's light view and projection, size, tiles) and
+ * each object's identity, state, grid slot and TTT. Anything that can change
+ * a map but is not here must bump CScene::ContentGeneration.
+ */
+static std::vector<std::uint32_t> SceneLightShadowMapKey(PyMOLGlobals* G,
+    const pymol::LightShadowFrame& shadows, const float* mv)
+{
+  CScene* I = G->Scene;
+  std::vector<std::uint32_t> key;
+  auto appendWord = [&key](std::uint32_t w) { key.push_back(w); };
+  auto appendFloat = [&key](float f) {
+    std::uint32_t u{};
+    std::memcpy(&u, &f, sizeof(u));
+    key.push_back(u);
+  };
+  auto appendFloats = [&appendFloat](const float* f, std::size_t n) {
+    for (std::size_t i = 0; i < n; ++i) {
+      appendFloat(f[i]);
+    }
+  };
+  auto appendPtr = [&key](const void* p) {
+    auto ptrVal = reinterpret_cast<std::uintptr_t>(p);
+    key.push_back(static_cast<std::uint32_t>(ptrVal));
+    key.push_back(
+        static_cast<std::uint32_t>(static_cast<std::uint64_t>(ptrVal) >> 32));
+  };
+
+  // 1. Content generation
+  appendWord(I->ContentGeneration);
+
+  // 2. State and frame
+  appendWord(static_cast<std::uint32_t>(SceneGetState(G)));
+  appendWord(static_cast<std::uint32_t>(SceneGetFrame(G)));
+
+  // 3. Camera
+  appendFloats(mv, 16);
+  appendFloats(SceneGetProjectionMatrixPtr(G), 16);
+  appendFloat(I->m_view.m_clipSafe().m_front);
+  appendFloat(I->m_view.m_clipSafe().m_back);
+  appendFloat(I->VertexScale);
+  appendWord(static_cast<std::uint32_t>(I->Width));
+  appendWord(static_cast<std::uint32_t>(I->Height));
+  appendWord(static_cast<std::uint32_t>(SettingGetGlobal_b(G, cSetting_ortho)));
+
+  // 4. Grid
+  appendWord(static_cast<std::uint32_t>(I->grid.active));
+  if (I->grid.active) {
+    appendWord(static_cast<std::uint32_t>((int)I->grid.mode));
+    appendWord(static_cast<std::uint32_t>(I->grid.first_slot));
+    appendWord(static_cast<std::uint32_t>(I->grid.last_slot));
+    appendWord(static_cast<std::uint32_t>(I->grid.n_col));
+    appendWord(static_cast<std::uint32_t>(I->grid.n_row));
+  }
+
+  // 5. The plan
+  appendWord(static_cast<std::uint32_t>(shadows.count));
+  appendWord(static_cast<std::uint32_t>(shadows.size));
+  appendWord(static_cast<std::uint32_t>(shadows.tiles));
+  appendWord(static_cast<std::uint32_t>(shadows.firstSlot));
+  appendWord(static_cast<std::uint32_t>(shadows.light[0]));
+  appendWord(static_cast<std::uint32_t>(shadows.light[1]));
+  appendWord(static_cast<std::uint32_t>(shadows.light[2]));
+  for (int s = 0; s < shadows.count; ++s) {
+    appendFloats(glm::value_ptr(shadows.view[s].view), 16);
+    appendFloats(glm::value_ptr(shadows.view[s].proj), 16);
+    appendFloat(shadows.view[s].tanHalfFov);
+    appendFloat(shadows.view[s].nearZ);
+    appendFloat(shadows.view[s].farZ);
+    appendWord(static_cast<std::uint32_t>(shadows.view[s].beamFit));
+  }
+
+  // 6. Objects
+  appendWord(static_cast<std::uint32_t>(I->Obj.size()));
+  for (auto* obj : I->Obj) {
+    appendPtr(obj);
+    appendWord(static_cast<std::uint32_t>(obj->type));
+    appendWord(static_cast<std::uint32_t>(obj->grid_slot));
+    appendWord(static_cast<std::uint32_t>(ObjectGetCurrentState(obj, false)));
+    appendWord(static_cast<std::uint32_t>(obj->TTTFlag));
+    if (obj->TTTFlag) {
+      appendFloats(obj->TTT, 16);
+    }
+  }
+
+  return key;
+}
+
+/*
  * The studio shadow pre-pass (#616): one perspective depth map per shadowed
  * light of the rig, each in its own slice of the renderer's map array
  * (`shadows` is this frame's plan, SceneLightsFrame). For each slot the
@@ -2226,6 +2319,10 @@ static glm::mat4 SceneBuildLightViewProjEye(PyMOLGlobals* G, float* outRadius = 
  * overlays (#433: gadgets, gizmos and the Move gizmo never cast). One reopen
  * of the scene pass ends the maps (endLightShadowMaps), and the camera
  * matrices are restored.
+ *
+ * When nothing the maps depend on changed and the renderer still holds the
+ * previous pass's maps, the pass is skipped and the maps are reused (#666).
+ * Otherwise, the key is updated and the maps are re-rendered.
  *
  * grid_mode (decision D7 of #616): each map is a tile atlas, still one pass
  * per light. Every cell draws its own objects into its own tile (the encoder
@@ -2244,6 +2341,14 @@ static void SceneRenderLightShadowMaps(PyMOLGlobals* G,
   CScene* I = G->Scene;
   const std::vector<pymol::CObject*> overlays = SceneLightShadowOverlays(G);
   const float* mv = SceneGetModelViewMatrixPtr(G);
+  // #666: the maps depend only on what the key holds. When it equals the key
+  // of the last frame whose pass ran and the renderer still holds that pass's
+  // maps, this frame samples them instead of drawing them again.
+  std::vector<std::uint32_t> key = SceneLightShadowMapKey(G, shadows, mv);
+  if (key == I->LightShadowMapKey &&
+      G->Renderer->reuseLightShadowMaps(shadows.count))
+    return;
+  I->LightShadowMapKey.clear();
   for (int slot = 0; slot < shadows.count; ++slot) {
     if (!G->Renderer->beginLightShadowMap(
             slot, glm::value_ptr(shadows.view[slot].view)))
@@ -2273,6 +2378,7 @@ static void SceneRenderLightShadowMaps(PyMOLGlobals* G,
     }
   }
   G->Renderer->endLightShadowMaps();
+  I->LightShadowMapKey = std::move(key);
   // Restore the camera matrices for the normal scene pass.
   G->Renderer->matrixMode(0x1701);
   G->Renderer->loadMatrixf(SceneGetProjectionMatrixPtr(G));
@@ -2654,6 +2760,9 @@ void SceneRenderMetal(PyMOLGlobals* G)
   // Studio shadows (#616) replace it: while the rig has a shadowed light (and
   // metal_shadows is on), each such light renders its own map instead
   // (SceneRenderLightShadowMaps), and this whole-pixel pass does not run.
+  // A frame without studio maps forgets their key (#666).
+  if (!lights.shadows)
+    I->LightShadowMapKey.clear();
   if (lights.shadows) {
     SceneRenderLightShadowMaps(G, &context, normal, *lights.shadows);
   } else if (!lights.studioShadows && !I->grid.active &&

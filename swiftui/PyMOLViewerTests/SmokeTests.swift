@@ -990,3 +990,183 @@ final class McpCaptureMetalTests: XCTestCase {
         XCTAssertLessThanOrEqual(diffC, maxAllowedDiff, "c differs from a in \(diffC) pixels (max allowed \(maxAllowedDiff))")
     }
 }
+
+/// Studio shadow-map reuse across frames (#666).
+final class StudioShadowMapCacheTests: XCTestCase {
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var sceneBuilt = false
+    private var savedView: [Float]?
+
+    override func tearDown() {
+        if sceneBuilt {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.delete('sm666f or sm666o')
+            _c.mset()
+            _c.frame(1)
+            _c.set('metal_shadows', globals().pop('_sm666_shadows', 1))
+            _c.set('metal_raytrace', globals().pop('_sm666_raytrace', 0))
+            _c.set('bg_rgb', globals().pop('_sm666_bg', [0.0, 0.0, 0.0]))
+            _c.set_lights(globals().pop('_sm666_rig', None))
+            for _n in globals().pop('_sm666_enabled', []):
+                _c.enable(_n)
+            """)
+            sceneBuilt = false
+        }
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        super.tearDown()
+    }
+
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            throw XCTSkip("the PyMOL engine did not come up under the test host")
+        }
+    }
+
+    private func buildScene() {
+        savedView = engine.captureView()
+        sceneBuilt = true
+        engine.runPython("""
+        from pymol import cmd as _c
+        _sm666_enabled = _c.get_names('objects', enabled_only=1)
+        _sm666_bg = list(_c.get_setting_tuple('bg_rgb')[1])
+        _sm666_shadows = _c.get_setting_int('metal_shadows')
+        _sm666_raytrace = _c.get_setting_int('metal_raytrace')
+        _sm666_rig = _c.get_lights()
+        for _n in _sm666_enabled:
+            _c.disable(_n)
+        _c.pseudoatom('sm666f', pos=[0.0, 0.0, 0.0])
+        _c.pseudoatom('sm666o', pos=[3.0, 3.0, 18.0])
+        _c.show_as('spheres', 'sm666f or sm666o')
+        _c.color('white', 'sm666f or sm666o')
+        _c.set('sphere_scale', 12.0, 'sm666f')
+        _c.set('sphere_scale', 2.5, 'sm666o')
+        _c.create('sm666o', 'sm666o', 1, 2)
+        _c.translate([4.0, 0.0, 0.0], 'sm666o', state=2, camera=0)
+        _c.mset('1 -2')
+        _c.frame(1)
+        _c.set('bg_rgb', [0.0, 0.0, 0.0])
+        _c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                     0.0, 0.0, -60.0, 0.0, 0.0, 0.0, 40.0, 100.0, -20.0))
+        _c.set('metal_shadows', 1)
+        _c.set_lights({'enabled': True, 'lights': [{'name': 'key', 'anchor': 'camera', 'orbit': -30.0, 'pitch': 20.0, 'shadow': True}]})
+        """)
+    }
+
+    private func passes(forget: Bool = false) throws -> Int {
+        let out = NSTemporaryDirectory() + "issue_666_passes.txt"
+        defer { try? FileManager.default.removeItem(atPath: out) }
+        engine.runPython("""
+        from pymol import cmd as _c
+        open(r'\(out)', 'w').write(str(_c._cmd.get_light_shadow_map_passes(_c._COb, \(forget ? 1 : 0))))
+        """)
+        let text = try XCTUnwrap(FileManager.default.contents(atPath: out)
+            .flatMap { String(data: $0, encoding: .utf8) }, "no readout written")
+        return try XCTUnwrap(Int(text))
+    }
+
+    private func render() throws -> [UInt8] {
+        let png = NSTemporaryDirectory() + "issue_666_render.png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: 400, height: 300, rayTraced: 0)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(
+            URL(fileURLWithPath: png) as CFURL, nil), "no export written")
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        let w = image.width, h = image.height
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return rgba
+    }
+
+    private func differs(_ a: [UInt8], _ b: [UInt8]) -> Int {
+        guard a.count == b.count else { return Int.max }
+        var diff = 0
+        for i in stride(from: 0, to: a.count, by: 4) {
+            if a[i] != b[i] || a[i + 1] != b[i + 1] || a[i + 2] != b[i + 2] {
+                diff += 1
+            }
+        }
+        return diff
+    }
+
+    private func assertRerendersAndMatchesUncached(_ change: String, _ label: String) throws {
+        let before = try render()
+        let p0 = try passes()
+        engine.runPython("from pymol import cmd as _c\n" + change)
+        let cached = try render()
+        let p1 = try passes()
+        XCTAssertEqual(p1 - p0, 1, "\(label): the maps were not rendered again")
+        _ = try passes(forget: true)
+        let fresh = try render()
+        XCTAssertEqual(try passes() - p1, 1, "\(label): forgetting the maps did not render them again")
+        XCTAssertTrue(cached == fresh,
+                      "\(label): the frame differs from an uncached one in \(differs(cached, fresh)) pixels")
+        XCTAssertGreaterThan(differs(before, cached), 50, "\(label): the change did not show")
+    }
+
+    func testUnchangedSceneRendersTheMapsOnce() throws {
+        try requireEngine()
+        buildScene()
+        _ = try render()
+        let p0 = try passes()
+        let a = try render()
+        let p1 = try passes()
+        let b = try render()
+        let p2 = try passes()
+        XCTAssertEqual(p1 - p0, 0, "an unchanged frame rendered the maps again")
+        XCTAssertEqual(p2 - p1, 0, "an unchanged frame rendered the maps again")
+        XCTAssertTrue(a == b, "two unchanged frames differ in \(differs(a, b)) pixels")
+        _ = try passes(forget: true)
+        let c = try render()
+        XCTAssertEqual(try passes() - p2, 1, "forgetting the maps did not render them again")
+        XCTAssertTrue(c == b, "the uncached frame differs in \(differs(c, b)) pixels")
+        engine.runPython("from pymol import cmd as _c\n_c.set('metal_shadows', 0)")
+        let plain = try render()
+        XCTAssertGreaterThan(differs(plain, b), 100, "shadows were not actually drawn")
+    }
+
+    func testCameraTurnRendersTheMapsAgain() throws {
+        try requireEngine()
+        buildScene()
+        try assertRerendersAndMatchesUncached("_c.turn('y', 15)\n", "camera turn")
+    }
+
+    func testMovingAnObjectRendersTheMapsAgain() throws {
+        try requireEngine()
+        buildScene()
+        try assertRerendersAndMatchesUncached("_c.translate([0.0, 3.0, 0.0], 'sm666o', camera=0)\n", "moving an object")
+    }
+
+    func testRepChangeRendersTheMapsAgain() throws {
+        try requireEngine()
+        buildScene()
+        try assertRerendersAndMatchesUncached("_c.set('sphere_scale', 4.0, 'sm666o')\n", "rep change")
+    }
+
+    func testLightChangeRendersTheMapsAgain() throws {
+        try requireEngine()
+        buildScene()
+        try assertRerendersAndMatchesUncached("_r = _c.get_lights()\n_r['lights'][0]['orbit'] = 20.0\n_c.set_lights(_r)\n", "light change")
+    }
+
+    func testMovieFrameAdvanceRendersTheMapsAgain() throws {
+        try requireEngine()
+        buildScene()
+        try assertRerendersAndMatchesUncached("_c.frame(2)\n", "movie frame advance")
+    }
+}

@@ -478,6 +478,14 @@ public:
   }
   virtual void endLightShadowMaps() {}
 
+  // Studio shadow-map reuse (#666). SceneRenderLightShadowMaps calls
+  // reuseLightShadowMaps(count) instead of the map pass when nothing the maps
+  // depend on changed since the last pass: true when this renderer still
+  // holds that pass's `count` complete maps at this frame's size, and they
+  // are then this frame's (as if rendered); false, and the pass runs.
+  // Default: false (no maps to keep).
+  virtual bool reuseLightShadowMaps(int /*count*/) { return false; }
+
   // GPU frame times (#616, metal_gpu_timing: 0 off, 1 a summary per window,
   // 2 every frame) and their readout (_cmd.get_gpu_frame_stats). Defaults:
   // no-op, and no stats.
@@ -490,6 +498,13 @@ public:
   virtual size_t classicShadowMapBytes() const { return 0; }
   // Test-only: drops the classic shadow map; the next pre-pass makes it again.
   virtual void releaseClassicShadowMap() {}
+
+  // Test-only (#666, _cmd.get_light_shadow_map_passes): the studio map slices
+  // rendered since the renderer was made (one per shadowed light per pass).
+  virtual unsigned long long lightShadowMapSlicesRendered() const { return 0; }
+  // Test-only: forgets the kept studio maps, so the next shadowed frame
+  // renders them again (an uncached reference frame).
+  virtual void forgetLightShadowMaps() {}
 
   // The air (#618, haze and dust): this frame's air block, or nullptr when
   // the frame draws no air. SceneRenderMetal calls it once per frame, after
