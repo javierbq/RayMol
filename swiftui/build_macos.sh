@@ -45,9 +45,11 @@ CLEAN="${CLEAN:-0}"
 # A changed setting default is exactly what an incremental build can silently
 # miss (header comment above), and the stamp written below would then vouch for
 # the stale table. So when layer1/SettingInfo.h differs from what the previous
-# stamp recorded, rebuild clean instead of trusting the incremental build.
+# stamp recorded - or an existing core has no stamp to compare with (the first
+# build after this check landed) - rebuild clean instead of trusting the
+# incremental build.
 if [ "$(bash "$PYMOL_ROOT/scripts/check_core_fresh.sh" settings-hash "$BUILD_DIR" 2>/dev/null || true)" = "changed" ]; then
-    echo "== layer1/SettingInfo.h changed since the last core build: forcing CLEAN=1 =="
+    echo "== layer1/SettingInfo.h changed or the core was never stamped: forcing CLEAN=1 =="
     CLEAN=1
 fi
 case "$CLEAN" in

@@ -29,9 +29,10 @@
 #   fingerprint     print the current source fingerprint
 #   settings-hash [BUILD_DIR]
 #                   no argument: print the blob id of layer1/SettingInfo.h.
-#                   With BUILD_DIR: print "changed" when the stamp there recorded
-#                   a different SettingInfo.h (the incremental-build hazard that
-#                   build_macos.sh documents, which then forces CLEAN=1).
+#                   With BUILD_DIR: print "changed" when an existing lib there is
+#                   unstamped or its stamp recorded a different SettingInfo.h
+#                   (the incremental-build hazard that build_macos.sh documents,
+#                   which then forces CLEAN=1). Silent when there is no lib yet.
 #   sha [BUILD_DIR] print "1fc5fc9" / "1fc5fc9-dirty" from the stamp (the app
 #                   copies it into Info.plist so the console banner shows it)
 #
@@ -97,9 +98,13 @@ settings_hash() {
 cmd_settings_hash() {
   if [ -z "${1:-}" ]; then settings_hash; return 0; fi
   local f="$1/$STAMP_NAME" old
-  [ -f "$f" ] || return 0   # no previous stamp: nothing to compare against
-  old="$(stamp_value "$f" settings_hash)"
-  [ -n "$old" ] || return 0 # stamp predates this field
+  # No library yet: a from-scratch build cannot carry a stale object.
+  [ -f "$1/libpymol_core.a" ] || return 0
+  # A library with no stamp (built before stamping existed) or a stamp without
+  # the field cannot prove its settings table is current, and the stamp about to
+  # be written would vouch for it: treat it as changed so the build goes clean.
+  old=""; [ -f "$f" ] && old="$(stamp_value "$f" settings_hash)"
+  [ -n "$old" ] || { echo changed; return 0; }
   [ "$old" = "$(settings_hash)" ] || echo changed
 }
 
