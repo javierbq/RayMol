@@ -403,6 +403,22 @@ USAGE
                 _metric_store.clear()
             except Exception:
                 pass
+            # The core drops the scenes and the movie with everything else, but
+            # the per-scene extras (#617's rigs, the object snapshots) and the
+            # scene-movie animation authored into that movie (#657) are Python-side
+            # too. Left behind they reach the next .pse, and the next author()
+            # blanks frames of a movie that is gone (one Movie-Error per frame).
+            # No mdo here: the movie no longer exists.
+            try:
+                from pymol import raymol_scenes as _raymol_scenes
+                _raymol_scenes.clear_all(_self)
+            except Exception:
+                pass
+            try:
+                from pymol import raymol_scene_anim as _raymol_scene_anim
+                _raymol_scene_anim.reset()
+            except Exception:
+                pass
         if _self._raising(r,_self): raise pymol.CmdException
         return r
 

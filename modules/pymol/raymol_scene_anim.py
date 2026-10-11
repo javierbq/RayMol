@@ -847,6 +847,18 @@ _scene_marks = []
 _lights_track = {}
 
 
+def reset():
+    """Forget the whole authored animation WITHOUT touching the movie (#657).
+
+    For `reinitialize everything`, which has already dropped the movie: author([])
+    or clear_authored() would mdo frames of a movie that no longer exists (one
+    Movie-Error per frame), and a .pse saved or loaded afterwards would carry the
+    stale marks and tracks into the fresh session."""
+    _track.clear()
+    _scene_marks[:] = []
+    _lights_track.clear()
+
+
 def clear_authored(_self=cmd):
     """Blank the frames a previous author() pass wrote. mdo (not mappend) SETS the
     slot, so this removes our text; without it a re-author appends on top of the
