@@ -42,6 +42,14 @@ bash "$PYMOL_ROOT/scripts/build_macos_deps.sh"
 CORE_FP="$(bash "$PYMOL_ROOT/scripts/check_core_fresh.sh" fingerprint 2>/dev/null || true)"
 
 CLEAN="${CLEAN:-0}"
+# A changed setting default is exactly what an incremental build can silently
+# miss (header comment above), and the stamp written below would then vouch for
+# the stale table. So when layer1/SettingInfo.h differs from what the previous
+# stamp recorded, rebuild clean instead of trusting the incremental build.
+if [ "$(bash "$PYMOL_ROOT/scripts/check_core_fresh.sh" settings-hash "$BUILD_DIR" 2>/dev/null || true)" = "changed" ]; then
+    echo "== layer1/SettingInfo.h changed since the last core build: forcing CLEAN=1 =="
+    CLEAN=1
+fi
 case "$CLEAN" in
   1|true|yes|on) echo "== Clean core build (rm -rf $BUILD_DIR) =="; rm -rf "$BUILD_DIR" ;;
   *)             echo "== Incremental core build (set CLEAN=1 if a setting default changed) ==" ;;

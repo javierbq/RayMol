@@ -14,6 +14,7 @@
 #           git_sha=<HEAD at build time>
 #           dirty=0|1            (core sources differed from HEAD)
 #           source_fingerprint=<sha1 of the core source CONTENTS>
+#           settings_hash=<blob id of layer1/SettingInfo.h>
 #       Callers take `fingerprint` BEFORE compiling and pass it in, so a source
 #       edited mid-build leaves a stamp that does not match and is reported stale
 #       instead of being blessed.
@@ -26,6 +27,11 @@
 #       iphoneos), which Xcode exports into script phases.
 #
 #   fingerprint     print the current source fingerprint
+#   settings-hash [BUILD_DIR]
+#                   no argument: print the blob id of layer1/SettingInfo.h.
+#                   With BUILD_DIR: print "changed" when the stamp there recorded
+#                   a different SettingInfo.h (the incremental-build hazard that
+#                   build_macos.sh documents, which then forces CLEAN=1).
 #   sha [BUILD_DIR] print "1fc5fc9" / "1fc5fc9-dirty" from the stamp (the app
 #                   copies it into Info.plist so the console banner shows it)
 #
@@ -80,6 +86,23 @@ fingerprint() {
   ) | shasum | cut -c1-40
 }
 
+# Blob id of the settings-defaults header. An incremental CMake build does not
+# reliably recompile the generated settings table when it changes (see the
+# header of swiftui/build_macos.sh), so the stamp records it and the build
+# script forces a clean build when it differs from the previous stamp.
+settings_hash() {
+  [ -f "$ROOT/layer1/SettingInfo.h" ] && git -C "$ROOT" hash-object "$ROOT/layer1/SettingInfo.h" 2>/dev/null || true
+}
+
+cmd_settings_hash() {
+  if [ -z "${1:-}" ]; then settings_hash; return 0; fi
+  local f="$1/$STAMP_NAME" old
+  [ -f "$f" ] || return 0   # no previous stamp: nothing to compare against
+  old="$(stamp_value "$f" settings_hash)"
+  [ -n "$old" ] || return 0 # stamp predates this field
+  [ "$old" = "$(settings_hash)" ] || echo changed
+}
+
 # Resolve the build directory + the script that rebuilds it, from $1 or Xcode's
 # PLATFORM_NAME. Sets BUILD_DIR and REBUILD.
 resolve_dir() {
@@ -113,7 +136,8 @@ cmd_stamp() {
   [ -n "$fp" ] || fp="$(fingerprint || true)"
   # Write-then-rename so a reader never sees a half-written stamp.
   local tmp; tmp="$(mktemp "$dir/.core_sha.XXXXXX")" || return 1
-  { echo "git_sha=$sha"; echo "dirty=$dirty"; echo "source_fingerprint=$fp"; } > "$tmp"
+  { echo "git_sha=$sha"; echo "dirty=$dirty"; echo "source_fingerprint=$fp"
+    echo "settings_hash=$(settings_hash)"; } > "$tmp"
   mv -f "$tmp" "$dir/$STAMP_NAME"
   echo "== core stamp: ${sha:0:9}$([ "$dirty" = 1 ] && echo '-dirty') -> $dir/$STAMP_NAME =="
 }
@@ -168,6 +192,7 @@ case "${1:-}" in
   fingerprint) fingerprint || { echo "error: cannot fingerprint (not a git work tree?)" >&2; exit 1; } ;;
   stamp) shift; cmd_stamp "$@" ;;
   sha)   shift; cmd_sha "$@" ;;
+  settings-hash) shift; cmd_settings_hash "$@" ;;
   check) shift; cmd_check "$@" ;;
-  *) echo "usage: $0 {fingerprint | stamp BUILD_DIR [FINGERPRINT] | sha [BUILD_DIR] | check [BUILD_DIR]}" >&2; exit 2 ;;
+  *) echo "usage: $0 {fingerprint | settings-hash [BUILD_DIR] | stamp BUILD_DIR [FINGERPRINT] | sha [BUILD_DIR] | check [BUILD_DIR]}" >&2; exit 2 ;;
 esac

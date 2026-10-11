@@ -159,6 +159,20 @@ echo '// edit' >> "$E/layer1/Scene.cpp"; stamp "$E"
 grep -qx "dirty=1" "$S" && ok "edited tree stamps dirty=1" || fail "stamp dirty: $(cat "$S")"
 OUT="$(bash "$E/scripts/check_core_fresh.sh" sha "$E/build_macos_swiftui")"
 [ "$OUT" = "${HEAD_SHA:0:9}-dirty" ] && ok "sha prints -dirty" || fail "sha dirty output '$OUT'"
+# settings-hash: build_macos.sh forces CLEAN=1 when SettingInfo.h changed since
+# the previous stamp (an incremental build can miss a changed default).
+H="$(make_fixture)"; mkdir -p "$H/layer1"; echo 'enum { S = 1 };' > "$H/layer1/SettingInfo.h"
+( cd "$H" && git add -A && git -c user.name=t -c user.email=t@t commit -q -m s )
+S2="$H/scripts/check_core_fresh.sh"
+OUT="$(bash "$S2" settings-hash "$H/build_macos_swiftui")"; [ -z "$OUT" ] && ok "settings-hash: no previous stamp is silent" || fail "settings-hash no stamp: '$OUT'"
+stamp "$H"
+grep -q "^settings_hash=[0-9a-f]\{40\}$" "$H/build_macos_swiftui/core_sha.txt" && ok "stamp records settings_hash" || fail "stamp settings_hash: $(cat "$H/build_macos_swiftui/core_sha.txt")"
+OUT="$(bash "$S2" settings-hash "$H/build_macos_swiftui")"; [ -z "$OUT" ] && ok "settings-hash: unchanged header is silent" || fail "settings-hash unchanged: '$OUT'"
+echo '// other core edit' >> "$H/layer1/Scene.cpp"
+OUT="$(bash "$S2" settings-hash "$H/build_macos_swiftui")"; [ -z "$OUT" ] && ok "settings-hash: other core edits are silent" || fail "settings-hash other: '$OUT'"
+echo 'enum { S = 2 };' > "$H/layer1/SettingInfo.h"
+OUT="$(bash "$S2" settings-hash "$H/build_macos_swiftui")"; [ "$OUT" = "changed" ] && ok "settings-hash: edited SettingInfo.h reports changed" || fail "settings-hash edited: '$OUT'"
+
 # The root-level generator is matched by an anchored regex alternative; the
 # dirty check must still see it through porcelain's status-column prefix.
 G="$(make_fixture)"; echo '# edit' >> "$G/create_shadertext.py"; stamp "$G"
