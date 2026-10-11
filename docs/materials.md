@@ -89,8 +89,9 @@ cartoon-plus-side-chains, the side chains match the backbone they hang from.
 - The rule is per object, not per atom. A ligand shown as sticks in the same
   object follows too. "Shows a cartoon" means a polymer atom has it, so an
   object with no polymer, such as a docked ligand, never follows.
-- The layer still degrades as its own representation: spheres following a
-  glass cartoon draw `default`, as glass spheres always do.
+- The layer still degrades as its own representation: sticks following a
+  glass cartoon on a ball-and-stick (`stick_ball`) draw `default`, as glass
+  ball-and-stick always does. Spheres following a glass cartoon draw glass.
 
 **Object-scoped, never per atom.** A selection-scoped `set` of one of the four
 `*_material` settings (`set cartoon_material, marble, chain A`) is rejected
@@ -117,21 +118,20 @@ reach them.
 | `matte` | procedural | all | Lambert only: no highlight at all. |
 | `plastic` | reflective | all | Glossy clear coat: a white environment reflection over the base colour. Traced reflections when ray tracing is on. |
 | `metallic` | reflective | all | A stronger, rougher environment reflection, tinted by the base colour. The body and the light highlight are `default`'s, so the difference is all in what it reflects (under `ray`, see below, the body is darker and the highlight tinted). |
-| `glass` | glass | cartoon, surface, sticks | Clear body (implied alpha 0.15) under a Fresnel rim, with key-light and headlight glints. Bends what is seen through it (see below). |
-| `frosted_glass` | glass | cartoon, surface, sticks | Glass with a blurred environment and soft, broad glints (implied alpha 0.2). Bends what is seen through it like `glass`. |
+| `glass` | glass | all | Clear body (implied alpha 0.15) under a Fresnel rim, with key-light and headlight glints. Bends what is seen through it (see below). |
+| `frosted_glass` | glass | all | Glass with a blurred environment and soft, broad glints (implied alpha 0.2). Bends what is seen through it like `glass`. |
 | `jelly` | glass | all | A dense gummy body (implied alpha 0.85) with an inner glow and a wet highlight. Bends what is seen through it. |
 | `marble` | procedural | all | Veined stone with a waxy light wrap. |
 | `clay` | procedural | all | Unglazed ceramic: fine grain, darkened at grazing angles. |
 | `rubber` | procedural | all | A mottled, low-sheen skin. |
 
-**Glass on spheres and ball-and-stick.** Clear and frosted glass degrade to
-`default` on the sphere representation, and on a stick representation that
-draws `stick_ball` spheres: at their implied alpha a sphere reads as a
-near-invisible disc. The degradation applies to the whole rep, so a
-ball-and-stick is never half glass, and both the shading and the implied alpha
-degrade, so the rep draws exactly as `default`. **Jelly is the exception:** it
-is dense enough to read as gummy balls, so it draws on spheres and on
-ball-and-stick, with its implied alpha.
+**Glass on spheres and ball-and-stick.** Clear and frosted glass draw on the
+sphere representation (since #635), with their rim, glints and refraction, at
+their implied alpha. On a stick representation that draws `stick_ball`
+spheres they still degrade to `default`. The degradation applies to the whole
+rep, so a ball-and-stick is never half glass, and both the shading and the
+implied alpha degrade, so the rep draws exactly as `default`. **Jelly is the
+exception:** it draws on ball-and-stick too, with its implied alpha.
 
 **Procedural patterns are locked to the object** in the viewport. They don't
 slide when you rotate, pan or zoom.
@@ -159,7 +159,7 @@ is ignored:
 
 In the **Inspector**, a layer's Material menu has **Custom…** under the
 materials whenever the material the layer draws with has knobs (not, for
-example, glass on spheres, which draws as `default`). Choosing it keeps that
+example, glass on a ball-and-stick, which draws as `default`). Choosing it keeps that
 material and shows its knobs as sliders at the values it draws with; moving
 one tunes that layer only, and the menu then reads **Custom (metallic)**.
 Glass's and frosted glass's **Reflection** and **Distortion**, and jelly's
@@ -331,8 +331,7 @@ structure is lit the same through the glass as beside it.
   to 1 on the command line.
 - **Jelly bends less visibly.** It refracts the same way, but its body is
   85% opaque, so only the part of the view that passes through it is bent.
-  It refracts on spheres too; glass on spheres draws `default`, which does
-  not.
+  It refracts on spheres too, as clear and frosted glass do.
 - **The full strength is fixed** (Distortion scales it down, never up), and
   deliberately below what a real refractive index would give. A molecular surface is hundreds of lobes, and a real
   index turns the view through them into noise. Displacement is capped at 2%
@@ -526,7 +525,6 @@ It exits non-zero, and lists the cause at the top of the page, when:
 Expected cases are declared in `manifest.json` with their reasons, and the
 page labels them instead of failing:
 
-- clear and frosted glass on spheres, which must still match `default`;
 - plastic and metallic on a dark background without ray tracing;
 - the glass family's ray-tracing invariance (#532; the gallery renders with
   `metal_rt_transparent` off).

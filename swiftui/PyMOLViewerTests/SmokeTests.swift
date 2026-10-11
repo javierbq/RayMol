@@ -1706,6 +1706,10 @@ final class SphereGlassRenderTests: XCTestCase {
         XCTAssertGreaterThan(diffCount, 1000, "frosted glass should differ from clear glass in > 1000 pixels")
     }
 
+    /// The printed hashes are compared by hand against the same test run on a
+    /// master core (see PR #833); they are not pinned here, because the exact
+    /// bytes depend on the GPU and OS. What is asserted is that drawing glass
+    /// leaves no state behind: `default` renders the same before and after.
     func testNonGlassSpheresAreUnchanged() throws {
         try requireEngine()
         setupScene()

@@ -5,7 +5,8 @@ A stick or sphere layer with no material of its own -- `stick_material` /
 CARTOON's material and Custom knobs while the object shows a cartoon. Giving the
 layer a material, `default` included, makes it independent; hiding the cartoon
 releases it. Surfaces never follow. The per-rep degradations stay keyed on the
-rep that draws: a glass cartoon's spheres still degrade to `default`.
+rep that draws: a glass cartoon's ball-and-stick sticks still degrade to
+`default`, while its spheres draw glass (#635).
 
 And a Look is a base coat on ATOMS, so "by element" (util.cnc) recolours the
 heteroatoms on top of it.

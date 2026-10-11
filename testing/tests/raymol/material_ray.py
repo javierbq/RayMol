@@ -204,7 +204,7 @@ class TestTheMapping(_RayCase):
         self.assertEqual(ray_params('m', 'sticks')[:2], (0, 0))
 
     def testJellyOnSpheresAndBallAndStickTracesAsJelly(self):
-        # Jelly is the exception to both degradations above (#526).
+        # Jelly is the exception to the stick_ball degradation above (#526).
         peptide(rep='spheres', material='jelly')
         self.assertEqual(ray_params('m', 'spheres'), EXPECTED['jelly'])
         cmd.show('sticks', 'm')

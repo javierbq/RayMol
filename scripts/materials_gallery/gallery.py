@@ -28,8 +28,9 @@ residual is under half the unshifted one -- a ratio, so the sub-pixel
 resampling of a fine grain (rubber) does not read as swimming.
 
 A cell is not flagged when the manifest's `degrades_to_default` says the
-material draws as `default` on that representation (clear and frosted glass
-on spheres); its caption says so instead.
+material draws as `default` on that representation (none since #635, when
+clear and frosted glass began drawing on spheres); its caption says so
+instead.
 """
 import html
 import json

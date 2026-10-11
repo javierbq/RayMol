@@ -254,8 +254,10 @@ MaterialParams MaterialResolve(int id, int repType)
     return MaterialParams{};
   }
   /* Clear and frosted glass draw on sphere impostors since #635 (through the
-     OIT glass path with the coverage split); the only remaining glass
-     degradation is the ball-and-stick one in MaterialResolveForDraw. */
+     OIT glass path with the coverage split), so no rule here depends on
+     repType any more; it stays in the signature for the callers. The only
+     remaining glass degradation is the ball-and-stick one in
+     MaterialResolveForDraw, which needs the settings. */
   return row->params;
 }
 
