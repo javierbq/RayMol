@@ -61,8 +61,6 @@ extension Notification.Name {
     static let raymolPerformToggleNotePreview = Notification.Name("raymol.notes.performTogglePreview")
     static let raymolPerformFontIncrease = Notification.Name("raymol.notes.performFontIncrease")
     static let raymolPerformFontDecrease = Notification.Name("raymol.notes.performFontDecrease")
-    // Opens the Help ▸ Keyboard Shortcuts sheet on macOS (#368).
-    static let raymolShowKeyboardShortcuts = Notification.Name("raymol.menu.showKeyboardShortcuts")
 }
 
 #if os(iOS)
@@ -270,7 +268,6 @@ struct ContentView: View {
     // NSOpenPanel directly, so it needs no presentation state).
     @State private var showMacFetch = false
     @State private var macFetchID = ""
-    @State private var showKeyboardShortcuts = false
     // Drag-and-drop: true while a file is hovered over the viewport (draws a border).
     @State private var isViewportDropTargeted = false
     // Local key-down monitor token for the Esc → clear-selection handler
@@ -860,9 +857,6 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .raymolToggleTimeline)) { _ in
             withAnimation(.easeInOut(duration: 0.2)) { engine.timelineMode.toggle() }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .raymolShowKeyboardShortcuts)) { _ in
-            showKeyboardShortcuts = true
-        }
         #if !RAYMOL_MAS_RESTRICTED
         .onReceive(NotificationCenter.default.publisher(for: .mcpOpenConnectSheet)) { _ in
             showConnectSheet = true
@@ -870,9 +864,6 @@ struct ContentView: View {
         #endif
         .sheet(isPresented: $showCustomSizeSheet) {
             customSizeSheet
-        }
-        .sheet(isPresented: $showKeyboardShortcuts) {
-            KeyboardShortcutsSheet { showKeyboardShortcuts = false }
         }
 
         #if !RAYMOL_MAS_RESTRICTED

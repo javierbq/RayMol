@@ -364,13 +364,16 @@ final class AppShortcutsTests: XCTestCase {
         XCTAssertEqual(AppShortcuts.hint(AppShortcuts.keyboardShortcuts), "⌘/")
     }
 
-    /// Every bare-⌃-letter shortcut must be mirrored in the Python launch audit
+    /// Every ⌃ shortcut without ⌘ must be mirrored in the Python launch audit
     /// (modules/pymol/raymol_keys.py APP_SHORTCUTS), which warns when a
-    /// ~/.raymolrc binding shadows a menu command. Pin the set here so a new bare ⌃
-    /// entry fails this test until the audit table learns it. ⌘ entries (including ⌃⌘M)
-    /// need no mirror — KeyRouting passes ⌘ straight through to the menus.
+    /// ~/.raymolrc binding shadows a menu command. Pin the set here so a new ⌃
+    /// (or ⌃⇧) entry fails this test until the audit table learns it. Entries
+    /// carrying ⌘ (including ⌃⌘M) need no mirror — KeyRouting passes ⌘ straight
+    /// through to the menus.
     func testControlShortcutsMatchPythonAuditTable() {
-        let ctrl = AppShortcuts.all.filter { $0.modifiers == .control }
+        let ctrl = AppShortcuts.all.filter {
+            $0.modifiers.contains(.control) && !$0.modifiers.contains(.command)
+        }
         XCTAssertEqual(Set(ctrl.map { String($0.key.character) }),
                        ["m", "e", "d", "p", "b", "s"])
     }
@@ -383,24 +386,23 @@ final class AppShortcutsTests: XCTestCase {
         }
     }
 
-    /// Every non-comment line of every .swift file under swiftui/PyMOLViewer,
-    /// as (file name, 1-based line number, text). Comment lines are dropped so
-    /// a doc comment quoting a shortcut cannot count as a registration.
-    private func appSourceLines() throws -> [(file: String, line: Int, text: String)] {
+    /// Every .swift file under swiftui/PyMOLViewer as (file name, text), with
+    /// comment lines blanked (line numbers kept) so a doc comment quoting a
+    /// shortcut cannot count as a registration.
+    private func appSources() throws -> [(file: String, text: String)] {
         let root = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()          // PyMOLViewerTests
             .deletingLastPathComponent()          // swiftui
             .appendingPathComponent("PyMOLViewer")
         let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil,
                                                    options: [.skipsHiddenFiles])
-        var out: [(file: String, line: Int, text: String)] = []
+        var out: [(file: String, text: String)] = []
         while let url = files?.nextObject() as? URL {
             guard url.pathExtension == "swift" else { continue }
-            let text = try String(contentsOf: url, encoding: .utf8)
-            for (index, line) in text.components(separatedBy: "\n").enumerated()
-            where !line.trimmingCharacters(in: .whitespaces).hasPrefix("//") {
-                out.append((url.lastPathComponent, index + 1, line))
-            }
+            let lines = try String(contentsOf: url, encoding: .utf8)
+                .components(separatedBy: "\n")
+                .map { $0.trimmingCharacters(in: .whitespaces).hasPrefix("//") ? "" : $0 }
+            out.append((url.lastPathComponent, lines.joined(separator: "\n")))
         }
         return out
     }
@@ -409,21 +411,29 @@ final class AppShortcutsTests: XCTestCase {
     /// around the table: every `.keyboardShortcut(` in the app takes an
     /// `AppShortcuts` case (dialog Return/Esc buttons and the rail tongue's
     /// forwarded case excepted), and nothing outside PyMOLApp.swift builds a
-    /// `KeyboardShortcut` of its own.
+    /// `KeyboardShortcut` of its own. The regex runs over whole files, so a
+    /// call split across lines is still checked.
     func testEveryShortcutInTheAppComesFromTheTable() throws {
         let regex = try NSRegularExpression(pattern: #"\.keyboardShortcut\(([^)]*)\)"#)
         var calls = 0
-        for (file, number, line) in try appSourceLines() {
-            if file != "PyMOLApp.swift" && line.contains("KeyboardShortcut(") {
-                XCTFail("\(file):\(number) constructs a KeyboardShortcut outside AppShortcuts")
+        for (file, text) in try appSources() {
+            func lineOf(_ range: NSRange) -> Int {
+                (text as NSString).substring(to: range.location)
+                    .components(separatedBy: "\n").count
             }
-            for match in regex.matches(in: line, range: NSRange(line.startIndex..., in: line)) {
+            if file != "PyMOLApp.swift" {
+                let ctor = (text as NSString).range(of: "KeyboardShortcut(")
+                XCTAssertEqual(ctor.location, NSNotFound,
+                               "\(file):\(lineOf(ctor)) constructs a KeyboardShortcut outside AppShortcuts")
+            }
+            let all = NSRange(text.startIndex..., in: text)
+            for match in regex.matches(in: text, range: all) {
                 calls += 1
-                guard let r = Range(match.range(at: 1), in: line) else { continue }
-                let arg = line[r].trimmingCharacters(in: .whitespaces)
+                guard let r = Range(match.range(at: 1), in: text) else { continue }
+                let arg = text[r].trimmingCharacters(in: .whitespacesAndNewlines)
                 XCTAssertTrue(arg.hasPrefix("AppShortcuts.")
                               || [".cancelAction", ".defaultAction", "shortcut?.shortcut"].contains(arg),
-                              "\(file):\(number) registers a shortcut outside AppShortcuts: \(arg)")
+                              "\(file):\(lineOf(match.range)) registers a shortcut outside AppShortcuts: \(arg)")
             }
         }
         // A wrong path would scan nothing and pass; there are 30+ calls today.
@@ -433,7 +443,7 @@ final class AppShortcutsTests: XCTestCase {
     /// The reverse direction: a table entry no call site registers would put a
     /// dead key on the sheet.
     func testEveryTableEntryIsRegistered() throws {
-        let source = try appSourceLines().map(\.text).joined(separator: "\n")
+        let source = try appSources().map(\.text).joined(separator: "\n")
         for c in AppShortcuts.allCases {
             let call = ".keyboardShortcut(AppShortcuts.\(c))"
             XCTAssertTrue(source.contains(call), "No call site registers \(call)")
@@ -486,7 +496,7 @@ final class AppShortcutsTests: XCTestCase {
             ShortcutSheetRow(keys: AppShortcuts.hint($0), title: $0.title)
         }
         XCTAssertEqual(nonViewportRows, expectedRows)
-        XCTAssertEqual(KeyboardShortcutsSheet().sections, AppShortcuts.sheetSections())
+        XCTAssertEqual(KeyboardShortcutsView().sections, AppShortcuts.sheetSections())
     }
 
     /// ⌘/ is unused elsewhere in the table, is not the system Help-search key
@@ -499,6 +509,26 @@ final class AppShortcutsTests: XCTestCase {
         XCTAssertNotEqual(AppShortcuts.keyboardShortcuts.shortcut, KeyboardShortcut("?", modifiers: .command))
         XCTAssertNotEqual(AppShortcuts.keyboardShortcuts.shortcut, KeyboardShortcut("/", modifiers: [.command, .shift]))
         XCTAssertNil(KeyRouting.token(keyCode: 44, charactersIgnoringModifiers: "/", modifiers: .command, textFieldFocused: false, textEditingActive: false))
+    }
+
+    /// Help ▸ Keyboard Shortcuts opens one reusable NSPanel hosting the sheet
+    /// view (an NSPanel is what ContentView's key monitors yield Esc to), and
+    /// Esc closes it. Not a visual check: it only proves the window plumbing.
+    @MainActor
+    func testPanelShowsReusesAndClosesOnEsc() throws {
+        KeyboardShortcutsPanel.show()
+        let panel = try XCTUnwrap(KeyboardShortcutsPanel.panel)
+        defer { panel.close() }
+        XCTAssertTrue(panel.isVisible)
+        XCTAssertEqual(panel.title, "Keyboard Shortcuts")
+        XCTAssertTrue(panel.contentViewController is NSHostingController<KeyboardShortcutsView>)
+
+        panel.cancelOperation(nil)
+        XCTAssertFalse(panel.isVisible, "Esc should close the panel")
+
+        KeyboardShortcutsPanel.show()
+        XCTAssertTrue(KeyboardShortcutsPanel.panel === panel, "the panel is reused, not rebuilt")
+        XCTAssertTrue(panel.isVisible)
     }
 }
 

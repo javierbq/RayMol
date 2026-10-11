@@ -72,10 +72,11 @@ final class RayMolAppDelegate: NSObject, NSApplicationDelegate {
 /// here so the Help ▸ Keyboard Shortcuts sheet renders them all by
 /// construction (#368).
 ///
-/// Every ⌃-letter entry must be mirrored in modules/pymol/raymol_keys.py
-/// (APP_SHORTCUTS), the launch-time audit that warns when ~/.raymolrc binds
-/// over a menu shortcut. ⌘ entries need no mirror: KeyRouting passes ⌘ events
-/// straight through to the menus, so a user binding can never shadow them.
+/// Every ⌃ entry without ⌘ (⌃M … ⌃S) must be mirrored in
+/// modules/pymol/raymol_keys.py (APP_SHORTCUTS), the launch-time audit that
+/// warns when ~/.raymolrc binds over a menu shortcut. Entries carrying ⌘
+/// (including ⌃⌘M) need no mirror: KeyRouting passes ⌘ events straight through
+/// to the menus, so a user binding can never shadow them.
 enum AppShortcuts: CaseIterable, Identifiable {
     // File menu (plus ⌘O on the toolbar's Open menu). Case order is the order
     // the Keyboard Shortcuts sheet lists them in.
@@ -111,7 +112,7 @@ enum AppShortcuts: CaseIterable, Identifiable {
     case sequencePane
     case sidePanel
 
-    // Movie and Notes menus.
+    // Movie menu, then Notes menu.
     case editTimeline
     case insertNoteViewLink
     case toggleNotePreview
@@ -125,13 +126,14 @@ enum AppShortcuts: CaseIterable, Identifiable {
 
     /// The sheet's groups, in display order (#368).
     enum Section: CaseIterable {
-        case file, tools, panes, movieAndNotes, connect, help
+        case file, tools, panes, movie, notes, connect, help
         var title: String {
             switch self {
             case .file: return "Files & Session"
             case .tools: return "Tools"
             case .panes: return "Panes"
-            case .movieAndNotes: return "Movie & Notes"
+            case .movie: return "Movie"
+            case .notes: return "Notes"
             case .connect: return "AI Control"
             case .help: return "Help"
             }
@@ -167,6 +169,10 @@ enum AppShortcuts: CaseIterable, Identifiable {
         }
     }
 
+    /// The sheet's label. Menu items whose label never changes read it from
+    /// here, so the sheet and the menu bar name a command the same way; items
+    /// whose label flips with state ("Show/Hide Console", "Enter/Exit Design
+    /// Mode") keep their own strings and this names the command neutrally.
     var title: String {
         switch self {
         case .openFile: return "Open…"
@@ -186,10 +192,10 @@ enum AppShortcuts: CaseIterable, Identifiable {
         case .sidePanel: return "Show / Hide Side Panel"
         case .editTimeline: return "Edit Timeline"
         case .insertNoteViewLink: return "Insert Camera View Link"
-        case .toggleNotePreview: return "Toggle Note Edit / Preview"
+        case .toggleNotePreview: return "Toggle Edit / Preview"
         case .increaseNoteFontSize: return "Increase Note Font Size"
         case .decreaseNoteFontSize: return "Decrease Note Font Size"
-        case .aiControl: return "Enable / Disable AI Control"
+        case .aiControl: return "Enable AI control"
         case .keyboardShortcuts: return "Keyboard Shortcuts"
         }
     }
@@ -202,8 +208,10 @@ enum AppShortcuts: CaseIterable, Identifiable {
             return .tools
         case .consolePane, .sequencePane, .sidePanel:
             return .panes
-        case .editTimeline, .insertNoteViewLink, .toggleNotePreview, .increaseNoteFontSize, .decreaseNoteFontSize:
-            return .movieAndNotes
+        case .editTimeline:
+            return .movie
+        case .insertNoteViewLink, .toggleNotePreview, .increaseNoteFontSize, .decreaseNoteFontSize:
+            return .notes
         case .aiControl:
             return .connect
         case .keyboardShortcuts:
@@ -214,7 +222,8 @@ enum AppShortcuts: CaseIterable, Identifiable {
     /// Whether this build registers the shortcut at all, so the sheet lists
     /// only keys that do something: Design needs RAYMOL_MPNN, Binder Design is
     /// macOS-only behind RAYMOL_EXPERIMENTAL_BINDER_DESIGN, and AI control is
-    /// compiled out of the Mac App Store build.
+    /// compiled out of the Mac App Store build. These mirror the gates around
+    /// the macCommands registrations; change one, change the other.
     var isAvailable: Bool {
         switch self {
         case .designTool:
@@ -288,8 +297,11 @@ extension AppShortcuts {
     static let viewportSectionTitle = "Viewport"
 
     /// The viewport keys. These are not menu key equivalents, so they cannot
-    /// live in the case table; the step sizes come from KeyRouting so the
-    /// text follows the code.
+    /// live in the case table: Esc, Tab and the Lights-mode arrows are RayMol's
+    /// own key monitors (the step sizes come from KeyRouting so the text
+    /// follows the code); the arrows, PgUp/PgDn, Home and End rows are stock
+    /// PyMOL set_key bindings (modules/pymol/shortcut_dict.py) that the
+    /// set_key monitor dispatches.
     static var viewportKeys: [ShortcutSheetRow] {
         let step = String(format: "%g°", KeyRouting.lightNudgeStep)
         let big = String(format: "%g°", KeyRouting.lightNudgeShiftStep)
@@ -297,6 +309,10 @@ extension AppShortcuts {
             ShortcutSheetRow(keys: "Esc", title: "Leave the active tool, or clear the selection"),
             ShortcutSheetRow(keys: "⇥", title: "Next selection mode"),
             ShortcutSheetRow(keys: "⇧⇥", title: "Previous selection mode"),
+            ShortcutSheetRow(keys: "← →", title: "Previous / next movie frame"),
+            ShortcutSheetRow(keys: "PgUp PgDn", title: "Previous / next scene"),
+            ShortcutSheetRow(keys: "Home", title: "Zoom to everything"),
+            ShortcutSheetRow(keys: "End", title: "Play / pause the movie"),
             ShortcutSheetRow(keys: "← →", title: "Lights mode: orbit the selected light by \(step)"),
             ShortcutSheetRow(keys: "↑ ↓", title: "Lights mode: pitch the selected light by \(step)"),
             ShortcutSheetRow(keys: "⇧ arrows", title: "Lights mode: move the selected light by \(big)"),
@@ -320,7 +336,7 @@ extension AppShortcuts {
 
 /// Help ▸ Keyboard Shortcuts (⌘/, #368). Renders `AppShortcuts.sheetSections()`
 /// and nothing hand-written, so a new table entry shows up here by itself.
-struct KeyboardShortcutsSheet: View {
+struct KeyboardShortcutsView: View {
     let sections: [ShortcutSheetSection]
     var onDone: () -> Void
 
@@ -332,9 +348,6 @@ struct KeyboardShortcutsSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Keyboard Shortcuts")
-                .font(.title2.bold())
-
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     ForEach(sections) { section in
@@ -353,9 +366,13 @@ struct KeyboardShortcutsSheet: View {
                         }
                     }
 
-                    Text("Your own set_key bindings from ~/.raymolrc fire in the viewport. To let them fire while you type in the command line, turn on View ▸ Send Key Bindings to Viewport While Typing.")
+                    Text("Your own set_key bindings from ~/.raymolrc fire in the viewport, "
+                         + "and one on a ⌃-letter overrides that Tools shortcut (RayMol warns "
+                         + "at launch). To let them fire while you type in the command line, "
+                         + "turn on View ▸ Send Key Bindings to Viewport While Typing.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                         .padding(.top, 4)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -363,17 +380,51 @@ struct KeyboardShortcutsSheet: View {
 
             HStack {
                 Spacer()
-                Button("Done") {
-                    onDone()
-                }
-                .keyboardShortcut(.defaultAction)
+                Button("Done") { onDone() }
+                    .keyboardShortcut(.defaultAction)
             }
         }
         .padding(20)
         .frame(width: 440, height: 560)
-        .onExitCommand {
-            onDone()
+    }
+}
+
+/// The floating panel that shows `KeyboardShortcutsView` (#368).
+///
+/// An NSPanel rather than a sheet or a SwiftUI `Window`, for three reasons:
+///   * it opens with the main window closed, or while the Analysis Notes
+///     window is key, and never competes with a sheet already on the main
+///     window (SwiftUI drops a second sheet on the same view);
+///   * ContentView's key monitors treat an NSPanel key window as owning the
+///     keyboard (`secondaryWindowOwnsKeys`), so Esc closes this panel instead
+///     of clearing the selection behind it — a plain window would not get that;
+///   * it can stay open beside the viewport as a reference.
+@MainActor
+enum KeyboardShortcutsPanel {
+    static let title = "Keyboard Shortcuts"
+
+    /// The one panel, created on first `show()` and reused after it closes.
+    private(set) static var panel: NSPanel?
+
+    /// Esc closes the panel (NSWindow's default cancelOperation does nothing).
+    private final class Panel: NSPanel {
+        override func cancelOperation(_ sender: Any?) { performClose(sender) }
+    }
+
+    static func show() {
+        if panel == nil {
+            let p = Panel(contentRect: NSRect(x: 0, y: 0, width: 440, height: 560),
+                          styleMask: [.titled, .closable],
+                          backing: .buffered, defer: false)
+            p.title = title
+            p.isReleasedWhenClosed = false
+            p.hidesOnDeactivate = false   // an ordinary window when the app is in the background
+            p.contentViewController = NSHostingController(
+                rootView: KeyboardShortcutsView(onDone: { panel?.performClose(nil) }))
+            p.center()
+            panel = p
         }
+        panel?.makeKeyAndOrderFront(nil)
     }
 }
 #endif
@@ -552,29 +603,27 @@ struct PyMOLApp: App {
             // NSWorkspace URL-open works in the sandboxed Mac App Store build too,
             // so this isn't gated behind RAYMOL_MAS_RESTRICTED.
             CommandGroup(after: .help) {
-                Button("Keyboard Shortcuts") {
-                    NotificationCenter.default.post(name: .raymolShowKeyboardShortcuts, object: nil)
-                }
-                .keyboardShortcut(AppShortcuts.keyboardShortcuts)
+                Button(AppShortcuts.keyboardShortcuts.title) { KeyboardShortcutsPanel.show() }
+                    .keyboardShortcut(AppShortcuts.keyboardShortcuts)
                 Button("Contact Support…") { contactSupport() }
             }
             CommandGroup(after: .newItem) {
-                Button("Open…") {
+                Button(AppShortcuts.openFile.title) {
                     NotificationCenter.default.post(name: .raymolOpenFile, object: nil)
                 }.keyboardShortcut(AppShortcuts.openFile)
-                Button("Fetch from PDB…") {
+                Button(AppShortcuts.fetchPDB.title) {
                     NotificationCenter.default.post(name: .raymolFetch, object: nil)
                 }.keyboardShortcut(AppShortcuts.fetchPDB)
                 Divider()
                 // ⌘S overwrites the open .pse with no panel (Save As if never saved).
-                Button("Save Session") {
+                Button(AppShortcuts.saveSession.title) {
                     NotificationCenter.default.post(name: .raymolSaveSession, object: nil)
                 }.keyboardShortcut(AppShortcuts.saveSession)
                 // ⇧⌘S always shows the Save panel and updates the tracked document.
-                Button("Save Session As…") {
+                Button(AppShortcuts.saveSessionAs.title) {
                     NotificationCenter.default.post(name: .raymolSaveSessionAs, object: nil)
                 }.keyboardShortcut(AppShortcuts.saveSessionAs)
-                Button("Export Image…") {
+                Button(AppShortcuts.exportImage.title) {
                     NotificationCenter.default.post(name: .raymolExportImage, object: nil)
                 }.keyboardShortcut(AppShortcuts.exportImage)
                 // ⌘C as a real menu command (not a toolbar-Menu button) so the
@@ -582,7 +631,7 @@ struct PyMOLApp: App {
                 // A menu key equivalent outranks the responder chain, so route
                 // through CopyRouting: a live text selection (console log, command
                 // line) copies as text and the image copy is the fallback (#287).
-                Button("Copy Image to Clipboard") {
+                Button(AppShortcuts.copyImage.title) {
                     CopyRouting.perform {
                         NotificationCenter.default.post(name: .raymolCopyImage, object: nil)
                     }
@@ -707,23 +756,23 @@ struct PyMOLApp: App {
                 }.keyboardShortcut(AppShortcuts.editTimeline)
             }
             CommandMenu("Notes") {
-                Button("Insert Camera View Link") {
+                Button(AppShortcuts.insertNoteViewLink.title) {
                     NotificationCenter.default.post(name: .raymolInsertNoteView, object: nil)
                 }.keyboardShortcut(AppShortcuts.insertNoteViewLink)
-                Button("Toggle Edit / Preview") {
+                Button(AppShortcuts.toggleNotePreview.title) {
                     NotificationCenter.default.post(name: .raymolToggleNotePreview, object: nil)
                 }.keyboardShortcut(AppShortcuts.toggleNotePreview)
                 Divider()
-                Button("Increase Note Font Size") {
+                Button(AppShortcuts.increaseNoteFontSize.title) {
                     NotificationCenter.default.post(name: .raymolNotesFontIncrease, object: nil)
                 }.keyboardShortcut(AppShortcuts.increaseNoteFontSize)
-                Button("Decrease Note Font Size") {
+                Button(AppShortcuts.decreaseNoteFontSize.title) {
                     NotificationCenter.default.post(name: .raymolNotesFontDecrease, object: nil)
                 }.keyboardShortcut(AppShortcuts.decreaseNoteFontSize)
             }
             #if os(macOS) && !RAYMOL_MAS_RESTRICTED
             CommandMenu("Connect") {
-                Toggle("Enable AI control", isOn: Binding(
+                Toggle(AppShortcuts.aiControl.title, isOn: Binding(
                     get: { mcp.isRunning }, set: { _ in mcp.toggle() }))
                 .keyboardShortcut(AppShortcuts.aiControl)
                 Divider()
