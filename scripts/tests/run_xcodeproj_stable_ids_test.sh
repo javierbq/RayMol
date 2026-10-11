@@ -1,9 +1,18 @@
 #!/bin/bash
-# Unit tests for XcodeGen deterministic object IDs (GitHub issue #642).
-# Asserts that project.pbxproj contains no random TEMP_ UUIDs, that project.yml
-# configFiles entries do not point directly to the project root, and that
-# xcodegen regeneration is deterministic and free of TEMP_ IDs when xcodegen
-# is available.
+# Tests for deterministic XcodeGen output (GitHub issue #642).
+#
+# XcodeGen gives a `configFiles` entry at the project root an orphan PBXGroup,
+# and that group plus the file reference get random TEMP_<UUID> object ids, so
+# every `xcodegen generate` rewrote project.pbxproj. This suite asserts:
+#   1. the TEMP_ id detector itself works (fixtures);
+#   2. the committed project.pbxproj has no TEMP_ object ids;
+#   3. no configFiles entry in project.yml (project- or target-level) points at
+#      a file in the project root;
+#   4. when xcodegen is installed: regenerating a copy of swiftui/ twice gives
+#      byte-identical output with no TEMP_ ids, and, with xcodegen >= 2.46.0
+#      (project.yml's minimumXcodeGenVersion), output identical to the committed
+#      project.pbxproj (i.e. `xcodegen generate` leaves `git diff` empty).
+# CI's runner has no xcodegen, so there checks 1-3 are what is enforced.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -14,101 +23,161 @@ trap 'rm -rf "$TMP"' EXIT
 ok ()   { echo "  ok: $1"; }
 fail () { echo "  FAIL: $1"; FAILED=1; }
 
-echo "== xcodegen_stable_ids =="
+echo "== xcodeproj_stable_ids =="
 
 # no_temp_ids <pbxproj>: prints the offending lines and returns non-zero if the
-# file contains a TEMP_ object id, else returns 0.
+# file contains a TEMP_<UUID> object id, else returns 0. Matches the id shape
+# only, so build settings such as TARGET_TEMP_DIR in embedded shell scripts
+# don't trip it.
+TEMP_ID_RE='TEMP_[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}'
 no_temp_ids () {
   local pbx="$1"
   if [ ! -f "$pbx" ]; then
     echo "file not found: $pbx" >&2
     return 2
   fi
-  if grep -n 'TEMP_' "$pbx"; then
+  if grep -nE "$TEMP_ID_RE" "$pbx"; then
     return 1
   fi
   return 0
 }
 
-# --- 1. Self-test no_temp_ids --------------------------------------------------
+# root_config_files <project.yml>: prints every configFiles value (project- or
+# target-level, any config name) that resolves to a file in the project root.
+root_config_files () {
+  awk '
+    function indent(s) { match(s, /^ */); return RLENGTH }
+    /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+    {
+      ind = indent($0)
+      if (inblock && ind <= blockind) inblock = 0
+      if (inblock) {
+        line = $0; sub(/^[[:space:]]*[^:]+:[[:space:]]*/, "", line)
+        sub(/[[:space:]]+#.*$/, "", line); gsub(/["\047]/, "", line)
+        while (line ~ /^\.\//) sub(/^\.\//, "", line)
+        if (line != "" && line !~ /\//) print $0
+      }
+      if ($0 ~ /^[[:space:]]*configFiles:[[:space:]]*$/) { inblock = 1; blockind = ind }
+    }' "$1"
+}
+
+# --- 1. Self-test the detectors ------------------------------------------------
 BAD_FX="$TMP/bad.pbxproj"
 GOOD_FX="$TMP/good.pbxproj"
 echo '"TEMP_EDD84068-517B-461C-BDE0-73E905351476" /* PyMOLBridge.xcconfig */ = {isa = PBXFileReference; };' > "$BAD_FX"
-echo '0DBFD1FF07FFAD4B8029FA48 /* Project.xcconfig */ = {isa = PBXFileReference; };' > "$GOOD_FX"
+cat > "$GOOD_FX" <<'EOF'
+0DBFD1FF07FFAD4B8029FA48 /* Project.xcconfig */ = {isa = PBXFileReference; };
+shellScript = "cp \"$TARGET_TEMP_DIR/x\" \"$TEMP_FILES_DIR/y\"\n";
+EOF
 
 if OUT="$(no_temp_ids "$BAD_FX" 2>&1)"; then
   fail "no_temp_ids accepted fixture with TEMP_ ids"
+elif [[ "$OUT" == *"TEMP_EDD84068"* ]]; then
+  ok "no_temp_ids rejects fixture with TEMP_ ids and prints offending lines"
 else
-  if [[ "$OUT" == *"TEMP_EDD84068"* ]]; then
-    ok "no_temp_ids rejects fixture with TEMP_ ids and prints offending lines"
-  else
-    fail "no_temp_ids rejected fixture but did not print offending lines"
-  fi
+  fail "no_temp_ids rejected fixture but did not print offending lines"
 fi
 
 if no_temp_ids "$GOOD_FX" >/dev/null 2>&1; then
-  ok "no_temp_ids accepts fixture without TEMP_ ids"
+  ok "no_temp_ids accepts fixture without TEMP_ ids (TARGET_TEMP_DIR is not an id)"
 else
   fail "no_temp_ids rejected fixture without TEMP_ ids"
 fi
 
-# --- 2. Committed project.pbxproj has no TEMP_ ---------------------------------
+YML_FX="$TMP/fixture.yml"
+cat > "$YML_FX" <<'EOF'
+options:
+  createIntermediateGroups: true
+configFiles:
+  Debug: Config/Project.xcconfig    # fine
+  Release: ./Root.xcconfig
+  Profile: "Root2.xcconfig"
+targets:
+  App:
+    configFiles:
+      Debug: Config/App.xcconfig
+      Release: TargetRoot.xcconfig
+    settings:
+      base:
+        X: y.xcconfig
+EOF
+OUT="$(root_config_files "$YML_FX")"
+if [[ "$OUT" == *Root.xcconfig* && "$OUT" == *Root2.xcconfig* && "$OUT" == *TargetRoot.xcconfig* \
+      && "$OUT" != *Project.xcconfig* && "$OUT" != *App.xcconfig* && "$OUT" != *y.xcconfig* ]]; then
+  ok "root_config_files flags root-level entries (./, any config name, target-level) only"
+else
+  fail "root_config_files fixture output wrong: $OUT"
+fi
+
+# --- 2. Committed project.pbxproj has no TEMP_ ids ----------------------------
 COMMITTED_PBX="$ROOT/swiftui/PyMOLViewer.xcodeproj/project.pbxproj"
 if [ ! -f "$COMMITTED_PBX" ]; then
   fail "committed project.pbxproj missing: $COMMITTED_PBX"
 elif OUT="$(no_temp_ids "$COMMITTED_PBX" 2>&1)"; then
-  ok "committed project.pbxproj exists and has no TEMP_ ids"
+  ok "committed project.pbxproj has no TEMP_ ids"
 else
   fail "committed project.pbxproj contains TEMP_ ids: $OUT"
 fi
 
-# --- 3. Assert project.yml configFiles entries are not in project root ---------
+# --- 3. No configFiles entry in the project root -------------------------------
 PROJECT_YML="$ROOT/swiftui/project.yml"
 if [ ! -f "$PROJECT_YML" ]; then
   fail "project.yml missing: $PROJECT_YML"
+elif ! grep -qE '^[[:space:]]*configFiles:' "$PROJECT_YML"; then
+  fail "no configFiles block found in $PROJECT_YML"
+elif OUT="$(root_config_files "$PROJECT_YML")" && [ -n "$OUT" ]; then
+  fail "configFiles entries in the project root (XcodeGen gives them TEMP_ ids; put them in a subdirectory, see swiftui/Config/Project.xcconfig): $OUT"
 else
-  count=0
-  bad_configs=()
-  while read -r key val; do
-    [ -z "$key" ] && continue
-    count=$((count + 1))
-    if [[ "$val" != */* ]]; then
-      bad_configs+=("$key $val")
-    fi
-  done < <(awk '/^configFiles:/{flag=1; next} /^[a-zA-Z]/{flag=0} flag && /^[[:space:]]*(Debug|Release):/{print $1, $2}' "$PROJECT_YML")
-
-  if [ "$count" -eq 0 ]; then
-    fail "no Debug/Release entries found under configFiles in $PROJECT_YML"
-  elif [ "${#bad_configs[@]}" -ne 0 ]; then
-    fail "project.yml configFiles entries point at project root (must be in a subdirectory to avoid TEMP_ ids): ${bad_configs[*]}"
-  else
-    ok "project.yml configFiles entries point to subdirectory paths (non-root)"
-  fi
+  ok "project.yml configFiles entries are all in subdirectories"
 fi
 
-# --- 4. XcodeGen regeneration determinism (if installed) -----------------------
-if command -v xcodegen >/dev/null 2>&1; then
-  cp -R "$ROOT/swiftui" "$TMP/swiftui"
-  # Drop the copied project so a failed generate cannot leave the committed
-  # pbxproj in place and make both checks below pass vacuously.
+# --- 4. Regeneration is deterministic and matches the committed project -------
+# gen <label>: regenerate the copy from scratch; fails if no pbxproj results.
+gen () {
   rm -rf "$TMP/swiftui/PyMOLViewer.xcodeproj"
-  GEN_PBX="$TMP/swiftui/PyMOLViewer.xcodeproj/project.pbxproj"
   if ! OUT="$(cd "$TMP/swiftui" && xcodegen generate --quiet 2>&1)" || [ ! -f "$GEN_PBX" ]; then
-    fail "first xcodegen generate failed: $OUT"
-  else
-    if OUT="$(no_temp_ids "$GEN_PBX" 2>&1)"; then
-      ok "first xcodegen generated pbxproj has no TEMP_ ids"
-    else
-      fail "first xcodegen generated pbxproj contains TEMP_ ids: $OUT"
-    fi
+    fail "$1 xcodegen generate failed: $OUT"
+    return 1
+  fi
+}
 
-    cp "$GEN_PBX" "$TMP/pbxproj.run1"
-    if ! OUT="$(cd "$TMP/swiftui" && xcodegen generate --quiet 2>&1)"; then
-      fail "second xcodegen generate failed: $OUT"
-    elif cmp -s "$TMP/pbxproj.run1" "$GEN_PBX"; then
-      ok "xcodegen generation is byte-identical across runs (determinism check)"
-    else
-      fail "xcodegen generation produced different pbxproj across runs"
+if command -v xcodegen >/dev/null 2>&1; then
+  # Copy only tracked and untracked-but-not-ignored files: the gitignored
+  # DerivedData dirs under swiftui/ are gigabytes, and local overrides such as
+  # PyMOLBridge.local.xcconfig must not leak into the generated project.
+  mkdir -p "$TMP/swiftui"
+  if ! ( cd "$ROOT" && git ls-files -z -co --exclude-standard -- swiftui \
+           | while IFS= read -r -d '' f; do [ -e "$f" ] && printf '%s\0' "$f"; done \
+           | tar --null -T - -cf - ) | tar -xf - -C "$TMP"; then
+    fail "could not copy swiftui/ for regeneration"
+  else
+    GEN_PBX="$TMP/swiftui/PyMOLViewer.xcodeproj/project.pbxproj"
+    if gen "first"; then
+      if OUT="$(no_temp_ids "$GEN_PBX" 2>&1)"; then
+        ok "regenerated pbxproj has no TEMP_ ids"
+      else
+        fail "regenerated pbxproj contains TEMP_ ids: $OUT"
+      fi
+      cp "$GEN_PBX" "$TMP/pbxproj.run1"
+      if gen "second"; then
+        if cmp -s "$TMP/pbxproj.run1" "$GEN_PBX"; then
+          ok "two regenerations are byte-identical (determinism check)"
+        else
+          fail "two regenerations produced different pbxproj files"
+        fi
+      fi
+
+      VER="$(xcodegen --version 2>/dev/null | sed -n 's/^Version: *//p')"
+      MIN="2.46.0"
+      if [ -n "$VER" ] && [ "$(printf '%s\n%s\n' "$MIN" "$VER" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)" = "$MIN" ]; then
+        if cmp -s "$TMP/pbxproj.run1" "$COMMITTED_PBX"; then
+          ok "regeneration matches the committed project.pbxproj"
+        else
+          fail "committed project.pbxproj is stale or was made by another xcodegen; run 'cd swiftui && xcodegen generate' and commit. Diff: $(diff "$COMMITTED_PBX" "$TMP/pbxproj.run1" | head -20)"
+        fi
+      else
+        echo "  skip: xcodegen ${VER:-unknown} < $MIN (committed-project comparison)"
+      fi
     fi
   fi
 else

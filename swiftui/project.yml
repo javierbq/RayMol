@@ -9,6 +9,9 @@ options:
     iOS: "17.0"
   xcodeVersion: "16.0"
   createIntermediateGroups: true
+  # 2.46 orders PBXProject targets by declaration (older versions sort by name),
+  # so an older xcodegen would reorder the committed pbxproj on every run (#642).
+  minimumXcodeGenVersion: 2.46.0
 
 # Base configurations point at Config/Project.xcconfig rather than PyMOLBridge.xcconfig
 # because a root-level config file gets random TEMP_ UUIDs from XcodeGen (#642).
