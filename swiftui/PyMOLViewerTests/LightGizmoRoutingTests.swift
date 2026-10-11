@@ -461,7 +461,7 @@ final class LightGizmoRoutingTests: XCTestCase {
     /// An option-click on the molecule off every target runs one `lights
     /// <name>, click=` command and no atom pick; off the molecule it runs
     /// nothing; on a knob it selects that light. A plain click off the
-    /// gizmo is still today's atom pick.
+    /// gizmo runs no atom pick either (#696).
     func testOptionClickPlacesAHighlightOnAHitOnly() throws {
         try enterGizmo()
         var l = try layout()
@@ -521,13 +521,29 @@ final class LightGizmoRoutingTests: XCTestCase {
         }
         XCTAssertEqual(t.commands.lines, [])
 
-        // A plain click off the gizmo: today's atom pick.
+        // A plain click off the gizmo runs no atom pick (#696).
         t = taps()
         try press(empty)
         try release(empty)
         t.stop()
-        guard t.events.list.count == 1, case .pick = t.events.list[0] else {
-            return XCTFail("a plain click is today's atom pick: \(t.events.list)")
+        XCTAssertEqual(t.events.list, [], "a plain click in Lights mode picks nothing: \(t.events.list)")
+        XCTAssertEqual(t.commands.lines, [])
+    }
+
+    /// The click-pick decision (#696): Lights mode never picks; every other
+    /// mode picks unless the press was a drag.
+    func testClickPickDecision() {
+        let modes: [InteractionMode] = [.viewing, .move, .boxSelect, .lights]
+        for mode in modes {
+            for onGizmo in [false, true] {
+                for option in [false, true] {
+                    XCTAssertEqual(
+                        LightClickPick.shouldPick(mode: mode, onGizmo: onGizmo, option: option, wasDrag: false),
+                        mode != .lights, "\(mode) gizmo=\(onGizmo) option=\(option)")
+                    XCTAssertFalse(
+                        LightClickPick.shouldPick(mode: mode, onGizmo: onGizmo, option: option, wasDrag: true))
+                }
+            }
         }
     }
 
