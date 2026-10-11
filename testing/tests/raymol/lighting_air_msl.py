@@ -139,7 +139,7 @@ CLASSIC_LIGHT_LITERALS = ('kVBOSrc', 'kSphereImpostorSrc', 'kCylinderImpostorSrc
 # taken out (AIR_STATEMENTS).
 MASTER_FUNCTIONS = {
     ('RendererMetal.mm', 'RendererMetal::runPostChain'): '4f0c6097ac77fcb0',
-    ('RendererMetal.mm', 'RendererMetal::beginFrame'): 'a943ed9e4b89cda5',
+    ('RendererMetal.mm', 'RendererMetal::beginFrame'): '5e8f5b413ca93cd4',  # #736: clears the labels deferred out of a peel pass
     ('SceneRender.cpp', 'SceneRenderMetal'): '555f9bb27d8c8aee',  # #433/#662: classic pre-pass excludes overlays
     ('SceneLights.cpp', 'SceneLightsFrame'): '5fb060d63ab0d96b',
 }

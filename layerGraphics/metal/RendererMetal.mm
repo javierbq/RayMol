@@ -1148,6 +1148,8 @@ void RendererMetal::beginFrame()
   // few frames. Which is exactly what it did.
   _oitCleared = false;
   _oitRefractCleared = false;
+  // Labels deferred out of a peeled object's pass belong to their frame.
+  _peelDeferredLabels.clear();
   // The light rig (#613) is per frame: SceneRenderMetal sets it again before
   // any draw, so a frame that never reaches it draws without the rig.
   _lightRigOn = false;
@@ -6005,6 +6007,15 @@ void RendererMetal::beginTransparentOIT(bool peel)
   _oitActive = true;
   _oitPeelTest = peel;
   _oitHasContent = true;
+  // Labels of the objects peeled before this pass (#736, see drawLabels).
+  if (!peel && !_peelDeferredLabels.empty()) {
+    std::vector<PeelDeferredLabels> deferred;
+    deferred.swap(_peelDeferredLabels);
+    for (const auto& d : deferred)
+      encodeLabels(d.call, d.modelview, d.projection, d.depthTest);
+    [_encoder setDepthStencilState:oitDepthState()];
+    [_encoder setCullMode:MTLCullModeNone];
+  }
 }
 
 void RendererMetal::endTransparentOIT()
@@ -13322,6 +13333,24 @@ void RendererMetal::drawLabels(const LabelDrawCall& call)
   // vanish wherever a label sits in front of it.
   if (_peelMode)
     return;
+  // Upload the atlas now: its CPU copy can be reallocated later in the frame,
+  // so a deferred draw must not read call.atlasPixels again.
+  ensureLabelAtlas(call.atlasPixels, call.atlasW, call.atlasH, call.atlasGen);
+  // A peeled object's OIT pass tests against the depth of that object's own
+  // front shell, which would hide every label anchored inside it (an atom
+  // centre). Defer them to the frame's ordinary OIT pass, which tests against
+  // the opaque depth like every other label (beginTransparentOIT flushes).
+  if (_oitActive && _oitPeelTest) {
+    _peelDeferredLabels.push_back(
+        {call, _modelviewMatrix, _projectionMatrix, _depthTestEnabled});
+    return;
+  }
+  encodeLabels(call, _modelviewMatrix, _projectionMatrix, _depthTestEnabled);
+}
+
+void RendererMetal::encodeLabels(const LabelDrawCall& call, const Mat4& mv,
+    const Mat4& proj, bool depthTest)
+{
   ensureEncoder();
   if (!_encoder)
     return;
@@ -13330,10 +13359,7 @@ void RendererMetal::drawLabels(const LabelDrawCall& call)
   // open (#736): its targets need the OIT variant.
   id<MTLRenderPipelineState> pipeline =
       _oitActive ? _labelOitPipeline : _labelPipeline;
-  if (!pipeline || !_labelSampler)
-    return;
-  ensureLabelAtlas(call.atlasPixels, call.atlasW, call.atlasH, call.atlasGen);
-  if (!_labelAtlas)
+  if (!pipeline || !_labelSampler || !_labelAtlas)
     return;
 
   // Upload (or reuse cached) the interleaved label vertex data.
@@ -13353,12 +13379,10 @@ void RendererMetal::drawLabels(const LabelDrawCall& call)
   [_encoder setRenderPipelineState:pipeline];
   applyDepthStencilState();
   if (_oitActive) {
-    // Test against the pass's depth but never write it, as every transparent
+    // Test against the opaque depth but never write it, as every transparent
     // draw does; float_labels (depth test off) still draws over everything.
-    // LessEqual even in a peeled object's pass: EQUAL against its shell would
-    // drop every label not lying exactly on it.
-    [_encoder setDepthStencilState:_depthTestEnabled ? oitDepthState()
-                                                     : labelOitNoDepthState()];
+    [_encoder setDepthStencilState:depthTest ? oitDepthState()
+                                             : labelOitNoDepthState()];
   } else if (_depthStencilState) {
     [_encoder setDepthStencilState:_depthStencilState];
   }
@@ -13376,8 +13400,8 @@ void RendererMetal::drawLabels(const LabelDrawCall& call)
     float clipRange;
     float _pad;
   } U;
-  std::memcpy(U.modelview, _modelviewMatrix.data(), 64);
-  std::memcpy(U.projection, _projectionMatrix.data(), 64);
+  std::memcpy(U.modelview, mv.data(), 64);
+  std::memcpy(U.projection, proj.data(), 64);
   U.screenSize[0] = call.screenW;
   U.screenSize[1] = call.screenH;
   U.screenOriginVertexScale = call.screenOriginVertexScale;

@@ -343,7 +343,7 @@ final class LabelColorExportTests: XCTestCase {
         if sceneBuilt {
             engine.runPython(
                 "from pymol import cmd as _c\n"
-                + "_c.delete('lc736a or lc736b')\n"
+                + "_c.delete('lc736a or lc736b or lc736p')\n"
                 + "_c.set('bg_rgb', globals().pop('_lc736_bg', [0.0, 0.0, 0.0]))\n"
                 + "for _n in globals().pop('_lc736_enabled', []):\n"
                 + "    _c.enable(_n)\n")
@@ -400,6 +400,60 @@ final class LabelColorExportTests: XCTestCase {
             if r > 200 && g < 60 && b > 200 { magenta += 1 }
         }
         return (match, magenta)
+    }
+
+    /// A label inside a peeled transparent object (transparency_peel): its own
+    /// pass tests against the object's front shell, so the label is drawn in
+    /// the ordinary OIT pass instead, behind that shell like any other label.
+    func testLabelInsideAPeeledObjectIsDrawn() throws {
+        try requireEngine()
+        savedView = engine.captureView()
+        sceneBuilt = true
+        let state = NSTemporaryDirectory() + "issue_736_peel.json"
+        defer { try? FileManager.default.removeItem(atPath: state) }
+        engine.runPython("""
+        from pymol import cmd as _c
+        _lc736_enabled = _c.get_names('objects', enabled_only=1)
+        _lc736_bg = list(_c.get_setting_tuple('bg_rgb')[1])
+        for _n in _lc736_enabled:
+            _c.disable(_n)
+        _c.pseudoatom('lc736p', pos=[0.0, 0.0, 0.0], label='PEEL')
+        _c.show_as('spheres', 'lc736p')
+        _c.show('labels', 'lc736p')
+        _c.color('white', 'lc736p')
+        _c.set('sphere_scale', 5.0, 'lc736p')
+        _c.set('sphere_transparency', 0.5, 'lc736p')
+        _c.set('transparency_peel', 1, 'lc736p')
+        _c.set('label_color', 'red', 'lc736p')
+        _c.set('label_size', 40, 'lc736p')
+        _c.set('bg_rgb', [0.0, 0.0, 0.0])
+        _c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                     0.0, 0.0, -40.0, 0.0, 0.0, 0.0, 30.0, 50.0, -20.0))
+        import json as _json
+        _lc736_peel = _c._cmd.get_frame_peel(_c._COb)
+        open(r'\(state)', 'w').write(_json.dumps(
+            {'can': bool(_lc736_peel[0]), 'names': list(_lc736_peel[1])}))
+        """)
+        let peel = try XCTUnwrap(FileManager.default.contents(atPath: state)
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] })
+        XCTAssertEqual(peel["names"] as? [String], ["lc736p"], "the object is not peeled")
+        if peel["can"] as? Bool != true {
+            throw XCTSkip("this renderer cannot peel")
+        }
+
+        for rt in [0, 1] {
+            let png = NSTemporaryDirectory() + "issue_736_peel_rt\(rt).png"
+            defer { try? FileManager.default.removeItem(atPath: png) }
+            engine.renderHiResPNG(png, width: 400, height: 300, rayTraced: rt)
+            let px = try XCTUnwrap(pngPixels(png), "no export written (rt=\(rt))")
+            // The red glyphs, seen through the half-transparent white shell.
+            var red = 0
+            for i in stride(from: 0, to: px.count, by: 4) {
+                let r = Int(px[i]), g = Int(px[i + 1]), b = Int(px[i + 2])
+                if r - g > 60 && r - b > 60 { red += 1 }
+            }
+            XCTAssertGreaterThan(red, 300, "red label pixels inside the peeled sphere (rt=\(rt))")
+        }
     }
 
     func testPseudoatomLabelsExportInTheirColour() throws {
