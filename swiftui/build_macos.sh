@@ -35,6 +35,12 @@ fi
 # No-op when already staged; every macOS build path runs through here.
 bash "$PYMOL_ROOT/scripts/build_macos_deps.sh"
 
+# Fingerprint the core sources BEFORE compiling, and stamp it after (#400): the
+# Xcode pre-build phase (scripts/check_core_fresh.sh) fails the app build when
+# the sources no longer match this stamp. A source edited mid-build then reads
+# as stale, never as fresh.
+CORE_FP="$(bash "$PYMOL_ROOT/scripts/check_core_fresh.sh" fingerprint 2>/dev/null || true)"
+
 CLEAN="${CLEAN:-0}"
 case "$CLEAN" in
   1|true|yes|on) echo "== Clean core build (rm -rf $BUILD_DIR) =="; rm -rf "$BUILD_DIR" ;;
@@ -55,6 +61,8 @@ cmake "$PYMOL_ROOT/appkit" \
     -DCMAKE_BUILD_TYPE=Release
 
 cmake --build . --target pymol_core -j"${NCPU}"
+
+bash "$PYMOL_ROOT/scripts/check_core_fresh.sh" stamp "$BUILD_DIR" "$CORE_FP"
 
 echo ""
 echo "=== Done: ${BUILD_DIR}/libpymol_core.a ==="

@@ -305,6 +305,18 @@ targets:
           # OUT of the macOS build (sandbox + 2.5.2). No effect on iOS — gated to
           # os(macOS) in RayMolBuild.mcpEnabled. Then archive for the MAS.
           # SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) RAYMOL_MAS_RESTRICTED
+    # Fail the build when libpymol_core.a is older than the C++ it was built from
+    # (#400). The project has no build dependency on the core, so without this a
+    # stale static library links silently. scripts/check_core_fresh.sh compares a
+    # content fingerprint of the core sources with the core_sha.txt stamp that
+    # build_macos.sh / build_ios.sh write next to the library: Swift-only edits,
+    # `touch` and worktree checkouts do not trip it. Bypass with
+    # RAYMOL_SKIP_CORE_CHECK=1 (env var or an xcodebuild build setting).
+    preBuildScripts:
+      - name: "Core: check libpymol_core.a is fresh"
+        basedOnDependencyAnalysis: false
+        script: |
+          bash "$SRCROOT/../scripts/check_core_fresh.sh" check
     # iOS runtime packaging (BeeWare CPython 3.13). Guarded to iOS via
     # PLATFORM_NAME so the macOS target is unaffected. The xcframework has no
     # macOS slice, so a native embed dependency can't be used on a shared target.
@@ -351,6 +363,25 @@ targets:
           [ -f "$PLIST" ] || { echo "no Info.plist at $PLIST"; exit 0; }
           /usr/bin/plutil -replace RayMolBetaLabel -string "$LABEL" "$PLIST"
           echo "RayMolBetaLabel -> $LABEL ($PLIST)"
+      # Core build identity, e.g. "1fc5fc983-dirty" -> Info.plist RayMolCoreSHA,
+      # which AppBuildInfo reads for the console banner. The value is the git SHA
+      # that build_macos.sh / build_ios.sh stamped next to libpymol_core.a, so a
+      # core that was linked past the freshness check (RAYMOL_SKIP_CORE_CHECK)
+      # still shows which commit it really came from. No-op when unstamped.
+      - name: "Core: set RayMolCoreSHA from core_sha.txt"
+        basedOnDependencyAnalysis: false
+        # Same Info.plist input edge as the scripts above (orders this after
+        # plist generation).
+        inputFiles:
+          - "$(TARGET_BUILD_DIR)/$(INFOPLIST_PATH)"
+        script: |
+          set -e
+          LABEL="$(bash "$SRCROOT/../scripts/check_core_fresh.sh" sha || true)"
+          [ -n "$LABEL" ] || { echo "RayMolCoreSHA skipped (no core_sha.txt stamp)"; exit 0; }
+          PLIST="${TARGET_BUILD_DIR}/${INFOPLIST_PATH}"
+          [ -f "$PLIST" ] || { echo "no Info.plist at $PLIST"; exit 0; }
+          /usr/bin/plutil -replace RayMolCoreSHA -string "$LABEL" "$PLIST"
+          echo "RayMolCoreSHA -> $LABEL ($PLIST)"
       # Sparkle auto-update keys. macOS only (Sparkle is not linked on iOS), and
       # skipped for the Mac App Store fallback (RAYMOL_MAS_RESTRICTED) since that
       # build updates through Apple. The public EdDSA key pairs with the private

@@ -32,6 +32,13 @@ enum AppBuildInfo {
         Self.displayVersion(version: version, build: build, betaLabel: betaLabel)
     }
 
+    /// `RayMolCoreSHA`, e.g. "1fc5fc983" or "1fc5fc983-dirty": the git commit the
+    /// linked libpymol_core.a was built from (#400). A postBuildScript copies it
+    /// from the core_sha.txt stamp that build_macos.sh / build_ios.sh write next
+    /// to the library, so a stale core linked past the pre-build freshness check
+    /// still announces its real commit. `nil` when the core was never stamped.
+    static var coreSHA: String? { Self.normalizedLabel(string(for: "RayMolCoreSHA")) }
+
     /// True when this build came off the beta pipeline.
     static var isBeta: Bool { betaLabel != nil }
 
@@ -39,7 +46,7 @@ enum AppBuildInfo {
     /// " [build] RayMol 1.10.0 (27)". Derived from the bundle so it can never go
     /// stale: it replaced a hand-bumped "v35" marker that sat two months behind
     /// the real version (GitHub issue #377).
-    static var consoleBanner: String { consoleBanner(displayVersion: displayVersion) }
+    static var consoleBanner: String { consoleBanner(displayVersion: displayVersion, coreSHA: coreSHA) }
 
     // MARK: - Pure logic (unit-tested; no Bundle access)
 
@@ -69,9 +76,13 @@ enum AppBuildInfo {
 
     /// Leading space matches the console's other status lines. An Info.plist
     /// with neither key still prints an honest line rather than "RayMol ".
-    static func consoleBanner(displayVersion: String) -> String {
-        displayVersion.isEmpty ? " [build] RayMol (unknown version)"
-                               : " [build] RayMol \(displayVersion)"
+    /// The core commit, when stamped, is appended as " core 1fc5fc983" so a
+    /// console screenshot shows which C++ the app was linked against (#400).
+    static func consoleBanner(displayVersion: String, coreSHA: String? = nil) -> String {
+        let base = displayVersion.isEmpty ? " [build] RayMol (unknown version)"
+                                          : " [build] RayMol \(displayVersion)"
+        guard let core = normalizedLabel(coreSHA) else { return base }
+        return base + " core \(core)"
     }
 
     // MARK: - Bundle access
