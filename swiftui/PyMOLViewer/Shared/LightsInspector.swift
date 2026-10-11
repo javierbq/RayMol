@@ -971,6 +971,9 @@ struct LightsInspector: View {
     @State private var colourWidth: CGFloat = LightsInspector.width - 24
     /// The Rename popover (#797) is open.
     @State private var renaming = false
+    /// The light Rename was tapped on: frozen when the popover opens, so a
+    /// selection change while it is open never retargets it.
+    @State private var renameTarget = ""
     /// 44 on iOS (every control a 44 pt target, #623), 0 on macOS.
     @Environment(\.lightsTouchMinimum) private var touchMinimum
     @Environment(\.lightsExposure) private var exposure
@@ -1216,9 +1219,13 @@ struct LightsInspector: View {
             }
             Divider()
             Button(LightsInspectorState.renameTitle) {
+                let target = state.name
                 // After the menu has closed: a popover opened while the menu is
                 // still dismissing is dropped.
-                DispatchQueue.main.async { renaming = true }
+                DispatchQueue.main.async {
+                    renameTarget = target
+                    renaming = true
+                }
             }
             .disabled(!state.canRename)
             .help(LightsInspectorState.renameHelp)
@@ -1246,7 +1253,7 @@ struct LightsInspector: View {
         .accessibilityHint(LightsInspectorState.menuHint)
         .accessibilityIdentifier("lights.inspector.menu")
         .popover(isPresented: $renaming, arrowEdge: .bottom) {
-            LightRenameForm(controller: controller, style: style, current: state.name) {
+            LightRenameForm(controller: controller, style: style, current: renameTarget) {
                 renaming = false
             }
             .presentationCompactAdaptation(.popover)
