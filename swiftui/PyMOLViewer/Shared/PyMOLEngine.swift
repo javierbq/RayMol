@@ -581,12 +581,13 @@ final class PyMOLEngine: ObservableObject {
     // Frames the restored scene still has to present before the snapshot hands
     // off. nil = no handoff armed (nothing restored yet, or already done).
     private var restoreFramesToPresent: Int?
-    // #385: frames the restored scene still has to present before the
-    // restore-in-progress flag clears. The heavy rep geometry (surfaces,
-    // cartoons) is built on those first frames, not inside `load`, so a kill
-    // there must still count as an interrupted restore. Armed even when no
-    // snapshot is shown. nil = nothing pending.
-    private var restoreFlagFramesToPresent: Int?
+    // #385: the restore-in-progress flag is set and this process's restore
+    // isn't confirmed yet. The heavy rep geometry (surfaces, cartoons) is built
+    // on the first rendered frame, not inside `load`, so the flag clears only
+    // once a frame has rendered AND the object list has landed
+    // (finishRestoreFlagIfReady). Independent of whether a snapshot is shown.
+    private var restoreFlagPending = false
+    private var restoreFrameRendered = false
     // Backstop that drops a stuck snapshot if the render loop never presents.
     private var restoreBackstop: DispatchWorkItem?
     #endif
@@ -921,6 +922,7 @@ final class PyMOLEngine: ObservableObject {
             // The restore handoff may be waiting only on the object list, which
             // pollFeedback just parsed.
             self.finishRestoreHandoffIfReady()
+            self.finishRestoreFlagIfReady()
             #endif
             // While the core is advancing frames, mirror the frame counter at
             // the full 100ms tick so the scrubber tracks playback smoothly.
@@ -1005,20 +1007,32 @@ final class PyMOLEngine: ObservableObject {
     ///   structure was loaded.
     func autosaveSession(keepingNotes: Bool = false) {
         guard isReady, let url = autosaveURL else { return }
-        // While the user has not answered the prompt, the scene is empty only
-        // because the restore was held back, so the empty-scene branch would
-        // delete the autosave the user may still want to retry (#385).
-        guard !interruptedRestorePrompt else { return }
-        guard !objects.isEmpty || keepingNotes else { clearAutosave(); return }
+        // #385: while the prompt is up and nothing new was loaded, there is
+        // nothing to save; the autosave on disk is the session awaiting an answer.
+        if interruptedRestorePrompt && objects.isEmpty { return }
+        guard !objects.isEmpty || keepingNotes else {
+            // #385: never delete an autosave whose restore is unresolved. The
+            // scene can be empty only because that restore is held back behind
+            // the prompt, still loading, or was replaced by a file open that
+            // failed. The flag is cleared by Start Empty, a confirmed restore,
+            // or a fresh save below.
+            if !Self.restoreWasInterrupted(in: .standard) { clearAutosave() }
+            return
+        }
 
         let bgTask = UIApplication.shared.beginBackgroundTask(withName: "RayMolAutosave")
         defer { if bgTask != .invalid { UIApplication.shared.endBackgroundTask(bgTask) } }
 
+        let modifiedBefore = Self.modificationDate(of: url)
         runPython("from pymol import cmd as _c; _c.save(r'''\(url.path)''')")
         let saved = FileManager.default.fileExists(atPath: url.path)
         UserDefaults.standard.set(saved, forKey: Self.autosaveDefaultsKey)
-        if saved {
+        // #385: only a save that actually rewrote the file replaces the session
+        // whose restore was interrupted. A failed save leaves the old (possibly
+        // oversized) file in place, so its flag must stay set.
+        if saved, Self.modificationDate(of: url) != modifiedBefore {
             Self.clearRestoreInProgress(in: .standard)
+            interruptedRestorePrompt = false
         }
         // The viewport snapshot is captured separately on `.inactive` (see
         // captureRestoreSnapshot) — iOS forbids GPU/Metal work once the app is
@@ -1144,7 +1158,8 @@ final class PyMOLEngine: ObservableObject {
         Self.markRestoreInProgress(in: .standard)
         runCommand("load \(url.path)")
         refreshAfterRestore()
-        restoreFlagFramesToPresent = 2
+        restoreFrameRendered = false
+        restoreFlagPending = true
         // Hand the snapshot off once the restored scene has actually presented
         // (restoreRenderTick) AND the object list has landed (so the empty-state
         // CTA can't flash in between) — not after a fixed delay, which either
@@ -1161,11 +1176,20 @@ final class PyMOLEngine: ObservableObject {
     /// restored scene's presented frames down; the handoff itself waits for the
     /// object list too (finishRestoreHandoffIfReady, also polled by the timer).
     private func restoreRenderTick() {
-        restoreFlagFramesToPresent = Self.restoreFlagCountdown(
-            afterPresenting: restoreFlagFramesToPresent, defaults: .standard)
         guard let left = restoreFramesToPresent, left > 0 else { return }
         restoreFramesToPresent = left - 1
         finishRestoreHandoffIfReady()
+    }
+
+    /// #385: clear the restore-in-progress flag once the restored scene has
+    /// rendered a frame (the geometry build survived) and its objects landed.
+    /// Called per rendered frame and from the 100 ms feedback timer.
+    private func finishRestoreFlagIfReady() {
+        guard restoreFlagPending,
+              Self.restoreConfirmed(frameRendered: restoreFrameRendered,
+                                    hasObjects: !objects.isEmpty) else { return }
+        restoreFlagPending = false
+        Self.clearRestoreInProgress(in: .standard)
     }
 
     private func finishRestoreHandoffIfReady() {
@@ -1372,6 +1396,13 @@ final class PyMOLEngine: ObservableObject {
     func heavyRenderTick(presented: Bool = true) {
         #if os(iOS)
         if presented { restoreRenderTick() }
+        // #385: any rendered frame (presented or not) has built the restored
+        // scene's geometry. The first tick after the load always renders: the
+        // load leaves the scene dirty, so it can't be a RenderGate .skip.
+        if restoreFlagPending {
+            restoreFrameRendered = true
+            finishRestoreFlagIfReady()
+        }
         #endif
         guard pendingHeavyClearFrames > 0 else { return }
         pendingHeavyClearFrames -= 1
@@ -1848,25 +1879,28 @@ final class PyMOLEngine: ObservableObject {
 
     static func clearRestoreInProgress(in defaults: UserDefaults) {
         defaults.removeObject(forKey: restoreInProgressDefaultsKey)
+        defaults.synchronize()
     }
 
-    /// Set the in-progress flag before a restore. Flushed right away: the
-    /// main thread blocks in the load next, and a watchdog/jetsam SIGKILL there
-    /// must not lose the write (that would restore blindly again next launch).
+    /// Set the in-progress flag before a restore. Both this and the clear are
+    /// flushed with synchronize() so the flag's state on disk tracks the
+    /// restore even if a watchdog/jetsam SIGKILL follows (the main thread
+    /// blocks in the load right after this). Belt and braces: cfprefsd usually
+    /// persists the write without it.
     static func markRestoreInProgress(in defaults: UserDefaults) {
         defaults.set(true, forKey: restoreInProgressDefaultsKey)
         defaults.synchronize()
     }
 
-    /// One presented frame of the restored scene: count `left` down and clear
-    /// the in-progress flag when the last frame presents. Returns the new
-    /// count (nil = done, or nothing was pending).
-    static func restoreFlagCountdown(afterPresenting left: Int?,
-                                     defaults: UserDefaults) -> Int? {
-        guard let left else { return nil }
-        if left > 1 { return left - 1 }
-        clearRestoreInProgress(in: defaults)
-        return nil
+    /// A restore is confirmed (its in-progress flag may clear) once the restored
+    /// scene has rendered a frame, which builds the rep geometry, and its object
+    /// list has landed. Either one alone is not enough.
+    static func restoreConfirmed(frameRendered: Bool, hasObjects: Bool) -> Bool {
+        frameRendered && hasObjects
+    }
+
+    static func modificationDate(of url: URL) -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
     }
 
     // MARK: - Theme

@@ -266,28 +266,21 @@ final class AutosaveRestoreGuardTests: XCTestCase {
         XCTAssertEqual(action, .askStartEmpty)
     }
 
-    /// The flag is set before the load and survives until the restored scene
-    /// has presented both countdown frames: the rep geometry is built on those
-    /// frames, so a kill there must still read as interrupted next launch.
-    func testFlagClearsOnlyAfterRestoredFramesPresent() {
-        XCTAssertFalse(PyMOLEngine.restoreWasInterrupted(in: defaults))
-        PyMOLEngine.markRestoreInProgress(in: defaults)
-        XCTAssertTrue(PyMOLEngine.restoreWasInterrupted(in: defaults))
-
-        var left = PyMOLEngine.restoreFlagCountdown(afterPresenting: 2, defaults: defaults)
-        XCTAssertEqual(left, 1)
-        XCTAssertTrue(PyMOLEngine.restoreWasInterrupted(in: defaults),
-                      "first frame (geometry build) must not clear the flag")
-
-        left = PyMOLEngine.restoreFlagCountdown(afterPresenting: left, defaults: defaults)
-        XCTAssertNil(left)
-        XCTAssertFalse(PyMOLEngine.restoreWasInterrupted(in: defaults))
+    /// The flag is set before the load and stays set until the restore is
+    /// confirmed (#385): neither the load returning nor the objects landing is
+    /// enough without a rendered frame, which is where the rep geometry
+    /// (surfaces, cartoons) is built and a large session gets killed.
+    func testRestoreConfirmedNeedsRenderedFrameAndObjects() {
+        XCTAssertFalse(PyMOLEngine.restoreConfirmed(frameRendered: false, hasObjects: false))
+        XCTAssertFalse(PyMOLEngine.restoreConfirmed(frameRendered: false, hasObjects: true))
+        XCTAssertFalse(PyMOLEngine.restoreConfirmed(frameRendered: true, hasObjects: false))
+        XCTAssertTrue(PyMOLEngine.restoreConfirmed(frameRendered: true, hasObjects: true))
     }
 
-    /// With nothing pending, a presented frame leaves the flag alone.
-    func testCountdownWithNothingPendingIsANoOp() {
+    /// markRestoreInProgress sets the flag the next launch reads.
+    func testMarkRestoreInProgressSetsFlag() {
+        XCTAssertFalse(PyMOLEngine.restoreWasInterrupted(in: defaults))
         PyMOLEngine.markRestoreInProgress(in: defaults)
-        XCTAssertNil(PyMOLEngine.restoreFlagCountdown(afterPresenting: nil, defaults: defaults))
         XCTAssertTrue(PyMOLEngine.restoreWasInterrupted(in: defaults))
     }
 
@@ -305,7 +298,8 @@ final class AutosaveRestoreGuardTests: XCTestCase {
         XCTAssertEqual(action, .askStartEmpty)
     }
 
-    /// "Start Empty" (via clearAutosave) and a fresh autosave clear the flag.
+    /// The helper that Start Empty (clearAutosave), a confirmed restore and a
+    /// fresh autosave all use to clear the flag.
     func testClearRestoreInProgress() {
         defaults.set(true, forKey: PyMOLEngine.restoreInProgressDefaultsKey)
         XCTAssertTrue(PyMOLEngine.restoreWasInterrupted(in: defaults))
@@ -313,15 +307,17 @@ final class AutosaveRestoreGuardTests: XCTestCase {
         XCTAssertFalse(PyMOLEngine.restoreWasInterrupted(in: defaults))
     }
 
-    /// A "Try Again" restore that completes clears the flag the killed one left.
-    func testSuccessfulRetryClearsLeftoverFlag() {
-        defaults.set(true, forKey: PyMOLEngine.restoreInProgressDefaultsKey)
-        XCTAssertTrue(PyMOLEngine.restoreWasInterrupted(in: defaults))
-        PyMOLEngine.markRestoreInProgress(in: defaults)
-        var left: Int? = 2
-        while left != nil {
-            left = PyMOLEngine.restoreFlagCountdown(afterPresenting: left, defaults: defaults)
-        }
-        XCTAssertFalse(PyMOLEngine.restoreWasInterrupted(in: defaults))
+    /// autosaveSession clears the flag only when the save rewrote the file
+    /// (#385); a missing file reads as nil, so a first save also counts.
+    func testModificationDateTracksRewrites() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("raymol-385-\(UUID().uuidString).pse")
+        defer { try? FileManager.default.removeItem(at: url) }
+        XCTAssertNil(PyMOLEngine.modificationDate(of: url))
+        try Data("a".utf8).write(to: url)
+        let first = try XCTUnwrap(PyMOLEngine.modificationDate(of: url))
+        try FileManager.default.setAttributes(
+            [.modificationDate: first.addingTimeInterval(5)], ofItemAtPath: url.path)
+        XCTAssertNotEqual(PyMOLEngine.modificationDate(of: url), first)
     }
 }
