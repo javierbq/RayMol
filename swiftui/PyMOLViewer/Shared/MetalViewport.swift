@@ -1408,7 +1408,11 @@ extension MetalViewport {
             // Pure click (no drag, no PyMOL button events sent) → CPU pick.
             // NDC in view-point space, bottom-left origin (macOS views aren't
             // flipped, matching PyMOL's NDC) so no Y flip.
-            if moved < 4 {
+            // Lights mode (#696): a plain click off the gizmo runs no pick.
+            let mode = engine?.interactionMode ?? .viewing
+            if moved < 4,
+               LightClickPick.shouldPick(mode: mode, onGizmo: false,
+                                         option: event.modifierFlags.contains(.option), wasDrag: false) {
                 let w = view.bounds.width, h = view.bounds.height
                 if w > 0, h > 0 {
                     let ndcX = Float(loc.x / w) * 2 - 1
@@ -2088,6 +2092,11 @@ extension MetalViewport {
                 engine.moveSetActiveAt(ndcX: ndcX, ndcY: ndcY, aspect: aspect)
                 return
             }
+            // Lights mode (#696): a tap off the gizmo runs no pick and leaves the
+            // selection unchanged.
+            guard LightClickPick.shouldPick(mode: engine.interactionMode, onGizmo: false,
+                                            option: gesture.modifierFlags.contains(.alternate),
+                                            wasDrag: false) else { return }
             #if RAYMOL_MPNN
             if engine.designMode {
                 // In Design mode a viewport tap targets a residue, mirroring the

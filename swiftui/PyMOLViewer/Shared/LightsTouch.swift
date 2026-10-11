@@ -216,6 +216,19 @@ enum LightLongPressRoute: Equatable {
     case contextMenu
 }
 
+/// Whether a click or tap runs the atom pick (#696). In Lights mode a plain
+/// click or tap runs no pick and leaves the selection alone, on or off the
+/// gizmo and with or without the option key (an option-click off a target
+/// places a highlight instead, #622). Every other mode picks on a click that
+/// was not a drag, as before.
+enum LightClickPick {
+    static func shouldPick(mode: InteractionMode, onGizmo: Bool, option: Bool,
+                           wasDrag: Bool) -> Bool {
+        if mode == .lights { return false }
+        return !wasDrag
+    }
+}
+
 /// Where a long-press or an option-tap goes in Lights mode (#623 Q4).
 enum LightTouchRouter {
     /// The point targets: a long-press there never begins, so press, hold and

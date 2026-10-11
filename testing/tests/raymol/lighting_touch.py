@@ -436,6 +436,12 @@ class TestTouchSource(testing.PyMOLTestCase):
         self.assertIsNotNone(tap, 'handleTap not found')
         self.assertIn('lightGizmoTap(at: p, option: gesture.modifierFlags.contains(.alternate), in: view)', tap)
         self.assertLess(tap.find('lightGizmoTap('), tap.find('engine.pick('))
+        # #696: the atom pick is gated on LightClickPick, in both handlers.
+        self.assertLess(tap.find('LightClickPick.shouldPick('), tap.find('engine.pick('))
+        up = body(viewport, 'func handleMouseUp(_ event: NSEvent, in view: MTKView)')
+        self.assertIsNotNone(up, 'handleMouseUp not found')
+        self.assertIn('LightClickPick.shouldPick(', up)
+        self.assertLess(up.find('LightClickPick.shouldPick('), up.find('engine?.pick('))
         routine = body(viewport, 'private func lightGizmoTap(')
         self.assertIsNotNone(routine, 'lightGizmoTap not found')
         option = routine.find('LightTouchRouter.optionTap(at: p, layout: layout)')
