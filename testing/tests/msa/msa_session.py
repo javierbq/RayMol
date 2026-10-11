@@ -78,6 +78,27 @@ class MSASessionTest(MSASessionTestCase):
         cmd.load(empty)
         self.assertEqual(store.names(), [])
 
+    def testPartialRestoreLeavesTheStoreAlone(self):
+        """`load x.pse, partial=1` brings in objects, not extras (#658): neither a
+        session with no alignments nor one with its own replaces the live store."""
+        empty = self.pse()
+        cmd.save(empty)
+        cmd.load_msa(self.toy(), 'other')
+        other = self.pse()
+        cmd.save(other)
+        store.clear()
+        cmd.load_msa(self.toy(), 'aln')
+        live = store.get('aln')
+        for path in (empty, other):
+            cmd.load(path, partial=1)
+            self.assertEqual(store.names(), ['aln'])
+            self.assertIs(store.get('aln'), live)
+        # A full restore still replaces it.
+        cmd.load(other)
+        self.assertEqual(store.names(), ['other'])
+        cmd.load(empty)
+        self.assertEqual(store.names(), [])
+
     def testKeyIsAbsentWhenNothingIsLoaded(self):
         """A user who never touched an alignment gets the .pse they always got."""
         self.assertNotIn(store.SESSION_KEY, cmd.get_session())

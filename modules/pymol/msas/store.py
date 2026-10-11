@@ -232,7 +232,7 @@ def session_save(session, **_kwargs):
     return 1
 
 
-def session_restore(session, **_kwargs):
+def session_restore(session, *, _self=None, **_kwargs):
     """Session-restore task: replace the store with what the session carries.
 
     A session WITHOUT the key clears the store. That is the point: opening a session
@@ -241,7 +241,14 @@ def session_restore(session, **_kwargs):
 
     Tolerant by construction -- a malformed entry is skipped with a warning rather than
     raised, because a restore task that throws takes the whole session load with it.
+
+    A PARTIAL restore (`load x.pse, partial=1`) leaves the live store alone (#658): it
+    brings in the session's objects, not its extras, so clearing would drop the
+    alignments the user already has open.
     """
+    from pymol import cmd, raymol_scenes
+    if raymol_scenes.restoring_partial(cmd if _self is None else _self):
+        return 1
     clear()
     payload = session.get(SESSION_KEY)
     if not isinstance(payload, dict):
