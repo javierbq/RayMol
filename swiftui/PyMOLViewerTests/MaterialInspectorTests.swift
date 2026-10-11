@@ -296,3 +296,216 @@ final class MaterialInspectorTests: XCTestCase {
     // feature's death. The real check is Python-side and reads the list
     // itself: TestSceneMaterialRows.testTheSceneParamsArePolled.
 }
+
+/// Glass glints on sphere impostors (#713). The sphere OIT fragment used to
+/// fold glass's glints into the colour, and weighted-blended OIT scales a
+/// fragment's colour by its coverage -- glass's body coverage, 0.15 -- so the
+/// glints reached the screen at 15% of their strength: on surface dots the
+/// glints-on and glints-off renders differed by at most 7 levels. #833 gave
+/// the fragment the coverage split the VBO and cylinder paths have
+/// (mat_glass_cover / light_glass_cover): the body sits at its coverage and the
+/// glints go on top at full strength. These pin that.
+///
+/// Each test renders a red glass scene over black twice, glints on and off.
+/// A pure red body has no green or blue, and over black the room reflection
+/// adds none, so green and blue come from the (white) glints alone: the
+/// glints-off renders measure 0 in both. The `specular` setting is not the
+/// switch -- glass's glints are its own (mat_glass_shade) and ignore it -- so
+/// the classic glints are toggled the way the rig scales them, by its
+/// `classic` (1 vs 0) with every rig light dark, and a light's glint by its
+/// `highlight`.
+final class SphereGlassGlintTests: XCTestCase {
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var sceneBuilt = false
+    private var savedView: [Float]?
+    private let w = 400, h = 300
+
+    override func tearDown() {
+        if sceneBuilt {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.delete('gg713')
+            _c.set('bg_rgb', globals().pop('_gg713_bg', [0.0, 0.0, 0.0]))
+            _c.set_lights(globals().pop('_gg713_rig', None))
+            for _n in globals().pop('_gg713_enabled', []):
+                _c.enable(_n)
+            """)
+            sceneBuilt = false
+        }
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        super.tearDown()
+    }
+
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            throw XCTSkip("the PyMOL engine did not come up under the test host")
+        }
+    }
+
+    /// A red glass sphere -- or, with `dots`, a red glass dot surface, which
+    /// draws its dots as sphere impostors through the same fragment -- at the
+    /// centre of a black background, with no rig.
+    private func setupScene(dots: Bool) {
+        savedView = engine.captureView()
+        sceneBuilt = true
+        let rep = dots
+            ? """
+            _c.alter('gg713', 'vdw=1.5')
+            _c.set('surface_type', 1, 'gg713')
+            _c.set('dot_as_spheres', 1, 'gg713')
+            _c.show_as('surface', 'gg713')
+            _c.set('surface_material', 'glass', 'gg713')
+            """
+            : """
+            _c.alter('gg713', 'vdw=1.0')
+            _c.show_as('spheres', 'gg713')
+            _c.set('sphere_scale', 1.0, 'gg713')
+            _c.set('sphere_material', 'glass', 'gg713')
+            """
+        engine.runPython("""
+        from pymol import cmd as _c
+        _gg713_enabled = _c.get_names('objects', enabled_only=1)
+        _gg713_bg = list(_c.get_setting_tuple('bg_rgb')[1])
+        _gg713_rig = _c.get_lights()
+        for _n in _gg713_enabled:
+            _c.disable(_n)
+        _c.set_lights(None)
+        _c.pseudoatom('gg713', pos=[0.0, 0.0, 0.0])
+        \(rep)
+        _c.color('red', 'gg713')
+        _c.set('bg_rgb', [0.0, 0.0, 0.0])
+        _c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                     0.0, 0.0, -\(dots ? "20.0" : "12.0"), 0.0, 0.0, 0.0, 5.0, 100.0, -20.0))
+        """)
+    }
+
+    /// One camera-anchored key light, framed on the scene explicitly (so it
+    /// sits well outside the dot surface), with the rig's classic and the
+    /// light's intensity and highlight as given.
+    private func setRig(classic: Double, intensity: Double, highlight: Double) {
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set_lights({'enabled': True, 'centre': [0.0, 0.0, 0.0], 'size': 3.0,
+                       'classic': \(classic),
+                       'lights': [{'name': 'key', 'anchor': 'camera', 'orbit': -30.0,
+                                   'pitch': 20.0, 'intensity': \(intensity),
+                                   'highlight': \(highlight)}]})
+        """)
+    }
+
+    private func render(_ tag: String) throws -> [UInt8] {
+        let png = NSTemporaryDirectory() + "gg713_\(tag)_\(UUID().uuidString).png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: w, height: h, rayTraced: 0)
+        guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: png) as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            XCTFail("no export written (\(tag))")
+            return []
+        }
+        XCTAssertEqual(image.width, w)
+        XCTAssertEqual(image.height, h)
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return rgba
+    }
+
+    /// The largest per-channel difference between two renders, and how many
+    /// pixels have every channel >= `floor` in `on` but not in `off`.
+    private func compare(_ on: [UInt8], _ off: [UInt8], floor: Int) -> (maxDelta: Int, onOnly: Int) {
+        guard on.count == w * h * 4, off.count == on.count else { return (0, 0) }
+        var maxDelta = 0, onOnly = 0
+        for i in 0..<(w * h) {
+            var onBright = true, offBright = true
+            for c in 0..<3 {
+                let a = Int(on[i * 4 + c]), b = Int(off[i * 4 + c])
+                maxDelta = max(maxDelta, abs(a - b))
+                if a < floor { onBright = false }
+                if b < floor { offBright = false }
+            }
+            if onBright && !offBright { onOnly += 1 }
+        }
+        return (maxDelta, onOnly)
+    }
+
+    /// PyMOL's own lights' glints (the key light and the headlight). They are
+    /// soft by design (glass's glints peak near 0.49, #590), so they are pinned
+    /// as visible, not white: >= 40 levels where the folded glints reached 7,
+    /// and a glint patch whose green and blue -- absent from the red body --
+    /// both clear 60. Also checked without a rig, the classic pipeline proper.
+    private func assertClassicGlints(dots: Bool) throws {
+        let what = dots ? "glass dots" : "glass sphere"
+        setRig(classic: 0.0, intensity: 0.0, highlight: 0.5)
+        let off = try render("c0")
+        setRig(classic: 1.0, intensity: 0.0, highlight: 0.5)
+        let onRig = try render("c1")
+        engine.runPython("from pymol import cmd as _c\n_c.set_lights(None)")
+        let onClassic = try render("norig")
+        // Glass's body is 85% see-through, so over black it stays dark: no
+        // bright, glint-free red. An opaque red sphere fills its disc with it
+        // (before #833 -- and #635 -- a glass sphere drew as `default`).
+        let opaqueRed = stride(from: 0, to: onClassic.count, by: 4).filter {
+            onClassic[$0] >= 150 && onClassic[$0 + 1] < 40 && onClassic[$0 + 2] < 40
+        }.count
+        print("713-body \(what) opaque red pixels: \(opaqueRed)")
+        XCTAssertLessThan(opaqueRed, 50, "\(what) should draw as glass, not as an opaque red body")
+        for (name, on) in [("rig classic 1", onRig), ("no rig", onClassic)] {
+            let r = compare(on, off, floor: 60)
+            print("713-classic \(what) \(name) vs classic 0: \(r)")
+            XCTAssertGreaterThanOrEqual(r.maxDelta, 40,
+                "\(what), \(name): the classic glints should move a pixel >= 40 levels (#713)")
+            XCTAssertGreaterThanOrEqual(r.onOnly, 10,
+                "\(what), \(name): the classic glints should leave a patch with green and blue >= 60 (#713)")
+        }
+    }
+
+    /// A studio light's glint at full highlight: sharp and near white.
+    private func assertKeyLightGlint(dots: Bool) throws {
+        let what = dots ? "glass dots" : "glass sphere"
+        setRig(classic: 0.0, intensity: 1.0, highlight: 0.0)
+        let off = try render("hi0")
+        setRig(classic: 0.0, intensity: 1.0, highlight: 1.0)
+        let on = try render("hi1")
+        let r = compare(on, off, floor: 200)
+        print("713-key \(what) highlight 1 vs 0: \(r)")
+        XCTAssertGreaterThanOrEqual(r.maxDelta, 40,
+            "\(what): the key light's glint should move a pixel >= 40 levels (#713)")
+        XCTAssertGreaterThanOrEqual(r.onOnly, 10,
+            "\(what): the key light's glint should be near white (every channel >= 200) (#713)")
+    }
+
+    func testClassicGlintsShowOnAGlassSphere() throws {
+        try requireEngine()
+        setupScene(dots: false)
+        try assertClassicGlints(dots: false)
+    }
+
+    func testStudioKeyLightGlintShowsOnAGlassSphere() throws {
+        try requireEngine()
+        setupScene(dots: false)
+        try assertKeyLightGlint(dots: false)
+    }
+
+    /// The case #713 was measured on: surface dots in glass, drawn as sphere
+    /// impostors through the same OIT fragment.
+    func testGlintsShowOnGlassSurfaceDots() throws {
+        try requireEngine()
+        setupScene(dots: true)
+        try assertClassicGlints(dots: true)
+        try assertKeyLightGlint(dots: true)
+    }
+}
