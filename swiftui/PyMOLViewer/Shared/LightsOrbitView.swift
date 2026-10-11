@@ -605,6 +605,19 @@ struct OrbitPlanPainter {
         spoke.addLine(to: selectedPoint)
         context.stroke(spoke, with: .color(colour), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
 
+        // The beam ticks of lights aimed at a point (#678), under the lamps.
+        for lamp in state.lamps {
+            let r = lamp.isSelected ? LightsOrbitMetrics.selectedLampRadius : LightsOrbitMetrics.lampRadius
+            let p = layout.lampPoint(orbit: lamp.orbit, radius: lamp.radius)
+            guard let tick = layout.aimTick(from: p, lampRadius: r + (lamp.isSelected ? 4 : 0),
+                                            aim: lamp.aimOffset) else { continue }
+            var path = Path()
+            path.move(to: tick.from)
+            path.addLine(to: tick.to)
+            context.stroke(path, with: .color(LightPalette.color(lamp.slot).opacity(state.isOn ? 0.55 : 0.25)),
+                           style: StrokeStyle(lineWidth: 2, lineCap: .round))
+        }
+
         // The other lamps, in rig order, with their pitch labels.
         for lamp in state.lamps where !lamp.isSelected {
             let p = layout.lampPoint(orbit: lamp.orbit, radius: lamp.radius)

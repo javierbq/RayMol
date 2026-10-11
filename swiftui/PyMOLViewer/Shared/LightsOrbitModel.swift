@@ -43,6 +43,11 @@ enum LightsOrbitMetrics {
     static let arcSize = CGSize(width: 58, height: 196)
     /// Between the plan's outer ring and its canvas edge.
     static let planMargin: CGFloat = 5
+    /// The aim tick (#678): its length, its gap from the lamp's edge, and the
+    /// shortest tick worth drawing.
+    static let aimTickLength: CGFloat = 16
+    static let aimTickGap: CGFloat = 3
+    static let aimTickMinimum: CGFloat = 3
     /// The drawn radius of a lamp, and of the selected one.
     static let lampRadius: CGFloat = 6
     static let selectedLampRadius: CGFloat = 8
@@ -164,6 +169,36 @@ struct OrbitPlanLayout: Equatable {
     /// Where the lamp of a light at `orbit` and `radius` is drawn (and hit).
     func lampPoint(orbit: Double, radius: Double) -> CGPoint {
         point(orbit: orbit, distance: drawnDistance(radius: radius))
+    }
+
+    /// The short tick that shows where a light aimed at a point points (#678):
+    /// from just outside the lamp at `lamp` (radius `lampRadius`) towards the
+    /// aim point, whose offset from the rig centre in the plan's (x, z) eye
+    /// axes is `aim` (scene sizes). It stops at the aim point and at the outer
+    /// ring. nil for a light aimed at the centre (`aim` nil: it always points
+    /// inward) and when the aim point is on the lamp, so it has no direction.
+    func aimTick(from lamp: CGPoint, lampRadius: CGFloat, aim: SIMD2<Double>?)
+        -> (from: CGPoint, to: CGPoint)? {
+        guard let aim, aim.x.isFinite, aim.y.isFinite else { return nil }
+        let target = CGPoint(x: centre.x + CGFloat(aim.x) * pointsPerSize,
+                             y: centre.y + CGFloat(aim.y) * pointsPerSize)
+        let dx = target.x - lamp.x, dy = target.y - lamp.y
+        let distance = hypot(dx, dy)
+        let gap = lampRadius + LightsOrbitMetrics.aimTickGap
+        guard distance > gap + LightsOrbitMetrics.aimTickMinimum else { return nil }
+        let ux = dx / distance, uy = dy / distance
+        var length = min(LightsOrbitMetrics.aimTickLength, distance - gap)
+        let start = CGPoint(x: lamp.x + ux * gap, y: lamp.y + uy * gap)
+        // Clip along the beam where it leaves the outer ring; a start already
+        // outside it (a lamp on the rim aiming outwards) has no tick.
+        let sx = start.x - centre.x, sy = start.y - centre.y
+        let c = sx * sx + sy * sy - outerRadius * outerRadius
+        guard c <= 0 else { return nil }
+        let b = sx * ux + sy * uy
+        length = min(length, -b + (b * b - c).squareRoot())
+        guard length >= LightsOrbitMetrics.aimTickMinimum else { return nil }
+        let end = CGPoint(x: start.x + ux * length, y: start.y + uy * length)
+        return (start, end)
     }
 
     /// The orbit of `point` around the centre; nil within
@@ -547,6 +582,10 @@ struct LightsOrbitState: Equatable {
         var isPinned: Bool
         /// Beyond the plan's extent or nearer than 0.5×.
         var isOutOfRange: Bool
+        /// Where the light aims, as an offset from the rig centre on the
+        /// plan's axes in scene sizes: nil when aimed at the centre or when
+        /// eye space is not read.
+        var aimOffset: SIMD2<Double>? = nil
         /// Its pitch (`+30°`), plus its true radius when out of range
         /// (`+30° · 12.0×`).
         var labelText: String
@@ -599,6 +638,7 @@ struct LightsOrbitState: Equatable {
               let lights = controller.rig?.lights, lights.indices.contains(index) else { return nil }
         let placements = lights.indices.map { controller.placement(at: $0) ?? lights[$0].placement }
         let extent = OrbitPlanLayout.extent(for: placements.map(\.radius))
+        let eyeSpace = controller.eye.eyeSpace
         lamps = lights.enumerated().map { i, light in
             let p = placements[i]
             let out = OrbitPlanLayout.isOutOfRange(radius: p.radius, extent: extent)
@@ -606,6 +646,7 @@ struct LightsOrbitState: Equatable {
                         orbit: p.orbit, pitch: p.pitch, radius: p.radius,
                         isSelected: i == index, isPinned: light.anchor == .pinned,
                         isOutOfRange: out,
+                        aimOffset: Self.aimOffset(eyeSpace, at: i),
                         labelText: Self.label(pitch: p.pitch, radius: p.radius, outOfRange: out))
         }
         selected = lamps[index]
@@ -616,6 +657,15 @@ struct LightsOrbitState: Equatable {
         orbitText = LightInspectorFormat.angle(selected.orbit)
         pitchText = LightInspectorFormat.angle(selected.pitch, plus: true)
         radiusText = LightInspectorFormat.radius(selected.radius, frameSize: frameSize)
+    }
+
+    /// Light `index`'s aim as a plan offset (see `Lamp.aimOffset`): only for
+    /// a light aimed at a point, from the eye-space read.
+    static func aimOffset(_ eye: LightEyeSpace?, at index: Int) -> SIMD2<Double>? {
+        guard let eye, eye.hasFrame, eye.size > 0, eye.lights.indices.contains(index),
+              eye.lights[index].aim == .point else { return nil }
+        let d = SIMD3<Double>(eye.lights[index].target - eye.centre) / Double(eye.size)
+        return SIMD2(d.x, d.z)
     }
 
     /// The lamp of the light called `name` (ignoring case).

@@ -370,8 +370,12 @@ final class LightsOrbitLiveTests: XCTestCase {
         XCTAssertEqual(after.selected.orbit, moved.orbit, "the arc and labels follow too")
 
         // Camera lights stay put on the plan (decision 6).
-        XCTAssertEqual(after.lamp(named: "key"), key, "a camera light does not move")
-        XCTAssertEqual(after.lamp(named: "fill"), fill)
+        // (Its aim point is a world point, so its beam tick may turn: not compared.)
+        func placed(_ lamp: LightsOrbitState.Lamp?) -> LightsOrbitState.Lamp? {
+            lamp.map { var l = $0; l.aimOffset = nil; return l }
+        }
+        XCTAssertEqual(placed(after.lamp(named: "key")), placed(key), "a camera light does not move")
+        XCTAssertEqual(placed(after.lamp(named: "fill")), placed(fill))
         XCTAssertEqual(Double(try coreEye(0).orbit), 12.5, accuracy: 1e-3)
         XCTAssertEqual(try coreRig().lights[2].anchor, .pinned, "the frame hook writes nothing")
         XCTAssertEqual(controllerChanges.count, 0, "a per-frame publish must not re-render the bar")
