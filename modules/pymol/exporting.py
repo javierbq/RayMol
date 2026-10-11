@@ -219,6 +219,75 @@ ARGUMENTS
             lines.append('')  # final newline
         return '\n'.join(lines)
 
+    def fasta(selection='', state=-1, chains=1, quiet=0, *, _self=cmd):
+        '''
+DESCRIPTION
+
+    "fasta" prints the protein and nucleic acid sequences of a selection
+    in FASTA format to the console, where the text can be selected and
+    copied, e.g. into a BLAST box or a structure prediction input.
+
+USAGE
+
+    fasta [ selection [, state [, chains ]]]
+
+ARGUMENTS
+
+    selection = string: atom selection {default: enabled objects}
+
+    state = int: only used if state > 0 {default: -1}
+
+    chains = 0 or 1: 1 prints one record per chain (">object_chain"),
+    0 prints one record per object, with all of its chains joined
+    {default: 1}
+
+EXAMPLES
+
+    fasta
+    fasta 1ubq
+    fasta 1ubq and chain A
+    fasta 1ubq, chains=0
+
+NOTES
+
+    With no selection, only enabled, public objects are used (objects
+    whose name starts with an underscore are internal and are skipped).
+    Residues are read from "guide & alt +A" atoms, so ligands, water and
+    other non-polymer entities are not included; unknown residues are
+    written as "?".
+
+    The FASTA text is also returned. Given the same selection, state and
+    chains, "cmd.fasta(quiet=1)" returns the same string as
+    "cmd.get_fastastr"; with no selection the two differ, because
+    "get_fastastr" defaults to all objects.
+
+SEE ALSO
+
+    save, get_fastastr
+
+PYMOL API
+
+    cmd.fasta(string selection, int state, int chains, int quiet)
+
+        '''
+        chains, quiet = int(chains), int(quiet)
+
+        selection = str(selection).strip()
+        if not selection:
+            selection = 'enabled & ! (model _*)'
+
+        # key=model folds every chain of an object into one record
+        text = _self.get_fastastr(selection, state, 1,
+                                  '' if chains else 'model')
+
+        if not quiet:
+            if text:
+                print(text.rstrip('\n'))
+            else:
+                print(' fasta: no sequence found.')
+
+        return text
+
     def get_pdbstr(selection="all", state=-1, ref='', ref_state=-1, quiet=1, *, _self=cmd):
         '''
 DESCRIPTION

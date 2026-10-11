@@ -88,6 +88,7 @@ def get_command_keywords(self_cmd=cmd):
         'exec'          : [ self_cmd.python_help       , 0 , 0 , ''  , parsing.PYTHON ],
         'fab'           : [ self_cmd.fab               , 0 , 0 , ''  , parsing.STRICT ],
         'fnab'          : [ self_cmd.fnab              , 0 , 0 , ''  , parsing.STRICT ],
+        'fasta'         : [ self_cmd.fasta             , 0 , 0 , ''  , parsing.STRICT ],
         'feedback'      : [ self_cmd.feedback          , 0,  0 , ''  , parsing.STRICT ],
         'fetch'         : [ self_cmd.fetch             , 0,  0 , ''  , parsing.STRICT ],
         'fit'           : [ self_cmd.fit               , 0 , 0 , ''  , parsing.STRICT ],

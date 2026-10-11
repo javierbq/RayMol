@@ -231,6 +231,7 @@ from . import exporting
 from .exporting import \
       copy_image,         \
       cache,              \
+      fasta,              \
       get_str,            \
       get_bytes,          \
       get_pdbstr,         \

@@ -226,6 +226,7 @@ def get_auto_arg_list(self_cmd=cmd):
         'cache'          : [ self_cmd.exporting.cache_action_sc , 'cache mode'   , ', ' ],
         'center'         : aa_sel_e,
         'center_all'     : aa_obj_c,
+        'fasta'          : aa_sel_c,
         'cealign'        : aa_sel_e,
         'centerofmass'   : aa_sel_e,
         'color'          : [ lambda c=self_cmd:c._get_color_sc(c), 'color'       , ', ' ],
