@@ -191,12 +191,10 @@ class TestTheMapping(_RayCase):
         self.assertEqual(ray_params('m', 'surface')[0], 2)
 
     def testRayFollowsTheDrawDegradations(self):
-        # glass has no sphere-impostor path and degrades to default there --
-        # so under `ray` a frosted_glass sphere must not pick up the frost
-        # texture either, or the viewport and the export disagree about what
-        # the rep is made of.
+        # #635: glass draws on spheres, so frosted_glass spheres trace with
+        # the frosted_glass ray params (Matte 1 texture and implied alpha).
         peptide(rep='spheres', material='frosted_glass')
-        self.assertEqual(ray_params('m', 'spheres'), (0, 0, 1.0, 1.0, 0.0))
+        self.assertEqual(ray_params('m', 'spheres'), EXPECTED['frosted_glass'])
         # glass on a stick rep that emits stick_ball spheres: the whole rep
         # degrades.
         cmd.show('sticks', 'm')
@@ -391,3 +389,11 @@ class TestGlassSurfaceUnderRay(_RayCase):
         # measured ~32 against ~0 for default; 0.85 opacity is a small
         # share of red, so the bar sits well below it but far above noise
         self.assertGreater(jelly, opaque + 15)
+
+    def testGlassSpheresTraceTranslucent(self):
+        # #635: clear and frosted glass spheres trace translucent under ray
+        opaque = self.red_behind('default', 0, rep='spheres')
+        self.assertLess(opaque, 5)
+        for name in ('glass', 'frosted_glass'):
+            val = self.red_behind(name, 0, rep='spheres')
+            self.assertGreater(val, opaque + 40, name)

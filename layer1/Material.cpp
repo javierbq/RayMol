@@ -253,19 +253,9 @@ MaterialParams MaterialResolve(int id, int repType)
   if (!row || !row->implemented) {
     return MaterialParams{};
   }
-  /* Clear and frosted glass do not draw on sphere impostors: at an implied
-     alpha of 0.15 / 0.2 a sphere reads as a near-invisible disc, and a
-     ball-and-stick of them as scattered smudges. Jelly DOES (#526): at 0.85 it
-     is a dense body, gummy balls are the representation a gummy most
-     obviously belongs on, and the path already exists --
-     buildImpostorPipelines() builds the sphere pipelines for every implemented
-     family and mat_impostor_composite's kMatGlass branch dispatches jelly.
-     Kept in one place so a rep cannot shade as a material while building with
-     its implied alpha (MaterialEffectiveTransparency resolves through here). */
-  if (row->family == cMaterialFamily_glass && repType == cRepSphere &&
-      row->id != cMaterial_jelly) {
-    return MaterialParams{};
-  }
+  /* Clear and frosted glass draw on sphere impostors since #635 (through the
+     OIT glass path with the coverage split); the only remaining glass
+     degradation is the ball-and-stick one in MaterialResolveForDraw. */
   return row->params;
 }
 
@@ -526,10 +516,9 @@ const char* MaterialGetName(int id)
  * `stick_ball` is an ATOM-level setting (SettingInfo.h: REC_b(276, stick_ball,
  * atom)) and RepCylBond reads it per atom via AtomSettingGetWD. Asking only the
  * object/global value therefore answers the wrong question in both directions:
- * an atom-level `stick_ball 1` under an object-level 0 drew glass balls (the
- * near-invisible discs the rule exists to prevent, and reachable now that the
- * glass-family sphere pipelines are built), while every atom overriding an
- * object-level 1 back to 0 degraded a rep that emits no balls at all.
+ * an atom-level `stick_ball 1` under an object-level 0 drew glass balls the
+ * rule exists to keep off, while every atom overriding an object-level 1 back
+ * to 0 degraded a rep that emits no balls at all.
  *
  * Scanned only for a glass stick rep, which is rare and already expensive; the
  * default path never reaches this.
@@ -596,16 +585,16 @@ static MaterialParams MaterialResolveForDrawCached(PyMOLGlobals* G,
 {
   // The SETTING comes from the source layer (a side chain following its
   // cartoon reads cartoon_material); the degradations below stay keyed on the
-  // rep that actually draws -- glass on sphere impostors, stick_ball glass.
+  // rep that actually draws -- stick_ball glass.
   int const id = MaterialResolveSettingId(
       G, set1, set2, MaterialSourceRep(G, set1, set2, repType, obj));
   MaterialParams params = MaterialResolve(id, repType);
   // stick_ball spheres are emitted by the STICK rep, so they arrive as cRepCyl
-  // and take stick_material -- including clear or frosted glass, which
-  // MaterialResolve keeps off sphere impostors. A glassy stick beside
-  // near-invisible ball discs looks broken, so the WHOLE rep degrades to
-  // `default` rather than half of it. Jelly is exempt, as it is from the
-  // sphere rule (#526): its balls read as gummy balls.
+  // and take stick_material -- including clear or frosted glass. The sphere
+  // rep draws those since #635 (MaterialResolve), but ball-and-stick keeps
+  // degrading the WHOLE rep to `default` until that case is checked on its own
+  // (many small OIT balls beside the sticks: look and cost). Jelly is exempt
+  // (#526): its balls read as gummy balls.
   //
   // This rule depends on a setting, not on the rep alone, so MaterialResolve
   // cannot express it. It lives here rather than at the draw site because

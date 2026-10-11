@@ -130,12 +130,16 @@ class TestSideChainsFollowTheCartoon(testing.PyMOLTestCase):
         self.assertEqual(_cmd.get_rep_material(cmd._COb, '', STICKS, -1, 1), STICKS)
 
     def testDegradationsStayKeyedOnTheRepThatDraws(self):
-        """Glass on sphere impostors floats as near-invisible discs, so spheres
-        following a glass cartoon still draw `default`."""
+        """Spheres following a glass cartoon draw glass (#635), while sticks
+        following it on a ball-and-stick still degrade to `default`: the rule
+        is keyed on the rep that draws, not on the source layer."""
         cmd.set('cartoon_material', 'glass', 'p')
         self.assertEqual(params('p', CARTOON)[0], 3)   # glass family
         self.assertEqual(params('p', STICKS)[0], 3)
-        self.assertEqual(params('p', SPHERES)[0], 0)
+        self.assertEqual(params('p', SPHERES)[0], 3)
+        cmd.set('stick_ball', 1, 'p')
+        self.assertEqual(params('p', STICKS)[0], 0)
+        self.assertEqual(params('p', CARTOON)[0], 3)
 
     def testEverythingDefaultStaysDefault(self):
         cmd.unset('cartoon_material', 'p')

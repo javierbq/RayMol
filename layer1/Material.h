@@ -93,8 +93,8 @@ int MaterialSettingForRep(int repType);
  *
  * Per object, not per atom: a ligand shown as sticks in the same object follows
  * too. Surfaces never follow. Only the SETTING is borrowed -- the degradations
- * of MaterialResolve stay keyed on the rep that draws (glass on sphere
- * impostors), so pass the real rep to it.
+ * of MaterialResolve stay keyed on the rep that draws (glass on stick_ball
+ * sticks), so pass the real rep to it.
  *
  * With every material at `default` this changes nothing that is drawn: the
  * cartoon then resolves to `material_default`, which is what the layer would
@@ -189,7 +189,7 @@ float MaterialEffectiveTransparency(PyMOLGlobals* G, const CSetting* set1,
  * The parameters a material id renders with on a given representation.
  *
  * Also where a material that cannot draw on a representation degrades to
- * `default` (glass on sphere impostors, for one) rather than glitching.
+ * `default` (such as glass on stick_ball sticks) rather than glitching.
  *
  * The table behind this arrives with the material table itself (#486); today
  * every id resolves to `default`, so declaring a material changes nothing that
@@ -418,8 +418,7 @@ int MaterialGetFamily(int id);
 
 /**
  * The material id a representation EFFECTIVELY draws with, after the per-rep
- * degradation in MaterialResolve (glass on sphere impostors, for one, which
- * would otherwise float as near-invisible discs).
+ * degradation in MaterialResolve (glass on stick_ball sticks, for one).
  *
  * Distinct from MaterialResolveSettingId, which answers what the SETTING says.
  * Both matter: the setting keeps the user's intent across a .pse, while this is
