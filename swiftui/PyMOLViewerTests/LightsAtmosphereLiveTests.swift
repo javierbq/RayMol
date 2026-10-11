@@ -632,27 +632,21 @@ final class AirDustTickCacheTests: XCTestCase {
         """)
         _ = try stats(forget: true)
 
-        // The first 20 airTick frames must all be full (air +0)
-        for _ in 0..<20 {
-            let sBefore = try stats()
-            frame(airTick: true)
-            let sAfter = try stats()
-            XCTAssertEqual(sAfter.air - sBefore.air, 0, "temporal AO must not cache during first 20 frames")
-            XCTAssertEqual(sAfter.scene - sBefore.scene, 1, "frame must be full")
-        }
-
-        // Within 40 more airTick frames, a dust-only frame happens
-        var settled = false
-        for _ in 0..<40 {
+        // Every tick is full until a frame whose AO has accumulated
+        // kAirCacheAOFrames (32) frames since the camera reset it was kept.
+        var firstDustOnly = 0
+        for tick in 1...60 {
             let sBefore = try stats()
             frame(airTick: true)
             let sAfter = try stats()
             if sAfter.air > sBefore.air {
-                settled = true
+                firstDustOnly = tick
                 break
             }
+            XCTAssertEqual(sAfter.scene - sBefore.scene, 1, "tick \(tick) must be full")
         }
-        XCTAssertTrue(settled, "temporal AO must settle and cache within 40 frames")
+        XCTAssertGreaterThan(firstDustOnly, 32, "the image was kept before the AO settled")
+        XCTAssertLessThanOrEqual(firstDustOnly, 40, "temporal AO must settle and cache")
     }
 
     func testExportsRenderInFull() throws {
@@ -742,6 +736,7 @@ final class AirDustTickCacheTests: XCTestCase {
         print("685-gpu-ms full=\(fullMedian) dust=\(dustMedian)")
         XCTAssertGreaterThan(fullMedian, 0.0, "full median must be > 0")
         XCTAssertGreaterThan(dustMedian, 0.0, "dust median must be > 0")
+        XCTAssertLessThan(dustMedian, fullMedian, "a dust-only tick must cost less GPU time")
     }
 }
 #endif

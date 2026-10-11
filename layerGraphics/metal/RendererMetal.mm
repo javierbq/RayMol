@@ -4394,6 +4394,7 @@ void RendererMetal::ensureRayTracingTransAS()
     if (_rtTransAS) releaseRayTracingTransAS();
     return;
   }
+  // (A new skip or rebuild condition here belongs in rayTracingCurrent().)
   // Built already -- to a structure, or to nothing when every transparent
   // triangle was clipped away (latched too, or that frame record would be
   // re-gathered every frame for nothing).
@@ -4551,6 +4552,7 @@ void RendererMetal::ensureRayTracingAS()
   // geometry itself was never gathered — a pure camera move re-draws the same
   // entries at the same generations and lands on the same signature.
   uint64_t h = _rtFrameSig;
+  // A new skip or rebuild condition here belongs in rayTracingCurrent() too.
   if (_rtReady && _rtInstanceAS && !_rtGeomDirty && h == _rtSphereHash) {
     // Unchanged casters. The grid cell RECTS are not part of the signature (a
     // window resize must not rebuild), so refresh them from this frame's record.
@@ -13098,13 +13100,17 @@ bool RendererMetal::airCacheStats(int& sceneFrames, int& postChains,
   return true;
 }
 
+// #685: whether the next beginFrame would rebuild nothing, i.e. this frame's
+// record is the one the structures were built from. Mirrors the skip tests of
+// ensureRayTracingAS and ensureRayTracingTransAS: keep them in step. With ray
+// tracing off no structure is traced, so nothing can be stale.
 bool RendererMetal::rayTracingCurrent() const
 {
   if (!_rtEnabled || !_rtSupported) return true;
   const bool opaque = _rtFrameKeys.empty()
       ? !_rtReady
-      : (_rtReady && _rtInstanceAS && !_rtGeomDirty && _rtFrameSig == _rtSphereHash &&
-         _rtFrameMat == _rtBuiltMat);
+      : (_rtReady && _rtInstanceAS && !_rtGeomDirty &&
+         _rtFrameSig == _rtSphereHash && _rtFrameMat == _rtBuiltMat);
   if (!opaque) return false;
   if (!_rtTransparent || _rtTFrameKeys.empty() || _rtFrameKeys.empty())
     return _rtTransAS == nil;

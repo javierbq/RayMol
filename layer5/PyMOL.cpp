@@ -18,6 +18,8 @@
 #include "os_std.h"
 #include "os_gl.h"
 
+#include <atomic>
+
 #include <clocale>
 
 #include "MemoryDebug.h"
@@ -109,7 +111,7 @@ struct CPyMOL {
   int FakeDragFlag{};
   int RedisplayFlag{};
   // #685: bumped on every redisplay request, consumed or not
-  unsigned long RedisplayGeneration{};
+  std::atomic<unsigned long> RedisplayGeneration{};
   int PassiveFlag{};
   int SwapFlag{};
   int BusyFlag{};
@@ -2859,7 +2861,7 @@ int PyMOL_GetRedisplay(CPyMOL * I, int reset)
 
 unsigned long PyMOL_GetRedisplayGeneration(CPyMOL * I)
 {
-  return I ? I->RedisplayGeneration : 0;
+  return I ? I->RedisplayGeneration.load() : 0UL;
 }
 
 int PyMOL_GetPassive(CPyMOL * I, int reset)
