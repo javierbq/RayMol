@@ -447,13 +447,17 @@ int PyMOLBridge_SetView(PyMOLHandle h, const float *view, int count, float anima
 
 int PyMOLBridge_TurnZ(PyMOLHandle h, float degrees)
 {
-    // CmdTurn's body (layer4/Cmd.cpp) without the Python: it refuses during
-    // a modal draw (APIEnterNotModal), and SceneRotateAxis -> SceneRotate
+    // CmdTurn's body (layer4/Cmd.cpp) without running Python source: it
+    // refuses during a modal draw (APIEnterNotModal) and holds the API lock
+    // that cmd.turn's `with lockcm` holds, as the one-finger rotate does
+    // (PyMOL_Drag, PYMOL_API_LOCK). SceneRotateAxis -> SceneRotate
     // invalidates the scene, so the display link redraws.
     if (!h || PyMOL_GetModalDraw(INST(h))) return 0;
     PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
     if (!G) return 0;
+    PyMOL_LockAPIAndUnblock(INST(h));
     SceneRotateAxis(G, degrees, 'z');
+    PyMOL_BlockAndUnlockAPI(INST(h));
     return 1;
 }
 

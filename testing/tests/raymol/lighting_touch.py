@@ -434,8 +434,8 @@ class TestTouchSource(testing.PyMOLTestCase):
     def testTheTwistRunsNoPython(self):
         """#719: both twist handlers roll through rollCamera(byRadians:),
         which calls engine.turnZ; that calls PyMOLBridge_TurnZ, which is
-        CmdTurn's SceneRotateAxis with the modal-draw refusal and no Python.
-        No handler runs Python per tick."""
+        CmdTurn's SceneRotateAxis with the modal-draw refusal and the API
+        lock, and runs no Python source. No handler runs Python per tick."""
         viewport = self.read(VIEWPORT)
         engine_src = self.read(ENGINE)
         bridge = self.read(BRIDGE)
@@ -463,6 +463,14 @@ class TestTouchSource(testing.PyMOLTestCase):
         self.assertIsNotNone(bridge_turn, 'PyMOLBridge_TurnZ not found')
         self.assertIn('PyMOL_GetModalDraw(INST(h))', bridge_turn)
         self.assertIn("SceneRotateAxis(G, degrees, 'z')", bridge_turn)
+        # The API lock cmd.turn's lockcm holds (PyMOL_Drag's PYMOL_API_LOCK),
+        # taken around the rotation and released after it.
+        lock = bridge_turn.find('PyMOL_LockAPIAndUnblock(INST(h))')
+        rotate = bridge_turn.find("SceneRotateAxis(G, degrees, 'z')")
+        unlock = bridge_turn.find('PyMOL_BlockAndUnlockAPI(INST(h))')
+        self.assertGreaterEqual(lock, 0, 'TurnZ takes no API lock')
+        self.assertLess(lock, rotate)
+        self.assertLess(rotate, unlock)
         for banned in ('PyRun', 'PAutoBlock', 'PyMOLBridge_RunPython'):
             self.assertNotIn(banned, bridge_turn)
 

@@ -1312,9 +1312,10 @@ final class PyMOLEngine: ObservableObject {
     }
 
     /// Roll the camera `degrees` about the view's z axis, exactly as
-    /// `cmd.turn('z', degrees)` but with no Python (#719): the two-finger
-    /// twist calls this on every tick. The core marks the scene dirty, so the
-    /// display link redraws without a request.
+    /// `cmd.turn('z', degrees)` (same API lock, same modal-draw refusal) but
+    /// with no Python source run (#719): the two-finger twist calls this on
+    /// every tick. The core marks the scene dirty, so the display link
+    /// redraws without a request.
     func turnZ(_ degrees: Float) {
         guard isReady, degrees.isFinite, let instance else { return }
         _ = PyMOLBridge_TurnZ(instance, degrees)

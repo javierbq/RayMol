@@ -185,6 +185,7 @@ final class TwistRollTests: XCTestCase {
 
     override func tearDown() {
         engine.pythonTap = nil
+        engine.commandTap = nil
         if let savedView {
             engine.restoreView(savedView, animate: 0)
         }
@@ -241,12 +242,15 @@ final class TwistRollTests: XCTestCase {
         let coordinator = MetalViewport.Coordinator()
         coordinator.engine = engine
 
-        let lines = Lines()
+        let lines = Lines(), commands = Lines()
         engine.pythonTap = { lines.append($0) }
+        engine.commandTap = { commands.append($0) }
         coordinator.rollCamera(byRadians: 0.3)
         engine.pythonTap = nil
+        engine.commandTap = nil
 
         XCTAssertTrue(lines.lines.isEmpty, "rollCamera ran Python: \(lines.lines)")
+        XCTAssertTrue(commands.lines.isEmpty, "rollCamera ran a command: \(commands.lines)")
         let twisted = try XCTUnwrap(engine.captureView())
         engine.restoreView(s, animate: 0)
 

@@ -1164,7 +1164,7 @@ extension MetalViewport {
         /// One tick of the two-finger twist (#719), shared by the iOS rotation
         /// recognizer and the macOS trackpad twist: `radians` is the change in the
         /// recognizer's cumulative rotation since the last tick. Rolls the camera
-        /// about z through the bridge (engine.turnZ), never Python.
+        /// about z through the bridge (engine.turnZ), never runPython.
         func rollCamera(byRadians radians: CGFloat) {
             let deg = kRollSign * Float(radians) * 180.0 / .pi
             engine?.turnZ(deg)
