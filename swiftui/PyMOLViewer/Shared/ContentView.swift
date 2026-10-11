@@ -4965,18 +4965,19 @@ enum SaveStructureSelection {
         !["wrl", "pov"].contains(ext.lowercased())
     }
 
-    /// MOL and XYZ hold one molecule: several chosen objects are merged into it.
+    /// MOL holds one molecule: several chosen objects are merged into it. (XYZ and the
+    /// other multi-entry formats write one record per object.)
     static func mergesObjects(ext: String) -> Bool {
-        ["mol", "xyz"].contains(ext.lowercased())
+        ext.lowercased() == "mol"
     }
 
-    /// Names the `%name` selector can carry. PyMOL itself strips whitespace and
-    /// punctuation from object names, so this only keeps a stray odd name from
-    /// breaking the generated expression (or the Python literal it is embedded in).
+    /// Names the `%name` selector can carry: the characters PyMOL's own name
+    /// validation allows (`ObjectMakeValidName`: letters, digits and `+ - . ^ _`).
+    /// It only keeps a stray odd name from breaking the generated expression.
     static func isSelectorSafe(_ name: String) -> Bool {
         !name.isEmpty && name.unicodeScalars.allSatisfy {
             ("a"..."z").contains($0) || ("A"..."Z").contains($0) || ("0"..."9").contains($0)
-                || "_.-+".unicodeScalars.contains($0)
+                || "_.-+^".unicodeScalars.contains($0)
         }
     }
 
@@ -4995,15 +4996,26 @@ enum SaveStructureSelection {
         return parts.isEmpty ? .nothing : .subset(parts.joined(separator: " or "))
     }
 
+    /// A Python string literal for `value`. The destination path is user-typed in the
+    /// save panel and may hold quotes or backslashes, so it must not be interpolated raw.
+    static func pythonLiteral(_ value: String) -> String {
+        "'" + value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "'", with: "\\'")
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\r", with: "\\r") + "'"
+    }
+
     /// The Python that writes `path`, or nil for `.nothing`.
     static func saveCommand(path: String, choice: SaveStructureChoice) -> String? {
+        let head = "from pymol import cmd as _c\n"
         switch choice {
         case .nothing:
             return nil
         case .everything:
-            return "from pymol import cmd as _c\n_c.save(r'''\(path)''')"
+            return head + "_c.save(\(pythonLiteral(path)))"
         case .subset(let expression):
-            return "from pymol import cmd as _c\n_c.save(r'''\(path)''', r'''\(expression)''')"
+            return head + "_c.save(\(pythonLiteral(path)), \(pythonLiteral(expression)))"
         }
     }
 }
@@ -5042,7 +5054,7 @@ struct SaveStructureCandidates: Equatable {
             _s = 'sele' in (_c.get_names('selections') or []) and _c.count_atoms('sele') > 0
         except Exception:
             _s = False
-        open(r'''\(url.path)''', 'w').write(json.dumps({'objects': _o, 'sele': bool(_s)}))
+        open(\(SaveStructureSelection.pythonLiteral(url.path)), 'w').write(json.dumps({'objects': _o, 'sele': bool(_s)}))
         """)
         guard let data = try? Data(contentsOf: url) else { return nil }
         return parse(data)

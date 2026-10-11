@@ -99,7 +99,7 @@ final class SaveStructureSelectionTests: XCTestCase {
         XCTAssertEqual(SaveStructureSelection.choice(selectedObjects: Set(all), allObjects: all,
                                                      includeSelection: true), .everything)
         let code = SaveStructureSelection.saveCommand(path: "/tmp/s.pdb", choice: .everything)
-        XCTAssertEqual(code, "from pymol import cmd as _c\n_c.save(r'''/tmp/s.pdb''')")
+        XCTAssertEqual(code, "from pymol import cmd as _c\n_c.save('/tmp/s.pdb')")
     }
 
     func testSubsetBuildsExpressionInObjectOrder() {
@@ -122,10 +122,10 @@ final class SaveStructureSelectionTests: XCTestCase {
 
     func testNamesWithSpecialCharactersUseTheExplicitReference() {
         // Digit-leading, '+', '-', '.' would otherwise parse as atom keywords/operators.
-        let odd = ["1abc", "p+q", "a-b", "x.y", "and_"]
-        let choice = SaveStructureSelection.choice(selectedObjects: ["p+q", "a-b", "x.y"],
+        let odd = ["1abc", "p+q", "a-b", "x.y", "and_", "a^b"]
+        let choice = SaveStructureSelection.choice(selectedObjects: ["p+q", "a-b", "x.y", "a^b"],
                                                    allObjects: odd, includeSelection: false)
-        XCTAssertEqual(choice, .subset("%p+q or %a-b or %x.y"))
+        XCTAssertEqual(choice, .subset("%p+q or %a-b or %x.y or %a^b"))
         XCTAssertTrue(odd.allSatisfy(SaveStructureSelection.isSelectorSafe))
     }
 
@@ -145,7 +145,7 @@ final class SaveStructureSelectionTests: XCTestCase {
     func testSubsetSaveCommandPassesTheSelection() {
         let code = SaveStructureSelection.saveCommand(path: "/tmp/s.cif",
                                                       choice: .subset("%2kpo or %lig"))
-        XCTAssertEqual(code, "from pymol import cmd as _c\n_c.save(r'''/tmp/s.cif''', r'''%2kpo or %lig''')")
+        XCTAssertEqual(code, "from pymol import cmd as _c\n_c.save('/tmp/s.cif', '%2kpo or %lig')")
     }
 
     func testSceneFormatsSkipThePicker() {
@@ -156,10 +156,16 @@ final class SaveStructureSelectionTests: XCTestCase {
         }
     }
 
-    func testOnlyMolAndXyzMergeObjects() {
+    func testSaveCommandEscapesQuotesAndBackslashesInThePath() {
+        // A path holding ''' would close a raw triple-quoted literal and break the script.
+        let code = SaveStructureSelection.saveCommand(path: "/tmp/it's'''a\\b.pdb", choice: .everything)
+        XCTAssertEqual(code, "from pymol import cmd as _c\n_c.save('/tmp/it\\'s\\'\\'\\'a\\\\b.pdb')")
+    }
+
+    func testOnlyMolMergesObjects() {
         XCTAssertTrue(SaveStructureSelection.mergesObjects(ext: "mol"))
-        XCTAssertTrue(SaveStructureSelection.mergesObjects(ext: "xyz"))
-        for ext in ["pdb", "cif", "sdf", "mol2", "pqr"] {
+        // XYZ writes one record per object (MoleculeExporterXYZ: cMolExportByCoordSet).
+        for ext in ["xyz", "pdb", "cif", "sdf", "mol2", "pqr"] {
             XCTAssertFalse(SaveStructureSelection.mergesObjects(ext: ext), ext)
         }
     }
