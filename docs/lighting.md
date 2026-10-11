@@ -672,9 +672,10 @@ When it traces an image while the rig is on, it prints one line per command:
 - In the app, image exports render with Metal, so they keep the studio look,
   including **Ray-traced (AO + shadows)** (Metal ray tracing), and so does a
   `png` typed in the app's console without `ray=1`.
-- The MCP `capture_viewport` tool renders with the CPU ray tracer, so its
-  image has no studio lights; while the rig is on it adds a `Note:` with the
-  notice after the image (#643).
+- The MCP `capture_viewport` tool renders with Metal in the app too (#643), so
+  its image keeps the studio look. In a session with no Metal view it falls
+  back to the CPU ray tracer and, while the rig is on, adds a `Note:` with
+  the notice after the image.
 
 ```text
 lights three_point
@@ -794,9 +795,8 @@ Open follow-ups of the lighting work (#610) that you may notice:
   steppers are under 44 pt (#720), and on small rings the 44 pt ring band
   covers the whole interior (#721). The Scene panel's Exposure help text does
   not say what exposure scales under a rig (#733).
-- **Exports and MCP.** The MCP `capture_viewport` tool renders with the CPU
-  ray tracer, without the studio look (#643). Metal exports do not draw ramp
-  gadgets or `bg_gradient` (#689).
+- **Exports and MCP.** Metal exports, and with them the MCP
+  `capture_viewport` image, do not draw ramp gadgets or `bg_gradient` (#689).
 
 ## Regenerating the gallery
 

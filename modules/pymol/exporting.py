@@ -684,6 +684,19 @@ PYMOL API
 
         return _self._call_with_opengl_context(func)
 
+    def _metal_png(filename, width, height, ray=-1, *, _self=cmd):
+        '''
+        Render the current view to the PNG file `filename` (width x height
+        pixels) with the RayMol app's Metal renderer, exactly as the app's
+        Save Image does, and return True. Return False, writing nothing, when
+        there is no Metal renderer: the pip/GLUT build, a headless session, or
+        the app before its first frame (#643). Main thread only.
+        ray = -1 for the live metal_raytrace setting, 0 off, 1 on.
+        '''
+        with _self.lockcm:
+            return bool(_self._cmd.metal_png(_self._COb, str(filename),
+                                             int(width), int(height), int(ray)))
+
     def multisave(filename, pattern="all", state=-1,
                   append=0, format='', quiet=1, *, _self=cmd):
         '''

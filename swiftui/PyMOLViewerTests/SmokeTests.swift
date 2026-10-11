@@ -770,3 +770,223 @@ final class ClassicShadowMapLazyTests: XCTestCase {
         print("667-shadowed-hash \(String(hash, radix: 16))")
     }
 }
+
+/// MCP capture_viewport renders with the app's Metal Save Image path (#643):
+/// `exporting._metal_png` -> `_cmd.metal_png` -> the hook the bridge registers
+/// on the instance -> `PyMOLBridge_RenderHiResPNG`. Both the wrapper and the
+/// tool itself must give the image `renderHiResPNG` gives, and the tool adds no
+/// `Note:` although a rig is on: that note only follows a CPU-traced image.
+@MainActor
+final class McpCaptureMetalTests: XCTestCase {
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var sceneBuilt = false
+    private var savedView: [Float]?
+
+    override func tearDown() {
+        if sceneBuilt {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.delete('mc643')
+            _c.set('bg_rgb', globals().pop('_mc643_bg', [0.0, 0.0, 0.0]))
+            _c.set('metal_raytrace', globals().pop('_mc643_rt', 0))
+            _c.set_lights(globals().pop('_mc643_lights', None))
+            for _n in globals().pop('_mc643_enabled', []):
+                _c.enable(_n)
+            """)
+            sceneBuilt = false
+        }
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        super.tearDown()
+    }
+
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            throw XCTSkip("the PyMOL engine did not come up under the test host")
+        }
+        // The hook says no until the Metal renderer exists (a cold launch
+        // before the first live frame, #654): wait for it, as a scripted
+        // export does, rather than fail on a host that is still starting.
+        while !engine.metalRendererReady() && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.metalRendererReady() else {
+            throw XCTSkip("no Metal renderer under the test host")
+        }
+    }
+
+    private func buildScene() {
+        savedView = engine.captureView()
+        sceneBuilt = true
+        engine.runPython("""
+        from pymol import cmd as _c
+        _mc643_enabled = _c.get_names('objects', enabled_only=1)
+        _mc643_bg = list(_c.get_setting_tuple('bg_rgb')[1])
+        _mc643_rt = _c.get_setting_int('metal_raytrace')
+        _mc643_lights = _c.get_lights()
+        for _n in _mc643_enabled:
+            _c.disable(_n)
+        _c.pseudoatom('mc643', pos=[0, 0, 0])
+        _c.alter('mc643', 'vdw=2.0')
+        _c.show_as('spheres', 'mc643')
+        _c.color('red', 'mc643')
+        _c.set('bg_rgb', [0, 0, 0])
+        _c.set('metal_raytrace', 0)
+        _c.set_lights({'enabled': True, 'lights': [{'name': 'key'}]})
+        _c.set_view((1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -30, 0, 0, 0, 20, 40, -20))
+        """)
+    }
+
+    private func pngPixels(_ path: String) -> (width: Int, height: Int, rgba: [UInt8])? {
+        guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+        let w = image.width, h = image.height
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        guard drawn else { return nil }
+        return (w, h, rgba)
+    }
+
+    func testCaptureViewportMatchesRenderHiResPNG() throws {
+        try requireEngine()
+        buildScene()
+
+        let a = NSTemporaryDirectory() + "issue_643_a.png"
+        let b = NSTemporaryDirectory() + "issue_643_b.png"
+        let c = NSTemporaryDirectory() + "issue_643_c.png"
+        let r = NSTemporaryDirectory() + "issue_643_r.txt"
+        let j = NSTemporaryDirectory() + "issue_643_j.json"
+
+        defer {
+            try? FileManager.default.removeItem(atPath: a)
+            try? FileManager.default.removeItem(atPath: b)
+            try? FileManager.default.removeItem(atPath: c)
+            try? FileManager.default.removeItem(atPath: r)
+            try? FileManager.default.removeItem(atPath: j)
+        }
+
+        // The Save Image render (WYSIWYG ray tracing, like the tool).
+        engine.renderHiResPNG(a, width: 400, height: 300, rayTraced: -1)
+
+        // The Python wrapper over the new core entry.
+        engine.runPython("""
+        from pymol import exporting as _exp
+        _res = _exp._metal_png(r'\(b)', 400, 300)
+        with open(r'\(r)', 'w') as _f:
+            _f.write(repr(_res))
+        """)
+
+        // The MCP tool, with this (main) thread standing in as the drain thread
+        // so run_on_main runs the body inline.
+        engine.runPython("""
+        import base64 as _b64
+        import json as _json
+        import threading as _thr
+        import traceback as _tb
+
+        try:
+            import raymol_mcp.mainthread as _mt
+            import raymol_mcp.tools as _tools
+            _saved_ident = _mt._main_ident
+            _mt._main_ident = _thr.get_ident()
+            try:
+                _res = _tools._capture_viewport({'width': 400, 'height': 300})
+            finally:
+                _mt._main_ident = _saved_ident
+
+            if not _res.get('isError') and _res.get('content'):
+                with open(r'\(c)', 'wb') as _f:
+                    _f.write(_b64.b64decode(_res['content'][0]['data']))
+
+            _payload = {
+                'isError': _res.get('isError', False),
+                'types': [item['type'] for item in _res.get('content', [])]
+            }
+            with open(r'\(j)', 'w') as _f:
+                _json.dump(_payload, _f)
+        except Exception:
+            with open(r'\(j)', 'w') as _f:
+                _json.dump({'error': _tb.format_exc()}, _f)
+        """)
+
+        let rText = try String(contentsOfFile: r, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertEqual(rText, "True")
+
+        guard let jData = FileManager.default.contents(atPath: j),
+              let jObj = try? JSONSerialization.jsonObject(with: jData) as? [String: Any] else {
+            XCTFail("failed to read or parse json file j")
+            return
+        }
+        if let err = jObj["error"] as? String {
+            XCTFail("Python error in capture_viewport: \(err)")
+            return
+        }
+        XCTAssertEqual(jObj["isError"] as? Bool, false)
+        XCTAssertEqual(jObj["types"] as? [String], ["image"])
+
+        // Same image from all three routes.
+        let pxA = try XCTUnwrap(pngPixels(a), "no export written for a")
+        let pxB = try XCTUnwrap(pngPixels(b), "no export written for b")
+        let pxC = try XCTUnwrap(pngPixels(c), "no export written for c")
+
+        XCTAssertEqual(pxA.width, 400)
+        XCTAssertEqual(pxA.height, 300)
+        XCTAssertEqual(pxB.width, 400)
+        XCTAssertEqual(pxB.height, 300)
+        XCTAssertEqual(pxC.width, 400)
+        XCTAssertEqual(pxC.height, 300)
+
+        let totalPixels = 400 * 300
+        var redPixels = 0
+        for i in 0..<totalPixels {
+            let r = Int(pxA.rgba[i * 4])
+            let g = Int(pxA.rgba[i * 4 + 1])
+            let b = Int(pxA.rgba[i * 4 + 2])
+            if r > 60 && r - g > 40 && r - b > 40 {
+                redPixels += 1
+            }
+        }
+        XCTAssertGreaterThan(redPixels, 500, "a should have > 500 red pixels")
+
+        var diffB = 0
+        var diffC = 0
+        for i in 0..<totalPixels {
+            let rA = Int(pxA.rgba[i * 4])
+            let gA = Int(pxA.rgba[i * 4 + 1])
+            let bA = Int(pxA.rgba[i * 4 + 2])
+
+            let rB = Int(pxB.rgba[i * 4])
+            let gB = Int(pxB.rgba[i * 4 + 1])
+            let bB = Int(pxB.rgba[i * 4 + 2])
+
+            if abs(rA - rB) > 8 || abs(gA - gB) > 8 || abs(bA - bB) > 8 {
+                diffB += 1
+            }
+
+            let rC = Int(pxC.rgba[i * 4])
+            let gC = Int(pxC.rgba[i * 4 + 1])
+            let bC = Int(pxC.rgba[i * 4 + 2])
+
+            if abs(rA - rC) > 8 || abs(gA - gC) > 8 || abs(bA - bC) > 8 {
+                diffC += 1
+            }
+        }
+
+        let maxAllowedDiff = Int(Double(totalPixels) * 0.005)
+        XCTAssertLessThanOrEqual(diffB, maxAllowedDiff, "b differs from a in \(diffB) pixels (max allowed \(maxAllowedDiff))")
+        XCTAssertLessThanOrEqual(diffC, maxAllowedDiff, "c differs from a in \(diffC) pixels (max allowed \(maxAllowedDiff))")
+    }
+}

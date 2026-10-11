@@ -36,8 +36,8 @@ Signing reads the Developer-ID key from the login keychain; a locked keychain or
 ## Build the DMG in the BACKGROUND
 `make_dmg.sh` runs 20–40 min (Release build + sign every embedded Mach-O + two notarization waits + DMG). The foreground shell timeout is ~10 min. Run it as a background command and poll / wait for the completion notification.
 
-## `capture_viewport` (MCP) can't prove a Metal post-pass feature
-`capture_viewport` is a CPU raytrace that bypasses Metal post passes (outline, surface contour, etc.). To verify a live-Metal feature, screenshot the on-screen window (`screencapture`) instead. Relevant when functionally testing rendering fixes in an RC.
+## `capture_viewport` (MCP) renders with Metal in the app
+Since #643 `capture_viewport` renders through the app's Metal Save Image path, so it shows the Metal post passes (outline, surface contour, DOF, studio lights). It falls back to a CPU raytrace, without them, only when there is no Metal renderer (headless, or before the app's first frame); that image carries a `Note:` when a rig is on. Overlays drawn by SwiftUI over the viewport are still not in it: screenshot the window (`screencapture`) for those.
 
 ## xcodegen rewrites pbxproj TEMP_ UUIDs
 `make_dmg.sh`/`build.sh` run `xcodegen generate`, which rewrites `project.pbxproj` (including `TEMP_…` UUID churn). If it dirties the tree in a repo you didn't mean to touch, `git checkout` that noise. The version strings in the regenerated pbxproj (repeated across its build configs) will match `project.yml`.

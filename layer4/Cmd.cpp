@@ -6368,6 +6368,27 @@ static PyObject *CmdPNG(PyObject * self, PyObject * args)
   return APIResultCode(result);
 }
 
+/// #643: render the current view to a PNG through the host app's image
+/// export (the RayMol app's Metal Save Image path, which the bridge
+/// registers with PyMOL_SetHiResPNGRenderer). Returns False when no host
+/// renderer is registered (pip/GLUT and headless builds) or it could not
+/// render (no Metal renderer yet, not on the main thread), so the caller
+/// can fall back to the CPU tracer.
+static PyObject* CmdMetalPNG(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  const char* filename = nullptr;
+  int width, height, ray;
+  API_SETUP_ARGS(G, self, args, "Osiii", &self, &filename, &width, &height,
+      &ray);
+  int ok = 0;
+  if (APIEnterNotModal(G)) {
+    ok = PyMOL_RenderHiResPNG(G->PyMOL, filename, width, height, ray);
+    APIExit(G);
+  }
+  return PyBool_FromLong(ok);
+}
+
 static PyObject *CmdMPNG(PyObject * self, PyObject * args)
 {
   PyMOLGlobals *G = nullptr;
@@ -8162,6 +8183,7 @@ static PyMethodDef Cmd_methods[] = {
   {"overlap", CmdOverlap, METH_VARARGS},
   {"paste", CmdPaste, METH_VARARGS},
   {"png", CmdPNG, METH_VARARGS},
+  {"metal_png", CmdMetalPNG, METH_VARARGS},
   {"pop", CmdPop, METH_VARARGS},
   {"protect", CmdProtect, METH_VARARGS},
   {"pseudoatom", CmdPseudoatom, METH_VARARGS},

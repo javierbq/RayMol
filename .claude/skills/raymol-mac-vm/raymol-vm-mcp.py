@@ -43,7 +43,8 @@ PROTOCOL_VERSION = "2025-06-18"
 DEFAULT_SSH_USER = "admin"
 DEFAULT_SSH_KEY = os.path.expanduser("~/.mac-vm-pool/id_ed25519")
 HANDOFF_PATH = "$HOME/Library/Application Support/RayMol/mcp.json"
-# capture_viewport CPU ray-traces, so give tool calls a generous read timeout.
+# capture_viewport falls back to a CPU ray-trace when the app has no Metal
+# frame yet (#643), so give tool calls a generous read timeout.
 INIT_TIMEOUT = 10
 CALL_TIMEOUT = 180
 
