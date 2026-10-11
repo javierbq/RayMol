@@ -820,6 +820,24 @@ class TestAuthorAndSession(unittest.TestCase):
         self.assertEqual(sorted(self.anim._track), list(range(2, 6)))
         self.assertEqual(sorted(self.anim._scene_marks), [(1, 'A'), (6, 'B')])
 
+    def test_reset_forgets_state_without_touching_the_movie(self):
+        # #657: reinitialize has already dropped the movie, so the reset must
+        # not mdo its frames (one Movie-Error per frame) -- only forget them.
+        self._two_scenes()
+        fake = FakeCmd()
+        self.anim.author([(1, 'A', 0.0), (6, 'B', 0.0)], _self=fake)
+        self.assertTrue(self.anim._track and self.anim._scene_marks)
+        self.anim._lights_track[3] = ('A', 'B', 0.5)
+        fake.done.clear()
+        self.anim.reset()
+        self.assertEqual(self.anim._track, {})
+        self.assertEqual(self.anim._scene_marks, [])
+        self.assertEqual(self.anim._lights_track, {})
+        self.assertEqual(fake.done, [])
+        # the module-level state is shared, not rebound: a later author() sees it
+        self.assertEqual(self.anim.author([], _self=fake), 0)
+        self.assertEqual(fake.done, [])
+
     def _slots_as_cmds(self, fake, n):
         """The movie's Cmd[] as PyMOL would hold it, from the fake's accumulator."""
         cmds = [''] * n

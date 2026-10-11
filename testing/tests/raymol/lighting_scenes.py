@@ -76,9 +76,9 @@ RIG_B = {
 
 
 def reset_module_state():
-    """What setUp and tearDown reset directly: reinitialize does not clear
-    these (and author([]) after reinitialize would mdo frames of a movie
-    that no longer exists)."""
+    """What setUp and tearDown reset directly, so a test starts and ends from
+    a known state whatever it did (reinitialize clears these since #657, but
+    the tests that lean on that say so themselves)."""
     raymol_scenes.clear_all()
     raymol_scene_anim._track.clear()
     raymol_scene_anim._scene_marks[:] = []
@@ -1152,6 +1152,52 @@ class TestSceneMovieBlend(_BlendCase):
         lighting.set_lights(None)
         self.assertEqual(played(13), before)
         self.assertEqual(played(25), self.b)
+
+    def testReinitializeForgetsTheAnimation(self):
+        """#657: `reinitialize` drops the movie and the scenes, so the
+        Python-side per-scene extras and the authored animation go too, with
+        no mdo on the movie that is gone. Nothing here calls
+        reset_module_state() after the reinitialize."""
+        self.build()
+        self.assertTrue(anim._track or anim._lights_track)
+        self.assertTrue(anim._scene_marks)
+        self.assertTrue(raymol_scenes._scene_lights)
+        with capture_console() as printed:
+            cmd.reinitialize()
+        self.assertNotIn('Movie-Error', printed())
+        self.assertEqual(anim._track, {})
+        self.assertEqual(anim._scene_marks, [])
+        self.assertEqual(anim._lights_track, {})
+        self.assertEqual(raymol_scenes._scene_lights, {})
+        self.assertEqual(raymol_scenes._scene_settings, {})
+        # the next author() (a rebuild with no scenes is author([])) has no
+        # stale frames to blank in the movie that no longer exists
+        with capture_console() as printed:
+            anim.author([])
+        self.assertNotIn('Movie-Error', printed())
+        # and a .pse saved now carries none of it
+        session = cmd.get_session()
+        self.assertEqual(session['raymol_movie_anim'],
+                         {'track': {}, 'marks': []})
+        self.assertEqual(session['raymol_scene_lights'], {})
+
+    def testReinitializeOtherFormsKeepTheAnimation(self):
+        """Only a bare `reinitialize everything` touches the movie and the
+        scenes; `settings` and `everything` with an object pattern must leave
+        the animation and the per-scene extras alone."""
+        self.build()
+
+        def state():
+            return copy.deepcopy((
+                anim._track, anim._scene_marks, anim._lights_track,
+                raymol_scenes._scene_lights, raymol_scenes._scene_settings))
+
+        before = state()
+        # rig-only scenes: the lights track, marks and rigs are what exist
+        self.assertTrue(before[1] and before[2] and before[3])
+        for args in (('settings',), ('everything', 'm')):
+            cmd.reinitialize(*args)
+            self.assertEqual(state(), before, args)
 
     def testOlderBuildsIgnoreTheTrack(self):
         """Q4: an older build sees no frame command of ours (stripped) and
