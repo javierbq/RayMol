@@ -169,6 +169,7 @@ class CScene : public Block {
   // frame's image only while all of them still hold.
   struct MetalAirFrameKey {
     unsigned long generation = 0;   // PyMOL_GetRedisplayGeneration
+    unsigned contentGeneration = 0; // ContentGeneration (#666)
     float projection[16]{};
     float modelview[16]{};
     int viewport[4]{};              // Renderer::getViewportRect

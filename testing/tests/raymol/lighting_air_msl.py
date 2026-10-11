@@ -188,7 +188,9 @@ STATEMENTS_684 = (
 # digests hold.
 STATEMENTS_685 = {
     'SceneRenderMetal': (
-        re.compile(r'const\s+bool\s+airOnly\s*=\s*SceneRenderMetalAirOnly\(G\)\s*;'),
+        re.compile(r'const\s+CScene::MetalAirFrameKey\s+airAtStart\s*\{[^;]*\}\s*;'),
+        re.compile(r'const\s+bool\s+airOnly\s*=\s*'
+                   r'SceneRenderMetalAirOnly\(G,\s*airAtStart\)\s*;'),
         re.compile(r'if\s*\(\s*airOnly\s*\)\s*return\s*;'),
     ),
     'RendererMetal::beginFrame': (
@@ -1447,13 +1449,19 @@ class TestDustOnlyTicks(testing.PyMOLTestCase):
         self.assertIn('if (!(airTick && SceneRenderMetalArmAirTick(G)))', bridge_fn)
         self.assertLess(bridge_fn.index('if (!(airTick && SceneRenderMetalArmAirTick(G)))'),
                         bridge_fn.index('renderer->beginFrame();'))
+        self.assertLess(bridge_fn.index('renderer->setAirTickFrame(airTick != 0);'),
+                        bridge_fn.index('SceneRenderMetalArmAirTick(G)'))
         draw = swift_body(self.viewport, 'func draw(in view: MTKView)')
         self.assertRegex(draw, r'engine\.renderMetalFrame\([\s\S]*?\bairTick:\s*airDue')
 
     def testSceneRenderMetalPlacement(self):
         body = cpp_function(self.scene_render, 'SceneRenderMetal')
         idx_prep = body.index('ScenePrepareMatrix(G, 0);')
-        idx_air_only = body.index('SceneRenderMetalAirOnly(G);')
+        # the generations are read before the update phase
+        idx_start = body.index('PyMOL_GetRedisplayGeneration(G->PyMOL)')
+        self.assertLess(idx_start, body.index('OrthoExecDeferred(G)'))
+        self.assertLess(idx_start, body.index('SceneUpdate(G, false)'))
+        idx_air_only = body.index('SceneRenderMetalAirOnly(G, airAtStart);')
         idx_lights = body.index('SceneLightsFrame(')
         self.assertLess(idx_prep, idx_air_only)
         self.assertLess(idx_air_only, idx_lights)
@@ -1474,6 +1482,9 @@ class TestDustOnlyTicks(testing.PyMOLTestCase):
         arm_air = cpp_function(self.scene_render, 'SceneRenderMetalArmAirTick')
         self.assertIn('PyMOL_GetRedisplayGeneration', arm_air)
         self.assertIn('OrthoDeferredWaiting', arm_air)
+        self.assertIn('ContentGeneration', arm_air)
+        self.assertIn('a.contentGeneration != b.contentGeneration',
+                      cpp_function(self.scene_render, 'SceneMetalAirFrameKeyEqual'))
 
     def testRunPostChainAirCache(self):
         post = cpp_function(self.mm, 'RendererMetal::runPostChain')
@@ -1490,6 +1501,8 @@ class TestDustOnlyTicks(testing.PyMOLTestCase):
         self.assertIn('_contourActive', keep_fn)
         self.assertIn('!rayTracingCurrent()', keep_fn)
         self.assertIn('kAirCacheAOFrames', keep_fn)
+        # only a frame rendered for the dust alone pays the copy
+        self.assertIn('!_airTickFrame', keep_fn)
         # a dust-only frame leaves the kept image valid for the next tick
         self.assertRegex(keep_fn, r'\{\s*if\s*\(_airOnlyFrame\)\s*return;')
 

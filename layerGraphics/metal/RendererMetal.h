@@ -256,6 +256,10 @@ public:
   bool beginAirOnlyFrame() override;
   bool airCacheStats(int& sceneFrames, int& postChains,
                      int& airFrames, bool forget) override;
+  // The live frame being begun renders only because the dust moves (the
+  // bridge's airTick). Only such a frame keeps its pre-air image, so a camera
+  // drag or a redisplay never pays the copy. endFrame clears it.
+  void setAirTickFrame(bool airTick) { _airTickFrame = airTick; }
 
   // Request a PNG capture of the next RENDERED frame (png ray=0). The Metal
   // app has no GL framebuffer for PyMOL's ScenePNG to read, so we grab the
@@ -1001,14 +1005,24 @@ private:
   // SceneRenderMetal sets it again.
   bool _lightAirOn = false;
   LightAirBlock _lightAirBlock{};
-  id<MTLTexture> _airCacheColor = nil;   // the last full live frame's pre-air colour (#685)
-  bool _airCacheValid = false;           // _airCacheColor is reusable (keepPreAirImage)
-  int _airCacheLbX = 0, _airCacheLbY = 0;// its letterbox origin
-  bool _airOnlyArmed = false;            // armAirOnlyFrame; cleared by beginFrame/endFrame
-  bool _airOnlyFrame = false;            // this frame re-runs the post chain only
-  bool _rtAOTemporalRan = false;         // pass A.5 ran this frame
-  int _rtAOAccumFrames = 0;              // temporal AO frames since its last reset
-  int _statSceneFrames = 0, _statPostChains = 0, _statAirFrames = 0;  // test-only
+  // Dust-only ticks (#685). The last full live frame's pre-air colour
+  // (keepPreAirImage), whether it may be reused, and its letterbox origin.
+  id<MTLTexture> _airCacheColor = nil;
+  bool _airCacheValid = false;
+  int _airCacheLbX = 0, _airCacheLbY = 0;
+  // armAirOnlyFrame; cleared by beginFrame, beginAirOnlyFrame and endFrame.
+  bool _airOnlyArmed = false;
+  // This frame re-runs only the post chain, from _airCacheColor.
+  bool _airOnlyFrame = false;
+  // The bridge renders this frame for the dust alone (setAirTickFrame).
+  bool _airTickFrame = false;
+  // Temporal AO: whether pass A.5 ran this frame, and the frames it has
+  // accumulated since its last reset.
+  bool _rtAOTemporalRan = false;
+  int _rtAOAccumFrames = 0;
+  // Test-only counters (airCacheStats).
+  int _statSceneFrames = 0, _statPostChains = 0, _statAirFrames = 0;
+  // Temporal AO frames needed before a frame's image may be kept.
   static constexpr int kAirCacheAOFrames = 32;
   bool airCacheUsable() const;
   void noteSceneFrame();
@@ -1090,10 +1104,14 @@ private:
   // This frame's studio shadow maps for the readout: the slices the map pass
   // rendered, and their size (0 without maps; a frame that reuses its maps
   // reports 0 maps rendered this frame).
-  int gpuFrameShadowMaps() const { return _lightShadowSlicesOpened; }
+  // A dust-only frame (#685) renders none.
+  int gpuFrameShadowMaps() const
+  {
+    return _airOnlyFrame ? 0 : _lightShadowSlicesOpened;
+  }
   int gpuFrameShadowSize() const
   {
-    return _lightShadowSlicesOpened > 0 ? _lightShadowArraySize : 0;
+    return gpuFrameShadowMaps() > 0 ? _lightShadowArraySize : 0;
   }
   // Key-light direction TOWARD the light in eye space = -normalize(cSetting_light).
   // Default reproduces the previously hard-coded normalize(0.4,0.4,1.0), which is

@@ -840,6 +840,7 @@ int PyMOLBridge_RenderMetalFrame(PyMOLHandle h, void *mtkViewPtr,
     syncClearColor(G, renderer);
     // #685: on a dust-only tick the pre-check armed the renderer, which deferred
     // beginFrame. SceneRenderMetal makes the final call.
+    renderer->setAirTickFrame(airTick != 0);
     if (!(airTick && SceneRenderMetalArmAirTick(G)))
         renderer->beginFrame();
     ImmBatch_SetActiveRenderer(renderer);

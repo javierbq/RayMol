@@ -1300,6 +1300,7 @@ void RendererMetal::endFrame()
   _screenPassDesc = nil;
   _airOnlyFrame = false;
   _airOnlyArmed = false;
+  _airTickFrame = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -13119,13 +13120,17 @@ void RendererMetal::keepPreAirImage(id<MTLTexture> src)
     return;
   // A full frame: keep its image only when nothing would make the next
   // frame differ but the dust. Otherwise the next tick renders in full.
-  if (_offscreen || !src ||
-      !(_lightAirOn && _lightRigOn && _postColor && _sceneDepth) ||
-      _contourActive || !rayTracingCurrent() ||
-      (_rtAOTemporalRan && _rtAOAccumFrames < kAirCacheAOFrames)) {
-    _airCacheValid = false;
-    return;
+  _airCacheValid = false;
+  const bool air = _lightAirOn && _lightRigOn && _postColor && _sceneDepth;
+  // A live frame without the air: the kept image's memory goes too.
+  if (!_offscreen && !air) {
+    [_airCacheColor release];
+    _airCacheColor = nil;
   }
+  if (!_airTickFrame || _offscreen || !src || !air || _contourActive ||
+      !rayTracingCurrent() ||
+      (_rtAOTemporalRan && _rtAOAccumFrames < kAirCacheAOFrames))
+    return;
 
   if (!_airCacheColor || _airCacheColor.width != src.width ||
       _airCacheColor.height != src.height ||

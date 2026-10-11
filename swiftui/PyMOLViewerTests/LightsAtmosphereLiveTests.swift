@@ -494,6 +494,16 @@ final class AirDustTickCacheTests: XCTestCase {
         let s2 = try stats()
         XCTAssertEqual(s2.scene - s1.scene, 1)
         XCTAssertEqual(s2.air - s1.air, 0)
+
+        // A frame not rendered for the dust keeps no image (no copy during a
+        // drag): the next tick is full and keeps one, the one after reuses it.
+        frame(airTick: true)
+        let s3 = try stats()
+        XCTAssertEqual(s3.scene - s2.scene, 1, "the tick after a redisplay frame renders in full")
+        frame(airTick: true)
+        let s4 = try stats()
+        XCTAssertEqual(s4.scene - s3.scene, 0)
+        XCTAssertEqual(s4.air - s3.air, 1, "then the dust-only ticks resume")
     }
 
     func testChangesRenderAFullFrame() throws {
@@ -526,6 +536,12 @@ final class AirDustTickCacheTests: XCTestCase {
         }
         try verifyChange {
             self.engine.runPython("from pymol import cmd as _c\n_c.hide('sticks')")
+        }
+
+        // A change that only calls SceneDirty (no redisplay request): the
+        // title of a state. #666's ContentGeneration catches it.
+        try verifyChange {
+            self.engine.runPython("from pymol import cmd as _c\n_c.set_title('lmt_pep', 1, 'adt685')")
         }
 
         // Setting change
