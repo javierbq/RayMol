@@ -574,7 +574,13 @@ struct LightGizmoPainter {
         let r = knob.radius
         if behind {
             c.fill(circle(knob.centre, r), with: .color(Self.halo.opacity(0.4)))
-            stroke(&c, circle(knob.centre, r - 1), colour, 2, dash: [3, 2])
+            // The dashed ring carries the marker's contrasting outline too, so a black light still reads
+            // over a dark viewport (#798).
+            let ring = circle(knob.centre, r - 1)
+            c.stroke(ring, with: .color(knob.marker.outlineColor),
+                     style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round, dash: [3, 2]))
+            c.stroke(ring, with: .color(colour),
+                     style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round, dash: [3, 2]))
             if knob.isSelected {
                 c.stroke(circle(knob.centre, r + 1.5), with: .color(Self.ink), lineWidth: 1.5)
             }
