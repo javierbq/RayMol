@@ -493,15 +493,21 @@ final class LightsOrbitLiveTests: XCTestCase {
         func wiggle(on c: LightsController) throws -> [LightSetResult] {
             let card = try card(c)
             let lamp = try XCTUnwrap(card.state.lamp(named: "rim"))
-            let press = card.plan.lampPoint(orbit: lamp.orbit, radius: lamp.radius)
+            // Press 5 pt outside the ring (still on the lamp's hit target) so
+            // every tick is more than the 3 pt drag slop from the press: the
+            // sub-degree offsets then reach the rounding and the filters.
+            let distance = card.plan.drawnDistance(radius: lamp.radius)
+            let press = card.plan.point(orbit: lamp.orbit, distance: distance + 5)
             var session = try XCTUnwrap(LightsOrbitInteraction(controller: c)
                 .beginPlan(at: press, state: card.state, layout: card.plan))
-            let distance = card.plan.drawnDistance(radius: lamp.radius)
+            XCTAssertEqual(session.target, .lamp(name: lamp.name, index: lamp.index))
             var k = 0
-            return drag(&session, on: c, steps: offsets.count) { _ in
+            let results = drag(&session, on: c, steps: offsets.count) { _ in
                 defer { k += 1 }
                 return card.plan.point(orbit: lamp.orbit + offsets[k], distance: distance)
             }
+            XCTAssertTrue(session.hasMoved, "the drag passed the slop, so the filters ran")
+            return results
         }
         XCTAssertEqual(try wiggle(on: controller), [], "a drag that rounds to 105 wrote")
         XCTAssertEqual(engine.lightRigJSON(), json, "no light_set may reach the core")
