@@ -109,7 +109,7 @@ MASTER_LITERALS = {
     'kConnectorShaderSrc': '40ef57a0e535d985',
     'kCylinderImpostorSrc': '637f7d7546fb17e3',
     'kEyeReconSrc': '34e775c149c8b075',
-    'kLabelShaderSrc': 'e9739e2374962609',
+    'kLabelShaderSrc': 'ca5097bd2ad97d60',  # #736: label_fragment_oit, the OIT pass's variant
     'kMaterialImpostorSrc': '5da7ac9fc2e8eb42',
     'kMaterialSrc': 'da47cac063348d43',
     'kPostSrc': 'c13f90740b5420b8',

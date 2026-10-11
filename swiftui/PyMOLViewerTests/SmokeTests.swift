@@ -327,3 +327,117 @@ final class ScriptedMovieExportTests: XCTestCase {
         wait(for: [done], timeout: 2)
     }
 }
+
+
+/// Metal export: a label is drawn in its own colour (issue #736). Labels draw
+/// in the transparent pass, which on Metal is the OIT pass; drawing them there
+/// with the scene-pass pipeline (BGRA8, MSAA) wrote undefined values into the
+/// OIT targets, so every label came out magenta, or not at all.
+@MainActor
+final class LabelColorExportTests: XCTestCase {
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var sceneBuilt = false
+    private var savedView: [Float]?
+
+    override func tearDown() {
+        if sceneBuilt {
+            engine.runPython(
+                "from pymol import cmd as _c\n"
+                + "_c.delete('lc736a or lc736b')\n"
+                + "_c.set('bg_rgb', globals().pop('_lc736_bg', [0.0, 0.0, 0.0]))\n"
+                + "for _n in globals().pop('_lc736_enabled', []):\n"
+                + "    _c.enable(_n)\n")
+            sceneBuilt = false
+        }
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        super.tearDown()
+    }
+
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            throw XCTSkip("the PyMOL engine did not come up under the test host")
+        }
+    }
+
+    private func pngPixels(_ path: String) -> [UInt8]? {
+        guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+        let w = image.width, h = image.height
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        return drawn ? rgba : nil
+    }
+
+    /// Pixels of an export (rt 0 and 1) close to `rgb`, and the ones that are
+    /// magenta, the colour every label used to come out in.
+    private func countLabelPixels(_ rgb: (Int, Int, Int), rt: Int)
+        -> (match: Int, magenta: Int) {
+        let png = NSTemporaryDirectory() + "issue_736_label_\(rgb.2)_rt\(rt).png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: 400, height: 300, rayTraced: rt)
+        guard let px = pngPixels(png) else {
+            XCTFail("no export written (rt=\(rt))")
+            return (0, 0)
+        }
+        var match = 0, magenta = 0
+        for i in stride(from: 0, to: px.count, by: 4) {
+            let r = Int(px[i]), g = Int(px[i + 1]), b = Int(px[i + 2])
+            if abs(r - rgb.0) <= 12 && abs(g - rgb.1) <= 12 && abs(b - rgb.2) <= 12 { match += 1 }
+            if r > 200 && g < 60 && b > 200 { magenta += 1 }
+        }
+        return (match, magenta)
+    }
+
+    func testPseudoatomLabelsExportInTheirColour() throws {
+        try requireEngine()
+        savedView = engine.captureView()
+        sceneBuilt = true
+        // Two pseudoatom labels alone in the scene: one black via label_color
+        // and the atom colour (issue #736's EXPOSURE label), one navy via
+        // label_color only (its unlit labels were not drawn at all).
+        engine.runPython("""
+        from pymol import cmd as _c
+        _lc736_enabled = _c.get_names('objects', enabled_only=1)
+        _lc736_bg = list(_c.get_setting_tuple('bg_rgb')[1])
+        for _n in _lc736_enabled:
+            _c.disable(_n)
+        _c.pseudoatom('lc736a', pos=[0.0, 2.0, 0.0], label='EXPOSURE')
+        _c.pseudoatom('lc736b', pos=[0.0, -2.0, 0.0], label='NAVY')
+        _c.hide('nonbonded', 'lc736a or lc736b')
+        _c.color('black', 'lc736a')
+        _c.set('label_color', 'black', 'lc736a')
+        _c.set_color('lc736_navy', [0.0, 0.0, 0.35])
+        _c.set('label_color', 'lc736_navy', 'lc736b')
+        _c.set('label_size', 40, 'lc736a')
+        _c.set('label_size', 40, 'lc736b')
+        _c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                     0.0, 0.0, -40.0, 0.0, 0.0, 0.0, 30.0, 50.0, -20.0))
+        """)
+
+        for rt in [0, 1] {
+            engine.runPython("from pymol import cmd as _c\n_c.set('bg_rgb', [1.0, 1.0, 1.0])")
+            let black = countLabelPixels((0, 0, 0), rt: rt)
+            XCTAssertGreaterThan(black.match, 800, "black label pixels (rt=\(rt))")
+            XCTAssertEqual(black.magenta, 0, "magenta label pixels on white (rt=\(rt))")
+
+            engine.runPython("from pymol import cmd as _c\n_c.set('bg_rgb', [0.0, 0.0, 0.0])")
+            let navy = countLabelPixels((0, 0, 89), rt: rt)
+            XCTAssertGreaterThan(navy.match, 400, "navy label pixels (rt=\(rt))")
+            XCTAssertEqual(navy.magenta, 0, "magenta label pixels on black (rt=\(rt))")
+        }
+    }
+}

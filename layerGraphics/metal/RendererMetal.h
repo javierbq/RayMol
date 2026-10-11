@@ -319,6 +319,7 @@ private:
   // a fresh state (+ descriptor) was created per draw call, leaking one of each
   // every transparent/tube draw under MRC. Released in the destructor.
   id<MTLDepthStencilState> oitDepthState();     // LessEqual, no depth write
+  id<MTLDepthStencilState> labelOitNoDepthState(); // float_labels in OIT (#736)
   id<MTLDepthStencilState> bezierDepthState();  // LessEqual, depth write
   MTLPrimitiveType toMTL(PrimitiveType t);
   void buildVBOPipelines();
@@ -1283,6 +1284,10 @@ private:
   // Label/text rendering (screen-aligned textured glyph quads). Initialized to
   // nil — this is a C++ class under MRC, so id ivars are not zero-initialized.
   id<MTLRenderPipelineState> _labelPipeline = nil;
+  // The OIT pass's variant (#736): labels draw in the transparent pass, which
+  // is the OIT pass, so they need its RGBA16F/R16F single-sample targets.
+  id<MTLRenderPipelineState> _labelOitPipeline = nil;
+  id<MTLDepthStencilState> _labelOitNoDepthState = nil;
   id<MTLSamplerState> _labelSampler = nil;
   id<MTLTexture> _labelAtlas = nil;  // glyph atlas, uploaded from CPU copy
   uint64_t _labelAtlasGen = 0;       // generation of the uploaded atlas

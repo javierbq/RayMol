@@ -111,7 +111,7 @@ MASTER_054B525 = {
     'kConnectorShaderSrc': '40ef57a0e535d985',
     'kCylinderImpostorSrc': '43f9c76b791ece1d',
     'kEyeReconSrc': '34e775c149c8b075',
-    'kLabelShaderSrc': 'e9739e2374962609',
+    'kLabelShaderSrc': 'ca5097bd2ad97d60',  # #736: label_fragment_oit, the OIT pass's variant
     'kMaterialImpostorSrc': 'ad8142cda60dc979',
     'kMaterialSrc': '4f4f1e7f4c703bad',
     'kPostSrc': 'c13f90740b5420b8',
