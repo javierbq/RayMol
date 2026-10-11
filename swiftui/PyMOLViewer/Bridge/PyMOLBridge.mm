@@ -445,6 +445,18 @@ int PyMOLBridge_SetView(PyMOLHandle h, const float *view, int count, float anima
     return 1;
 }
 
+int PyMOLBridge_TurnZ(PyMOLHandle h, float degrees)
+{
+    // CmdTurn's body (layer4/Cmd.cpp) without the Python: it refuses during
+    // a modal draw (APIEnterNotModal), and SceneRotateAxis -> SceneRotate
+    // invalidates the scene, so the display link redraws.
+    if (!h || PyMOL_GetModalDraw(INST(h))) return 0;
+    PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
+    if (!G) return 0;
+    SceneRotateAxis(G, degrees, 'z');
+    return 1;
+}
+
 // --- Light rig (#611, spec §4.4) ---
 // Main thread only. These call only the scene's light-rig functions
 // (SceneLightsJSON / SceneLightSet / SceneLightsResolve, layer1/SceneLights.h),

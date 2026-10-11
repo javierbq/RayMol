@@ -150,3 +150,111 @@ final class BoxSelectGeometryTests: XCTestCase {
                      "a press that misses the box must fall through to drawing a new one")
     }
 }
+
+/// The two-finger twist's roll (#719): engine.turnZ is cmd.turn('z', ...)
+/// with no Python, and the coordinator's per-tick seam runs no Python.
+/// Against the live engine; each test restores the host's camera.
+@MainActor
+final class TwistRollTests: XCTestCase {
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+
+    private struct EngineNotReady: Error, CustomStringConvertible {
+        var description: String { "PyMOLEngine.shared never became ready" }
+    }
+
+    private var savedView: [Float]?
+
+    private final class Lines {
+        var lines: [String] = []
+        func append(_ line: String) { lines.append(line) }
+    }
+
+    /// Wait (up to 20 s, pumping the run loop) for the host app's engine.
+    /// XCTFail + throw when it never comes up, so the test body does not run
+    /// and the test counts as failed.
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            XCTFail("PyMOLEngine.shared was not ready after 20 s: the live twist roll test ran nothing")
+            throw EngineNotReady()
+        }
+    }
+
+    override func tearDown() {
+        engine.pythonTap = nil
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+        }
+        super.tearDown()
+    }
+
+    private func setupNonTrivialView() throws -> [Float] {
+        engine.runPython(
+            "from pymol import cmd as _twr_cmd\n"
+            + "_twr_cmd.turn('y', 35)\n"
+            + "_twr_cmd.turn('x', -20)\n")
+        return try XCTUnwrap(engine.captureView())
+    }
+
+    private func assertViewsEqual(_ a: [Float], _ b: [Float], _ what: String,
+                                  file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(a.count, 25, "\(what): count mismatch (\(a.count) != 25)", file: file, line: line)
+        XCTAssertEqual(b.count, 25, "\(what): count mismatch (\(b.count) != 25)", file: file, line: line)
+        guard a.count == 25, b.count == 25 else { return }
+        for i in 0..<25 {
+            XCTAssertEqual(a[i], b[i], accuracy: 1e-5,
+                           "\(what): mismatch at index \(i) (\(a[i]) vs \(b[i]))",
+                           file: file, line: line)
+        }
+    }
+
+    func testTurnZMatchesCmdTurn() throws {
+        try requireEngine()
+        savedView = engine.captureView()
+        let s = try setupNonTrivialView()
+        engine.turnZ(17)
+        let bridge = try XCTUnwrap(engine.captureView())
+        engine.restoreView(s, animate: 0)
+        let restored = try XCTUnwrap(engine.captureView())
+        assertViewsEqual(restored, s, "restore of start view is exact")
+
+        engine.runPython(
+            "from pymol import cmd as _twr_cmd\n"
+            + "_twr_cmd.turn('z', 17)\n")
+        let python = try XCTUnwrap(engine.captureView())
+        assertViewsEqual(bridge, python, "engine.turnZ matches cmd.turn('z')")
+
+        var maxRotDiff: Float = 0
+        for i in 0..<9 {
+            maxRotDiff = max(maxRotDiff, abs(bridge[i] - s[i]))
+        }
+        XCTAssertGreaterThan(maxRotDiff, 0.1, "turn did not change rotation matrix")
+    }
+
+    func testTwistTickRunsNoPython() throws {
+        try requireEngine()
+        savedView = engine.captureView()
+        let s = try setupNonTrivialView()
+        let coordinator = MetalViewport.Coordinator()
+        coordinator.engine = engine
+
+        let lines = Lines()
+        engine.pythonTap = { lines.append($0) }
+        coordinator.rollCamera(byRadians: 0.3)
+        engine.pythonTap = nil
+
+        XCTAssertTrue(lines.lines.isEmpty, "rollCamera ran Python: \(lines.lines)")
+        let twisted = try XCTUnwrap(engine.captureView())
+        engine.restoreView(s, animate: 0)
+
+        let deg: Float = -1 * Float(CGFloat(0.3)) * 180.0 / .pi
+        engine.runPython(
+            "from pymol import cmd as _twr_cmd\n"
+            + "_twr_cmd.turn('z', \(deg))\n")
+        let python = try XCTUnwrap(engine.captureView())
+        assertViewsEqual(twisted, python, "rollCamera roll matches cmd.turn('z', deg)")
+    }
+}

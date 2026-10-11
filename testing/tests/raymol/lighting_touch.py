@@ -16,7 +16,9 @@ sets that light's radius; the pan and the twist do nothing); a long-press
 never begins on a knob, the aim dot or a handle and places a highlight
 anywhere else while the gizmo shows (the context menu only when it is
 hidden); an option-tap off every target does the same; Move mode's
-one-finger pan hit-tests where the finger came down (#702).
+one-finger pan hit-tests where the finger came down (#702). The camera's
+twist (outside a knob pinch) rolls through a bridge call (#719), so no
+handler runs Python per tick.
 
 The docked tools (Part 3, LightsSheet.swift): placement by size class, the
 sheet's heights keyed by the room (the scene keeps 180 pt), the grabber drag
@@ -79,6 +81,8 @@ GIZMO_OVERLAY = os.path.join(SHARED, 'LightGizmoOverlay.swift')
 BAR = os.path.join(SHARED, 'LightsBar.swift')
 INSPECTOR = os.path.join(SHARED, 'LightsInspector.swift')
 VIEWPORT = os.path.join(SHARED, 'MetalViewport.swift')
+ENGINE = os.path.join(SHARED, 'PyMOLEngine.swift')
+BRIDGE = os.path.join('swiftui', 'PyMOLViewer', 'Bridge', 'PyMOLBridge.mm')
 SHEET = os.path.join(SHARED, 'LightsSheet.swift')
 CONTENT_VIEW = os.path.join(SHARED, 'ContentView.swift')
 FLOAT = os.path.join(SHARED, 'LightsFloatingTools.swift')
@@ -426,6 +430,43 @@ class TestTouchSource(testing.PyMOLTestCase):
         named = body(model, 'func beginPinch(named name: String) -> OrbitPinchSession?')
         self.assertIsNotNone(named, 'beginPinch(named:) not found')
         self.assertIn('LightsOrbitInteraction(controller: controller).beginPinch()', named)
+
+    def testTheTwistRunsNoPython(self):
+        """#719: both twist handlers roll through rollCamera(byRadians:),
+        which calls engine.turnZ; that calls PyMOLBridge_TurnZ, which is
+        CmdTurn's SceneRotateAxis with the modal-draw refusal and no Python.
+        No handler runs Python per tick."""
+        viewport = self.read(VIEWPORT)
+        engine_src = self.read(ENGINE)
+        bridge = self.read(BRIDGE)
+
+        for sig in ('func handleRotation(_ gesture: UIRotationGestureRecognizer)',
+                    'func handleRotationGesture(_ gesture: NSRotationGestureRecognizer)'):
+            handler = body(viewport, sig)
+            self.assertIsNotNone(handler, '%s not found' % sig)
+            self.assertIn('rollCamera(byRadians: delta)', handler)
+            self.assertNotIn('runPython', handler)
+            self.assertNotIn('turn(', handler)
+
+        roll = body(viewport, 'func rollCamera(byRadians radians: CGFloat)')
+        self.assertIsNotNone(roll, 'rollCamera not found')
+        self.assertIn('engine?.turnZ(deg)', roll)
+        self.assertIn('kRollSign', roll)
+        self.assertNotIn('runPython', roll)
+
+        turn = body(engine_src, 'func turnZ(_ degrees: Float)')
+        self.assertIsNotNone(turn, 'turnZ not found')
+        self.assertIn('PyMOLBridge_TurnZ(instance, degrees)', turn)
+        self.assertNotIn('runPython', turn)
+
+        bridge_turn = body(bridge, 'int PyMOLBridge_TurnZ(PyMOLHandle h, float degrees)')
+        self.assertIsNotNone(bridge_turn, 'PyMOLBridge_TurnZ not found')
+        self.assertIn('PyMOL_GetModalDraw(INST(h))', bridge_turn)
+        self.assertIn("SceneRotateAxis(G, degrees, 'z')", bridge_turn)
+        for banned in ('PyRun', 'PAutoBlock', 'PyMOLBridge_RunPython'):
+            self.assertNotIn(banned, bridge_turn)
+
+        self.assertNotIn("_c.turn('z'", viewport)
 
     def testOptionTapPlacesAHighlight(self):
         """handleTap passes the option key to lightGizmoTap, which places a
