@@ -371,7 +371,6 @@ private:
   uint32_t _boundFBO = 0;
 
   // Pipeline state cache
-  id<MTLRenderPipelineState> _currentPipeline;
   id<MTLRenderPipelineState> _batchPipeline;  // built-in batch shader pipeline
   // Lit pipelines are specialised per MATERIAL FAMILY (#503): the fragment
   // function is compiled with kMatFamily fixed, so the `default` family carries

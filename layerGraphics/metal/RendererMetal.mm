@@ -308,7 +308,6 @@ RendererMetal::RendererMetal(id<MTLDevice> device, id<MTLCommandQueue> queue)
     , _encoder(nil)
     , _passDesc(nil)
     , _drawable(nil)
-    , _currentPipeline(nil)
     , _batchPipeline(nil)
     , _vboVertexFunc(nil)
     , _vboVertexUnlitFunc(nil)
@@ -549,7 +548,7 @@ RendererMetal::~RendererMetal()
   // resource set leaks each time the renderer is torn down (device/context loss,
   // view reinit). NOT released here: _device/_queue (plain ctor assignment, no
   // retain — owned by the Metal layer), the per-frame _cmdBuffer/_encoder/
-  // _drawable (autoreleased), and _passDesc/_screenPassDesc/_currentPipeline
+  // _drawable (autoreleased), and _passDesc/_screenPassDesc
   // (non-owning aliases of owned objects).
 
   // Pooled Metal objects held by value in STL maps: clear()/erase() does NOT
@@ -6801,11 +6800,6 @@ void RendererMetal::drawArrays(PrimitiveType mode, int first, int count)
     [_encoder setVertexBuffer:it->second offset:0 atIndex:0];
   }
 
-  // Set current pipeline if available
-  if (_currentPipeline) {
-    [_encoder setRenderPipelineState:_currentPipeline];
-  }
-
   [_encoder drawPrimitives:toMTL(mode)
                vertexStart:static_cast<NSUInteger>(first)
                vertexCount:static_cast<NSUInteger>(count)];
@@ -6821,10 +6815,6 @@ void RendererMetal::drawElements(
   auto vit = _buffers.find(_boundArrayBuffer);
   if (vit != _buffers.end()) {
     [_encoder setVertexBuffer:vit->second offset:0 atIndex:0];
-  }
-
-  if (_currentPipeline) {
-    [_encoder setRenderPipelineState:_currentPipeline];
   }
 
   // If an element array buffer is bound, use it
@@ -7316,7 +7306,6 @@ void RendererMetal::endBatch()
     [_encoder setFragmentBytes:&_lt length:sizeof(_lt) atIndex:0]; }
 
   // Always use the built-in batch pipeline for batch rendering.
-  // _currentPipeline is for VBO draws with a different vertex layout.
   [_encoder setRenderPipelineState:_batchPipeline];
 
   MTLPrimitiveType mtlPrim =
@@ -7523,7 +7512,7 @@ constant float kMatMarbleWrap = 0.35;
 //
 // Below the knee nothing changes at all, which is what keeps `default`
 // byte-identical: its specular rarely reaches 0.8, and where it does the curve
-// is continuous and C1 at the knee.
+// is continuous (C0) at the knee; the slope drops from 1 to 0.2 there.
 static float3 mat_soft_knee(float3 c) {
   const float knee = 0.8;
   float3 over = max(c - float3(knee), float3(0.0));
