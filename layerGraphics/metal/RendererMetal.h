@@ -1019,11 +1019,10 @@ private:
 
   // #666: the maps the last map pass left complete (endLightShadowMaps), kept
   // across frames until a slice is opened again, the array is reallocated or
-  // a test forgets them; their count and size. _lightShadowSlicesRendered
+  // a test forgets them; their count. _lightShadowSlicesRendered
   // counts every slice opened (test-only readout).
   bool _lightShadowMapsKept = false;
   int _lightShadowMapsKeptCount = 0;
-  int _lightShadowMapsKeptSize = 0;
   unsigned long long _lightShadowSlicesRendered = 0;
   // The grid cell the following draws belong to (grid_mode): stored by
   // setGridSlot before anything else, 0 outside the grid loops (beginFrame

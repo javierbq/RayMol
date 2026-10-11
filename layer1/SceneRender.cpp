@@ -2230,6 +2230,7 @@ static std::vector<std::uint32_t> SceneLightShadowMapKey(PyMOLGlobals* G,
 {
   CScene* I = G->Scene;
   std::vector<std::uint32_t> key;
+  key.reserve(64 + 40 * pymol::kLightRigBlockShadowSlots + 24 * I->Obj.size());
   auto appendWord = [&key](std::uint32_t w) { key.push_back(w); };
   auto appendFloat = [&key](float f) {
     std::uint32_t u{};
@@ -2280,9 +2281,8 @@ static std::vector<std::uint32_t> SceneLightShadowMapKey(PyMOLGlobals* G,
   appendWord(static_cast<std::uint32_t>(shadows.size));
   appendWord(static_cast<std::uint32_t>(shadows.tiles));
   appendWord(static_cast<std::uint32_t>(shadows.firstSlot));
-  appendWord(static_cast<std::uint32_t>(shadows.light[0]));
-  appendWord(static_cast<std::uint32_t>(shadows.light[1]));
-  appendWord(static_cast<std::uint32_t>(shadows.light[2]));
+  for (int light : shadows.light)
+    appendWord(static_cast<std::uint32_t>(light));
   for (int s = 0; s < shadows.count; ++s) {
     appendFloats(glm::value_ptr(shadows.view[s].view), 16);
     appendFloats(glm::value_ptr(shadows.view[s].proj), 16);

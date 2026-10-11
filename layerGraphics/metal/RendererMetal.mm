@@ -1155,7 +1155,9 @@ void RendererMetal::beginFrame()
   _lightRigOn = false;
   // So is its HDR colour (#624), derived from it by setLightRig.
   _lightHdrOn = false;
-  // So are its studio shadow maps (#616): no frame reads another's.
+  // So is whether its studio shadow maps (#616) are this frame's: the map
+  // pass or reuseLightShadowMaps (#666, the last pass's maps, kept across
+  // frames) sets it again.
   _lightShadowMapsReady = false;
   _lightStudioShadows = false;
   _lightShadowSlotOpen = -1;
@@ -6351,7 +6353,6 @@ void RendererMetal::endLightShadowMaps()
                           _lightShadowSlicesOpened == (int)_lightRigBlock.head[3];
   _lightShadowMapsKept = _lightShadowMapsReady;
   _lightShadowMapsKeptCount = _lightShadowSlicesOpened;
-  _lightShadowMapsKeptSize = _lightShadowArraySize;
   // Re-open the scene pass with a fresh CLEAR, as endShadowPass does (the
   // statements below are its own, copied verbatim; CI compares them).
   _passDesc = _scenePassDesc;
@@ -6393,8 +6394,9 @@ bool RendererMetal::reuseLightShadowMaps(int count)
   if (count <= 0 || count != _lightShadowMapsKeptCount ||
       count != (int)_lightRigBlock.head[3])
     return false;
-  if (!_lightShadowArray || _lightShadowArraySize != _lightShadowSize ||
-      _lightShadowMapsKeptSize != _lightShadowArraySize)
+  // (A reallocation clears _lightShadowMapsKept, so kept maps are the
+  // array's own.)
+  if (!_lightShadowArray || _lightShadowArraySize != _lightShadowSize)
     return false;
   _lightShadowMapsReady = true;
   return true;
