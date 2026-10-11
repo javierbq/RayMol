@@ -254,7 +254,7 @@ final class TwistRollTests: XCTestCase {
         let twisted = try XCTUnwrap(engine.captureView())
         engine.restoreView(s, animate: 0)
 
-        let deg: Float = -1 * Float(CGFloat(0.3)) * 180.0 / .pi
+        let deg: Float = MetalViewport.Coordinator.rollSign * Float(CGFloat(0.3)) * 180.0 / .pi
         engine.runPython(
             "from pymol import cmd as _twr_cmd\n"
             + "_twr_cmd.turn('z', \(deg))\n")

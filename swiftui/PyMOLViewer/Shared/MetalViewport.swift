@@ -691,10 +691,8 @@ extension MetalViewport {
 
         // Trackpad two-finger twist → Z-roll (Trackpad mode only). NSRotationGesture
         // .rotation is cumulative radians; feed the per-callback delta to
-        // rollCamera(byRadians:). Negated so a clockwise twist rolls the
-        // molecule clockwise on screen, to match the iOS handleRotation sign.
+        // rollCamera(byRadians:) (sign: Coordinator.rollSign, shared with iOS).
         private var lastRoll: CGFloat = 0
-        private let kRollSign: Float = -1
 
         // Trackpad two-finger drag (delivered as precise scrollWheel events) →
         // translate. Synthesized as a PyMOL middle-button drag: a MIDDLE-DOWN at
@@ -737,10 +735,8 @@ extension MetalViewport {
         private let kZoomGain: CGFloat = 1.0
         // Two-finger rotation → Z-axis roll. UIRotationGestureRecognizer.rotation
         // is cumulative radians; feed the per-callback delta to
-        // rollCamera(byRadians:). Negated so a clockwise twist rolls the
-        // molecule clockwise on screen; flip kRollSign if it feels inverted.
+        // rollCamera(byRadians:) (sign: Coordinator.rollSign, shared with macOS).
         private var lastRotation: CGFloat = 0
-        private let kRollSign: Float = -1
         // Last position fed to a multi-finger drag (translate / clip). On release
         // the touches lift unevenly and the pan recognizer's centroid jumps to the
         // remaining finger; replaying that jumped location as the button-UP would
@@ -1161,12 +1157,17 @@ extension MetalViewport {
             MainActor.assumeIsolated { engine.lightGizmoUI.hovered = target }
         }
 
+        /// The twist's roll sign on both platforms: negated so a clockwise
+        /// twist rolls the molecule clockwise on screen. Flip it if that feels
+        /// inverted.
+        static let rollSign: Float = -1
+
         /// One tick of the two-finger twist (#719), shared by the iOS rotation
         /// recognizer and the macOS trackpad twist: `radians` is the change in the
         /// recognizer's cumulative rotation since the last tick. Rolls the camera
         /// about z through the bridge (engine.turnZ), never runPython.
         func rollCamera(byRadians radians: CGFloat) {
-            let deg = kRollSign * Float(radians) * 180.0 / .pi
+            let deg = Self.rollSign * Float(radians) * 180.0 / .pi
             engine?.turnZ(deg)
         }
 

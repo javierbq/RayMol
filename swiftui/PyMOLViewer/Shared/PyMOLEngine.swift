@@ -1317,7 +1317,9 @@ final class PyMOLEngine: ObservableObject {
     /// every tick. The core marks the scene dirty, so the display link
     /// redraws without a request.
     func turnZ(_ degrees: Float) {
-        guard isReady, degrees.isFinite, let instance else { return }
+        // A zero tick (fingers moving without twisting) changes nothing, so
+        // it takes no lock and leaves no redraw.
+        guard isReady, degrees.isFinite, degrees != 0, let instance else { return }
         _ = PyMOLBridge_TurnZ(instance, degrees)
     }
 

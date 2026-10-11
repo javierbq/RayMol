@@ -615,7 +615,7 @@ ROUTING = (
     # long-press in Lights mode places a highlight before any context menu.
     ('func handlePinch(', 'lightGizmoPinch(', ('zoomBy(',)),
     ('func handleTwoFingerPan(', 'lightGizmoTwoFinger(', ('engine?.button(', 'engine?.drag(')),
-    ('func handleRotation(', 'lightGizmoTwoFinger(', ('runPython(',)),
+    ('func handleRotation(', 'lightGizmoTwoFinger(', ('rollCamera(',)),
     ('func handleLongPress(', 'lightGizmoLongPress(', ('longPressPick(',)),
 )
 # Nothing the gizmo's routing does may reach Python, the console, the
