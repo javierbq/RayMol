@@ -1181,16 +1181,23 @@ class TestSceneMovieBlend(_BlendCase):
                          {'track': {}, 'marks': []})
         self.assertEqual(session['raymol_scene_lights'], {})
 
-    def testReinitializeOtherCodesKeepTheAnimation(self):
-        """Only `everything` touches the movie and the scenes; `settings`
-        (and a pattern) must leave the animation alone."""
+    def testReinitializeOtherFormsKeepTheAnimation(self):
+        """Only a bare `reinitialize everything` touches the movie and the
+        scenes; `settings` and `everything` with an object pattern must leave
+        the animation and the per-scene extras alone."""
         self.build()
-        marks = list(anim._scene_marks)
-        track = dict(anim._lights_track)
-        cmd.reinitialize('settings')
-        self.assertEqual(anim._scene_marks, marks)
-        self.assertEqual(anim._lights_track, track)
-        self.assertEqual(set(raymol_scenes._scene_lights), {'A', 'B'})
+
+        def state():
+            return copy.deepcopy((
+                anim._track, anim._scene_marks, anim._lights_track,
+                raymol_scenes._scene_lights, raymol_scenes._scene_settings))
+
+        before = state()
+        # rig-only scenes: the lights track, marks and rigs are what exist
+        self.assertTrue(before[1] and before[2] and before[3])
+        for args in (('settings',), ('everything', 'm')):
+            cmd.reinitialize(*args)
+            self.assertEqual(state(), before, args)
 
     def testOlderBuildsIgnoreTheTrack(self):
         """Q4: an older build sees no frame command of ours (stripped) and
