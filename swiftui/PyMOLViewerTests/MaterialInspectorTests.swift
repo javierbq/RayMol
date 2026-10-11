@@ -349,6 +349,14 @@ final class SphereGlassGlintTests: XCTestCase {
         guard engine.isReady else {
             throw XCTSkip("the PyMOL engine did not come up under the test host")
         }
+        // No export until the Metal renderer exists (a cold launch before the
+        // first live frame, #654): wait for it, as McpCaptureMetalTests does.
+        while !engine.metalRendererReady() && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.metalRendererReady() else {
+            throw XCTSkip("no Metal renderer under the test host")
+        }
     }
 
     /// A red glass sphere -- or, with `dots`, a red glass dot surface, which
@@ -412,9 +420,10 @@ final class SphereGlassGlintTests: XCTestCase {
                                    "no export written (\(tag))")
         let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil),
                                   "export unreadable (\(tag))")
-        XCTAssertEqual(image.width, w, tag)
-        XCTAssertEqual(image.height, h, tag)
-        guard image.width == w, image.height == h else { throw CocoaError(.fileReadCorruptFile) }
+        guard image.width == w, image.height == h else {
+            XCTFail("export is \(image.width)x\(image.height), not \(w)x\(h) (\(tag))")
+            throw CocoaError(.fileReadCorruptFile)
+        }
         var rgba = [UInt8](repeating: 0, count: w * h * 4)
         let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
             guard let context = CGContext(
@@ -463,9 +472,11 @@ final class SphereGlassGlintTests: XCTestCase {
         // Glass's body is 85% see-through, so over black it stays dark: no
         // bright, glint-free red. An opaque red sphere fills its disc with it
         // (before #833 -- and #635 -- a glass sphere drew as `default`).
-        let opaqueRed = stride(from: 0, to: onClassic.count, by: 4).filter {
-            onClassic[$0] >= 150 && onClassic[$0 + 1] < 40 && onClassic[$0 + 2] < 40
-        }.count
+        var opaqueRed = 0
+        for i in stride(from: 0, to: onClassic.count, by: 4)
+            where onClassic[i] >= 150 && onClassic[i + 1] < 40 && onClassic[i + 2] < 40 {
+            opaqueRed += 1
+        }
         print("713-body \(what) opaque red pixels: \(opaqueRed)")
         XCTAssertLessThan(opaqueRed, 50, "\(what) should draw as glass, not as an opaque red body")
         for (name, on) in [("rig classic 1", onRig), ("no rig", onClassic)] {
