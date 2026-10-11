@@ -99,10 +99,10 @@ struct PickSpan {
   bool has_in = false, has_out = false;
   /**
    * The far wall the impostor shader tests when the near plane cuts its
-   * front surface (Impostor rule, interior cap): for a sphere its exit; for
-   * a cylinder the INFINITE tube's far crossing, whatever the ends are
-   * (cyl_shade's `dist2`, RendererMetal.mm), so a round or open end does not
-   * change it.
+   * front surface (Impostor rule, interior cap): for a sphere its exit;
+   * for a cylinder, the capped solid's exit, an open end counting as the
+   * ball of radius r the atom's first bond draws there (cyl_shade's far
+   * wall, RendererMetal.mm, #641).
    */
   float s_cap_far = 0.f;
 };
@@ -260,8 +260,8 @@ inline bool pickCylinder(const float* a, const float* d, const float* p0,
   }
 
   // A (near) zero-length cylinder: RepCylBond draws a lone zero-order-bond
-  // atom as one (axis 1e-4) with round caps, i.e. a sphere. The impostor
-  // still decides its interior cap from the tube about that tiny axis.
+  // atom as one (axis 1e-4) with round caps, i.e. a sphere. Its far wall
+  // is the ball's exit.
   // (Pointed ends draw a double cone there, handled below.)
   if (h < 1e-3 && !pointed) {
     if (cap0 != PickCap::Round && cap1 != PickCap::Round)
@@ -271,7 +271,7 @@ inline bool pickCylinder(const float* a, const float* d, const float* p0,
       return false;
     span.s_in = float(s0);
     span.s_out = float(s1);
-    span.s_cap_far = float((h > 0.0 && tube && !parallel) ? t1 : s1);
+    span.s_cap_far = span.s_out;
     sphereNormal(a, d, c0, s0, span.n_in);
     sphereNormal(a, d, c0, s1, span.n_out);
     span.has_in = span.has_out = true;
@@ -430,9 +430,19 @@ inline bool pickCylinder(const float* a, const float* d, const float* p0,
   span.s_out = float(rout == 1 ? s_out : t1);
   if (span.s_in > span.s_out)
     return false;
-  // cyl_shade's far body crossing. Exactly parallel to the axis it has none
-  // (the shader divides by zero there): fall back to the solid's exit.
-  span.s_cap_far = parallel ? span.s_out : float(t1);
+  // cyl_shade's far wall (#641): the capped solid's exit, which resolve()
+  // found unless the ray leaves through an open end. There it is the ball
+  // of radius r the atom's first bond draws; a ray that misses it has no
+  // far wall (no cap).
+  span.s_cap_far = span.s_out;
+  if (rout == 0) {
+    const double z = parallel ? (du > 0 ? z_hi + 1.0 : z_lo - 1.0)
+                              : md + t1 * du;
+    double s0, s1;
+    span.s_cap_far = sphereInterval(a, d, z < z_lo ? c0 : c1, rr, s0, s1)
+                         ? float(s1)
+                         : span.s_in;
+  }
   return true;
 }
 

@@ -895,19 +895,21 @@ class TestBranchedSticks(PickCase):
                 return True
         return False
 
-    def metal_hit(self, d, cap_on, round_far='tube'):
+    def metal_hit(self, d, cap_on, far='solid'):
         '''What Metal's cylinder impostor draws along the ray (cyl_shade and
         cyl_impostor_vertex, RendererMetal.mm): (depth, cap) or None.
         Per bond: the front crossing of the infinite tube; past an end, that
         end's round cap, or nothing if the end is open (caps()). A point in
-        front of the near plane is discarded, unless cap_on and the tube's
-        FAR crossing (of the infinite tube, as the shader computes it) is
-        behind the plane: then a flat cap at the plane. The nearest wins.
+        front of the near plane is discarded, unless cap_on and the capped
+        solid's exit (its far wall, #641) is behind the plane: then a flat
+        cap at the plane. The nearest wins.
 
-        round_far='ball': where that far crossing lies past a ROUND end, use
-        the ball's far crossing instead (the capped solid's exit). That is
-        NOT what Metal does; the test uses it to find the rays where the two
-        differ, which the pick must still answer as Metal does.'''
+        far='solid' (default): where the tube's far crossing lies past an
+        end, use that end's ball far root, whether capped or open (an open
+        end counts as the ball the atom's first bond draws); if the ray
+        misses that ball, the bond has no far wall.
+        far='tube': what Metal did before #641 (the infinite tube's far
+        crossing as is), used only to find rays where the two rules differ.'''
         caps = self.caps()
         best = None
         for bond in self.BONDS:
@@ -915,7 +917,7 @@ class TestBranchedSticks(PickCase):
             roots = tube_roots(EYE, d, p0, u, self.r)
             if roots is None:
                 continue
-            front, far = roots
+            front, far_root = roots
             q = sub(tuple(EYE[k] + front * d[k] for k in range(3)), p0)
             z = dot(q, u)
             if z < 0.0 or z > h:
@@ -926,16 +928,15 @@ class TestBranchedSticks(PickCase):
                 if ball is None:
                     continue
                 front = ball[0]
-            if round_far == 'ball':
-                q = sub(tuple(EYE[k] + far * d[k] for k in range(3)), p0)
+            if far == 'solid':
+                q = sub(tuple(EYE[k] + far_root * d[k] for k in range(3)), p0)
                 z = dot(q, u)
                 if z < 0.0 or z > h:
                     atom = bond[0] if z < 0.0 else bond[1]
-                    if caps[bond, atom]:
-                        ball = sphere_roots(EYE, d, self.pos[atom], self.r)
-                        far = ball[1] if ball else front
+                    ball = sphere_roots(EYE, d, self.pos[atom], self.r)
+                    far_root = ball[1] if ball is not None else float('-inf')
             if front <= FRONT:
-                if not cap_on or far <= FRONT:
+                if not cap_on or far_root <= FRONT:
                     continue
                 hit = (FRONT, True)
             elif front >= BACK:
@@ -958,20 +959,34 @@ class TestBranchedSticks(PickCase):
 
     def testOpenEndsAreBuilt(self):
         # Guards the premise that app_sticks builds the app's open ends (the
-        # headless default caps every end). The interior cap follows the
-        # infinite tube whatever the ends, so only one ray tells them apart
-        # here: exactly down CB-CC (NDC 0, 0), parallel to the bond, the tube
-        # has no far crossing and the pick falls back to the bond's exit.
-        # Through the open end at CB it runs on behind the plane: a cap.
-        # Through CB's ball it ends in front of the plane: nothing.
-        self.junction(z0=50.4)
-        cmd.set('metal_interior_cap', 1, 'br')
-        hit = self.pick(0.0, 0.0)
-        self.assertHit(hit)
-        self.assertTrue(hit.cap)
-        self.junction(z0=50.4, use_shaders=0)
-        cmd.set('metal_interior_cap', 1, 'br')
-        self.assertIsNone(self.pick(0.0, 0.0))
+        # headless default caps every end). A-B is made first, so it caps B
+        # and B-C is OPEN there. With A-B fully transparent (it still caps
+        # B, RepCylBond's capdrawn ignores transparency), a ray through B's
+        # ball on the side away from both bonds meets only that ball: under
+        # app_sticks nothing draws it; with every end capped, B-C does.
+        for use_shaders, drawn in ((1, False), (0, True)):
+            cmd.delete('op')
+            cmd.set('use_shaders', use_shaders)
+            for name, p in (('A', (-1.5, 0.0, 0.0)), ('B', (0.0, 0.0, 0.0)),
+                            ('C', (0.0, 1.5, 0.0))):
+                cmd.pseudoatom('op', name=name, pos=list(p))
+            cmd.bond('op and name A', 'op and name B')
+            cmd.bond('op and name B', 'op and name C')
+            cmd.show_as('sticks', 'op')
+            cmd.set_bond('stick_transparency', 1.0, 'op and name A',
+                         'op and name B')
+            x, y = self.ndc_of((0.12, -0.12, 0.0))
+            hit = self.pick(x, y)
+            if drawn:
+                self.assertHit(hit)
+                self.assertFalse(hit.cap)
+                r = cmd.get_setting_float('stick_radius')
+                self.assertAlmostEqual(
+                    hit.depth,
+                    sphere_roots(EYE, self.ray_dir(x, y), (0.0, 0.0, 0.0),
+                                 r)[0], delta=1e-3)
+            else:
+                self.assertIsNone(hit, 'use_shaders %d' % use_shaders)
 
     def testMatchesTheCapsuleUnion(self):
         self.junction()
@@ -1016,7 +1031,7 @@ class TestBranchedSticks(PickCase):
         self.assertGreater(open_exits, 15)
 
     def testNearPlaneThroughTheJunction(self):
-        tube_not_ball = 0
+        tube_not_solid = 0
         for z0 in (49.6, 50.0, 50.4):
             for cap_on in (0, 1):
                 self.junction(z0=z0)
@@ -1026,11 +1041,10 @@ class TestBranchedSticks(PickCase):
                 for x, y in self.grid(19):
                     d = self.ray_dir(x, y)
                     ref = self.metal_hit(d, cap_on)
-                    # A ray leaving a ROUND end's ball in front of the plane
-                    # while the infinite tube runs on behind it: Metal caps
-                    # it (cyl_shade tests the tube), so the pick must too.
-                    tube_not_ball += \
-                        ref != self.metal_hit(d, cap_on, round_far='ball')
+                    # Rays where the infinite tube (Metal's rule before #641)
+                    # and the capped solid disagree.
+                    tube_not_solid += \
+                        ref != self.metal_hit(d, cap_on, far='tube')
                     hit = self.pick(x, y)
                     where = 'z0 %g cap %d at %r: pick %r, Metal %r' % (
                         z0, cap_on, (x, y), hit, ref)
@@ -1045,16 +1059,17 @@ class TestBranchedSticks(PickCase):
                     self.assertOnRay(hit, x, y)
                     self.assertOriented(hit)
                 if cap_on:
-                    # At 50.4 every atom is in front of the plane: the caps
-                    # come from CB-CC and CB-CD, whose far crossings run on
-                    # past their open ends at CB.
+                    # Caps wherever a bond's solid straddles the plane. At
+                    # 50.4 only the CA end of CA-CB still reaches behind it
+                    # (CA at eye depth 49.9), and the caps come from there.
                     self.assertGreater(caps, 10, 'z0 %g' % z0)
                 else:
                     self.assertEqual(caps, 0)
                     if z0 < 50.2:
                         self.assertGreater(hits, 0, 'z0 %g' % z0)
-        # The grid reaches rays where the tube and the ball disagree.
-        self.assertGreater(tube_not_ball, 0)
+        # The grid reaches rays where the old tube rule capped and the solid
+        # does not, so the pick is held to the new rule.
+        self.assertGreater(tube_not_solid, 0)
 
 
 class TestSlab(PickCase):
@@ -1145,12 +1160,10 @@ class TestSlab(PickCase):
         self.assertCap(hit, 'cut')
         self.assertEqual(hit.rep, 'sticks')
 
-    def testInteriorCapFollowsTheTubeNotTheBall(self):
-        # cyl_shade decides the cap from the INFINITE tube's far crossing,
-        # whatever the ends. A stick wholly in front of the plane, leaning
-        # away from the camera: this ray enters its body and leaves through
-        # the far ball, both in front of the plane, but the tube runs on
-        # behind the plane, so Metal caps.
+    def testNoInteriorCapPastTheFarBall(self):
+        # cyl_shade decides the cap from the capped solid's exit (#641); this
+        # ray leaves through the far ball in front of the plane, so no cap
+        # although the infinite tube runs on behind it.
         p0, p1 = (0.0, 0.0, 52.0), (0.0, 1.0, 50.3)
         self.stick('cut', p0, p1)
         cmd.set('metal_interior_cap', 1, 'cut')
@@ -1170,18 +1183,29 @@ class TestSlab(PickCase):
         self.assertLess(tube[0], FRONT, 'test setup')
         self.assertLess(ball[1], FRONT, 'test setup')
         self.assertGreater(tube[1], FRONT, 'test setup')
+        self.assertIsNone(self.pick(x, y))
+        cmd.set('metal_interior_cap', 0, 'cut')
+        self.assertIsNone(self.pick(x, y))
+        # 0.4 A further back the far ball reaches behind the plane.
+        cmd.set('metal_interior_cap', 1, 'cut')
+        cmd.translate([0.0, 0.0, -0.4], 'cut', camera=0)
+        p0_pos, p1_pos = (0.0, 0.0, 51.6), (0.0, 1.0, 49.9)
+        x, y = self.ndc_of((0.0, 1.15, 49.9))
+        d = self.ray_dir(x, y)
+        tube = tube_roots(EYE, d, p0_pos, u, r)
+        ball = sphere_roots(EYE, d, (0.0, 1.0, 49.9), r)
+        self.assertGreater(ball[1], FRONT, 'test setup: ball exit')
+        self.assertLess(tube[0], FRONT, 'test setup: body entry')
         hit = self.pick(x, y)
         self.assertHit(hit)
         self.assertTrue(hit.cap)
         self.assertAlmostEqual(hit.depth, FRONT, delta=1e-3)
         self.assertOnRay(hit, x, y)
-        cmd.set('metal_interior_cap', 0, 'cut')
-        self.assertIsNone(self.pick(x, y))
 
-    def testNoCapWhereMetalClipsTheBox(self):
-        # The same tube rule, but the stick is too far in front of the plane
-        # for Metal to keep its impostor box (metal_box_kept): no fragment,
-        # so no cap, though the tube runs on behind the plane.
+    def testStickWhollyInFrontOfThePlaneNeverCaps(self):
+        # A stick caps only where its solid reaches behind the plane, and
+        # then Metal always keeps its box. Wholly in front of the plane: no
+        # cap even when the infinite tube runs on behind it.
         p0, p1 = (0.0, 0.0, 55.0), (0.0, 0.1, 53.0)
         self.stick('cut', p0, p1)
         cmd.set('metal_interior_cap', 1, 'cut')
@@ -1193,7 +1217,8 @@ class TestSlab(PickCase):
         self.assertGreater(tube[1], FRONT, 'test setup')
         self.assertFalse(metal_box_kept(p0, p1, r), 'test setup')
         self.assertIsNone(self.pick(x, y))
-        # 2.5 A further back Metal keeps the box, and caps.
+        # 2.5 A further back Metal keeps the box and the tube still runs on
+        # behind the plane, but the far ball is in front of it: no cap.
         cmd.translate([0.0, 0.0, -2.5], 'cut', camera=0)
         p0, p1 = (0.0, 0.0, 52.5), (0.0, 0.1, 50.5)
         self.assertTrue(metal_box_kept(p0, p1, r), 'test setup')
@@ -1201,11 +1226,61 @@ class TestSlab(PickCase):
         d = self.ray_dir(x, y)
         self.assertLess(sphere_roots(EYE, d, p0, r)[0], FRONT, 'test setup')
         self.assertGreater(
-            tube_roots(EYE, d, p0, unit(sub(p1, p0)), r)[1], FRONT)
+            tube_roots(EYE, d, p0, unit(sub(p1, p0)), r)[1], FRONT,
+            'test setup: tube runs on')
+        self.assertLess(sphere_roots(EYE, d, p1, r)[1], FRONT,
+                        'test setup: ball exit in front')
+        self.assertIsNone(self.pick(x, y))
+        # Another 0.6 A back the solid reaches behind the plane, and caps.
+        cmd.translate([0.0, 0.0, -0.6], 'cut', camera=0)
+        p0, p1 = (0.0, 0.0, 51.9), (0.0, 0.1, 49.9)
+        x, y = self.ndc_of((0.0, 0.1, 49.9))
+        d = self.ray_dir(x, y)
+        self.assertGreater(sphere_roots(EYE, d, p1, r)[1], FRONT,
+                           'test setup: ball exit behind')
         hit = self.pick(x, y)
         self.assertHit(hit)
         self.assertTrue(hit.cap)
         self.assertAlmostEqual(hit.depth, FRONT, delta=1e-3)
+
+    def testInteriorCapOnAFlatEnd(self):
+        # With half_bonds on, hiding A2's sticks leaves the half bond A1 ->
+        # midpoint M, flat at M (RepCylBond, cCylShaderCap2Flat). RepCylBond
+        # builds nothing unless some bond has both atoms shown: B1-B2, off
+        # to the side. Straight down the view axis
+        # through M: the body is entered in front of the plane and left
+        # through the flat disc at M (eye depth 49.88), in front of it, so no
+        # cap, though both the infinite tube (~50.61) and a ball at M
+        # (~50.13) would reach behind the plane.
+        th, length = math.radians(20.0), 1.5
+        m = (0.0, 0.0, 50.12)
+        a1 = (0.0, -length * math.sin(th), m[2] + length * math.cos(th))
+        a2 = (0.0, -a1[1], 2.0 * m[2] - a1[2])
+        cmd.set('half_bonds', 1)
+        self.stick('half', a1, a2)
+        cmd.pseudoatom('half', name='B1', pos=[10.0, 0.0, 0.0])
+        cmd.pseudoatom('half', name='B2', pos=[12.0, 0.0, 0.0])
+        cmd.bond('half and name B1', 'half and name B2')
+        cmd.show_as('sticks', 'half')
+        cmd.hide('sticks', 'half and name A2')
+        cmd.set('metal_interior_cap', 1, 'half')
+        r = cmd.get_setting_float('stick_radius')
+        d = self.ray_dir(0.0, 0.0)
+        u = unit(sub(m, a1))
+        tube = tube_roots(EYE, d, a1, u, r)
+        self.assertLess(tube[0], FRONT, 'test setup: body entry')
+        self.assertGreater(tube[1], FRONT, 'test setup: tube runs on')
+        self.assertGreater(sphere_roots(EYE, d, m, r)[1], FRONT,
+                           'test setup: a ball would reach behind')
+        self.assertLess(EYE[2] - m[2], FRONT, 'test setup: disc in front')
+        self.assertIsNone(self.pick(0.0, 0.0))
+        # 0.3 A further back the disc (eye depth 50.18) is behind the plane.
+        cmd.translate([0.0, 0.0, -0.3], 'half', camera=0)
+        hit = self.pick(0.0, 0.0)
+        self.assertHit(hit)
+        self.assertTrue(hit.cap)
+        self.assertAlmostEqual(hit.depth, FRONT, delta=1e-3)
+        self.assertOnRay(hit, 0.0, 0.0)
 
     def testNoCapOnTransparentStick(self):
         self.stick('cut', (-3.0, 0.0, 50.0), (3.0, 0.0, 50.0))

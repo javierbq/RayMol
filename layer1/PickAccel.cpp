@@ -297,16 +297,6 @@ void PickAccel::build()
   m_built = true;
   m_cellStart.clear();
   m_refs.clear();
-  m_capReach = 0.f;
-  for (const auto& cy : m_cylinders) {
-    if (cy.rule != PickRule::Impostor)
-      continue;
-    const float len = std::sqrt(cy.axis[0] * cy.axis[0] +
-                                cy.axis[1] * cy.axis[1] +
-                                cy.axis[2] * cy.axis[2]);
-    if (std::isfinite(len) && std::isfinite(cy.r))
-      m_capReach = std::max(m_capReach, len + 3.5f * cy.r);
-  }
   m_firstCyl = std::uint32_t(m_spheres.size());
   m_firstTri = m_firstCyl + std::uint32_t(m_cylinders.size());
   m_firstBlock = m_firstTri + std::uint32_t(m_triangles.size());
@@ -464,22 +454,9 @@ bool PickAccel::intersect(const PickRay& ray, bool cap_on, PickRayHit& hit,
   if (!m_built || m_cellStart.empty() || !(ray.smin <= ray.smax))
     return false;
 
-  // Clip the window to the grid box (slab method). With the interior cap,
-  // an impostor cylinder wholly in front of the near plane can still cap it
-  // (its infinite tube runs on behind the plane), so the walk starts as far
-  // in front of the plane as a kept box can reach: its nearest corner within
-  // the ends' depth difference + 3.5 r of the plane.
+  // Clip the window to the grid box (slab method). The walk starts at the near
+  // plane (ray.smin): an impostor caps only where its solid reaches behind it.
   double t0 = ray.smin, t1 = ray.smax;
-  if (cap_on && eye && m_capReach > 0.f) {
-    const double rate = -(double(eye->row[0]) * ray.d[0] +
-                          double(eye->row[1]) * ray.d[1] +
-                          double(eye->row[2]) * ray.d[2]); // depth per unit s
-    const double scale = std::sqrt(double(eye->row[0]) * eye->row[0] +
-                                   double(eye->row[1]) * eye->row[1] +
-                                   double(eye->row[2]) * eye->row[2]);
-    if (rate > 0.0)
-      t0 -= std::max(1.0, scale) * m_capReach / rate;
-  }
   for (int k = 0; k < 3; ++k) {
     const double dk = ray.d[k];
     if (std::fabs(dk) < 1e-30) {

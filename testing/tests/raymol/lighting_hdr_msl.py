@@ -109,7 +109,7 @@ MASTER_054B525 = {
     'kBezierTubeRigSrc': 'c15ddac6015e66dc',
     'kBezierTubeSrc': '0085bdbf88964ab4',
     'kConnectorShaderSrc': '40ef57a0e535d985',
-    'kCylinderImpostorSrc': '43f9c76b791ece1d',
+    'kCylinderImpostorSrc': '9b30a4adff1fbb12',  # #641: cyl_shade caps from the capped solid's exit
     'kEyeReconSrc': '34e775c149c8b075',
     'kLabelShaderSrc': 'ca5097bd2ad97d60',  # #736: label_fragment_oit, the OIT pass's variant
     'kMaterialImpostorSrc': 'ad8142cda60dc979',

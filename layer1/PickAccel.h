@@ -218,9 +218,6 @@ private:
   std::uint32_t m_blockTris = 0;
   Mesh m_mesh;
   PickNubShape m_nub;
-  /// Largest length + 3.5 r of the impostor cylinders: how far in front of
-  /// the near plane (in depth) one can sit and still have its box kept.
-  float m_capReach = 0.f;
   // First item id of each kind (spheres start at 0); set by build().
   std::uint32_t m_firstCyl = 0, m_firstTri = 0, m_firstBlock = 0,
                 m_firstMesh = 0;

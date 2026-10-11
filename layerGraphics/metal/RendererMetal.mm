@@ -12061,6 +12061,10 @@ static void cyl_shade(CylVOut in, constant CylU& u,
   bool endcapround   = (cyl_bit(fcap) > 0.5) && (u.no_flat_caps > 0.5);
   bool nocolorinterp = !(cyl_bit(fcap) > 0.5);
 
+  // The base end's bits, before the end-cap branch below reuses
+  // frontcap/frontcapround for whichever end the front point is past.
+  const bool basecap = frontcap, basecapround = frontcapround;
+
   float ratio = dot(new_point - in.base, in.end_cyl - in.base) * in.inv_sqr_height;
   if (nocolorinterp) {
     float dp = clamp(-u.half_bond * new_point.z * u.inv_height, 0.0, 0.5);
@@ -12102,15 +12106,40 @@ static void cyl_shade(CylVOut in, constant CylU& u,
   float ndcz = clip.z / clip.w;
   depth = (u.depthZeroToOne >= 0.5) ? ndcz : (0.5 + 0.5 * ndcz);
   if (depth <= 0.0) {
-    // Surface point is in front of the slab. If the cylinder body still straddles
+    // Surface point is in front of the slab. If the capped solid still straddles
     // the slab (its far wall is inside), cap the cross-section with a flat
     // interior color instead of discarding (= see-through). Else discard.
     if (u.interiorCap < 0.5) discard_fragment();
-    float dist2 = (-a1 - sqrt(d)) / a2;            // far body intersection
+    // The far wall is the CAPPED solid's exit (#641), not the infinite
+    // tube's: the tube's far crossing between the end planes; past an end,
+    // that end's disc (flat) or ball (round, or open: the ball the atom's
+    // first bond draws there). Else a stick wholly in front of the slab,
+    // whose axis runs on past it, would cap the slab where none of it is.
+    float dist2 = (-a1 - sqrt(d)) / a2;            // far tube crossing
     float3 p2 = ray_target + dist2 * ray_dir;
+    float z2 = dot(p2 - in.base, in.axis);
+    float hz = dot(in.end_cyl - in.base, in.axis);
+    if (z2 < 0.0 || z2 > hz) {
+      bool atEnd = z2 > hz;
+      float3 cb = atEnd ? in.end_cyl : in.base;
+      bool flatEnd = atEnd ? (endcap && !endcapround)
+                           : (basecap && !basecapround);
+      if (flatEnd) {
+        float3 outAxis = atEnd ? in.axis : -in.axis;
+        float dNV = dot(outAxis, ray_dir);         // < 0: leaving through it
+        if (dNV >= 0.0) discard_fragment();
+        p2 = ray_origin + ray_dir * (dot(outAxis, cb - ray_origin) / dNV);
+      } else {
+        float3 sd = cb - ray_origin;
+        float b = dot(sd, ray_dir);
+        float pos = b*b + radius2 - dot(sd, sd);
+        if (pos < 0.0) discard_fragment();
+        p2 = ray_origin + (b - sqrt(pos)) * ray_dir;  // the ball's far side
+      }
+    }
     float4 c2 = u.projection * float4(p2, 1.0);
     float d2 = (u.depthZeroToOne >= 0.5) ? (c2.z / c2.w) : (0.5 + 0.5 * c2.z / c2.w);
-    if (d2 <= 0.0) discard_fragment();             // whole stick in front of slab
+    if (d2 <= 0.0) discard_fragment();             // the whole solid is in front of the slab
     depth = 1e-5;                                  // flat disc at the slab plane
     rgb = (u.interiorColor.a > 0.5) ? u.interiorColor.rgb  // ray_interior_color
                                     : color.rgb * 0.45;    // else bond darkened
