@@ -1170,3 +1170,387 @@ final class StudioShadowMapCacheTests: XCTestCase {
         try assertRerendersAndMatchesUncached("_c.frame(2)\n", "movie frame advance")
     }
 }
+
+/// Issue #689: Metal exports draw bg_gradient backgrounds and ramp gadgets.
+@MainActor
+final class BackgroundGradientGadgetExportTests: XCTestCase {
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var sceneBuilt = false
+    private var savedView: [Float]?
+
+    override func tearDown() {
+        if sceneBuilt {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.delete('bg689* or gr689*')
+            _c.set('bg_gradient', globals().pop('_bg689_bg_gradient', 0))
+            _c.set('bg_rgb_top', globals().pop('_bg689_bg_rgb_top', '0x00004D'))
+            _c.set('bg_rgb_bottom', globals().pop('_bg689_bg_rgb_bottom', '0x333380'))
+            _c.set('ray_opaque_background', globals().pop('_bg689_ray_opaque_background', 1))
+            _c.set('metal_tonemap', globals().pop('_bg689_metal_tonemap', 0))
+            _c.set('metal_exposure', globals().pop('_bg689_metal_exposure', 1.0))
+            _c.set('bg_rgb', globals().pop('_bg689_bg_rgb', [0.0, 0.0, 0.0]))
+            for _n in globals().pop('_bg689_enabled', []):
+                _c.enable(_n)
+            """)
+            sceneBuilt = false
+        }
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        super.tearDown()
+    }
+
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            throw XCTSkip("the PyMOL engine did not come up under the test host")
+        }
+    }
+
+    private func prepareScene() {
+        savedView = engine.captureView()
+        sceneBuilt = true
+        engine.runPython("""
+        from pymol import cmd as _c
+        _bg689_enabled = _c.get_names('objects', enabled_only=1)
+        _bg689_bg_rgb = list(_c.get_setting_tuple('bg_rgb')[1])
+        _bg689_bg_gradient = _c.get_setting_int('bg_gradient')
+        _bg689_bg_rgb_top = _c.get('bg_rgb_top')
+        _bg689_bg_rgb_bottom = _c.get('bg_rgb_bottom')
+        _bg689_ray_opaque_background = _c.get_setting_int('ray_opaque_background')
+        _bg689_metal_tonemap = _c.get_setting_int('metal_tonemap')
+        _bg689_metal_exposure = _c.get_setting_float('metal_exposure')
+        for _n in _bg689_enabled:
+            _c.disable(_n)
+        _c.set('ray_opaque_background', 1)
+        _c.set('bg_rgb', [0.0, 0.0, 0.0])
+        _c.set('metal_tonemap', 0)
+        _c.set('metal_exposure', 1.0)
+        """)
+    }
+
+    private func pngPixels(pngPath: String, width: Int, height: Int) throws -> [UInt8] {
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(
+            URL(fileURLWithPath: pngPath) as CFURL, nil), "no export written")
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        XCTAssertEqual(image.width, width)
+        XCTAssertEqual(image.height, height)
+        var rgba = [UInt8](repeating: 0, count: width * height * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return rgba
+    }
+
+    func testGradientEndsMatchTheSettings() throws {
+        try requireEngine()
+        prepareScene()
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set('bg_gradient', 1)
+        _c.set('bg_rgb_top', [0.2, 0.4, 0.8])
+        _c.set('bg_rgb_bottom', [0.8, 0.2, 0.1])
+        """)
+        for rt in [0, 1] {
+            let png = NSTemporaryDirectory() + "issue_689_grad_rt\(rt).png"
+            defer { try? FileManager.default.removeItem(atPath: png) }
+            engine.renderHiResPNG(png, width: 400, height: 300, rayTraced: rt)
+            let px = try pngPixels(pngPath: png, width: 400, height: 300)
+
+            // Top row: (x = 200, y = 0)
+            let topIdx = (0 * 400 + 200) * 4
+            XCTAssertEqual(Int(px[topIdx]), 51, accuracy: 4, "top R (rt=\(rt))")
+            XCTAssertEqual(Int(px[topIdx + 1]), 102, accuracy: 4, "top G (rt=\(rt))")
+            XCTAssertEqual(Int(px[topIdx + 2]), 204, accuracy: 4, "top B (rt=\(rt))")
+            XCTAssertEqual(px[topIdx + 3], 255, "top A (rt=\(rt))")
+
+            // Bottom row: (x = 200, y = 299)
+            let botIdx = (299 * 400 + 200) * 4
+            XCTAssertEqual(Int(px[botIdx]), 204, accuracy: 4, "bottom R (rt=\(rt))")
+            XCTAssertEqual(Int(px[botIdx + 1]), 51, accuracy: 4, "bottom G (rt=\(rt))")
+            XCTAssertEqual(Int(px[botIdx + 2]), 25, accuracy: 4, "bottom B (rt=\(rt))")
+            XCTAssertEqual(px[botIdx + 3], 255, "bottom A (rt=\(rt))")
+
+            // Middle row: (x = 200, y = 150)
+            let midIdx = (150 * 400 + 200) * 4
+            let avgR = (51 + 204) / 2
+            let avgG = (102 + 51) / 2
+            let avgB = (204 + 25) / 2
+            XCTAssertEqual(Int(px[midIdx]), avgR, accuracy: 6, "mid R (rt=\(rt))")
+            XCTAssertEqual(Int(px[midIdx + 1]), avgG, accuracy: 6, "mid G (rt=\(rt))")
+            XCTAssertEqual(Int(px[midIdx + 2]), avgB, accuracy: 6, "mid B (rt=\(rt))")
+            XCTAssertEqual(px[midIdx + 3], 255, "mid A (rt=\(rt))")
+        }
+    }
+
+    func testGradientIsBehindGeometry() throws {
+        try requireEngine()
+        prepareScene()
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set('bg_gradient', 1)
+        _c.set('bg_rgb_top', [0.2, 0.4, 0.8])
+        _c.set('bg_rgb_bottom', [0.8, 0.2, 0.1])
+        _c.pseudoatom('bg689s', pos=[0.0, 0.0, 0.0])
+        _c.show_as('spheres', 'bg689s')
+        _c.color('white', 'bg689s')
+        _c.set('sphere_scale', 6.0, 'bg689s')
+        _c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                     0.0, 0.0, -40.0, 0.0, 0.0, 0.0, 20.0, 80.0, -20.0))
+        """)
+        let png = NSTemporaryDirectory() + "issue_689_behind.png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: 400, height: 300, rayTraced: 0)
+        let px = try pngPixels(pngPath: png, width: 400, height: 300)
+
+        // Corner pixel (0, 0) still ≈ top colour
+        let cornerIdx = 0
+        XCTAssertEqual(Int(px[cornerIdx]), 51, accuracy: 6, "corner R")
+        XCTAssertEqual(Int(px[cornerIdx + 1]), 102, accuracy: 6, "corner G")
+        XCTAssertEqual(Int(px[cornerIdx + 2]), 204, accuracy: 6, "corner B")
+
+        // Center pixel (200, 150) is NOT the gradient colour (white sphere drawn)
+        let midIdx = (150 * 400 + 200) * 4
+        let r = Int(px[midIdx]), g = Int(px[midIdx + 1]), b = Int(px[midIdx + 2])
+        let isGradient = abs(r - 127) <= 10 && abs(g - 76) <= 10 && abs(b - 114) <= 10
+        XCTAssertFalse(isGradient, "center pixel should be covered by sphere, not gradient")
+        XCTAssertGreaterThan(r, 150, "sphere center should be bright")
+        XCTAssertGreaterThan(g, 150, "sphere center should be bright")
+        XCTAssertGreaterThan(b, 150, "sphere center should be bright")
+    }
+
+    func testTransparentExportDropsTheGradient() throws {
+        try requireEngine()
+        prepareScene()
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set('bg_gradient', 1)
+        _c.set('bg_rgb_top', [0.2, 0.4, 0.8])
+        _c.set('bg_rgb_bottom', [0.8, 0.2, 0.1])
+        _c.set('ray_opaque_background', 0)
+        """)
+        let png = NSTemporaryDirectory() + "issue_689_trans.png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: 400, height: 300, rayTraced: 0)
+        let px = try pngPixels(pngPath: png, width: 400, height: 300)
+
+        let topIdx = (0 * 400 + 200) * 4
+        let botIdx = (299 * 400 + 200) * 4
+        XCTAssertEqual(px[topIdx + 3], 0, "top row alpha must be 0")
+        XCTAssertEqual(px[botIdx + 3], 0, "bottom row alpha must be 0")
+
+        // The alpha above is the export matte's, whatever the background
+        // colour. That the gradient itself is dropped shows in the fog: it
+        // fades toward bg_rgb (black), not toward the gradient.
+        addFoggedBackdrop()
+        defer { restoreFog() }
+        let fogPng = NSTemporaryDirectory() + "issue_689_trans_fog.png"
+        defer { try? FileManager.default.removeItem(atPath: fogPng) }
+        engine.renderHiResPNG(fogPng, width: 400, height: 300, rayTraced: 0)
+        let fog = try pngPixels(pngPath: fogPng, width: 400, height: 300)
+        for (row, idx) in [("top", (2 * 400 + 200) * 4), ("bottom", (297 * 400 + 200) * 4)] {
+            XCTAssertEqual(fog[idx + 3], 255, "\(row): the backdrop is drawn")
+            XCTAssertLessThan(Int(fog[idx]) + Int(fog[idx + 1]) + Int(fog[idx + 2]), 60,
+                              "\(row): fog fades toward black, not the gradient")
+        }
+    }
+
+    func testRampGadgetIsDrawn() throws {
+        try requireEngine()
+        prepareScene()
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.pseudoatom('gr689p', pos=[0.0, 0.0, 0.0])
+        _c.disable('gr689p')
+        _c.ramp_new('gr689', 'gr689p', [0, 10], ['red', 'blue'])
+        """)
+
+        for rt in [0, 1] {
+            let png = NSTemporaryDirectory() + "issue_689_ramp_rt\(rt).png"
+            defer { try? FileManager.default.removeItem(atPath: png) }
+            engine.renderHiResPNG(png, width: 400, height: 300, rayTraced: rt)
+            let px = try pngPixels(pngPath: png, width: 400, height: 300)
+
+            var redCount = 0
+            var blueCount = 0
+            for i in stride(from: 0, to: px.count, by: 4) {
+                let r = Int(px[i]), g = Int(px[i + 1]), b = Int(px[i + 2])
+                if r > 200 && g < 60 && b < 60 {
+                    redCount += 1
+                }
+                if b > 200 && r < 60 && g < 60 {
+                    blueCount += 1
+                }
+            }
+            XCTAssertGreaterThan(redCount, 100, "red ramp pixels (rt=\(rt))")
+            XCTAssertGreaterThan(blueCount, 100, "blue ramp pixels (rt=\(rt))")
+        }
+
+        // Also with ray_opaque_background 0: the red pixels have alpha 255
+        engine.runPython("from pymol import cmd as _c\n_c.set('ray_opaque_background', 0)")
+        let transPng = NSTemporaryDirectory() + "issue_689_ramp_trans.png"
+        defer { try? FileManager.default.removeItem(atPath: transPng) }
+        engine.renderHiResPNG(transPng, width: 400, height: 300, rayTraced: 0)
+        let transPx = try pngPixels(pngPath: transPng, width: 400, height: 300)
+
+        var transRedCount = 0
+        var opaqueRedCount = 0
+        for i in stride(from: 0, to: transPx.count, by: 4) {
+            let r = Int(transPx[i]), g = Int(transPx[i + 1]), b = Int(transPx[i + 2]), a = transPx[i + 3]
+            if r > 200 && g < 60 && b < 60 {
+                transRedCount += 1
+                if a == 255 {
+                    opaqueRedCount += 1
+                }
+            }
+        }
+        XCTAssertGreaterThan(transRedCount, 100, "transparent export red ramp pixels")
+        XCTAssertEqual(opaqueRedCount, transRedCount, "red ramp pixels should have alpha 255")
+
+        // grid_mode: the gadget draws in its own cell, with that cell's unit
+        // context (it used to be left zeroed on Metal, and the bar vanished).
+        engine.runPython("""
+        from pymol import cmd as _c
+        _bg689_grid = _c.get_setting_int('grid_mode')
+        _c.set('ray_opaque_background', 1)
+        _c.enable('gr689p')
+        _c.show_as('spheres', 'gr689p')
+        _c.set('grid_mode', 1)
+        """)
+        defer {
+            engine.runPython("from pymol import cmd as _c\n_c.set('grid_mode', globals().pop('_bg689_grid', 0))")
+        }
+        let gridPng = NSTemporaryDirectory() + "issue_689_ramp_grid.png"
+        defer { try? FileManager.default.removeItem(atPath: gridPng) }
+        engine.renderHiResPNG(gridPng, width: 400, height: 300, rayTraced: 0)
+        let gridPx = try pngPixels(pngPath: gridPng, width: 400, height: 300)
+        var gridRed = 0, gridBlue = 0
+        for i in stride(from: 0, to: gridPx.count, by: 4) {
+            let r = Int(gridPx[i]), g = Int(gridPx[i + 1]), b = Int(gridPx[i + 2])
+            if r > 200 && g < 60 && b < 60 { gridRed += 1 }
+            if b > 200 && r < 60 && g < 60 { gridBlue += 1 }
+        }
+        XCTAssertGreaterThan(gridRed, 20, "red ramp pixels in grid_mode")
+        XCTAssertGreaterThan(gridBlue, 20, "blue ramp pixels in grid_mode")
+    }
+
+    func testPlainExportUnchanged() throws {
+        try requireEngine()
+        prepareScene()
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set('bg_gradient', 0)
+        _c.pseudoatom('bg689u', pos=[0.0, 0.0, 0.0])
+        _c.show_as('spheres', 'bg689u')
+        _c.color('white', 'bg689u')
+        _c.set('sphere_scale', 6.0, 'bg689u')
+        _c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                     0.0, 0.0, -40.0, 0.0, 0.0, 0.0, 20.0, 80.0, -20.0))
+        """)
+
+        let png1 = NSTemporaryDirectory() + "issue_689_plain1.png"
+        defer { try? FileManager.default.removeItem(atPath: png1) }
+        engine.renderHiResPNG(png1, width: 400, height: 300, rayTraced: 0)
+        let bytes1 = try pngPixels(pngPath: png1, width: 400, height: 300)
+
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in bytes1 { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
+        print("689-plain-hash \(String(hash, radix: 16))")
+
+        // Then set bg_gradient 1, create+delete a ramp gadget, render once, set bg_gradient 0 again and render
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set('bg_gradient', 1)
+        _c.pseudoatom('gr689tmp', pos=[0.0, 0.0, 0.0])
+        _c.disable('gr689tmp')
+        _c.ramp_new('gr689r', 'gr689tmp', [0, 10], ['red', 'blue'])
+        """)
+        let pngTmp = NSTemporaryDirectory() + "issue_689_plaintmp.png"
+        defer { try? FileManager.default.removeItem(atPath: pngTmp) }
+        engine.renderHiResPNG(pngTmp, width: 400, height: 300, rayTraced: 0)
+
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.delete('gr689*')
+        _c.set('bg_gradient', 0)
+        """)
+
+        let png2 = NSTemporaryDirectory() + "issue_689_plain2.png"
+        defer { try? FileManager.default.removeItem(atPath: png2) }
+        engine.renderHiResPNG(png2, width: 400, height: 300, rayTraced: 0)
+        let bytes2 = try pngPixels(pngPath: png2, width: 400, height: 300)
+
+        XCTAssertEqual(bytes1, bytes2, "render after toggling gradient and gadget must equal first render")
+    }
+
+    /// A black CGO quad filling the view at the back of the slab, with
+    /// depth-cue fog from the front plane, so it comes out (almost) fully
+    /// fogged: each pixel shows the colour the fog fades toward there.
+    private func addFoggedBackdrop() {
+        engine.runPython("""
+        from pymol import cmd as _c
+        from pymol.cgo import BEGIN, TRIANGLE_STRIP, COLOR, NORMAL, VERTEX, END
+        _bg689_fog = (_c.get_setting_int('depth_cue'), _c.get_setting_float('fog'),
+                      _c.get_setting_float('fog_start'))
+        _c.load_cgo([BEGIN, TRIANGLE_STRIP, COLOR, 0.0, 0.0, 0.0,
+                     NORMAL, 0.0, 0.0, 1.0,
+                     VERTEX, -60.0, -60.0, 0.0, VERTEX, 60.0, -60.0, 0.0,
+                     VERTEX, -60.0, 60.0, 0.0, VERTEX, 60.0, 60.0, 0.0, END],
+                    'bg689w')
+        _c.set('depth_cue', 1)
+        _c.set('fog', 1.0)
+        _c.set('fog_start', 0.0)
+        _c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                     0.0, 0.0, -60.0, 0.0, 0.0, 0.0, 1.0, 61.0, -20.0))
+        """)
+    }
+
+    private func restoreFog() {
+        engine.runPython("""
+        from pymol import cmd as _c
+        _f = globals().pop('_bg689_fog', None)
+        if _f:
+            _c.set('depth_cue', _f[0]); _c.set('fog', _f[1]); _c.set('fog_start', _f[2])
+        """)
+    }
+
+    /// Depth-cue fog fades geometry toward the background AT THAT PIXEL, as
+    /// GL and the CPU ray tracer do with a gradient: the fogged backdrop is
+    /// the top colour at the top and the bottom colour at the bottom, not the
+    /// black bg_rgb, and not upside down.
+    func testFogFadesTowardTheGradient() throws {
+        try requireEngine()
+        prepareScene()
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set('bg_gradient', 1)
+        _c.set('bg_rgb_top', [0.9, 0.2, 0.2])
+        _c.set('bg_rgb_bottom', [0.2, 0.2, 0.9])
+        """)
+        addFoggedBackdrop()
+        defer { restoreFog() }
+        for rt in [0, 1] {
+            let png = NSTemporaryDirectory() + "issue_689_fog_rt\(rt).png"
+            defer { try? FileManager.default.removeItem(atPath: png) }
+            engine.renderHiResPNG(png, width: 400, height: 300, rayTraced: rt)
+            let px = try pngPixels(pngPath: png, width: 400, height: 300)
+            let top = (2 * 400 + 200) * 4, bottom = (297 * 400 + 200) * 4
+            XCTAssertEqual(px[top + 3], 255, "the backdrop is drawn (rt=\(rt))")
+            XCTAssertGreaterThan(Int(px[top]), 180, "top fogs toward the top colour (rt=\(rt))")
+            XCTAssertLessThan(Int(px[top + 2]), 90, "top fogs toward the top colour (rt=\(rt))")
+            XCTAssertGreaterThan(Int(px[bottom + 2]), 180, "bottom fogs toward the bottom colour (rt=\(rt))")
+            XCTAssertLessThan(Int(px[bottom]), 90, "bottom fogs toward the bottom colour (rt=\(rt))")
+        }
+    }
+}

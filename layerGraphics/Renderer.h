@@ -606,6 +606,21 @@ public:
   // When true, current draw calls represent UI overlays (gadgets, gizmos)
   // that should not be recorded into ray tracing acceleration structures (#433).
   virtual void setOverlayDraw(bool /*overlay*/) {}
+
+  // Background vertical gradient for the scene pass and depth-cue fog (#689).
+  virtual void setBackgroundGradient(
+      bool /*on*/, const float* /*top*/, const float* /*bottom*/)
+  {
+  }
+
+  // Draws until false are screen-space overlays (ramp gadgets,
+  // RenderContext::UnitWindow): drawn after the post chain, unlit, above
+  // everything (#689).
+  virtual void setScreenOverlay(bool /*on*/) {}
+
+  // The GL ramp shader's offsetPt (RAMP_OFFSETPT) for the following overlay
+  // draws (#689).
+  virtual void setScreenOverlayOffset(float /*x*/, float /*y*/, float /*z*/) {}
 };
 
 } // namespace pymol

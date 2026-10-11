@@ -773,6 +773,19 @@ static void SceneRenderAllObject(PyMOLGlobals* G, CScene* I,
           glm::ortho(context->unit_left, context->unit_right, context->unit_top,
               context->unit_bottom, context->unit_front, context->unit_back);
 
+      // Metal (#689): the renderer never sees I->projectionMatrix, so load
+      // the unit ortho into it, and mark the draws as a screen overlay: the
+      // renderer stashes them and draws them unlit after the post chain,
+      // above everything, as the GL ramp shader draws a gadget. Only the
+      // transparent pass, the one gadgets draw in.
+      const bool isMetalOverlay = G->Renderer &&
+          info->pass == RenderPass::Transparent && !info->pick && !info->ray;
+      if (isMetalOverlay) {
+        G->Renderer->matrixMode(0x1701);
+        G->Renderer->loadMatrixf(glm::value_ptr(I->projectionMatrix));
+        G->Renderer->setScreenOverlay(true);
+      }
+
 #ifndef PURE_OPENGL_ES_2
       if (!G->Renderer && ALWAYS_IMMEDIATE_OR(!use_shader)) {
         glPushAttrib(GL_LIGHTING_BIT);
@@ -796,6 +809,13 @@ static void SceneRenderAllObject(PyMOLGlobals* G, CScene* I,
       obj->render(info);
 
       I->projectionMatrix = projSave;
+
+      if (isMetalOverlay) {
+        G->Renderer->setScreenOverlay(false);
+        G->Renderer->matrixMode(0x1701);
+        G->Renderer->loadMatrixf(SceneGetProjectionMatrixPtr(G));
+        G->Renderer->matrixMode(0x1700);
+      }
 
 #ifndef PURE_OPENGL_ES_2
       if (!G->Renderer && ALWAYS_IMMEDIATE_OR(!use_shader)) {
@@ -2432,6 +2452,78 @@ static void SceneSetMetalGridCell(
   grid->slot = slot;
   grid->cur_viewport_size = Extent2D{
       static_cast<std::uint32_t>(cw), static_cast<std::uint32_t>(ch)};
+  // The cell's unit-window context, as GridSetViewport sets it on the GL path:
+  // a gadget in a grid cell draws with grid->context (SceneRenderAllObject),
+  // which the Metal path otherwise left zeroed, so the gadget vanished (#689).
+  grid->context = ScenePrepareUnitContext(grid->cur_viewport_size);
+}
+
+/**
+ * Whether this Metal frame draws the vertical background gradient (#689), and
+ * its two colours (copied, never held as pointers: see #540 below). Only
+ * BgGradient::Vertical; BgGradient::Grid stays a solid bg_rgb. A transparent
+ * offscreen export drops the gradient, as the CPU ray tracer does when
+ * opaque_back is off (Ray.cpp); the live view's layer is opaque, so it always
+ * draws it.
+ */
+static bool SceneMetalBgGradient(PyMOLGlobals* G, float* top, float* bottom)
+{
+  if (SettingGet<BgGradient>(G, cSetting_bg_gradient) != BgGradient::Vertical)
+    return false;
+  // A background image wins over the gradient in GL's bg_grad and in the CPU
+  // ray tracer. Metal draws no image, but it must not paint the gradient
+  // either.
+  const char* bg_image = SettingGetGlobal_s(G, cSetting_bg_image_filename);
+  if ((bg_image && bg_image[0]) || OrthoBackgroundDataIsSet(*G->Ortho))
+    return false;
+  if (G->Renderer->offscreenFrame() &&
+      !SettingGetGlobal_b(G, cSetting_ray_opaque_background))
+    return false;
+  copy3f(ColorGet(G, SettingGetGlobal_color(G, cSetting_bg_rgb_top)), top);
+  copy3f(
+      ColorGet(G, SettingGetGlobal_color(G, cSetting_bg_rgb_bottom)), bottom);
+  return true;
+}
+
+/**
+ * Draw the vertical background gradient (#689) into the Metal scene pass,
+ * before any geometry: a full-viewport quad in NDC through the renderer's
+ * immediate batch (whose pipeline already matches the scene pass's sample
+ * count and formats), with no depth test or write. Drawn first, MSAA edges and
+ * the OIT resolve blend against it, and the post passes leave it alone (they
+ * skip cleared depth). The GL path draws it in bg_grad (Ortho.cpp).
+ */
+static void SceneDrawMetalBgGradient(
+    PyMOLGlobals* G, const float* top, const float* bottom)
+{
+  G->Renderer->matrixMode(0x1701);
+  G->Renderer->loadIdentity();
+  G->Renderer->matrixMode(0x1700);
+  G->Renderer->loadIdentity();
+
+  G->Renderer->disable(pymol::Capability::DepthTest);
+  G->Renderer->depthMask(false);
+
+  // z = 0.5: the batch vertex shader does no GL -> Metal depth remap, so the
+  // NDC z has to lie in [0, 1] or the quad is clipped.
+  G->Renderer->beginBatch(pymol::PrimitiveType::TriangleStrip);
+  G->Renderer->batchColor4f(top[0], top[1], top[2], 1.0f);
+  G->Renderer->batchVertex3f(-1.0f, 1.0f, 0.5f);
+  G->Renderer->batchVertex3f(1.0f, 1.0f, 0.5f);
+  G->Renderer->batchColor4f(bottom[0], bottom[1], bottom[2], 1.0f);
+  G->Renderer->batchVertex3f(-1.0f, -1.0f, 0.5f);
+  G->Renderer->batchVertex3f(1.0f, -1.0f, 0.5f);
+  G->Renderer->endBatch();
+
+  G->Renderer->depthMask(true);
+  G->Renderer->enable(pymol::Capability::DepthTest);
+
+  // loadMatrixf, not a pop: it keeps the renderer's inverse modelview (ray
+  // tracing) in step with the camera.
+  G->Renderer->matrixMode(0x1701);
+  G->Renderer->loadMatrixf(SceneGetProjectionMatrixPtr(G));
+  G->Renderer->matrixMode(0x1700);
+  G->Renderer->loadMatrixf(SceneGetModelViewMatrixPtr(G));
 }
 
 void SceneRenderMetal(PyMOLGlobals* G)
@@ -2790,6 +2882,20 @@ void SceneRenderMetal(PyMOLGlobals* G)
     G->Renderer->loadMatrixf(SceneGetProjectionMatrixPtr(G));
     G->Renderer->matrixMode(0x1700);
     G->Renderer->loadMatrixf(mvp);
+  }
+
+  // --- Background gradient (#689). Here, after the shadow pre-passes, not
+  // with the other per-frame params above: both shadow paths reopen the scene
+  // pass with a CLEAR, which would wipe a gradient drawn before them. The
+  // renderer also gets the colours for the depth-cue fog, which fades toward
+  // the background at each pixel like GL and the CPU ray tracer. ---
+  {
+    float gradTop[3], gradBottom[3];
+    const bool grad = SceneMetalBgGradient(G, gradTop, gradBottom);
+    G->Renderer->setBackgroundGradient(
+        grad, grad ? gradTop : nullptr, grad ? gradBottom : nullptr);
+    if (grad)
+      SceneDrawMetalBgGradient(G, gradTop, gradBottom);
   }
 
   // --- Render objects: opaque first, then transparent via order-independent

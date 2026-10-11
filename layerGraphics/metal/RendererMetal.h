@@ -259,6 +259,10 @@ public:
   void drawBezierTubes(const void* controlPoints, size_t dataSize, float radius,
       float r, float g, float b) override;
   void setOverlayDraw(bool overlay) override { _overlayDraw = overlay; }
+  void setBackgroundGradient(
+      bool on, const float* top, const float* bottom) override;
+  void setScreenOverlay(bool on) override;
+  void setScreenOverlayOffset(float x, float y, float z) override;
 
   // Shadow map: SceneRenderMetal replays the opaque geometry a second time
   // between begin/endShadowPass with the LIGHT view-projection loaded via
@@ -749,6 +753,40 @@ private:
   bool _oitPeelTest = false;    // true while an OIT pass tests against the peel
   bool _oitCleared = false;     // the frame's first transparent encoder cleared
   bool _overlayDraw = false;    // true while drawing UI overlays (never recorded for RT)
+
+  // Background vertical gradient (#689)
+  bool _bgGradOn = false;
+  float _bgGradTop[3] = {0, 0, 0};
+  float _bgGradBottom[3] = {0, 0, 0};
+  float _bgGradSpan[2] = {0, 1};  // first row and rows spanned, post uv
+
+  // Screen-space overlays (ramp gadgets, #689)
+  bool _screenOverlay = false;
+  float _screenOverlayOffset[3] = {0, 0, 0};
+  struct ScreenOverlayDraw {
+    id<MTLBuffer> vbo;  // retained (MRC) until clearScreenOverlayDraws
+    PrimitiveType mode;
+    int count;
+    size_t stride;
+    int posOffset, normalOffset, colorOffset, colorType;
+    float projection[16];
+    float offset[3];
+    MTLViewport viewport;
+    bool scissorOn;
+    MTLScissorRect scissor;
+  };
+  std::vector<ScreenOverlayDraw> _screenOverlayDraws;
+  std::map<uint64_t, id<MTLRenderPipelineState>> _screenOverlayPipelines;
+  id<MTLLibrary> _overlayLib = nil;
+  bool _overlayLibFailed = false;
+  id<MTLFunction> _overlayVtxFunc = nil;
+  id<MTLFunction> _overlayVtxNoNormalFunc = nil;
+  id<MTLFunction> _overlayFragFunc = nil;
+  id<MTLRenderPipelineState> screenOverlayPipeline(
+      const ScreenOverlayDraw& draw, MTLPixelFormat pixelFormat);
+  void encodeScreenOverlays(id<MTLTexture> target);
+  void clearScreenOverlayDraws();  // releases the stash's retained buffers
+  id<MTLBuffer> cachedVBOBuffer(const void* data, size_t dataSize);
 
   // --- Real shadow map (light-POV depth pre-pass + PCF in the post pass) ---
   // _shadowDepth is a fixed-resolution single-sample Depth32Float map rendered
