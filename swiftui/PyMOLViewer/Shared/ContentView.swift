@@ -61,6 +61,8 @@ extension Notification.Name {
     static let raymolPerformToggleNotePreview = Notification.Name("raymol.notes.performTogglePreview")
     static let raymolPerformFontIncrease = Notification.Name("raymol.notes.performFontIncrease")
     static let raymolPerformFontDecrease = Notification.Name("raymol.notes.performFontDecrease")
+    // Opens the Help ▸ Keyboard Shortcuts sheet on macOS (#368).
+    static let raymolShowKeyboardShortcuts = Notification.Name("raymol.menu.showKeyboardShortcuts")
 }
 
 #if os(iOS)
@@ -268,6 +270,7 @@ struct ContentView: View {
     // NSOpenPanel directly, so it needs no presentation state).
     @State private var showMacFetch = false
     @State private var macFetchID = ""
+    @State private var showKeyboardShortcuts = false
     // Drag-and-drop: true while a file is hovered over the viewport (draws a border).
     @State private var isViewportDropTargeted = false
     // Local key-down monitor token for the Esc → clear-selection handler
@@ -857,6 +860,9 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .raymolToggleTimeline)) { _ in
             withAnimation(.easeInOut(duration: 0.2)) { engine.timelineMode.toggle() }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .raymolShowKeyboardShortcuts)) { _ in
+            showKeyboardShortcuts = true
+        }
         #if !RAYMOL_MAS_RESTRICTED
         .onReceive(NotificationCenter.default.publisher(for: .mcpOpenConnectSheet)) { _ in
             showConnectSheet = true
@@ -864,6 +870,9 @@ struct ContentView: View {
         #endif
         .sheet(isPresented: $showCustomSizeSheet) {
             customSizeSheet
+        }
+        .sheet(isPresented: $showKeyboardShortcuts) {
+            KeyboardShortcutsSheet { showKeyboardShortcuts = false }
         }
 
         #if !RAYMOL_MAS_RESTRICTED
@@ -2883,7 +2892,7 @@ struct ContentView: View {
     // AppShortcuts constant is what fires — and names it in the hover tooltip,
     // the pill's only surface that can show a hint.
     private func railTongue(icon: String?, label: String, shown: Binding<Bool>,
-                            shortcut: KeyboardShortcut? = nil) -> some View {
+                            shortcut: AppShortcuts? = nil) -> some View {
         let on = shown.wrappedValue
         return Button {
             withAnimation(.easeInOut(duration: 0.25)) { shown.wrappedValue.toggle() }
@@ -2916,7 +2925,7 @@ struct ContentView: View {
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
-        .keyboardShortcut(shortcut)
+        .keyboardShortcut(shortcut?.shortcut)
         .help("\(on ? "Hide" : "Show") the \(label) pane"
               + (shortcut.map { " (\(AppShortcuts.hint($0)))" } ?? ""))
         .accessibilityIdentifier("rail-\(label.lowercased())")
@@ -3754,7 +3763,7 @@ struct ContentView: View {
                 Button {
                     macOpenFile()
                 } label: { Label("Open File…", systemImage: "folder") }
-                .keyboardShortcut("o", modifiers: .command)
+                .keyboardShortcut(AppShortcuts.openFile)
                 Button {
                     macFetchID = ""; showMacFetch = true
                 } label: { Label("Fetch from PDB…", systemImage: "arrow.down.circle") }

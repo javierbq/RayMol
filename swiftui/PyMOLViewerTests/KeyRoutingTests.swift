@@ -349,15 +349,28 @@ final class AppShortcutsTests: XCTestCase {
         XCTAssertEqual(
             AppShortcuts.hint(KeyboardShortcut("k", modifiers: [.command, .shift, .option, .control])),
             "⌃⌥⇧⌘K")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.openFile), "⌘O")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.fetchPDB), "⇧⌘O")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.saveSession), "⌘S")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.saveSessionAs), "⇧⌘S")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.exportImage), "⇧⌘E")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.copyImage), "⌘C")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.editTimeline), "⌥⌘M")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.insertNoteViewLink), "⌥⌘L")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.toggleNotePreview), "⌥⌘P")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.increaseNoteFontSize), "⌥⌘+")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.decreaseNoteFontSize), "⌥⌘-")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.aiControl), "⌃⌘M")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.keyboardShortcuts), "⌘/")
     }
 
-    /// Every ⌃-letter shortcut must be mirrored in the Python launch audit
+    /// Every bare-⌃-letter shortcut must be mirrored in the Python launch audit
     /// (modules/pymol/raymol_keys.py APP_SHORTCUTS), which warns when a
-    /// ~/.raymolrc binding shadows a menu command. Pin the set here so a new ⌃
-    /// entry fails this test until the audit table learns it. ⌘ entries need no
-    /// mirror — KeyRouting passes ⌘ straight through to the menus.
+    /// ~/.raymolrc binding shadows a menu command. Pin the set here so a new bare ⌃
+    /// entry fails this test until the audit table learns it. ⌘ entries (including ⌃⌘M)
+    /// need no mirror — KeyRouting passes ⌘ straight through to the menus.
     func testControlShortcutsMatchPythonAuditTable() {
-        let ctrl = AppShortcuts.all.filter { $0.modifiers.contains(.control) }
+        let ctrl = AppShortcuts.all.filter { $0.modifiers == .control }
         XCTAssertEqual(Set(ctrl.map { String($0.key.character) }),
                        ["m", "e", "d", "p", "b", "s"])
     }
@@ -366,8 +379,126 @@ final class AppShortcutsTests: XCTestCase {
     /// shadowing, and consistent with each other as the issue asks.
     func testPaneTogglesAreCommandFamily() {
         for s in [AppShortcuts.consolePane, AppShortcuts.sequencePane, AppShortcuts.sidePanel] {
-            XCTAssertEqual(s.modifiers, .command)
+            XCTAssertEqual(s.shortcut.modifiers, .command)
         }
+    }
+
+    /// Every non-comment line of every .swift file under swiftui/PyMOLViewer,
+    /// as (file name, 1-based line number, text). Comment lines are dropped so
+    /// a doc comment quoting a shortcut cannot count as a registration.
+    private func appSourceLines() throws -> [(file: String, line: Int, text: String)] {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()          // PyMOLViewerTests
+            .deletingLastPathComponent()          // swiftui
+            .appendingPathComponent("PyMOLViewer")
+        let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil,
+                                                   options: [.skipsHiddenFiles])
+        var out: [(file: String, line: Int, text: String)] = []
+        while let url = files?.nextObject() as? URL {
+            guard url.pathExtension == "swift" else { continue }
+            let text = try String(contentsOf: url, encoding: .utf8)
+            for (index, line) in text.components(separatedBy: "\n").enumerated()
+            where !line.trimmingCharacters(in: .whitespaces).hasPrefix("//") {
+                out.append((url.lastPathComponent, index + 1, line))
+            }
+        }
+        return out
+    }
+
+    /// The cheat sheet (#368) is only complete if no shortcut is registered
+    /// around the table: every `.keyboardShortcut(` in the app takes an
+    /// `AppShortcuts` case (dialog Return/Esc buttons and the rail tongue's
+    /// forwarded case excepted), and nothing outside PyMOLApp.swift builds a
+    /// `KeyboardShortcut` of its own.
+    func testEveryShortcutInTheAppComesFromTheTable() throws {
+        let regex = try NSRegularExpression(pattern: #"\.keyboardShortcut\(([^)]*)\)"#)
+        var calls = 0
+        for (file, number, line) in try appSourceLines() {
+            if file != "PyMOLApp.swift" && line.contains("KeyboardShortcut(") {
+                XCTFail("\(file):\(number) constructs a KeyboardShortcut outside AppShortcuts")
+            }
+            for match in regex.matches(in: line, range: NSRange(line.startIndex..., in: line)) {
+                calls += 1
+                guard let r = Range(match.range(at: 1), in: line) else { continue }
+                let arg = line[r].trimmingCharacters(in: .whitespaces)
+                XCTAssertTrue(arg.hasPrefix("AppShortcuts.")
+                              || [".cancelAction", ".defaultAction", "shortcut?.shortcut"].contains(arg),
+                              "\(file):\(number) registers a shortcut outside AppShortcuts: \(arg)")
+            }
+        }
+        // A wrong path would scan nothing and pass; there are 30+ calls today.
+        XCTAssertGreaterThanOrEqual(calls, 20)
+    }
+
+    /// The reverse direction: a table entry no call site registers would put a
+    /// dead key on the sheet.
+    func testEveryTableEntryIsRegistered() throws {
+        let source = try appSourceLines().map(\.text).joined(separator: "\n")
+        for c in AppShortcuts.allCases {
+            let call = ".keyboardShortcut(AppShortcuts.\(c))"
+            XCTAssertTrue(source.contains(call), "No call site registers \(call)")
+        }
+    }
+
+    /// The sheet renders every entry exactly once, in its group, groups in
+    /// `Section` order, with the viewport keys last.
+    func testSheetListsEveryEntryGrouped() {
+        let sections = AppShortcuts.sheetSections(includeUnavailable: true)
+        XCTAssertEqual(
+            sections.map(\.title),
+            AppShortcuts.Section.allCases.map(\.title) + [AppShortcuts.viewportSectionTitle]
+        )
+
+        let nonViewportRows = sections.dropLast().flatMap(\.rows)
+        let expectedRows = AppShortcuts.allCases.map {
+            ShortcutSheetRow(keys: AppShortcuts.hint($0), title: $0.title)
+        }
+        XCTAssertEqual(nonViewportRows, expectedRows)
+
+        for c in AppShortcuts.allCases {
+            guard let section = sections.first(where: { $0.title == c.section.title }) else {
+                XCTFail("Missing section for \(c.section.title)")
+                continue
+            }
+            XCTAssertTrue(
+                section.rows.contains(where: { $0.title == c.title }),
+                "Section \(section.title) does not contain row \(c.title)"
+            )
+        }
+
+        guard let lastSection = sections.last else {
+            XCTFail("No sections in sheetSections")
+            return
+        }
+        XCTAssertEqual(lastSection.rows, AppShortcuts.viewportKeys)
+        let keys = Set(lastSection.rows.map(\.keys))
+        XCTAssertTrue(keys.contains("Esc"))
+        XCTAssertTrue(keys.contains("⇥"))
+        XCTAssertTrue(keys.contains("⇧⇥"))
+    }
+
+    /// Outside tests the sheet hides what this build does not register (⌃D
+    /// without RAYMOL_MPNN, ⌃B without the experimental flag, ⌃⌘M on MAS).
+    func testSheetShowsOnlyAvailableEntries() {
+        let defaultSections = AppShortcuts.sheetSections()
+        let nonViewportRows = defaultSections.dropLast().flatMap(\.rows)
+        let expectedRows = AppShortcuts.allCases.filter(\.isAvailable).map {
+            ShortcutSheetRow(keys: AppShortcuts.hint($0), title: $0.title)
+        }
+        XCTAssertEqual(nonViewportRows, expectedRows)
+        XCTAssertEqual(KeyboardShortcutsSheet().sections, AppShortcuts.sheetSections())
+    }
+
+    /// ⌘/ is unused elsewhere in the table, is not the system Help-search key
+    /// (⇧⌘/ i.e. ⌘?), and as a ⌘ chord is never routed to a set_key binding.
+    func testCheatSheetShortcutIsFree() {
+        XCTAssertEqual(AppShortcuts.keyboardShortcuts.shortcut, KeyboardShortcut("/", modifiers: .command))
+        for c in AppShortcuts.allCases where c != .keyboardShortcuts {
+            XCTAssertNotEqual(c.shortcut.key.character, "/", "Case \(c) also uses key /")
+        }
+        XCTAssertNotEqual(AppShortcuts.keyboardShortcuts.shortcut, KeyboardShortcut("?", modifiers: .command))
+        XCTAssertNotEqual(AppShortcuts.keyboardShortcuts.shortcut, KeyboardShortcut("/", modifiers: [.command, .shift]))
+        XCTAssertNil(KeyRouting.token(keyCode: 44, charactersIgnoringModifiers: "/", modifiers: .command, textFieldFocused: false, textEditingActive: false))
     }
 }
 
