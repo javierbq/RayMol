@@ -3029,6 +3029,21 @@ struct ContentView: View {
             } message: {
                 Text("There’s no animation yet. Open the Movie tab, pick a motion (e.g. Camera → Roll) and tap Build & Play — then Export Movie will render it.")
             }
+            // #385: the previous cold-launch restore never finished (the app was
+            // killed or crashed mid-restore). Offer to start empty instead of
+            // retrying the same restore blindly on every launch.
+            // The setter ignores SwiftUI's dismissals: only the two buttons
+            // (or a file open) retire the prompt. Otherwise a layout swap (iPhone
+            // rotation) that tears down this alert's host would drop the prompt
+            // unanswered, and the next background would delete the session.
+            .alert("Start with an empty session?", isPresented: Binding(
+                get: { engine.interruptedRestorePrompt },
+                set: { _ in })) {
+                Button("Start Empty", role: .destructive) { engine.startEmptyAfterInterruptedRestore() }
+                Button("Try Again") { engine.retryInterruptedRestore() }
+            } message: {
+                Text("RayMol closed before your last session finished restoring. It may be too large to restore on this device. Start Empty discards the saved session.")
+            }
             // The light gizmo (#622): early, so every overlay below (the side
             // column, the buttons, the readouts) draws above it. One site for
             // the four layouts, full screen included.
