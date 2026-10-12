@@ -3432,9 +3432,23 @@ static bool rt_find_cell(float2 uv, constant RTU& u, constant RTGridU& g,
 // single facet's normal then flips between neighbours and stripes the shadow.
 // The 3-facet average cancels the alternation (for a caster in a different
 // strip the average is still a sane local normal).
+// #668: only connected neighbours on the same smooth surface are averaged (see
+// rt_tri_normal_smooth), so unrelated or folded buffer neighbours do not tilt
+// flat quads.
 static float3 rt_facet_normal(device const packed_float3* tris, uint q) {
   float3 a = float3(tris[3 * q]), b = float3(tris[3 * q + 1]), c = float3(tris[3 * q + 2]);
   return normalize(cross(b - a, c - a));
+}
+// #668: true when world-tris a and b share a vertex (the triangle buffer
+// concatenates every object's triangles, so buffer neighbours are not
+// necessarily mesh neighbours).
+static bool rt_tris_touch(device const packed_float3* tris, uint a, uint b) {
+  for (uint i = 0; i < 3; ++i)
+    for (uint j = 0; j < 3; ++j) {
+      float3 d = float3(tris[3 * a + i]) - float3(tris[3 * b + j]);
+      if (dot(d, d) < 1e-8) return true;
+    }
+  return false;
 }
 static float3 rt_tri_normal_smooth(device const packed_float3* tris, uint p, uint n) {
   float3 fp = rt_facet_normal(tris, p);
@@ -3443,10 +3457,34 @@ static float3 rt_tri_normal_smooth(device const packed_float3* tris, uint p, uin
   // alternating tilt of a twisted quad's two triangles cancels even when the
   // twist per ring is large). Winding is not guaranteed consistent between
   // neighbours: align each to fp.
-  for (uint k = 1; k <= 2; ++k) {
-    if (p >= k)     { float3 f = rt_facet_normal(tris, p - k); acc += (dot(f, fp) < 0.0) ? -f : f; }
-    if (p + k < n)  { float3 f = rt_facet_normal(tris, p + k); acc += (dot(f, fp) < 0.0) ? -f : f; }
+  // Which neighbours count (#668). The triangle buffer concatenates every
+  // object, so a buffer neighbour counts only while it shares a vertex with
+  // the last one taken on that side (rt_tris_touch). And it must be part of
+  // the same smooth surface: within 60 degrees of fp, or the steep middle
+  // facet of a twisted quad, recognised by the facet beyond it lying back
+  // within 60 degrees of fp (the alternation this average exists to cancel).
+  // A face folded off the plane (an L-shaped backdrop, a box) is neither, so
+  // a flat quad keeps its own normal and its two triangles agree.
+  bool t1[2], t2[2];
+  float3 f1[2], f2[2];
+  for (uint side = 0; side < 2; ++side) {
+    const bool lo = side == 0;
+    const bool has1 = lo ? p >= 1 : p + 1 < n;
+    const bool has2 = lo ? p >= 2 : p + 2 < n;
+    const uint q1 = lo ? p - 1 : p + 1, q2 = lo ? p - 2 : p + 2;
+    const bool touch1 = has1 && rt_tris_touch(tris, q1, p);
+    const bool touch2 = touch1 && has2 && rt_tris_touch(tris, q2, q1);
+    f1[side] = touch1 ? rt_facet_normal(tris, q1) : fp;
+    f2[side] = touch2 ? rt_facet_normal(tris, q2) : fp;
+    const bool near2 = touch2 && abs(dot(f2[side], fp)) >= 0.5;
+    t1[side] = touch1 && (abs(dot(f1[side], fp)) >= 0.5 || near2);
+    t2[side] = t1[side] && near2;
   }
+  // Same order and arithmetic as before #668 when every neighbour counts.
+  if (t1[0]) acc += (dot(f1[0], fp) < 0.0) ? -f1[0] : f1[0];
+  if (t1[1]) acc += (dot(f1[1], fp) < 0.0) ? -f1[1] : f1[1];
+  if (t2[0]) acc += (dot(f2[0], fp) < 0.0) ? -f2[0] : f2[0];
+  if (t2[1]) acc += (dot(f2[1], fp) < 0.0) ? -f2[1] : f2[1];
   return normalize(acc);
 }
 

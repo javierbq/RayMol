@@ -3410,3 +3410,329 @@ final class ReflectionHitMaterialGapsTests: XCTestCase {
     }
 }
 
+/// Issue #668: With metal_raytrace 1, flat quads (e.g. backdrops) should not have
+/// an AO brightness seam along their diagonal caused by averaging with unrelated
+/// buffer neighbours.
+@MainActor
+final class FlatQuadSeamTests: XCTestCase {
+    private static let width = 400
+    private static let height = 300
+
+    // The strip's traced AO factor at its centre (mean over x 185..<215) on
+    // master, where rt_tri_normal_smooth averages a full quad either side
+    // (measured 0.753). A facet-only normal reads about 0.87 there.
+    private static let masterStripAO = 0.75
+
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var sceneBuilt = false
+    private var savedView: [Float]?
+
+    override func tearDown() {
+        if sceneBuilt {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.delete('seam668*')
+            for _n, _v in globals().pop('_seam668_settings', {}).items():
+                _c.set(_n, _v)
+            _c.set_lights(globals().pop('_seam668_rig', None))
+            for _n in globals().pop('_seam668_enabled', []):
+                _c.enable(_n)
+            """)
+            sceneBuilt = false
+        }
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        super.tearDown()
+    }
+
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            throw XCTSkip("the PyMOL engine did not come up under the test host")
+        }
+    }
+
+    private func buildScene() {
+        savedView = engine.captureView()
+        sceneBuilt = true
+        engine.runPython("""
+        from pymol import cmd as _c
+        _seam668_enabled = _c.get_names('objects', enabled_only=1)
+        _seam668_settings = {_n: _c.get_setting_tuple(_n)[1][0] for _n in (
+            'bg_rgb', 'depth_cue', 'metal_shadows', 'metal_ssao', 'metal_msaa',
+            'metal_rt_transparent', 'metal_temporal_ao', 'metal_light_hdr')}
+        _seam668_settings['bg_rgb'] = list(_c.get_setting_tuple('bg_rgb')[1])
+        _seam668_rig = _c.get_lights()
+        for _n in _seam668_enabled:
+            _c.disable(_n)
+        _c.set('bg_rgb', [0.0, 0.0, 0.0])
+        _c.set('depth_cue', 0)
+        _c.set('metal_shadows', 0)
+        _c.set('metal_msaa', 0)
+        _c.set('metal_temporal_ao', 0)
+        _c.set('metal_rt_transparent', 0)
+        _c.set('metal_ssao', 0)
+        _c.set('metal_light_hdr', 0)
+        _c.set_lights({'enabled': True, 'ambient': 0.3, 'centre': [0, 0, 0], 'size': 20.0,
+                       'lights': [{'name': 'key', 'anchor': 'camera', 'orbit': 0.0, 'pitch': 0.0,
+                                   'radius': 3.0, 'beam': 80.0, 'highlight': 0.0, 'shadow': False,
+                                   'intensity': 0.6}]})
+        _c.set_view((1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -80, 0, 0, 0, 40, 120, -20))
+        """)
+    }
+
+    private func loadQuad() {
+        engine.runPython("""
+        from pymol import cmd as _c
+        _q = [2.0, 5.0, 6.0, 0.8, 0.8, 0.8, 5.0, 0.0, 0.0, 1.0, 4.0, -10.0, -10.0, 0.0, 4.0, 10.0, -10.0, 0.0, 4.0, -10.0, 10.0, 0.0, 4.0, 10.0, 10.0, 0.0, 3.0]
+        _c.load_cgo(_q, 'seam668q', zoom=0)
+        """)
+    }
+
+    // The quad and, in the same strip, a wall bent 90 degrees away from the
+    // camera along its top edge: buffer neighbours that DO share vertices with
+    // the quad but are not part of its plane (an L-shaped backdrop, a box).
+    private func loadBentQuad() {
+        engine.runPython("""
+        from pymol import cmd as _c
+        _b = [2.0, 5.0, 6.0, 0.8, 0.8, 0.8, 5.0, 0.0, 0.0, 1.0, 4.0, -10.0, -10.0, 0.0, 4.0, 10.0, -10.0, 0.0, 4.0, -10.0, 10.0, 0.0, 4.0, 10.0, 10.0, 0.0, 4.0, -10.0, 10.0, -10.0, 4.0, 10.0, 10.0, -10.0, 3.0]
+        _c.load_cgo(_b, 'seam668b', zoom=0)
+        """)
+    }
+
+    private func loadNeighbour() {
+        engine.runPython("""
+        from pymol import cmd as _c
+        _x = [2.0, 4.0, 6.0, 0.8, 0.8, 0.8, 4.0, 60.0, 0.0, -5.0, 4.0, 60.0, 5.0, 5.0, 4.0, 60.0, -5.0, 5.0, 4.0, 61.0, 0.0, -5.0, 4.0, 61.0, 5.0, 5.0, 4.0, 61.0, -5.0, 5.0, 3.0]
+        _c.load_cgo(_x, 'seam668x', zoom=0)
+        """)
+    }
+
+    private func loadStripAndFloor() {
+        engine.runPython("""
+        import math
+        from pymol import cmd as _c
+        _o = [2.0, 5.0, 6.0, 0.8, 0.8, 0.8]
+        for _i in range(61):
+            _x = -15.0 + _i * 0.5
+            _t = math.radians(_i * 25.0)
+            for _s in (-1.0, 1.0):
+                _o += [4.0, _x, _s * 1.6 * math.cos(_t), _s * 1.6 * math.sin(_t)]
+        _o += [3.0]
+        _c.load_cgo(_o, 'seam668s', zoom=0)
+        _f = [2.0, 5.0, 6.0, 0.8, 0.8, 0.8, 5.0, 0.0, 0.0, 1.0, 4.0, -18.0, -6.0, -2.5, 4.0, 18.0, -6.0, -2.5, 4.0, -18.0, 6.0, -2.5, 4.0, 18.0, 6.0, -2.5, 3.0]
+        _c.load_cgo(_f, 'seam668f', zoom=0)
+        """)
+    }
+
+    private func render(rayTraced: Int) throws -> [UInt8] {
+        let png = NSTemporaryDirectory() + "issue_668_render.png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: Self.width, height: Self.height, rayTraced: rayTraced)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(
+            URL(fileURLWithPath: png) as CFURL, nil), "no export written")
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        XCTAssertEqual(image.width, Self.width)
+        XCTAssertEqual(image.height, Self.height)
+        let w = image.width, h = image.height
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return rgba
+    }
+
+    private func lum(_ px: [UInt8], _ x: Double, _ y: Double) -> Double {
+        let xi = max(0, min(Self.width - 1, Int(round(x))))
+        let yi = max(0, min(Self.height - 1, Int(round(y))))
+        let offset = (yi * Self.width + xi) * 4
+        return (Double(px[offset]) + Double(px[offset + 1]) + Double(px[offset + 2])) / 3.0
+    }
+
+    private func step(_ px: [UInt8], diagonal d: Int, offset o: Double) -> Double {
+        let s = 1.0 / sqrt(2.0)
+        let u: (x: Double, y: Double) = (d == 0) ? (s, s) : (s, -s)
+        let n: (x: Double, y: Double) = (u.y, -u.x)
+        var total = 0.0
+        for t in -90...90 {
+            let pxCoord = 199.5 + Double(t) * u.x + o * n.x
+            let pyCoord = 149.5 + Double(t) * u.y + o * n.y
+            let pPlusL = lum(px, pxCoord + 3.0 * n.x, pyCoord + 3.0 * n.y)
+            let pMinusL = lum(px, pxCoord - 3.0 * n.x, pyCoord - 3.0 * n.y)
+            total += (pPlusL - pMinusL)
+        }
+        return total / 181.0
+    }
+
+    private func seam(_ px: [UInt8], _ d: Int) -> Double {
+        abs(step(px, diagonal: d, offset: 0) - step(px, diagonal: d, offset: 20))
+    }
+
+    private func diagMean(_ px: [UInt8]) -> Double {
+        let s = 1.0 / sqrt(2.0)
+        let u: (x: Double, y: Double) = (s, s)
+        var total = 0.0
+        for t in -90...90 {
+            let pxCoord = 199.5 + Double(t) * u.x
+            let pyCoord = 149.5 + Double(t) * u.y
+            total += lum(px, pxCoord, pyCoord)
+        }
+        return total / 181.0
+    }
+
+    func testTracedAOHasNoSeamAcrossAFlatQuadsDiagonal() throws {
+        try requireEngine()
+        guard engine.rayTracingSupported else {
+            throw XCTSkip("Hardware ray tracing is not supported on this device")
+        }
+        buildScene()
+        loadQuad()
+        loadNeighbour()
+
+        let rt0 = try render(rayTraced: 0)
+
+        let rt1a = try render(rayTraced: 1)
+        let rt1b = try render(rayTraced: 1)
+        guard rt1a == rt1b else {
+            throw XCTSkip("two ray-traced frames of the same scene differ: not deterministic here")
+        }
+        let rt1 = rt1a
+
+        let mean0 = diagMean(rt0)
+        XCTAssertGreaterThan(mean0, 100.0, "the quad is drawn")
+
+        let seam0 = seam(rt1, 0)
+        let seam1 = seam(rt1, 1)
+        XCTAssertLessThanOrEqual(seam0, 1.0, "seam across diagonal d=0")
+        XCTAssertLessThanOrEqual(seam1, 1.0, "seam across diagonal d=1")
+
+        let mean1 = diagMean(rt1)
+        let meanDiff = abs(mean1 - mean0)
+        XCTAssertLessThanOrEqual(meanDiff, 1.0, "an open flat quad is not self-occluded")
+
+        print(String(format: "668 seam d0=%.3f d1=%.3f mean0=%.3f mean1=%.3f diff=%.3f",
+                     seam0, seam1, mean0, mean1, meanDiff))
+    }
+
+    func testUnrelatedTrianglesDoNotChangeAQuadsTracedAO() throws {
+        try requireEngine()
+        guard engine.rayTracingSupported else {
+            throw XCTSkip("Hardware ray tracing is not supported on this device")
+        }
+        buildScene()
+        loadQuad()
+
+        let rtAloneA = try render(rayTraced: 1)
+        let rtAloneB = try render(rayTraced: 1)
+        guard rtAloneA == rtAloneB else {
+            throw XCTSkip("two ray-traced frames of the same scene differ: not deterministic here")
+        }
+        let rtAlone = rtAloneA
+
+        loadNeighbour()
+
+        let rtNeighbourA = try render(rayTraced: 1)
+        let rtNeighbourB = try render(rayTraced: 1)
+        guard rtNeighbourA == rtNeighbourB else {
+            throw XCTSkip("two ray-traced frames of the same scene differ: not deterministic here")
+        }
+        let rtNeighbour = rtNeighbourA
+
+        var maxDiff = 0
+        for y in 60..<240 {
+            for x in 110..<290 {
+                let offset = (y * Self.width + x) * 4
+                for c in 0..<3 {
+                    let diff = abs(Int(rtAlone[offset + c]) - Int(rtNeighbour[offset + c]))
+                    if diff > maxDiff {
+                        maxDiff = diff
+                    }
+                }
+            }
+        }
+        print("668 quad alone vs with neighbour max channel diff=\(maxDiff)")
+        XCTAssertLessThanOrEqual(maxDiff, 1, "unrelated triangles changed the quad's traced AO")
+    }
+
+    func testABentNeighbourDoesNotTiltAQuadsTracedAO() throws {
+        try requireEngine()
+        guard engine.rayTracingSupported else {
+            throw XCTSkip("Hardware ray tracing is not supported on this device")
+        }
+        buildScene()
+        loadQuad()
+        let aloneA = try render(rayTraced: 1)
+        let aloneB = try render(rayTraced: 1)
+        guard aloneA == aloneB else {
+            throw XCTSkip("two ray-traced frames of the same scene differ: not deterministic here")
+        }
+        engine.runPython("from pymol import cmd as _c\n_c.delete('seam668q')")
+        loadBentQuad()
+        let bentA = try render(rayTraced: 1)
+        let bentB = try render(rayTraced: 1)
+        guard bentA == bentB else {
+            throw XCTSkip("two ray-traced frames of the same scene differ: not deterministic here")
+        }
+        let seam0 = seam(bentA, 0)
+        let seam1 = seam(bentA, 1)
+        var maxDiff = 0
+        for y in 60..<240 {
+            for x in 110..<290 {
+                let offset = (y * Self.width + x) * 4
+                for c in 0..<3 {
+                    maxDiff = max(maxDiff, abs(Int(aloneA[offset + c]) - Int(bentA[offset + c])))
+                }
+            }
+        }
+        print(String(format: "668 bent seam d0=%.3f d1=%.3f maxDiff=%d", seam0, seam1, maxDiff))
+        XCTAssertLessThanOrEqual(seam0, 1.0, "seam across diagonal d=0 next to a bent face")
+        XCTAssertLessThanOrEqual(seam1, 1.0, "seam across diagonal d=1 next to a bent face")
+        XCTAssertLessThanOrEqual(maxDiff, 1, "a face bent away from the quad changed the quad's traced AO")
+    }
+
+    func testTwistedStripKeepsItsSmoothedAO() throws {
+        try requireEngine()
+        guard engine.rayTracingSupported else {
+            throw XCTSkip("Hardware ray tracing is not supported on this device")
+        }
+        buildScene()
+        loadStripAndFloor()
+
+        let rt0 = try render(rayTraced: 0)
+
+        let rt1a = try render(rayTraced: 1)
+        let rt1b = try render(rayTraced: 1)
+        guard rt1a == rt1b else {
+            throw XCTSkip("two ray-traced frames of the same scene differ: not deterministic here")
+        }
+        let rt1 = rt1a
+
+        var fValues = [Double]()
+        for x in 185..<215 {
+            var sum1 = 0.0
+            var sum0 = 0.0
+            for y in 147...152 {
+                sum1 += lum(rt1, Double(x), Double(y))
+                sum0 += lum(rt0, Double(x), Double(y))
+            }
+            XCTAssertGreaterThan(sum0, 0.0, "rt0 sum at x=\(x) must be > 0")
+            fValues.append(sum1 / sum0)
+        }
+
+        let meanF = fValues.reduce(0.0, +) / Double(fValues.count)
+        print(String(format: "668 strip mean AO=%.4f", meanF))
+        XCTAssertEqual(meanF, Self.masterStripAO, accuracy: 0.05,
+                       "twisted strip should keep its smoothed AO factor")
+    }
+}
