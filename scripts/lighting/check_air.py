@@ -34,8 +34,9 @@ describes every tag). The checks read, by tag:
 Checks (pure functions on arrays; testing/tests/raymol/lighting_air_check.py
 exercises each on synthetic images, a pass and a fail):
 
-  visible    spot_haze adds light against spot_none: at least VISIBLE_PX
-             pixels gain light, by VISIBLE_MEAN luminance levels on average.
+  visible    spot_haze and grid_air add light against their noair twins (#686):
+             at least VISIBLE_PX pixels gain light, by VISIBLE_MEAN luminance
+             levels on average.
   rt_match   RT on and off agree (air minus its no-air twin): background
              pixels at least BG_MARGIN px from geometry differ by at most
              RT_BG_MAX between rt0 and rt1 (and the air is there: at least
@@ -67,7 +68,7 @@ exercises each on synthetic images, a pass and a fail):
              movie_f1; movie_f16 == movie_f16b == pinned05; movie_f17 !=
              movie_f16; speed0_f16 == speed0_still.
   geometry   ovl_air == ovl_noair (no air without geometry).
-  off        airoff == spot_none at rt0 and rt1; grid_air == grid_noair.
+  off        airoff == spot_none at rt0 and rt1.
   half       half resolution differs from full, and their air agrees within
              HALF_TOL on HALF_SHARE of the air's pixels, mean <= HALF_MEAN,
              and on HALF_EDGE_SHARE of the silhouettes (no halo).
@@ -540,7 +541,8 @@ def l2_plan():
     for rt in RTS:
         plan.append(('off', 'airoff_rt%d' % rt, check_same,
                      ['airoff_rt%d' % rt, 'spot_none_rt%d' % rt], {}))
-    plan.append(('off', 'grid_rt0', check_same, ['grid_air_rt0', 'grid_noair_rt0'], {}))
+    # #686: grid_mode draws air per cell
+    plan.append(('visible', 'grid_rt0', check_visible, ['grid_noair_rt0', 'grid_air_rt0'], {}))
     for rt in RTS:
         plan.append(('half', 'half_rt%d' % rt, check_half,
                      ['spot_none_rt%d' % rt, 'spot_hazedust_rt%d' % rt,

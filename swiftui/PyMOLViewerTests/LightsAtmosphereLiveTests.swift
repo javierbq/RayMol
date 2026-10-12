@@ -2260,3 +2260,231 @@ final class HdrAmbientOcclusionTests: XCTestCase {
     }
 }
 
+
+/// Issue #686: draw the atmosphere (haze and dust) in grid_mode, per cell.
+@MainActor
+final class GridAirTests: XCTestCase {
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var sceneBuilt = false
+    private var savedView: [Float]?
+
+    override func tearDown() {
+        if sceneBuilt {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.delete('ga686*')
+            _c.set('grid_mode', globals().pop('_ga686_grid', 0))
+            _c.set('metal_shadows', globals().pop('_ga686_shadows', 1))
+            _c.set('metal_raytrace', globals().pop('_ga686_raytrace', 0))
+            _c.set('metal_light_air_resolution', globals().pop('_ga686_air_res', 0))
+            _c.set('metal_light_air_time', globals().pop('_ga686_air_time', -1.0))
+            _c.set('bg_rgb', globals().pop('_ga686_bg', [0.0, 0.0, 0.0]))
+            _c.set_lights(globals().pop('_ga686_rig', None))
+            for _n in globals().pop('_ga686_enabled', []):
+                _c.enable(_n)
+            """)
+            sceneBuilt = false
+        }
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        super.tearDown()
+    }
+
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            throw XCTSkip("the PyMOL engine did not come up under the test host")
+        }
+    }
+
+    private func buildScene() {
+        savedView = engine.captureView()
+        sceneBuilt = true
+        engine.runPython("""
+        from pymol import cmd as _c
+        _ga686_enabled = _c.get_names('objects', enabled_only=1)
+        _ga686_bg = list(_c.get_color_tuple(_c.get_setting_tuple('bg_rgb')[1][0]))
+        _ga686_grid = _c.get_setting_int('grid_mode')
+        _ga686_shadows = _c.get_setting_int('metal_shadows')
+        _ga686_raytrace = _c.get_setting_int('metal_raytrace')
+        _ga686_air_res = _c.get_setting_int('metal_light_air_resolution')
+        _ga686_air_time = _c.get_setting_float('metal_light_air_time')
+        _ga686_rig = _c.get_lights()
+        for _n in _ga686_enabled:
+            _c.disable(_n)
+        _c.set('bg_rgb', [0.0, 0.0, 0.0])
+        _c.set('metal_raytrace', 0)
+        _c.set('metal_shadows', 1)
+        _c.set('metal_light_air_resolution', 1)
+        _c.set('metal_light_air_time', 2.0)
+        _c.pseudoatom('ga686a', pos=[0.0, 0.0, 0.0], vdw=1.0)
+        _c.show_as('spheres', 'ga686a')
+        _c.color('white', 'ga686a')
+        _c.create('ga686b', 'ga686a')
+        _c.set('sphere_scale', 4.0, 'ga686*')
+        _c.set('grid_mode', 1)
+        """)
+        frameScene()
+    }
+
+    private func frameScene() {
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                     0.0, 0.0, -60.0, 0.0, 0.0, 0.0, 20.0, 100.0, -20.0))
+        """)
+    }
+
+    private func setRig(haze: Double) {
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set_lights({'enabled': True, 'centre': [0.0, 0.0, 0.0], 'size': 20.0,
+                       'lights': [{'name': 'key', 'anchor': 'camera', 'orbit': -30.0,
+                                   'pitch': 20.0, 'beam': 40.0, 'shadow': True}],
+                       'air': {'haze': \(haze), 'dust': 0.0}})
+        """)
+    }
+
+    private func render() throws -> [UInt8] {
+        let png = NSTemporaryDirectory() + "ga686_render.png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: 400, height: 300, rayTraced: 0)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(
+            URL(fileURLWithPath: png) as CFURL, nil), "no export written")
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        let w = image.width, h = image.height
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return rgba
+    }
+
+    private func assertSpheresDrawnInBothHalves(_ haze0: [UInt8]) {
+        let width = 400, height = 300
+        var leftBright = 0, rightBright = 0
+        for y in 0..<height {
+            for x in 0..<width {
+                let i = (y * width + x) * 4
+                let lum = (Double(haze0[i]) + Double(haze0[i + 1]) + Double(haze0[i + 2])) / 3.0
+                if lum > 50.0 {
+                    if x < 200 { leftBright += 1 } else { rightBright += 1 }
+                }
+            }
+        }
+        XCTAssertGreaterThan(leftBright, 100, "left cell sphere must be drawn")
+        XCTAssertGreaterThan(rightBright, 100, "right cell sphere must be drawn")
+    }
+
+    func testHazeShowsInEveryGridCell() throws {
+        try requireEngine()
+        buildScene()
+        setRig(haze: 0.0)
+        let haze0 = try render()
+        assertSpheresDrawnInBothHalves(haze0)
+
+        setRig(haze: 0.3)
+        let haze3 = try render()
+
+        let width = 400, height = 300
+        for (halfName, xRange) in [("left", 0..<200), ("right", 200..<400)] {
+            var bgCount = 0
+            var bgGainSum = 0.0
+            var gainedCount = 0
+            for y in 0..<height {
+                for x in xRange {
+                    let i = (y * width + x) * 4
+                    let lum0 = (Double(haze0[i]) + Double(haze0[i + 1]) + Double(haze0[i + 2])) / 3.0
+                    let lum3 = (Double(haze3[i]) + Double(haze3[i + 1]) + Double(haze3[i + 2])) / 3.0
+                    if lum0 <= 2.0 {
+                        bgCount += 1
+                        let gain = lum3 - lum0
+                        bgGainSum += gain
+                        if gain >= 1.0 {
+                            gainedCount += 1
+                        }
+                    }
+                }
+            }
+            XCTAssertGreaterThan(bgCount, 500, "enough background pixels in \(halfName) half")
+            let meanGain = bgCount > 0 ? bgGainSum / Double(bgCount) : 0.0
+            print("ga686 \(halfName) bgCount=\(bgCount) meanGain=\(meanGain) gained=\(gainedCount)")
+            XCTAssertGreaterThanOrEqual(meanGain, 1.0, "\(halfName) half background luminance must rise by >= 1.0 level")
+            XCTAssertGreaterThanOrEqual(gainedCount, 500, "\(halfName) half must have >= 500 pixels gain light")
+        }
+    }
+
+    func testCellsMarchTheirOwnRays() throws {
+        try requireEngine()
+        buildScene()
+        setRig(haze: 0.0)
+        let haze0 = try render()
+        assertSpheresDrawnInBothHalves(haze0)
+
+        setRig(haze: 0.3)
+        let haze3 = try render()
+
+        let width = 400, height = 300
+        var leftAirSum = 0.0
+        var rightAirSum = 0.0
+
+        for row in 0..<6 {
+            for col in 0..<8 {
+                let x0 = col * 25
+                let x1 = x0 + 25
+                let y0 = row * 50
+                let y1 = y0 + 50
+
+                var leftBoxSum = 0.0
+                var rightBoxSum = 0.0
+                let boxPixels = 25 * 50
+
+                for y in y0..<y1 {
+                    for x in x0..<x1 {
+                        let iL = (y * width + x) * 4
+                        let iR = (y * width + (x + 200)) * 4
+                        let lum0L = (Double(haze0[iL]) + Double(haze0[iL + 1]) + Double(haze0[iL + 2])) / 3.0
+                        let lum3L = (Double(haze3[iL]) + Double(haze3[iL + 1]) + Double(haze3[iL + 2])) / 3.0
+                        let lum0R = (Double(haze0[iR]) + Double(haze0[iR + 1]) + Double(haze0[iR + 2])) / 3.0
+                        let lum3R = (Double(haze3[iR]) + Double(haze3[iR + 1]) + Double(haze3[iR + 2])) / 3.0
+                        let airL = lum3L - lum0L
+                        let airR = lum3R - lum0R
+                        leftBoxSum += airL
+                        rightBoxSum += airR
+                    }
+                }
+                leftAirSum += leftBoxSum
+                rightAirSum += rightBoxSum
+                let leftMean = leftBoxSum / Double(boxPixels)
+                let rightMean = rightBoxSum / Double(boxPixels)
+                let boxDiff = abs(leftMean - rightMean)
+                XCTAssertLessThanOrEqual(
+                    boxDiff, 2.0,
+                    "box (col=\(col), row=\(row)) left=\(leftMean) right=\(rightMean) diff=\(boxDiff) exceeds 2.0")
+            }
+        }
+
+        let halfPixels = 200 * 300
+        let leftTotalMean = leftAirSum / Double(halfPixels)
+        let rightTotalMean = rightAirSum / Double(halfPixels)
+        let maxTotalMean = max(leftTotalMean, rightTotalMean)
+        let totalDiff = abs(leftTotalMean - rightTotalMean)
+        print("ga686 leftTotalMean=\(leftTotalMean) rightTotalMean=\(rightTotalMean) diff=\(totalDiff)")
+        XCTAssertGreaterThan(leftTotalMean, 0.5, "left half has air")
+        XCTAssertGreaterThan(rightTotalMean, 0.5, "right half has air")
+        XCTAssertLessThanOrEqual(
+            totalDiff, 0.10 * maxTotalMean,
+            "halves total means left=\(leftTotalMean) right=\(rightTotalMean) differ by > 10%")
+    }
+}

@@ -87,10 +87,10 @@ float LightAirSeedOffset(int seed)
 }
 
 bool LightAirAnimating(const LightAir& air, double pinned, bool playing,
-    bool geometry, bool grid)
+    bool geometry)
 {
   return air.dust > 0.0 && air.dustSpeed > 0.0 && !(pinned >= 0.0) &&
-         !playing && !grid && geometry;
+         !playing && geometry;
 }
 
 std::optional<LightAirBlock> LightAirPack(const LightAirSource& source,

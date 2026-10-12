@@ -370,7 +370,9 @@ CONSTANTS = (('kAirHazeSteps', 'kLightAirHazeSteps'),
              ('kAirMaxScatter', 'kLightAirMaxScatter'),
              ('kAirDepthSigma', 'kLightAirDepthSigma'))
 
+# #686: kAirCellBufferIndex for per-cell air drawing in grid_mode
 AIR_INDICES = (('kAirParamsBufferIndex', 0), ('kAirRigBufferIndex', 1),
+               ('kAirCellBufferIndex', 2),
                ('kAirColorTextureIndex', 0), ('kAirDepthTextureIndex', 1),
                ('kAirMapsTextureIndex', 2), ('kAirTermTextureIndex', 3),
                ('kAirPostSamplerIndex', 0),
@@ -632,7 +634,9 @@ class TestLibrary(AirMSLCase):
                     r'depth2d_array<float>\s+maps\s*\[\[\s*texture\(2\)\s*\]\]',
                     r'sampler\s+smp\s*\[\[\s*sampler\(1\)\s*\]\]',
                     r'constant\s+LightAirU\s*&\s*air\s*\[\[\s*buffer\(0\)\s*\]\]',
-                    r'constant\s+LightRigU\s*&\s*rig\s*\[\[\s*buffer\(1\)\s*\]\]'):
+                    r'constant\s+LightRigU\s*&\s*rig\s*\[\[\s*buffer\(1\)\s*\]\]',
+                    # #686: cell buffer for per-cell air
+                    r'constant\s+float4\s*&\s*cell\s*\[\[\s*buffer\(2\)\s*\]\]'):
             self.assertRegex(sig, arg)
         # read at this pixel, never filtered
         self.assertIn('colorTex.read(px)', body)
@@ -859,9 +863,17 @@ class TestPostChain(AirMSLCase):
                      'air.proj[1] = _projB;', 'air.proj[2] = _projX;',
                      'air.proj[3] = _projY;', 'LightRigBlock rig = _lightRigBlock;'):
             self.assertIn(text, enc)
-        # the whole slice (a grid frame draws no air) ...
+        # #686: the whole slice without a grid, and in a grid the cell's tile
         self.assertEqual(re.findall(r'rig\.shadowTile\[(\d)\]\s*=\s*([\d.]+)f;', enc),
                          [('0', '0.0'), ('1', '0.0'), ('2', '1.0'), ('3', '1.0')])
+        self.assertIn('pymol::LightShadowTileRect(', enc)
+        self.assertIn('(int)_lightRigBlock.shadowGrid[1]', enc)
+        self.assertIn('(int)_lightRigBlock.shadowGrid[0]', enc)
+        self.assertIn('_lightShadowArraySize', enc)
+        self.assertIn('_rtFrameCells', enc)
+        self.assertIn('setScissorRect:', enc)
+        self.assertIn('copyFromTexture:sceneSrc toTexture:dst', enc)
+        self.assertIn('MTLLoadActionLoad', enc)
         # ... and no maps unless they were rendered, the stand-in then
         self.assertRegex(enc, r'const bool maps = lightShadowsReady\(\);\s*'
                               r'if \(!maps\)\s*rig\.head\[3\] = 0\.0f;')
@@ -876,6 +888,8 @@ class TestPostChain(AirMSLCase):
         self.assertIn('setFragmentBytes:&air length:sizeof(air) atIndex:kAirParamsBufferIndex]',
                       enc)
         self.assertIn('setFragmentBytes:&rig length:sizeof(rig) atIndex:kAirRigBufferIndex]',
+                      enc)
+        self.assertIn('setFragmentBytes:c.rect length:sizeof(c.rect) atIndex:kAirCellBufferIndex]',
                       enc)
         self.assertIn('setFragmentTexture:_sceneDepth atIndex:kAirDepthTextureIndex]', enc)
         self.assertIn('setFragmentSamplerState:_shadowSampler atIndex:kAirMapsSamplerIndex]',
@@ -990,7 +1004,8 @@ class TestHalf(AirMSLCase):
         # both passes bind the same blocks, depth and maps
         self.assertEqual(enc.count('bindAir(em);'), 1)
         self.assertEqual(enc.count('bindAir(ea);'), 1)
-        self.assertEqual(enc.count('endEncoding'), 2)
+        # #686: 3 with the grid blit encoder
+        self.assertEqual(enc.count('endEncoding'), 3)
 
     def testHalfFallsBackToFull(self):
         ensure = self.body('RendererMetal::ensureAirPipelines')
@@ -1017,20 +1032,24 @@ class TestHalf(AirMSLCase):
                     r'depth2d_array<float>\s+maps\s*\[\[\s*texture\(2\)\s*\]\]',
                     r'sampler\s+smp\s*\[\[\s*sampler\(1\)\s*\]\]',
                     r'constant\s+LightAirU\s*&\s*air\s*\[\[\s*buffer\(0\)\s*\]\]',
-                    r'constant\s+LightRigU\s*&\s*rig\s*\[\[\s*buffer\(1\)\s*\]\]'):
+                    r'constant\s+LightRigU\s*&\s*rig\s*\[\[\s*buffer\(1\)\s*\]\]',
+                    # #686: cell buffer for per-cell air
+                    r'constant\s+float4\s*&\s*cell\s*\[\[\s*buffer\(2\)\s*\]\]'):
             self.assertRegex(sig, arg)
         # the 2x2 block, clamped; the nearest depth on one colour of the
         # checkerboard, the farthest on the other; read, never filtered
         self.assertIn('const bool nearest = ((tx.x + tx.y) & 1u) == 0u;', body)
-        self.assertIn('uint2 px = min(tx * 2u, lim);', body)
+        # #686: candidate pixels clamped into the cell's pixel rect
+        self.assertIn('uint2 px = clamp(tx * 2u, lo, hi);', body)
         self.assertIn('for (uint k = 1u; k < 4u; ++k)', body)
-        self.assertIn('min(tx * 2u + uint2(k & 1u, k >> 1u), lim)', body)
+        self.assertIn('clamp(tx * 2u + uint2(k & 1u, k >> 1u), lo, hi)', body)
         self.assertIn('if (nearest ? dq < d : dq > d)', body)
         self.assertEqual(body.count('depthTex.read('), 2)
         self.assertNotIn('.sample(', body)
         # the same term as full resolution, through the chosen pixel
         self.assertIn('const float2 frag = float2(px) + 0.5;', body)
-        self.assertIn('return post_air_term(frag / float2(lim + 1u), frag, d, air, rig, '
+        # #686: post_air_term takes cell and frag / float2(size)
+        self.assertIn('return post_air_term(frag / float2(size), frag, d, cell, air, rig, '
                       'maps, smp);', body)
 
     def testJointBilateralUpsample(self):
@@ -1038,6 +1057,8 @@ class TestHalf(AirMSLCase):
         self.assertTrue(sig.lstrip().startswith('fragment float4 post_air_upsample('))
         for arg in (r'texture2d<float>\s+colorTex\s*\[\[\s*texture\(0\)\s*\]\]',
                     r'depth2d<float>\s+depthTex\s*\[\[\s*texture\(1\)\s*\]\]',
+                    # #686: cell buffer placed right after depthTex
+                    r'constant\s+float4\s*&\s*cell\s*\[\[\s*buffer\(2\)\s*\]\]',
                     r'texture2d<float>\s+termTex\s*\[\[\s*texture\(3\)\s*\]\]',
                     r'constant\s+LightAirU\s*&\s*air\s*\[\[\s*buffer\(0\)\s*\]\]',
                     # #624: the rig block, for its tone (bindAir binds it to
@@ -1051,7 +1072,8 @@ class TestHalf(AirMSLCase):
         # on the eye depth where it stopped
         self.assertIn('const float2 h = in.position.xy * 0.5 - 0.5;', body)
         self.assertIn('for (int k = 0; k < 4; ++k)', body)
-        self.assertIn('termTex.read(uint2(clamp(int2(b) + o, int2(0), lim)))', body)
+        # #686: texel reads clamped to cell's half-res rect (tlo, thi)
+        self.assertIn('termTex.read(uint2(clamp(int2(b) + o, tlo, thi)))', body)
         self.assertIn('const float dz = abs(t.a - z);', body)
         self.assertIn('(o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y)', body)
         self.assertIn('max(kAirDepthSigma * (air.range.y - air.range.x), 1e-3)', body)

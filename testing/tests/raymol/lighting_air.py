@@ -2,8 +2,8 @@
 
 SceneLightsFrame (layer1/SceneLights.cpp) copies the rig's air and frame in
 eye space (airSource) from its one rig read, only while the rig is on with
-haze or dust. SceneLightsAir then applies the gates (no air in grid mode, no
-air without geometry), reads the dust clock (LightAirClock: a pin, movie time
+haze or dust. SceneLightsAir then applies the gates (no air without geometry),
+reads the dust clock (LightAirClock: a pin, movie time
 in exports, 0 for an offscreen still, the live clock) and the settings
 metal_light_air_resolution, metal_light_air_time and
 metal_light_air_shadow_filter, and packs the 80-byte block
@@ -379,9 +379,13 @@ class TestGate(AirCase):
 
     def testGrid(self):
         self.rig()
-        self.assertIsNotNone(self.frame())
-        self.assertIsNone(self.frame(grid=(2, 1, 1)))
-        self.assertIsNone(self.frame(grid=(1, 1, 1)))
+        base = self.frame()
+        self.assertIsNotNone(base)
+        # #686: the grid no longer suppresses the air; same block
+        for grid in ((2, 1, 1), (1, 1, 1)):
+            got = self.frame(grid=grid)
+            self.assertIsNotNone(got)
+            self.assertEqual(got, base)
 
     def testReinitialize(self):
         self.rig()
@@ -767,9 +771,9 @@ class TestSource(testing.PyMOLTestCase):
         first = re.search(r'\S', body)
         self.assertTrue(body[first.start():].startswith('if (!frame.airSource)'),
                         body[:80])
-        grid = body.index('grid')
+        # #686: grid mode no longer suppresses the air
+        self.assertNotIn('grid', body)
         extent = body.index('SceneGetLightShadowExtent(')
-        self.assertLess(grid, extent)
         for token in ('cSetting_metal_light_air_time',
                       'cSetting_metal_light_air_phase',
                       'cSetting_metal_light_air_resolution',
@@ -787,9 +791,11 @@ class TestSource(testing.PyMOLTestCase):
     def testAnimatingOrder(self):
         body = function_body(self.scene_lights(), 'SceneLightsAirAnimating')
         self.assertEqual(body.count('SceneGetLightShadowExtent('), 1)
+        # #686: grid mode no longer stops dust animation
+        self.assertNotIn('grid', body)
         extent = body.index('SceneGetLightShadowExtent(')
         for token in ('LightRigIsOn(', 'cSetting_metal_light_air_time',
-                      'MoviePlaying(', 'grid'):
+                      'MoviePlaying('):
             self.assertLess(body.index(token), extent, token)
 
     def testNoRedrawRequests(self):

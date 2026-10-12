@@ -378,8 +378,8 @@ atmosphere off
   `shadow=1` and `metal_shadows` on. Dust motes glint only inside beams.
 - The air spans the rig's frame, so showing, hiding or zooming never moves it
   (`lights recenter` does). It needs something shown: with nothing enabled,
-  or only overlays such as the Move gizmo, there is no air. It is not drawn
-  in `grid_mode` (#686).
+  or only overlays such as the Move gizmo, there is no air. In `grid_mode` the
+  air is drawn per cell, each cell shadowed by its own casters (#686).
 - A transparent-background export (`ray_opaque_background` 0) takes its
   alpha from depth, so by default haze and dust over empty background are
   cut out with it. `set metal_light_air_alpha, 1` keeps them: alpha there is
@@ -388,10 +388,10 @@ atmosphere off
   that alpha. Off by default, so exports are unchanged unless you ask (#684).
 - Haze alone is still: only dust moves. The live view redraws for the dust
   only while the rig is on with dust and `dust_speed` above 0, the dust clock
-  is not pinned, no movie plays, nothing is in grid mode and something is
-  shown. The app then redraws at most 30 times a second, and only while it is
-  active and its window visible. In Low Power Mode, or at a serious or
-  critical thermal state, the dust holds still.
+  is not pinned, no movie plays and something is shown. The app then redraws at
+  most 30 times a second, and only while it is active and its window visible. In
+  Low Power Mode, or at a serious or critical thermal state, the dust holds
+  still.
 - **The dust clock.** `metal_light_air_time` 0 or more pins it to that many
   seconds (before `dust_speed`), for repeatable renders. Below 0 (the
   default), exports and a playing movie use movie time (frame N at
@@ -771,10 +771,9 @@ Open follow-ups of the lighting work (#610) that you may notice:
 - **The air.** The haze only adds light (it has no extinction), so haze
   above about 0.3 with a light behind the molecule washes the picture out;
   lower the exposure, the haze or the light (#683, see [Backlit
-  haze](#backlit-haze)). No air in grid mode (#686). Transparent-background
-  exports drop the air over the empty background (#684). Animated dust
-  redraws the whole scene on every tick (#685). The dust seed has no control
-  in the Atmosphere card (#740).
+  haze](#backlit-haze)). Transparent-background exports drop the air over the
+  empty background (#684). Animated dust redraws the whole scene on every tick
+  (#685). The dust seed has no control in the Atmosphere card (#740).
 - **Materials and HDR.** The studio diffuse lights a material's plain base
   colour, not its procedural pattern (#710). Glass glints on sphere impostors
   do not show (#713). The materials' own classic terms pass their 8-bit knee
