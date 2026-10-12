@@ -65,6 +65,10 @@ constexpr NSUInteger kRTLightRigBufferIndex = 13;
 // kRTSrc's own kLightHdr (#624): set on every RT specialisation, as
 // kRTLightRig is.
 constexpr NSUInteger kRTLightHdrConstantIndex = 2;
+// Studio shadow maps on traced reflection hits (#664): kRTSrc's kRTLightShadow
+// and the composite's lightShadowMaps texture(5).
+constexpr NSUInteger kRTLightShadowConstantIndex = 3;
+constexpr NSUInteger kRTLightShadowTextureIndex = 5;
 
 // The air pass (#618; kAirSrc): its own library and its own index space. The
 // air block (pymol::LightAirBlock, MSL LightAirU) and a copy of the rig block
@@ -634,10 +638,11 @@ RendererMetal::~RendererMetal()
   [_exportAlphaPipeline release];
   [_rtAOPipeline release];            [_rtResolvePipeline release];
   [_rtAOPipelineT release];           [_rtResolvePipelineT release];
-  // the rig composites (#613), [transparent][hdr] (#624)
+  // the rig composites (#613), [transparent][hdr][shadow] (#624, #664)
   for (int t = 0; t < 2; ++t)
     for (int h = 0; h < 2; ++h)
-      [_rtResolvePipelineRig[t][h] release];
+      for (int s = 0; s < 2; ++s)
+        [_rtResolvePipelineRig[t][h][s] release];
   [_rtLib release];
   releaseRayTracingTransAS();
   [_rtAOAccumPipeline release];       [_labelPipeline release];
@@ -3355,8 +3360,9 @@ constant bool kRTTrans [[function_constant(0)]];
 // structs and of the helpers the hit shading needs. Each copy is kMaterialSrc's
 // code verbatim, comments aside; lighting_msl.py fails if one drifts. No
 // light_outline: the beam outlines are an overlay, and overlays never enter ray
-// tracing. The response is light_response_neutral(), as on the bezier tube:
-// #615's light_response needs MaterialU, which this library has no copy of.
+// tracing. Hits take the studio shadow maps (#664) under kRTLightShadow. The
+// response is light_response_neutral(), as on the bezier tube: #615's
+// light_response needs MaterialU, which this library has no copy of.
 constant bool kRTLightRig [[function_constant(1)]];
 
 // HDR colour (#624): kMaterialSrc's kLightHdr, under the same name so the
@@ -3366,6 +3372,11 @@ constant bool kRTLightRig [[function_constant(1)]];
 // composite of a frame without HDR, so a reflection hit then takes the knee
 // as before #624.
 constant bool kLightHdr [[function_constant(2)]];
+
+// Studio shadow maps (#616) on traced reflection hits (#664); true only for
+// the rig composite of a frame whose maps are ready and which has no grid.
+// Everywhere else it is false, so those frames compile to what they did before.
+constant bool kRTLightShadow [[function_constant(3)]];
 
 struct LightRigLight {
   float4 pos;       // xyz eye-space position (A); w shadow slot (#616)
@@ -3380,7 +3391,7 @@ struct LightRigShadow {
 struct LightRigU {
   float4 head;      // x light count, y shininess, z orthographic, w shadow maps
   LightRigLight L[6];
-  LightRigShadow S[3];  // read by no RT function (#616: hits stay unshadowed)
+  LightRigShadow S[3];  // shadow maps 0..head.w-1 (#616, #664)
   float4 shadowGrid;
   float4 shadowTile;
   float4 tone;          // exposure, 1 = HDR, 0, 0 (#624)
@@ -3438,6 +3449,88 @@ __attribute__((unused)) static LightTerms light_terms_view(
         ? min(pow(rig.L[i].misc.z / d, rig.L[i].misc.y), 1e4) : 1.0;
     const float3 rad = rig.L[i].radiance.rgb *
         (spot * fall * light_visibility(rig, i, pEye, N, Ld, d));
+    t.diffuse += rad * (wd * r.diffuse);
+    const float3 H = Ld + V;
+    if (ndl > 0.0 && dot(H, H) > 1e-8) {
+      t.specular += rad * (rig.L[i].misc.x * r.highlight *
+                           pow(saturate(dot(N, normalize(H))), shin));
+    }
+  }
+  t.specular *= mix(float3(1.0), base, r.tint);
+  return t;
+}
+
+// kMaterialSrc's studio shadow block (#616), copied for the traced hits
+// (#664): light_shadow_lookup, light_visibility_shadowed and
+// light_terms_view_shadowed, verbatim. They read no function constant; only
+// the kRTLightShadow composite calls them, with the whole slice as the tile.
+__attribute__((unused)) static float light_shadow_lookup(constant LightRigU& rig,
+    depth2d_array<float> maps, sampler smp, int slot, float3 p, float3 n,
+    float3 ld, float d) {
+  const float4 tile = rig.shadowTile;
+  if (!(tile.z > 0.0 && tile.w > 0.0)) return 1.0;
+  const float4 info = rig.S[slot].info;
+  const float size = max(info.y, 1.0);
+  const float tilePx = max(info.y * tile.z, 1.0);
+  // One texel of this tile, in eye units, at the point's distance.
+  const float texel = 2.0 * d * info.x / tilePx;
+  const float3 q = p + n * (info.z * texel / max(dot(n, ld), 0.25)) + ld * texel;
+  const float4 lc = rig.S[slot].viewProj * float4(q, 1.0);
+  if (!(lc.w > 1e-6)) return 1.0;
+  const float3 ndc = lc.xyz / lc.w;
+  if (!(abs(ndc.x) <= 1.0 && abs(ndc.y) <= 1.0 && abs(ndc.z) <= 1.0)) return 1.0;
+  const float2 uv = tile.xy + float2(0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y) * tile.zw;
+  const float fd = 0.5 + 0.5 * ndc.z - info.w;
+  const float2 halfTexel = float2(0.5 / size);
+  const float2 lo = tile.xy + halfTexel;
+  const float2 hi = max(tile.xy + tile.zw - halfTexel, lo);
+  const float tap = 1.2 / size;
+  float lit = 0.0;
+  for (int y = -1; y <= 1; ++y) {
+    for (int x = -1; x <= 1; ++x) {
+      lit += maps.sample_compare(smp, clamp(uv + float2(x, y) * tap, lo, hi),
+                                 uint(slot), fd);
+    }
+  }
+  return lit / 9.0;
+}
+
+// light_visibility with the maps: light i's own map (its slot is pos.w, -1 =
+// none), 1 for a light without one or a slot past this frame's maps (head.w).
+__attribute__((unused)) static float light_visibility_shadowed(
+    constant LightRigU& rig, depth2d_array<float> maps, sampler smp, int i,
+    float3 p, float3 n, float3 ld, float d) {
+  const int slot = int(rig.L[i].pos.w);
+  if (slot < 0 || slot >= 3 || slot >= int(rig.head.w)) return 1.0;
+  return light_shadow_lookup(rig, maps, smp, slot, p, n, ld, d);
+}
+
+__attribute__((unused)) static LightTerms light_terms_view_shadowed(
+    constant LightRigU& rig, depth2d_array<float> maps, sampler smp,
+    float3 base, float3 nEye, float3 pEye, float3 V, LightResponse r) {
+  LightTerms t;
+  t.diffuse = float3(0.0);
+  t.specular = float3(0.0);
+  const int n = int(rig.head.x);
+  const float nl = length(nEye);
+  float3 N = nl > 1e-8 ? nEye / nl : V;
+  if (dot(N, V) < 0.0) N = -N;
+  const float shin = max(rig.head.y * r.sharpness, 1.0);
+  for (int i = 0; i < 6; ++i) {
+    if (i >= n) break;
+    const float3 Lv = rig.L[i].pos.xyz - pEye;
+    const float d = max(length(Lv), 1e-3);
+    const float3 Ld = Lv / d;
+    const float band = max(rig.L[i].radiance.w - rig.L[i].axis.w, 1e-7);
+    const float s = saturate((dot(-Ld, rig.L[i].axis.xyz) - rig.L[i].axis.w) / band);
+    const float spot = s * s * (3.0 - 2.0 * s);
+    const float ndl = dot(N, Ld);
+    const float wd = saturate((ndl + r.wrap) / (1.0 + r.wrap));
+    if (spot <= 0.0 || wd <= 0.0) continue;
+    const float fall = rig.L[i].misc.y > 0.0
+        ? min(pow(rig.L[i].misc.z / d, rig.L[i].misc.y), 1e4) : 1.0;
+    const float3 rad = rig.L[i].radiance.rgb *
+        (spot * fall * light_visibility_shadowed(rig, maps, smp, i, pEye, N, Ld, d));
     t.diffuse += rad * (wd * r.diffuse);
     const float3 H = Ld + V;
     if (ndl > 0.0 && dot(H, H) > 1e-8) {
@@ -3518,6 +3611,22 @@ static float3 rt_rig_hit(constant LightRigU& rig, constant RTU& u,
   const float3 V = -normalize(toEye * R);
   const LightTerms t = light_terms_view(rig, base, nEye, pEye, V,
                                         light_response_neutral());
+  return light_finish(shaded + base * t.diffuse + t.specular, rig.tone.x);
+}
+
+// The shadowed variant of rt_rig_hit (#664): takes the studio shadow maps
+// and calls light_terms_view_shadowed.
+static float3 rt_rig_hit_shadowed(constant LightRigU& rig, constant RTU& u,
+    depth2d_array<float> maps, sampler smp,
+    float3 shaded, float3 base, float3 pModel, float3 nModel, float3 R) {
+  const float3x3 toEye = transpose(float3x3(u.invModelview[0].xyz,
+                                            u.invModelview[1].xyz,
+                                            u.invModelview[2].xyz));
+  const float3 pEye = toEye * (pModel - u.invModelview[3].xyz);
+  const float3 nEye = toEye * nModel;
+  const float3 V = -normalize(toEye * R);
+  const LightTerms t = light_terms_view_shadowed(rig, maps, smp, base, nEye, pEye, V,
+                                                 light_response_neutral());
   return light_finish(shaded + base * t.diffuse + t.specular, rig.tone.x);
 }
 
@@ -3807,7 +3916,8 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
     primitive_acceleration_structure tas [[buffer(9), function_constant(kRTTrans)]],
     device const float4* tcols [[buffer(10), function_constant(kRTTrans)]],
     device const packed_float3* tnrms [[buffer(11), function_constant(kRTTrans)]],
-    constant LightRigU& rig [[buffer(13), function_constant(kRTLightRig)]]) {
+    constant LightRigU& rig [[buffer(13), function_constant(kRTLightRig)]],
+    depth2d_array<float> lightShadowMaps [[texture(5), function_constant(kRTLightShadow)]]) {
   float3 col = colorTex.sample(s, in.uv).rgb;
   float3 colRaw = col;   // lit colour before AO/shadow: tints the reflection
   float d = depthTex.sample(s, in.uv);
@@ -4054,7 +4164,9 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
           // The light rig (#613) on top of the hit's classic colour, as the
           // raster path puts it on top of the surface the mirror shows.
           if (kRTLightRig)
-            reflCol = rt_rig_hit(rig, u, reflCol, hc, hitP, hn, R);
+            reflCol = kRTLightShadow
+                ? rt_rig_hit_shadowed(rig, u, lightShadowMaps, shadowSamp, reflCol, hc, hitP, hn, R)
+                : rt_rig_hit(rig, u, reflCol, hc, hitP, hn, R);
           // Fade distant hits toward the environment so far-off geometry does
           // not read as a hard mirror image (cheap "reflection fog").
           reflCol = mix(reflCol, envCol, saturate(res.distance / 120.0));
@@ -4087,8 +4199,9 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
             }
             float3 tcol = tc.rgb * min(inten, 1.0) + specv;
             if (kRTLightRig)
-              tcol = rt_rig_hit(rig, u, tcol, tc.rgb, tr.origin + R * th.distance,
-                                hn, R);
+              tcol = kRTLightShadow
+                  ? rt_rig_hit_shadowed(rig, u, lightShadowMaps, shadowSamp, tcol, tc.rgb, tr.origin + R * th.distance, hn, R)
+                  : rt_rig_hit(rig, u, tcol, tc.rgb, tr.origin + R * th.distance, hn, R);
             tcol = mix(tcol, envCol, saturate(th.distance / 120.0));
             reflCol = mix(reflCol, tcol, saturate(tc.a));
           }
@@ -4989,7 +5102,8 @@ void RendererMetal::ensureRayTracingAS()
 // The RT pass pipelines, specialised on kRTTrans (function constant 0). The
 // light rig's constant (kRTLightRig) is always set, false: these are the
 // pipelines every frame without a rig runs. Its variants come from
-// buildRTRigComposite. So is HDR's (#624, kLightHdr), always false here.
+// buildRTRigComposite. So is HDR's (#624, kLightHdr), always false here, and
+// studio shadow maps (#664, kRTLightShadow), always false here.
 void RendererMetal::buildRTPipelines(bool transparent,
     id<MTLRenderPipelineState>* ao, id<MTLRenderPipelineState>* composite)
 {
@@ -5001,6 +5115,8 @@ void RendererMetal::buildRTPipelines(bool transparent,
   [fc setConstantValue:&rig type:MTLDataTypeBool atIndex:kRTLightRigConstantIndex];
   bool hdr = false;
   [fc setConstantValue:&hdr type:MTLDataTypeBool atIndex:kRTLightHdrConstantIndex];
+  bool shadow = false;
+  [fc setConstantValue:&shadow type:MTLDataTypeBool atIndex:kRTLightShadowConstantIndex];
   id<MTLFunction> vtx = [_rtLib newFunctionWithName:@"rt_vertex"];
   id<MTLFunction> fao = [_rtLib newFunctionWithName:@"rt_ao" constantValues:fc error:&err];
   id<MTLFunction> fco = fao ? [_rtLib newFunctionWithName:@"rt_composite" constantValues:fc error:&err] : nil;
@@ -5034,10 +5150,12 @@ void RendererMetal::buildRTPipelines(bool transparent,
 // AO pass never sees the rig, so it has no variant. HDR's constant (#624,
 // kLightHdr) as asked: true for an HDR frame (a traced hit goes through the
 // tone curve at the frame's exposure), false for the 8-bit knee as before
-// #624. Both come from the retained _rtLib, so neither compiles the library
-// again. Returns +1, or nil after logging; the caller tries each once and
-// draws the classic composite otherwise.
-id<MTLRenderPipelineState> RendererMetal::buildRTRigComposite(bool transparent, bool hdr)
+// #624. Studio shadow maps (#664, kRTLightShadow) as asked: true for a frame
+// whose maps are ready and without grid, false otherwise. All come from the
+// retained _rtLib, so none compiles the library again. Returns +1, or nil
+// after logging; the caller tries each once and draws the classic composite
+// otherwise.
+id<MTLRenderPipelineState> RendererMetal::buildRTRigComposite(bool transparent, bool hdr, bool shadow)
 {
   if (!_rtLib)
     return nil;
@@ -5049,6 +5167,8 @@ id<MTLRenderPipelineState> RendererMetal::buildRTRigComposite(bool transparent, 
   [fc setConstantValue:&rig type:MTLDataTypeBool atIndex:kRTLightRigConstantIndex];
   bool h = hdr;
   [fc setConstantValue:&h type:MTLDataTypeBool atIndex:kRTLightHdrConstantIndex];
+  bool s = shadow;
+  [fc setConstantValue:&s type:MTLDataTypeBool atIndex:kRTLightShadowConstantIndex];
   id<MTLFunction> vtx = [_rtLib newFunctionWithName:@"rt_vertex"];
   id<MTLFunction> fco = [_rtLib newFunctionWithName:@"rt_composite" constantValues:fc error:&err];
   [fc release];
@@ -5062,8 +5182,9 @@ id<MTLRenderPipelineState> RendererMetal::buildRTRigComposite(bool transparent, 
     [pd release];
   }
   if (!pipeline)
-    NSLog(@"RendererMetal RT: light-rig %s%s composite failed: %@",
-          transparent ? "transparent" : "default", hdr ? " HDR" : "", err);
+    NSLog(@"RendererMetal RT: light-rig %s%s%s composite failed: %@",
+          transparent ? "transparent" : "default", hdr ? " HDR" : "",
+          shadow ? " shadow" : "", err);
   [vtx release]; [fco release];
   return pipeline;
 }
@@ -5325,14 +5446,19 @@ void RendererMetal::runPostChain()
     id<MTLRenderPipelineState> composite =
         doRTTrans ? _rtResolvePipelineT : _rtResolvePipeline;
     bool rtRig = false;
+    int rigS = 0;
     if (_lightRigOn && u.matCount > 0.5f) {
+      // Grid mode (shadowGrid[1] > 0) deliberately keeps the unshadowed variant:
+      // the composite is one full-screen pass, but the maps hold one tile per cell.
+      const bool rtShadow = lightShadowsReady() && (int)_lightRigBlock.shadowGrid[1] <= 0;
       const int rigT = doRTTrans ? 1 : 0;
       const int rigH = _lightHdrOn ? 1 : 0;
-      id<MTLRenderPipelineState>* rigComposite = &_rtResolvePipelineRig[rigT][rigH];
-      bool* tried = &_rtRigTried[rigT][rigH];
+      rigS = rtShadow ? 1 : 0;
+      id<MTLRenderPipelineState>* rigComposite = &_rtResolvePipelineRig[rigT][rigH][rigS];
+      bool* tried = &_rtRigTried[rigT][rigH][rigS];
       if (!*rigComposite && !*tried) {
         *tried = true;
-        *rigComposite = buildRTRigComposite(doRTTrans, _lightHdrOn);
+        *rigComposite = buildRTRigComposite(doRTTrans, _lightHdrOn, rtShadow);
       }
       if (*rigComposite) {
         composite = *rigComposite;
@@ -5351,6 +5477,13 @@ void RendererMetal::runPostChain()
       // follows the projection (the hits use the ray's own view vector).
       LightRigBlock block = _lightRigBlock;
       block.head[2] = _projOrtho > 0.5f ? 1.0f : 0.0f;
+      if (rigS) {
+        block.shadowTile[0] = 0.0f;
+        block.shadowTile[1] = 0.0f;
+        block.shadowTile[2] = 1.0f;
+        block.shadowTile[3] = 1.0f;
+        [er setFragmentTexture:_lightShadowArray atIndex:kRTLightShadowTextureIndex];
+      }
       [er setFragmentBytes:&block length:sizeof(block) atIndex:kRTLightRigBufferIndex];
     }
     [er setFragmentTexture:_sceneColor atIndex:0];

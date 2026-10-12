@@ -113,7 +113,7 @@ MASTER_LITERALS = {
     'kMaterialImpostorSrc': 'ea5947e14500d7d5',  # #710: the rig lights the material's albedo
     'kMaterialSrc': 'da47cac063348d43',
     'kPostSrc': 'a3236d6afc3a38b1',  # #689: post_ssao_fog fades toward the bg_gradient
-    'kRTSrc': 'c434543f02ae5906',  # #689: rt_composite's fog fades toward the bg_gradient
+    'kRTSrc': '4c0d300690b534ca',  # #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps
     'kScreenOverlaySrc': '9f09ecbdd4a9ddfa',  # #689: ramp gadgets drawn after the post chain
     # #635: retaken after sphere glass coverage split; #710: the rig lights
     # the material's albedo
@@ -142,7 +142,7 @@ CLASSIC_LIGHT_LITERALS = ('kVBOSrc', 'kSphereImpostorSrc', 'kCylinderImpostorSrc
 # included, comments stripped); on this branch with the air's statement
 # taken out (AIR_STATEMENTS).
 MASTER_FUNCTIONS = {
-    ('RendererMetal.mm', 'RendererMetal::runPostChain'): '5209a4dc0f3a9090',  # #689: gradient fog uniforms, screen overlays after the matte
+    ('RendererMetal.mm', 'RendererMetal::runPostChain'): '3593c3f8a7df9a6d',  # #689: gradient fog uniforms, screen overlays after the matte; #664: the RT rig composite's shadow variant and its maps
     ('RendererMetal.mm', 'RendererMetal::beginFrame'): 'c4c22f37453efc02',  # #665: closes the classic pass's caster view; #736: clears the labels deferred out of a peel pass; #689: the gradient and the screen overlays
     ('SceneRender.cpp', 'SceneRenderMetal'): '0a1d6df2f4b2383e',  # #665: the classic pre-pass opens with the light's view; #433/#662: classic pre-pass excludes overlays; #689: draws the bg_gradient
     ('SceneLights.cpp', 'SceneLightsFrame'): '5fb060d63ab0d96b',
@@ -239,20 +239,23 @@ def without_post_exposure_624(body):
 
 
 # #624's RT rig composite choice in runPostChain (Part 5): the rig composites
-# are [transparent][hdr] slots and tried flags, and the builder takes the
-# frame's hdr choice. With the slot choice (exactly one match) and the
-# builder call (exactly one) written back as #613's, the function is what it
-# was.
+# are [transparent][hdr][shadow] slots and tried flags (#664), and the builder
+# takes the frame's hdr and shadow choices. With the slot choice (exactly one
+# match) and the builder call (exactly one) written back as #613's, the
+# function is what it was.
 RT_RIG_CHOICE_624 = re.compile(
+    r'(?://[^\n]*\n\s*)*'
+    r'const\s+bool\s+rtShadow\s*=\s*lightShadowsReady\(\)\s*&&\s*\(int\)_lightRigBlock\.shadowGrid\[1\]\s*<=\s*0\s*;\s*'
     r'const\s+int\s+rigT\s*=\s*doRTTrans\s*\?\s*1\s*:\s*0\s*;\s*'
     r'const\s+int\s+rigH\s*=\s*_lightHdrOn\s*\?\s*1\s*:\s*0\s*;\s*'
+    r'rigS\s*=\s*rtShadow\s*\?\s*1\s*:\s*0\s*;\s*'
     r'id<MTLRenderPipelineState>\s*\*\s*rigComposite\s*=\s*'
-    r'&_rtResolvePipelineRig\[rigT\]\[rigH\]\s*;\s*'
-    r'bool\s*\*\s*tried\s*=\s*&_rtRigTried\[rigT\]\[rigH\]\s*;')
+    r'&_rtResolvePipelineRig\[rigT\]\[rigH\]\[rigS\]\s*;\s*'
+    r'bool\s*\*\s*tried\s*=\s*&_rtRigTried\[rigT\]\[rigH\]\[rigS\]\s*;')
 RT_RIG_CHOICE_613 = ('id<MTLRenderPipelineState>* rigComposite = '
                      'doRTTrans ? &_rtResolvePipelineTRig : &_rtResolvePipelineRig; '
                      'bool* tried = doRTTrans ? &_rtRigTTried : &_rtRigTried;')
-RT_RIG_BUILD_624 = re.compile(r'buildRTRigComposite\(\s*doRTTrans\s*,\s*_lightHdrOn\s*\)')
+RT_RIG_BUILD_624 = re.compile(r'buildRTRigComposite\(\s*doRTTrans\s*,\s*_lightHdrOn\s*,\s*rtShadow\s*\)')
 
 
 def without_rt_rig_hdr_624(body):

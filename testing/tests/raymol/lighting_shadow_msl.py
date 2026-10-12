@@ -314,7 +314,9 @@ class TestShadowBlock(ShadowMSLCase):
         # the C++ side
         for name, value in (('kLightShadowConstantIndex', 2),
                             ('kLightShadowTextureIndex', 7),
-                            ('kLightShadowSamplerIndex', 7)):
+                            ('kLightShadowSamplerIndex', 7),
+                            ('kRTLightShadowConstantIndex', 3),
+                            ('kRTLightShadowTextureIndex', 5)):
             self.assertRegex(self.code, r'constexpr NSUInteger %s = %d;'
                              % (name, value))
         # and nowhere else: no other literal declares or reads it
@@ -336,6 +338,33 @@ class TestShadowBlock(ShadowMSLCase):
                         self.assertIn('depth2d_array<float> lightShadowMaps [[texture(7)]]', sig)
                         self.assertIn('sampler lightShadowSmp [[sampler(7)]]', sig)
                         self.assertIn('light_apply_shadowed', body)
+                continue
+            if name == 'kRTSrc':
+                # #664: kRTSrc declares kRTLightShadow [[function_constant(3)]],
+                # never kLightShadow. lightShadowMaps appears only in rt_composite
+                # at texture(5) under kRTLightShadow, and _shadowed only in the
+                # copies, in rt_rig_hit_shadowed and at the two call sites.
+                code = strip_comments(literal)
+                self.assertNotIn('kLightShadow', code)
+                self.assertRegex(code, r'constant\s+bool\s+kRTLightShadow\s*\[\[\s*'
+                                       r'function_constant\(3\)\s*\]\];')
+                funcs = msl_functions(literal)
+                for fn_name, (sig, body) in funcs.items():
+                    if fn_name in ('light_visibility_shadowed',
+                                   'light_terms_view_shadowed'):
+                        # verbatim copies (lighting_msl.py RT_COPIES)
+                        self.assertNotRegex(sig + body, r'\bkRTLightShadow\b|\blightShadow\w*')
+                    elif fn_name == 'rt_rig_hit_shadowed':
+                        self.assertIn('light_terms_view_shadowed(rig, maps, smp,', body)
+                        self.assertNotRegex(sig + body, r'\bkRTLightShadow\b|\blightShadow\w*')
+                    elif fn_name == 'rt_composite':
+                        self.assertIn('depth2d_array<float> lightShadowMaps [[texture(5), function_constant(kRTLightShadow)]]', sig)
+                        self.assertEqual(len(re.findall(r'\blightShadowMaps\b', body)), 2)
+                        self.assertEqual(len(re.findall(r'\brt_rig_hit_shadowed\b', body)), 2)
+                        body_without = re.sub(r'\brt_rig_hit_shadowed\b|\blightShadowMaps\b', '', body)
+                        self.assertNotRegex(body_without, SHADOW_TOKENS, fn_name)
+                    else:
+                        self.assertNotRegex(sig + body, SHADOW_TOKENS, fn_name)
                 continue
             self.assertNotRegex(strip_comments(literal), SHADOW_TOKENS, name)
         for name in ('kRTSrc', 'kBezierTubeSrc', 'kBezierTubeRigSrc', 'kPostSrc',
@@ -376,9 +405,19 @@ class TestShadowBlock(ShadowMSLCase):
                          if c in self.material]
             # light_response is #615's; the helpers take a LightResponse
             self.assertNotIn('light_response', seen, helper)
-        # defined only in kMaterialSrc
+        # defined only in kMaterialSrc (and kRTSrc for its verbatim copies, #664)
         for name, literal in self.msl.items():
             if name == 'kMaterialSrc':
+                continue
+            if name == 'kRTSrc':
+                # #664: kRTSrc carries verbatim copies of light_shadow_lookup,
+                # light_visibility_shadowed and light_terms_view_shadowed
+                rt_funcs = msl_functions(literal)
+                for helper in ('light_shadow_lookup', 'light_visibility_shadowed',
+                               'light_terms_view_shadowed'):
+                    self.assertIn(helper, rt_funcs, helper)
+                for helper in ('light_terms_shadowed', 'light_apply_shadowed'):
+                    self.assertNotIn(helper, rt_funcs, helper)
                 continue
             for helper in SHADOW_HELPERS:
                 self.assertNotIn(helper, msl_functions(literal), name)
@@ -513,6 +552,12 @@ class TestFragments(ShadowMSLCase):
                     self.assertIn('depth2d_array<float> lightShadowMaps [[texture(7)]]', sig)
                     self.assertIn('sampler lightShadowSmp [[sampler(7)]]', sig)
                     self.assertIn('light_apply_shadowed', body)
+                    continue
+                if lib == 'kRTSrc' and name == 'rt_composite':
+                    # #664: rt_composite takes lightShadowMaps under kRTLightShadow at texture(5)
+                    self.assertNotIn('kLightShadow', sig + body)
+                    self.assertIn('depth2d_array<float> lightShadowMaps [[texture(5), function_constant(kRTLightShadow)]]', sig)
+                    self.assertEqual(len(re.findall(r'\brt_rig_hit_shadowed\b', body)), 2)
                     continue
                 takes = lib in RIG_FRAGMENTS and name in RIG_FRAGMENTS[lib]
                 if not takes:
@@ -889,6 +934,23 @@ class TestPipelines(ShadowMSLCase):
                     'lightShadow') for c in conditions), (fn, conditions))
         cached = self.body('RendererMetal::cachedVBOPipeline')
         self.assertIn('const bool lightShadow = lightRig && lightShadowsReady();', cached)
+
+    def testRTShadowPipelinesAndDispatch(self):
+        """#664: RT composite shadow variant and its dispatch."""
+        build = self.body('RendererMetal::buildRTPipelines')
+        self.assertRegex(build, r'bool\s+shadow\s*=\s*false;\s*\[fc\s+setConstantValue:&shadow\s+'
+                                r'type:MTLDataTypeBool\s+atIndex:kRTLightShadowConstantIndex\];')
+        variant = self.body('RendererMetal::buildRTRigComposite')
+        self.assertRegex(variant, r'bool\s+s\s*=\s*shadow;\s*\[fc\s+setConstantValue:&s\s+'
+                                  r'type:MTLDataTypeBool\s+atIndex:kRTLightShadowConstantIndex\];')
+        post = self.body('RendererMetal::runPostChain')
+        self.assertRegex(post, r'const bool rtShadow = lightShadowsReady\(\) && '
+                               r'\(int\)_lightRigBlock\.shadowGrid\[1\] <= 0;')
+        self.assertRegex(post, r'buildRTRigComposite\(doRTTrans,\s*_lightHdrOn,\s*rtShadow\)')
+        # binds _lightShadowArray at kRTLightShadowTextureIndex only under the shadow variant
+        bind_block = re.search(r'if\s*\(\s*rigS\s*\)\s*\{[^}]*\[er\s+setFragmentTexture:_lightShadowArray\s+'
+                               r'atIndex:kRTLightShadowTextureIndex\];\s*\}', post)
+        self.assertIsNotNone(bind_block)
 
 
 SCENE_RENDER = os.path.join(ROOT, 'layer1', 'SceneRender.cpp')
