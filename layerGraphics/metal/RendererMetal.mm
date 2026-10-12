@@ -8301,7 +8301,10 @@ static float3 mat_shade_procedural(float3 base, float3 N, float3 pModel,
 // under a rig at classic 0 instead of fading with the classic light. It is
 // the factor each classic shader applies to the base: marble's albedo before
 // its two-light model, the body materials' grain (and clay's edge) after
-// theirs. Rubber's highlight and sheen are light, not albedo, and stay out.
+// theirs. Rubber's highlight and sheen are light, not albedo, and are not
+// added here; the rig's highlight tint (light_terms_view's `base`, 0.7 for
+// rubber) does follow this albedo, so it carries the grain too (at most
+// p[0] of it), as the stone's veins would tint a highlight on marble.
 // Every other family returns `base`; kMatProcedural is a function constant,
 // so their rig pipelines fold to exactly the call they made before.
 //
