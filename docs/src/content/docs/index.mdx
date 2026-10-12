@@ -21,18 +21,24 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 
 <CardGrid stagger>
   <Card title="Metal Real-Time Rendering" icon="rocket">
-    Hardware ray-traced ambient occlusion and shadows, weighted-blended transparency, and real-time shadow mapping on supported Apple Silicon devices.
+    Hardware ray-traced ambient occlusion and shadows, order-independent weighted-blended transparency, and Metal-accelerated viewport rendering on Apple Silicon.
   </Card>
-  <Card title="Built on PyMOL" icon="document">
-    The genuine open-source PyMOL core, an embedded Python 3.13 runtime, and native `.pse` session support in a modern Apple-platform interface.
+  <Card title="Studio Lights & Materials" icon="sun">
+    Configurable multi-light rigs with interactive directional controls, environment lighting, and physically inspired materials like Matte, Plastic, Metallic, Glass, and Marble.
   </Card>
-  <Card title="Built-in MCP Server" icon="setting">
-    Direct Model Context Protocol integration lets supported AI apps inspect and manipulate molecular scenes through explicit tool calls.
+  <Card title="Structure Prediction & Design" icon="puzzle">
+    Run state-of-the-art ML models on-device with MLX, including Boltz-2 and (on macOS) Protenix structure prediction, alongside ProteinMPNN sequence design.
   </Card>
-  <Card title="Glycobiology Tools" icon="seti:svg">
-    Explore glycans with SNFG colors and Metal-rendered symbols, residue picking, and bond-derived topology analysis in the development preview.
+  <Card title="PyMOL Engine & Python" icon="document">
+    The genuine open-source PyMOL core with an embedded Python 3.13 runtime, full `.pse` session compatibility, and familiar command syntax.
+  </Card>
+  <Card title="AI Control via MCP" icon="setting">
+    A built-in Model Context Protocol server connects AI assistants directly to RayMol to inspect molecular scenes, select residues, and execute commands. Available in the direct-download macOS build (Homebrew/DMG).
+  </Card>
+  <Card title="Analysis Notes & Glycobiology" icon="pencil">
+    Document observations with 3D camera and scene links, inline #tags, and live residue/contact/measurement inserts, alongside native SNFG 3D glycan symbols and topology analysis.
   </Card>
   <Card title="Native Across Apple Platforms" icon="laptop">
-    A shared SwiftUI and Metal codebase designed for macOS, iPad, and iPhone.
+    A unified SwiftUI and Metal interface tailored for macOS desktop workflows, iPad touch and Pencil interactions, and iPhone inspection on the go.
   </Card>
 </CardGrid>

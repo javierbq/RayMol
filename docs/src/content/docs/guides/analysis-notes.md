@@ -1,101 +1,59 @@
 ---
 title: Analysis Notes
-description: Record observations, link molecular views, and capture structured object and residue references inside a RayMol session.
+description: Record observations, bookmark 3D camera orientations, insert molecular measurements, and embed structured notes directly inside RayMol sessions.
 ---
 
-Analysis Notes is a session-linked laboratory scratchpad. Use it to record an
-interpretation beside the structure, preserve the exact view that led to an
-observation, and pass a documented `.pse` session to a collaborator.
+Analysis Notes is a session-linked scientific scratchpad built directly into RayMol. It allows you to document observations side by side with molecular structures, bookmark key camera angles and complete scenes, and embed the entire record into portable `.pse` session files.
 
-Open **Notes** in the inspector. Use **Edit** to write Markdown and **Preview**
-to read the formatted result and follow interactive links.
+Open the **Notes** tab in the inspector panel. On macOS, you can also click the detachable window button (**Open Notes in a detachable window**) to pop Notes out into an independent floating window.
 
-## Keep notes with a session
+## Managing note pages & structure
 
-Notes, named note pages, view links, and linked images are embedded when you
-save the RayMol session as a `.pse` file. Sharing that session therefore shares
-its analysis record as well. Unsaved work is staged locally for recovery, but a
-saved session is the portable copy you should archive or send to someone else.
+Notes supports multi-document workspaces and structured Markdown formatting:
 
-Use the note-page menu to create, rename, switch, or delete separate documents
-within one session. Search filters the current note, while the outline and tag
-menus help navigate Markdown headings and tags such as `#interface`.
+- **Document pages:** Click the document menu in the header (displaying the active note name) to switch pages or select **New Note…**, **Rename Current Note…**, or **Delete Current Note**.
+- **Edit and Preview modes:** Toggle between **Edit** mode to write Markdown and **Preview** mode to view formatted text and click interactive view links.
+- **Persistent editing mode:** Inserting snapshots, view bookmarks, or measurements preserves your active editing mode without switching you to Preview.
+- **Search and filters:** Type in the search field and press Return to show only the matching lines in Preview.
+- **Outlines and tags:** Click the **Heading outline** menu or the **Note tags** menu to choose a heading or tag to filter the Preview to lines containing it.
+- **Text size:** Adjust font size using the **Decrease/Increase note text size** controls.
 
-## Link an observation to the 3D view
+## Bookmarking views & snapshots
 
-Choose **Insert Image / View** at the bottom of Notes:
+To connect your text notes to specific molecular conformations in the 3D viewport, open the **Insert Image / View** menu at the bottom of the inspector:
 
-- **Image from Current View** inserts a rendered snapshot.
-- **Camera Link** saves the current orientation and zoom. Following the link
-  restores the camera without intentionally changing object visibility or
-  representations.
-- **Scene Link** stores a PyMOL scene. Following the link restores the broader
-  scene state as well as the view.
+- **Image from Current View:** Renders an image of the current viewport and inserts it directly into your note as an embedded figure.
+- **Camera Link:** Captures the current camera orientation, translation matrix, clipping planes, and zoom level. Clicking a camera link restores your exact viewpoint without altering object visibility, representations, or color assignments.
+- **Scene Link:** Stores a full PyMOL scene (view, representations, colors and the other state PyMOL scenes capture). Clicking it animates back to that scene. Save the `.pse` after adding one.
 
-Name the link for the scientific observation—for example, `NAG301 hydrogen
-bond`—instead of accepting a generic name. In Preview, select the linked image
-or view name to return to that state.
+When inserting a view bookmark, enter a descriptive label (such as `Glu286 active site salt bridge`) instead of a generic name.
 
-## Insert scientific data
-
-The atom menu can add contacts around the active `sele` selection and current
-measurements. RayMol leaves the note unchanged and shows an alert when there is
-nothing available to insert.
-
-:::note[Structured logging preview]
-The faster object and residue-reference workflow below is proposed in
-[PR #753](https://github.com/javierbq/RayMol/pull/753). It becomes available
-when that change is merged and included in a build.
+:::tip[View-link thumbnails]
+If **Include image of the view** is on (the default), the link is inserted as a thumbnail you can click in Preview. Every link is also listed under VIEW LINKS with a Camera or Scene badge.
 :::
 
-### Reference an object with `@`
+## Inserting scientific measurements & selections
 
-Type `@` in the editor and continue typing any part of an object name. Use the
-arrow keys and **Return** or **Tab**, or select a result, to insert an
-unambiguous object marker:
+The **Insert structured scientific data** menu allows you to insert structured text summaries of active selections and measurements:
 
-```text
-[Object: object="4tuj"]
-```
+- **Selected Residues:** Inserts a bulleted list of the residues in `sele`. In Preview, clicking one selects and zooms to that residue.
+- **Contacts Around Selection:** Inserts the residues outside `sele` that lie within 4.0 Å of it.
+- **Current Measurements:** Inserts distances, angles and dihedrals created with RayMol's measurement tool during the current run.
 
-### Insert the current selection
+If there is no `sele` selection (or no measurement), RayMol shows a **Nothing to Insert** alert and leaves the note unchanged.
 
-Create or update the normal PyMOL `sele` selection, place the note caret where
-the references should go, and choose **Insert Current Selection** (the scope
-button). RayMol inserts each unique residue on its own line in a stable order.
+## Saving & exporting notes
 
-Residue references preserve object, segment, chain, residue name, and residue
-identifier—including insertion codes and deliberately empty fields:
+### Session embedding
 
-```text
-[Residue: object="4tuj" segi="" chain="D" resn="NAG" resi="301B"]
-```
+Analysis notes are automatically staged and embedded within the `.pse` file whenever you save your session (**File ▸ Save Session** or `⌘S`).
 
-This complete format is intended to remain useful after a session is reopened
-and to be straightforward for scripts or AI tools to parse.
+Notes, including their images, are stored inside the `.pse` file. Standard PyMOL ignores them, so the file still opens in PyMOL.
 
-### Capture repeated picks with Logbook Mode
+### File export
 
-Enable **Logbook Mode** (the record button), then continue selecting residues
-in the 3D viewport. Each successful pick appends a new line to the active note
-without moving keyboard focus away from the structure:
+To share notes outside of a RayMol session, click the **Export Analysis Notes** menu at the bottom of the panel:
 
-```markdown
-- **[Residue: object="4tuj" segi="" chain="D" resn="NAG" resi="301B"]**:
-```
-
-Logbook Mode is deliberately off when RayMol or a session is reopened. Normal
-clicks keep their usual selection and information behavior, and RayMol does not
-write residue references to the system clipboard.
-
-On macOS, **Option-click** a residue to insert its structured reference at the
-last saved note caret instead. The ordinary PyMOL pick still occurs, and the
-insertion participates in the editor's normal undo history.
-
-## Export the record
-
-Use the share menu at the bottom of Notes to export clean Markdown, HTML with
-images, or PDF with images. Exported files are useful for reports, but the
-`.pse` session remains the format that preserves RayMol's interactive camera
-and scene links.
-
+- **Export Clean Markdown…:** Generates a standalone `.md` text file containing your formatted note text and heading structure.
+- **Export HTML with Images…:** Packages your formatted notes, rendered screenshots, and layout into a self-contained HTML document suitable for web viewing or archiving.
+- **Export PDF with Images…:** Compiles a publication-ready PDF report containing formatted text, embedded figures, and headings.

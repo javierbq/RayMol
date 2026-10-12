@@ -1,11 +1,13 @@
 ---
 title: PyMOL Commands & API
-description: An introduction to supported command syntax and Python scripting in RayMol.
+description: Reference guide to standard PyMOL commands, RayMol extension commands, and Python scripting.
 ---
 
-RayMol embeds the open-source PyMOL engine and Python 3.13. Most standard PyMOL commands and the `pymol.cmd` API work as expected, although plugins or scripts that depend on desktop-only GUI toolkits or unbundled Python packages may require adaptation.
+RayMol embeds the open-source PyMOL C++ engine and an embedded CPython 3.13 interpreter. Standard PyMOL commands, selection syntax, and the `pymol.cmd` Python API work natively, augmented by RayMol-specific commands for studio lighting, physically-based materials, glycobiology, on-device structure prediction, generative binder design (experimental, macOS only), multiple-sequence alignments, and quality metrics.
 
 ## Core commands
+
+Standard PyMOL commands are fully supported in the command input bar and scripts:
 
 | Command | Example | Description |
 | :--- | :--- | :--- |
@@ -13,27 +15,283 @@ RayMol embeds the open-source PyMOL engine and Python 3.13. Most standard PyMOL 
 | `show` / `hide` | `show cartoon, polymer` | Toggle a representation for a selection. |
 | `color` | `color marine, chain A` | Apply a named color to a selection. |
 | `select` | `select active_site, byres ligand around 4` | Create a named atom selection. |
-| `distance` | `distance contacts, ligand, polymer, 3.5` | Create a distance measurement. |
+| `distance` | `distance contacts, ligand, polymer, 3.5` | Create a distance measurement between selections. |
 | `save` | `save analysis.pse` | Save a structure, selection, or session based on the extension. |
-| `ray` | `ray 2400, 1600` | Run PyMOL's high-quality CPU ray renderer. |
+| `ray` | `ray 2400, 1600` | Run PyMOL's high-quality CPU ray tracer. |
 
-## Glycobiology commands
+---
 
-The glycan tools are currently a development preview. See the
-[glycobiology guide](/RayMol/guides/glycobiology/) for supported residue
-codes, interpretation guidance, and branch availability.
+## RayMol commands
 
-| Command | Example | Description |
-| :--- | :--- | :--- |
-| `glycocolor` | `glycocolor 4tuj` | Apply the official SNFG color palette to recognized carbohydrate residues. |
-| `glycocartoon` | `glycocartoon 4tuj` | Draw Metal-compatible SNFG symbols and covalent glycan linkers. |
-| `glycocartoon_hide` | `glycocartoon_hide 4tuj` | Remove the SNFG cartoon generated for a selection. |
-| `glyco_tree` | `glyco_tree 4tuj` | Print a JSON, bond-derived glycan forest with advisory puckering and linkage measurements. |
-| `glyco_remediate` | `glyco_remediate 4tuj` | Report recognized and tentative residue identities without modifying the structure. |
+RayMol adds specialized commands for studio lighting, physically-based materials, automated SNFG glycan cartoon generation, screen-space box selection, structure prediction, generative design, multiple-sequence alignments, and metric scoring.
 
-## Python scripts
+### Rendering & Lighting
 
-Run a `.pml` or `.py` script from the console with `run path/to/script.py`. Python code can import the command API directly:
+Commands for configuring studio lighting rigs, atmospheric haze and dust, and offline video exports.
+
+#### `lights`
+Configure a studio lighting rig of up to six directional spotlights placed around the scene.
+- **Syntax**: `lights [preset | name | keyword] [, field=value, ...]`
+- **Keywords**: `add`, `remove`, `presets`, `recenter`, `on`, `off`, `clear`
+- **Fields**: `orbit`, `pitch`, `radius`, `beam`, `softness`, `color`, `rgb`, `warmth`, `intensity`, `highlight`, `falloff`, `shadow`, `outline`, `aim`, `pin`, `target=sele`, `highlight=sele`, `click=x/y`, `rim=deg`
+- **Example**: `lights three_point` or `lights key, orbit=-45, pitch=35, color=warm, intensity=1.2`
+
+#### `atmosphere`
+Control the air and atmospheric medium (haze and floating dust) illuminated by studio lights. Haze and dust are drawn only by the live Metal renderer — `ray` output and `grid_mode` views never show them.
+- **Syntax**: `atmosphere [off | field=value, ...]`
+- **Fields**: `haze` (0–1), `dust` (0–1), `dust_size` (0.05–2), `dust_speed` (0–10), `scatter` (-0.9–0.9), `seed` (0–1000000)
+- **Example**: `atmosphere haze=0.3, dust=0.5, dust_speed=1.0`
+
+#### `movie_export`
+Render high-fidelity movies or image sequences through the Metal exporter with quality overrides. Runs asynchronously inside the RayMol app and reports the finished file in the log; it is not available in command-line PyMOL.
+- **Syntax**: `movie_export filename [, width [, height [, quality [, format [, codec [, fps [, supersample [, rt_samples [, ray [, bitrate [, first [, last ]]]]]]]]]]]]`
+- **Arguments**: `filename` (path ending in `.mp4`, `.mov`, `.gif`, or folder for PNG sequence), `quality` (`draft`, `standard`, `high`, `maximum`), `format` (`mp4`, `mov`, `gif`, `png`), `codec` (`h264`, `hevc`, `prores`), `first`, `last` (frame range; `last=0` = final frame)
+- **Example**: `movie_export presentation.mp4, width=1920, height=1080, quality=high, codec=hevc`
+
+---
+
+### Materials
+
+#### `apply_look`
+Assign a curated material style, custom surface knobs, and coordinated atom base coat to a single layer of an object.
+- **Syntax**: `apply_look look, object, layer`
+- **Arguments**: `look` (`gold`, `copper`, `bronze`, `steel`, `chrome`, `statuary`, `terracotta`), `object` (target object name), `layer` (`cartoon`, `surface`, `stick`, `sphere`)
+- **Example**: `apply_look gold, 1ubq, cartoon`
+
+---
+
+### Glycobiology
+
+RayMol includes built-in support for the Symbol Nomenclature for Glycans (SNFG), providing 3D cartoon symbols and carbohydrate topology inspection. See the [Glycobiology Guide](/RayMol/guides/glycobiology/) for complete residue catalogues and interpretation details.
+
+#### `glycocolor`
+Apply official SNFG color schemes to recognized carbohydrate residues without changing representation visibility.
+- **Syntax**: `glycocolor [selection]`
+- **Example**: `glycocolor 4tuj`
+
+#### `glycocartoon`
+Construct Metal-rendered 3D SNFG symbols (spheres, cubes, cones, diamonds) and covalent inter-sugar linkers for recognized carbohydrate residues.
+- **Syntax**: `glycocartoon [selection [, size [, draw_linkers [, state ]]]]`
+- **Example**: `glycocartoon 4tuj, size=2.5`
+
+#### `glycocartoon_hide`
+Remove the SNFG 3D cartoon geometry generated for a specific selection and restore stick visibility.
+- **Syntax**: `glycocartoon_hide [selection]`
+- **Example**: `glycocartoon_hide 4tuj`
+
+#### `glycocartoon_hide_all`
+Delete every generated SNFG cartoon object in the session and show sticks again on all recognized carbohydrate residues.
+- **Syntax**: `glycocartoon_hide_all`
+- **Example**: `glycocartoon_hide_all`
+
+#### `glyco_tree`
+Analyze carbohydrate connectivity and output a JSON-formatted glycan forest containing linkage positions, puckering parameters, and ring conformations.
+- **Syntax**: `glyco_tree [selection [, state ]]`
+- **Example**: `glyco_tree 4tuj`
+
+#### `glyco_remediate`
+Inspect residue geometry and print an advisory carbohydrate identity assessment without modifying the underlying coordinate structure.
+- **Syntax**: `glyco_remediate [selection [, state ]]`
+- **Example**: `glyco_remediate 4tuj`
+
+---
+
+### Selection & Picking
+
+#### `box_select`
+Select all visible, drawn atoms projected inside a rectangular screen-space bounding box.
+- **Syntax**: `box_select x1, y1, x2, y2 [, name [, mode [, selection [, state ]]]]`
+- **Arguments**: `x1, y1, x2, y2` (coordinates in viewport pixels with bottom-left origin), `name` (target selection name, default `sele`), `mode` (`replace`, `add`, `subtract`)
+- **Example**: `box_select 100, 100, 500, 400, mode=add`
+
+---
+
+### Design & Structure Prediction
+
+RayMol integrates on-device neural network inference via MLX for AlphaFold/Boltz-style structure prediction and RFdiffusion-style backbone generation. Boltz-2 is available on all platforms; Protenix is macOS-only. On iPhone and iPad, Predict and Design require physical hardware running iOS/iPadOS 18+ (not supported on the Simulator).
+
+#### Structure Prediction
+
+##### `predict`
+Submit an asynchronous structure prediction job from a sequence or loaded protein chains using a registered neural network model.
+- **Syntax**: `predict predictor, sequence [, name [, recycling_steps [, diffusion_steps [, seed [, n_models [, msa [, msa_depth ]]]]]]]`
+- **Arguments**: `predictor` (`boltz2` on all platforms, or `protenix` on macOS), `sequence` (amino acid sequence or loaded object/selection), `name` (resulting object name, default derived from sequence), `recycling_steps` (default `3`), `diffusion_steps` (default `200`), `seed` (fresh per run when omitted), `n_models` (default `1`, max `20` — each is a full run), `msa` (one `/`-separated slot per chain), `msa_depth` (default `16384`)
+- **Example**: `predict boltz2, MKTAYIAKQRQISFVKSHFSRQLEERLGLIEVQ, name=target_pred`
+
+##### `predict_status`
+Query the execution status, progress percentage, current phase, and ETA of pending or completed prediction jobs.
+- **Syntax**: `predict_status [job_id]`
+- **Example**: `predict_status`
+
+##### `predict_cancel`
+Stop a running prediction. `job_id` is a job id, or the name of a pending object — which cancels every model still outstanding for it.
+- **Syntax**: `predict_cancel job_id`
+- **Example**: `predict_cancel target_pred`
+
+##### `predict_dismiss`
+Clear the retained card of a prediction that failed or was cancelled (successful runs retire their own card). With no name, clears all of them. Works only inside the RayMol app.
+- **Syntax**: `predict_dismiss [name]`
+- **Example**: `predict_dismiss target_pred`
+
+##### `predict_result`
+Manually retrieve and load finished structure prediction coordinates into a named molecular object.
+- **Syntax**: `predict_result job_id [, name ]`
+- **Example**: `predict_result pending-9c21ab40f7d3, my_folded_model` (ids come from `predict_status`)
+
+##### `predict_weights`
+Inspect local weight bundle cache state or pre-download neural network weights.
+- **Syntax**: `predict_weights [predictor [, download [, async_ ]]]`
+- **Example**: `predict_weights boltz2, download=1`
+
+##### `predict_weights_cancel`
+Stop an in-progress model weight bundle download.
+- **Syntax**: `predict_weights_cancel [predictor]`
+- **Example**: `predict_weights_cancel boltz2`
+
+---
+
+#### Generative Backbone Design
+
+##### `binder_design`
+Generate de novo protein backbone binders against a designated target structure using a diffusion model (e.g. `rfd3`). *Experimental, macOS only; not enabled in the app UI by default.*
+- **Syntax**: `binder_design generator, target [, hotspots [, length [, name [, n_designs [, diffusion_steps [, recycling_steps [, seed [, live_view [, live_steps [, keep_frames ]]]]]]]]]]`
+- **Example**: `binder_design rfd3, target_obj, hotspots=resi 45+48+52, length=70, n_designs=4`
+
+##### `design_status`
+Report progress, diffusion phase, and status for running backbone design jobs.
+- **Syntax**: `design_status [job_id]`
+- **Example**: `design_status`
+
+##### `design_cancel`
+Halt an active diffusion design job or entire batch.
+- **Syntax**: `design_cancel job_id`
+- **Example**: `design_cancel rfd3_design_7a1c` — an object or batch-group name also works
+
+##### `design_dismiss`
+Clear the card of a design that failed or was cancelled and remove its empty placeholder object. Works only inside the RayMol app.
+- **Syntax**: `design_dismiss [name]`
+- **Example**: `design_dismiss rfd3_design_7a1c`
+
+##### `design_result`
+Load finished backbone design coordinates into an object.
+- **Syntax**: `design_result job_id [, name ]`
+- **Example**: `design_result pending-5be10c92a4f1, my_binder` (ids come from `design_status`)
+
+##### `design_weights`
+Check availability or download weights for backbone generation models.
+- **Syntax**: `design_weights [generator [, download ]]`
+- **Example**: `design_weights rfd3, download=1`
+
+##### `design_weights_cancel`
+Cancel an active weight bundle download for generative models.
+- **Syntax**: `design_weights_cancel [generator]`
+- **Example**: `design_weights_cancel rfd3`
+
+---
+
+#### Multiple-Sequence Alignments (MSA)
+
+##### `load_msa`
+Load a multiple-sequence alignment (`.a3m` or aligned `.fasta`, optionally gzipped) into the session.
+- **Syntax**: `load_msa filename [, name [, target [, chain ]]]`
+- **Example**: `load_msa barnase.a3m, barnase_aln, 1brs, A`
+
+##### `msa_list`
+List all MSA alignments currently stored in the active session.
+- **Syntax**: `msa_list`
+- **Example**: `msa_list`
+
+##### `msa_delete`
+Remove a stored MSA object from the session.
+- **Syntax**: `msa_delete name`
+- **Example**: `msa_delete barnase_aln`
+
+##### `msa_rename`
+Rename a stored MSA alignment object.
+- **Syntax**: `msa_rename name, new_name`
+- **Example**: `msa_rename old_aln, new_aln`
+
+##### `msa_attach`
+Associate a loaded alignment with a specific target object and chain for downstream prediction.
+- **Syntax**: `msa_attach name, target [, chain ]`
+- **Example**: `msa_attach barnase_aln, 1brs, A`
+
+##### `msa_detach`
+Disassociate an alignment from its attached target object while keeping the alignment in the session.
+- **Syntax**: `msa_detach name`
+- **Example**: `msa_detach barnase_aln`
+
+##### `msa_server`
+Display or configure the remote ColabFold MMseqs2 MSA server endpoint. The default server is `https://api.colabfold.com`, and `save` defaults to `1`.
+- **Syntax**: `msa_server [server [, save ]]`
+- **Example**: `msa_server server=https://colabfold.example.org, save=1`
+
+##### `msa_search`
+Initiate an asynchronous MMseqs2 alignment search against an MSA server for a given sequence or object chain.
+- **Syntax**: `msa_search sequence [, name [, target [, chain [, server [, mode [, refresh ]]]]]]`
+- **Example**: `msa_search 1ubq, target=1ubq, chain=A`
+
+##### `msa_status`
+Check the status of pending background MSA searches.
+- **Syntax**: `msa_status [search_id]`
+- **Example**: `msa_status`
+
+##### `msa_cancel`
+Cancel an ongoing background MSA search. With no id, every running search is cancelled.
+- **Syntax**: `msa_cancel [search_id]`
+- **Example**: `msa_cancel msa-3f2a91c40b7e` (ids come from `msa_status`)
+
+---
+
+#### Quality Metrics & Scoring
+
+##### `metrics_list`
+List all recorded metric runs (confidence, pLDDT, PAE, design scores) attached to objects in the session.
+- **Syntax**: `metrics_list [object [, tool ]]`
+- **Example**: `metrics_list my_model`
+
+##### `metrics_get`
+Retrieve recorded metric summaries, scalar values, or per-residue array data for an object.
+- **Syntax**: `metrics_get [run [, key [, object [, state [, tool ]]]]]`
+- **Example**: `metrics_get key=plddt, object=my_model`
+
+##### `metrics_delete`
+Delete metric runs for a specific run ID, an object, or all objects.
+- **Syntax**: `metrics_delete name`
+- **Example**: `metrics_delete my_model`
+
+##### `metrics_color`
+Color an object by a per-residue metric array (e.g. pLDDT or interface confidence) using PyMOL color ramps.
+- **Syntax**: `metrics_color key [, object [, run [, state [, palette [, minimum [, maximum [, selection [, tool ]]]]]]]]`
+- **Example**: `metrics_color plddt, my_model, palette=rainbow`
+
+##### `metrics_export`
+Export recorded metrics to `.json` (full data including PAE matrices) or `.csv` (tabular per-residue values).
+- **Syntax**: `metrics_export filename [, object [, run ]]`
+- **Example**: `metrics_export scores.json, my_model`
+
+##### `metrics_load`
+Load external metric files conforming to the RayMol schema and attach them to an existing object.
+- **Syntax**: `metrics_load filename [, object ]`
+- **Example**: `metrics_load external_metrics.json, my_model`
+
+##### `metrics_schema`
+Print the specification, units, scope, and expected ranges for metrics reported by a tool.
+- **Syntax**: `metrics_schema [tool]`
+- **Example**: `metrics_schema boltz2`
+
+---
+
+## Python scripting & startup
+
+Run `.pml` command scripts or `.py` Python scripts using the console `run` command or `@` syntax:
+
+```text
+run path/to/script.py
+@path/to/script.pml
+```
+
+Within Python scripts, the `cmd` module exposes the PyMOL and RayMol API:
 
 ```python
 from pymol import cmd
@@ -41,6 +299,23 @@ from pymol import cmd
 cmd.fetch("1ubq", async_=0)
 cmd.show("cartoon", "1ubq")
 cmd.color("marine", "1ubq")
+cmd.apply_look("gold", "1ubq", "cartoon")
+cmd.lights("three_point")
 ```
 
-See the [PyMOL command reference](https://pymolwiki.org/index.php/Category:Commands) for the broader command language.
+### Startup configuration (`~/.raymolrc`)
+
+On macOS, RayMol runs a startup script at launch, if present: `~/.raymolrc.py` (Python syntax) and then `~/.raymolrc` (PyMOL command syntax). The Mac App Store build is sandboxed, so its home folder is its container (`~/Library/Containers/io.raymol.RayMol/Data/`). iPadOS and iOS have no user-visible home directory, so startup scripts are not loaded there.
+
+If an existing desktop `~/.pymolrc` or `~/.pymolrc.py` is detected on macOS, RayMol prompts the user on first launch to import it into `~/.raymolrc`.
+
+### Available Python packages
+
+RayMol embeds a self-contained CPython 3.13 runtime with:
+- **Python standard library**: Complete Python 3.13 stdlib modules.
+- **NumPy**: Bundled on macOS and available in iOS device builds.
+- **Biopython (`Bio`)**: Bundled in embedded Python (`import Bio`). On macOS, full compiled extensions are supported. On iOS the compiled C extensions are stripped, so submodules that need them (for example `Bio.Align`, `Bio.pairwise2`) cannot be imported; the pure-Python modules, including `Bio.Seq`, `Bio.SeqRecord`, `Bio.SeqUtils`, `Bio.Data` and `Bio.PDB`, work.
+- **PyMOL modules**: Core packages `pymol`, `chempy`, and extension modules `_cmd` and `_champ`.
+- **Unavailable packages**: Desktop-only GUI libraries (`PyQt5`, `PyQt6`, `PySide2`, `PySide6`, `tkinter`) are not bundled because RayMol uses native SwiftUI and Metal interfaces. Installing extra packages with `pip` is not supported: the bundled interpreter lives inside the signed application bundle.
+
+See the [PyMOL command reference](https://pymolwiki.org/index.php/Category:Commands) for stock PyMOL commands.

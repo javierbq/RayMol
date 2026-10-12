@@ -29,27 +29,53 @@ export default defineConfig({
           items: [
             { label: 'Installation', slug: 'getting-started/installation' },
             { label: 'Quickstart', slug: 'getting-started/quickstart' },
+            { label: 'Interface Tour', slug: 'getting-started/interface' },
           ],
         },
         {
-          label: 'How-to Guides',
+          label: 'Working with Structures',
           items: [
+            { label: 'Selecting, Measuring & Moving', slug: 'guides/selecting' },
             { label: 'Analysis Notes', slug: 'guides/analysis-notes' },
-            { label: 'Claude MCP Integration', slug: 'guides/mcp-setup' },
             { label: 'Glycobiology', slug: 'guides/glycobiology' },
+          ],
+        },
+        {
+          label: 'Rendering',
+          items: [
             { label: 'Rendering & Export', slug: 'guides/rendering-export' },
+            { label: 'Studio Lights & Atmosphere', slug: 'guides/lighting' },
+            { label: 'Materials & Looks', slug: 'guides/materials' },
+            { label: 'Camera, Lens & Depth of Field', slug: 'guides/camera' },
+            { label: 'Movies & Scenes', slug: 'guides/movies' },
+          ],
+        },
+        {
+          label: 'Predict & Design',
+          items: [
+            { label: 'Structure Prediction', slug: 'guides/predict' },
+            { label: 'Sequence Design', slug: 'guides/design' },
+            { label: 'Metrics', slug: 'guides/metrics' },
+          ],
+        },
+        {
+          label: 'AI Integration',
+          items: [
+            { label: 'MCP Server (Claude & AI apps)', slug: 'guides/mcp-setup' },
           ],
         },
         {
           label: 'Reference',
           items: [
-            { label: 'PyMOL Commands & API', slug: 'reference/commands' },
+            { label: 'Commands & Python API', slug: 'reference/commands' },
+            { label: 'RayMol Settings', slug: 'reference/settings' },
+            { label: 'Keyboard Shortcuts', slug: 'reference/keyboard-shortcuts' },
           ],
         },
         {
-          label: 'Architecture',
+          label: 'Concepts',
           items: [
-            { label: 'Metal Engine Design', slug: 'concepts/architecture' },
+            { label: 'Architecture', slug: 'concepts/architecture' },
           ],
         },
       ],
