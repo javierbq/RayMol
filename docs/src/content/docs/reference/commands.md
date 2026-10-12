@@ -67,17 +67,17 @@ RayMol includes built-in support for the Symbol Nomenclature for Glycans (SNFG),
 #### `glycocolor`
 Apply official SNFG color schemes to recognized carbohydrate residues without changing representation visibility.
 - **Syntax**: `glycocolor [selection]`
-- **Example**: `glycocolor 4tuj`
+- **Example**: `glycocolor 4byh`
 
 #### `glycocartoon`
 Construct Metal-rendered 3D SNFG symbols (spheres, cubes, cones, diamonds) and covalent inter-sugar linkers for recognized carbohydrate residues.
 - **Syntax**: `glycocartoon [selection [, size [, draw_linkers [, state ]]]]`
-- **Example**: `glycocartoon 4tuj, size=2.5`
+- **Example**: `glycocartoon 4byh, size=2.5`
 
 #### `glycocartoon_hide`
 Remove the SNFG 3D cartoon geometry generated for a specific selection and restore stick visibility.
 - **Syntax**: `glycocartoon_hide [selection]`
-- **Example**: `glycocartoon_hide 4tuj`
+- **Example**: `glycocartoon_hide 4byh`
 
 #### `glycocartoon_hide_all`
 Delete every generated SNFG cartoon object in the session and show sticks again on all recognized carbohydrate residues.
@@ -87,12 +87,12 @@ Delete every generated SNFG cartoon object in the session and show sticks again 
 #### `glyco_tree`
 Analyze carbohydrate connectivity and output a JSON-formatted glycan forest containing linkage positions, puckering parameters, and ring conformations.
 - **Syntax**: `glyco_tree [selection [, state ]]`
-- **Example**: `glyco_tree 4tuj`
+- **Example**: `glyco_tree 4byh`
 
 #### `glyco_remediate`
 Inspect residue geometry and print an advisory carbohydrate identity assessment without modifying the underlying coordinate structure.
 - **Syntax**: `glyco_remediate [selection [, state ]]`
-- **Example**: `glyco_remediate 4tuj`
+- **Example**: `glyco_remediate 4byh`
 
 ---
 

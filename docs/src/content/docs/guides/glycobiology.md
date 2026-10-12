@@ -41,9 +41,9 @@ In the **Objects** panel:
 Run `glycocartoon` and `glycocolor` directly in the command entry bar:
 
 ```text
-fetch 4tuj, async=0
-glycocolor 4tuj
-glycocartoon 4tuj
+fetch 4byh, async=0
+glycocolor 4byh
+glycocartoon 4byh
 ```
 
 To customize cartoon dimensions or linkers, supply the optional arguments:
@@ -59,10 +59,10 @@ glycocartoon [selection [, size [, draw_linkers [, state]]]]
 
 ### Hiding cartoons
 
-To remove one cartoon, pass the same selection text you gave `glycocartoon` (e.g. `glycocartoon_hide 4tuj` after `glycocartoon 4tuj`). If unsure, use `glycocartoon_hide_all`.
+To remove one cartoon, pass the same selection text you gave `glycocartoon` (e.g. `glycocartoon_hide 4byh` after `glycocartoon 4byh`). If unsure, use `glycocartoon_hide_all`.
 
 ```text
-glycocartoon_hide 4tuj
+glycocartoon_hide 4byh
 ```
 
 To remove all generated glycan cartoon objects across the entire session and show those sugar residues as sticks:
