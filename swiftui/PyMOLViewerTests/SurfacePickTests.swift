@@ -579,15 +579,27 @@ final class SurfacePickTests: XCTestCase {
         XCTAssertEqual(axis.normal.z, 1, accuracy: 1e-3)
         XCTAssertFalse(axis.cap)
 
-        // The junction just in front of the near plane, interior cap on: a
-        // ray down CB-CC is capped at the plane. Its front, CC's ball, is in
-        // front of the plane, but the bond's infinite tube runs on behind
-        // it, and that is what cyl_shade decides the cap from.
+        // A bond caps the slab only where its capped solid straddles the
+        // near plane, an open end closed by its disc (#641). The aim is a
+        // point on the plane (eye depth 50), 0.036 A off the CB-CC axis.
+        let aim = camera.project(SIMD3(0.03, 0.02, 50.0), aspect: sceneAspect).0
+        let aimNDC = SIMD2(Float(aim.x), Float(aim.y))
+
+        // The junction wholly in front of the plane (CB at depth 49.6, its
+        // ball to 49.85), interior cap on: no cap down the open bond. The
+        // bond's infinite tube runs on behind the plane, but none of the
+        // sticks reaches it there (the rule before #641 capped this ray).
         _ = python("_c.translate([0.0, 0.0, 50.4], 'lt614br', camera=0)\n"
                    + "_c.set('metal_interior_cap', 1, 'lt614br')\n")
-        let aim = camera.project(SIMD3(0.03, 0.02, 51.9), aspect: sceneAspect).0
-        let capped = try XCTUnwrap(pick(SIMD2(Float(aim.x), Float(aim.y)), true),
-                                   "no interior cap down the open bond")
+        let front = pick(aimNDC, true)
+        XCTAssertNil(front, "a cap where no stick reaches the plane")
+
+        // One Angstrom back, the plane cuts CB-CC's body 0.6 A from CB (CB
+        // at depth 50.6, CB's ball wholly behind the plane). Only CB-CC
+        // reaches the plane on this ray, and its far wall is its open end at
+        // CB, closed by that end's disc: it caps at the plane.
+        _ = python("_c.translate([0.0, 0.0, -1.0], 'lt614br', camera=0)\n")
+        let capped = try XCTUnwrap(pick(aimNDC, true), "no interior cap down the open bond")
         XCTAssertTrue(capped.cap)
         XCTAssertEqual(capped.depth, 50, accuracy: 1e-2)
 
@@ -632,7 +644,8 @@ final class SurfacePickTests: XCTestCase {
         XCTAssertEqual(kept, tessellated)
 
         print("SurfacePickTests live geometry: junction axis depth \(axis.depth), "
-              + "near-plane cap \(capped.cap) at \(capped.depth); ring sphere before frame nil, "
+              + "in front of the plane \(front == nil ? "no pick" : "picked"), "
+              + "plane through the open bond: cap \(capped.cap) at \(capped.depth); ring sphere before frame nil, "
               + "after frame inside \(tessellated.inside) at \(tessellated.depth), "
               + "after transparency_mode 3 \(kept.depth)")
     }
