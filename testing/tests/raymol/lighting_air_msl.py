@@ -1166,7 +1166,7 @@ class TestAirAlpha(AirMSLCase):
         self.assertIn('b.view[2] = alpha ? 1.0f : 0.0f;', pack)
         self.assertRegex(read(AIR_CPP),
                          r'LightAirPack\(const LightAirSource& source,\s*double clock, '
-                         r'int resolution, int shadowFilter, bool alpha\)')
+                         r'int resolution, int shadowFilter, bool alpha, double phase\)')
         self.assertIn('z air counts toward', read(AIR_BLOCK_H))
         self.assertIn('bool alpha = false', read(AIR_H))
         # the scene reads the setting once, with the air's other settings

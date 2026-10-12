@@ -220,6 +220,17 @@ class TestSettings(AirCase):
         for _, name, _, _ in SETTINGS:
             self.assertNotIn(name, raymol_scenes.CAPTURE)
 
+    def testPhaseSetting(self):
+        from pymol import setting, raymol_scenes
+        self.assertEqual(setting._get_index('metal_light_air_phase'), 889)
+        text = strip_comments(read_source(self, os.path.join('layer1',
+                                                             'SettingInfo.h')))
+        pattern = r'REC_f\(\s*889,\s*metal_light_air_phase\s*,\s*global\s*,\s*0\.0F\s*\)'
+        self.assertRegex(text, pattern)
+        self.assertEqual(len(re.findall(r'\bmetal_light_air_phase\b', text)), 1)
+        self.assertEqual(cmd.get_setting_float('metal_light_air_phase'), 0.0)
+        self.assertNotIn('metal_light_air_phase', raymol_scenes.CAPTURE)
+
 
 class TestResolution(testing.PyMOLTestCase):
 
@@ -298,6 +309,11 @@ class TestClock(testing.PyMOLTestCase):
         self.assertEqual(time(3.0, 0.0), 0.0)
         self.assertEqual(time(-3.0, 2.0), 0.0)
         self.assertEqual(time(3.0, -2.0), 0.0)
+        self.assertEqual(time(3.0, 2.0, 1.5), 7.5)
+        self.assertEqual(time(3.0, 0.0, 2.0), 2.0)
+        self.assertEqual(time(1.0, 1.0, -5.0), 0.0)
+        self.assertEqual(time(1.0, 1.0, float('nan')), 1.0)
+        self.assertAlmostEqual(time(TIME_WRAP, 1.0, 1.5), 1.5)
         self.assertAlmostEqual(time(TIME_WRAP + 1.5, 1.0), 1.5)
         self.assertAlmostEqual(time(15000.0, 2.0), 10000.0)
         self.assertGreaterEqual(time(1e300, 1e300), 0.0)
@@ -593,6 +609,24 @@ class TestMovieTime(AirCase):
         cmd.frame(16)
         self.assertEqual(self.time(offscreen=False, wall=50.0), 100.0)
 
+    def testPhase(self):
+        # In TestMovieTime, rig dust_speed 2, cmd.frame(16),
+        # cmd.set('metal_light_air_phase', 0.25): offscreen time ==
+        # f32(0.5 * 2.0 + 0.25); live not playing
+        # (self.time(offscreen=False, wall=50.0)) == 100.0 (phase ignored);
+        # pinned (metal_light_air_time 2.0) == 4.0 (ignored); cmd.mset() (no
+        # movie) offscreen == 0.0 (ignored).
+        self.rig(air=dict(AIR, dust_speed=2.0))
+        cmd.frame(16)
+        cmd.set('metal_light_air_phase', 0.25)
+        self.assertEqual(self.time(), f32(0.5 * 2.0 + 0.25))
+        self.assertEqual(self.time(offscreen=False, wall=50.0), 100.0)
+        cmd.set('metal_light_air_time', 2.0)
+        self.assertEqual(self.time(), 4.0)
+        cmd.set('metal_light_air_time', -1.0)
+        cmd.mset()
+        self.assertEqual(self.time(), 0.0)
+
     def testStatesWithoutMovieAreStill(self):
         # #688: with no movie, a multi-state object's state never drives
         # the dust; an offscreen still of state 3 has time 0, like state 1
@@ -737,6 +771,7 @@ class TestSource(testing.PyMOLTestCase):
         extent = body.index('SceneGetLightShadowExtent(')
         self.assertLess(grid, extent)
         for token in ('cSetting_metal_light_air_time',
+                      'cSetting_metal_light_air_phase',
                       'cSetting_metal_light_air_resolution',
                       'cSetting_metal_light_air_shadow_filter',
                       'cSetting_metal_light_air_alpha',

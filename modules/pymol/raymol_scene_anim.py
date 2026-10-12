@@ -37,6 +37,9 @@ is one), stripped from the saved movie and regenerated on load like the rest.
 Loop-wrap transitions (#656): when the movie loops (movie_loop on or wrap=True),
 a pseudo-transition from the last keyframe back to the first shifted by the movie
 length blends settings, DOF and the light rig across the wrap span.
+Dust phase (#687): when dust_speed differs between scenes, enter_scene and
+_lights_blend write metal_light_air_phase so the dust time is the integrated
+speed across the movie and the dust does not jump.
 """
 import base64
 import copy
@@ -756,6 +759,208 @@ def blend_target(ra, rb, t):
     return copy.deepcopy(ra)
 
 
+_PHASE_SETTING = 'metal_light_air_phase'
+_DEFAULT_FPS = 30.0        # LightAir.h kLightAirDefaultFps
+_MAX_DUST_SPEED = 10.0     # LightRig.cpp's dust_speed range
+
+
+def _rig_speed(rig):
+    """The dust speed the core would hold for rig dict `rig` (on): air
+    dust_speed clamped to 0..10, 1.0 (the core default) when absent."""
+    if isinstance(rig, dict):
+        air = rig.get('air')
+        if isinstance(air, dict):
+            s = air.get('dust_speed')
+            if _is_num(s):
+                return min(max(float(s), 0.0), _MAX_DUST_SPEED)
+    return 1.0
+
+
+def _entry_speed(entry):
+    """A scene entry's speed: None for no entry (the rig is left alone);
+    _rig_speed for a rig that is on; 0.0 for 'off' or a rig that is not on
+    (no air is drawn, the dust holds)."""
+    if entry is None:
+        return None
+    if rig_on(entry):
+        return _rig_speed(entry)
+    return 0.0
+
+
+def _blend_speed(ra, rb, t):
+    """The speed blend_target(ra, rb, t) leaves the rig with, without
+    building the rig: None when ra is None; _entry_speed(rb) when t >= 1;
+    when 0 < t < 1 and both rig_on: _lerp of the two RAW air dust_speed
+    values (then clamped like _rig_speed) when both air dicts hold numbers,
+    else _rig_speed(ra) (blend_rigs keeps A's air); otherwise
+    _entry_speed(ra)."""
+    if ra is None:
+        return None
+    t = float(t)
+    if t >= 1.0:
+        return _entry_speed(rb)
+    if t > 0.0 and rig_on(ra) and rig_on(rb):
+        air_a = ra.get('air') if isinstance(ra, dict) else None
+        air_b = rb.get('air') if isinstance(rb, dict) else None
+        if (isinstance(air_a, dict) and isinstance(air_b, dict)
+                and _is_num(air_a.get('dust_speed'))
+                and _is_num(air_b.get('dust_speed'))):
+            lerped = _lerp(float(air_a['dust_speed']), float(air_b['dust_speed']), t)
+            return min(max(float(lerped), 0.0), _MAX_DUST_SPEED)
+        return _rig_speed(ra)
+    return _entry_speed(ra)
+
+
+def dust_speeds(marks=None, lights_track=None, entries=None):
+    """[s(1), ..., s(L)]: the rig's dust speed at each 1-based movie frame
+    of the authored movie, L the last frame either list names (0 frames -> []).
+    `marks` / `lights_track` default to the module's _scene_marks and
+    _lights_track; `entries` maps a scene name to its rig entry and defaults
+    to raymol_scenes.scene_lights (read ONCE per name, cached in a local
+    dict). A transition frame takes _blend_speed; else a keyframe takes
+    _entry_speed of its scene (the last mark wins if a frame has several);
+    a frame with neither, or whose value is None, keeps the previous frame's
+    speed. Frames before the first known speed take the FIRST known speed of
+    the movie (the live rig before it is unknown); with no known speed at
+    all, every frame is 0.0."""
+    if marks is None:
+        marks = _scene_marks
+    if lights_track is None:
+        lights_track = _lights_track
+
+    cache = {}
+
+    def get_entry(name):
+        if name not in cache:
+            if entries is None:
+                from pymol import raymol_scenes as _rs
+                cache[name] = _rs.scene_lights(name)
+            elif callable(entries):
+                cache[name] = entries(name)
+            elif isinstance(entries, dict):
+                cache[name] = entries.get(name)
+            else:
+                cache[name] = None
+        return cache[name]
+
+    mark_frames = []
+    keyframe_scenes = {}
+    for f, name in marks:
+        fi = int(f)
+        keyframe_scenes[fi] = name
+        mark_frames.append(fi)
+
+    track_frames = []
+    trans_map = {}
+    if isinstance(lights_track, dict):
+        for f, val in lights_track.items():
+            fi = int(f)
+            trans_map[fi] = (val[0], val[1], val[2])
+            track_frames.append(fi)
+    elif lights_track:
+        for it in lights_track:
+            fi = int(it[0])
+            trans_map[fi] = (it[1], it[2], it[3])
+            track_frames.append(fi)
+
+    all_frames = mark_frames + track_frames
+    if not all_frames:
+        return []
+    L = max(all_frames)
+    if L < 1:
+        return []
+
+    raw = [None] * L
+    for f in range(1, L + 1):
+        s = None
+        if f in trans_map:
+            a, b, t = trans_map[f]
+            s = _blend_speed(get_entry(a), get_entry(b), t)
+        if s is None and f in keyframe_scenes:
+            s = _entry_speed(get_entry(keyframe_scenes[f]))
+        raw[f - 1] = s
+
+    first_known = None
+    for s in raw:
+        if s is not None:
+            first_known = s
+            break
+
+    if first_known is None:
+        return [0.0] * L
+
+    out = []
+    cur = first_known
+    for s in raw:
+        if s is not None:
+            cur = s
+        out.append(float(cur))
+    return out
+
+
+def dust_phase(frame, fps, speeds):
+    """metal_light_air_phase for 1-based movie `frame`: (sum of speeds of
+    the frames before it - (frame - 1) x its own speed) / fps, so that
+    (frame - 1) / fps x speed + phase is the integral of the speed over the
+    movie so far. fps <= 0 or not finite reads as 30. A frame past the end
+    keeps the last speed; frame < 1 or an empty list gives 0.0."""
+    if not speeds or frame < 1:
+        return 0.0
+    try:
+        fps = float(fps)
+        if not (fps > 0.0 and math.isfinite(fps)):
+            fps = _DEFAULT_FPS
+    except (TypeError, ValueError):
+        fps = _DEFAULT_FPS
+
+    frame = int(frame)
+    i = frame - 1
+    L = len(speeds)
+    if i < L:
+        s_i = speeds[i]
+        sum_before = sum(speeds[:i])
+    else:
+        s_i = speeds[-1]
+        sum_before = sum(speeds) + (i - L) * s_i
+
+    return float((sum_before - i * s_i) / fps)
+
+
+def _write_phase(_self):
+    """Write metal_light_air_phase for the current movie frame
+    (_self.get_frame()) and movie_fps (float(_self.get('movie_fps'))). Writes
+    only when it differs from the current value (read with
+    _self.get_setting_float; if that is unavailable, write). Never raises:
+    a core without the setting, or a stand-in cmd without get_frame, writes
+    nothing."""
+    try:
+        get_frame = getattr(_self, 'get_frame', None)
+        if get_frame is None:
+            return
+        frame = int(get_frame())
+        try:
+            fps_val = _self.get('movie_fps')
+            fps = float(fps_val) if fps_val is not None else _DEFAULT_FPS
+        except Exception:
+            fps = _DEFAULT_FPS
+
+        speeds = dust_speeds()
+        phase = dust_phase(frame, fps, speeds)
+
+        getter = getattr(_self, 'get_setting_float', None)
+        if getter is not None:
+            try:
+                cur = float(getter(_PHASE_SETTING))
+                # the setting is a float32: compare at its precision
+                if abs(cur - phase) <= 1e-6 * max(1.0, abs(phase)):
+                    return
+            except Exception:
+                return
+        _self.set(_PHASE_SETTING, phase, quiet=1)
+    except Exception:
+        pass
+
+
 def _name_hex(name):
     return name.encode('utf-8').hex()
 
@@ -831,9 +1036,9 @@ def lights_blend(a_hex, b_hex, t, _self=cmd):
         t = min(max(t, 0.0), 1.0)
         from pymol import raymol_scenes as _rs
         target = blend_target(_rs.scene_lights(a), _rs.scene_lights(b), t)
-        if target is None:
-            return
-        _rs._apply_lights_target(target, _self, report=a)
+        if target is not None:
+            _rs._apply_lights_target(target, _self, report=a)
+        _write_phase(_self)
     except Exception:
         pass
 
@@ -1206,5 +1411,9 @@ def enter_scene(name_b64, _self=cmd):
     # with no entry leaves the rig alone; a matching rig writes nothing.
     try:
         _rs.apply_lights(name, _self)
+    except Exception:
+        pass
+    try:
+        _write_phase(_self)
     except Exception:
         pass

@@ -1527,6 +1527,67 @@ class TestSceneMovieBlend(_BlendCase):
         self.assertEqual([(f, n) for f, n, _p in kfs[2:]], [(40, 'A')])
 
 
+class TestSceneMovieDustPhase(_BlendCase):
+
+    def testDustPhase(self):
+        a_rig = copy.deepcopy(MOVIE_A)
+        a_rig['air'] = dict(a_rig.get('air', {}), dust=0.5, dust_speed=1.0)
+        b_rig = copy.deepcopy(MOVIE_B)
+        b_rig['air'] = dict(b_rig.get('air', {}), dust=0.5, dust_speed=3.0)
+        self.store('A', a_rig)
+        self.store('B', b_rig)
+
+        cmd.set('movie_fps', 30)
+        rebuild(scene_item(1, 'A'), scene_item(25, 'B'))
+
+        count = cmd.count_frames()
+        if count < 30:
+            for f in range(count + 1, 31):
+                cmd.madd('1 x1')
+                cmd.mappend(f, anim.scene_mark_command('B'))
+            count = cmd.count_frames()
+
+        times = []
+        for f in range(1, count + 1):
+            cmd.frame(f)
+            air = lighting._light_air_frame(offscreen=True)
+            if air is None:
+                self.skipTest("air frame is None (rig has no centre/size or camera)")
+            times.append(air['time'])
+
+        # Assert: every step T(F+1) - T(F) is >= 0 and <= 3.0/30 + 1e-4 (float32)
+        for f in range(len(times) - 1):
+            step = times[f + 1] - times[f]
+            self.assertGreaterEqual(step, -1e-5, "step >= 0 at frame %d" % (f + 1))
+            self.assertLessEqual(step, 3.0 / 30.0 + 1e-4, "step bound at frame %d" % (f + 1))
+
+        # Reverse order
+        reverse_times = {}
+        for f in range(count, 0, -1):
+            cmd.frame(f)
+            air = lighting._light_air_frame(offscreen=True)
+            self.assertIsNotNone(air)
+            reverse_times[f] = air['time']
+        for f in range(1, count + 1):
+            self.assertAlmostEqual(reverse_times[f], times[f - 1], delta=1e-5,
+                                   msg="reverse order frame %d" % f)
+
+        # Random order
+        import random
+        order = list(range(1, count + 1))
+        random.seed(42)
+        random.shuffle(order)
+        rand_times = {}
+        for f in order:
+            cmd.frame(f)
+            air = lighting._light_air_frame(offscreen=True)
+            self.assertIsNotNone(air)
+            rand_times[f] = air['time']
+        for f in range(1, count + 1):
+            self.assertAlmostEqual(rand_times[f], times[f - 1], delta=1e-5,
+                                   msg="random order frame %d" % f)
+
+
 # --- the L2 scene file (scripts/lighting/scenes/lighting_617_movie.json) ----
 
 ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),

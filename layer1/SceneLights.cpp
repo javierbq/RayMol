@@ -379,6 +379,10 @@ std::optional<pymol::LightAirBlock> SceneLightsAir(PyMOLGlobals* G,
   in.wallSeconds = options && options->wallSeconds ? *options->wallSeconds
                                                    : UtilGetSeconds(G);
 
+  const double phase = pymol::LightAirClockIsMovie(in)
+                           ? SettingGetGlobal_f(G, cSetting_metal_light_air_phase)
+                           : 0.0;
+
   const int resolution = pymol::LightAirResolution(
       SettingGetGlobal_i(G, cSetting_metal_light_air_resolution),
       kSceneLightsMobile);
@@ -388,8 +392,8 @@ std::optional<pymol::LightAirBlock> SceneLightsAir(PyMOLGlobals* G,
   // #684: 1 only for exactly 1; read with the rest, only while the air draws.
   const bool alpha =
       SettingGetGlobal_i(G, cSetting_metal_light_air_alpha) == 1;
-  return pymol::LightAirPack(
-      *frame.airSource, pymol::LightAirClock(in), resolution, filter, alpha);
+  return pymol::LightAirPack(*frame.airSource, pymol::LightAirClock(in),
+      resolution, filter, alpha, phase);
 }
 
 bool SceneLightsAirAnimating(PyMOLGlobals* G)
