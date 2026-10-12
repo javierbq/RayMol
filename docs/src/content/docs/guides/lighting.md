@@ -39,6 +39,13 @@ lights on
 
 RayMol provides seven built-in studio presets. Applying a preset replaces existing lights while preserving atmospheric haze and dust settings:
 
+<div class="media-grid">
+  <figure><img src="/RayMol/media/lights-three_point.png" alt="HIV-1 protease cartoon in grey with the MK1 inhibitor as orange sticks, lit by a warm key light with soft shadows, a cool fill and a white rim on black" loading="lazy" /><figcaption><code>three_point</code></figcaption></figure>
+  <figure><img src="/RayMol/media/lights-rembrandt.png" alt="The same HIV protease scene lit by a single hard warm light from high on one side, most of the molecule falling into deep shadow" loading="lazy" /><figcaption><code>rembrandt</code></figcaption></figure>
+  <figure><img src="/RayMol/media/lights-neon.png" alt="The same scene in near darkness with magenta and cyan rim light picking out the edges of the ribbons" loading="lazy" /><figcaption><code>neon</code></figcaption></figure>
+  <figure><img src="/RayMol/media/lights-sunset.png" alt="The same scene lit orange from one side and blue from the other, with cast shadows across the ribbons" loading="lazy" /><figcaption><code>sunset</code></figcaption></figure>
+</div>
+
 | Preset | Active lights | Default ambient | Description |
 | :--- | :--- | :--- | :--- |
 | `three_point` | `key`, `fill`, `rim` | 0.10 | Classic portrait setup: warm key light with shadow, cool fill, neutral white rim. |
@@ -61,6 +68,9 @@ lights neon, ambient=0.1
 For visual adjustments, enter interactive Lights mode: choose **Tools ▸ Enter
 Lights Mode** in the menu bar (macOS), or **Lights** in the **Tools** button's
 menu (Mac, iPad and iPhone).
+
+![Lights mode active: Lights bar with key, fill and rim chips, on-viewport light handles and orbit guides, the Orbit/Pitch dial, and the per-light editor (orbit, pitch, radius, intensity, colour, warmth, beam, softness)](../../../assets/docs/lights-mode.png)
+*Lights mode with the three-point rig: the Lights bar, orbit view and light inspector.*
 
 ### The Lights bar
 
@@ -154,6 +164,9 @@ cmd.atmosphere(haze=0.25, dust=0.5, dust_size=0.4)
 ## Atmospheric haze and dust
 
 Studio lights can shine through volumetric atmosphere using the `atmosphere` command or the **Atmosphere** card in Lights mode:
+
+![HIV protease lit by a warm side key light through brown haze, with glowing dust motes scattered in front of and behind the molecule and faint shadow streaks in the air](../../../assets/docs/lights-haze.png)
+*Haze and dust with the rembrandt key light shining through it.*
 
 ```text
 atmosphere haze=0.3, dust=0.5, dust_speed=1.0

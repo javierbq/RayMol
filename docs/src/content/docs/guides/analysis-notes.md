@@ -22,6 +22,9 @@ Notes supports multi-document workspaces and structured Markdown formatting:
 
 To connect your text notes to specific molecular conformations in the 3D viewport, open the **Insert Image / View** menu at the bottom of the inspector:
 
+![Notes tab in Preview: heading "Ubiquitin (1UBQ)", a paragraph on the beta-grasp fold, a "Hydrophobic patch" section, a camera-link thumbnail labelled "Hydrophobic patch: Leu8 / Ile44 / Val70", and the VIEW LINKS list with a Camera badge](../../../assets/docs/notes.png)
+*An analysis note in Preview with headings, text and a clickable camera-link thumbnail.*
+
 - **Image from Current View:** Renders an image of the current viewport and inserts it directly into your note as an embedded figure.
 - **Camera Link:** Captures the current camera orientation, translation matrix, clipping planes, and zoom level. Clicking a camera link restores your exact viewpoint without altering object visibility, representations, or color assignments.
 - **Scene Link:** Stores a full PyMOL scene (view, representations, colors and the other state PyMOL scenes capture). Clicking it animates back to that scene. Save the `.pse` after adding one.

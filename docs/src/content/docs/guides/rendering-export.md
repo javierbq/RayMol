@@ -15,6 +15,9 @@ Canvas, Camera, Lighting, Shadows & AO, Metal optimization, Effects and
 Quality. RayMol's Metal pipeline evaluates lighting, shadows, and screen-space
 or ray-traced effects interactively as you orbit, pan, and zoom.
 
+![Inspector Display tab showing the Theme Studio button and the Canvas, Camera, Lighting, Shadows & AO and Effects groups next to a rainbow ubiquitin cartoon](../../../assets/docs/display-tab.png)
+*The Display tab: canvas, camera, lighting, shadows & AO and effects controls.*
+
 ### Hardware ray tracing
 
 Ray tracing is on by default on any Apple GPU that supports Metal ray tracing,
@@ -22,6 +25,9 @@ including every Apple silicon Mac (M1 and later) and recent iPhones and iPads.
 It is fastest on chips with dedicated ray-tracing hardware (M3 or later, A17 Pro
 or later). Where it isn't supported, the toggle is unavailable and RayMol uses
 screen-space ambient occlusion and shadow maps:
+
+![HIV protease with one monomer as a grey molecular surface and the other as a light-blue cartoon, the inhibitor sticks nestled in the surface pocket, with soft ray-traced shadows and ambient occlusion on a white background](../../../assets/docs/render-rt.png)
+*Hardware ray tracing: ray-traced ambient occlusion and cast shadows from the cartoon onto the surface.*
 
 - **Ray tracing (AO + shadows)** (`set metal_raytrace, 1`): Traces ambient
   occlusion and shadow rays directly against molecular geometry.
@@ -60,6 +66,9 @@ screen-space ambient occlusion and shadow maps.
 ### Outlines and silhouettes
 
 RayMol can overlay clean publication-style contours:
+
+![Rainbow cartoon of ubiquitin on a white background, every ribbon edge traced by a thin black contour line](../../../assets/docs/render-outline.png)
+*Metal outlines: a black silhouette contour drawn around the cartoon.*
 
 - **Silhouette outlines** (`set metal_outline, 1`): Draws edge outlines
   around structures. Set outline thickness in screen pixels with
@@ -126,6 +135,9 @@ sticks, and spheres:
 On macOS, use the toolbar **Export** menu ▸ **Save Image**, or **File ▸ Export
 Image…** (⇧⌘E) to save at 2× the view size. On iPad and iPhone, use **Export ▸
 Share Image**.
+
+![Toolbar Export menu open with the Save Image submenu showing Current View Size, 2× View, 4K · 3840 × 2160 and Custom…](../../../assets/docs/export-menu.png)
+*The toolbar Export menu with the Save Image size submenu.*
 
 ### Resolution and framing
 

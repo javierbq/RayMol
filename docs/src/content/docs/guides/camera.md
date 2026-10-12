@@ -131,6 +131,9 @@ Depth of field renders out-of-focus structures with realistic photographic
 blur (bokeh), directing the viewer's eye to a catalytic triad, bound ligand,
 or interface while keeping the overall protein context softly visible.
 
+![HIV protease seen at an angle in grey, the inhibitor sticks in the middle in sharp focus while the nearer and farther parts of the protein melt into soft blur](../../../assets/docs/camera-dof.png)
+*Depth of field with autofocus locked on the ligand.*
+
 Enable depth of field by tapping **Depth** in the camera dock and toggling
 **Enabled**, or set `metal_dof` in the command line:
 

@@ -82,8 +82,8 @@ scene pocket, delete
 RayMol's docked **Timeline** transforms PyMOL's frame transport into a visual
 composition editor:
 
-![The timeline editor with a model track, scene clips and transport controls](../../../assets/docs/timeline.png)
-*The timeline in the Movie tab.*
+![Timeline movie studio docked under the viewport with a Roll camera clip (keyframes every 2.7 s) followed by a "patch" scene clip, scene chips "overview" and "patch", transport controls and the Roll/Y/8s Append bar; the Inspector shows the Movie tab](../../../assets/docs/timeline-mac.png)
+*The Timeline movie studio: a Roll camera clip followed by a scene clip, with the Movie tab in the Inspector.*
 
 - **macOS & iPad**: Open the **Movie** tab in the inspector. Select the
   expand button to dock the full-width timeline below the 3D viewport (on iPad,
@@ -218,6 +218,9 @@ During scene playback, RayMol smoothly blends between states:
 
 RayMol can render and encode movies directly on your device without requiring
 external tools like `ffmpeg`.
+
+![Export Movie sheet over the timeline: Format (Video / GIF / PNG sequence), Size 720p · 1280×720, Ray-traced frames (slow) checkbox, Quality presets Draft/Standard/High/Maximum/Custom, Advanced disclosure, "301 frames at 30 fps" and the Render & Export button](../../../assets/docs/movie-export.png)
+*The Export Movie sheet.*
 
 Select the **Export movie** button (share icon) in the Timeline header (disabled
 while the timeline is empty), or choose **Export Movie…** from the playback bar's

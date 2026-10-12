@@ -9,6 +9,9 @@ RayMol provides a native macOS, iPadOS, and iOS interface designed for structura
 
 On macOS and iPad (landscape), the window is divided into three main operational areas:
 
+![RayMol main window: console pane with recent commands, sequence pane showing the ubiquitin sequence in rainbow colours, 3D viewport with a rainbow cartoon of ubiquitin, and the Inspector on the Objects tab](../../../assets/docs/window.png)
+*The RayMol window: top rail with Console / Seq / Tools pills, console and sequence panes, the 3D viewport, and the Inspector (Objects tab) on the right.*
+
 1. **Top Rail & Toolbar**: Houses file operations (**Open** and **Export** on macOS; **Open**, **Save**, **Export** on iPad and iPhone), pane visibility pills (**Console**, **Seq**, **Tools**), and active background task indicators.
 2. **3D Viewport**: The central canvas where molecular structures are rendered, selected, and transformed.
 3. **Inspector Panel**: The collapsible right-hand column featuring tabbed access to objects, scenes, movies, analysis notes, and display settings.
@@ -81,6 +84,9 @@ Access the integrated PyMOL and Python terminal by clicking the **Console** rail
 
 The **Tools** menu (macOS menu bar) and the toolbar **Tools** button's menu house RayMol's interaction modes. Entering any mode temporarily reassigns viewport pointer actions:
 
+![The macOS menu bar Tools menu open, listing Move Objects ⌃M, Measure Distances ⌃E, Box Select ⌃S, Enter Lights Mode, Enter Design Mode ⌃D, Enter Predict Mode ⌃P](../../../assets/docs/tools-menu.png)
+*The Tools menu (menu bar) with the interaction modes and their shortcuts.*
+
 - **Move Objects (`⌃M`)**: Displays a 3D coordinate gizmo to translate and rotate individual structures in space.
 - **Measure Distances (`⌃E`)**: Accumulates viewport atom picks to compute distances, angles, and dihedral torsions.
 - **Box Select**: Draws a 2D rectangle to select enclosed atoms. Box Select is in the macOS **Tools** menu (`⌃S`) and, on any platform, behind the lasso icon in the **Selections** header; it is not in the toolbar **Tools** button's menu.
@@ -99,12 +105,18 @@ Pressing `Esc` (macOS) or clicking the mode banner's close button returns the vi
 
 Enable multi-structure comparison by turning on **Grid** in the Display tab's **Canvas** group, or `set grid_mode, 1`:
 
+![Three structures side by side on black, each in its own panel: blue ubiquitin, salmon hemoglobin with yellow hemes, and green HIV protease with its inhibitor](../../../assets/docs/grid-mode.png)
+*Grid mode: each object drawn in its own cell with a shared camera.*
+
 - Rather than superimposing all structures at a common origin, Grid Mode tiles each loaded object into its own discrete viewport cell.
 - Camera transformations and lighting interactively synchronize across grid cells, simplifying comparative analysis of homologs and conformational ensembles.
 
 ## Theme Studio
 
 Customize RayMol's visual appearance by selecting **Theme Studio…** in the **Display** inspector tab:
+
+![Theme Studio panel open in the Inspector with Classic, Paper, Sunset and Dawn presets and Customize controls for chrome colours, terminal font, default style, chain and element colours, next to its preview molecule (green cartoon with sticks)](../../../assets/docs/theme-studio.png)
+*Theme Studio.*
 
 - **Application chrome**: Customize accent colors, inspector backgrounds, tab tints, and console text colors and fonts.
 - **Molecular styling**: Adjust default chain cycle palettes, heteroatom element colors, and default representations (Cartoon, Sticks, Spheres, Ball & Stick, Surface).

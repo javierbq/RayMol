@@ -9,6 +9,9 @@ RayMol integrates native macOS and iPadOS keyboard accelerators with PyMOL's com
 
 Shortcuts are listed for macOS. On iPad with a hardware keyboard, ⌃M, ⌃E, ⌃D, ⌃P, ⌘1, ⌘2 and ⌘3 also work; the other shortcuts and the viewport keys are macOS only.
 
+![Keyboard Shortcuts window listing Files & Session, Tools, Panes, Movie and Notes shortcuts with their key combinations](../../../assets/docs/shortcuts-sheet.png)
+*Help ▸ Keyboard Shortcuts (⌘/).*
+
 ### Files & Session
 
 | Command | Shortcut | Description |

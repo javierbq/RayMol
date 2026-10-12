@@ -89,6 +89,9 @@ From a selection's **A** (Action) menu, you can also:
 
 RayMol provides visual, pick-driven measurement tools that render dashed lines and distance or angle readouts directly in the scene.
 
+![Close-up of the ubiquitin core: grey translucent cartoon with five hydrophobic side chains as orange sticks, a dashed yellow distance line labelled 3.9 and an angle marker labelled 74.3](../../../assets/docs/measure.png)
+*A distance (Ile3 to Leu67, 3.9 Å) and an angle (Val5–Leu15–Ile30, 74.3°) measured in the ubiquitin core.*
+
 1. Activate measurement mode from **Tools ▸ Measure Distances**, the **Tools** rail pill, or by pressing `⌃E`.
 2. Choose the type from the **Distance / Angle / Dihedral** segmented control in the measurement bar:
    - **Distance**: Pick 2 atoms. RayMol creates a `distXX` object showing the distance in Ångströms.

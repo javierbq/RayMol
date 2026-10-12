@@ -41,6 +41,9 @@ RayMol exposes five purpose-built MCP tools to connected AI models:
 
 To configure and launch the server:
 
+![Connect an AI app sheet: RayMol MCP server toggle (on, listening on 127.0.0.1:51737), Claude Code section with Connect and Copy connection details buttons and the manual `claude mcp add --transport http raymol …` command, and Claude for Mac Install (.mcpb) / Set it up for me buttons](../../../assets/docs/mcp-connect.png)
+*Connect ▸ Connect an AI app…*
+
 1. Open RayMol on macOS.
 2. Choose **Connect ▸ Connect an AI app…** from the menu bar, or choose **Connect ▸ Enable AI control** (`⌃⌘M`).
 3. Toggle the **RayMol MCP server** switch to **On**. The sheet will confirm that the server is listening (for example, on `127.0.0.1:51737`).

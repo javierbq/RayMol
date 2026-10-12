@@ -29,6 +29,9 @@ Residue codes not in this table are left untouched; a catalogued residue whose r
 
 When an SNFG cartoon is generated, RayMol computes the centroid and ring normal of each complete sugar ring, renders the corresponding 3D geometric symbol, and traces covalent glycosidic bonds between residues as cylindrical linkers. Linkers reflect true covalent connectivity, not arbitrary spatial proximity.
 
+![Grey cartoon of a sialylated IgG Fc with its two N-glycans drawn as SNFG symbols: blue cubes for GlcNAc, green spheres for mannose, yellow spheres for galactose, red cones for fucose and a purple diamond for sialic acid, joined by linker sticks](../../../assets/docs/glycan-snfg.png)
+*SNFG glycan cartoon of a sialylated IgG Fc (PDB 4BYH).*
+
 ### From the interface
 
 In the **Objects** panel:
@@ -82,6 +85,9 @@ Complex *N*- and *O*-linked glycans form branched tree structures rooted at prot
 ### The Glycan Topology panel
 
 To inspect the glycan forest interactively:
+
+![Glycan Topology sheet listing 20 residues in 2 components: GlcNAc NAG 1 (chain C) expanded to Fuc FUC 10 (C1-O6), GlcNAc NAG 2 (C1-O4), Man BMA 3 (C1-O4), Man MAN 4 (C1-O6) and Man MAN 8 (C1-O3), each with SNFG symbol and "chair-like" ring shape](../../../assets/docs/glycan-topology.png)
+*The Glycan Topology sheet for the IgG Fc N-glycans of 4BYH.*
 
 1. Locate the **OBJECTS** section header in the **Objects** panel.
 2. Click the indented-list icon (**Glycan topology**) at the right of the OBJECTS header.
