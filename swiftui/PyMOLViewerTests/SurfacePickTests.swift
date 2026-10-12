@@ -597,12 +597,15 @@ final class SurfacePickTests: XCTestCase {
         // this ray none of the sticks' solids does (the rule before #641
         // capped it). CA-CB does reach the plane elsewhere (CA at 49.9, its
         // ball to 50.15), about 1.5 A from this ray.
+        // The depths below hold for the default stick_radius only.
+        XCTAssertEqual(r, 0.25, accuracy: 1e-6, "the cap steps assume stick_radius 0.25")
         let near = python("_c.translate([0.0, 0.0, 50.4], 'lt614br', camera=0)\n"
                           + "_c.set('metal_interior_cap', 1, 'lt614br')\n" + cbAndCap)
         XCTAssertEqual(near["cb_z"] as? Double ?? .nan, 50.4, accuracy: 1e-3, "setup failed: \(near)")
         XCTAssertEqual(near["cap"] as? Int, 1, "setup failed: \(near)")
         let front = pick(aimNDC, true)
-        XCTAssertNil(front, "a cap on a ray whose sticks all end in front of the plane")
+        XCTAssertNil(front, "a hit on a ray whose sticks all end in front of the plane: "
+                     + "\(front.map { "cap \($0.cap) at \($0.depth)" } ?? "nil")")
 
         // One Angstrom back, the plane cuts CB-CC's body 0.6 A from CB (CB
         // at depth 50.6, CB's ball wholly behind the plane). Only CB-CC
@@ -614,6 +617,8 @@ final class SurfacePickTests: XCTestCase {
         let capped = try XCTUnwrap(pick(aimNDC, true), "no interior cap down the open bond")
         XCTAssertTrue(capped.cap)
         XCTAssertEqual(capped.depth, 50, accuracy: 1e-2)
+        XCTAssertEqual(capped.normal.z, 1, accuracy: 1e-3, "the cap does not face the camera")
+        assertOnRay(capped, scene: aimNDC, camera: camera, aspect: sceneAspect)
 
         // TTT single-strand DNA, cartoon_ring_mode 4: the middle base's ring
         // sphere (radius 1.5) centred on the near plane, that base at
@@ -656,7 +661,8 @@ final class SurfacePickTests: XCTestCase {
         XCTAssertEqual(kept, tessellated)
 
         print("SurfacePickTests live geometry: junction axis depth \(axis.depth), "
-              + "CB at depth 49.6: no cap on the ray, "
+              + "CB at depth \(100 - (near["cb_z"] as? Double ?? .nan)): "
+              + "\(front.map { "cap \($0.cap) at \($0.depth)" } ?? "no hit"), "
               + "plane through the open bond: cap \(capped.cap) at \(capped.depth); ring sphere before frame nil, "
               + "after frame inside \(tessellated.inside) at \(tessellated.depth), "
               + "after transparency_mode 3 \(kept.depth)")
