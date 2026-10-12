@@ -622,6 +622,8 @@ private:
   // acceleration structure when the accumulated sphere set changes.
   void buildSphereProtoAS();
   void ensureRayTracingAS();
+  void uploadRTMatTable(id<MTLBuffer>& buffer,
+      const std::vector<std::array<float, 16>>& rows);
   void uploadRTMaterials();
   id<MTLAccelerationStructure> buildAccelStructure(MTLAccelerationStructureDescriptor* desc);
 
@@ -1247,17 +1249,18 @@ private:
   //    surface-clipped-open cavities stop occluding (#425).
   std::vector<Mat4> _rtFrameXform;
   std::vector<std::array<float, 2>> _rtFrameClip;
-  // Per-occurrence traced-reflection material (#709): two float4 (8 floats) per
+  // Per-occurrence traced-reflection material (#709, #855): four float4 (16 floats) per
   // occurrence. row0 = {reflect, tint, rough, lightWrap}, row1 = {lightDiffuse,
-  // lightHighlight, lightSharpness, lightTint}. NOT folded into the rebuild
+  // lightHighlight, lightSharpness, lightTint}, row2 = {float(family), float(mode),
+  // p[0], p[1]}, row3 = {p[2], p[3], p[4], p[5]}. NOT folded into the rebuild
   // signature: the built AS stores each primitive's occurrence index, and the
   // material table is refreshed from the current frame's record every frame, so
   // dragging a material slider never rebuilds.
-  std::vector<std::array<float, 8>> _rtFrameMat;
-  std::vector<std::array<float, 8>> _rtBuiltMat;   // table uploaded for the built AS
+  std::vector<std::array<float, 16>> _rtFrameMat;
+  std::vector<std::array<float, 16>> _rtBuiltMat;   // table uploaded for the built AS
   // The next draw's row of that table: _repMat plus the studio response
-  // bindRepMaterial gives the raster draw (#709).
-  std::array<float, 8> rtOccurrenceMaterial() const;
+  // bindRepMaterial gives the raster draw and procedural/glass parameters (#709, #855).
+  std::array<float, 16> rtOccurrenceMaterial() const;
   Mat4 _rtBaseModelView{};      // camera-only modelview (world -> eye)
   Mat4 _rtBaseModelViewInv{};   // its inverse (eye -> world)
 
@@ -1316,7 +1319,7 @@ private:
     std::memcpy(delta.data(), &d, 64);
     _rtFrameXform.push_back(delta);
     _rtFrameClip.push_back({_repClipFront, _repClipBack});
-    // #709: snapshot this occurrence's full 8-float material response
+    // #709, #855: snapshot this occurrence's full 16-float material response
     _rtFrameMat.push_back(rtOccurrenceMaterial());
 
     _rtFrameSig ^= (uint64_t)reinterpret_cast<uintptr_t>(key);
@@ -1359,6 +1362,10 @@ private:
   std::vector<const void*> _rtTFrameKeys;
   std::vector<Mat4> _rtTFrameXform;
   std::vector<std::array<float, 2>> _rtTFrameClip;
+  // The transparent occurrences' material rows (#855), as _rtFrameMat: indexed
+  // by the per-triangle occurrence in _rtTOccBuffer, never in the signature.
+  std::vector<std::array<float, 16>> _rtTFrameMat;
+  std::vector<std::array<float, 16>> _rtTBuiltMat;
   uint64_t _rtTFrameSig = 0;
   uint64_t _rtTBuiltSig = 0;
   bool _rtTReady = false;
@@ -1369,6 +1376,7 @@ private:
   id<MTLBuffer> _rtTColBuffer = nil;   // float4/tri: rgb, alpha
   id<MTLBuffer> _rtTNrmBuffer = nil;   // 9 floats/tri: world-space vertex normals
   id<MTLBuffer> _rtTOccBuffer = nil;   // uint32/tri: occurrence (one object's rep)
+  id<MTLBuffer> _rtTMatBuffer = nil;  // 4 float4 per transparent occurrence (#855)
   id<MTLLibrary> _rtLib = nil;         // kept to specialise the transparent pipelines
   id<MTLRenderPipelineState> _rtAOPipelineT = nil;
   id<MTLRenderPipelineState> _rtResolvePipelineT = nil;
@@ -1402,7 +1410,7 @@ private:
   id<MTLBuffer> _rtTriColBuffer = nil;
   id<MTLBuffer> _rtTriNrmBuffer = nil;   // 9 floats/tri: world-space vertex normals
   id<MTLBuffer> _rtTriMatBuffer = nil;   // uint32/tri: occurrence index into the material table
-  id<MTLBuffer> _rtMatBuffer = nil;      // 2 float4 per occurrence (#709): {reflect, tint, rough, wrap}, {diffuse, highlight, sharpness, tint}
+  id<MTLBuffer> _rtMatBuffer = nil;      // 4 float4 per occurrence (#709, #855)
   id<MTLBuffer> _rtSphereBuffer = nil;
   size_t _rtSphereInstCount = 0;
   id<MTLBuffer> _rtTriBuffer = nil;   // world-tri vertices (9 floats/tri), bound to rt_ao so the

@@ -82,11 +82,11 @@ def without_finite_739(code):
 PRE_739 = {
     'kMaterialSrc': 'f4eb7866dc2af793',
     'kAirSrc': '9aa3e116f43c6764',  # #686: per-cell air; #683: Beer-Lambert extinction (re-taken at #683's head)
-    'kRTSrc': '5d6587ba4f787bcb',  # #732: AO in scene units under an HDR rig; #709: traced reflection hits take their material's studio response; #852: AO and the cast shadow in scene units under an HDR rig
+    'kRTSrc': '2c3c142eef14dbfc',  # #732: AO in scene units under an HDR rig; #709: traced reflection hits take their material's studio response; #852: AO and the cast shadow in scene units under an HDR rig; #855: traced hits take the transparent table, the procedural albedo and the glass glints
 }
 FINITE_COUNTS = {
     'kMaterialSrc': {'helpers': 2, 'finite3': 2, 'finite': 2},
-    'kRTSrc': {'helpers': 2, 'finite3': 2, 'finite': 2},
+    'kRTSrc': {'helpers': 2, 'finite3': 3, 'finite': 2},  # #855
     'kAirSrc': {'helpers': 0, 'finite3': 2, 'finite': 3},  # #683: post_air_transmittance's guard
 }
 

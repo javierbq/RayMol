@@ -3142,3 +3142,271 @@ final class AirExtinctionTests: XCTestCase {
     }
 }
 
+/// Issue #855: Traced reflection hit material gaps: transparent layer material
+/// response, procedural albedo, and glass glints.
+@MainActor
+final class ReflectionHitMaterialGapsTests: XCTestCase {
+    private static let width = 400
+    private static let height = 300
+
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var sceneBuilt = false
+    private var savedView: [Float]?
+
+    override func tearDown() {
+        if sceneBuilt {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.delete('rh855*')
+            for _n, _v in globals().pop('_rh855_settings', {}).items():
+                _c.set(_n, _v)
+            _c.set_lights(globals().pop('_rh855_rig', None))
+            for _n in globals().pop('_rh855_enabled', []):
+                _c.enable(_n)
+            """)
+            sceneBuilt = false
+        }
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        super.tearDown()
+    }
+
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            throw XCTSkip("the PyMOL engine did not come up under the test host")
+        }
+    }
+
+    private func buildScene(rtTransparent: Int = 0) {
+        savedView = engine.captureView()
+        sceneBuilt = true
+        engine.runPython("""
+        from pymol import cmd as _c
+        _rh855_enabled = _c.get_names('objects', enabled_only=1)
+        _rh855_settings = {_n: _c.get_setting_tuple(_n)[1][0] for _n in (
+            'depth_cue', 'metal_shadows', 'metal_rt_transparent', 'metal_temporal_ao')}
+        _rh855_settings['bg_rgb'] = list(_c.get_setting_tuple('bg_rgb')[1])
+        _rh855_rig = _c.get_lights()
+        for _n in _rh855_enabled:
+            _c.disable(_n)
+        _c.set('bg_rgb', [0.0, 0.0, 0.0])
+        _c.set('depth_cue', 0)
+        _c.set('metal_temporal_ao', 0)
+        _c.set('metal_shadows', 0)
+        _c.set('metal_rt_transparent', \(rtTransparent))
+
+        # Mirror sphere: metallic, reflect 1.0, tint 0.0, rough 0.0
+        _c.pseudoatom('rh855m', pos=[4.0, 0.0, 0.0], vdw=4.5)
+        _c.show_as('spheres', 'rh855m')
+        _c.set('sphere_material', 'metallic', 'rh855m')
+        _c.set('sphere_material_reflect', 1.0, 'rh855m')
+        _c.set('sphere_material_tint', 0.0, 'rh855m')
+        _c.set('sphere_material_rough', 0.0, 'rh855m')
+
+        # Target sphere: grey80, the default material until the test changes it
+        _c.pseudoatom('rh855t', pos=[-4.0, 0.0, -2.0], vdw=3.5)
+        _c.show_as('spheres', 'rh855t')
+        _c.color('grey80', 'rh855t')
+
+        _c.set_lights({'enabled': True, 'ambient': 0.06, 'centre': [0.0, 0.0, 0.0], 'size': 20.0,
+                       'lights': [{'name': 'key', 'anchor': 'camera', 'orbit': -30.0, 'pitch': 20.0,
+                                   'radius': 3.0, 'beam': 80.0, 'highlight': 1.0, 'shadow': False}]})
+
+        _c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                     0.0, 0.0, -60.0, 0.0, 0.0, 0.0, 20.0, 100.0, -20.0))
+        """)
+    }
+
+    private func render(rayTraced: Int) throws -> [UInt8] {
+        let png = NSTemporaryDirectory() + "issue_855_render.png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: Self.width, height: Self.height, rayTraced: rayTraced)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(
+            URL(fileURLWithPath: png) as CFURL, nil), "no export written")
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        XCTAssertEqual(image.width, Self.width)
+        XCTAssertEqual(image.height, Self.height)
+        let w = image.width, h = image.height
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return rgba
+    }
+
+    private func footprint(of name: String) throws -> [Bool] {
+        let others = ["rh855m", "rh855t"].filter { $0 != name }
+        for other in others {
+            engine.runPython("from pymol import cmd as _c\n_c.disable('\(other)')")
+        }
+        let px = try render(rayTraced: 0)
+        for other in others {
+            engine.runPython("from pymol import cmd as _c\n_c.enable('\(other)')")
+        }
+        return stride(from: 0, to: px.count, by: 4).map { max(px[$0], px[$0 + 1], px[$0 + 2]) > 3 }
+    }
+
+    private func maxDelta(_ a: [UInt8], _ b: [UInt8], in region: [Bool]) -> Int {
+        guard a.count == b.count, a.count == region.count * 4 else { return -1 }
+        var best = 0
+        for (p, inside) in region.enumerated() where inside {
+            for c in 0..<3 {
+                best = max(best, abs(Int(a[p * 4 + c]) - Int(b[p * 4 + c])))
+            }
+        }
+        return best
+    }
+
+    private func meanSum(_ px: [UInt8], in region: [Bool]) -> Double {
+        var total = 0, count = 0
+        for (p, inside) in region.enumerated() where inside {
+            total += Int(px[p * 4]) + Int(px[p * 4 + 1]) + Int(px[p * 4 + 2])
+            count += 1
+        }
+        return count > 0 ? Double(total) / Double(count) : 0
+    }
+
+    private func computeBoxRegion() throws -> [Bool] {
+        let mirror = try footprint(of: "rh855m")
+        let target = try footprint(of: "rh855t")
+
+        var minX = Self.width, maxX = 0, minY = Self.height, maxY = 0
+        for y in 0..<Self.height {
+            for x in 0..<Self.width where mirror[y * Self.width + x] {
+                minX = min(minX, x)
+                maxX = max(maxX, x)
+                minY = min(minY, y)
+                maxY = max(maxY, y)
+            }
+        }
+        XCTAssertGreaterThan(maxX - minX, 40, "mirror sphere not found in frame")
+
+        let boxMaxX = minX + (maxX - minX) / 3
+        var box = [Bool](repeating: false, count: Self.width * Self.height)
+        for y in minY...maxY {
+            for x in minX...boxMaxX {
+                let idx = y * Self.width + x
+                box[idx] = mirror[idx] && !target[idx]
+            }
+        }
+        let boxCount = box.filter { $0 }.count
+        XCTAssertGreaterThan(boxCount, 100, "the box region inside the mirror is too small: \(boxCount)")
+        return box
+    }
+
+    func testTransparentHitTakesItsMaterialResponse() throws {
+        try requireEngine()
+        guard engine.rayTracingSupported else {
+            throw XCTSkip("Hardware ray tracing is not supported on this device")
+        }
+        buildScene(rtTransparent: 1)
+        engine.runPython("from pymol import cmd as _c\n_c.set('sphere_transparency', 0.4, 'rh855t')")
+
+        let box = try computeBoxRegion()
+        let rt1 = try render(rayTraced: 1)
+        let rt2 = try render(rayTraced: 1)
+        guard maxDelta(rt1, rt2, in: box) == 0 else {
+            throw XCTSkip("two ray-traced frames of the same scene differ: not deterministic here")
+        }
+
+        // A = target default material (already set)
+        let rtA = rt1
+        let meanA = meanSum(rtA, in: box)
+
+        // B = target metallic, reflect 1.0, tint 1.0, rough 1.0 (studio diffuse 0)
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set('sphere_material', 'metallic', 'rh855t')
+        _c.set('sphere_material_reflect', 1.0, 'rh855t')
+        _c.set('sphere_material_tint', 1.0, 'rh855t')
+        _c.set('sphere_material_rough', 1.0, 'rh855t')
+        """)
+        let rtB = try render(rayTraced: 1)
+        let meanB = meanSum(rtB, in: box)
+        let delta = maxDelta(rtA, rtB, in: box)
+        print("855 trans hit delta=\(delta) meanA=\(meanA) meanB=\(meanB)")
+
+        XCTAssertGreaterThanOrEqual(delta, 20, "transparent hit material response was ignored")
+        XCTAssertLessThan(meanB, meanA, "metallic transparent hit with diffuse 0 must reflect darker than default")
+    }
+
+    func testMirroredProceduralAlbedo() throws {
+        try requireEngine()
+        guard engine.rayTracingSupported else {
+            throw XCTSkip("Hardware ray tracing is not supported on this device")
+        }
+        buildScene(rtTransparent: 0)
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set('sphere_material', 'marble', 'rh855t')
+        _c.set('sphere_material_knob2', 0.5, 'rh855t')
+        _c.set('sphere_material_knob5', 0.0, 'rh855t')
+        """)
+
+        let box = try computeBoxRegion()
+        let rt1 = try render(rayTraced: 1)
+        let rt2 = try render(rayTraced: 1)
+        guard maxDelta(rt1, rt2, in: box) == 0 else {
+            throw XCTSkip("two ray-traced frames of the same scene differ: not deterministic here")
+        }
+
+        // A = knob5 0.0 (vein contrast 0: plain stone)
+        let rtA = rt1
+
+        // B = knob5 1.0 (vein contrast 1.0)
+        engine.runPython("from pymol import cmd as _c\n_c.set('sphere_material_knob5', 1.0, 'rh855t')")
+        let rtB = try render(rayTraced: 1)
+        let delta = maxDelta(rtA, rtB, in: box)
+        let meanA = meanSum(rtA, in: box)
+        let meanB = meanSum(rtB, in: box)
+        print("855 marble albedo delta=\(delta) meanA=\(meanA) meanB=\(meanB)")
+
+        XCTAssertGreaterThanOrEqual(delta, 20, "mirrored procedural albedo was ignored")
+    }
+
+    func testMirroredGlassTakesTheGlints() throws {
+        try requireEngine()
+        guard engine.rayTracingSupported else {
+            throw XCTSkip("Hardware ray tracing is not supported on this device")
+        }
+        buildScene(rtTransparent: 1)
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set('sphere_material', 'glass', 'rh855t')
+        _c.set('sphere_material_knob1', 0.0, 'rh855t')
+        """)
+
+        let box = try computeBoxRegion()
+        let rt1 = try render(rayTraced: 1)
+        let rt2 = try render(rayTraced: 1)
+        guard maxDelta(rt1, rt2, in: box) == 0 else {
+            throw XCTSkip("two ray-traced frames of the same scene differ: not deterministic here")
+        }
+
+        // A = knob1 0.0 (Reflection 0: no glints)
+        let rtA = rt1
+
+        // B = knob1 1.0 (Reflection 1.0: glints on)
+        engine.runPython("from pymol import cmd as _c\n_c.set('sphere_material_knob1', 1.0, 'rh855t')")
+        let rtB = try render(rayTraced: 1)
+        let delta = maxDelta(rtA, rtB, in: box)
+        let meanA = meanSum(rtA, in: box)
+        let meanB = meanSum(rtB, in: box)
+        print("855 glass glints delta=\(delta) meanA=\(meanA) meanB=\(meanB)")
+
+        XCTAssertGreaterThanOrEqual(delta, 20, "mirrored glass glints were ignored")
+    }
+}
+

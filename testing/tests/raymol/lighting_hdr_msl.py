@@ -117,7 +117,7 @@ MASTER_054B525 = {
     'kMaterialImpostorSrc': '10727f58afb05138',  # #710: the rig lights the material's albedo
     'kMaterialSrc': '98346bdc0203becb',  # #739: NaN guards as bit tests (light_finite); #710: the rig lights the material's albedo
     'kPostSrc': 'd59b86052b35d529',  # #689: post_ssao_fog fades toward the bg_gradient; #732: AO in scene units under an HDR rig; #852: AO and the cast shadow in scene units under an HDR rig
-    'kRTSrc': '003f7e5d08b90cc8',  # #739: NaN guards as bit tests (light_finite); #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps; #729: rt_reflect_tint keeps the metallic tint's hue under HDR; #732: AO in scene units under an HDR rig; #709: traced reflection hits take their material's studio response; #852: AO and the cast shadow in scene units under an HDR rig
+    'kRTSrc': '5306c2f36a93018d',  # #739: NaN guards as bit tests (light_finite); #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps; #729: rt_reflect_tint keeps the metallic tint's hue under HDR; #732: AO in scene units under an HDR rig; #709: traced reflection hits take their material's studio response; #852: AO and the cast shadow in scene units under an HDR rig; #855: traced hits take the transparent table, the procedural albedo and the glass glints
     'kScreenOverlaySrc': '9f09ecbdd4a9ddfa',  # #689: ramp gadgets drawn after the post chain
     # #635: retaken after sphere glass coverage split; #710: the rig lights
     # the material's albedo
@@ -139,8 +139,8 @@ MASTER_LAWS = {
 EDIT_COUNTS = {
     'kMaterialSrc': {'functions': 5, 'declarations': 3, 'finish_signature': 1,
                      'finish_body': 1, 'apply_exposure': 2, 'glints_body': 1},
-    'kRTSrc': {'functions': 4, 'declarations': 3, 'finish_signature': 1,
-               'finish_body': 1, 'hit_exposure': 2},
+    'kRTSrc': {'functions': 5, 'declarations': 3, 'finish_signature': 1,
+               'finish_body': 1, 'hit_exposure': 2, 'glints_body': 1},  # #855
     'kPostSrc': {'functions': 4, 'declarations': 2},  # #732: the tone helpers for HDR AO
     'kVBOSrc': {'vbo_cover': 1},
     'kCylinderImpostorSrc': {'cyl_cover': 1},
@@ -321,14 +321,11 @@ class TestConstants(HdrMSLCase):
 
     def testRTCopiesAreVerbatim(self):
         attribute = re.compile(r'__attribute__\(\(unused\)\)')
-        for name in TONE_HELPERS + ('light_finish',):
+        for name in TONE_HELPERS + ('light_finish', 'light_glass_cover', 'light_glass_glints'):
             sig, body = self.fn(self.rt, name)
             msig, mbody = self.fn(self.material, name)
             self.assertEqual(attribute.sub('', sig), attribute.sub('', msig), name)
             self.assertEqual(body, mbody, name)
-        # no glass helper in the ray tracer (it shades no glass with the rig)
-        self.assertNotIn('light_glass_cover', self.rt)
-        self.assertNotIn('light_glass_glints', self.rt)
         # #732: kPostSrc's copies of the tone helpers (and the finite tests
         # they call) are verbatim as well, and it has no other light_ helper
         post = msl_functions(self.msl['kPostSrc'])
@@ -419,9 +416,9 @@ class TestShaders(HdrMSLCase):
         for lib in self.msl:
             code = squash(strip_comments(self.msl[lib]))
             calls = len(re.findall(r'(?<!static)(?<!float4)light_glass_cover\(', code))
-            # #635: kSphereImpostorSrc now has 1 call to light_glass_cover
+            # #635: kSphereImpostorSrc now has 1 call to light_glass_cover; #855: kRTSrc has 2
             self.assertEqual(calls, {'kVBOSrc': 1, 'kCylinderImpostorSrc': 1,
-                                     'kSphereImpostorSrc': 1}.get(lib, 0),
+                                     'kSphereImpostorSrc': 1, 'kRTSrc': 2}.get(lib, 0),
                              lib)
         # the classic glints' own curve (mat_glass_shade) is a material law
         _, shade = self.fn(self.material, 'mat_glass_shade')

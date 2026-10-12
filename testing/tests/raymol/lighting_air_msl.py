@@ -113,7 +113,7 @@ MASTER_LITERALS = {
     'kMaterialImpostorSrc': 'ea5947e14500d7d5',  # #710: the rig lights the material's albedo
     'kMaterialSrc': 'da47cac063348d43',
     'kPostSrc': 'd59b86052b35d529',  # #689: post_ssao_fog fades toward the bg_gradient; #732: AO in scene units under an HDR rig; #852: AO and the cast shadow in scene units under an HDR rig
-    'kRTSrc': '003f7e5d08b90cc8',  # #739: NaN guards as bit tests (light_finite); #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps; #729: rt_reflect_tint keeps the metallic tint's hue under HDR; #732: AO in scene units under an HDR rig; #709: traced reflection hits take their material's studio response; #852: AO and the cast shadow in scene units under an HDR rig
+    'kRTSrc': '5306c2f36a93018d',  # #739: NaN guards as bit tests (light_finite); #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps; #729: rt_reflect_tint keeps the metallic tint's hue under HDR; #732: AO in scene units under an HDR rig; #709: traced reflection hits take their material's studio response; #852: AO and the cast shadow in scene units under an HDR rig; #855: traced hits take the transparent table, the procedural albedo and the glass glints
     'kScreenOverlaySrc': '9f09ecbdd4a9ddfa',  # #689: ramp gadgets drawn after the post chain
     # #635: retaken after sphere glass coverage split; #710: the rig lights
     # the material's albedo
@@ -143,8 +143,8 @@ CLASSIC_LIGHT_LITERALS = ('kVBOSrc', 'kSphereImpostorSrc', 'kCylinderImpostorSrc
 # included, comments stripped); on this branch with the air's statement
 # taken out (AIR_STATEMENTS).
 MASTER_FUNCTIONS = {
-    ('RendererMetal.mm', 'RendererMetal::runPostChain'): '3fa774548d434b41',  # #689: gradient fog uniforms, screen overlays after the matte; #664: the RT rig composite's shadow variant and its maps; #732: AO in scene units under an HDR rig
-    ('RendererMetal.mm', 'RendererMetal::beginFrame'): 'c4c22f37453efc02',  # #665: closes the classic pass's caster view; #736: clears the labels deferred out of a peel pass; #689: the gradient and the screen overlays
+    ('RendererMetal.mm', 'RendererMetal::runPostChain'): '4abd4d7a6688e84f',  # #689: gradient fog uniforms, screen overlays after the matte; #664: the RT rig composite's shadow variant and its maps; #732: AO in scene units under an HDR rig; #855: binds transparent occurrence and material tables
+    ('RendererMetal.mm', 'RendererMetal::beginFrame'): 'a45b7220f160c07e',  # #665: closes the classic pass's caster view; #736: clears the labels deferred out of a peel pass; #689: the gradient and the screen overlays; #855: clears the transparent material table
     ('SceneRender.cpp', 'SceneRenderMetal'): '0a1d6df2f4b2383e',  # #665: the classic pre-pass opens with the light's view; #433/#662: classic pre-pass excludes overlays; #689: draws the bg_gradient
     ('SceneLights.cpp', 'SceneLightsFrame'): '5fb060d63ab0d96b',
 }
