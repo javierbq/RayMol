@@ -110,7 +110,7 @@ MASTER_LITERALS = {
     'kCylinderImpostorSrc': '4d982d2b0a0712eb',  # #641 cut caps; #710 the rig lights the albedo
     'kEyeReconSrc': '34e775c149c8b075',
     'kLabelShaderSrc': 'ca5097bd2ad97d60',  # #736: label_fragment_oit, the OIT pass's variant
-    'kMaterialImpostorSrc': 'ea5947e14500d7d5',  # #710: the rig lights the material's albedo
+    'kMaterialImpostorSrc': 'c30ea9e6f872b010',  # #710: the rig lights the material's albedo; #712: mat_inner_knee
     'kMaterialSrc': 'da47cac063348d43',
     'kPostSrc': '1ed0138bf670bdba',  # #689: post_ssao_fog fades toward the bg_gradient; #732: AO in scene units under an HDR rig; #852: AO and the cast shadow in scene units under an HDR rig; #735: ACES as the rig's scene-unit curve
     'kRTSrc': '8c5d35f298c657bd',  # #739: NaN guards as bit tests (light_finite); #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps; #729: rt_reflect_tint keeps the metallic tint's hue under HDR; #732: AO in scene units under an HDR rig; #709: traced reflection hits take their material's studio response; #852: AO and the cast shadow in scene units under an HDR rig; #855: traced hits take the transparent table, the procedural albedo and the glass glints; #668: rt_tri_normal_smooth averages only connected neighbours on the same smooth surface; #735: ACES as the rig's scene-unit curve; #741: traced soft shadows from light size
@@ -118,7 +118,7 @@ MASTER_LITERALS = {
     # #635: retaken after sphere glass coverage split; #710: the rig lights
     # the material's albedo
     'kSphereImpostorSrc': '94fec70542219449',
-    'kVBOSrc': 'e0bb73ffd9bc762e',  # #710: the rig lights the material's albedo
+    'kVBOSrc': '0ad3704f8cb6e5c8',  # #710: the rig lights the material's albedo; #712: mat_inner_knee
 }
 # #615 (Materials own their response to studio lights) changes kMaterialSrc
 # itself: MaterialU carries the studio response, light_response reads it, the
@@ -130,8 +130,8 @@ MASTER_LITERALS = {
 # lighting_material_msl.py pins what changed.
 CHANGED_BY_615 = {
     # #739: NaN guards as bit tests (light_finite); #710: the rig lights the
-    # material's albedo
-    'kMaterialSrc': '98346bdc0203becb',
+    # material's albedo; #712: mat_inner_knee, kLightHdr moved
+    'kMaterialSrc': '8abde8aedc224454',
 }
 # #615 appends the material's classic scale to every mat_glass_shade call
 # (`, mat_classic_light(m)`). These four literals carry such calls and nothing

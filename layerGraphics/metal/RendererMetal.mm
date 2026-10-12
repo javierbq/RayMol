@@ -8940,6 +8940,12 @@ constant bool kMatGlass = (kMatFamily == 3);
 // MaterialU) reads it; the rig's own block stays at the end of this library.
 constant bool kLightRig [[function_constant(1)]];
 
+// HDR colour's constant (#624), specialised per pipeline: true only on the rig
+// variants of an HDR frame. Declared here, beside kLightRig, since #712 because
+// the materials' own knee (mat_inner_knee) reads it; the HDR helpers stay in
+// their block near the end of this library.
+constant bool kLightHdr [[function_constant(3)]];
+
 constant int kMatMode_frosted_glass = 5;
 constant int kMatMode_jelly = 6;
 
@@ -9003,6 +9009,20 @@ static float3 mat_soft_knee(float3 c) {
   // Reinhard on the excess only: x/(1+x) asymptotes to 1, so a very bright
   // reflection compresses toward white instead of arriving there and staying.
   return min(c, float3(knee)) + over / (float3(1.0) + over) * (1.0 - knee);
+}
+
+// A material's OWN knee (#712, #731): mat_soft_knee, except on an HDR rig
+// pipeline (kLightRig && kLightHdr), where it is the identity. There the
+// fragment's whole colour, these terms included, goes through the tone curve
+// T once (light_finish), in scene units; squeezing a highlight through the
+// 8-bit knee first compressed it twice and capped it below 1.0 before T saw
+// it. Every classic pipeline (kLightRig false) and every rig pipeline at the
+// 8-bit knee (kLightHdr false) keeps mat_soft_knee: both constants are
+// function constants, so `if (false)` folds away and those renders are
+// byte-identical to the build before #712.
+static float3 mat_inner_knee(float3 c) {
+  if (kLightRig && kLightHdr) return c;
+  return mat_soft_knee(c);
 }
 
 // Schlick's Fresnel: how much the surface reflects at this grazing angle. f0 is
@@ -9216,7 +9236,7 @@ static float3 mat_env_specular(float3 N, float3 V, float rough, float3 f0,
   // the pre-filtered sample carries the lobe, which is what keeps this one
   // texture fetch instead of an integral per fragment.
   float3 F = mat_fresnel(f0, ndotv);
-  return mat_soft_knee(room * F);
+  return mat_inner_knee(room * F);
 }
 
 constant int kMatMode_matte  = 1;
@@ -9371,7 +9391,7 @@ static float3 mat_jelly_shade(float3 base, float3 N, float3 V,
   col += (m.p[2] * pow(ndoth, kMatJellyWetExp) + 0.12 * pow(ndoth, 8.0))
          * mat_classic_light(m)
          * mix(float3(1.0), saturate(base * 1.3), kMatJellyWetTint);
-  return mat_soft_knee(col);
+  return mat_inner_knee(col);
 }
 
 // --- value noise -----------------------------------------------------------
@@ -9758,7 +9778,7 @@ __attribute__((unused)) static LightTerms light_terms(constant LightRigU& rig,
 // reach these helpers sets it: RendererMetal::materialFragmentFunction,
 // bezierTubeRigFunction and airFunction (kRTSrc has its own copy, at its own
 // index). It is the ONLY function constant the light_ helpers read.
-constant bool kLightHdr [[function_constant(3)]];
+// kLightHdr is declared at the top of this library, beside kLightRig (#712).
 
 // T's knee k and white point W (pymol::kLightToneKnee, kLightToneWhite in
 // layer1/LightTone.h, which mirrors these functions operation for operation;
@@ -10146,14 +10166,14 @@ static float3 mat_impostor_composite(float3 base, float3 N, float3 pEye,
     float3 hi;
     float3 body = mat_glass_shade(base, N, V, m.rough, m.p[0], taps, keyDir,
                                   envMap, envSmp, hi, mat_classic_light(m));
-    return mat_soft_knee(body + hi);
+    return mat_inner_knee(body + hi);
   }
   if (kMatReflective) {
     // Same base as the lit VBO path, so one object's surface and its spheres
     // reflect the same room -- the drift that bit marble in #487.
     float3 V = float3(0.0, 0.0, 1.0);
     float3 f0 = mix(float3(m.reflect), base * m.reflect, m.tint);
-    return mat_soft_knee(base * min(defaultIntensity, 1.0) + defaultSpecular
+    return mat_inner_knee(base * min(defaultIntensity, 1.0) + defaultSpecular
                        + mat_env_specular(N, V, m.rough, f0, envMap, envSmp));
   }
   if (kMatProcedural) {
@@ -10308,7 +10328,7 @@ static float3 vbo_material_shade(float3 baseColor, float3 nEye, float3 pModel,
     float3 body = mat_glass_shade(baseColor, N, V, mat.rough, mat.p[0], taps,
                                   float3(lt.klx, lt.kly, lt.klz), envMap,
                                   envSmp, hi, mat_classic_light(mat));
-    return mat_soft_knee(body + hi);
+    return mat_inner_knee(body + hi);
   }
   if (kMatReflective) {
     // The reflective family's BASE: the default shading plus one GGX lobe
@@ -10322,7 +10342,7 @@ static float3 vbo_material_shade(float3 baseColor, float3 nEye, float3 pModel,
     // object's own colour, which is what separates a coloured metal from a
     // clear coat over it.
     float3 f0 = mix(float3(mat.reflect), baseColor * mat.reflect, mat.tint);
-    return mat_soft_knee(vbo_shade(baseColor, nEye, lt)
+    return mat_inner_knee(vbo_shade(baseColor, nEye, lt)
                        + mat_env_specular(N, V, mat.rough, f0, envMap, envSmp));
   }
   if (kMatProcedural) {

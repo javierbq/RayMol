@@ -4536,3 +4536,173 @@ final class SoftShadowSizeTests: XCTestCase {
         XCTAssertEqual(delta, 0, "raster render should ignore size")
     }
 }
+
+/// #712 A (#731): under an HDR rig a material's own soft knee is the identity,
+/// so its highlight is compressed once, by T, not twice.
+@MainActor
+final class MaterialHdrKneeTests: XCTestCase {
+    private static let width = 400
+    private static let height = 300
+
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var sceneBuilt = false
+    private var savedView: [Float]?
+
+    override func tearDown() {
+        if sceneBuilt {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.delete('mk712*')
+            for _n, _v in globals().pop('_mk712_settings', {}).items():
+                _c.set(_n, _v)
+            for _n in globals().pop('_mk712_enabled', []):
+                _c.enable(_n)
+            """)
+            LightsLive.tearDown()
+            sceneBuilt = false
+        }
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        super.tearDown()
+    }
+
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            throw XCTSkip("the PyMOL engine did not come up under the test host")
+        }
+    }
+
+    private func buildScene(asSurface: Bool = false) {
+        savedView = engine.captureView()
+        sceneBuilt = true
+        engine.runPython("""
+        from pymol import cmd as _c
+        _mk712_enabled = _c.get_names('objects', enabled_only=1)
+        _mk712_settings = {_n: _c.get_setting_tuple(_n)[1][0] for _n in (
+            'depth_cue', 'metal_temporal_ao', 'metal_raytrace', 'metal_shadows',
+            'material_env', 'metal_light_hdr', 'metal_exposure')}
+        _mk712_settings['bg_rgb'] = list(_c.get_setting_tuple('bg_rgb')[1])
+        for _n in _mk712_enabled:
+            _c.disable(_n)
+        _c.set('bg_rgb', [0.0, 0.0, 0.0])
+        _c.set('depth_cue', 0)
+        _c.set('metal_temporal_ao', 0)
+        _c.set('metal_raytrace', 0)
+        _c.set('metal_shadows', 0)
+        _c.set('material_env', 1)
+        _c.set('metal_light_hdr', 1)
+        _c.set('metal_exposure', 0.5)
+
+        _c.pseudoatom('mk712s', pos=[0.0, 0.0, 0.0], vdw=4.0)
+        _c.color('white', 'mk712s')
+        """)
+
+        if asSurface {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.show_as('surface', 'mk712s')
+            _c.set('surface_material', 'metallic', 'mk712s')
+            _c.set('surface_material_reflect', 1.0, 'mk712s')
+            _c.set('surface_material_tint', 0.0, 'mk712s')
+            _c.set('surface_material_rough', 0.0, 'mk712s')
+            """)
+        } else {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.show_as('spheres', 'mk712s')
+            _c.set('sphere_material', 'metallic', 'mk712s')
+            _c.set('sphere_material_reflect', 1.0, 'mk712s')
+            _c.set('sphere_material_tint', 0.0, 'mk712s')
+            _c.set('sphere_material_rough', 0.0, 'mk712s')
+            """)
+        }
+
+        let rigDict = """
+        {'enabled': True, 'ambient': 0.0, 'classic': 1.0,
+         'centre': [0.0, 0.0, 0.0], 'size': 10.0,
+         'lights': [{'name': 'key', 'intensity': 0.0, 'highlight': 0.0}]}
+        """
+        LightsLive.setRig(rigDict)
+
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                     0.0, 0.0, -40.0, 0.0, 0.0, 0.0, 20.0, 60.0, -20.0))
+        """)
+    }
+
+    private func render(rayTraced: Int = 0) throws -> [UInt8] {
+        let png = NSTemporaryDirectory() + "issue_712_render.png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: Self.width, height: Self.height, rayTraced: rayTraced)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(
+            URL(fileURLWithPath: png) as CFURL, nil), "no export written")
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        XCTAssertEqual(image.width, Self.width)
+        XCTAssertEqual(image.height, Self.height)
+        let w = image.width, h = image.height
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return rgba
+    }
+
+    /// The object's footprint (largest channel above 3) and its brightest channel.
+    private func measure(_ px: [UInt8]) -> (count: Int, peak: Int) {
+        var count = 0
+        var best = 0
+        for i in stride(from: 0, to: px.count, by: 4) {
+            let m = Int(max(px[i], px[i + 1], px[i + 2]))
+            if m > 3 {
+                count += 1
+                best = max(best, m)
+            }
+        }
+        return (count, best)
+    }
+
+    /// At exposure 0.5 T is the identity below its knee (0.55), so a pixel
+    /// shows 0.5 * c, c the fragment's colour in scene units. Before #712 c had
+    /// already been through mat_soft_knee, which is always below 1.0, so no
+    /// pixel could exceed 0.5 * 255 = 127.5; with the knee the identity, a
+    /// highlight above 1.0 shows above that. Measured on an M-series Mac:
+    /// master 113 (sphere) and 110 (surface), #712 180 and 159. The floor 140
+    /// sits between the cap and the smaller of the two.
+    private static let peakFloor = 140
+
+    /// The impostor path (mat_impostor_composite's reflective branch).
+    func testHighlightIsNotKneedTwiceUnderHdr() throws {
+        try requireEngine()
+        buildScene(asSurface: false)
+        let (count, peak) = measure(try render(rayTraced: 0))
+        print("712-knee peak=\(peak)")
+        XCTAssertGreaterThanOrEqual(count, 2000, "the sphere footprint has too few pixels")
+        XCTAssertGreaterThanOrEqual(peak, Self.peakFloor,
+                                    "the sphere's highlight was knee-compressed twice under the HDR rig")
+    }
+
+    /// The lit-VBO path (vbo_material_shade's reflective branch): the same
+    /// pseudoatom as a surface.
+    func testSurfaceHighlightIsNotKneedTwiceUnderHdr() throws {
+        try requireEngine()
+        buildScene(asSurface: true)
+        let (count, peak) = measure(try render(rayTraced: 0))
+        print("712-knee surface peak=\(peak)")
+        XCTAssertGreaterThanOrEqual(count, 2000, "the surface footprint has too few pixels")
+        XCTAssertGreaterThanOrEqual(peak, Self.peakFloor,
+                                    "the surface's highlight was knee-compressed twice under the HDR rig")
+    }
+}
