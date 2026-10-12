@@ -107,7 +107,7 @@ HDR_CONSTANT = re.compile(r'\bkLightHdr\b')
 # literal, comments stripped and whitespace removed, the first 16 hex digits.
 # Taken from master with these parsers, never from this branch.
 MASTER_054B525 = {
-    'kAirSrc': '4fccf58f05d2d1e3',  # #739: NaN guards as bit tests (light_finite)
+    'kAirSrc': 'a8d76055522b4f53',  # #686: per-cell air
     'kBezierTubeRigSrc': '8b5d47b1b8b9d31b',  # #663: bezier_tube_fragment_rig_shadow
     'kBezierTubeSrc': '0085bdbf88964ab4',
     'kConnectorShaderSrc': '40ef57a0e535d985',

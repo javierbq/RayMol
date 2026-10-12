@@ -5805,7 +5805,8 @@ static PyObject* CmdGetLightShadowMapPasses(PyObject* self, PyObject* args)
 /// live camera (as get_light_frame); `offscreen` None reads the renderer's
 /// flag, else a bool; `wall` None reads the live clock, else seconds; `grid`
 /// None for the scene's grid, or (n_col, n_row, first_slot) for an active
-/// grid. The scene members are brought up to date first, as a frame does.
+/// grid (shaping the shadow plan, #686). The scene members are brought up to
+/// date first, as a frame does.
 static PyObject* CmdGetLightAirFrame(PyObject* self, PyObject* args)
 {
   PyMOLGlobals* G = nullptr;
@@ -5846,7 +5847,6 @@ static PyObject* CmdGetLightAirFrame(PyObject* self, PyObject* args)
           "grid must be None or (n_col, n_row, first_slot) with n_col, n_row >= 1"));
     }
     g = over;
-    options.grid = &*g;
   }
   APIEnterBlocked(G);
   ExecutiveUpdateSceneMembers(G);

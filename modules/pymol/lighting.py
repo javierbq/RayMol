@@ -255,12 +255,13 @@ def _light_air_frame(matrix=None, offscreen=None, wall=None, grid=None, *,
                      _self=cmd):
     '''One frame's air block as the Metal renderer receives it (#618), or
     None when the frame draws no air: no rig, a rig that is off, haze and
-    dust both 0, nothing to light (overlays alone do not count), grid mode,
-    or the rig behind the camera. `matrix` is as for _light_frame;
-    `offscreen` None reads the renderer's flag (False without one), else the
-    frame is taken as offscreen (an export) or live; `wall` None reads the
-    live clock, else the live clock's seconds; `grid` None for the scene's
-    grid, or (n_col, n_row, first_slot) for an active grid. Reads only.
+    dust both 0, nothing to light (overlays alone do not count), or the rig
+    behind the camera. `matrix` is as for _light_frame; `offscreen` None
+    reads the renderer's flag (False without one), else the frame is taken
+    as offscreen (an export) or live; `wall` None reads the live clock,
+    else the live clock's seconds; `grid` None for the scene's grid, or
+    (n_col, n_row, first_slot) for an active grid (shaping the shadow plan,
+    #686). Reads only.
 
     {'block': [20 floats], 'haze_density', 'dust_occupancy', 'scatter',
      'seed_offset', 'near', 'far', 'focus', 'cell', 'time', 'mote_radius',
@@ -327,7 +328,8 @@ def _light_air_shadow_filter(setting, mobile=False, *, _self=cmd):
 def _light_air_animating(*, _self=cmd):
     '''True when the dust moves on its own and the live view must redraw
     for it (#618): the rig is on with dust and dust_speed above 0, the dust
-    clock is not pinned, no movie plays, no grid, and something is shown.
+    clock is not pinned, no movie plays and something is shown (a grid
+    animates too, #686).
     What the app's redraw policy asks.'''
     with _self.lockcm:
         return _self._cmd.light_air_animating(_self._COb)

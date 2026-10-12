@@ -152,11 +152,11 @@ float LightAirSeedOffset(int seed);
 /**
  * The dust moves on its own, so the live view must redraw for it: dust > 0
  * and dust_speed > 0, the clock not pinned, no movie playing (playback
- * redraws already), no grid and something to light. The rig being on is the
- * caller's check.
+ * redraws already) and something to light. The rig being on is the caller's
+ * check.
  */
 bool LightAirAnimating(const LightAir& air, double pinned, bool playing,
-    bool geometry, bool grid);
+    bool geometry);
 
 /**
  * The air block for the source, with the dust clock `clock` (s, before

@@ -13,7 +13,7 @@ has no GPU, so this pins what it can:
   in-process twice (the way the app runs it), leaves the camera alone,
   installs the rig, air and settings its tag says (framed explicitly on m),
   and _light_air_frame(offscreen=True) gives what the check expects for the
-  tag: no air for the no-air twins, the overlay, grid and air-off tags and
+  tag: no air for the no-air twins, the overlay and air-off tags and
   every regression scene; the listed dust times for the clock tags;
 * the regression file sets a #618 setting only through _l618_opt and calls
   no _light_air_* helper (it must run on master);
@@ -484,7 +484,8 @@ def l2_expected(tag):
     if base.startswith('filter9'):
         e['filter'] = 2
     e['grid'] = base.startswith('grid')
-    if e['haze'] == 0.0 and e['dust'] == 0.0 or base.startswith(('ovl_', 'grid_')):
+    # #686: grid_mode draws air per cell; only ovl_ is suppressed
+    if e['haze'] == 0.0 and e['dust'] == 0.0 or base.startswith('ovl_'):
         e['time'] = None
     elif base in CLOCK_TIMES:
         e['time'] = CLOCK_TIMES[base]
@@ -554,7 +555,8 @@ class TestSceneFiles(testing.PyMOLTestCase):
 
     def testSceneFilesLoad(self):
         self.assertEqual(len(self.jobs['l2']), 64)
-        self.assertEqual(len(self.jobs['noair']), 31)
+        # #686: 30 jobs (suppressed_grid_rt0 removed)
+        self.assertEqual(len(self.jobs['noair']), 30)
         for which, spec in self.specs.items():
             self.assertEqual(spec['rig'], 'on', which)
             self.assertIsNone(spec['base'], which)
@@ -581,7 +583,7 @@ class TestSceneFiles(testing.PyMOLTestCase):
         for tag in ('zero_ortho_rt0', 'zero_oit_rt0', 'zero_oit_rt1', 'zero_grid_rt0',
                     'rigoff_air_surface_rt0', 'rigoff_air_surface_rt1',
                     'rigoff_air_cartoon_rt0', 'rigoff_air_cartoon_rt1', 'atmo_norig_rt0',
-                    'suppressed_grid_rt0', 'suppressed_ovl_rt0'):
+                    'suppressed_ovl_rt0'):
             self.assertIn(tag, tags)
 
     def testNewSettingsGuarded(self):
@@ -675,9 +677,6 @@ class TestSceneFiles(testing.PyMOLTestCase):
                 self.assertEqual(frame['time'], f32(e['time']), job.tag)
                 self.assertEqual(frame['scale'], 0.5 if e['res'] == 2 else 1.0, job.tag)
                 self.assertEqual(frame['shadow_filter'], 2 if e['filter'] == 2 else 1, job.tag)
-            if e['grid'] and e['haze']:
-                # the air is on: only the grid suppresses it
-                self.assertIsNotNone(lighting._light_air_frame(offscreen=True), job.tag)
             if base == 'ovl_air':
                 # nothing enabled at all: no air either
                 cmd.disable('_move_gizmo')
@@ -740,12 +739,9 @@ class TestSceneFiles(testing.PyMOLTestCase):
                 self.assertFramed(rig, job.tag)
                 self.assertAlmostEqual(rig['air']['haze'], 0.3, places=6)
                 self.assertAlmostEqual(rig['air']['dust'], 0.5, places=6)
-                if grid:
-                    # the air is on: only the grid suppresses it
-                    self.assertIsNotNone(lighting._light_air_frame(offscreen=True))
-                else:
-                    self.assertEqual(cmd.get_names('objects', enabled_only=1),
-                                     ['_move_gizmo'])
+                # #686: only the overlay case is left (a grid draws air)
+                self.assertEqual(cmd.get_names('objects', enabled_only=1),
+                                 ['_move_gizmo'])
             else:
                 self.fail('no expectation for %s' % job.tag)
             restore_shims()

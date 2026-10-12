@@ -236,31 +236,29 @@ void SceneLightsToneFill(PyMOLGlobals* G, pymol::LightRigBlock& block);
  * Haze and dust, drawn by the Metal renderer's air pass. SceneRenderMetal
  * calls SceneLightsAir() once per frame, after SceneLightsFrame(), and hands
  * the block to the renderer (setLightAir). No air without a rig that is on
- * with haze or dust (airSource), without geometry, or in grid mode.
+ * with haze or dust (airSource), or without geometry (grid frames draw air per
+ * cell, #686).
  */
 
-/// Overrides for _cmd.get_light_air_frame (CI has no renderer, grid or live
-/// clock): each unset field reads what a frame reads.
+/// Overrides for _cmd.get_light_air_frame (CI has no renderer or live clock):
+/// each unset field reads what a frame reads.
 struct SceneLightAirOptions {
   /// The frame renders offscreen (else Renderer::offscreenFrame()).
   std::optional<bool> offscreen;
   /// The live clock in seconds (else UtilGetSeconds).
   std::optional<double> wallSeconds;
-  /// The grid layout (else the scene's, G->Scene->grid).
-  const pymol::LightShadowGridOverride* grid = nullptr;
 };
 
 /**
  * This frame's air block, or nullopt when the frame draws no air. Tests, in
- * order and reading nothing before its turn: the frame's airSource; grid
- * mode (D8: no air in a grid); something to light (the overlay-free extent,
- * SceneGetLightShadowExtent, so overlays alone never get air); then reads
- * the dust clock (LightAirClock: metal_light_air_time, movie frame and
- * movie_fps, the renderer's offscreen flag, MoviePlaying on live frames only,
- * the wall clock) and metal_light_air_phase and metal_light_air_resolution and
+ * order and reading nothing before its turn: the frame's airSource; something to
+ * light (the overlay-free extent, SceneGetLightShadowExtent, so overlays alone
+ * never get air; grid frames draw air per cell, #686); then reads the dust
+ * clock (LightAirClock: metal_light_air_time, movie frame and movie_fps, the
+ * renderer's offscreen flag, MoviePlaying on live frames only, the wall clock)
+ * and metal_light_air_phase and metal_light_air_resolution and
  * metal_light_air_shadow_filter and metal_light_air_alpha, and packs
- * (LightAirPack). Writes nothing and
- * never requests a redraw.
+ * (LightAirPack). Writes nothing and never requests a redraw.
  */
 std::optional<pymol::LightAirBlock> SceneLightsAir(PyMOLGlobals* G,
     const SceneLightFrame& frame, const SceneLightAirOptions* options = nullptr);
@@ -268,9 +266,9 @@ std::optional<pymol::LightAirBlock> SceneLightsAir(PyMOLGlobals* G,
 /**
  * The dust moves on its own, so the live view must redraw for it
  * (LightAirAnimating): the rig is on, dust and dust_speed are above 0, the
- * clock is not pinned, no movie plays, no grid and there is geometry. Cheap
- * tests first, the extent last. Main thread (MoviePlaying). Writes nothing and
- * never requests a redraw: the app's redraw policy asks it (#618 D11).
+ * clock is not pinned, no movie plays and there is geometry. Cheap tests first,
+ * the extent last. Main thread (MoviePlaying). Writes nothing and never
+ * requests a redraw: the app's redraw policy asks it (#618 D11).
  */
 bool SceneLightsAirAnimating(PyMOLGlobals* G);
 

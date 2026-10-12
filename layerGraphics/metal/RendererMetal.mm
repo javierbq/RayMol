@@ -79,6 +79,7 @@ constexpr NSUInteger kRTLightShadowTextureIndex = 5;
 // or the maps' index in the lit libraries.
 constexpr NSUInteger kAirParamsBufferIndex = 0;
 constexpr NSUInteger kAirRigBufferIndex = 1;
+constexpr NSUInteger kAirCellBufferIndex = 2;
 constexpr NSUInteger kAirColorTextureIndex = 0;
 constexpr NSUInteger kAirDepthTextureIndex = 1;
 constexpr NSUInteger kAirMapsTextureIndex = 2;
@@ -2430,16 +2431,16 @@ static float3 post_air_light(float3 pEye, float3 toCam, float g, float phMax,
 // The view ray through uv in eye space: from the eye for a perspective
 // projection, parallel to -z from the near plane's point for an orthographic
 // one.
-static void post_air_ray(float2 uv, constant LightAirU& air, thread float3& ro,
-                         thread float3& rd) {
+static void post_air_ray(float2 uv, float4 cell, constant LightAirU& air,
+                         thread float3& ro, thread float3& rd) {
   if (air.view.y > 0.5) {
     const float3 p = post_eye_pos(uv, 0.5, air.proj.x, air.proj.y, air.proj.z,
-                                  air.proj.w, 1.0);
+                                  air.proj.w, 1.0, cell);
     ro = float3(p.xy, 0.0);
     rd = float3(0.0, 0.0, -1.0);
   } else {
     const float3 p = post_eye_pos(uv, 0.5, air.proj.x, air.proj.y, air.proj.z,
-                                  air.proj.w, 0.0);
+                                  air.proj.w, 0.0, cell);
     const float pl = length(p);
     ro = float3(0.0);
     rd = pl > 1e-3 ? p / pl : float3(0.0, 0.0, -1.0);
@@ -2533,7 +2534,7 @@ static float3 post_air_dust(float3 ro, float3 rd, float zLo, float zHi,
 // the march stopped. The air spans the rig frame's range, clamped to the
 // camera's near and far and stopped at the first surface; an empty or
 // non-finite span adds nothing, and so does a non-finite result.
-static float4 post_air_term(float2 uv, float2 frag, float d,
+static float4 post_air_term(float2 uv, float2 frag, float d, float4 cell,
     constant LightAirU& air, constant LightRigU& rig,
     depth2d_array<float> maps, sampler smp) {
   const float A = air.proj.x, B = air.proj.y, ortho = air.view.y;
@@ -2545,7 +2546,7 @@ static float4 post_air_term(float2 uv, float2 frag, float d,
   if (!(zHi > zLo) || !light_finite(zHi - zLo))
     return float4(0.0, 0.0, 0.0, zSurf);
   float3 ro, rd;
-  post_air_ray(uv, air, ro, rd);
+  post_air_ray(uv, cell, air, ro, rd);
   float3 add = float3(0.0);
   if (air.medium.x > 0.0)
     add += post_air_haze(ro, rd, zLo, zHi, frag, air, rig, maps, smp);
@@ -2586,11 +2587,12 @@ fragment float4 post_air_full(AirVOut in [[stage_in]],
     depth2d_array<float> maps [[texture(2)]],
     sampler smp [[sampler(1)]],
     constant LightAirU& air [[buffer(0)]],
-    constant LightRigU& rig [[buffer(1)]]) {
+    constant LightRigU& rig [[buffer(1)]],
+    constant float4& cell [[buffer(2)]]) {
   const uint2 px = uint2(in.position.xy);
   const float4 c = colorTex.read(px);
   const float d = depthTex.read(px);
-  const float4 t = post_air_term(in.uv, in.position.xy, d, air, rig, maps, smp);
+  const float4 t = post_air_term(in.uv, in.position.xy, d, cell, air, rig, maps, smp);
   return float4(post_air_finish(c.rgb, t.rgb, rig.tone.x), c.a);
 }
 
@@ -2625,14 +2627,17 @@ fragment float4 post_air_march(AirVOut in [[stage_in]],
     depth2d_array<float> maps [[texture(2)]],
     sampler smp [[sampler(1)]],
     constant LightAirU& air [[buffer(0)]],
-    constant LightRigU& rig [[buffer(1)]]) {
+    constant LightRigU& rig [[buffer(1)]],
+    constant float4& cell [[buffer(2)]]) {
   const uint2 tx = uint2(in.position.xy);
-  const uint2 lim = uint2(depthTex.get_width(), depthTex.get_height()) - 1;
+  const uint2 size = uint2(depthTex.get_width(), depthTex.get_height());
+  const uint2 lo = uint2(cell.xy * float2(size) + 0.5);
+  const uint2 hi = max(uint2(cell.zw * float2(size) + 0.5), lo + 1u) - 1u;
   const bool nearest = ((tx.x + tx.y) & 1u) == 0u;
-  uint2 px = min(tx * 2u, lim);
+  uint2 px = clamp(tx * 2u, lo, hi);
   float d = depthTex.read(px);
   for (uint k = 1u; k < 4u; ++k) {
-    const uint2 q = min(tx * 2u + uint2(k & 1u, k >> 1u), lim);
+    const uint2 q = clamp(tx * 2u + uint2(k & 1u, k >> 1u), lo, hi);
     const float dq = depthTex.read(q);
     if (nearest ? dq < d : dq > d) {
       d = dq;
@@ -2640,7 +2645,7 @@ fragment float4 post_air_march(AirVOut in [[stage_in]],
     }
   }
   const float2 frag = float2(px) + 0.5;
-  return post_air_term(frag / float2(lim + 1u), frag, d, air, rig, maps, smp);
+  return post_air_term(frag / float2(size), frag, d, cell, air, rig, maps, smp);
 }
 
 // The upsample at full resolution: a joint-bilateral filter over the four
@@ -2653,6 +2658,7 @@ fragment float4 post_air_march(AirVOut in [[stage_in]],
 fragment float4 post_air_upsample(AirVOut in [[stage_in]],
     texture2d<float> colorTex [[texture(0)]],
     depth2d<float> depthTex [[texture(1)]],
+    constant float4& cell [[buffer(2)]],
     texture2d<float> termTex [[texture(3)]],
     constant LightAirU& air [[buffer(0)]],
     constant LightRigU& rig [[buffer(1)]]) {
@@ -2662,7 +2668,15 @@ fragment float4 post_air_upsample(AirVOut in [[stage_in]],
   const float2 h = in.position.xy * 0.5 - 0.5;
   const float2 b = floor(h);
   const float2 f = h - b;
+  const uint2 size = uint2(depthTex.get_width(), depthTex.get_height());
+  const uint2 lo = uint2(cell.xy * float2(size) + 0.5);
+  const uint2 hi = max(uint2(cell.zw * float2(size) + 0.5), lo + 1u) - 1u;
   const int2 lim = int2(termTex.get_width(), termTex.get_height()) - 1;
+  // #686: a half-res texel belongs to the cell holding its first pixel
+  // (2t), as encodeAirPass's march scissor does, so a cell never reads
+  // the texel its neighbour marched at an odd boundary.
+  const int2 tlo = int2((lo + 1u) / 2u);
+  const int2 thi = max(min(int2(hi / 2u), lim), tlo);
   const float sigma = max(kAirDepthSigma * (air.range.y - air.range.x), 1e-3);
   float3 sum = float3(0.0);
   float wsum = 0.0;
@@ -2670,7 +2684,7 @@ fragment float4 post_air_upsample(AirVOut in [[stage_in]],
   float best = 3.0e38;
   for (int k = 0; k < 4; ++k) {
     const int2 o = int2(k & 1, k >> 1);
-    const float4 t = termTex.read(uint2(clamp(int2(b) + o, int2(0), lim)));
+    const float4 t = termTex.read(uint2(clamp(int2(b) + o, tlo, thi)));
     const float dz = abs(t.a - z);
     const float wb = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y);
     const float r = dz / sigma;
@@ -13680,8 +13694,8 @@ bool RendererMetal::ensureAirTerm(NSUInteger w, NSUInteger h)
 // value copies of the frame's blocks in its own index space and never touches
 // the lit draws' bindings (bindLightRig):
 // - the air block, with this frame's projection (ortho, A, B, X, Y);
-// - the rig block, with the whole slice as the shadow tile (a grid frame
-//   draws no air) and head.w (the maps this frame) 0 unless the maps were
+// - the rig block, with the whole slice as the shadow tile (or in grid_mode,
+//   each cell's tile, #686) and head.w (the maps this frame) 0 unless the maps were
 //   rendered (lightShadowsReady), so planned but unrendered maps are never
 //   read; _airNoMaps is bound in their place then.
 // At full resolution (view.x 1) one pass, post_air_full. At half (view.x 0.5)
@@ -13716,15 +13730,84 @@ id<MTLTexture> RendererMetal::encodeAirPass(id<MTLTexture> sceneSrc)
                     ensureAirTerm(dst.width, dst.height);
   if (!half)
     air.view[0] = 1.0f;
-  // What every air pass reads: the depth, the maps, the blocks, the samplers.
+
+  // #686: grid_mode draws the air once per cell (_rtFrameCells, setGridSlot):
+  // each draw scissored to its cell, its rays measured against the cell's
+  // rect and its shadow lookups in the cell's tile of each map (the tile
+  // bindLightRig gives the cell's lit draws). Without a grid, one draw over
+  // the frame with the whole slice, as before.
+  struct AirCell { float rect[4]; float tile[4]; };
+  std::vector<AirCell> cells;
+  const bool grid = !_rtFrameCells.empty();
+  if (!grid) {
+    cells.push_back({{0.0f, 0.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 1.0f, 1.0f}});
+  } else {
+    const int firstGridSlot = (int)_lightRigBlock.shadowGrid[1];
+    cells.reserve(_rtFrameCells.size());
+    for (const auto& c : _rtFrameCells) {
+      AirCell ac;
+      std::memcpy(ac.rect, c.rect, sizeof(ac.rect));
+      if (maps && firstGridSlot > 0) {
+        const pymol::LightShadowTile tile = pymol::LightShadowTileRect(
+            c.slot - firstGridSlot, (int)_lightRigBlock.shadowGrid[0],
+            _lightShadowArraySize);
+        std::memcpy(ac.tile, tile.uv, sizeof(ac.tile));
+      } else {
+        ac.tile[0] = 0.0f;
+        ac.tile[1] = 0.0f;
+        ac.tile[2] = 1.0f;
+        ac.tile[3] = 1.0f;
+      }
+      cells.push_back(ac);
+    }
+  }
+
+  // What every air pass reads: the depth, the maps, the air block, the samplers.
   auto bindAir = [&](id<MTLRenderCommandEncoder> e) {
     [e setFragmentTexture:_sceneDepth atIndex:kAirDepthTextureIndex];
     [e setFragmentTexture:mapsTex atIndex:kAirMapsTextureIndex];
     [e setFragmentSamplerState:_postSampler atIndex:kAirPostSamplerIndex];
     [e setFragmentSamplerState:_shadowSampler atIndex:kAirMapsSamplerIndex];
     [e setFragmentBytes:&air length:sizeof(air) atIndex:kAirParamsBufferIndex];
-    [e setFragmentBytes:&rig length:sizeof(rig) atIndex:kAirRigBufferIndex];
   };
+
+  auto drawCells = [&](id<MTLRenderCommandEncoder> e, NSUInteger targetW,
+                       NSUInteger targetH, bool isHalf) {
+    for (const auto& c : cells) {
+      if (grid) {
+        const long x0 = std::clamp(lround(c.rect[0] * dst.width), 0L, (long)dst.width);
+        const long y0 = std::clamp(lround(c.rect[1] * dst.height), 0L, (long)dst.height);
+        const long x1 = std::clamp(lround(c.rect[2] * dst.width), 0L, (long)dst.width);
+        const long y1 = std::clamp(lround(c.rect[3] * dst.height), 0L, (long)dst.height);
+        NSUInteger sx, sy, sw, sh;
+        if (!isHalf) {
+          sx = (NSUInteger)x0;
+          sy = (NSUInteger)y0;
+          sw = (NSUInteger)std::max(0L, x1 - x0);
+          sh = (NSUInteger)std::max(0L, y1 - y0);
+        } else {
+          // The texels whose first pixel (2t) is in the cell, so cells
+          // meeting on an odd pixel never share (and overwrite) a texel.
+          const long hx0 = std::clamp((x0 + 1L) / 2L, 0L, (long)targetW);
+          const long hy0 = std::clamp((y0 + 1L) / 2L, 0L, (long)targetH);
+          const long hx1 = std::clamp((x1 + 1L) / 2L, 0L, (long)targetW);
+          const long hy1 = std::clamp((y1 + 1L) / 2L, 0L, (long)targetH);
+          sx = (NSUInteger)hx0;
+          sy = (NSUInteger)hy0;
+          sw = (NSUInteger)std::max(0L, hx1 - hx0);
+          sh = (NSUInteger)std::max(0L, hy1 - hy0);
+        }
+        if (sw == 0 || sh == 0)
+          continue;
+        [e setScissorRect:MTLScissorRect{sx, sy, sw, sh}];
+      }
+      std::memcpy(rig.shadowTile, c.tile, sizeof(rig.shadowTile));
+      [e setFragmentBytes:&rig length:sizeof(rig) atIndex:kAirRigBufferIndex];
+      [e setFragmentBytes:c.rect length:sizeof(c.rect) atIndex:kAirCellBufferIndex];
+      [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    }
+  };
+
   if (half) {
     MTLRenderPassDescriptor* md = [MTLRenderPassDescriptor renderPassDescriptor];
     md.colorAttachments[0].texture = _airTerm;
@@ -13733,12 +13816,17 @@ id<MTLTexture> RendererMetal::encodeAirPass(id<MTLTexture> sceneSrc)
     id<MTLRenderCommandEncoder> em = [_cmdBuffer renderCommandEncoderWithDescriptor:md];
     [em setRenderPipelineState:_airMarchPipeline];
     bindAir(em);
-    [em drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    drawCells(em, _airTerm.width, _airTerm.height, true);
     [em endEncoding];
+  }
+  if (grid) {
+    id<MTLBlitCommandEncoder> b = [_cmdBuffer blitCommandEncoder];
+    [b copyFromTexture:sceneSrc toTexture:dst];
+    [b endEncoding];
   }
   MTLRenderPassDescriptor* pd = [MTLRenderPassDescriptor renderPassDescriptor];
   pd.colorAttachments[0].texture = dst;
-  pd.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+  pd.colorAttachments[0].loadAction = grid ? MTLLoadActionLoad : MTLLoadActionDontCare;
   pd.colorAttachments[0].storeAction = MTLStoreActionStore;
   id<MTLRenderCommandEncoder> ea = [_cmdBuffer renderCommandEncoderWithDescriptor:pd];
   [ea setRenderPipelineState:(half ? _airUpsamplePipeline[h] : _airFullPipeline[h])];
@@ -13746,7 +13834,7 @@ id<MTLTexture> RendererMetal::encodeAirPass(id<MTLTexture> sceneSrc)
   [ea setFragmentTexture:sceneSrc atIndex:kAirColorTextureIndex];
   if (half)
     [ea setFragmentTexture:_airTerm atIndex:kAirTermTextureIndex];
-  [ea drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+  drawCells(ea, dst.width, dst.height, false);
   [ea endEncoding];
   encodeAirAlpha(sceneSrc, dst, air.view[2] > 0.5f);
   return dst;

@@ -461,13 +461,6 @@ std::optional<pymol::LightAirBlock> SceneLightsAir(PyMOLGlobals* G,
   if (!frame.airSource)
     return std::nullopt;
 
-  // D8: no air in grid mode (each cell has its own view; the pass marches
-  // one ray per full-frame pixel).
-  const bool grid = options && options->grid ? options->grid->active
-                                             : G->Scene->grid.active;
-  if (grid)
-    return std::nullopt;
-
   // D7: no air without geometry. The overlay-free extent (cached), so a
   // scene holding only gadgets or the Move gizmo gets none.
   float mn[3], mx[3];
@@ -518,15 +511,12 @@ bool SceneLightsAirAnimating(PyMOLGlobals* G)
   const double pinned = SettingGetGlobal_f(G, cSetting_metal_light_air_time);
   if (pinned >= 0.0)
     return false;
-  const bool grid = G->Scene->grid.active;
-  if (grid)
-    return false;
   const bool playing = MoviePlaying(G) != 0;
   if (playing)
     return false;
   float mn[3], mx[3];
   const bool geometry = SceneGetLightShadowExtent(G, mn, mx);
-  return pymol::LightAirAnimating(rig->air, pinned, playing, geometry, grid);
+  return pymol::LightAirAnimating(rig->air, pinned, playing, geometry);
 }
 
 /* ---- Studio shadow casters (#616) ---------------------------------------- */
