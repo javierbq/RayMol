@@ -204,6 +204,15 @@ enum LightsFloatLayout {
         return max(clearance, keyboardOverlap + LightsFloatMetrics.gap)
     }
 
+    /// The room a bottom-trailing orbit card takes at the bottom of the
+    /// trailing column: its height and the gap, less what the column's
+    /// lift above the keyboard (#725) already clears (the card stays put,
+    /// under the keyboard). Unlifted (`trailingPadding` is the card's own
+    /// clearance) it is `cardHeight + gap`.
+    static func trailingCardRoom(cardHeight: CGFloat, cardClearance: CGFloat, trailingPadding: CGFloat) -> CGFloat {
+        max(0, cardClearance + cardHeight + LightsFloatMetrics.gap - trailingPadding)
+    }
+
     /// #718: whether an open CameraDock collapses the orbit card to its
     /// header: the card is in a bottom corner, the dock lifts it (the dock's
     /// clearance beats the clearance without it), and the expanded card's
@@ -436,7 +445,11 @@ struct LightsFloatingTools: View {
                     .padding(.top, inspectorShown ? gap : 0)
                     .layoutPriority(1)
                 Spacer(minLength: 0)
-                if corner == .bottomTrailing && cardShown { Spacer().frame(height: cardHeight + gap) }
+                if corner == .bottomTrailing && cardShown {
+                    Spacer().frame(height: LightsFloatLayout.trailingCardRoom(cardHeight: cardHeight,
+                                                                              cardClearance: cardClearance,
+                                                                              trailingPadding: trailingPadding))
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             .padding(inset)

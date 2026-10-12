@@ -942,4 +942,16 @@ final class LightsFieldFocusReportTests: XCTestCase {
         // focused with overlap 20 and clearance 58 -> 58
         XCTAssertEqual(LightsFloatLayout.trailingBottomPadding(clearance: clearance, focused: true, keyboardOverlap: 20), clearance)
     }
+
+    func testABottomTrailingCardOnlyTakesTheRoomTheLiftLeaves() {
+        let gap = LightsFloatMetrics.gap
+        // Unlifted: the card's height and the gap, as before #725.
+        XCTAssertEqual(LightsFloatLayout.trailingCardRoom(cardHeight: 252, cardClearance: 58, trailingPadding: 58),
+                       252 + gap)
+        // Lifted part of the way: only the card's part above the lift.
+        XCTAssertEqual(LightsFloatLayout.trailingCardRoom(cardHeight: 252, cardClearance: 58, trailingPadding: 200),
+                       58 + 252 + gap - 200)
+        // Lifted past the card (it is under the keyboard): no room.
+        XCTAssertEqual(LightsFloatLayout.trailingCardRoom(cardHeight: 252, cardClearance: 58, trailingPadding: 400), 0)
+    }
 }
