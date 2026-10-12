@@ -63,6 +63,34 @@ struct LightsSheetScrollTargetKey: PreferenceKey {
     }
 }
 
+/// The card's own rows keep the focused field in view (#725): on the iPad
+/// float the column shrinks above the keyboard after a field takes the
+/// focus, so the card's ScrollView scrolls the focused row
+/// (LightsSheetScrollTargetKey) back into view when the focus moves and when
+/// its height changes.
+private struct AtmosphereCardFocusScroll: ViewModifier {
+    var proxy: ScrollViewProxy
+    @State private var focusedRow: String?
+    @State private var height: CGFloat = 0
+
+    func body(content: Content) -> some View {
+        content
+            .background(GeometryReader { g in
+                Color.clear
+                    .onAppear { height = g.size.height }
+                    .onChange(of: g.size.height) { _, new in height = new }
+            })
+            .onPreferenceChange(LightsSheetScrollTargetKey.self) { focusedRow = $0 }
+            .onChange(of: focusedRow) { reveal() }
+            .onChange(of: height) { reveal() }
+    }
+
+    private func reveal() {
+        guard let focusedRow else { return }
+        proxy.scrollTo(focusedRow)
+    }
+}
+
 /// The card's identifiers and fixed strings. Pure.
 enum AtmosphereCardIDs {
     static let card = "lights.atmosphere"
@@ -173,14 +201,17 @@ struct LightsAtmosphereCard: View {
                 .padding(.horizontal, 12).padding(.vertical, touchMinimum > 0 ? 0 : 8)
             if !collapsed {
                 Rectangle().fill(style.text.opacity(0.12)).frame(height: 0.5)
-                ScrollView(.vertical) {
-                    content(state)
-                        .padding(.horizontal, 12).padding(.vertical, 10)
-                        .background(GeometryReader { g in
-                            Color.clear.preference(key: AtmosphereContentHeightKey.self, value: g.size.height)
-                        })
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical) {
+                        content(state)
+                            .padding(.horizontal, 12).padding(.vertical, 10)
+                            .background(GeometryReader { g in
+                                Color.clear.preference(key: AtmosphereContentHeightKey.self, value: g.size.height)
+                            })
+                    }
+                    .scrollBounceBehavior(.basedOnSize)
+                    .modifier(AtmosphereCardFocusScroll(proxy: proxy))
                 }
-                .scrollBounceBehavior(.basedOnSize)
                 .frame(maxHeight: contentHeight)
                 .onPreferenceChange(AtmosphereContentHeightKey.self) { height in
                     if height > 0, abs(height - contentHeight) > 0.5 { contentHeight = height }
@@ -427,9 +458,10 @@ struct AtmosphereSliderRow: View {
         .onChange(of: focused) { _, now in
             if now { editor.begin() } else { commit() }
         }
-        // The iPhone sheet and the side panel keep the scene's size while a
-        // field has the keyboard (#623), and scroll the focused row into
-        // view above it.
+        // The iPhone sheet, the side panel and the iPad float keep the scene's
+        // size while a field has the keyboard (#623, #725); the sheet and the
+        // card's own rows (AtmosphereCardFocusScroll) scroll the focused row
+        // into view above it.
         .preference(key: LightsFieldFocusKey.self, value: focused)
         .preference(key: LightsSheetScrollTargetKey.self, value: focused ? AtmosphereCardIDs.row(p) : nil)
     }

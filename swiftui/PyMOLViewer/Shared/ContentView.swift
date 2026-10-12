@@ -197,11 +197,12 @@ struct ContentView: View {
     // time Lights mode opens (expanded under the DEBUG `expand`), never
     // persisted. `lightsSheetMoving` is true only for the one snap after a
     // release (the drawable is frozen meanwhile and the gizmo fades);
-    // `lightsFieldFocused` while an Orbit or Pitch field of the sheet or the
-    // side panel has the keyboard (the viewport then keeps its size). The
-    // pane overrides bring the console or the sequence strip back beside the
-    // portrait sheet for the rest of the mode (LightsPaneRule). The header,
-    // rows, room and side sizes are what the tools measured.
+    // `lightsFieldFocused` while an Orbit, Pitch or Atmosphere field of the
+    // sheet, the side panel or the iPad float has the keyboard (the viewport
+    // then keeps its size, #623, #725). The pane overrides bring the console
+    // or the sequence strip back beside the portrait sheet for the rest of
+    // the mode (LightsPaneRule). The header, rows, room and side sizes are
+    // what the tools measured.
     @State private var lightsSheetDetent: LightsSheetDetent = .compact
     @State private var lightsSheetMoving = false
     @State private var lightsFieldFocused = false
@@ -1858,6 +1859,11 @@ struct ContentView: View {
                 (hSize == .regular && vSize == .regular) ? []      // iPad: standard safe area
                 : isPhoneLandscape ? .all                          // iPhone landscape: island letterbox handled inline
                 : [.bottom, .horizontal])                          // iPhone portrait: keep the rail/chrome below the status bar + island
+            // A field of the iPad float with the keyboard (#725): the size the
+            // layouts read holds too, so the panes sized from it (the portrait
+            // bottom inspector, the console) and the viewport between them keep
+            // their heights. The layouts' own rule covers what is inside them.
+            .ignoresSafeArea(lightsFieldFocused && lightsPlacement == .floating ? .keyboard : [], edges: .bottom)
             #if os(iOS)
             // Track the real per-side window safe-area inset (correct across a
             // landscapeLeft<->Right flip) for the landscape panel's trailing inset.
@@ -2627,8 +2633,8 @@ struct ContentView: View {
                         }
                 }
             }
-            // A light field with the keyboard (#623): the viewport and the
-            // side panel keep their size (only the side panel sets it).
+            // A light field with the keyboard (#623, #725): the viewport, the
+            // side panel and the float keep their size.
             .ignoresSafeArea(lightsFieldFocused ? .keyboard : [], edges: .bottom)
         } else {
             // PORTRAIT (iPad): console + sequence ABOVE the viewer; Objects +
@@ -2704,6 +2710,8 @@ struct ContentView: View {
                         .animation(.easeInOut(duration: 0.25), value: inspectorTab)
                 }
             }
+            // A light field with the keyboard (#725): the viewport keeps its size.
+            .ignoresSafeArea(lightsFieldFocused ? .keyboard : [], edges: .bottom)
         }
     }
 
@@ -4557,7 +4565,8 @@ struct ContentView: View {
                             onEnableSceneShadows: { engine.enableSceneShadows() },
                             onFrames: { frames in
                                 if frames != lightsFloatFrames { lightsFloatFrames = frames }
-                            })
+                            },
+                            onFieldFocus: { lightsFieldFocused = $0 })
             .onDisappear { lightsFloatFrames = nil }
     }
     #endif

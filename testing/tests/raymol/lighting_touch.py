@@ -834,23 +834,36 @@ class TestTouchSource(testing.PyMOLTestCase):
         self.assertEqual(len(re.findall(r'engine\.suppressDrawableResize\s*=\s*moving', content)), 1)
 
     def testAFocusedLightFieldKeepsTheViewport(self):
-        """While an Orbit or Pitch field of the sheet or the side panel has
-        the keyboard, the viewport-plus-tools container of each phone layout
-        ignores it (an unconditional modifier with a dynamic argument); only
-        the tools' onFieldFocus sets the flag (the iPad card's fields keep
-        today's keyboard avoidance)."""
+        """While an Orbit, Pitch or Atmosphere field of the sheet, the side
+        panel or the iPad float has the keyboard, the viewport-plus-tools
+        container of each layout ignores it (an unconditional modifier with
+        a dynamic argument; both iPad orientations, #725), and on the float
+        the GeometryReader the layouts are sized from ignores it too. Only
+        the tools' onFieldFocus sets the flag; the float forwards
+        LightsFieldFocusKey like the sheet does and lifts its trailing
+        column above the keyboard."""
         content = self.read(CONTENT_VIEW)
         rule = '.ignoresSafeArea(lightsFieldFocused ? .keyboard : [], edges: .bottom)'
-        self.assertEqual(content.count(rule), 3)
+        self.assertEqual(content.count(rule), 4)
         for signature in ('private func iPhoneLayout(geo: GeometryProxy)',
-                          'private func iPhoneLandscapeLayout(geo: GeometryProxy)',
-                          'private func iPadMacStyleLayout(geo: GeometryProxy)'):
+                          'private func iPhoneLandscapeLayout(geo: GeometryProxy)'):
             with self.subTest(signature):
-                self.assertIn(rule, body(content, signature))
-        self.assertEqual(content.count('onFieldFocus: { lightsFieldFocused = $0 }'), 2)
+                self.assertEqual(body(content, signature).count(rule), 1)
+        self.assertEqual(body(content, 'private func iPadMacStyleLayout(geo: GeometryProxy)').count(rule), 2)
+        self.assertIn('.ignoresSafeArea(lightsFieldFocused && lightsPlacement == .floating ? .keyboard : [], '
+                      'edges: .bottom)', body(content, 'private var iPadOSLayout: some View'))
+        self.assertEqual(content.count('onFieldFocus: { lightsFieldFocused = $0 }'), 3)
+        self.assertIn('onFieldFocus: { lightsFieldFocused = $0 }',
+                      body(content, 'private var lightsFloatingTools: some View'))
         self.assertNotIn('onPreferenceChange(LightsFieldFocusKey', content)
         self.assertIn('if lightsFieldFocused { lightsFieldFocused = false }',
                       body(content, 'private func endLightsSheetMotion()'))
+        float = self.read(FLOAT)
+        self.assertIn('.onPreferenceChange(LightsFieldFocusKey.self)', float)
+        self.assertIn('onFieldFocus(focused)', float)
+        self.assertIn('onFieldFocus(false)', float)
+        self.assertIn('.modifier(LightsKeyboardTopReader(top: $keyboardTop))', float)
+        self.assertIn('.padding(.bottom, trailingPadding)', float)
 
     def testThePhoneLogLines(self):
         """A DEBUG LightsLayout line names the tools, the scene, the sheet's
@@ -1087,13 +1100,15 @@ class TestTouchSource(testing.PyMOLTestCase):
 
     def testTheUITestsCoverEveryGesture(self):
         """LightsGestureUITests runs the off-target camera gestures, the knob
-        pinch and press-hold-drag, the iPhone grabber and the iPad grip,
+        pinch and press-hold-drag, the iPhone grabber, the iPad grip and
+        the iPad float's field focus (the viewport keeps its frame, #725),
         reads the probe and the viewport by identifier, and skips (with the
         reason) when a knob is unreachable instead of passing silently."""
         text = self.read(UI_TESTS)
         for name in ('testOffTargetDragRotates', 'testOffTargetPinchZooms', 'testOffTargetTwistRolls',
                      'testKnobPinchChangesOnlyTheRadius', 'testPressHoldDragOnAKnobDrags',
-                     'testGrabberDragExpandsTheSheet', 'testGripDragMovesTheFloat'):
+                     'testGrabberDragExpandsTheSheet', 'testGripDragMovesTheFloat',
+                     'testFloatFieldFocusKeepsTheViewport'):
             with self.subTest(name):
                 self.assertIn('func %s() throws' % name, text)
         for needle in ('"lightsProbe"', '"raymol.viewport"', '"lights.gizmo.knob."',

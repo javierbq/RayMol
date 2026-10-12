@@ -749,8 +749,8 @@ struct LightAngleFieldRow: View {
         .onChange(of: focused) { _, now in
             if now { editor.begin(light: lightName) } else { commit() }
         }
-        // The iPhone sheet and the side panel keep the scene's size while a
-        // field has the keyboard (#623): they read this.
+        // The iPhone sheet, the side panel and the iPad float keep the scene's
+        // size while a field has the keyboard (#623, #725): they read this.
         .preference(key: LightsFieldFocusKey.self, value: focused)
     }
 
@@ -919,8 +919,8 @@ struct LightsChip: View {
 // MARK: - The card
 
 /// True while an Orbit or Pitch field has the keyboard focus. The iPhone
-/// sheet and the side panel (#623) forward it, so the viewport does not
-/// resize for the keyboard while a Lights field is edited.
+/// sheet, the side panel (#623) and the iPad float (#725) forward it, so the
+/// viewport does not resize for the keyboard while a Lights field is edited.
 struct LightsFieldFocusKey: PreferenceKey {
     static var defaultValue = false
     static func reduce(value: inout Bool, nextValue: () -> Bool) {
