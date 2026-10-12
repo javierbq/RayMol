@@ -26,6 +26,7 @@ APP_SHORTCUTS = {
     'CTRL-D': 'Enter/Exit Design Mode (Tools menu)',
     'CTRL-P': 'Enter/Exit Predict Mode (Tools menu)',
     'CTRL-B': 'Binder Design (Tools menu)',
+    'CTRL-L': 'Enter/Exit Lights Mode (Tools menu)',
 }
 
 # CTRL-D only exists in RAYMOL_MPNN builds, so the caller says whether the

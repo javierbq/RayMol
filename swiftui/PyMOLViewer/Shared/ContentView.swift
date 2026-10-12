@@ -3899,8 +3899,8 @@ struct ContentView: View {
         .disabled(isDesignLocked)
         .keyboardShortcut(AppShortcuts.measureTool)
 
-        // Lights (#619): raises the Lights bar. No shortcut: ⌃L is PyMOL's
-        // CTRL-L, and this row has no AppShortcuts constant to mirror.
+        // Lights (#619): raises the Lights bar. ⌃L since #873 (PyMOL's CTRL-L
+        // ligand zoom moved to CTRL-G).
         Button {
             engine.setInteractionMode(engine.interactionMode == .lights ? .viewing : .lights)
         } label: {
@@ -3911,6 +3911,7 @@ struct ContentView: View {
             }
         }
         .disabled(isDesignLocked)
+        .keyboardShortcut(AppShortcuts.lightsTool)
 
         #if RAYMOL_MPNN
         // Also gated on DesignAvailability: Design needs a minimum iOS version, and
@@ -3984,7 +3985,7 @@ struct ContentView: View {
         // register (#360), so the tooltip cannot drift from the menu.
         var parts = ["Move objects (\(AppShortcuts.hint(AppShortcuts.moveTool)))",
                      "Measure distances (\(AppShortcuts.hint(AppShortcuts.measureTool)))",
-                     "Light the scene"]
+                     "Light the scene (\(AppShortcuts.hint(AppShortcuts.lightsTool)))"]
         #if RAYMOL_MPNN
         if DesignAvailability.isSupported {
             parts.append("Design with MPNN (\(AppShortcuts.hint(AppShortcuts.designTool)))")
