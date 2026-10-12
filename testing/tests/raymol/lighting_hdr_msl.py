@@ -115,7 +115,7 @@ MASTER_054B525 = {
     'kMaterialImpostorSrc': 'ad8142cda60dc979',
     'kMaterialSrc': '4f4f1e7f4c703bad',
     'kPostSrc': 'a3236d6afc3a38b1',  # #689: post_ssao_fog fades toward the bg_gradient
-    'kRTSrc': 'c434543f02ae5906',  # #689: rt_composite's fog fades toward the bg_gradient
+    'kRTSrc': '4c0d300690b534ca',  # #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps
     'kScreenOverlaySrc': '9f09ecbdd4a9ddfa',  # #689: ramp gadgets drawn after the post chain
     # #635: retaken after sphere glass coverage split
     'kSphereImpostorSrc': '70122d7482dedf17',
@@ -137,7 +137,7 @@ EDIT_COUNTS = {
     'kMaterialSrc': {'functions': 5, 'declarations': 3, 'finish_signature': 1,
                      'finish_body': 1, 'apply_exposure': 2, 'glints_body': 1},
     'kRTSrc': {'functions': 4, 'declarations': 3, 'finish_signature': 1,
-               'finish_body': 1, 'hit_exposure': 1},
+               'finish_body': 1, 'hit_exposure': 2},
     'kVBOSrc': {'vbo_cover': 1},
     'kCylinderImpostorSrc': {'cyl_cover': 1},
     # #635: sphere glass coverage split uses the same HDR cover statement as cylinder
@@ -524,9 +524,13 @@ class TestSpecialisers(HdrMSLCase):
                             ('RendererMetal::buildRTRigComposite', 'hdr')):
             fn = cpp_function(self.mm, name)
             self.assertEqual(self.setting(fn, 'kRTLightHdrConstantIndex'), value, name)
+        for name, value in (('RendererMetal::buildRTPipelines', 'false'),
+                            ('RendererMetal::buildRTRigComposite', 'shadow')):
+            fn = cpp_function(self.mm, name)
+            self.assertEqual(self.setting(fn, 'kRTLightShadowConstantIndex'), value, name)
         self.assertRegex(self.code, r'RendererMetal::buildRTRigComposite\(bool transparent, '
-                                    r'bool hdr\)')
-        self.assertRegex(self.header, r'buildRTRigComposite\(bool transparent, bool hdr\);')
+                                    r'bool hdr, bool shadow\)')
+        self.assertRegex(self.header, r'buildRTRigComposite\(bool transparent, bool hdr, bool shadow\);')
         # no other specialisation of these libraries: each site sets both
         # constants, and every one is in a function named above
         self.assertEqual(self.code.count('atIndex:kLightHdrConstantIndex]'),
@@ -534,6 +538,8 @@ class TestSpecialisers(HdrMSLCase):
         self.assertEqual(self.code.count('atIndex:kLightHdrConstantIndex]'),
                          len(MATERIAL_SPECIALISERS))
         self.assertEqual(self.code.count('atIndex:kRTLightHdrConstantIndex]'),
+                         self.code.count('atIndex:kRTLightRigConstantIndex]'))
+        self.assertEqual(self.code.count('atIndex:kRTLightShadowConstantIndex]'),
                          self.code.count('atIndex:kRTLightRigConstantIndex]'))
         self.assertEqual(self.code.count('atIndex:kRTLightHdrConstantIndex]'),
                          len(RT_SPECIALISERS))
@@ -583,7 +589,7 @@ class TestSpecialisers(HdrMSLCase):
         # frame's choice
         rt = [squash(r) for r in re.findall(r'(?<![\w:])buildRTRigComposite\(([^;]*)\);',
                                             code)]
-        self.assertEqual(rt, ['doRTTrans,_lightHdrOn'])
+        self.assertEqual(rt, ['doRTTrans,_lightHdrOn,rtShadow'])
 
     def testNothingUnspecialisedReachesIt(self):
         """A function fetched with plain newFunctionWithName: never reads
@@ -644,10 +650,10 @@ class TestCaches(HdrMSLCase):
                             r' = \{\};')
         # one tried flag for both tube variants
         self.assertRegex(h, r'bool _bezierTubeRigTried = false;')
-        # Part 5: the RT rig composites and their tried flags [transparent][hdr]
-        self.assertRegex(h, r'id<MTLRenderPipelineState> _rtResolvePipelineRig\[2\]\[2\]'
+        # Part 5: the RT rig composites and their tried flags [transparent][hdr][shadow] (#664)
+        self.assertRegex(h, r'id<MTLRenderPipelineState> _rtResolvePipelineRig\[2\]\[2\]\[2\]'
                             r' = \{\};')
-        self.assertRegex(h, r'bool _rtRigTried\[2\]\[2\] = \{\};')
+        self.assertRegex(h, r'bool _rtRigTried\[2\]\[2\]\[2\] = \{\};')
         self.assertNotRegex(h, r'_rtResolvePipelineTRig|_rtRigTTried')
         # Part 5: the air's composites [hdr], the march and the attempt single
         for member in ('_airFullPipeline', '_airUpsamplePipeline'):
@@ -795,26 +801,31 @@ class TestCaches(HdrMSLCase):
 
     def testRTRigComposites(self):
         """Part 5: the RT rig composite for the frame's kind (transparent or
-        not, HDR or knee), each slot tried once, built from the retained RT
-        library (no compile of its own), every slot released."""
+        not, HDR or knee, shadows or unshadowed), each slot tried once, built
+        from the retained RT library (no compile of its own), every slot released."""
         build = cpp_function(self.mm, 'RendererMetal::buildRTRigComposite')
         self.assertRegex(build, r'^\{\s*if \(!_rtLib\)\s*return nil;')
         self.assertNotIn('newLibraryWithSource:', build)
         self.assertEqual(build.count('[_rtLib newFunctionWithName:'), 2)
         self.assertIn('hdr ? " HDR" : ""', build)
+        self.assertIn('shadow ? " shadow" : ""', build)
         post = cpp_function(self.mm, 'RendererMetal::runPostChain')
         block = re.search(r'if\s*\(\s*_lightRigOn\s*&&\s*u\.matCount\s*>\s*0\.5f\s*\)\s*\{',
                           post)
         self.assertIsNotNone(block)
         inside = post[block.end():_msl.match_brace(post, block.end() - 1)]
-        self.assertRegex(inside, r'^\s*const int rigT = doRTTrans \? 1 : 0;\s*'
+        self.assertRegex(inside, r'^\s*(?://[^\n]*\n\s*)*'
+                                 r'const bool rtShadow = lightShadowsReady\(\) && '
+                                 r'\(int\)_lightRigBlock\.shadowGrid\[1\] <= 0;\s*'
+                                 r'const int rigT = doRTTrans \? 1 : 0;\s*'
                                  r'const int rigH = _lightHdrOn \? 1 : 0;\s*'
+                                 r'rigS = rtShadow \? 1 : 0;\s*'
                                  r'id<MTLRenderPipelineState>\* rigComposite = '
-                                 r'&_rtResolvePipelineRig\[rigT\]\[rigH\];\s*'
-                                 r'bool\* tried = &_rtRigTried\[rigT\]\[rigH\];\s*'
+                                 r'&_rtResolvePipelineRig\[rigT\]\[rigH\]\[rigS\];\s*'
+                                 r'bool\* tried = &_rtRigTried\[rigT\]\[rigH\]\[rigS\];\s*'
                                  r'if \(!\*rigComposite && !\*tried\) \{\s*\*tried = true;\s*'
                                  r'\*rigComposite = buildRTRigComposite\(doRTTrans, '
-                                 r'_lightHdrOn\);\s*\}')
+                                 r'_lightHdrOn,\s*rtShadow\);\s*\}')
         # the slots are read nowhere else
         for member in ('_rtResolvePipelineRig', '_rtRigTried'):
             owners = set()
@@ -827,7 +838,8 @@ class TestCaches(HdrMSLCase):
         dtor = cpp_function(self.mm, 'RendererMetal::~RendererMetal')
         self.assertRegex(dtor, r'for \(int t = 0; t < 2; \+\+t\)\s*'
                                r'for \(int h = 0; h < 2; \+\+h\)\s*'
-                               r'\[_rtResolvePipelineRig\[t\]\[h\] release\];')
+                               r'for \(int s = 0; s < 2; \+\+s\)\s*'
+                               r'\[_rtResolvePipelineRig\[t\]\[h\]\[s\] release\];')
 
     def testAirFromOneCompile(self):
         """Part 5: ensureAirPipelines makes both kLightHdr variants of the two

@@ -1369,14 +1369,15 @@ private:
       id<MTLRenderPipelineState>* composite);
   void releaseRayTracingTransAS();
   // The light rig on traced reflection hits (#613): rt_composite specialised
-  // with kRTLightRig, [transparent][hdr] (kRTTrans; kLightHdr, #624: 1 for an
-  // HDR frame, 0 for the 8-bit knee), each built from the retained _rtLib the
-  // first time a rig-on frame of that kind has something reflective (one
-  // attempt each, _rtRigTried). Used only then; every other frame keeps
+  // with kRTLightRig, [transparent][hdr][shadow] (kRTTrans; kLightHdr, #624: 1
+  // for an HDR frame, 0 for the 8-bit knee; kRTLightShadow, #664: 1 for studio
+  // shadows on reflection hits, 0 otherwise), each built from the retained
+  // _rtLib the first time a rig-on frame of that kind has something reflective
+  // (one attempt each, _rtRigTried). Used only then; every other frame keeps
   // _rtResolvePipeline / _rtResolvePipelineT.
-  id<MTLRenderPipelineState> _rtResolvePipelineRig[2][2] = {};
-  bool _rtRigTried[2][2] = {};
-  id<MTLRenderPipelineState> buildRTRigComposite(bool transparent, bool hdr);
+  id<MTLRenderPipelineState> _rtResolvePipelineRig[2][2][2] = {};
+  bool _rtRigTried[2][2][2] = {};
+  id<MTLRenderPipelineState> buildRTRigComposite(bool transparent, bool hdr, bool shadow);
 
   // Drop the cached RT geometry derived from a CPU buffer that is about to be
   // freed (or whose contents changed). Handles both primary and alias keys.

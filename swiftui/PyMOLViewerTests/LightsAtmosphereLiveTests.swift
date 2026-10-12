@@ -1385,3 +1385,212 @@ final class ClassicShadowImpostorCasterTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(off - on, 30, "a light straight above casts no shadow")
     }
 }
+
+/// Issue #664: Traced reflection hits ignore studio shadows.
+/// At `metal_raytrace 1`, `rt_composite` traces a reflection ray per reflective
+/// pixel. When the studio light rig is on, reflected hit points receive the
+/// studio shadows under `kRTLightShadow` so a metallic mirror shows reflected
+/// geometry darkened by the studio shadow as it is in the raster image.
+@MainActor
+final class ReflectionStudioShadowTests: XCTestCase {
+    private static let width = 400
+    private static let height = 300
+
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var sceneBuilt = false
+    private var savedView: [Float]?
+
+    override func tearDown() {
+        if sceneBuilt {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.delete('rs664*')
+            for _n, _v in globals().pop('_rs664_settings', {}).items():
+                _c.set(_n, _v)
+            _c.set_lights(globals().pop('_rs664_rig', None))
+            for _n in globals().pop('_rs664_enabled', []):
+                _c.enable(_n)
+            """)
+            sceneBuilt = false
+        }
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        super.tearDown()
+    }
+
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            throw XCTSkip("the PyMOL engine did not come up under the test host")
+        }
+    }
+
+    private func buildScene(shadow: Bool) {
+        savedView = engine.captureView()
+        sceneBuilt = true
+        engine.runPython("""
+        from pymol import cmd as _c
+        _rs664_enabled = _c.get_names('objects', enabled_only=1)
+        _rs664_settings = {_n: _c.get_setting_tuple(_n)[1][0] for _n in (
+            'bg_rgb', 'depth_cue', 'metal_shadows', 'metal_rt_transparent',
+            'metal_temporal_ao', 'metal_rt_ao_intensity', 'metal_rt_ao_radius')}
+        _rs664_settings['bg_rgb'] = list(_c.get_setting_tuple('bg_rgb')[1])
+        _rs664_rig = _c.get_lights()
+        for _n in _rs664_enabled:
+            _c.disable(_n)
+        _c.set('bg_rgb', [0.0, 0.0, 0.0])
+        _c.set('depth_cue', 0)
+        _c.set('metal_temporal_ao', 0)
+        _c.set('metal_shadows', 1)
+        _c.set('metal_rt_transparent', 0)
+
+        # Mirror sphere: metallic, reflect 1.0, tint 0.0, rough 0.0
+        _c.pseudoatom('rs664m', pos=[4.0, 0.0, 0.0], vdw=4.5)
+        _c.show_as('spheres', 'rs664m')
+        _c.set('sphere_material', 'metallic', 'rs664m')
+        _c.set('sphere_material_reflect', 1.0, 'rs664m')
+        _c.set('sphere_material_tint', 0.0, 'rs664m')
+        _c.set('sphere_material_rough', 0.0, 'rs664m')
+
+        # Target sphere: grey80
+        _c.pseudoatom('rs664t', pos=[-4.0, 0.0, -2.0], vdw=3.5)
+        _c.show_as('spheres', 'rs664t')
+        _c.color('grey80', 'rs664t')
+
+        # Caster sphere between key light and target
+        _c.pseudoatom('rs664c', pos=[-7.3, 2.4, 3.7], vdw=2.2)
+        _c.show_as('spheres', 'rs664c')
+        _c.color('grey80', 'rs664c')
+
+        _c.set_lights({'enabled': True, 'ambient': 0.06, 'centre': [0.0, 0.0, 0.0], 'size': 20.0,
+                       'lights': [{'name': 'key', 'anchor': 'camera', 'orbit': -30.0, 'pitch': 20.0,
+                                   'radius': 3.0, 'beam': 80.0, 'highlight': 1.0, 'shadow': \(shadow ? "True" : "False")}]})
+
+        _c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                     0.0, 0.0, -60.0, 0.0, 0.0, 0.0, 20.0, 100.0, -20.0))
+        """)
+    }
+
+    private func setLightShadow(_ shadow: Bool) {
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set_lights({'enabled': True, 'ambient': 0.06, 'centre': [0.0, 0.0, 0.0], 'size': 20.0,
+                       'lights': [{'name': 'key', 'anchor': 'camera', 'orbit': -30.0, 'pitch': 20.0,
+                                   'radius': 3.0, 'beam': 80.0, 'highlight': 1.0, 'shadow': \(shadow ? "True" : "False")}]})
+        """)
+    }
+
+    private func render(rayTraced: Int) throws -> [UInt8] {
+        let png = NSTemporaryDirectory() + "issue_664_render.png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: Self.width, height: Self.height, rayTraced: rayTraced)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(
+            URL(fileURLWithPath: png) as CFURL, nil), "no export written")
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        XCTAssertEqual(image.width, Self.width)
+        XCTAssertEqual(image.height, Self.height)
+        let w = image.width, h = image.height
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return rgba
+    }
+
+    private func footprint(of name: String) throws -> [Bool] {
+        let others = ["rs664m", "rs664t", "rs664c"].filter { $0 != name }
+        for other in others {
+            engine.runPython("from pymol import cmd as _c\n_c.disable('\(other)')")
+        }
+        let px = try render(rayTraced: 0)
+        for other in others {
+            engine.runPython("from pymol import cmd as _c\n_c.enable('\(other)')")
+        }
+        return stride(from: 0, to: px.count, by: 4).map { max(px[$0], px[$0 + 1], px[$0 + 2]) > 3 }
+    }
+
+    private func maxDelta(_ a: [UInt8], _ b: [UInt8], in region: [Bool]) -> Int {
+        guard a.count == b.count, a.count == region.count * 4 else { return -1 }
+        var best = 0
+        for (p, inside) in region.enumerated() where inside {
+            for c in 0..<3 {
+                best = max(best, abs(Int(a[p * 4 + c]) - Int(b[p * 4 + c])))
+            }
+        }
+        return best
+    }
+
+    func testReflectionStudioShadow() throws {
+        try requireEngine()
+        guard engine.rayTracingSupported else {
+            throw XCTSkip("Hardware ray tracing is not supported on this device")
+        }
+        buildScene(shadow: true)
+
+        let mirror = try footprint(of: "rs664m")
+        let target = try footprint(of: "rs664t")
+        let caster = try footprint(of: "rs664c")
+
+        var minX = Self.width, maxX = 0, minY = Self.height, maxY = 0
+        for y in 0..<Self.height {
+            for x in 0..<Self.width {
+                if mirror[y * Self.width + x] {
+                    minX = min(minX, x)
+                    maxX = max(maxX, x)
+                    minY = min(minY, y)
+                    maxY = max(maxY, y)
+                }
+            }
+        }
+        XCTAssertGreaterThan(maxX - minX, 40, "mirror sphere not found in frame")
+
+        // Rectangular box inside mirror footprint on the side where the target reflection shows
+        let boxMinX = minX + (maxX - minX) / 8
+        let boxMaxX = minX + (maxX - minX) * 4 / 8
+        let boxMinY = minY + (maxY - minY) / 4
+        let boxMaxY = maxY - (maxY - minY) / 4
+
+        var box = [Bool](repeating: false, count: Self.width * Self.height)
+        for y in boxMinY...boxMaxY {
+            for x in boxMinX...boxMaxX {
+                let idx = y * Self.width + x
+                box[idx] = mirror[idx] && !target[idx] && !caster[idx]
+            }
+        }
+        let boxCount = box.filter { $0 }.count
+        XCTAssertGreaterThan(boxCount, 100, "the box region inside the mirror is too small: \(boxCount)")
+
+        // Determinism skip: two rt1 renders with the same settings must match in the box
+        let rt1On1 = try render(rayTraced: 1)
+        let rt1On2 = try render(rayTraced: 1)
+        guard maxDelta(rt1On1, rt1On2, in: box) == 0 else {
+            throw XCTSkip("two ray-traced frames of the same scene differ: not deterministic here")
+        }
+
+        // Render four images
+        let rt1ShadowOn = rt1On1
+        setLightShadow(false)
+        let rt1ShadowOff = try render(rayTraced: 1)
+        let rt0ShadowOff = try render(rayTraced: 0)
+        setLightShadow(true)
+        let rt0ShadowOn = try render(rayTraced: 0)
+
+        let rt1Delta = maxDelta(rt1ShadowOn, rt1ShadowOff, in: box)
+        let rt0Delta = maxDelta(rt0ShadowOn, rt0ShadowOff, in: box)
+        print("664 rt1 delta=\(rt1Delta) rt0 delta=\(rt0Delta)")
+
+        XCTAssertGreaterThanOrEqual(rt1Delta, 20, "the traced reflection ignores the studio shadow")
+        XCTAssertLessThanOrEqual(rt0Delta, 3, "rt0 mirror changes with studio shadow")
+    }
+}
