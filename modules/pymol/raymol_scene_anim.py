@@ -39,7 +39,10 @@ a pseudo-transition from the last keyframe back to the first shifted by the movi
 length blends settings, DOF and the light rig across the wrap span.
 Dust phase (#687): when dust_speed differs between scenes, enter_scene and
 _lights_blend write metal_light_air_phase so the dust time is the integrated
-speed across the movie and the dust does not jump.
+speed across the movie and the dust does not jump. When the movie has a rig
+blend, every other frame carries a phase-only command (_a.dust_hold()), so a
+jump straight to a hold frame renders the same dust time as playback; author()
+starts each movie from phase 0.
 """
 import base64
 import copy
@@ -898,12 +901,15 @@ def dust_speeds(marks=None, lights_track=None, entries=None):
     return out
 
 
-def dust_phase(frame, fps, speeds):
+def dust_phase(frame, fps, speeds, speed=None):
     """metal_light_air_phase for 1-based movie `frame`: (sum of speeds of
     the frames before it - (frame - 1) x its own speed) / fps, so that
     (frame - 1) / fps x speed + phase is the integral of the speed over the
     movie so far. fps <= 0 or not finite reads as 30. A frame past the end
-    keeps the last speed; frame < 1 or an empty list gives 0.0."""
+    keeps the last speed; frame < 1 or an empty list gives 0.0. `speed`,
+    when given, is the speed the rig actually holds now and replaces the
+    frame's own: the phase then makes the dust time the integral whatever
+    speed a jump left on the rig."""
     if not speeds or frame < 1:
         return 0.0
     try:
@@ -922,8 +928,23 @@ def dust_phase(frame, fps, speeds):
     else:
         s_i = speeds[-1]
         sum_before = sum(speeds) + (i - L) * s_i
+    if speed is not None:
+        s_i = float(speed)
 
     return float((sum_before - i * s_i) / fps)
+
+
+def _live_speed(_self):
+    """The dust speed of the rig as it is now (after this frame's commands),
+    or None when the rig is off or cannot be read (a stand-in cmd). A hold
+    frame reached by a jump keeps the rig of the frame shown before it; the
+    phase is computed against that speed so the dust time is still right."""
+    try:
+        from pymol import lighting
+        live = lighting.get_lights(_self=_self)
+    except Exception:
+        return None
+    return _rig_speed(live) if rig_on(live) else None
 
 
 def _write_phase(_self):
@@ -945,18 +966,9 @@ def _write_phase(_self):
             fps = _DEFAULT_FPS
 
         speeds = dust_speeds()
-        phase = dust_phase(frame, fps, speeds)
+        phase = dust_phase(frame, fps, speeds, _live_speed(_self))
 
-        getter = getattr(_self, 'get_setting_float', None)
-        if getter is not None:
-            try:
-                cur = float(getter(_PHASE_SETTING))
-                # the setting is a float32: compare at its precision
-                if abs(cur - phase) <= 1e-6 * max(1.0, abs(phase)):
-                    return
-            except Exception:
-                return
-        _self.set(_PHASE_SETTING, phase, quiet=1)
+        _set_phase(phase, _self)
     except Exception:
         pass
 
@@ -976,6 +988,65 @@ def _name_from_hex(s):
         return bytes.fromhex(s).decode('utf-8')
     except (ValueError, UnicodeDecodeError):
         return None
+
+
+def _movie_length(_self):
+    try:
+        return max(0, int(_self.get_movie_length()))
+    except Exception:
+        return 0
+
+
+def _set_phase(phase, _self):
+    """Write metal_light_air_phase when it differs from the setting (a
+    float32, so compared at its precision). Never raises: a core without
+    the setting writes nothing."""
+    try:
+        getter = getattr(_self, 'get_setting_float', None)
+        if getter is not None:
+            cur = float(getter(_PHASE_SETTING))
+            if abs(cur - phase) <= 1e-6 * max(1.0, abs(phase)):
+                return
+        _self.set(_PHASE_SETTING, phase, quiet=1)
+    except Exception:
+        pass
+
+
+def phase_command():
+    """The frame command of a hold frame (#687): it only writes the dust
+    phase. No arguments: the phase is computed from the authored movie."""
+    return "from pymol import raymol_scene_anim as _a; _a.dust_hold()"
+
+
+def build_phase_frames(marks, lights_track, length):
+    """The frames 1..`length` that carry neither a scene mark nor a rig
+    blend, when there is a rig blend at all (else []): a jump to one of them
+    (frame N then png, an export starting mid-movie) runs only that frame's
+    command, so each needs its own phase write or it renders with whatever
+    phase the last frame shown left behind."""
+    if not lights_track or length < 1:
+        return []
+    busy = set(int(f) for f, _n in marks) | set(int(f) for f in lights_track)
+    return [f for f in range(1, int(length) + 1) if f not in busy]
+
+
+def emit_phase_frames(frames, _self=cmd):
+    """One mappend of phase_command per hold frame. Returns the frames
+    touched."""
+    done = []
+    text = phase_command()
+    for f in frames:
+        try:
+            _self.mappend(int(f), text)
+            done.append(int(f))
+        except Exception as e:
+            print('MOVIE_ERR:' + str(e))
+    return done
+
+
+def dust_hold(_self=cmd):
+    """The hold frames' command: write the dust phase for this frame."""
+    _write_phase(_self)
 
 
 def lights_command(a, b, t):
@@ -1050,6 +1121,8 @@ _track = {}
 _scene_marks = []
 # ...and {frame: (scene_a, scene_b, t)} for the rig blend's _lights_blend.
 _lights_track = {}
+# ...and [frame] for the hold frames carrying the dust phase write (#687).
+_phase_frames = []
 
 
 def reset():
@@ -1062,6 +1135,7 @@ def reset():
     _track.clear()
     _scene_marks[:] = []
     _lights_track.clear()
+    _phase_frames[:] = []
 
 
 def clear_authored(_self=cmd):
@@ -1078,6 +1152,7 @@ def clear_authored(_self=cmd):
     frames = set(int(f) for f in _track)
     frames.update(int(f) for f, _n in _scene_marks)
     frames.update(int(f) for f in _lights_track)
+    frames.update(int(f) for f in _phase_frames)
     try:
         length = int(_self.get_movie_length())
     except Exception:
@@ -1133,6 +1208,10 @@ def author(keyframes, _self=cmd, power=None, wrap=None):
     _track.clear()
     _scene_marks[:] = []
     _lights_track.clear()
+    _phase_frames[:] = []
+    # #687: no phase from a previous movie survives into this one; the
+    # frames below write their own.
+    _set_phase(0.0, _self)
     wrap_length = _wrap_length(wrap, _self) if keyframes else 0
     marks = [(int(f), n) for f, n, _p in keyframes]
     track = build_track(keyframes, power, wrap_length=wrap_length)
@@ -1149,6 +1228,9 @@ def author(keyframes, _self=cmd, power=None, wrap=None):
     touched = set(emit_scene_marks(_scene_marks, _self))
     touched.update(emit_track(_track, _self))
     touched.update(emit_lights_track(_lights_track, _self))
+    _phase_frames[:] = build_phase_frames(_scene_marks, _lights_track,
+                                          _movie_length(_self))
+    touched.update(emit_phase_frames(_phase_frames, _self))
     return len(touched)
 
 
@@ -1198,6 +1280,7 @@ def rename_scene(old, new, _self=cmd):
         touched = set(emit_scene_marks(_scene_marks, _self))
         touched.update(emit_track(_track, _self))
         touched.update(emit_lights_track(_lights_track, _self))
+        touched.update(emit_phase_frames(_phase_frames, _self))
         return len(touched)
     except Exception:
         # Any other read failure: nothing was written yet, so put the state
@@ -1230,6 +1313,8 @@ def _our_commands():
             out.setdefault(int(f), []).append(s)
     for f, (a, b, t) in _lights_track.items():
         out.setdefault(int(f), []).append(lights_command(a, b, t))
+    for f in _phase_frames:
+        out.setdefault(int(f), []).append(phase_command())
     return out
 
 
@@ -1290,6 +1375,7 @@ def session_restore(session, *, _self=cmd):
     _track.clear()
     _scene_marks[:] = []
     _lights_track.clear()
+    _phase_frames[:] = []
     d = session.get('raymol_movie_anim')
     if not isinstance(d, dict):
         return 1
@@ -1338,6 +1424,11 @@ def session_restore(session, *, _self=cmd):
     emit_scene_marks(_scene_marks, _self)
     emit_track(_track, _self)
     emit_lights_track(_lights_track, _self)
+    # The hold frames' phase writes (#687) are not saved: they follow from
+    # the marks, the rig blends and the movie length.
+    _phase_frames[:] = build_phase_frames(_scene_marks, _lights_track,
+                                          _movie_length(_self))
+    emit_phase_frames(_phase_frames, _self)
     return 1
 
 

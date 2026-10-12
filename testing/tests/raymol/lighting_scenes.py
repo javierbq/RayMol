@@ -1236,7 +1236,12 @@ class TestSceneMovieBlend(_BlendCase):
         self.assertEqual(anim._lights_track, {5: ('A', 'B', 0.25),
                                               6: ("A'; quit", 'B', 0.5),
                                               24: ('A', 'B', 1.0)})
-        self.assertEqual(sorted((a[0], a[1]) for a, _kw in calls),
+        hold = anim.phase_command()
+        # #687: every other frame of the movie carries the phase write
+        self.assertEqual(sorted(a[0] for a, _kw in calls if a[1] == hold),
+                         [f for f in range(1, 26) if f not in (5, 6, 24)])
+        self.assertEqual(sorted((a[0], a[1]) for a, _kw in calls
+                                if a[1] != hold),
                          [(5, '_lights_blend 41, 42, 0.25'),
                           (6, '_lights_blend 41273b2071756974, 42, 0.5'),
                           (24, '_lights_blend 41, 42, 1')])
@@ -1538,21 +1543,16 @@ class TestSceneMovieDustPhase(_BlendCase):
         self.store('B', b_rig)
 
         cmd.set('movie_fps', 30)
-        rebuild(scene_item(1, 'A'), scene_item(25, 'B'))
-
+        # frames 26..39 hold B: no mark, no blend, only the phase write
+        rebuild(scene_item(1, 'A'), scene_item(25, 'B'), scene_item(40, 'B'))
         count = cmd.count_frames()
-        if count < 30:
-            for f in range(count + 1, 31):
-                cmd.madd('1 x1')
-                cmd.mappend(f, anim.scene_mark_command('B'))
-            count = cmd.count_frames()
+        self.assertGreaterEqual(count, 40)
 
         times = []
         for f in range(1, count + 1):
             cmd.frame(f)
             air = lighting._light_air_frame(offscreen=True)
-            if air is None:
-                self.skipTest("air frame is None (rig has no centre/size or camera)")
+            self.assertIsNotNone(air, 'no air at frame %d' % f)
             times.append(air['time'])
 
         # Assert: every step T(F+1) - T(F) is >= 0 and <= 3.0/30 + 1e-4 (float32)
@@ -1586,6 +1586,16 @@ class TestSceneMovieDustPhase(_BlendCase):
         for f in range(1, count + 1):
             self.assertAlmostEqual(rand_times[f], times[f - 1], delta=1e-5,
                                    msg="random order frame %d" % f)
+
+        # a jump straight into the hold (frame N then png) after the movie
+        # left a different phase behind: the hold frame writes its own
+        for start, f in ((40, 30), (1, 33), (24, 39), (35, 2)):
+            cmd.frame(start)
+            cmd.frame(f)
+            air = lighting._light_air_frame(offscreen=True)
+            self.assertAlmostEqual(air['time'], times[f - 1], delta=1e-5,
+                                   msg="jump %d -> %d" % (start, f))
+        self.assertGreater(times[32] - times[31], 2.9 / 30.0)  # B's speed
 
 
 # --- the L2 scene file (scripts/lighting/scenes/lighting_617_movie.json) ----

@@ -1572,3 +1572,76 @@ class TestDustPhase(unittest.TestCase):
             self.assertGreaterEqual(step, -1e-9)
             self.assertLessEqual(step, max_step + 1e-9)
             self.assertAlmostEqual(step, speeds[f - 1] / fps, delta=1e-9)
+
+
+class TestDustPhaseHoldFrames(unittest.TestCase):
+    """#687 review: a jump straight to a hold frame (no mark, no blend) runs
+    only that frame's command, so each hold frame writes its own phase; and
+    author() clears a phase left by a previous movie."""
+
+    class LengthCmd(FakeCmd):
+        def __init__(self, length):
+            FakeCmd.__init__(self)
+            self.length = length
+
+        def get_movie_length(self):
+            return self.length
+
+    def setUp(self):
+        self.scenes, self.anim = load_modules()
+        self.scenes.clear_all()
+        self.anim.reset()
+
+    def test_build_phase_frames(self):
+        build = self.anim.build_phase_frames
+        marks = [(1, 'A'), (25, 'B'), (40, 'B')]
+        track = {f: ('A', 'B', 0.5) for f in range(2, 25)}
+        self.assertEqual(build(marks, track, 42),
+                         list(range(26, 40)) + [41, 42])
+        self.assertEqual(build(marks, {}, 42), [])     # no rig blend: none
+        self.assertEqual(build(marks, track, 0), [])
+
+    def test_author_emits_and_strips_hold_commands(self):
+        self.scenes._scene_lights['A'] = rig(1.0)
+        self.scenes._scene_lights['B'] = rig(3.0)
+        fake = self.LengthCmd(40)
+        self.anim.author([(1, 'A', 0.0), (25, 'B', 0.0), (40, 'B', 0.0)],
+                         _self=fake, wrap=False)
+        hold = self.anim.phase_command()
+        self.assertEqual(sorted(f for f, c in fake.appended if c == hold),
+                         list(range(26, 40)))
+        # author() starts the new movie from phase 0
+        self.assertIn(('metal_light_air_phase', 0.0), fake.sets)
+        # the session strips them like the other commands
+        ours = self.anim._our_commands()
+        for f in range(26, 40):
+            self.assertEqual(ours[f], [hold])
+        # and clear_authored blanks them
+        self.assertTrue(set(range(26, 40)) <= set(self.anim.clear_authored(fake)))
+
+    def test_hold_frame_writes_its_phase(self):
+        self.scenes._scene_lights['A'] = rig(1.0)
+        self.scenes._scene_lights['B'] = rig(3.0)
+        fake = self.LengthCmd(40)
+        self.anim.author([(1, 'A', 0.0), (25, 'B', 0.0), (40, 'B', 0.0)],
+                         _self=fake, wrap=False)
+
+        class At(FakeCmd):
+            def get_frame(self):
+                return 33
+
+            def get(self, name):
+                return '30.0'
+
+        at = At()
+        self.anim.dust_hold(_self=at)
+        want = self.anim.dust_phase(33, 30.0, self.anim.dust_speeds())
+        self.assertNotEqual(want, 0.0)
+        self.assertEqual(at.sets, [('metal_light_air_phase', want)])
+
+    def test_no_rig_blend_no_hold_commands(self):
+        fake = self.LengthCmd(40)
+        self.anim.author([(1, 'A', 0.0), (25, 'B', 0.0)], _self=fake,
+                         wrap=False)
+        self.assertNotIn(self.anim.phase_command(),
+                         [c for _f, c in fake.appended])
