@@ -94,7 +94,8 @@ final class LightsAtmosphereLiveTests: XCTestCase {
         let entry = try enterWithThreeLights()
         let lightsBefore = try LightRigSnapshot.decode(Data(entry.utf8)).lights
         let values: [AirParameter: Double] = [.haze: 0.27, .dust: 0.61, .dustSize: 0.8,
-                                              .dustSpeed: 3.45, .scatter: -0.42]
+                                              .dustSpeed: 3.45, .scatter: -0.42,
+                                              .dustGlow: 2.5, .dustOpacity: 0.4]
         for p in AirParameter.allCases {
             XCTAssertEqual(controller.setAir(p, values[p]!), .ok, p.field)
             XCTAssertEqual(p.value(in: try coreAir()), values[p], "\(p.field) in the core")
@@ -129,7 +130,7 @@ final class LightsAtmosphereLiveTests: XCTestCase {
         let python = Lines(), commands = Lines()
         engine.pythonTap = { python.lines.append($0) }
         engine.commandTap = { commands.lines.append($0) }
-        // 5 fields x 10 slider ticks. No run-loop pumping in the loop, so the
+        // 7 fields x 10 slider ticks. No run-loop pumping in the loop, so the
         // poll timers cannot fire: every line a tap sees would be the edits'.
         var count = 0
         var changes = 0
@@ -149,8 +150,8 @@ final class LightsAtmosphereLiveTests: XCTestCase {
         }
         engine.pythonTap = nil
         engine.commandTap = nil
-        XCTAssertEqual(count, 50)
-        XCTAssertEqual(changes, 50, "every tick must reach the rig")
+        XCTAssertEqual(count, 70)
+        XCTAssertEqual(changes, 70, "every tick must reach the rig")
         XCTAssertEqual(python.lines, [], "an air tick must run no Python (#610)")
         XCTAssertEqual(commands.lines, [], "an air tick must run no console command")
         XCTAssertEqual(engine.lightRig()?.lights, lightsBefore, "air ticks never change a light")
@@ -168,6 +169,15 @@ final class LightsAtmosphereLiveTests: XCTestCase {
         XCTAssertEqual(state.row(.haze)?.text, "0.30")
         XCTAssertEqual(state.row(.dust)?.text, "0.45")
         XCTAssertTrue(state.isOn)
+
+        // #810: console dust_glow and dust_opacity show in the card
+        engine.runCommand("atmosphere dust_glow=2, dust_opacity=0.5")
+        engine.panelPolled.send()
+        let stateGlow = try XCTUnwrap(AtmosphereCardState(controller))
+        XCTAssertEqual(stateGlow.row(.dustGlow)?.value, 2.0)
+        XCTAssertEqual(stateGlow.row(.dustOpacity)?.value, 0.5)
+        XCTAssertEqual(stateGlow.row(.dustGlow)?.text, "2.00")
+        XCTAssertEqual(stateGlow.row(.dustOpacity)?.text, "0.50")
 
         // Card -> command: what a card edit writes is what `atmosphere` reads.
         XCTAssertEqual(controller.setAir(.haze, 0.4), .ok)
@@ -210,6 +220,8 @@ final class LightsAtmosphereLiveTests: XCTestCase {
         let entry = try enterWithThreeLights()
         XCTAssertEqual(controller.setAir(.haze, 0.9), .ok)
         XCTAssertEqual(controller.setAir(.scatter, 0.5), .ok)
+        XCTAssertEqual(controller.setAir(.dustGlow, 2.5), .ok)
+        XCTAssertEqual(controller.setAir(.dustOpacity, 0.75), .ok)
         XCTAssertTrue(controller.setAtmosphere(on: false))
         XCTAssertTrue(controller.setAtmosphere(on: true))
         XCTAssertEqual(controller.setAir(.dustSpeed, 9.5), .ok)
@@ -3734,5 +3746,252 @@ final class FlatQuadSeamTests: XCTestCase {
         print(String(format: "668 strip mean AO=%.4f", meanF))
         XCTAssertEqual(meanF, Self.masterStripAO, accuracy: 0.05,
                        "twisted strip should keep its smoothed AO factor")
+    }
+}
+
+/// Issue #810: dust_glow and dust_opacity in live Metal renders.
+@MainActor
+final class DustLookTests: XCTestCase {
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var savedExportRenderActive = false
+    private var savedView: [Float]?
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        try LightsLive.requireEngine()
+        savedExportRenderActive = engine.exportRenderActive
+        engine.exportRenderActive = true
+        savedView = engine.captureView()
+        engine.runPython("""
+        from pymol import cmd as _c
+        _dl810_settings = {_n: _c.get_setting_tuple(_n)[1][0] for _n in (
+            'metal_light_air_time', 'metal_raytrace', 'metal_temporal_ao',
+            'metal_light_hdr', 'metal_exposure', 'metal_light_air_resolution',
+            'metal_light_air_alpha', 'ray_opaque_background')}
+        _dl810_bg = _c.get('bg_rgb')
+        _c.set('bg_rgb', 'black')
+        _c.set('metal_raytrace', 0)
+        _c.set('metal_temporal_ao', 0)
+        _c.set('metal_light_air_time', 1.25)
+        _c.set('metal_light_air_resolution', 1)
+        _c.set('metal_light_hdr', 2)
+        """)
+        LightsLive.addPeptide()
+        engine.runPython("from pymol import cmd as _c\n_c.orient('lmt_pep')")
+        waitForInFlight()
+    }
+
+    override func tearDown() {
+        engine.runPython("""
+        from pymol import cmd as _c
+        for _n, _v in globals().pop('_dl810_settings', {}).items():
+            _c.set(_n, _v)
+        if '_dl810_bg' in globals():
+            _c.set('bg_rgb', globals().pop('_dl810_bg'))
+        """)
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        engine.exportRenderActive = savedExportRenderActive
+        LightsLive.tearDown()
+        super.tearDown()
+    }
+
+    private func waitForInFlight() {
+        let deadline = Date().addingTimeInterval(5.0)
+        while engine.metalFramesInFlight > 0 && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTAssertEqual(engine.metalFramesInFlight, 0, "frames in flight did not retire within 5 s")
+    }
+
+    private func export(_ name: String, rayTraced: Int = 0) throws -> [UInt8] {
+        let png = NSTemporaryDirectory() + "issue_810_\(name).png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: 400, height: 300, rayTraced: rayTraced)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(
+            URL(fileURLWithPath: png) as CFURL, nil), "no export written")
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        let w = image.width, h = image.height
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return rgba
+    }
+
+    private func rig(haze: Double = 0.0, dust: Double, intensity: Double,
+                     glow: Double? = nil, opacity: Double? = nil) {
+        var airParts = [
+            "'haze': \(haze)",
+            "'dust': \(dust)",
+            "'dust_size': 0.5",
+            "'dust_speed': 2.0",
+            "'scatter': 0.0",
+            "'seed': 7"
+        ]
+        if let glow { airParts.append("'dust_glow': \(glow)") }
+        if let opacity { airParts.append("'dust_opacity': \(opacity)") }
+        let airDict = "{" + airParts.joined(separator: ", ") + "}"
+        let dict = """
+        {'enabled': True, 'centre': list(_lmt_cmd.centerofmass('lmt_pep')), 'size': 10.0,
+         'ambient': 0.5, 'classic': 0.5,
+         'air': \(airDict),
+         'lights': [{'name': 'key', 'orbit': 0.0, 'pitch': 0.0, 'intensity': \(intensity),
+                     'shadow': False}]}
+        """
+        LightsLive.setRig(dict)
+    }
+
+    func testDefaultsAreByteIdentical() throws {
+        rig(haze: 0.0, dust: 0.8, intensity: 1.5, glow: nil, opacity: nil)
+        let absent = try export("defaults_absent")
+        rig(haze: 0.0, dust: 0.8, intensity: 1.5, glow: 1.0, opacity: 0.0)
+        let explicit = try export("defaults_explicit")
+        XCTAssertEqual(absent, explicit, "defaults must be byte-identical to absent keys")
+    }
+
+    func testZeroGlowAddsNothing() throws {
+        rig(haze: 0.0, dust: 0.0, intensity: 1.5)
+        let dust0 = try export("zero_glow_dust0")
+        rig(haze: 0.0, dust: 0.8, intensity: 1.5, glow: 0.0, opacity: 0.0)
+        let glow0 = try export("zero_glow_glow0")
+        XCTAssertEqual(glow0, dust0, "glow 0 (opacity 0) must be byte-identical to dust 0")
+    }
+
+    func testGlowScalesTheMotesLight() throws {
+        func lum(_ px: [UInt8], _ i: Int) -> Double {
+            0.2126 * Double(px[i]) + 0.7152 * Double(px[i + 1]) + 0.0722 * Double(px[i + 2])
+        }
+
+        rig(haze: 0.0, dust: 0.0, intensity: 0.6)
+        let base = try export("glow_base")
+        rig(haze: 0.0, dust: 0.8, intensity: 0.6, glow: 1.0, opacity: 0.0)
+        let g1 = try export("glow_1")
+        rig(haze: 0.0, dust: 0.8, intensity: 0.6, glow: 0.5, opacity: 0.0)
+        let g05 = try export("glow_05")
+        rig(haze: 0.0, dust: 0.8, intensity: 0.6, glow: 3.0, opacity: 0.0)
+        let g3 = try export("glow_3")
+
+        let width = 400, height = 300
+        var moteCount = 0
+        var sum1 = 0.0
+        var sum05 = 0.0
+        var sum3 = 0.0
+
+        for p in 0..<(width * height) {
+            let i = p * 4
+            let Lbase = lum(base, i)
+            let L1 = lum(g1, i)
+            let diff1 = L1 - Lbase
+            if diff1 >= 2.0 {
+                moteCount += 1
+                sum1 += diff1
+                sum05 += max(0.0, lum(g05, i) - Lbase)
+                sum3 += max(0.0, lum(g3, i) - Lbase)
+            }
+        }
+
+        let ratio05 = sum1 > 0 ? sum05 / sum1 : 0
+        let ratio3 = sum1 > 0 ? sum3 / sum1 : 0
+        print(String(format: "810-glow motes=%d sum1=%.1f sum05=%.1f (%.3f) sum3=%.1f (%.3f)",
+                     moteCount, sum1, sum05, ratio05, sum3, ratio3))
+
+        XCTAssertGreaterThanOrEqual(moteCount, 50, "glow 1 mote pixel count >= 50")
+        XCTAssertGreaterThanOrEqual(ratio05, 0.4, "glow 0.5 sum / glow 1 sum within 0.4..0.6")
+        XCTAssertLessThanOrEqual(ratio05, 0.6, "glow 0.5 sum / glow 1 sum within 0.4..0.6")
+        XCTAssertGreaterThan(ratio3, 1.8, "glow 3 sum / glow 1 sum > 1.8")
+    }
+
+    func testOpacityDarkensBehindUnlitMotes() throws {
+        engine.runPython("from pymol import cmd as _c\n_c.set('bg_rgb', 'white')")
+
+        rig(haze: 0.0, dust: 0.0, intensity: 0.0)
+        let base = try export("opacity_base")
+        rig(haze: 0.0, dust: 0.8, intensity: 0.0, glow: 1.0, opacity: 0.0)
+        let op0 = try export("opacity_0")
+        rig(haze: 0.0, dust: 0.8, intensity: 0.0, glow: 1.0, opacity: 0.5)
+        let op05 = try export("opacity_05")
+        rig(haze: 0.0, dust: 0.8, intensity: 0.0, glow: 1.0, opacity: 1.0)
+        let op1 = try export("opacity_1")
+
+        XCTAssertEqual(op0, base, "opacity 0 must be byte-identical to dust 0")
+
+        let width = 400, height = 300
+        var darkBgCount = 0
+        var darkMoleculeCount = 0
+        var sumDark1 = 0.0
+        var sumDark05 = 0.0
+
+        for p in 0..<(width * height) {
+            let i = p * 4
+            let isWhiteBg = (base[i] == 255 && base[i + 1] == 255 && base[i + 2] == 255)
+            if isWhiteBg {
+                let dark = 255.0 - Double(op1[i])
+                if dark >= 8.0 {
+                    darkBgCount += 1
+                }
+                if dark > 0.0 {
+                    sumDark1 += dark
+                    let dark05 = 255.0 - Double(op05[i])
+                    sumDark05 += max(0.0, dark05)
+                }
+            } else {
+                if op1[i] < base[i] || op1[i + 1] < base[i + 1] || op1[i + 2] < base[i + 2] {
+                    darkMoleculeCount += 1
+                }
+            }
+        }
+
+        let ratioDark = sumDark1 > 0 ? sumDark05 / sumDark1 : 0
+        print(String(format: "810-opacity darkBg=%d darkMol=%d sum1=%.1f sum05=%.1f (%.3f)",
+                     darkBgCount, darkMoleculeCount, sumDark1, sumDark05, ratioDark))
+
+        XCTAssertGreaterThanOrEqual(darkBgCount, 50, "at least 50 bg pixels darker than 255 by >= 8")
+        XCTAssertGreaterThanOrEqual(ratioDark, 0.35, "opacity 0.5 darkening / opacity 1 within 0.35..0.65")
+        XCTAssertLessThanOrEqual(ratioDark, 0.65, "opacity 0.5 darkening / opacity 1 within 0.35..0.65")
+        XCTAssertGreaterThan(darkMoleculeCount, 0, "molecule pixels must also darken somewhere at opacity 1")
+    }
+
+    func testOpaqueMotesCountTowardAlpha() throws {
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set('ray_opaque_background', 0)
+        _c.set('metal_light_air_alpha', 1)
+        """)
+
+        rig(haze: 0.0, dust: 0.0, intensity: 0.0)
+        let dust0 = try export("alpha_dust0")
+        rig(haze: 0.0, dust: 0.8, intensity: 0.0, glow: 1.0, opacity: 0.0)
+        let op0 = try export("alpha_op0")
+        rig(haze: 0.0, dust: 0.8, intensity: 0.0, glow: 1.0, opacity: 1.0)
+        let op1 = try export("alpha_op1")
+
+        let width = 400, height = 300
+        var op0AlphaCount = 0
+        var op1AlphaCount = 0
+
+        for p in 0..<(width * height) {
+            let i = p * 4
+            if dust0[i + 3] == 0 {
+                if op0[i + 3] > 0 {
+                    op0AlphaCount += 1
+                }
+                if op1[i + 3] > 0 {
+                    op1AlphaCount += 1
+                }
+            }
+        }
+
+        print("810-alpha op0Count=\(op0AlphaCount) op1Count=\(op1AlphaCount)")
+        XCTAssertEqual(op0AlphaCount, 0, "at opacity 0, background pixels keep alpha 0")
+        XCTAssertGreaterThanOrEqual(op1AlphaCount, 50, "at opacity 1, at least 50 background pixels gain alpha > 0")
     }
 }

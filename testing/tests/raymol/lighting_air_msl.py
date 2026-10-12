@@ -600,8 +600,9 @@ class TestLibrary(AirMSLCase):
             self.assertTrue(name.startswith('post_air_'), name)
         for name in ('post_air_vertex', 'post_air_far_pull', 'post_air_shadow_tap',
                      'post_air_visibility', 'post_air_light', 'post_air_ray',
-                     'post_air_haze', 'post_air_dust', 'post_air_term',
-                     'post_air_finish', 'post_air_full', 'post_air_stop',
+                     'post_air_haze', 'post_air_mote', 'post_air_dust',
+                     'post_air_term', 'post_air_finish', 'post_air_dust_cover',
+                     'post_air_full', 'post_air_stop',
                      'post_air_march', 'post_air_upsample',
                      # #684 (metal_light_air_alpha)
                      'post_air_alpha', 'post_air_alpha_merge'):
@@ -659,7 +660,7 @@ class TestLayout(AirMSLCase):
         cpp_struct = re.search(r'struct\s+LightAirBlock\s*\{(.*?)\};', block, re.S)
         self.assertIsNotNone(cpp_struct)
         cpp = re.findall(r'float\s+(\w+)\[4\]\s*;', cpp_struct.group(1))
-        self.assertEqual(cpp, ['medium', 'range', 'motion', 'view', 'proj'])
+        self.assertEqual(cpp, ['medium', 'range', 'motion', 'view', 'proj', 'mote'])
         self.assertEqual(msl, [('float4', name) for name in cpp])
 
     def testVertexIsPostVertex(self):
@@ -1214,7 +1215,7 @@ class TestAirAlpha(AirMSLCase):
 
     def testEncodedOnlyForATransparentOffscreenFrameThatAsked(self):
         enc = self.body('RendererMetal::encodeAirPass')
-        self.assertIn('encodeAirAlpha(sceneSrc, dst, air.view[2] > 0.5f);', enc)
+        self.assertIn('encodeAirAlpha(sceneSrc, dst, air.view[2] > 0.5f, air, rects, grid);', enc)
         # after the composite, before the frame's result is returned
         self.assertLess(enc.index('[ea endEncoding];'), enc.index('encodeAirAlpha('))
         self.assertRegex(enc, r'encodeAirAlpha\([^;]*\);\s*return dst;\s*\}$')
@@ -1227,6 +1228,9 @@ class TestAirAlpha(AirMSLCase):
         self.assertIn('ad.colorAttachments[0].texture = _airAlphaTex;', alpha)
         self.assertIn('[eb setFragmentTexture:before atIndex:0];', alpha)
         self.assertIn('[eb setFragmentTexture:after atIndex:1];', alpha)
+        self.assertIn('[eb setFragmentTexture:_sceneDepth atIndex:2];', alpha)
+        self.assertIn('setFragmentBytes:&air length:sizeof(air) atIndex:0', alpha)
+        self.assertIn('for (const auto& rect : rects)', alpha)
         self.assertEqual(alpha.count('_airAlphaDrawn = true;'), 1)
         self.assertGreater(alpha.index('_airAlphaDrawn = true;'), alpha.index('[eb endEncoding];'))
         self.assertEqual(len(re.findall(r'(?<!::)\bencodeAirAlpha\(', self.code)), 1)
@@ -1491,7 +1495,7 @@ class TestExtinction683(AirMSLCase):
         _, dust = self.fn('post_air_dust')
         self.assertIn('constfloattr=air.medium.x>0.0?exp(-air.medium.x*((z-zLo)*tPerZ)):1.0;',
                       squash(dust))
-        self.assertIn('0.9 * tw * tr)', dust)
+        self.assertIn('0.9 * tw * tr * air.mote.x * cover)', dust)
 
     def testCompositesPassTheTransmittance(self):
         """Both composites compute transmittance and pass it to post_air_finish."""
@@ -1621,3 +1625,74 @@ class TestDustOnlyTicks(testing.PyMOLTestCase):
         if not hasattr(cmd._cmd, 'get_metal_air_cache_stats'):
             self.skipTest('get_metal_air_cache_stats not in _cmd yet (needs rebuilt core)')
         self.assertIsNone(cmd._cmd.get_metal_air_cache_stats(cmd._COb, 0))
+
+
+class TestDustLook810(AirMSLCase):
+    """Issue #810: dust_glow and dust_opacity in MSL."""
+
+    def testLightAirULastMemberIsMote(self):
+        struct = re.search(r'struct\s+LightAirU\s*\{(.*?)\};', self.air_code, re.S)
+        self.assertIsNotNone(struct)
+        members = re.findall(r'(\w+)\s+(\w+)\s*;', struct.group(1))
+        self.assertEqual(members[-1], ('float4', 'mote'))
+
+    def testCoverTakesTheDustsMotes(self):
+        """The cover finds its motes with post_air_mote, whose statements are
+        post_air_dust's own mote statements (a drift guard). post_air_dust
+        keeps master's statements inline: as a helper call the compiler's
+        fast math moved single dust pixels by one level at the defaults."""
+        _, mote = self.fn('post_air_mote')
+        _, dust = self.fn('post_air_dust')
+        _, cover = self.fn('post_air_dust_cover')
+        self.assertIn('post_air_mote(', cover)
+        self.assertNotIn('post_air_mote(', dust)
+        self.assertNotIn('mat_hash(float3(ci, kk))', cover)
+
+        def geometry(body):
+            body = squash(strip_comments(body))
+            start = body.index('constfloatkk=')
+            end = body.index(';', body.index('xp=x+')) + 1
+            return body[start:end]
+
+        def normalise(text):
+            text = text.replace('continue;', 'returnfalse;')
+            # the helper writes its outputs, the dust declares them
+            for name in ('tw', 'r', 'a'):
+                text = text.replace('constfloat%s=' % name, '%s=' % name)
+            text = text.replace('floatsize=', 'size=')
+            return text.replace('constfloat3xp=', 'xp=')
+
+        self.assertEqual(normalise(geometry(dust)), normalise(geometry(mote)))
+        # and the same layers, range and cut-offs
+        for text in ('(air.range.y - air.range.x) / float(kAirDustLayers)',
+                     'if (z >= zHi) break;', 'if (z < zLo) continue;',
+                     'const float3 x = ro + rd * (z * tPerZ);'):
+            self.assertIn(text, dust)
+            self.assertIn(text, cover)
+
+    def testPostAirDustGainAndCover(self):
+        _, dust = self.fn('post_air_dust')
+        self.assertIn('* 0.9 * tw * tr * air.mote.x * cover)', dust)
+        self.assertIn('cover *= 1.0 - a * op;', dust)
+
+    def testPostAirDustCover(self):
+        _, cover = self.fn('post_air_dust_cover')
+        self.assertRegex(cover, r'if\s*\(!\(air\.mote\.y\s*>\s*0\.0\)\s*\|\|\s*!\(air\.medium\.y\s*>\s*0\.0\)\)\s*return\s*1\.0;')
+        self.assertIn('light_finite(zHi - zLo)', cover)
+        self.assertIn('light_finite(cover)', cover)
+
+    def testCompositesMultiplyDustCover(self):
+        _, full = self.fn('post_air_full')
+        _, upsample = self.fn('post_air_upsample')
+        self.assertIn('post_air_transmittance(d, in.uv, cell, air) * post_air_dust_cover(', full)
+        self.assertIn('post_air_transmittance(d, in.uv, cell, air) * post_air_dust_cover(', upsample)
+
+    def testAlphaTakesDustCover(self):
+        _, alpha = self.fn('post_air_alpha')
+        self.assertIn('1.0 - post_air_dust_cover(', alpha)
+
+    def testEncodeAirAlphaBindsAndLoopsRects(self):
+        alpha = self.body('RendererMetal::encodeAirAlpha')
+        self.assertIn('setFragmentBytes:&air length:sizeof(air) atIndex:0', alpha)
+        self.assertIn('for (const auto& rect : rects)', alpha)
+

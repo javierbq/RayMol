@@ -127,6 +127,8 @@ const std::vector<LightField>& LightRigFields()
       F(I::DustSpeed, S::Air, "dust_speed", K::Float, 0.0, 10.0),
       F(I::Scatter, S::Air, "scatter", K::Float, -0.9, 0.9),
       F(I::Seed, S::Air, "seed", K::Int, 0.0, 1000000.0),
+      F(I::DustGlow, S::Air, "dust_glow", K::Float, 0.0, 4.0),
+      F(I::DustOpacity, S::Air, "dust_opacity", K::Float, 0.0, 1.0),
       // light
       U(I::Name, S::Light, "name", K::Name),
       U(I::Anchor, S::Light, "anchor", K::Anchor),
@@ -198,6 +200,10 @@ LightValue LightFieldGet(const LightRig& rig, const LightField& field)
     return scalar(air.scatter);
   case I::Seed:
     return scalar(air.seed);
+  case I::DustGlow:
+    return scalar(air.dustGlow);
+  case I::DustOpacity:
+    return scalar(air.dustOpacity);
   default:
     assert(!"not a rig or air field");
     return {};
@@ -351,6 +357,12 @@ void LightFieldPut(LightRig& rig, const LightField& field, const LightValue& in)
     break;
   case I::Seed:
     air.seed = std::isfinite(v) ? static_cast<int>(v) : 0;
+    break;
+  case I::DustGlow:
+    air.dustGlow = v;
+    break;
+  case I::DustOpacity:
+    air.dustOpacity = v;
     break;
   default:
     assert(!"not a rig or air field");
@@ -699,6 +711,8 @@ LightRig LightRigBlend(const LightRig& a, const LightRig& b, double e)
   out.air.dustSpeed = lerp(a.air.dustSpeed, b.air.dustSpeed, e);
   out.air.scatter = lerp(a.air.scatter, b.air.scatter, e);
   out.air.seed = a.air.seed;
+  out.air.dustGlow = lerp(a.air.dustGlow, b.air.dustGlow, e);
+  out.air.dustOpacity = lerp(a.air.dustOpacity, b.air.dustOpacity, e);
 
   std::unordered_map<std::string, const Light*> by_key_b;
   for (const auto& l : b.lights) {

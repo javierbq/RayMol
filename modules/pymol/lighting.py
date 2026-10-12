@@ -69,7 +69,8 @@ PYMOL API
     {'version': 1, 'enabled': bool,
      'centre': [x, y, z] or None, 'size': float or None,
      'ambient': float, 'classic': float,
-     'air': {'haze', 'dust', 'dust_size', 'dust_speed', 'scatter', 'seed'},
+     'air': {'haze', 'dust', 'dust_size', 'dust_speed', 'scatter', 'seed',
+             'dust_glow', 'dust_opacity'},
      'lights': [{'name', 'anchor', 'orbit', 'pitch', 'radius', 'position',
                  'aim', 'aim_point', 'aim_selection', 'beam', 'softness',
                  'color', 'warmth', 'intensity', 'highlight', 'falloff',
@@ -263,15 +264,16 @@ def _light_air_frame(matrix=None, offscreen=None, wall=None, grid=None, *,
     (n_col, n_row, first_slot) for an active grid (shaping the shadow plan,
     #686). Reads only.
 
-    {'block': [20 floats], 'haze_density', 'dust_occupancy', 'scatter',
+    {'block': [24 floats], 'haze_density', 'dust_occupancy', 'scatter',
      'seed_offset', 'near', 'far', 'focus', 'cell', 'time', 'mote_radius',
-     'defocus', 'shadow_filter', 'scale'}
+     'defocus', 'shadow_filter', 'scale', 'dust_glow', 'dust_opacity'}
 
-    'block' is the 80-byte block the GPU reads (layer1/LightAirBlock.h has
+    'block' is the 96-byte block the GPU reads (layer1/LightAirBlock.h has
     the offsets): medium (haze density per A, dust occupancy, scatter g,
     seed offset), range (near, far, focus depth, dust cell), motion (dust
     time, mote radius, defocus gain, haze shadow filter), view (scale, then
-    the renderer's ortho flag) and proj (the renderer's). The rest is decoded
+    the renderer's ortho flag), proj (the renderer's) and mote (dust glow,
+    dust opacity). The rest is decoded
     from it.'''
     if matrix is not None:
         matrix = [float(v) for v in matrix]

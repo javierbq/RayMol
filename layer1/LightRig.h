@@ -87,6 +87,8 @@ struct LightAir {
   double dustSpeed = 1.0;
   double scatter = 0.55;
   int seed = 0;
+  double dustGlow = 1.0;
+  double dustOpacity = 0.0;
 };
 
 /**
@@ -134,6 +136,8 @@ enum class LightFieldId {
   DustSpeed,
   Scatter,
   Seed,
+  DustGlow,
+  DustOpacity,
   // light
   Name,
   Anchor,

@@ -128,6 +128,8 @@ LABELS = {
     'Dust size': os.path.join(SHARED, 'LightsAtmosphere.swift'),
     'Dust speed': os.path.join(SHARED, 'LightsAtmosphere.swift'),
     'Scatter (g)': os.path.join(SHARED, 'LightsAtmosphere.swift'),
+    'Dust glow': os.path.join(SHARED, 'LightsAtmosphere.swift'),
+    'Dust opacity': os.path.join(SHARED, 'LightsAtmosphere.swift'),
     'Shadows': os.path.join(PANELS, 'ObjectPanel.swift'),
     'Exposure': os.path.join(PANELS, 'ObjectPanel.swift'),
     'Filmic tone-map': os.path.join(PANELS, 'ObjectPanel.swift'),

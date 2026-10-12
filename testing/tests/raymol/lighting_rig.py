@@ -50,6 +50,8 @@ SPEC_FIELDS = [
     ('air', 'dust_speed', 'float', 1.0, 0.0, 10.0),
     ('air', 'scatter', 'float', 0.55, -0.9, 0.9),
     ('air', 'seed', 'int', 0, 0, 1000000),
+    ('air', 'dust_glow', 'float', 1.0, 0.0, 4.0),
+    ('air', 'dust_opacity', 'float', 0.0, 0.0, 1.0),
     ('light', 'name', 'name', None, None, None),
     ('light', 'anchor', 'camera|pinned', 'camera', None, None),
     ('light', 'orbit', 'angle', 0.0, -180.0, 180.0),
@@ -73,7 +75,8 @@ SPEC_FIELDS = [
 RIG_KEYS = ['version', 'enabled', 'centre', 'size', 'ambient', 'classic',
             'air', 'lights']
 AIR_DEFAULTS = {'haze': 0.0, 'dust': 0.0, 'dust_size': 0.35,
-                'dust_speed': 1.0, 'scatter': 0.55, 'seed': 0}
+                'dust_speed': 1.0, 'scatter': 0.55, 'seed': 0,
+                'dust_glow': 1.0, 'dust_opacity': 0.0}
 LIGHT_KEYS = [f[1] for f in SPEC_FIELDS if f[0] == 'light']
 
 
@@ -94,7 +97,8 @@ FULL_RIG = {
     'ambient': 0.2,
     'classic': 0.3,
     'air': {'haze': 0.3, 'dust': 0.45, 'dust_size': 0.4, 'dust_speed': 2.5,
-            'scatter': -0.35, 'seed': 42},
+            'scatter': -0.35, 'seed': 42, 'dust_glow': 2.4,
+            'dust_opacity': 0.6},
     'lights': [
         {'name': 'key', 'anchor': 'camera', 'orbit': -45.1, 'pitch': 35.2,
          'radius': 3.3, 'position': [0.1, 0.2, 0.3], 'aim': 'centre',

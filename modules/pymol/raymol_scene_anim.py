@@ -504,7 +504,8 @@ def build_dof_transition(keyframes, _self=cmd, power=None, wrap_length=0):
 # --- Light rig blend (#617) --------------------------------------------------
 # Computed by the core (pymol::LightRigBlend, #661).
 
-_RIG_AIR_LERP = ('haze', 'dust', 'dust_size', 'dust_speed', 'scatter')
+_RIG_AIR_LERP = ('haze', 'dust', 'dust_size', 'dust_speed', 'scatter',
+                 'dust_glow', 'dust_opacity')
 
 
 def _is_num(v):
@@ -530,7 +531,7 @@ def blend_rigs(a, b, e, _self=cmd):
     Starts from a copy of A, so a field steps at the cut unless listed here
     (a field a later ticket adds steps by default). The rig is enabled;
     centre, size, ambient, classic and the air's haze, dust, dust_size,
-    dust_speed and scatter lerp (seed stays A's). Lights match by name
+    dust_speed, scatter, dust_glow and dust_opacity lerp (seed stays A's). Lights match by name
     ignoring case and keep A's spelling. A matched light lerps beam,
     softness, highlight, falloff, warmth and intensity, colour in linear RGB,
     and orbit (shortest path), pitch and radius when both are camera lights,

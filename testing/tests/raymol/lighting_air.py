@@ -39,7 +39,7 @@ CELL_SIZES, MIN_CELL = 0.15, 0.5
 HAZE_DENSITY, MOTE_CELLS, DEFOCUS, OCCUPANCY = 0.73, 0.18, 0.3, 0.35
 TIME_WRAP, DEFAULT_FPS = 20000.0, 30.0
 GOLDEN = 0.6180339887498949
-BLOCK_FLOATS = 20
+BLOCK_FLOATS = 24
 
 SETTINGS = ((884, 'metal_light_air_resolution', 'i', 0),
             (885, 'metal_light_air_time', 'f', -1.0),
@@ -50,7 +50,7 @@ SETTINGS = ((884, 'metal_light_air_resolution', 'i', 0),
 OFFSETS = {'haze_density': 0, 'dust_occupancy': 1, 'scatter': 2,
            'seed_offset': 3, 'near': 4, 'far': 5, 'focus': 6, 'cell': 7,
            'time': 8, 'mote_radius': 9, 'defocus': 10, 'shadow_filter': 11,
-           'scale': 12}
+           'scale': 12, 'dust_glow': 20, 'dust_opacity': 21}
 
 
 def f32(x):
@@ -168,6 +168,8 @@ def expected(centre_eye, size_eye, air, time=0.0, scale=0.5, shadow_filter=1):
         'defocus': f32(DEFOCUS / s),
         'shadow_filter': shadow_filter,
         'scale': scale,
+        'dust_glow': f32(min(max(air.get('dust_glow', 1.0), 0.0), 4.0)),
+        'dust_opacity': f32(min(max(air.get('dust_opacity', 0.0), 0.0), 1.0)),
     }
 
 
@@ -550,6 +552,7 @@ class TestPack(AirCase):
         block = self.frame()['block']
         self.assertEqual(block[13:16], [0.0, 0.0, 0.0])
         self.assertEqual(block[16:20], [0.0, 0.0, 0.0, 0.0])
+        self.assertEqual(block[22:24], [0.0, 0.0])
 
     def testBlockLayout(self):
         self.rig(air=dict(AIR, seed=3))
@@ -723,9 +726,10 @@ class TestSource(testing.PyMOLTestCase):
             self.assertIsNone(found, '%s uses %r' % (name, found and found.group(0)))
         block = self.read(os.path.join('layer1', 'LightAirBlock.h'))
         self.assertEqual(re.findall(r'#include\s+"', block), [])
-        self.assertRegex(block, r'static_assert\(sizeof\(LightAirBlock\)\s*==\s*80')
+        # #810: 96 bytes (six float4s)
+        self.assertRegex(block, r'static_assert\(sizeof\(LightAirBlock\)\s*==\s*96')
         for field, offset in (('medium', 0), ('range', 16), ('motion', 32),
-                              ('view', 48), ('proj', 64)):
+                              ('view', 48), ('proj', 64), ('mote', 80)):
             self.assertRegex(block, r'offsetof\(LightAirBlock,\s*%s\)\s*==\s*%d'
                              % (field, offset))
 
@@ -829,3 +833,61 @@ class TestSource(testing.PyMOLTestCase):
         self.assertEqual(body.strip(), 'return _offscreen;')
         body = function_body(mm, 'RendererMetal::beginFrame')
         self.assertEqual(body.count('_lightAirOn = false;'), 1)
+
+
+class TestDustLook810(AirCase):
+    """Issue #810: dust_glow and dust_opacity."""
+
+    def setUp(self):
+        super().setUp()
+        self.load_m()
+
+    def testDefaults(self):
+        # defaults: a rig without the keys packs block[20:24] == [1.0, 0.0, 0.0, 0.0]
+        # and the same block as a rig with dust_glow=1.0, dust_opacity=0.0
+        self.rig(air=dict(AIR))
+        got = self.frame()
+        self.assertEqual(got['block'][20:24], [1.0, 0.0, 0.0, 0.0])
+        self.assertEqual(got['dust_glow'], 1.0)
+        self.assertEqual(got['dust_opacity'], 0.0)
+
+        self.rig(air=dict(AIR, dust_glow=1.0, dust_opacity=0.0))
+        explicit = self.frame()
+        self.assertEqual(got['block'], explicit['block'])
+
+    def testValues(self):
+        # values: dust_glow 2.5 / dust_opacity 0.4 pack as f32(2.5) / f32(0.4)
+        self.rig(air=dict(AIR, dust_glow=2.5, dust_opacity=0.4))
+        got = self.frame()
+        self.assertEqual(got['block'][20], f32(2.5))
+        self.assertEqual(got['block'][21], f32(0.4))
+        self.assertEqual(got['dust_glow'], f32(2.5))
+        self.assertEqual(got['dust_opacity'], f32(0.4))
+
+        # glow 0 and 4, opacity 0 and 1 (the ends) pack exactly
+        for glow, opacity in ((0.0, 0.0), (4.0, 1.0), (0.0, 1.0), (4.0, 0.0)):
+            self.rig(air=dict(AIR, dust_glow=glow, dust_opacity=opacity))
+            frame = self.frame()
+            self.assertEqual(frame['block'][20], f32(glow))
+            self.assertEqual(frame['block'][21], f32(opacity))
+
+        # set_lights with glow 9 and opacity -1 clamps to 4 and 0
+        self.rig(air=dict(AIR, dust_glow=9.0, dust_opacity=-1.0))
+        clamped = self.frame()
+        self.assertEqual(clamped['block'][20], f32(4.0))
+        self.assertEqual(clamped['block'][21], f32(0.0))
+        self.assertEqual(clamped['dust_glow'], f32(4.0))
+        self.assertEqual(clamped['dust_opacity'], f32(0.0))
+
+    def testOnlyMoteFloatsMove(self):
+        # only block[20:22] move when glow/opacity change (everything else equal)
+        self.rig(air=dict(AIR))
+        base_block = self.frame()['block']
+
+        self.rig(air=dict(AIR, dust_glow=3.0, dust_opacity=0.7))
+        moved_block = self.frame()['block']
+
+        self.assertEqual(base_block[:20], moved_block[:20])
+        self.assertNotEqual(base_block[20:22], moved_block[20:22])
+        self.assertEqual(base_block[22:24], moved_block[22:24])
+

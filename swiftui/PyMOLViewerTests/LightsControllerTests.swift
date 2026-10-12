@@ -184,12 +184,15 @@ final class FakeRigStore {
             + #"{"name": "dust_size", "kind": "float", "default": 0.35, "min": 0.05, "max": 2.0}, "#
             + #"{"name": "dust_speed", "kind": "float", "default": 1.0, "min": 0.0, "max": 10.0}, "#
             + #"{"name": "scatter", "kind": "float", "default": 0.55, "min": -0.9, "max": 0.9}, "#
-            + #"{"name": "seed", "kind": "int", "default": 0, "min": 0, "max": 1000000}]"#
+            + #"{"name": "seed", "kind": "int", "default": 0, "min": 0, "max": 1000000}, "#
+            + #"{"name": "dust_glow", "kind": "float", "default": 1.0, "min": 0.0, "max": 4.0}, "#
+            + #"{"name": "dust_opacity", "kind": "float", "default": 0.0, "min": 0.0, "max": 1.0}]"#
         return try! AirField.decodeList(Data(json.utf8))
     }()
     /// The core's default air (LightAir in layer1/LightRig.h).
     static let defaultAir = LightRigSnapshot.Air(haze: 0, dust: 0, dustSize: 0.35, dustSpeed: 1,
-                                                 scatter: 0.55, seed: 0)
+                                                 scatter: 0.55, seed: 0,
+                                                 dustGlow: 1.0, dustOpacity: 0.0)
 
     var exists = false
     var enabled = false
@@ -286,7 +289,8 @@ final class FakeRigStore {
         return "{\"version\":1,\"enabled\":\(enabled),\(frame),\"ambient\":0.05,\"classic\":0.0,"
             + "\"air\":{\"haze\":\(Self.num(air.haze)),\"dust\":\(Self.num(air.dust)),"
             + "\"dust_size\":\(Self.num(air.dustSize)),\"dust_speed\":\(Self.num(air.dustSpeed)),"
-            + "\"scatter\":\(Self.num(air.scatter)),\"seed\":\(air.seed)},"
+            + "\"scatter\":\(Self.num(air.scatter)),\"seed\":\(air.seed),"
+            + "\"dust_glow\":\(Self.num(air.dustGlow)),\"dust_opacity\":\(Self.num(air.dustOpacity))},"
             + "\"lights\":[\(lightsJSON)]}"
     }
 
@@ -481,6 +485,8 @@ final class FakeRigStore {
         case "dust_speed": air.dustSpeed = v
         case "scatter": air.scatter = v
         case "seed": air.seed = Int(v.rounded())
+        case "dust_glow": air.dustGlow = v
+        case "dust_opacity": air.dustOpacity = v
         default: break
         }
     }

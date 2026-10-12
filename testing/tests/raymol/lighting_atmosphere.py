@@ -66,7 +66,8 @@ from pymol import appkit_lights, cmd, lighting, raymol_scene_anim, \
 PEPTIDE = 'ACDEFG'
 
 # The air fields, in table order (the order of the .pse session list).
-AIR_FIELDS = ['haze', 'dust', 'dust_size', 'dust_speed', 'scatter', 'seed']
+AIR_FIELDS = ['haze', 'dust', 'dust_size', 'dust_speed', 'scatter', 'seed',
+              'dust_glow', 'dust_opacity']
 
 # What write_air_fields writes today, byte for byte (seed's bounds are
 # whole numbers; Swift decodes every number as a Double). Swift's
@@ -85,12 +86,16 @@ HELPER_JSON = (
     '{"name": "scatter", "kind": "float", "default": 0.55, "min": -0.9, '
     '"max": 0.9}, '
     '{"name": "seed", "kind": "int", "default": 0, "min": 0, '
-    '"max": 1000000}]')
+    '"max": 1000000}, '
+    '{"name": "dust_glow", "kind": "float", "default": 1.0, "min": 0.0, '
+    '"max": 4.0}, '
+    '{"name": "dust_opacity", "kind": "float", "default": 0.0, "min": 0.0, '
+    '"max": 1.0}]')
 
 # The card's slider resolutions (AirParameter.stepsPerUnit): steps per unit,
 # not ranges. A slider value is round(x * steps) / steps.
 STEPS = {'haze': 100, 'dust': 100, 'dust_size': 100, 'dust_speed': 20,
-         'scatter': 100}
+         'scatter': 100, 'dust_glow': 100, 'dust_opacity': 100}
 
 # The switch's On command with nothing remembered (AtmosphereSwitch.startLook,
 # the orchestrator's Q1): a UI default, not a field default.
@@ -668,7 +673,8 @@ class TestAtmosphereSource(testing.PyMOLTestCase):
         default = re.search(r'default:\s*return\s+(\d+)', body)
         self.assertIsNotNone(default)
         names = {'haze': 'haze', 'dust': 'dust', 'dustSize': 'dust_size',
-                 'dustSpeed': 'dust_speed', 'scatter': 'scatter'}
+                 'dustSpeed': 'dust_speed', 'scatter': 'scatter',
+                 'dustGlow': 'dust_glow', 'dustOpacity': 'dust_opacity'}
         steps = {field: int(cases.get(case, default.group(1)))
                  for case, field in names.items()}
         self.assertEqual(steps, STEPS)

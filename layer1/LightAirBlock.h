@@ -1,7 +1,7 @@
 /*
  * The air (haze and dust, #618, lighting epic #610) as the GPU reads it.
  *
- * One frame's air, resolved to eye space and packed into 80 bytes: five
+ * One frame's air, resolved to eye space and packed into 96 bytes: six
  * float4s. The Metal renderer binds it to the air pass (kAirSrc in
  * layerGraphics/metal/RendererMetal.mm) only while the air is drawn. Its
  * layout mirrors the MSL struct LightAirU: change them together. It is a
@@ -12,7 +12,7 @@
  * includes this header, so it must stay safe for the GL and GLUT builds. The
  * packing lives in LightAir.h (LightAirPack).
  *
- * Offsets in floats (_cmd.get_light_air_frame returns the block as 20
+ * Offsets in floats (_cmd.get_light_air_frame returns the block as 24
  * floats):
  *   0..3    medium: haze density (per Å), dust occupancy (0..0.35),
  *           scatter g (-0.9..0.9), seed offset (0..1000)
@@ -25,6 +25,7 @@
  *           (set by the renderer; 0 here), 0, 0
  *   16..19  proj: the renderer's projection terms A, B, X, Y (set by the
  *           renderer; 0 here)
+ *   20..23  mote: dust glow (0..4), dust opacity (0..1), 0, 0
  */
 
 #pragma once
@@ -51,14 +52,17 @@ struct LightAirBlock {
   float view[4];
   /// The renderer's projection terms A, B, X, Y (renderer; 0 here)
   float proj[4];
+  /// x dust glow (the dust_glow field, 0..4), y dust opacity (0..1), z 0, w 0
+  float mote[4];
 };
 
-static_assert(sizeof(LightAirBlock) == 80, "mirrors MSL LightAirU");
+static_assert(sizeof(LightAirBlock) == 96, "mirrors MSL LightAirU");
 static_assert(offsetof(LightAirBlock, medium) == 0, "float4 slots");
 static_assert(offsetof(LightAirBlock, range) == 16, "float4 slots");
 static_assert(offsetof(LightAirBlock, motion) == 32, "float4 slots");
 static_assert(offsetof(LightAirBlock, view) == 48, "float4 slots");
-static_assert(offsetof(LightAirBlock, proj) == 64, "last float4");
+static_assert(offsetof(LightAirBlock, proj) == 64, "float4 slots");
+static_assert(offsetof(LightAirBlock, mote) == 80, "last float4");
 static_assert(std::is_trivially_copyable<LightAirBlock>::value &&
                   std::is_standard_layout<LightAirBlock>::value,
     "copied to the GPU byte for byte");

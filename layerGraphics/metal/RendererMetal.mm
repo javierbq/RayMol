@@ -2324,6 +2324,7 @@ struct LightAirU {
   float4 view;    // x resolution scale (1 | 0.5), y orthographic 0|1, z air
                   // alpha for a transparent export 0|1 (read by the host)
   float4 proj;    // the projection terms A, B, X, Y
+  float4 mote;    // x dust glow (0..4), y dust opacity (0..1)
 };
 
 // The model's constants, named as in layer1/LightAir.h (a source test pins
@@ -2522,6 +2523,48 @@ static float3 post_air_haze(float3 ro, float3 rd, float zLo, float zHi,
   return acc * (air.medium.x * dz * tPerZ);
 }
 
+// Layer k's mote at the view ray's point x (eye depth z), for the cover
+// (#810): false when the layer's cell holds none or the ray misses it, else
+// its coverage a, its size and capped radius r, its twinkle tw and its
+// centre xp. Its statements are post_air_dust's own mote statements (a
+// source test pins them equal); post_air_dust keeps them inline because as a
+// call the compiler's fast math moved single dust pixels by one level.
+static bool post_air_mote(float3 x, float z, int k, constant LightAirU& air,
+    thread float& a, thread float& size, thread float& r, thread float& tw,
+    thread float3& xp) {
+  const float cell = max(air.range.w, 1e-3);
+  const float T = air.motion.x;
+  const float kk = float(k) * 13.37 + air.medium.w;
+  // Each layer drifts its own way, mostly sideways and settling slowly, so
+  // the layers slide past one another (cells per second).
+  const float ang = 6.2831853 * mat_hash(float3(kk, 3.1, 7.7));
+  const float spd = 0.12 + 0.18 * mat_hash(float3(kk, 9.2, 1.3));
+  const float2 drift = float2(cos(ang), 0.6 * sin(ang) - 0.35) * spd;
+  const float2 q = x.xy / cell + float2(kk * 0.731, kk * 0.293) - drift * T;
+  const float2 ci = floor(q);
+  const float2 f = q - ci;
+  if (mat_hash(float3(ci, kk)) > air.medium.y) return false;   // occupancy
+  // Every mote wanders on its own slow orbit: a centre 0.3..0.7 plus a 0.1
+  // wobble stays inside 0.2..0.8 of the cell.
+  const float ph = 6.2831853 * mat_hash(float3(ci, kk + 41.3));
+  const float fr = 0.4 + 0.9 * mat_hash(float3(ci, kk + 57.9));
+  float2 c = 0.3 + 0.4 * float2(mat_hash(float3(ci, kk + 17.1)),
+                                mat_hash(float3(ci, kk + 31.7)));
+  c += 0.1 * float2(sin(T * fr + ph), cos(T * fr * 1.37 + ph * 1.7));
+  // twinkle: flakes turn and catch the light
+  const float tb = 0.5 + 0.5 * sin(T * (1.3 + 2.1 * fr) + 3.0 * ph);
+  tw = 0.55 + 0.45 * tb * tb;
+  size = air.motion.y * (0.35 + 1.3 * mat_hash(float3(ci, kk + 5.3)));
+  const float blur = abs(z - air.range.z) * air.motion.z * size;
+  r = max(min(size + blur, 0.2 * cell), 1e-3);
+  size = min(size, r);
+  const float dist = length(f - c) * cell;
+  a = 1.0 - smoothstep(0.35 * r, r, dist);
+  if (a <= 0.0) return false;
+  xp = x + float3((c - f) * cell, 0.0);
+  return true;
+}
+
 // Dust motes on kAirDustLayers depth layers across the air's range, cut off
 // before zLo and at the first surface (zHi). Each layer is a grid of cells
 // one dust cell wide; a cell holds a mote when its hash is at most the
@@ -2541,6 +2584,8 @@ static float3 post_air_dust(float3 ro, float3 rd, float zLo, float zHi,
   const float g = min(clamp(air.medium.z, -kAirMaxScatter, kAirMaxScatter) + 0.25,
                       0.92);
   const float T = air.motion.x;
+  const float op = air.mote.y > 0.0 ? min(air.mote.y, 1.0) : 0.0;
+  float cover = 1.0;   // what the motes in front let through (#810)
   float3 add = float3(0.0);
   for (int k = 0; k < kAirDustLayers; ++k) {
     const float z = air.range.x + (float(k) + 0.5) * span;
@@ -2581,7 +2626,12 @@ static float3 post_air_dust(float3 ro, float3 rd, float zLo, float zHi,
     // with no haze.
     const float tr = air.medium.x > 0.0
         ? exp(-air.medium.x * ((z - zLo) * tPerZ)) : 1.0;
-    add += lit * (a * (size * size) / (r * r) * 0.9 * tw * tr);
+    // #810: dust_glow (mote.x) and what the motes in front let through,
+    // inside the scalar so the add stays master's and is bit-identical at
+    // glow 1, opacity 0 (both factors exactly 1.0). A mote adds its light,
+    // then hides what is behind it by a x dust_opacity.
+    add += lit * (a * (size * size) / (r * r) * 0.9 * tw * tr * air.mote.x * cover);
+    cover *= 1.0 - a * op;
   }
   return add;
 }
@@ -2638,6 +2688,37 @@ static float3 post_air_finish(float3 c, float3 a, float tr, float e) {
   return ct + max(mat_soft_knee(ct + a) - mat_soft_knee(ct), float3(0.0));
 }
 
+// The fraction of the scene colour the motes let through at this pixel
+// (#810): computed at full resolution in the composite, like
+// post_air_transmittance. Motes cover the background too (unlike the haze).
+static float post_air_dust_cover(float d, float2 uv, float4 cell,
+                                 constant LightAirU& air) {
+  if (!(air.mote.y > 0.0) || !(air.medium.y > 0.0)) return 1.0;
+  const float A = air.proj.x, B = air.proj.y, ortho = air.view.y;
+  const float camNear = post_linear_depth(0.0, A, B, ortho);
+  const float camFar = post_linear_depth(1.0, A, B, ortho);
+  const float zSurf = d < 0.99999 ? post_linear_depth(d, A, B, ortho) : camFar;
+  const float zLo = max(air.range.x, camNear);
+  const float zHi = min(min(air.range.y, camFar), zSurf);
+  if (!(zHi > zLo) || !light_finite(zHi - zLo)) return 1.0;
+  float3 ro, rd;
+  post_air_ray(uv, cell, air, ro, rd);
+  const float tPerZ = 1.0 / max(-rd.z, 1e-4);
+  const float span = (air.range.y - air.range.x) / float(kAirDustLayers);
+  const float op = min(air.mote.y, 1.0);
+  float cover = 1.0;
+  for (int k = 0; k < kAirDustLayers; ++k) {
+    const float z = air.range.x + (float(k) + 0.5) * span;
+    if (z >= zHi) break;
+    if (z < zLo) continue;
+    const float3 x = ro + rd * (z * tPerZ);
+    float a, size, r, tw; float3 xp;
+    if (!post_air_mote(x, z, k, air, a, size, r, tw, xp)) continue;
+    cover *= 1.0 - a * op;
+  }
+  return light_finite(cover) ? saturate(cover) : 1.0;
+}
+
 // The air at full resolution: colour and depth read at this pixel (never
 // filtered), the term, the composite. Alpha is kept.
 fragment float4 post_air_full(AirVOut in [[stage_in]],
@@ -2652,7 +2733,7 @@ fragment float4 post_air_full(AirVOut in [[stage_in]],
   const float4 c = colorTex.read(px);
   const float d = depthTex.read(px);
   const float4 t = post_air_term(in.uv, in.position.xy, d, cell, air, rig, maps, smp);
-  const float tr = post_air_transmittance(d, in.uv, cell, air);
+  const float tr = post_air_transmittance(d, in.uv, cell, air) * post_air_dust_cover(d, in.uv, cell, air);
   return float4(post_air_finish(c.rgb, t.rgb, tr, rig.tone.x), c.a);
 }
 
@@ -2758,7 +2839,7 @@ fragment float4 post_air_upsample(AirVOut in [[stage_in]],
     }
   }
   const float3 a = wsum > 1e-4 ? sum / wsum : nearest;
-  const float tr = post_air_transmittance(d, in.uv, cell, air);
+  const float tr = post_air_transmittance(d, in.uv, cell, air) * post_air_dust_cover(d, in.uv, cell, air);
   return float4(post_air_finish(c.rgb, a, tr, rig.tone.x), c.a);
 }
 
@@ -2770,11 +2851,16 @@ fragment float4 post_air_upsample(AirVOut in [[stage_in]],
 // export's matte; the live view and an opaque export never run it.
 fragment float4 post_air_alpha(AirVOut in [[stage_in]],
     texture2d<float> beforeTex [[texture(0)]],
-    texture2d<float> afterTex [[texture(1)]]) {
+    texture2d<float> afterTex [[texture(1)]],
+    depth2d<float> depthTex [[texture(2)]],
+    constant LightAirU& air [[buffer(0)]],
+    constant float4& cell [[buffer(2)]]) {
   const uint2 px = uint2(in.position.xy);
   const float3 add = max(afterTex.read(px).rgb - beforeTex.read(px).rgb,
                          float3(0.0));
-  return float4(saturate(dot(add, float3(0.2126, 0.7152, 0.0722))), 0.0, 0.0, 1.0);
+  const float lum = saturate(dot(add, float3(0.2126, 0.7152, 0.0722)));
+  return float4(max(lum, 1.0 - post_air_dust_cover(depthTex.read(px), in.uv, cell, air)),
+                0.0, 0.0, 1.0);
 }
 
 // The transparent export's matte with the air in it (#684): the export's
@@ -14192,7 +14278,12 @@ id<MTLTexture> RendererMetal::encodeAirPass(id<MTLTexture> sceneSrc)
     [ea setFragmentTexture:_airTerm atIndex:kAirTermTextureIndex];
   drawCells(ea, dst.width, dst.height, false);
   [ea endEncoding];
-  encodeAirAlpha(sceneSrc, dst, air.view[2] > 0.5f);
+  std::vector<std::array<float, 4>> rects;
+  rects.reserve(cells.size());
+  for (const auto& c : cells) {
+    rects.push_back({c.rect[0], c.rect[1], c.rect[2], c.rect[3]});
+  }
+  encodeAirAlpha(sceneSrc, dst, air.view[2] > 0.5f, air, rects, grid);
   return dst;
 }
 
@@ -14204,20 +14295,44 @@ id<MTLTexture> RendererMetal::encodeAirPass(id<MTLTexture> sceneSrc)
 // with the setting off (the default), in the live view and in an opaque
 // export nothing here runs and _airAlphaDrawn stays false.
 void RendererMetal::encodeAirAlpha(id<MTLTexture> before, id<MTLTexture> after,
-                                   bool wanted)
+                                   bool wanted, const LightAirBlock& air,
+                                   const std::vector<std::array<float, 4>>& rects,
+                                   bool grid)
 {
   if (!wanted || !_offscreen || !(_clearA < 0.5f) || !_airAlphaPipeline ||
       !_airAlphaMergePipeline || !ensureAirAlpha(after.width, after.height))
     return;
   MTLRenderPassDescriptor* ad = [MTLRenderPassDescriptor renderPassDescriptor];
   ad.colorAttachments[0].texture = _airAlphaTex;
-  ad.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+  // #810: in grid_mode the pass draws per cell (the motes' cover follows
+  // each cell's rays), so the gaps between cells are cleared to 0, the
+  // alpha master's full-frame pass gave them (no air was composited there).
+  ad.colorAttachments[0].loadAction = grid ? MTLLoadActionClear : MTLLoadActionDontCare;
+  ad.colorAttachments[0].clearColor = MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
   ad.colorAttachments[0].storeAction = MTLStoreActionStore;
   id<MTLRenderCommandEncoder> eb = [_cmdBuffer renderCommandEncoderWithDescriptor:ad];
   [eb setRenderPipelineState:_airAlphaPipeline];
   [eb setFragmentTexture:before atIndex:0];
   [eb setFragmentTexture:after atIndex:1];
-  [eb drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+  [eb setFragmentTexture:_sceneDepth atIndex:2];
+  [eb setFragmentBytes:&air length:sizeof(air) atIndex:0];
+  for (const auto& rect : rects) {
+    if (grid) {
+      const long x0 = std::clamp(lround(rect[0] * after.width), 0L, (long)after.width);
+      const long y0 = std::clamp(lround(rect[1] * after.height), 0L, (long)after.height);
+      const long x1 = std::clamp(lround(rect[2] * after.width), 0L, (long)after.width);
+      const long y1 = std::clamp(lround(rect[3] * after.height), 0L, (long)after.height);
+      NSUInteger sx = (NSUInteger)x0;
+      NSUInteger sy = (NSUInteger)y0;
+      NSUInteger sw = (NSUInteger)std::max(0L, x1 - x0);
+      NSUInteger sh = (NSUInteger)std::max(0L, y1 - y0);
+      if (sw == 0 || sh == 0)
+        continue;
+      [eb setScissorRect:MTLScissorRect{sx, sy, sw, sh}];
+    }
+    [eb setFragmentBytes:rect.data() length:sizeof(float) * 4 atIndex:2];
+    [eb drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+  }
   [eb endEncoding];
   _airAlphaDrawn = true;
 }

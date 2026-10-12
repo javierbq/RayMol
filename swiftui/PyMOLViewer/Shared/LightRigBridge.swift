@@ -22,11 +22,15 @@ struct LightRigSnapshot: Decodable, Equatable {
         var dustSpeed: Double
         var scatter: Double
         var seed: Int
+        var dustGlow: Double
+        var dustOpacity: Double
 
         enum CodingKeys: String, CodingKey {
             case haze, dust, scatter, seed
             case dustSize = "dust_size"
             case dustSpeed = "dust_speed"
+            case dustGlow = "dust_glow"
+            case dustOpacity = "dust_opacity"
         }
     }
 

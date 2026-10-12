@@ -41,7 +41,8 @@ THREE_LIGHTS_PLUS_AIR = {
     'ambient': 0.2,
     'classic': 0.3,
     'air': {'haze': 0.25, 'dust': 0.4, 'dust_size': 0.6, 'dust_speed': 2.5,
-            'scatter': -0.3, 'seed': 1234},
+            'scatter': -0.3, 'seed': 1234, 'dust_glow': 2.0,
+            'dust_opacity': 0.25},
     'lights': [
         {'name': 'key', 'anchor': 'camera', 'orbit': -35.5, 'pitch': 30.2,
          'radius': 3.3, 'beam': 50.0, 'softness': 0.45,
@@ -62,7 +63,8 @@ OTHER_RIG = {
 }
 
 AIR_DEFAULTS = {'haze': 0.0, 'dust': 0.0, 'dust_size': 0.35,
-                'dust_speed': 1.0, 'scatter': 0.55, 'seed': 0}
+                'dust_speed': 1.0, 'scatter': 0.55, 'seed': 0,
+                'dust_glow': 1.0, 'dust_opacity': 0.0}
 
 CHOICES = {'camera|pinned': ['camera', 'pinned'],
            'centre|point': ['centre', 'point']}
@@ -93,7 +95,8 @@ def session_list(rig):
 # version only appends to each scope (testSessionLayoutIsFrozen).
 V1_FIELDS = {
     'rig': ['enabled', 'centre', 'size', 'ambient', 'classic'],
-    'air': ['haze', 'dust', 'dust_size', 'dust_speed', 'scatter', 'seed'],
+    'air': ['haze', 'dust', 'dust_size', 'dust_speed', 'scatter', 'seed',
+            'dust_glow', 'dust_opacity'],
     'light': ['name', 'anchor', 'orbit', 'pitch', 'radius', 'position', 'aim',
               'aim_point', 'aim_selection', 'beam', 'softness', 'color',
               'warmth', 'intensity', 'highlight', 'falloff', 'shadow',
@@ -281,7 +284,7 @@ class TestLightSession(testing.PyMOLTestCase):
             self.assertEqual(key[0], 1)
             # enabled, centre, size, ambient, classic
             self.assertEqual(key[1], [1, rig['centre'], rig['size'], 0.2, 0.3])
-            self.assertEqual(key[2], [0.25, 0.4, 0.6, 2.5, -0.3, 1234])
+            self.assertEqual(key[2], [0.25, 0.4, 0.6, 2.5, -0.3, 1234, 2.0, 0.25])
             self.assertEqual(len(key[3]), 3)
             for light in key[3]:
                 self.assertEqual(len(light), 18)
@@ -625,6 +628,15 @@ class TestLightSession(testing.PyMOLTestCase):
         self.assertEqual(unnamed, dict(defaults, name='key'))
         self.assertEqual(pin, dict(defaults, name='pin', anchor='pinned',
                                    position=[5.0, 6.0, 7.0]))
+
+        # #810: a session list with only master's 6 air entries loads with
+        # dust_glow 1 and dust_opacity 0
+        six_air = [1, [1, [1.0, 2.0, 3.0], 4.0, 0.2, 0.0],
+                   [0.2, 0.4, 0.5, 1.5, 0.1, 42], []]
+        self.restore(dict(session, light_rig=six_air))
+        got = cmd.get_lights()
+        self.assertEqual(got['air']['dust_glow'], 1.0)
+        self.assertEqual(got['air']['dust_opacity'], 0.0)
 
     def testRestoreClampsOutOfRange(self):
         """Q3: out-of-range numbers are clamped, silently."""

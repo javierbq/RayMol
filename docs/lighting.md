@@ -368,6 +368,8 @@ atmosphere off
 | `dust_speed` | | 0 to 10 | 1 | How fast the dust drifts: 1 is real time, 0 holds it still. |
 | `scatter` | | -0.9 to 0.9 | 0.55 | Forward scattering (g): above 0, the air glows more where a beam points towards the camera. |
 | `seed` | | 0 to 1000000 | 0 | The dust pattern (a whole number). |
+| `dust_glow` | | 0 to 4 | 1 | How brightly a mote glows in a beam: 1 is the usual look, 0 hides the glints. |
+| `dust_opacity` | | 0 to 1 | 0 | How solid a mote is: 0 is see-through glints that only add light; above 0, a mote also hides what is behind it (an unlit mote is a faint dark speck). |
 
 ### How the air renders and redraws
 
@@ -383,8 +385,8 @@ atmosphere off
 - A transparent-background export (`ray_opaque_background` 0) takes its
   alpha from depth, so by default haze and dust over empty background are
   cut out with it. `set metal_light_air_alpha, 1` keeps them: alpha there is
-  the larger of the depth matte and the air's luminance (what the air added to
-  the pixel). The colour in the PNG is the air's own light, not divided by
+  the larger of the depth matte, the air's luminance and the motes' coverage
+  (`1 - cover`). The colour in the PNG is the air's own light, not divided by
   that alpha. Off by default, so exports are unchanged unless you ask (#684).
 - Haze alone is still: only dust moves. The live view redraws for the dust
   only while the rig is on with dust and `dust_speed` above 0, the dust clock
@@ -428,6 +430,30 @@ atmosphere haze=0.35, dust=0.6
 set metal_exposure, 0.5
 set metal_exposure, 1
 ```
+
+### Dust glow and opacity
+
+Floating dust motes have two controls beyond their size and drift speed:
+`dust_glow` and `dust_opacity` (#810).
+
+- **Dust glow.** `dust_glow` (0 to 4, default 1) scales the light a lit mote
+  adds. At 1, motes catch light with their usual brightness; at 0, glints are
+  hidden. Motes still glow only inside beams. Because mote light goes through
+  the same exposure and tone mapping as the rest of the air, high glow with
+  haze and a backlight clips sooner (see [Backlit haze](#backlit-haze)).
+- **Dust opacity.** `dust_opacity` (0 to 1, default 0) sets how solid a mote
+  is. At 0 (the default), motes are see-through glints that only add light.
+  Above 0, each mote covers what lies behind it (both scene colour and motes
+  behind, though not the haze's own light) by its coverage times `dust_opacity`
+  before its own light is added. An unlit mote reads as a faint dark speck. This
+  is the one case the dust dims a pixel, and it covers the empty background too.
+- Under an HDR rig the cover works in scene units, as the haze's extinction
+  does: it scales the light behind the mote before the tone curve. A pure
+  white background sits at the curve's white point, so a half-opaque mote
+  over it is much fainter than half grey; at 1 a mote is solid. Mid tones
+  dim roughly in proportion.
+- With `metal_light_air_alpha 1`, opaque motes count toward a transparent
+  export's alpha (`1 - cover`), over the empty background too.
 
 ## Shadows
 
@@ -576,7 +602,7 @@ molecule.
 
 The **Atmosphere** card edits the rig's air: **Haze**, **Dust**,
 **Dust size** and **Dust speed**, each a slider with a typed field, and
-**Scatter (g)** under a disclosure. The dust seed is set only with
+**Scatter (g)**, **Dust glow** and **Dust opacity** under a disclosure. The dust seed is set only with
 `atmosphere seed=` (#740). Ranges and defaults are the `atmosphere` command's.
 
 - **The switch.** The card's header holds an on/off switch. Off runs

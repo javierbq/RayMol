@@ -611,7 +611,9 @@ private:
   id<MTLTexture> ensureAirNoMaps();
   bool ensureAirTerm(NSUInteger w, NSUInteger h);
   bool ensureAirAlpha(NSUInteger w, NSUInteger h);
-  void encodeAirAlpha(id<MTLTexture> before, id<MTLTexture> after, bool wanted);
+  void encodeAirAlpha(id<MTLTexture> before, id<MTLTexture> after, bool wanted,
+      const LightAirBlock& air, const std::vector<std::array<float, 4>>& rects,
+      bool grid);
   id<MTLTexture> encodeAirAlphaMerge(id<MTLTexture> matte);
   // Encodes the air over sceneSrc into the other ping-pong target, on
   // _cmdBuffer, and returns that target (sceneSrc when it cannot draw).

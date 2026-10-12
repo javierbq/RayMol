@@ -126,6 +126,8 @@ std::optional<LightAirBlock> LightAirPack(const LightAirSource& source,
                                                       : kLightAirOneTap);
   b.view[0] = resolution == kLightAirHalf ? 0.5f : 1.0f;
   b.view[2] = alpha ? 1.0f : 0.0f;
+  b.mote[0] = float(std::clamp(air.dustGlow, 0.0, 4.0));
+  b.mote[1] = float(std::clamp(air.dustOpacity, 0.0, 1.0));
   return b;
 }
 

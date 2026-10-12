@@ -107,7 +107,7 @@ HDR_CONSTANT = re.compile(r'\bkLightHdr\b')
 # literal, comments stripped and whitespace removed, the first 16 hex digits.
 # Taken from master with these parsers, never from this branch.
 MASTER_054B525 = {
-    'kAirSrc': 'be5a334023581d20',  # #686: per-cell air; #683: Beer-Lambert extinction (re-taken at #683's head)
+    'kAirSrc': 'e39b91daf184e187',  # #810: dust_glow and dust_opacity (post_air_dust's gain and cover, post_air_mote, post_air_dust_cover, the alpha's cover); #686: per-cell air; #683: Beer-Lambert extinction
     'kBezierTubeRigSrc': '8b5d47b1b8b9d31b',  # #663: bezier_tube_fragment_rig_shadow
     'kBezierTubeSrc': '0085bdbf88964ab4',
     'kConnectorShaderSrc': '40ef57a0e535d985',
