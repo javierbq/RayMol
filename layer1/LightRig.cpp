@@ -14,6 +14,8 @@
 #include <cstdio>
 #include <locale>
 #include <sstream>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 #include <glm/geometric.hpp>
@@ -601,6 +603,223 @@ pymol::Result<> LightRigValidate(const LightRig& rig)
   }
 
   return {};
+}
+
+namespace
+{
+inline double lerp(double x, double y, double e)
+{
+  return x + (y - x) * e;
+}
+
+inline double wrap180(double x)
+{
+  if (x > -180.0 && x <= 180.0)
+    return x;
+  double r = std::fmod(x + 180.0, 360.0);
+  if (r <= 0.0)
+    r += 360.0;
+  return r - 180.0;
+}
+
+inline double srgb_to_linear(double c)
+{
+  c = std::clamp(c, 0.0, 1.0);
+  return c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
+}
+
+inline double linear_to_srgb(double v)
+{
+  v = std::clamp(v, 0.0, 1.0);
+  double s = v <= 0.0031308 ? 12.92 * v
+                            : 1.055 * std::pow(v, 1.0 / 2.4) - 0.055;
+  return std::clamp(s, 0.0, 1.0);
+}
+
+glm::dvec3 slerp_offset(const glm::dvec3& oa, const glm::dvec3& ob, double e)
+{
+  if (e <= 0.0)
+    return oa;
+  if (e >= 1.0)
+    return ob;
+  double la = std::sqrt(oa.x * oa.x + oa.y * oa.y + oa.z * oa.z);
+  double lb = std::sqrt(ob.x * ob.x + ob.y * ob.y + ob.z * ob.z);
+  if (la < 1e-9 || lb < 1e-9) {
+    return glm::dvec3(
+        lerp(oa.x, ob.x, e), lerp(oa.y, ob.y, e), lerp(oa.z, ob.z, e));
+  }
+  glm::dvec3 ua = oa / la;
+  glm::dvec3 ub = ob / lb;
+  double dot = std::clamp(ua.x * ub.x + ua.y * ub.y + ua.z * ub.z, -1.0, 1.0);
+  double theta = std::acos(dot);
+  glm::dvec3 d;
+  constexpr double kAntipodal = 179.9 * (kPi / 180.0);
+  if (theta < 1e-6) {
+    d = ua;
+  } else if (theta > kAntipodal) {
+    glm::dvec3 k(-ua.z, 0.0, ua.x);
+    double nk = std::sqrt(k.x * k.x + k.y * k.y + k.z * k.z);
+    k = nk > 1e-6 ? (k / nk) : glm::dvec3(1.0, 0.0, 0.0);
+    double phi = theta * e;
+    glm::dvec3 kxu = glm::cross(k, ua);
+    double cos_phi = std::cos(phi);
+    double sin_phi = std::sin(phi);
+    d = ua * cos_phi + kxu * sin_phi;
+  } else {
+    double s = std::sin(theta);
+    double wa = std::sin((1.0 - e) * theta) / s;
+    double wb = std::sin(e * theta) / s;
+    d = wa * ua + wb * ub;
+  }
+  double dist = lerp(la, lb, e);
+  return dist * d;
+}
+} // namespace
+
+LightRig LightRigBlend(const LightRig& a, const LightRig& b, double e)
+{
+  LightRig out = a;
+  out.enabled = true;
+
+  std::optional<glm::dvec3> blended_c;
+  if (a.centre && a.size && b.centre && b.size) {
+    blended_c = glm::dvec3(
+        lerp(a.centre->x, b.centre->x, e),
+        lerp(a.centre->y, b.centre->y, e),
+        lerp(a.centre->z, b.centre->z, e));
+    out.centre = blended_c;
+    out.size = lerp(*a.size, *b.size, e);
+  }
+
+  out.ambient = lerp(a.ambient, b.ambient, e);
+  out.classic = lerp(a.classic, b.classic, e);
+  out.air.haze = lerp(a.air.haze, b.air.haze, e);
+  out.air.dust = lerp(a.air.dust, b.air.dust, e);
+  out.air.dustSize = lerp(a.air.dustSize, b.air.dustSize, e);
+  out.air.dustSpeed = lerp(a.air.dustSpeed, b.air.dustSpeed, e);
+  out.air.scatter = lerp(a.air.scatter, b.air.scatter, e);
+  out.air.seed = a.air.seed;
+
+  std::unordered_map<std::string, const Light*> by_key_b;
+  for (const auto& l : b.lights) {
+    by_key_b.try_emplace(lower(l.name), &l);
+  }
+
+  std::unordered_set<std::string> keys_a;
+  for (const auto& l : a.lights) {
+    keys_a.insert(lower(l.name));
+  }
+
+  struct Entry {
+    Light light;
+    bool oneSided;
+  };
+  std::vector<Entry> entries;
+  entries.reserve(a.lights.size() + b.lights.size());
+
+  for (const auto& la : a.lights) {
+    auto it = by_key_b.find(lower(la.name));
+    if (it != by_key_b.end()) {
+      const Light& lb = *it->second;
+      Light outL = la;
+      outL.beam = lerp(la.beam, lb.beam, e);
+      outL.softness = lerp(la.softness, lb.softness, e);
+      outL.highlight = lerp(la.highlight, lb.highlight, e);
+      outL.falloff = lerp(la.falloff, lb.falloff, e);
+      outL.warmth = lerp(la.warmth, lb.warmth, e);
+      outL.intensity = lerp(la.intensity, lb.intensity, e);
+
+      if (e <= 0.0) {
+        outL.color = la.color;
+      } else if (e >= 1.0) {
+        outL.color = lb.color;
+      } else {
+        outL.color.x = linear_to_srgb(
+            lerp(srgb_to_linear(la.color.x), srgb_to_linear(lb.color.x), e));
+        outL.color.y = linear_to_srgb(
+            lerp(srgb_to_linear(la.color.y), srgb_to_linear(lb.color.y), e));
+        outL.color.z = linear_to_srgb(
+            lerp(srgb_to_linear(la.color.z), srgb_to_linear(lb.color.z), e));
+      }
+
+      if (la.anchor == LightAnchor::Camera &&
+          lb.anchor == LightAnchor::Camera) {
+        outL.orbit = wrap180(la.orbit + wrap180(lb.orbit - la.orbit) * e);
+        outL.pitch = lerp(la.pitch, lb.pitch, e);
+        outL.radius = lerp(la.radius, lb.radius, e);
+      } else if (la.anchor == LightAnchor::Pinned &&
+                 lb.anchor == LightAnchor::Pinned) {
+        if (e <= 0.0) {
+          outL.position = la.position;
+        } else if (blended_c && a.centre && b.centre) {
+          outL.position = *blended_c +
+              slerp_offset(la.position - *a.centre, lb.position - *b.centre, e);
+        } else {
+          outL.position = glm::dvec3(
+              lerp(la.position.x, lb.position.x, e),
+              lerp(la.position.y, lb.position.y, e),
+              lerp(la.position.z, lb.position.z, e));
+        }
+      }
+
+      if (la.aim == LightAim::Point && lb.aim == LightAim::Point) {
+        outL.aimPoint = glm::dvec3(
+            lerp(la.aimPoint.x, lb.aimPoint.x, e),
+            lerp(la.aimPoint.y, lb.aimPoint.y, e),
+            lerp(la.aimPoint.z, lb.aimPoint.z, e));
+      }
+
+      entries.push_back({std::move(outL), false});
+    } else {
+      Light outL = la;
+      outL.intensity *= (1.0 - e);
+      entries.push_back({std::move(outL), true});
+    }
+  }
+
+  for (const auto& lb : b.lights) {
+    if (keys_a.find(lower(lb.name)) != keys_a.end())
+      continue;
+    Light outL = lb;
+    outL.intensity *= e;
+    outL.shadow = false;
+    outL.outline = false;
+    entries.push_back({std::move(outL), true});
+  }
+
+  if (entries.size() > kLightRigMaxLights) {
+    int excess = static_cast<int>(entries.size()) - kLightRigMaxLights;
+    std::vector<size_t> one_sided_indices;
+    for (size_t i = 0; i < entries.size(); ++i) {
+      if (entries[i].oneSided)
+        one_sided_indices.push_back(i);
+    }
+    std::stable_sort(one_sided_indices.begin(), one_sided_indices.end(),
+        [&entries](size_t i1, size_t i2) {
+          double int1 = entries[i1].light.intensity;
+          double int2 = entries[i2].light.intensity;
+          if (int1 != int2)
+            return int1 < int2;
+          return i1 > i2;
+        });
+    std::vector<bool> drop(entries.size(), false);
+    int to_drop = std::min(excess, static_cast<int>(one_sided_indices.size()));
+    for (int i = 0; i < to_drop; ++i) {
+      drop[one_sided_indices[i]] = true;
+    }
+    out.lights.clear();
+    for (size_t i = 0; i < entries.size(); ++i) {
+      if (!drop[i])
+        out.lights.push_back(std::move(entries[i].light));
+    }
+  } else {
+    out.lights.clear();
+    for (auto& entry : entries) {
+      out.lights.push_back(std::move(entry.light));
+    }
+  }
+
+  return out;
 }
 
 glm::dvec3 LightOrbitDirection(double orbitDeg, double pitchDeg)

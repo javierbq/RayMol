@@ -54,6 +54,51 @@ void SceneSetLightRig(PyMOLGlobals* G, std::optional<pymol::LightRig> rig);
  */
 pymol::Result<> SceneLightsReplace(PyMOLGlobals* G, pymol::LightRig rig);
 
+/// #661: the eased position of camera animation element `cur` of `n`: the
+/// curve SceneLoadAnimation gives the camera (ViewElemInterpolate, power 2,
+/// bias 1): x = cur/n clamped to [0,1]; x < 0.5: pow(2x, 2) / 2;
+/// x > 0.5: 1 - pow(2(1-x), 2) / 2; 0.5 -> 0.5.
+double SceneLightsRecallEase(int cur, int n);
+
+/// #661: recall a scene's rig. `target` gets SceneLightsReplace's frame capture
+/// and validation (error -> nothing changes, return the error). A target equal
+/// to the live rig writes nothing and drops any pending blend. Then, when a
+/// camera animation started by the last scene recall is still running
+/// (SceneLightsNoteRecallView; consumed here) or `force` (tests:
+/// there is no camera animation without a GUI), and both the live rig and
+/// `target` are on (LightRigIsOn), the blend is recorded {from = live, to =
+/// target, serial = AnimationSerial} and the rig is left as it is (the camera's
+/// next frame steps it). Otherwise `target` is stored at once
+/// (SceneSetLightRig), as before #661.
+pymol::Result<> SceneLightsRecall(
+    PyMOLGlobals* G, pymol::LightRig target, bool force = false);
+
+/// #661: MovieSceneRecall's note of whether this recall started a camera
+/// animation (`animated`: it set the view with animate != 0). Records the
+/// animation's serial, or -1.
+void SceneLightsNoteRecallView(PyMOLGlobals* G, bool animated);
+
+/// #661: put the recall blend at camera element `cur` of `n`. Nothing pending
+/// -> false. n <= 0 or cur >= n -> finish (store `to` exactly, clear) and
+/// return false. Else store LightRigBlend(from, to, SceneLightsRecallEase(cur,
+/// n)) with air.dustSpeed = from's (the live dust clock is wall time x speed,
+/// so a ramp would race the dust: the speed steps when the blend finishes) and
+/// return true. Backwards steps are allowed (a movie scrubbed back re-steps the
+/// camera from element 0).
+bool SceneLightsRecallAdvance(PyMOLGlobals* G, int cur, int n);
+
+/// #661: SceneUpdateAnimation's step: nothing pending -> nothing; the pending
+/// blend's serial differs from AnimationSerial (a newer camera animation) ->
+/// finish; else SceneLightsRecallAdvance(cur_ani_elem, n_ani_elem).
+void SceneLightsRecallStep(PyMOLGlobals* G);
+
+/// #661: store the pending blend's `to` and clear it. A camera cut or user
+/// drag (SceneAbortAnimation), a light edit (SceneLightSet, which also covers
+/// a recall of an 'off' scene) and recenter land the rig on the scene's first;
+/// SceneSetLightRig replaces the whole rig and just drops the blend. Nothing
+/// pending -> nothing.
+void SceneLightsRecallFinish(PyMOLGlobals* G);
+
 /**
  * The rig frame for the current scene (spec §4.3, Q5): the box of the
  * enabled objects in the current state, that is the enabled atoms with

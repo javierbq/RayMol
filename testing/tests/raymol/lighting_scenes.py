@@ -811,8 +811,18 @@ class TestBlendValues(_BlendCase):
         lighting.set_lights(m)
         self.assertRigAlmostEqual(cmd.get_lights(), m)
 
+    def orbit_at(self, a, b, e):
+        """A camera light's orbit blended from `a` to `b` at `e`."""
+        one = lambda o: {'enabled': True, 'lights': [{'name': 'k', 'orbit': o}]}
+        return anim.blend_rigs(one(a), one(b), e)['lights'][0]['orbit']
+
+    def colour_at(self, a, b, e):
+        """A light's colour blended from `a` to `b` at `e`."""
+        one = lambda c: {'enabled': True, 'lights': [{'name': 'k', 'color': c}]}
+        return anim.blend_rigs(one(a), one(b), e)['lights'][0]['color']
+
     def testShortestPathAngles(self):
-        lerp = anim._lerp_angle
+        lerp = self.orbit_at
         self.assertAlmostEqual(lerp(160.0, -160.0, 0.5), 180.0)
         self.assertAlmostEqual(lerp(160.0, -160.0, 0.75), -170.0)
         self.assertAlmostEqual(lerp(-170.0, 170.0, 0.5), 180.0)
@@ -825,14 +835,15 @@ class TestBlendValues(_BlendCase):
                 self.assertTrue(-180.0 < v <= 180.0, (a, b, e, v))
 
     def testColourInLinearRgb(self):
-        c = anim._lerp_color([1.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.5)
+        c = self.colour_at([1.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.5)
         self.assertAlmostEqual(c[0], 0.735357, places=5)
         self.assertEqual(c[1], 0.0)
         self.assertAlmostEqual(c[2], 0.735357, places=5)
+        # the sRGB decode and encode undo each other
         for v in (0.0, 0.02, 0.04045, 0.2, 0.5, 1.0):
-            self.assertAlmostEqual(
-                anim._linear_to_srgb(anim._srgb_to_linear(v)), v, places=6)
-        self.assertEqual(anim._lerp_color([0.2, 0.4, 0.6], [1, 1, 1], 0.0),
+            self.assertAlmostEqual(self.colour_at([v] * 3, [v] * 3, 0.5)[0],
+                                   v, places=6)
+        self.assertEqual(self.colour_at([0.2, 0.4, 0.6], [1, 1, 1], 0.0),
                          [0.2, 0.4, 0.6])
 
     def testOneSidedFades(self):
@@ -922,11 +933,15 @@ class TestBlendValues(_BlendCase):
             self.assertAlmostEqual(got, want, places=5)
 
         # a vertical offset turns about the x axis
-        off = anim._slerp_offset([0.0, 4.0, 0.0], [0.0, -4.0, 0.0], 0.5)
+        a = pinned_rig([0.0, 0.0, 0.0], [0.0, 4.0, 0.0])
+        b = pinned_rig([0.0, 0.0, 0.0], [0.0, -4.0, 0.0])
+        off = self.light(anim.blend_rigs(a, b, 0.5), 'p')['position']
         for got, want in zip(off, (0.0, 0.0, 4.0)):
             self.assertAlmostEqual(got, want, places=6)
         # a zero-length offset lerps
-        self.assertEqual(anim._slerp_offset([0, 0, 0], [4, 0, 0], 0.5),
+        a = pinned_rig([0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
+        b = pinned_rig([0.0, 0.0, 0.0], [4.0, 0.0, 0.0])
+        self.assertEqual(self.light(anim.blend_rigs(a, b, 0.5), 'p')['position'],
                          [2.0, 0.0, 0.0])
 
     def testCaseInsensitiveMatch(self):
@@ -1615,6 +1630,208 @@ class TestSceneMovieDustPhase(_BlendCase):
             self.assertIsNotNone(air, f)
             self.assertAlmostEqual(air['time'], (f - 1) / 30.0 * 2.0,
                                    delta=1e-5, msg='frame %d' % f)
+
+
+# --- #661: the rig blend in the core ------------------------------------------
+
+def recall_ease(x):
+    """The easing SceneLoadAnimation gives the camera (ViewElemInterpolate,
+    power 2, bias 1), which the recall blend follows."""
+    return anim.ease(x, 2.0)
+
+
+def with_speed(source, speed):
+    out = copy.deepcopy(source)
+    out['air'] = dict(out.get('air', {}), dust=0.5, dust_speed=speed)
+    return out
+
+
+class TestRecallBlend(_BlendCase):
+    """#661: a recall that animates the camera blends the rig in the core,
+    one step per camera frame at the camera's eased position. The dust speed
+    holds the old rig's until the blend ends (the live dust clock is wall
+    time x speed, so a ramp would race the dust)."""
+
+    N = 30
+
+    def setUp(self):
+        super().setUp()
+        self.a = self.set_rig(with_speed(MOVIE_A, 1.0))
+        self.b = rig(with_speed(MOVIE_B, 3.0))
+
+    def expected(self, cur):
+        want = anim.blend_rigs(self.a, self.b, recall_ease(cur / float(self.N)))
+        want['air']['dust_speed'] = self.a['air']['dust_speed']
+        return want
+
+    def testIntermediateFramesBlend(self):
+        lighting._lights_recall(self.b, force=True)
+        # nothing moves before the camera's first frame
+        self.assertEqual(cmd.get_lights(), self.a)
+        for cur in (0, 1, 7, 15, 22, 29):
+            self.assertTrue(lighting._lights_recall_step(cur, self.N), cur)
+            got = cmd.get_lights()
+            self.assertRigAlmostEqual(got, self.expected(cur), 'cur %d' % cur)
+            e = recall_ease(cur / float(self.N))
+            # checked by hand too, not only against blend_rigs
+            self.assertAlmostEqual(got['ambient'], 0.05 + 0.1 * e, places=5)
+            self.assertAlmostEqual(got['classic'], 0.2 * e, places=5)
+            self.assertAlmostEqual(got['air']['haze'], 0.1 + 0.2 * e, places=5)
+            self.assertAlmostEqual(got['air']['dust_speed'], 1.0, places=5)
+            self.assertTrue(got['enabled'])
+        self.assertNotEqual(cmd.get_lights(), self.a)
+        self.assertNotEqual(cmd.get_lights(), self.b)
+        # the camera's last frame lands exactly on the scene's rig
+        self.assertFalse(lighting._lights_recall_step(self.N, self.N))
+        self.assertEqual(cmd.get_lights(), self.b)
+        # and nothing is pending any more
+        self.assertFalse(lighting._lights_recall_step(10, self.N))
+        self.assertEqual(cmd.get_lights(), self.b)
+
+    def testDirectStepEqualsPlayback(self):
+        lighting._lights_recall(self.b, force=True)
+        played_rigs = []
+        for cur in range(self.N):
+            lighting._lights_recall_step(cur, self.N)
+            played_rigs.append(cmd.get_lights())
+        for cur in (25, 3, 17, 0, 9):
+            self.set_rig(self.a)
+            lighting._lights_recall(self.b, force=True)
+            lighting._lights_recall_step(cur, self.N)
+            self.assertEqual(cmd.get_lights(), played_rigs[cur], cur)
+        # backwards within one blend (a movie scrubbed back)
+        lighting._lights_recall_step(28, self.N)
+        lighting._lights_recall_step(4, self.N)
+        self.assertEqual(cmd.get_lights(), played_rigs[4])
+
+    def testAnEditLandsTheBlendFirst(self):
+        # an edit mid-blend applies to the scene's rig, not a half-blended one
+        lighting._lights_recall(self.b, force=True)
+        lighting._lights_recall_step(10, self.N)
+        lighting._light_set(0, 'intensity', 0.5)
+        want = copy.deepcopy(self.b)
+        want['lights'][0]['intensity'] = 0.5
+        self.assertEqual(cmd.get_lights(), want)
+        self.assertFalse(lighting._lights_recall_step(20, self.N))
+        self.assertEqual(cmd.get_lights(), want)
+
+        # an 'off' scene recalled mid-blend turns the scene's rig off
+        self.set_rig(self.a)
+        lighting._lights_recall(self.b, force=True)
+        lighting._lights_recall_step(10, self.N)
+        lighting._light_set(-1, 'enabled', 0)
+        self.assertEqual(cmd.get_lights(), dict(self.b, enabled=False))
+
+        # recenter recentres the scene's rig
+        self.set_rig(self.a)
+        lighting._lights_recall(self.b, force=True)
+        lighting._lights_recall_step(10, self.N)
+        lighting._lights_recenter()
+        got = cmd.get_lights()
+        self.assertEqual([l['name'] for l in got['lights']],
+                         [l['name'] for l in self.b['lights']])
+        self.assertEqual(got['air'], self.b['air'])
+        self.assertFalse(lighting._lights_recall_step(20, self.N))
+
+        # set_lights replaces the rig and drops the blend
+        self.set_rig(self.a)
+        lighting._lights_recall(self.b, force=True)
+        lighting._lights_recall_step(10, self.N)
+        replaced = self.set_rig(RIG_B)
+        self.assertFalse(lighting._lights_recall_step(20, self.N))
+        self.assertEqual(cmd.get_lights(), replaced)
+
+    def testACameraCutFinishesTheBlend(self):
+        lighting._lights_recall(self.b, force=True)
+        lighting._lights_recall_step(10, self.N)
+        cmd.set_view(cmd.get_view())          # animate=0 aborts the animation
+        self.assertEqual(cmd.get_lights(), self.b)
+        self.assertFalse(lighting._lights_recall_step(20, self.N))
+
+    def testRecallingTheLiveRigDropsAPendingBlend(self):
+        # recall B, then A again before B's first frame: A stays
+        lighting._lights_recall(self.b, force=True)
+        with counting(lighting, 'set_lights') as calls:
+            lighting._lights_recall(self.a, force=True)
+        self.assertEqual(calls, [])
+        self.assertFalse(lighting._lights_recall_step(10, self.N))
+        self.assertEqual(cmd.get_lights(), self.a)
+
+    def testOnOffSteps(self):
+        # no rig, or a rig that is off, on either side: applied at once
+        off = dict(self.b, enabled=False)
+        lighting._lights_recall(off, force=True)
+        self.assertEqual(cmd.get_lights(), off)
+        self.assertFalse(lighting._lights_recall_step(10, self.N))
+        lighting._lights_recall(self.b, force=True)
+        self.assertEqual(cmd.get_lights(), self.b)
+        self.assertFalse(lighting._lights_recall_step(10, self.N))
+        lighting.set_lights(None)
+        lighting._lights_recall(self.a, force=True)
+        self.assertEqual(cmd.get_lights(), self.a)
+        self.assertFalse(lighting._lights_recall_step(10, self.N))
+
+    def testABadRigRaisesAndLeavesTheRig(self):
+        with self.assertRaises(pymol.CmdException) as cm:
+            lighting._lights_recall(dict(self.b, version=99), force=True)
+        self.assertIn('lights_recall', str(cm.exception))
+        self.assertEqual(cmd.get_lights(), self.a)
+        self.assertFalse(lighting._lights_recall_step(10, self.N))
+
+
+class TestRecallOutsideMovies(_BlendCase):
+    """#661: with no camera animation running (animate=0, or no GUI as
+    here) a recall applies the scene's rig at once, as before."""
+
+    def testRecallSnapsWithoutACameraAnimation(self):
+        a = self.store('A', MOVIE_A)
+        b = self.store('B', MOVIE_B)
+        cmd.scene('A', 'recall', animate=0)
+        self.assertEqual(cmd.get_lights(), a)
+        cmd.scene('B', 'recall', animate=1)
+        self.assertEqual(cmd.get_lights(), b)
+        self.assertFalse(lighting._lights_recall_step(0, 30))
+        cmd.scene('auto', 'previous')
+        self.assertEqual(cmd.get_lights(), a)
+        lighting._lights_recall(b)               # no animation: no blend
+        self.assertEqual(cmd.get_lights(), b)
+        self.assertFalse(lighting._lights_recall_step(0, 30))
+
+    def testRecallGoesThroughTheCoreAndTheMovieDoesNot(self):
+        a = self.store('A', MOVIE_A)
+        b = self.store('B', MOVIE_B)
+        with counting(lighting, '_lights_recall') as calls:
+            cmd.scene('A', 'recall')
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(cmd.get_lights(), a)
+        # a movie keyframe applies its scene's rig at once (the authored
+        # _lights_blend frames do the blending there)
+        with counting(lighting, '_lights_recall') as calls:
+            anim.enter_scene(b64('B'))
+        self.assertEqual(calls, [])
+        self.assertEqual(cmd.get_lights(), b)
+
+
+class TestMovieJumpEqualsPlayback(_BlendCase):
+    """#661: any frame of a scene movie, reached by a jump, shows the rig
+    playback shows there, hold frames included."""
+
+    def testJumpEqualsPlayback(self):
+        self.store('A', MOVIE_A)
+        self.store('B', MOVIE_B)
+        # 1-13 blends A -> B, 13-25 holds B, 25-37 blends back, 37-49 holds A
+        rebuild(scene_item(1, 'A'), scene_item(13, 'B'), scene_item(25, 'B'),
+                scene_item(37, 'A'), scene_item(49, 'A'))
+        count = cmd.count_frames()
+        self.assertGreaterEqual(count, 49)
+        playback = {}
+        for f in range(1, count + 1):
+            playback[f] = played(f)
+        for start in (1, 19, 43, count):
+            for f in range(1, count + 1):
+                played(start)
+                self.assertRigAlmostEqual(played(f), playback[f],
+                                          'jump %d -> %d' % (start, f))
 
 
 # --- the L2 scene file (scripts/lighting/scenes/lighting_617_movie.json) ----

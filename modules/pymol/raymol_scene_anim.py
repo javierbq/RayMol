@@ -28,21 +28,24 @@ interior frame of a transition between two DISTINCT scenes where at least one
 has an entry carries one compact frame command, `_lights_blend <A>, <B>, <t>`
 (scene names as UTF-8 hex, t the camera's eased position, pre-rounded). It
 reads both stored rigs at play time, so re-storing a scene's rig needs no
-re-authoring. blend_rigs starts from a copy of A, so every field steps at the
-cut unless it is listed there: angles take the shortest path, colour
-interpolates in linear RGB, pinned lights arc around the blended centre, and a
-light in only one scene fades its intensity from or to 0. Rig on/off steps at
-the cut. The track is saved as structured data under 'lights' (only when there
-is one), stripped from the saved movie and regenerated on load like the rest.
-Loop-wrap transitions (#656): when the movie loops (movie_loop on or wrap=True),
-a pseudo-transition from the last keyframe back to the first shifted by the movie
+re-authoring. The blend is computed by the core (pymol::LightRigBlend, #661);
+an interactive animated recall is blended by the core with the camera (#661).
+blend_rigs starts from a copy of A, so every field steps at the cut unless it
+is listed there: angles take the shortest path, colour interpolates in linear
+RGB, pinned lights arc around the blended centre, and a light in only one
+scene fades its intensity from or to 0. Rig on/off steps at the cut. The track
+is saved as structured data under 'lights' (only when there is one), stripped
+from the saved movie and regenerated on load like the rest. Loop-wrap
+transitions (#656): when the movie loops (movie_loop on or wrap=True), a
+pseudo-transition from the last keyframe back to the first shifted by the movie
 length blends settings, DOF and the light rig across the wrap span.
 Dust phase (#687): when dust_speed differs between scenes, enter_scene and
 _lights_blend write metal_light_air_phase so the dust time is the integrated
 speed across the movie and the dust does not jump. When the movie has a rig
 blend, every other frame carries a phase-only command (_a.dust_hold()), so a
-jump straight to a hold frame renders the same dust time as playback; author()
-starts each movie from phase 0.
+hold frame re-applies its scene's rig so a jump equals playback (#661) and
+renders the same dust time as playback; author() starts each movie from
+phase 0.
 """
 import base64
 import copy
@@ -499,19 +502,9 @@ def build_dof_transition(keyframes, _self=cmd, power=None, wrap_length=0):
 
 
 # --- Light rig blend (#617) --------------------------------------------------
-# Pure Python: no PyMOLGlobals, no cmd. The core clamps whatever set_lights
-# receives, and every value here stays between its two (valid) endpoints.
-
-# The rig's light cap (LightRig.h): a blend of two rigs never exceeds it.
-_MAX_LIGHTS = 6
-
-# Two pinned directions further apart than this are "opposite": the arc then
-# turns about a fixed axis so the path is deterministic.
-_ANTIPODAL = math.radians(179.9)
+# Computed by the core (pymol::LightRigBlend, #661).
 
 _RIG_AIR_LERP = ('haze', 'dust', 'dust_size', 'dust_speed', 'scatter')
-_LIGHT_LERP = ('beam', 'softness', 'highlight', 'falloff', 'warmth',
-               'intensity')
 
 
 def _is_num(v):
@@ -519,107 +512,8 @@ def _is_num(v):
             and math.isfinite(v))
 
 
-def _is_vec3(v):
-    return (isinstance(v, (list, tuple)) and len(v) == 3
-            and all(_is_num(x) for x in v))
-
-
 def _lerp(a, b, e):
     return a + (b - a) * e
-
-
-def _lerp3(a, b, e):
-    return [_lerp(float(x), float(y), e) for x, y in zip(a, b)]
-
-
-def _wrap180(x):
-    """x wrapped into (-180, 180], untouched when already there (so an
-    endpoint stays exact)."""
-    if -180.0 < x <= 180.0:
-        return x
-    r = math.fmod(x + 180.0, 360.0)
-    if r <= 0.0:
-        r += 360.0
-    return r - 180.0
-
-
-def _lerp_angle(a, b, e):
-    """Degrees, along the shortest path: the delta is wrapped into
-    (-180, 180] and so is the result (160 -> -160 passes through 180)."""
-    a = float(a)
-    return _wrap180(a + _wrap180(float(b) - a) * e)
-
-
-def _srgb_to_linear(c):
-    """IEC 61966-2-1 decode of one channel in [0, 1]."""
-    c = min(max(float(c), 0.0), 1.0)
-    return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
-
-
-def _linear_to_srgb(v):
-    """IEC 61966-2-1 encode of one channel in [0, 1]."""
-    v = min(max(float(v), 0.0), 1.0)
-    s = 12.92 * v if v <= 0.0031308 else 1.055 * v ** (1.0 / 2.4) - 0.055
-    return min(max(s, 0.0), 1.0)
-
-
-def _lerp_color(a, b, e):
-    """sRGB colours interpolated in linear RGB (decode, lerp, encode), exact
-    at both ends: red -> blue passes (0.735, 0, 0.735), not (0.5, 0, 0.5)."""
-    if e <= 0.0:
-        return [float(v) for v in a]
-    if e >= 1.0:
-        return [float(v) for v in b]
-    return [_linear_to_srgb(_lerp(_srgb_to_linear(x), _srgb_to_linear(y), e))
-            for x, y in zip(a, b)]
-
-
-def _norm(v):
-    return math.sqrt(sum(x * x for x in v))
-
-
-def _cross(a, b):
-    return [a[1] * b[2] - a[2] * b[1],
-            a[2] * b[0] - a[0] * b[2],
-            a[0] * b[1] - a[1] * b[0]]
-
-
-def _slerp_offset(oa, ob, e):
-    """An offset from a rig centre moving from `oa` to `ob`: the direction
-    along the shortest great-circle arc, the distance lerped. Exact at both
-    ends. Nearly opposite directions (> 179.9 degrees) turn about
-    normalize(oa x y), or the x axis when oa is vertical, so the path is
-    deterministic; a zero-length offset falls back to a straight lerp."""
-    oa = [float(x) for x in oa]
-    ob = [float(x) for x in ob]
-    if e <= 0.0:
-        return oa
-    if e >= 1.0:
-        return ob
-    la, lb = _norm(oa), _norm(ob)
-    if la < 1e-9 or lb < 1e-9:
-        return _lerp3(oa, ob, e)
-    ua = [x / la for x in oa]
-    ub = [x / lb for x in ob]
-    dot = min(max(sum(x * y for x, y in zip(ua, ub)), -1.0), 1.0)
-    theta = math.acos(dot)
-    if theta < 1e-6:
-        d = ua
-    elif theta > _ANTIPODAL:
-        k = _cross(ua, [0.0, 1.0, 0.0])
-        nk = _norm(k)
-        k = [x / nk for x in k] if nk > 1e-6 else [1.0, 0.0, 0.0]
-        # Rodrigues for an axis perpendicular to ua
-        phi = theta * e
-        kxu = _cross(k, ua)
-        d = [u * math.cos(phi) + w * math.sin(phi) for u, w in zip(ua, kxu)]
-    else:
-        s = math.sin(theta)
-        wa = math.sin((1.0 - e) * theta) / s
-        wb = math.sin(e * theta) / s
-        d = [wa * x + wb * y for x, y in zip(ua, ub)]
-    dist = _lerp(la, lb, e)
-    return [dist * x for x in d]
 
 
 def rig_on(r):
@@ -629,49 +523,9 @@ def rig_on(r):
     return _rs.rig_on(r)
 
 
-def _light_key(light):
-    """Lights match by name ignoring case: the rig's own uniqueness rule."""
-    return str(light.get('name', '')).lower()
-
-
-def _blend_light(la, lb, e, ca, cb, c):
-    """A light present in both rigs, starting from A's (every field steps
-    unless it is listed here)."""
-    out = copy.deepcopy(la)
-    for k in _LIGHT_LERP:
-        if _is_num(la.get(k)) and _is_num(lb.get(k)):
-            out[k] = _lerp(float(la[k]), float(lb[k]), e)
-    if _is_vec3(la.get('color')) and _is_vec3(lb.get('color')):
-        out['color'] = _lerp_color(la['color'], lb['color'], e)
-    anchor_a = la.get('anchor', 'camera')
-    anchor_b = lb.get('anchor', 'camera')
-    if anchor_a == 'camera' and anchor_b == 'camera':
-        if _is_num(la.get('orbit')) and _is_num(lb.get('orbit')):
-            out['orbit'] = _lerp_angle(la['orbit'], lb['orbit'], e)
-        for k in ('pitch', 'radius'):
-            if _is_num(la.get(k)) and _is_num(lb.get(k)):
-                out[k] = _lerp(float(la[k]), float(lb[k]), e)
-    elif anchor_a == 'pinned' and anchor_b == 'pinned':
-        pa, pb = la.get('position'), lb.get('position')
-        if _is_vec3(pa) and _is_vec3(pb):
-            if e <= 0.0:
-                out['position'] = [float(x) for x in pa]
-            elif c is not None:
-                # Pins are fixed in world space (decision 17): arc around the
-                # blended centre so the light never cuts through the molecule.
-                off = _slerp_offset([p - q for p, q in zip(pa, ca)],
-                                    [p - q for p, q in zip(pb, cb)], e)
-                out['position'] = [q + o for q, o in zip(c, off)]
-            else:
-                out['position'] = _lerp3(pa, pb, e)
-    if la.get('aim') == 'point' and lb.get('aim') == 'point':
-        if _is_vec3(la.get('aim_point')) and _is_vec3(lb.get('aim_point')):
-            out['aim_point'] = _lerp3(la['aim_point'], lb['aim_point'], e)
-    return out
-
-
-def blend_rigs(a, b, e):
-    """Rig dicts `a` and `b` (both on) blended at eased position `e`.
+def blend_rigs(a, b, e, _self=cmd):
+    """Rig dicts `a` and `b` (both on) blended at eased position `e` (#617,
+    computed by the core, pymol::LightRigBlend, #661).
 
     Starts from a copy of A, so a field steps at the cut unless listed here
     (a field a later ticket adds steps by default). The rig is enabled;
@@ -687,66 +541,28 @@ def blend_rigs(a, b, e):
     lights, then B's own, so shadow slots stay A's. Past six lights, the
     dimmest one-sided lights at this frame are left out (ties: the later
     one first)."""
-    e = float(e)
-    out = copy.deepcopy(a)
-    out['enabled'] = True
-    ca, cb = a.get('centre'), b.get('centre')
-    c = None
-    if (_is_vec3(ca) and _is_vec3(cb) and _is_num(a.get('size'))
-            and _is_num(b.get('size'))):
-        c = _lerp3(ca, cb, e)
-        out['centre'] = c
-        out['size'] = _lerp(float(a['size']), float(b['size']), e)
-    for k in ('ambient', 'classic'):
-        if _is_num(a.get(k)) and _is_num(b.get(k)):
-            out[k] = _lerp(float(a[k]), float(b[k]), e)
-    air_a, air_b = a.get('air'), b.get('air')
+    a = dict(a)
+    b = dict(b)
+    air_a = a.get('air')
+    air_b = b.get('air')
     if isinstance(air_a, dict) and isinstance(air_b, dict):
-        air = out['air']
+        air_b = dict(air_b)
         for k in _RIG_AIR_LERP:
-            if _is_num(air_a.get(k)) and _is_num(air_b.get(k)):
-                air[k] = _lerp(float(air_a[k]), float(air_b[k]), e)
-
-    lights_a = [l for l in (a.get('lights') or []) if isinstance(l, dict)]
-    lights_b = [l for l in (b.get('lights') or []) if isinstance(l, dict)]
-    by_key_b = {}
-    for l in lights_b:
-        by_key_b.setdefault(_light_key(l), l)
-    keys_a = set(_light_key(l) for l in lights_a)
-    entries = []        # [(light, one_sided)]
-    for l in lights_a:
-        m = by_key_b.get(_light_key(l))
-        if m is not None:
-            entries.append((_blend_light(l, m, e, ca, cb, c), False))
-        else:
-            d = copy.deepcopy(l)
-            if _is_num(d.get('intensity')):
-                d['intensity'] = float(d['intensity']) * (1.0 - e)
-            entries.append((d, True))
-    for l in lights_b:
-        if _light_key(l) in keys_a:
-            continue
-        d = copy.deepcopy(l)
-        if _is_num(d.get('intensity')):
-            d['intensity'] = float(d['intensity']) * e
-        d['shadow'] = False
-        d['outline'] = False
-        entries.append((d, True))
-    excess = len(entries) - _MAX_LIGHTS
-    if excess > 0:
-        one_sided = [i for i, (_d, one) in enumerate(entries) if one]
-
-        def dimmest(i):
-            v = entries[i][0].get('intensity')
-            return (float(v) if _is_num(v) else 0.0, -i)
-
-        drop = set(sorted(one_sided, key=dimmest)[:excess])
-        entries = [x for i, x in enumerate(entries) if i not in drop]
-    out['lights'] = [d for d, _one in entries]
-    return out
+            if not (_is_num(air_a.get(k)) and _is_num(air_b.get(k))):
+                if _is_num(air_a.get(k)):
+                    air_b[k] = air_a[k]
+                else:
+                    air_b.pop(k, None)
+        b['air'] = air_b
+    elif isinstance(air_a, dict):
+        b['air'] = dict(air_a)
+    else:
+        b.pop('air', None)
+    from pymol import lighting
+    return lighting._blend_lights(a, b, e, _self=_self)
 
 
-def blend_target(ra, rb, t):
+def blend_target(ra, rb, t, _self=cmd):
     """What the rig should be at position `t` of a transition from scene
     entry `ra` to `rb` (each a rig dict, 'off' or None for no entry):
     None (leave the rig alone) when A has no entry; B's entry from t >= 1
@@ -758,7 +574,7 @@ def blend_target(ra, rb, t):
     if t >= 1.0:
         return copy.deepcopy(rb)
     if t > 0.0 and rig_on(ra) and rig_on(rb):
-        return blend_rigs(ra, rb, t)
+        return blend_rigs(ra, rb, t, _self=_self)
     return copy.deepcopy(ra)
 
 
@@ -808,7 +624,9 @@ def _blend_speed(ra, rb, t):
         if (isinstance(air_a, dict) and isinstance(air_b, dict)
                 and _is_num(air_a.get('dust_speed'))
                 and _is_num(air_b.get('dust_speed'))):
-            lerped = _lerp(float(air_a['dust_speed']), float(air_b['dust_speed']), t)
+            sa = min(max(float(air_a['dust_speed']), 0.0), _MAX_DUST_SPEED)
+            sb = min(max(float(air_b['dust_speed']), 0.0), _MAX_DUST_SPEED)
+            lerped = _lerp(sa, sb, t)
             return min(max(float(lerped), 0.0), _MAX_DUST_SPEED)
         return _rig_speed(ra)
     return _entry_speed(ra)
@@ -1046,7 +864,21 @@ def emit_phase_frames(frames, _self=cmd):
 
 
 def dust_hold(_self=cmd):
-    """The hold frames' command: write the dust phase for this frame."""
+    """The hold frames' command: re-apply the held scene's light rig (#661) so
+    a jump equals playback, and write the dust phase for this frame (#687)."""
+    try:
+        get_frame = getattr(_self, 'get_frame', None)
+        if get_frame is not None and _scene_marks:
+            frame = int(get_frame())
+            held = None
+            for f, name in sorted(_scene_marks):
+                if int(f) <= frame:
+                    held = name
+            if held is not None:
+                from pymol import raymol_scenes as _rs
+                _rs.apply_lights(held, _self)
+    except Exception:
+        pass
     _write_phase(_self)
 
 
@@ -1107,12 +939,16 @@ def lights_blend(a_hex, b_hex, t, _self=cmd):
             return
         t = min(max(t, 0.0), 1.0)
         from pymol import raymol_scenes as _rs
-        target = blend_target(_rs.scene_lights(a), _rs.scene_lights(b), t)
+        target = None
+        try:
+            target = blend_target(_rs.scene_lights(a), _rs.scene_lights(b), t, _self=_self)
+        except Exception as exc:
+            _rs._warn_lights(a, 'light rig of scene "%s" could not be blended: %s' % (a, exc))
         if target is not None:
             _rs._apply_lights_target(target, _self, report=a)
-        _write_phase(_self)
     except Exception:
         pass
+    _write_phase(_self)
 
 
 # The animation authored into the CURRENT movie, regenerated on every rebuild.

@@ -29,8 +29,18 @@ const pymol::LightRig* SceneGetLightRig(PyMOLGlobals* G)
   return rig ? &*rig : nullptr;
 }
 
+namespace
+{
+void SceneSetDirectRig(PyMOLGlobals* G, pymol::LightRig rig)
+{
+  G->Scene->lightRig = std::move(rig);
+  SceneInvalidate(G);
+}
+} // namespace
+
 void SceneSetLightRig(PyMOLGlobals* G, std::optional<pymol::LightRig> rig)
 {
+  G->Scene->lightRecall.reset();
   auto& current = G->Scene->lightRig;
   if (!current && !rig)
     return;
@@ -51,6 +61,105 @@ pymol::Result<> SceneLightsReplace(PyMOLGlobals* G, pymol::LightRig rig)
   p_return_if_error(valid);
   SceneSetLightRig(G, std::move(rig));
   return {};
+}
+
+double SceneLightsRecallEase(int cur, int n)
+{
+  if (n <= 0)
+    return cur <= 0 ? 0.0 : 1.0;
+  double x = std::clamp(static_cast<double>(cur) / n, 0.0, 1.0);
+  if (x == 0.5)
+    return 0.5;
+  if (x < 0.5) {
+    double t = 2.0 * x;
+    return (t * t) * 0.5;
+  } else {
+    double t = 2.0 * (1.0 - x);
+    return 1.0 - (t * t) * 0.5;
+  }
+}
+
+pymol::Result<> SceneLightsRecall(
+    PyMOLGlobals* G, pymol::LightRig target, bool force)
+{
+  if (!target.lights.empty() && !target.centre && !target.size) {
+    glm::dvec3 centre;
+    double size;
+    SceneLightRigCapture(G, centre, size);
+    target.centre = centre;
+    target.size = size;
+  }
+  auto valid = pymol::LightRigValidate(target);
+  p_return_if_error(valid);
+
+  const auto* live = SceneGetLightRig(G);
+  if (live && pymol::LightRigToJSON(*live) == pymol::LightRigToJSON(target)) {
+    // Already the scene's rig: write nothing, but drop a blend still heading
+    // elsewhere (recall B, then A again before B's first frame).
+    G->Scene->lightRecall.reset();
+    return {};
+  }
+  // Only the camera animation this recall started (not an orient or zoom
+  // still in flight when the recall set no view); consumed so a later recall
+  // cannot reuse it.
+  const bool ownAnimation =
+      G->Scene->recallAnimationSerial == G->Scene->AnimationSerial;
+  G->Scene->recallAnimationSerial = -1;
+  bool animRunning =
+      (ownAnimation && G->Scene->cur_ani_elem < G->Scene->n_ani_elem) ||
+      force;
+  if (animRunning && pymol::LightRigIsOn(live) &&
+      pymol::LightRigIsOn(&target)) {
+    G->Scene->lightRecall = CScene::LightRecall{
+        *live, std::move(target), G->Scene->AnimationSerial};
+  } else {
+    SceneSetLightRig(G, std::move(target));
+  }
+  return {};
+}
+
+void SceneLightsNoteRecallView(PyMOLGlobals* G, bool animated)
+{
+  CScene* I = G->Scene;
+  I->recallAnimationSerial =
+      animated && I->cur_ani_elem < I->n_ani_elem ? I->AnimationSerial : -1;
+}
+
+void SceneLightsRecallFinish(PyMOLGlobals* G)
+{
+  if (!G->Scene->lightRecall)
+    return;
+  auto to = std::move(G->Scene->lightRecall->to);
+  G->Scene->lightRecall.reset();
+  SceneSetDirectRig(G, std::move(to));
+}
+
+bool SceneLightsRecallAdvance(PyMOLGlobals* G, int cur, int n)
+{
+  if (!G->Scene->lightRecall)
+    return false;
+  if (n <= 0 || cur >= n) {
+    SceneLightsRecallFinish(G);
+    return false;
+  }
+  double e = SceneLightsRecallEase(cur, n);
+  pymol::LightRig blended =
+      pymol::LightRigBlend(G->Scene->lightRecall->from,
+          G->Scene->lightRecall->to, e);
+  blended.air.dustSpeed = G->Scene->lightRecall->from.air.dustSpeed;
+  SceneSetDirectRig(G, std::move(blended));
+  return true;
+}
+
+void SceneLightsRecallStep(PyMOLGlobals* G)
+{
+  if (!G->Scene->lightRecall)
+    return;
+  if (G->Scene->lightRecall->serial != G->Scene->AnimationSerial) {
+    SceneLightsRecallFinish(G);
+    return;
+  }
+  SceneLightsRecallAdvance(G, G->Scene->cur_ani_elem, G->Scene->n_ani_elem);
 }
 
 void SceneLightRigCapture(PyMOLGlobals* G, glm::dvec3& centre, double& size)
@@ -132,6 +241,9 @@ glm::dmat4 SceneGetWorldToEye(PyMOLGlobals* G)
 pymol::LightSetStatus SceneLightSet(PyMOLGlobals* G, int index,
     std::string_view field, const double* v, int n, std::string* msg)
 {
+  // An edit during a recall blend applies to the scene's rig (#661), not to
+  // a half-blended one with faded lights and the old dust speed.
+  SceneLightsRecallFinish(G);
   auto& rig = G->Scene->lightRig;
   if (!rig) {
     if (msg)
@@ -178,6 +290,7 @@ std::optional<std::string> SceneLightsJSON(PyMOLGlobals* G)
 
 pymol::Result<> SceneLightsRecenter(PyMOLGlobals* G)
 {
+  SceneLightsRecallFinish(G); // recenter the scene's rig (#661)
   auto& rig = G->Scene->lightRig;
   if (!rig)
     return pymol::make_error("no light rig");

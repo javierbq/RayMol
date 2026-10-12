@@ -5496,6 +5496,67 @@ static PyObject* CmdGetLightsRayNotice(PyObject* self, PyObject* args)
   return result;
 }
 
+/// #661: pure rig blend of two dicts at position `e` -> dict
+static PyObject* CmdBlendLightRigs(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  PyObject* obA = nullptr;
+  PyObject* obB = nullptr;
+  double e = 0.0;
+  API_SETUP_ARGS(G, self, args, "OOOd", &self, &obA, &obB, &e);
+  APIEnterBlocked(G);
+  auto rigA = LightRigFromPyDict(obA);
+  if (!rigA) {
+    APIExitBlocked(G);
+    pymol::Result<> err =
+        pymol::make_error("blend_light_rigs: ", rigA.error().what());
+    return APIResult(G, err);
+  }
+  auto rigB = LightRigFromPyDict(obB);
+  if (!rigB) {
+    APIExitBlocked(G);
+    pymol::Result<> err =
+        pymol::make_error("blend_light_rigs: ", rigB.error().what());
+    return APIResult(G, err);
+  }
+  PyObject* dict = LightRigAsPyDict(pymol::LightRigBlend(*rigA, *rigB, e));
+  APIExitBlocked(G);
+  return dict;
+}
+
+/// #661: recall a scene's rig: blends with camera animation or snaps
+static PyObject* CmdLightsRecall(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  PyObject* obj = nullptr;
+  int force = 0;
+  API_SETUP_ARGS(G, self, args, "OOi", &self, &obj, &force);
+  APIEnterBlocked(G);
+  pymol::Result<> result;
+  if (auto rig = LightRigFromPyDict(obj)) {
+    result = SceneLightsRecall(G, std::move(*rig), force != 0);
+  } else {
+    result = rig.error_move();
+  }
+  APIExitBlocked(G);
+  if (!result)
+    result = pymol::make_error("lights_recall: ", result.error().what());
+  return APIResult(G, result);
+}
+
+/// #661: test hook: advance the pending recall blend to element cur of n
+static PyObject* CmdLightsRecallStep(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  int cur = 0;
+  int n = 0;
+  API_SETUP_ARGS(G, self, args, "Oii", &self, &cur, &n);
+  APIEnterBlocked(G);
+  bool advanced = SceneLightsRecallAdvance(G, cur, n);
+  APIExitBlocked(G);
+  return PyBool_FromLong(advanced);
+}
+
 /* ---- Light shading (#613) ------------------------------------------------
  * What the Metal renderer reads from the lighting each frame
  * (SceneLightsFrame, layer1/SceneLights.h) and the kelvin -> RGB conversion
@@ -8067,6 +8128,9 @@ static PyMethodDef Cmd_methods[] = {
   {"get_lights_ray_notice", CmdGetLightsRayNotice, METH_VARARGS},
   {"light_rig_to_session", CmdLightRigToSession, METH_VARARGS},
   {"light_rig_from_session", CmdLightRigFromSession, METH_VARARGS},
+  {"blend_light_rigs", CmdBlendLightRigs, METH_VARARGS},
+  {"lights_recall", CmdLightsRecall, METH_VARARGS},
+  {"lights_recall_step", CmdLightsRecallStep, METH_VARARGS},
   /* end light rig */
   /* light shading (#613) */
   {"get_light_frame", CmdGetLightFrame, METH_VARARGS},

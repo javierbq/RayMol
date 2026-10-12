@@ -436,6 +436,30 @@ def _rig_from_session(lst, *, _self=cmd):
     return rig, list(warnings)
 
 
+def _blend_lights(a, b, e, *, _self=cmd):
+    '''Blend rigs `a` and `b` at eased position `e` (#661): returns the blended
+    rig dict through _cmd.blend_light_rigs (core pymol::LightRigBlend). Never
+    touches the live rig.'''
+    with _self.lockcm:
+        return _self._cmd.blend_light_rigs(_self._COb, a, b, float(e))
+
+
+def _lights_recall(rig, force=False, *, _self=cmd):
+    '''Recall a scene's rig (#661): when a camera animation is running or
+    force=True, and both rigs are on, blends the rig in the core with the
+    camera frames; otherwise replaces the rig at once.'''
+    with _self.lockcm:
+        return _self._cmd.lights_recall(_self._COb, rig, int(bool(force)))
+
+
+def _lights_recall_step(cur, n, *, _self=cmd):
+    '''Test hook (#661): advance a pending recall blend to camera element
+    `cur` of `n` elements. Returns True while blending, False when finished
+    or nothing is pending.'''
+    with _self.lockcm:
+        return bool(_self._cmd.lights_recall_step(_self._COb, int(cur), int(n)))
+
+
 def _lights_blend(a='', b='', t='', *, _self=cmd):
     '''Movie frame command (#617): `_lights_blend A, B, t` blends scene A's
     stored rig towards scene B's at the eased position t (names in UTF-8

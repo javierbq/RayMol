@@ -133,6 +133,7 @@ class CScene : public Block {
   double AnimationStartTime{};
   double AnimationLagTime{};
   int AnimationStartFrame{};
+  int AnimationSerial{};
   double ApproxRenderTime{};
   float VertexScale{0.01F};
   float FogStart{};
@@ -181,6 +182,17 @@ class CScene : public Block {
      enabled == false is present but off. One per instance, cleared by
      SceneReinitialize. Not an object: never in Obj, never in an extent. */
   std::optional<pymol::LightRig> lightRig;
+
+  /* #661: a scene recall's rig blend, stepped with the camera animation
+     (SceneLightsRecallStep). from = the live rig when the recall started,
+     to = the scene's rig, serial = AnimationSerial of that camera animation. */
+  struct LightRecall { pymol::LightRig from, to; int serial = 0; };
+  std::optional<LightRecall> lightRecall;
+  /* #661: AnimationSerial of the camera animation the last scene recall
+     started, or -1 when it started none (no view recalled, animate=0, no
+     GUI). SceneLightsRecall blends only along that animation, and consumes
+     it, so a recall never rides another command's camera move. */
+  int recallAnimationSerial{-1};
 
   /* Document generation (#649): bumped when the whole document is replaced
      (SceneReinitialize, a full ExecutiveSetSession), so the app can tell a

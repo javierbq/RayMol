@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "MovieScene.h"
+#include "SceneLights.h"
 
 void SceneSetNames(PyMOLGlobals * G, const std::vector<std::string> &list);
 
@@ -581,6 +582,8 @@ pymol::Result<> MovieSceneRecallImpl(PyMOLGlobals* G, const MovieScene& scene,
 
     SceneSetView(G, scene.view, true, animate, 1);
   }
+  // #661: the rig blends only along a camera animation this recall started
+  SceneLightsNoteRecallView(G, recall_view && animate != 0.0F);
 
   // message
   MovieSceneRecallMessage(G, scene.message);
