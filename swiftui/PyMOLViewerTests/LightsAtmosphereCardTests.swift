@@ -14,7 +14,8 @@ import XCTest
 /// The air the pictures show on: haze 0.25, dust 0.5 (the other fields at
 /// their defaults).
 let atmosphereOnAir = LightRigSnapshot.Air(haze: 0.25, dust: 0.5, dustSize: 0.35, dustSpeed: 1,
-                                           scatter: 0.55, seed: 0)
+                                           scatter: 0.55, seed: 0,
+                                           dustGlow: 1.0, dustOpacity: 0.0)
 
 /// Draws SwiftUI offscreen as the other Lights snapshot tests do: an
 /// NSHostingView in a borderless window far off any screen, then cacheDisplay
@@ -140,7 +141,8 @@ final class AtmosphereCardViewTests: XCTestCase {
         XCTAssertEqual(AtmosphereCardIDs.sheetButton, "lights.sheet.atmosphere")
         XCTAssertEqual(AirParameter.allCases.map(AtmosphereCardIDs.slider),
                        ["lights.atmosphere.haze", "lights.atmosphere.dust", "lights.atmosphere.dust_size",
-                        "lights.atmosphere.dust_speed", "lights.atmosphere.scatter"])
+                        "lights.atmosphere.dust_speed", "lights.atmosphere.scatter",
+                        "lights.atmosphere.dust_glow", "lights.atmosphere.dust_opacity"])
         XCTAssertEqual(AtmosphereCardIDs.field(.dustSpeed), "lights.atmosphere.dust_speed.field")
         XCTAssertEqual(AtmosphereCardIDs.row(.haze), "lights.atmosphere.row.haze")
         XCTAssertEqual(AtmosphereCardIDs.fieldLabel(.dustSize), "Dust size value")

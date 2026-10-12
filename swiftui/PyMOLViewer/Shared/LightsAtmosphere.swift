@@ -72,6 +72,8 @@ enum AirParameter: String, CaseIterable {
     case dustSize = "dust_size"
     case dustSpeed = "dust_speed"
     case scatter
+    case dustGlow = "dust_glow"
+    case dustOpacity = "dust_opacity"
 
     /// The core field name.
     var field: String { rawValue }
@@ -84,6 +86,8 @@ enum AirParameter: String, CaseIterable {
         case .dustSize: return "Dust size"
         case .dustSpeed: return "Dust speed"
         case .scatter: return "Scatter (g)"
+        case .dustGlow: return "Dust glow"
+        case .dustOpacity: return "Dust opacity"
         }
     }
 
@@ -95,6 +99,8 @@ enum AirParameter: String, CaseIterable {
         case .dustSize: return air.dustSize
         case .dustSpeed: return air.dustSpeed
         case .scatter: return air.scatter
+        case .dustGlow: return air.dustGlow
+        case .dustOpacity: return air.dustOpacity
         }
     }
 
@@ -170,7 +176,7 @@ struct AirValue: Equatable {
 
     /// The fields the `atmosphere` command takes (the core's air field
     /// names; lighting_atmosphere.py checks them).
-    static let commandFields = ["haze", "dust", "dust_size", "dust_speed", "scatter", "seed"]
+    static let commandFields = ["haze", "dust", "dust_size", "dust_speed", "scatter", "seed", "dust_glow", "dust_opacity"]
 
     /// The value can go into the command: a known field, a finite number,
     /// and for seed a whole number >= 0.
@@ -517,6 +523,8 @@ struct AtmosphereCardState: Equatable {
     static let unavailableText = "Atmosphere settings are unavailable"
     /// One line about scatter, from the `atmosphere` command's help.
     static let scatterNote = "Above 0, the air glows more where a beam points towards the camera."
+    static let glowNote = "Above 1, bright dust with haze and a light behind the molecule can wash the picture out."
+    static let opacityNote = "Above 0, motes hide what is behind them."
     static let seedLabel = "Seed"
     static let seedNote = "The dust pattern: each whole number gives a different one."
 
@@ -584,7 +592,8 @@ struct AtmosphereCardState: Equatable {
             row(p).map { String(format: "%.2f", $0.value) } ?? "-"
         }
         return "on=\(isOn ? 1 : 0) haze=\(v(.haze)) dust=\(v(.dust)) dust_size=\(v(.dustSize))"
-            + " dust_speed=\(v(.dustSpeed)) scatter=\(v(.scatter)) rig=\(hasRig ? 1 : 0)"
+            + " dust_speed=\(v(.dustSpeed)) scatter=\(v(.scatter)) dust_glow=\(v(.dustGlow))"
+            + " dust_opacity=\(v(.dustOpacity)) rig=\(hasRig ? 1 : 0)"
             + " hint=\(hint?.identifier ?? "none") edit=\(canEdit ? 1 : 0) memory=\(hasMemory ? 1 : 0)"
     }
 }

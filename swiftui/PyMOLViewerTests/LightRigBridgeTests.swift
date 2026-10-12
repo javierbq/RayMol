@@ -129,7 +129,7 @@ final class LightRigBridgeTests: XCTestCase {
     func testDecodesFixture() throws {
         let json = """
             {"version":1,"enabled":true,"centre":[1.5,-2.0,3.25],"size":12.5,"ambient":0.05,"classic":0.0,
-             "air":{"haze":0.25,"dust":0.0,"dust_size":0.35,"dust_speed":1.0,"scatter":0.55,"seed":3},
+             "air":{"haze":0.25,"dust":0.0,"dust_size":0.35,"dust_speed":1.0,"scatter":0.55,"seed":3,"dust_glow":1.0,"dust_opacity":0.0},
              "lights":[
               {"name":"key","anchor":"camera","orbit":-45.0,"pitch":35.0,"radius":4.0,"position":[0.0,0.0,0.0],
                "aim":"centre","aim_point":[0.0,0.0,0.0],"aim_selection":"","beam":45.0,"softness":0.4,
@@ -149,7 +149,7 @@ final class LightRigBridgeTests: XCTestCase {
         XCTAssertTrue(rig.enabled)
         XCTAssertEqual(rig.centre, SIMD3(1.5, -2.0, 3.25))
         XCTAssertEqual(rig.size, 12.5)
-        XCTAssertEqual(rig.air, .init(haze: 0.25, dust: 0, dustSize: 0.35, dustSpeed: 1, scatter: 0.55, seed: 3))
+        XCTAssertEqual(rig.air, .init(haze: 0.25, dust: 0, dustSize: 0.35, dustSpeed: 1, scatter: 0.55, seed: 3, dustGlow: 1.0, dustOpacity: 0.0))
         XCTAssertEqual(rig.lights.map(\.name), ["key", "fill", "rim"])
         XCTAssertEqual(rig.lights.map(\.anchor), [.camera, .camera, .pinned])
         XCTAssertEqual(rig.lights.map(\.aim), [.centre, .point, .centre])
@@ -165,7 +165,7 @@ final class LightRigBridgeTests: XCTestCase {
 
         let empty = try LightRigSnapshot.decode(Data("""
             {"version":1,"enabled":false,"centre":null,"size":null,"ambient":0.05,"classic":0.0,
-             "air":{"haze":0.0,"dust":0.0,"dust_size":0.35,"dust_speed":1.0,"scatter":0.55,"seed":0},
+             "air":{"haze":0.0,"dust":0.0,"dust_size":0.35,"dust_speed":1.0,"scatter":0.55,"seed":0,"dust_glow":1.0,"dust_opacity":0.0},
              "lights":[]}
             """.utf8))
         XCTAssertNil(empty.centre)
@@ -230,7 +230,7 @@ final class LightRigBridgeTests: XCTestCase {
         XCTAssertEqual(bridge.size, 10)
         XCTAssertEqual(bridge.ambient, 0.1)
         XCTAssertEqual(bridge.classic, 0.25)
-        XCTAssertEqual(bridge.air, .init(haze: 0.2, dust: 0.3, dustSize: 0.5, dustSpeed: 2, scatter: -0.25, seed: 7))
+        XCTAssertEqual(bridge.air, .init(haze: 0.2, dust: 0.3, dustSize: 0.5, dustSpeed: 2, scatter: -0.25, seed: 7, dustGlow: 1.0, dustOpacity: 0.0))
         XCTAssertEqual(bridge.lights.map(\.name), ["key", "fill", "rim"])
         XCTAssertEqual(bridge.lights.map(\.anchor), [.camera, .camera, .pinned])
         XCTAssertEqual(bridge.lights.map(\.aim), [.centre, .point, .centre])

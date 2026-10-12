@@ -105,7 +105,7 @@ char *PyMOLBridge_LightsJSON(PyMOLHandle instance);
 // (index -1): orbit, pitch, radius, beam, softness, warmth, intensity,
 // highlight, falloff, shadow, outline, anchor (0 camera, 1 pin where it is
 // now), aim (0 centre, 1 point); enabled, ambient, classic, haze, dust,
-// dust_size, dust_speed, scatter, seed. Numbers are clamped into range.
+// dust_size, dust_speed, scatter, seed, dust_glow, dust_opacity. Numbers are clamped into range.
 // Returns a PYMOL_LIGHT_SET_* code; the rig is unchanged unless it is OK.
 int PyMOLBridge_LightSet(PyMOLHandle instance, int index, const char *field, double value);
 // Set one vector field of light `index`: color (sRGB 0..1), aim_point (world

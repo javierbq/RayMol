@@ -560,7 +560,8 @@ final class LightsAutoEditTests: XCTestCase {
         XCTAssertEqual(store.air.dustSpeed, 2.5)
         XCTAssertEqual(store.air.scatter, -0.25)
         XCTAssertEqual(AtmosphereCardState(controller)?.summary,
-                       "on=1 haze=0.28 dust=0.50 dust_size=0.35 dust_speed=2.50 scatter=-0.25 rig=1"
+                       "on=1 haze=0.28 dust=0.50 dust_size=0.35 dust_speed=2.50 scatter=-0.25"
+                       + " dust_glow=1.00 dust_opacity=0.00 rig=1"
                        + " hint=none edit=1 memory=0")
 
         entries = LightsAutoEdit.apply(LightsAutoEdit.parse("airon:0;airon:0;dust:0.4").tokens, to: controller)

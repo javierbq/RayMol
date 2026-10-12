@@ -750,7 +750,8 @@ class TestBlendValues(_BlendCase):
     A = {'enabled': True, 'centre': [0.0, 0.0, 0.0], 'size': 2.0,
          'ambient': 0.1, 'classic': 0.0,
          'air': {'haze': 0.0, 'dust': 0.2, 'dust_size': 0.2,
-                 'dust_speed': 1.0, 'scatter': -0.5, 'seed': 3},
+                 'dust_speed': 1.0, 'scatter': -0.5, 'seed': 3,
+                 'dust_glow': 0.5, 'dust_opacity': 0.0},
          'lights': [
              {'name': 'key', 'orbit': 170.0, 'pitch': 10.0, 'radius': 2.0,
               'beam': 20.0, 'softness': 0.2, 'intensity': 1.0,
@@ -760,7 +761,8 @@ class TestBlendValues(_BlendCase):
     B = {'enabled': True, 'centre': [2.0, 4.0, 6.0], 'size': 6.0,
          'ambient': 0.3, 'classic': 0.5,
          'air': {'haze': 0.4, 'dust': 0.6, 'dust_size': 1.0,
-                 'dust_speed': 3.0, 'scatter': 0.5, 'seed': 9},
+                 'dust_speed': 3.0, 'scatter': 0.5, 'seed': 9,
+                 'dust_glow': 3.0, 'dust_opacity': 1.0},
          'lights': [
              {'name': 'key', 'orbit': -170.0, 'pitch': 50.0, 'radius': 6.0,
               'beam': 60.0, 'softness': 0.6, 'intensity': 3.0,
@@ -803,13 +805,27 @@ class TestBlendValues(_BlendCase):
         self.assertAlmostEqual(m['size'], 4.0)
         air = m['air']
         for field, want in (('haze', 0.2), ('dust', 0.4), ('dust_size', 0.6),
-                            ('dust_speed', 2.0), ('scatter', 0.0)):
+                            ('dust_speed', 2.0), ('scatter', 0.0),
+                            ('dust_glow', 1.75), ('dust_opacity', 0.5)):
             self.assertAlmostEqual(air[field], want, places=5, msg=field)
         self.assertEqual(air['seed'], 3)                 # steps with A (Q3)
         self.assertTrue(m['enabled'])
         # the core takes it as it is
         lighting.set_lights(m)
         self.assertRigAlmostEqual(cmd.get_lights(), m)
+
+        # and a scene dict without the keys blends from the defaults
+        no_keys_a = {'enabled': True, 'lights': [{'name': 'key'}]}
+        no_keys_b = {'enabled': True, 'lights': [{'name': 'key'}]}
+        blended = anim.blend_rigs(no_keys_a, no_keys_b, 0.5)
+        self.assertAlmostEqual(blended['air']['dust_glow'], 1.0)
+        self.assertAlmostEqual(blended['air']['dust_opacity'], 0.0)
+
+        core_b = lighting._blend_lights(no_keys_a, {
+            'enabled': True, 'lights': [{'name': 'key'}],
+            'air': {'dust_glow': 3.0, 'dust_opacity': 1.0}}, 0.5)
+        self.assertAlmostEqual(core_b['air']['dust_glow'], 2.0)
+        self.assertAlmostEqual(core_b['air']['dust_opacity'], 0.5)
 
     def orbit_at(self, a, b, e):
         """A camera light's orbit blended from `a` to `b` at `e`."""

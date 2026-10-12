@@ -24,14 +24,16 @@ final class AirFieldDecodeTests: XCTestCase {
         + #"{"name": "dust_size", "kind": "float", "default": 0.35, "min": 0.05, "max": 2.0}, "#
         + #"{"name": "dust_speed", "kind": "float", "default": 1.0, "min": 0.0, "max": 10.0}, "#
         + #"{"name": "scatter", "kind": "float", "default": 0.55, "min": -0.9, "max": 0.9}, "#
-        + #"{"name": "seed", "kind": "int", "default": 0, "min": 0, "max": 1000000}]"#
+        + #"{"name": "seed", "kind": "int", "default": 0, "min": 0, "max": 1000000}, "#
+        + #"{"name": "dust_glow", "kind": "float", "default": 1.0, "min": 0.0, "max": 4.0}, "#
+        + #"{"name": "dust_opacity", "kind": "float", "default": 0.0, "min": 0.0, "max": 1.0}]"#
 
     func testDecodesTheHelperJSON() throws {
         let fields = try AirField.decodeList(Data(Self.helperJSON.utf8))
-        XCTAssertEqual(fields.map(\.name), ["haze", "dust", "dust_size", "dust_speed", "scatter", "seed"])
-        XCTAssertEqual(fields.map(\.kind), ["float", "float", "float", "float", "float", "int"])
-        XCTAssertEqual(fields.map(\.defaultValue), [0, 0, 0.35, 1, 0.55, 0])
-        XCTAssertEqual(fields.map(\.range), [0...1, 0...1, 0.05...2, 0...10, -0.9...0.9, 0...1_000_000])
+        XCTAssertEqual(fields.map(\.name), ["haze", "dust", "dust_size", "dust_speed", "scatter", "seed", "dust_glow", "dust_opacity"])
+        XCTAssertEqual(fields.map(\.kind), ["float", "float", "float", "float", "float", "int", "float", "float"])
+        XCTAssertEqual(fields.map(\.defaultValue), [0, 0, 0.35, 1, 0.55, 0, 1.0, 0.0])
+        XCTAssertEqual(fields.map(\.range), [0...1, 0...1, 0.05...2, 0...10, -0.9...0.9, 0...1_000_000, 0...4, 0...1])
         XCTAssertEqual(fields, FakeRigStore.airTable, "the fake's table is the helper's")
     }
 
@@ -73,14 +75,17 @@ final class AirParameterTests: XCTestCase {
     }
 
     func testLabelsFieldsAndValues() {
-        XCTAssertEqual(AirParameter.allCases.map(\.field), ["haze", "dust", "dust_size", "dust_speed", "scatter"])
+        XCTAssertEqual(AirParameter.allCases.map(\.field),
+                       ["haze", "dust", "dust_size", "dust_speed", "scatter", "dust_glow", "dust_opacity"])
         XCTAssertEqual(AirParameter.allCases.map(\.label),
-                       ["Haze", "Dust", "Dust size", "Dust speed", "Scatter (g)"])
+                       ["Haze", "Dust", "Dust size", "Dust speed", "Scatter (g)", "Dust glow", "Dust opacity"])
         let air = LightRigSnapshot.Air(haze: 0.1, dust: 0.2, dustSize: 0.3, dustSpeed: 0.4,
-                                       scatter: -0.5, seed: 6)
-        XCTAssertEqual(AirParameter.allCases.map { $0.value(in: air) }, [0.1, 0.2, 0.3, 0.4, -0.5])
+                                       scatter: -0.5, seed: 6, dustGlow: 2.5, dustOpacity: 0.75)
+        XCTAssertEqual(AirParameter.allCases.map { $0.value(in: air) }, [0.1, 0.2, 0.3, 0.4, -0.5, 2.5, 0.75])
         XCTAssertEqual(air.value(of: "seed"), 6)
         XCTAssertEqual(air.value(of: "dust_speed"), 0.4)
+        XCTAssertEqual(air.value(of: "dust_glow"), 2.5)
+        XCTAssertEqual(air.value(of: "dust_opacity"), 0.75)
         XCTAssertNil(air.value(of: "fog"))
     }
 
@@ -309,7 +314,8 @@ class AtmosphereControllerCase: XCTestCase {
     /// Haze 0.3, dust 0.4, dust size 0.6, dust speed 2.5, scatter -0.25,
     /// seed 7: an air away from every default.
     static let remembered = LightRigSnapshot.Air(haze: 0.3, dust: 0.4, dustSize: 0.6, dustSpeed: 2.5,
-                                                 scatter: -0.25, seed: 7)
+                                                 scatter: -0.25, seed: 7,
+                                                 dustGlow: 2.0, dustOpacity: 0.5)
 
     var state: AtmosphereCardState? { AtmosphereCardState(controller) }
 }
@@ -367,8 +373,8 @@ final class AtmosphereCardStateTests: AtmosphereControllerCase {
         XCTAssertFalse(s.canEdit, "the setter has no rig to write to")
         XCTAssertEqual(s.hint, .noLights)
         XCTAssertEqual(s.rows.map(\.parameter), AirParameter.allCases)
-        XCTAssertEqual(s.rows.map(\.value), [0, 0, 0.35, 1, 0.55])
-        XCTAssertEqual(s.rows.map(\.text), ["0.00", "0.00", "0.35", "1.00", "0.55"])
+        XCTAssertEqual(s.rows.map(\.value), [0, 0, 0.35, 1, 0.55, 1, 0])
+        XCTAssertEqual(s.rows.map(\.text), ["0.00", "0.00", "0.35", "1.00", "0.55", "1.00", "0.00"])
         XCTAssertEqual(s.row(.dustSize)?.range, 0.05...2)
         XCTAssertEqual(s.containerLabel, "Atmosphere")
     }
@@ -379,7 +385,7 @@ final class AtmosphereCardStateTests: AtmosphereControllerCase {
         XCTAssertTrue(s.isOn)
         XCTAssertEqual(s.switchValue, "On")
         XCTAssertTrue(s.canEdit)
-        XCTAssertEqual(s.rows.map(\.value), [0.3, 0.4, 0.6, 2.5, -0.25])
+        XCTAssertEqual(s.rows.map(\.value), [0.3, 0.4, 0.6, 2.5, -0.25, 2.0, 0.5])
         XCTAssertEqual(s.row(.scatter)?.text, "\u{2212}0.25")
         XCTAssertEqual(s.row(.scatter)?.spoken, "-0.25")
         XCTAssertEqual(s.row(.scatter)?.range, -0.9...0.9)
@@ -418,7 +424,7 @@ final class AtmosphereCardStateTests: AtmosphereControllerCase {
         XCTAssertEqual(state?.hint, .noLights)
         XCTAssertEqual(state?.summary,
                        "on=1 haze=0.30 dust=0.40 dust_size=0.60 dust_speed=2.50 scatter=-0.25"
-                       + " rig=1 hint=no_lights edit=1 memory=0")
+                       + " dust_glow=2.00 dust_opacity=0.50 rig=1 hint=no_lights edit=1 memory=0")
     }
 
     func testLightsOffHintOnlyWhileTheAirIsOn() {
@@ -468,7 +474,8 @@ final class AtmosphereCardStateTests: AtmosphereControllerCase {
 
     func testHintPriority() {
         let lit = LightRigSnapshot.Air(haze: 0.6, dust: 0.5, dustSize: 0.35, dustSpeed: 1,
-                                       scatter: 0.55, seed: 0)
+                                       scatter: 0.55, seed: 0,
+                                       dustGlow: 1.0, dustOpacity: 0.0)
         // No lights wins over everything.
         XCTAssertEqual(AtmosphereHint.current(rig: nil, behind: ["rim"]), .noLights)
         begin(["key", "rim"], enabled: false, air: lit)
@@ -512,20 +519,21 @@ final class AtmosphereCardStateTests: AtmosphereControllerCase {
 
     func testSummary() {
         begin(["key"], air: LightRigSnapshot.Air(haze: 0.25, dust: 0.5, dustSize: 0.35, dustSpeed: 1,
-                                                 scatter: 0.55, seed: 3))
+                                                 scatter: 0.55, seed: 3,
+                                                 dustGlow: 1.0, dustOpacity: 0.0))
         XCTAssertEqual(state?.summary,
-                       "on=1 haze=0.25 dust=0.50 dust_size=0.35 dust_speed=1.00 scatter=0.55"
+                       "on=1 haze=0.25 dust=0.50 dust_size=0.35 dust_speed=1.00 scatter=0.55 dust_glow=1.00 dust_opacity=0.00"
                        + " rig=1 hint=none edit=1 memory=0")
         controller.setAtmosphere(on: false)
         XCTAssertEqual(state?.summary,
-                       "on=0 haze=0.00 dust=0.00 dust_size=0.35 dust_speed=1.00 scatter=0.55"
+                       "on=0 haze=0.00 dust=0.00 dust_size=0.35 dust_speed=1.00 scatter=0.55 dust_glow=1.00 dust_opacity=0.00"
                        + " rig=1 hint=none edit=1 memory=1")
         let empty = FakeRigStore()
         empty.airFieldList = []
         let bare = LightsController(seams: empty.seams)
         bare.begin()
         XCTAssertEqual(AtmosphereCardState(bare)?.summary,
-                       "on=0 haze=- dust=- dust_size=- dust_speed=- scatter=- rig=0 hint=no_lights"
+                       "on=0 haze=- dust=- dust_size=- dust_speed=- scatter=- dust_glow=- dust_opacity=- rig=0 hint=no_lights"
                        + " edit=0 memory=0")
     }
 }
@@ -550,14 +558,16 @@ final class AtmosphereEditTests: AtmosphereControllerCase {
     func testEveryParameterReachesItsField() {
         begin(["key"])
         let values: [AirParameter: Double] = [.haze: 0.12, .dust: 0.34, .dustSize: 0.56,
-                                              .dustSpeed: 7.5, .scatter: -0.78]
+                                              .dustSpeed: 7.5, .scatter: -0.78,
+                                              .dustGlow: 2.5, .dustOpacity: 0.4]
         for p in AirParameter.allCases {
             XCTAssertEqual(controller.setAir(p, values[p]!), .ok, p.field)
             XCTAssertEqual(store.numberWrites.last?.field, p.field)
             XCTAssertEqual(controller.airValue(p), values[p], p.field)
         }
         XCTAssertEqual(controller.air, LightRigSnapshot.Air(haze: 0.12, dust: 0.34, dustSize: 0.56,
-                                                            dustSpeed: 7.5, scatter: -0.78, seed: 0))
+                                                            dustSpeed: 7.5, scatter: -0.78, seed: 0,
+                                                            dustGlow: 2.5, dustOpacity: 0.4))
     }
 
     func testTypedValuesAreWrittenExactlyAndTheCoreClamps() {
@@ -583,7 +593,7 @@ final class AtmosphereEditTests: AtmosphereControllerCase {
             }
         }
         XCTAssertEqual(store.performed, [], "a tick is a setter write, never a command or Python")
-        XCTAssertEqual(store.numberWrites.count, 50)
+        XCTAssertEqual(store.numberWrites.count, 70)
         XCTAssertTrue(store.numberWrites.allSatisfy { $0.index == -1 })
     }
 
@@ -684,6 +694,7 @@ final class AtmosphereSwitchTests: AtmosphereControllerCase {
         XCTAssertEqual(store.performed.last, .setAir([
             AirValue("haze", 0.3), AirValue("dust", 0.4), AirValue("dust_size", 0.6),
             AirValue("dust_speed", 2.5), AirValue("scatter", -0.25), AirValue("seed", 7),
+            AirValue("dust_glow", 2.0), AirValue("dust_opacity", 0.5),
         ]))
         XCTAssertEqual(store.air, Self.remembered, "On after Off restores the air exactly")
         XCTAssertTrue(controller.airIsOn)
@@ -718,6 +729,7 @@ final class AtmosphereSwitchTests: AtmosphereControllerCase {
         XCTAssertEqual(store.performed.last, .setAir([
             AirValue("haze", 0.3), AirValue("dust", 0.4), AirValue("dust_speed", 2.5),
             AirValue("scatter", -0.25), AirValue("seed", 7),
+            AirValue("dust_glow", 2.0), AirValue("dust_opacity", 0.5),
         ]))
         XCTAssertEqual(store.air.dustSize, 0.9, "changed since Off: kept")
         XCTAssertEqual(store.air.haze, 0.3)
@@ -783,7 +795,7 @@ final class AtmosphereSwitchTests: AtmosphereControllerCase {
         XCTAssertEqual(AtmosphereSwitch.onValues(current: nil, memory: nil, fields: fields),
                        [AirValue("haze", 0.2), AirValue("dust", 0.5)])
         // No rig with a memory (a rig removed since Off): the memory.
-        XCTAssertEqual(AtmosphereSwitch.onValues(current: nil, memory: Self.remembered, fields: fields).count, 6)
+        XCTAssertEqual(AtmosphereSwitch.onValues(current: nil, memory: Self.remembered, fields: fields).count, 8)
         // A memory with only dust: the start look is not used.
         var dustOnly = defaults
         dustOnly.dust = 0.7
@@ -864,7 +876,8 @@ final class AtmosphereMirrorTests: AtmosphereControllerCase {
         XCTAssertEqual(store.json,
                        "{\"version\":1,\"enabled\":true,\"centre\":null,\"size\":null,\"ambient\":0.05,"
                        + "\"classic\":0.0,\"air\":{\"haze\":0.0,\"dust\":0.0,\"dust_size\":0.35,"
-                       + "\"dust_speed\":1.0,\"scatter\":0.55,\"seed\":0},\"lights\":[]}")
+                       + "\"dust_speed\":1.0,\"scatter\":0.55,\"seed\":0,\"dust_glow\":1.0,"
+                       + "\"dust_opacity\":0.0},\"lights\":[]}")  // #810: the two dust fields
     }
 }
 

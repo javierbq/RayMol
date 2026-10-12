@@ -91,7 +91,8 @@ DEFAULT_LIGHT = {
     'highlight': 0.5, 'falloff': 2.0, 'shadow': False, 'outline': False,
 }
 AIR_DEFAULTS = {'haze': 0.0, 'dust': 0.0, 'dust_size': 0.35,
-                'dust_speed': 1.0, 'scatter': 0.55, 'seed': 0}
+                'dust_speed': 1.0, 'scatter': 0.55, 'seed': 0,
+                'dust_glow': 1.0, 'dust_opacity': 0.0}
 
 
 def L(name, orbit, pitch, beam, softness, intensity, highlight, **extra):
@@ -726,7 +727,8 @@ class TestQueries(CommandsCase):
         result, text = output(cmd.atmosphere)
         self.assertEqual(result, cmd.get_lights()['air'])
         self.assertIn('atmosphere: haze 0.3, dust 0, dust_size 0.35, '
-                      'dust_speed 1, scatter 0.55, seed 7', text)
+                      'dust_speed 1, scatter 0.55, seed 7, dust_glow 1, '
+                      'dust_opacity 0', text)
         self.assertNotIn('shows only while', text)
 
     def testPinnedLightPrintsItsDerivedPlace(self):
@@ -842,9 +844,10 @@ class TestAtmosphere(CommandsCase):
     def testEveryField(self):
         cmd.lights('three_point')
         want = {'haze': 0.3, 'dust': 0.45, 'dust_size': 0.4,
-                'dust_speed': 2.5, 'scatter': -0.35, 'seed': 42}
+                'dust_speed': 2.5, 'scatter': -0.35, 'seed': 42,
+                'dust_glow': 2.0, 'dust_opacity': 0.75}
         do('atmosphere haze=0.3, dust=0.45, dust_size=0.4, dust_speed=2.5, '
-           'scatter=-0.35, seed=42')
+           'scatter=-0.35, seed=42, dust_glow=2, dust_opacity=0.75')
         self.assertEqual(cmd.get_lights()['air'], want)
         cmd.atmosphere('off')
         cmd.atmosphere(**want)                  # Python numbers
@@ -852,14 +855,17 @@ class TestAtmosphere(CommandsCase):
 
     def testRangesAreInclusive(self):
         cmd.atmosphere(haze=1, dust=0, dust_size=0.05, dust_speed=10,
-                       scatter=-0.9, seed=1000000)
+                       scatter=-0.9, seed=1000000, dust_glow=0, dust_opacity=1)
         self.assertEqual(cmd.get_lights()['air'], {
             'haze': 1.0, 'dust': 0.0, 'dust_size': 0.05, 'dust_speed': 10.0,
-            'scatter': -0.9, 'seed': 1000000})
-        cmd.atmosphere(dust_size=2, scatter=0.9, seed=0)
+            'scatter': -0.9, 'seed': 1000000, 'dust_glow': 0.0,
+            'dust_opacity': 1.0})
+        cmd.atmosphere(dust_size=2, scatter=0.9, seed=0, dust_glow=4,
+                       dust_opacity=0)
         air = cmd.get_lights()['air']
-        self.assertEqual((air['dust_size'], air['scatter'], air['seed']),
-                         (2.0, 0.9, 0))
+        self.assertEqual((air['dust_size'], air['scatter'], air['seed'],
+                          air['dust_glow'], air['dust_opacity']),
+                         (2.0, 0.9, 0, 4.0, 0.0))
 
     def testOffResetsToTheTableDefaults(self):
         cmd.lights('three_point')
@@ -910,7 +916,8 @@ class TestAtmosphere(CommandsCase):
             self.assertError(r'seed=1000001 is out of range 0 to 1000000',
                              cmd.atmosphere, seed=1000001)
             self.assertError(r"unknown field 'fog' \(fields: haze, dust, "
-                             r"dust_size, dust_speed, scatter, seed\)",
+                             r"dust_size, dust_speed, scatter, seed, "
+                             r"dust_glow, dust_opacity\)",
                              cmd.atmosphere, fog=1)
             self.assertError(r'seed=7.5 is not a whole number',
                              cmd.atmosphere, seed='7.5')
@@ -969,6 +976,53 @@ class TestAtmosphere(CommandsCase):
         self.assertIn('the air shows only while the lights are on', text)
         _, text = output(cmd.atmosphere, haze=0.3, quiet=1)
         self.assertEqual(text, '')
+
+
+class TestAtmosphereDustLook810(CommandsCase):
+    """Issue #810: dust_glow and dust_opacity in the atmosphere command."""
+
+    def setUp(self):
+        super().setUp()
+        self.load()
+
+    def testSetBoth(self):
+        cmd.lights('three_point')
+        do('atmosphere dust_glow=2, dust_opacity=0.5')
+        air = cmd.get_lights()['air']
+        self.assertEqual(air['dust_glow'], 2.0)
+        self.assertEqual(air['dust_opacity'], 0.5)
+
+    def testValidation(self):
+        cmd.lights('three_point')
+        cmd.atmosphere(dust_glow=1.5, dust_opacity=0.2)
+        before = cmd.get_lights()['air']
+
+        for field, bad_val in (('dust_glow', 5),
+                               ('dust_opacity', 1.5),
+                               ('dust_glow', -0.1)):
+            msg = self.assertError(field, cmd.atmosphere, **{field: bad_val})
+            self.assertIn(field, msg)
+            self.assertEqual(cmd.get_lights()['air'], before)
+
+    def testOffResetsBoth(self):
+        cmd.lights('three_point')
+        cmd.atmosphere(dust_glow=2.0, dust_opacity=0.8)
+        cmd.atmosphere('off')
+        air = cmd.get_lights()['air']
+        self.assertEqual(air['dust_glow'], 1.0)
+        self.assertEqual(air['dust_opacity'], 0.0)
+
+    def testPrintoutListsBoth(self):
+        cmd.lights('three_point')
+        cmd.atmosphere(dust_glow=2.0, dust_opacity=0.5)
+        _, text = output(cmd.atmosphere)
+        self.assertIn('dust_glow 2', text)
+        self.assertIn('dust_opacity 0.5', text)
+
+    def testHelpMentionsBoth(self):
+        _, text = output(cmd.help, 'atmosphere')
+        self.assertIn('dust_glow', text)
+        self.assertIn('dust_opacity', text)
 
 
 # --- per-light edits (part 2) -----------------------------------------------
@@ -3257,7 +3311,8 @@ class TestSceneFiles(CommandsCase):
             self.assertIsNone(lighting._lights_ray_notice(), job.tag)
             self.assertEqual([l['name'] for l in rig['lights']],
                              ['key', 'fill', 'rim'], job.tag)
-            self.assertEqual(rig['air'], RIG_OFF_AIR, job.tag)
+            self.assertEqual(rig['air'], dict(RIG_OFF_AIR, dust_glow=1.0,
+                                               dust_opacity=0.0), job.tag)
             self.assertEqual(rig['ambient'], 0.1, job.tag)
             key, fill, rim = rig['lights']
             # key pinned where three_point put it

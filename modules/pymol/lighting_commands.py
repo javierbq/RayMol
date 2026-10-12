@@ -1672,8 +1672,8 @@ RIG FIELDS
     With no rig, "lights ambient=..." (like "atmosphere ...") creates an
     empty rig that is off and holds the value.
 
-    The air (haze, dust, dust_size, dust_speed, scatter, seed) is set with
-    "atmosphere".
+    The air (haze, dust, dust_size, dust_speed, scatter, seed, dust_glow,
+    dust_opacity) is set with "atmosphere".
 
 PLACEMENT
 
@@ -2114,6 +2114,11 @@ FIELDS
     scatter     -0.9 to 0.9, default 0.55: forward scattering (g); above 0
                 the air glows more where a beam points towards the camera
     seed        whole number, 0 to 1000000, default 0: the dust pattern
+    dust_glow   0 to 4, default 1: how brightly a mote glows in a beam;
+                1 is the usual look, 0 hides the glints
+    dust_opacity  0 to 1, default 0: how solid a mote is; 0 is see-through
+                glints that only add light, above 0 a mote also hides what
+                is behind it (an unlit mote is a faint dark speck)
 
     With no rig, "atmosphere field=..." creates a rig that is off and has
     no lights: the air shows once a preset or "lights add" turns it on.
@@ -2123,6 +2128,7 @@ FIELDS
 EXAMPLES
 
     atmosphere haze=0.3, dust=0.5, dust_size=0.4, dust_speed=1
+    atmosphere dust_glow=2, dust_opacity=0.5
     atmosphere seed=7
     atmosphere off
 
@@ -2152,7 +2158,8 @@ NOTES
     (0 the default, 1 one shadow tap per haze step, 2 the 3x3 lookup) and
     metal_light_air_alpha (0 the default; 1 lets the air count toward
     alpha in a transparent-background export, so haze and dust over empty
-    background are kept instead of cut out).
+    background are kept instead of cut out). With metal_light_air_alpha 1,
+    opaque motes count toward alpha in a transparent export.
 
 PYMOL API
 

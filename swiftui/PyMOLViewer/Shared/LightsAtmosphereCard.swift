@@ -322,6 +322,16 @@ struct LightsAtmosphereCard: View {
                             .font(.system(size: 11))
                             .foregroundColor(style.text.opacity(0.6))
                             .fixedSize(horizontal: false, vertical: true)
+                        sliderRow(.dustGlow, state)
+                        Text(AtmosphereCardState.glowNote)
+                            .font(.system(size: 11))
+                            .foregroundColor(style.text.opacity(0.6))
+                            .fixedSize(horizontal: false, vertical: true)
+                        sliderRow(.dustOpacity, state)
+                        Text(AtmosphereCardState.opacityNote)
+                            .font(.system(size: 11))
+                            .foregroundColor(style.text.opacity(0.6))
+                            .fixedSize(horizontal: false, vertical: true)
                         seedRow(state)
                     }
                 }

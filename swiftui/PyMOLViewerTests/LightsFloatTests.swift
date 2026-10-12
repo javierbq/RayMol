@@ -649,7 +649,8 @@ final class LightsFloatSnapshotTests: XCTestCase {
                  atmosphereStart: .expanded),
             Shot(name: "atmosphere_backlit_1032x602_ipad13", size: CGSize(width: 1032, height: 602),
                  air: LightRigSnapshot.Air(haze: 0.35, dust: 0.5, dustSize: 0.35, dustSpeed: 1,
-                                           scatter: 0.55, seed: 0)),
+                                           scatter: 0.55, seed: 0,
+                                           dustGlow: 1.0, dustOpacity: 0.0)),
         ]
         let dir = Self.outputDirectory
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

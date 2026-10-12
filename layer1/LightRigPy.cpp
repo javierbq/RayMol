@@ -1004,9 +1004,9 @@ PyObject* GpuFrameReportAsPyDict(const pymol::GpuFrameReport& r)
 
 PyObject* LightAirBlockAsPyDict(const pymol::LightAirBlock& b)
 {
-  static_assert(sizeof(pymol::LightAirBlock) == 20 * sizeof(float),
-      "20 floats, as LightAirBlock.h documents");
-  float f[20];
+  static_assert(sizeof(pymol::LightAirBlock) == 24 * sizeof(float),
+      "24 floats, as LightAirBlock.h documents");
+  float f[24];
   std::memcpy(f, &b, sizeof f); // the block as the GPU reads it
   unique_PyObject_ptr d(PyDict_New());
   if (!d)
@@ -1014,14 +1014,15 @@ PyObject* LightAirBlockAsPyDict(const pymol::LightAirBlock& b)
   auto num = [&](const char* key, int i) {
     return setItem(d.get(), key, PyFloat_FromDouble(f[i]));
   };
-  const bool ok = setItem(d.get(), "block", pyFloats(f, 20)) &&
+  const bool ok = setItem(d.get(), "block", pyFloats(f, 24)) &&
                   num("haze_density", 0) && num("dust_occupancy", 1) &&
                   num("scatter", 2) && num("seed_offset", 3) &&
                   num("near", 4) && num("far", 5) && num("focus", 6) &&
                   num("cell", 7) && num("time", 8) && num("mote_radius", 9) &&
                   num("defocus", 10) &&
                   setItem(d.get(), "shadow_filter", PyLong_FromLong(long(f[11]))) &&
-                  num("scale", 12);
+                  num("scale", 12) &&
+                  num("dust_glow", 20) && num("dust_opacity", 21);
   return ok ? d.release() : nullptr;
 }
 

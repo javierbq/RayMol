@@ -81,13 +81,13 @@ def without_finite_739(code):
 # and whitespace removed, first 16 hex digits (lighting_air_msl.py digest).
 PRE_739 = {
     'kMaterialSrc': 'f4eb7866dc2af793',
-    'kAirSrc': '9aa3e116f43c6764',  # #686: per-cell air; #683: Beer-Lambert extinction (re-taken at #683's head)
+    'kAirSrc': 'a63a1f3e60e93f00',  # #810: dust_glow and dust_opacity (post_air_dust's gain and cover, post_air_mote, post_air_dust_cover, the alpha's cover); #686: per-cell air; #683: Beer-Lambert extinction (re-taken at #683's head)
     'kRTSrc': '1682e93fe9543bab',  # #732: AO in scene units under an HDR rig; #709: traced reflection hits take their material's studio response; #852: AO and the cast shadow in scene units under an HDR rig; #855: traced hits take the transparent table, the procedural albedo and the glass glints; #668: rt_tri_normal_smooth averages only connected neighbours on the same smooth surface
 }
 FINITE_COUNTS = {
     'kMaterialSrc': {'helpers': 2, 'finite3': 2, 'finite': 2},
     'kRTSrc': {'helpers': 2, 'finite3': 3, 'finite': 2},  # #855
-    'kAirSrc': {'helpers': 0, 'finite3': 2, 'finite': 3},  # #683: post_air_transmittance's guard
+    'kAirSrc': {'helpers': 0, 'finite3': 2, 'finite': 5},  # #810: two guards in post_air_dust_cover; #683: post_air_transmittance's guard
 }
 
 
