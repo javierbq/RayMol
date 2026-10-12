@@ -2042,3 +2042,221 @@ final class FiniteGuardLiveTests: XCTestCase {
         try hashScene("rt-air", rayTraced: 1)
     }
 }
+
+/// Issue #732: Ambient occlusion applies in scene units under an HDR light rig.
+/// Under an HDR rig, AO (both SSAO and ray-traced AO) darkens scene light before
+/// the tone curve T:
+///   color = T(Tinv(color) * ao)
+/// rather than multiplying the tone-mapped display colour directly (color *= ao).
+/// Below T's knee (0.55), both T and Tinv are the identity so the calculation matches
+/// color * ao exactly. In a crease, occluding the scene light avoids darkening after
+/// compression, so an exposure blend gives e3 == T(3 * e1).
+@MainActor
+final class HdrAmbientOcclusionTests: XCTestCase {
+    private static let width = 400
+    private static let height = 300
+
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var sceneBuilt = false
+    private var savedView: [Float]?
+
+    override func tearDown() {
+        if sceneBuilt {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.delete('ao732*')
+            for _n, _v in globals().pop('_ao732_settings', {}).items():
+                _c.set(_n, _v)
+            _c.set_lights(globals().pop('_ao732_rig', None))
+            for _n in globals().pop('_ao732_enabled', []):
+                _c.enable(_n)
+            """)
+            sceneBuilt = false
+        }
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        super.tearDown()
+    }
+
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            throw XCTSkip("the PyMOL engine did not come up under the test host")
+        }
+    }
+
+    private func buildScene() {
+        savedView = engine.captureView()
+        sceneBuilt = true
+        engine.runPython("""
+        import math
+        from pymol import cmd as _c
+        _ao732_enabled = _c.get_names('objects', enabled_only=1)
+        _ao732_settings = {_n: _c.get_setting_tuple(_n)[1][0] for _n in (
+            'bg_rgb', 'depth_cue', 'metal_shadows', 'metal_ssao', 'metal_msaa',
+            'metal_rt_transparent', 'metal_temporal_ao', 'metal_rt_ao_intensity',
+            'metal_rt_ao_radius', 'metal_light_hdr', 'metal_exposure')}
+        _ao732_settings['bg_rgb'] = list(_c.get_setting_tuple('bg_rgb')[1])
+        _ao732_rig = _c.get_lights()
+        for _n in _ao732_enabled:
+            _c.disable(_n)
+        _c.set('bg_rgb', [0.0, 0.0, 0.0])
+        _c.set('depth_cue', 0)
+        _c.set('metal_shadows', 0)
+        _c.set('metal_msaa', 0)
+        _c.set('metal_temporal_ao', 0)
+        _c.set('metal_rt_transparent', 0)
+        _c.set('metal_light_hdr', 1)
+        _c.set('metal_exposure', 1.0)
+
+        # Cluster of 7 grey50 pseudoatom spheres (vdw 2.0), centres 3.4 A apart
+        _names = ['ao732a', 'ao732b', 'ao732c', 'ao732d', 'ao732e', 'ao732f', 'ao732g']
+        _c.pseudoatom(_names[0], pos=[0.0, 0.0, 0.0], vdw=2.0)
+        _c.show_as('spheres', _names[0])
+        _c.color('grey50', _names[0])
+        for _i in range(6):
+            _ang = _i * math.pi / 3.0
+            _c.pseudoatom(_names[_i + 1], pos=[3.4 * math.cos(_ang), 3.4 * math.sin(_ang), 0.0], vdw=2.0)
+            _c.show_as('spheres', _names[_i + 1])
+            _c.color('grey50', _names[_i + 1])
+
+        _c.set_lights({'enabled': True, 'ambient': 0.2, 'centre': [0, 0, 0], 'size': 20.0,
+                       'lights': [{'name': 'key', 'anchor': 'camera', 'orbit': -20.0, 'pitch': 15.0,
+                                   'radius': 3.0, 'beam': 80.0, 'highlight': 0.0, 'shadow': False,
+                                   'intensity': 1.0}]})
+
+        _c.set_view((1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -40, 0, 0, 0, 20, 60, -20))
+        """)
+    }
+
+    private func render(rayTraced: Int) throws -> [UInt8] {
+        let png = NSTemporaryDirectory() + "issue_732_render.png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: Self.width, height: Self.height, rayTraced: rayTraced)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(
+            URL(fileURLWithPath: png) as CFURL, nil), "no export written")
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        XCTAssertEqual(image.width, Self.width)
+        XCTAssertEqual(image.height, Self.height)
+        let w = image.width, h = image.height
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return rgba
+    }
+
+    /// Exact port of light_tone: scale the colour by light_tone_scalar(m) / m.
+    private func T(_ rgb: (Double, Double, Double)) -> (Double, Double, Double) {
+        let knee = 0.55
+        let white = 10.0
+        let m = max(rgb.0, max(rgb.1, rgb.2))
+        if m <= knee {
+            return rgb
+        }
+        if m >= white {
+            let scale = 1.0 / m
+            return (rgb.0 * scale, rgb.1 * scale, rgb.2 * scale)
+        }
+        let s = 1.0 - knee
+        let w = (white - knee) / s
+        let t = (m - knee) / s
+        let scalar = knee + s * t * (1.0 + t / (w * w)) / (1.0 + t)
+        let scale = scalar / m
+        return (rgb.0 * scale, rgb.1 * scale, rgb.2 * scale)
+    }
+
+    private func assertAOInSceneUnits(rayTraced: Int) throws {
+        // The frame without AO finds the creases (and the light before AO).
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set('metal_ssao', 0)
+        _c.set('metal_rt_ao_intensity', 0.0)
+        """)
+        let noAO = try render(rayTraced: rayTraced)
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set('metal_ssao', 1)
+        _c.set('metal_rt_ao_intensity', 1.0)
+        """)
+
+        // The same AO at exposure 1 and 3. A traced frame must be deterministic
+        // for the comparison to mean anything (as in #729).
+        engine.runPython("from pymol import cmd as _c\n_c.set('metal_exposure', 1.0)")
+        let e1: [UInt8]
+        if rayTraced == 1 {
+            let e1a = try render(rayTraced: 1)
+            let e1b = try render(rayTraced: 1)
+            guard e1a == e1b else {
+                throw XCTSkip("two ray-traced frames of the same scene differ: not deterministic here")
+            }
+            e1 = e1a
+        } else {
+            e1 = try render(rayTraced: 0)
+        }
+
+        engine.runPython("from pymol import cmd as _c\n_c.set('metal_exposure', 3.0)")
+        let e3 = try render(rayTraced: rayTraced)
+
+        // Surface pixels below the knee at exposure 1, darkened by AO by at least
+        // 8 levels, and above the knee at exposure 3. With AO in scene units
+        // e1 = L * ao and e3 = T(3 * L * ao) = T(3 * e1); on master
+        // e3 = T(3 * L) * ao, tens of levels darker.
+        var n = 0
+        var maxErr = 0
+        for p in 0..<(Self.width * Self.height) {
+            let offset = p * 4
+            let rNo = Double(noAO[offset])
+            let gNo = Double(noAO[offset + 1])
+            let bNo = Double(noAO[offset + 2])
+            let maxNo = max(rNo, max(gNo, bNo))
+            guard maxNo > 8.0, maxNo <= 130.0 else { continue }
+
+            let r1 = Double(e1[offset])
+            let g1 = Double(e1[offset + 1])
+            let b1 = Double(e1[offset + 2])
+            let max1 = max(r1, max(g1, b1))
+            guard (maxNo - max1) >= 8.0 else { continue }
+            guard (3.0 * max1 / 255.0) >= 0.75 else { continue }
+
+            let pred = T((3.0 * r1 / 255.0, 3.0 * g1 / 255.0, 3.0 * b1 / 255.0))
+            let errR = abs(Int(e3[offset]) - Int(round(pred.0 * 255.0)))
+            let errG = abs(Int(e3[offset + 1]) - Int(round(pred.1 * 255.0)))
+            let errB = abs(Int(e3[offset + 2]) - Int(round(pred.2 * 255.0)))
+            let err = max(errR, max(errG, errB))
+            maxErr = max(maxErr, err)
+            n += 1
+        }
+
+        print("732 rt=\(rayTraced) pixels=\(n) maxErr=\(maxErr)")
+        XCTAssertGreaterThanOrEqual(n, 100, "too few AO-darkened pixels to test")
+        XCTAssertLessThanOrEqual(maxErr, 4, "AO did not darken the scene light under the HDR rig: the occluded crease is not T(3 * occluded)")
+    }
+
+    func testSSAOAppliesInSceneUnitsUnderHdr() throws {
+        try requireEngine()
+        buildScene()
+        try assertAOInSceneUnits(rayTraced: 0)
+    }
+
+    func testTracedAOAppliesInSceneUnitsUnderHdr() throws {
+        try requireEngine()
+        guard engine.rayTracingSupported else {
+            throw XCTSkip("Hardware ray tracing is not supported on this device")
+        }
+        buildScene()
+        try assertAOInSceneUnits(rayTraced: 1)
+    }
+}
+
