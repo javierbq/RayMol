@@ -312,3 +312,100 @@ final class LightDepthTests: XCTestCase {
         XCTAssertEqual(LightDepth.tolerance, 1e-4)
     }
 }
+
+// MARK: - Grid cell tests (#697)
+
+final class LightGizmoGridCellTests: XCTestCase {
+
+    func testGridShapeMirrorsGridUpdate() {
+        let cases: [(size: Int, aspect: Double, cols: Int, rows: Int)] = [
+            (2, 4.0 / 3.0, 2, 1),
+            (3, 4.0 / 3.0, 2, 2),
+            (4, 4.0 / 3.0, 2, 2),
+            (5, 4.0 / 3.0, 3, 2),
+            (2, 0.5, 1, 2),
+            (3, 0.5, 1, 3),
+            (6, 16.0 / 9.0, 3, 2),
+            (1, 1.0, 1, 1),
+            (0, 1.0, 1, 1),
+        ]
+        for c in cases {
+            let shape = LightGizmoGridCell.shape(size: c.size, aspect: c.aspect)
+            XCTAssertEqual(shape.columns, c.cols, "size \(c.size) aspect \(c.aspect) cols")
+            XCTAssertEqual(shape.rows, c.rows, "size \(c.size) aspect \(c.aspect) rows")
+        }
+    }
+
+    func testGridCellUnderThePointer() {
+        let sceneRect = CGRect(x: 0, y: 0, width: 800, height: 600)
+
+        // Size 2: 2x1 grid
+        let c0 = LightGizmoGridCell.at(CGPoint(x: 100, y: 300), size: 2, in: sceneRect)
+        XCTAssertEqual(c0, LightGizmoGridCell(columns: 2, rows: 1, index: 0))
+
+        let c1 = LightGizmoGridCell.at(CGPoint(x: 700, y: 300), size: 2, in: sceneRect)
+        XCTAssertEqual(c1, LightGizmoGridCell(columns: 2, rows: 1, index: 1))
+        XCTAssertEqual(c1?.rect(in: sceneRect), CGRect(x: 400, y: 0, width: 400, height: 600))
+
+        // Size 3: 2x2 grid (index 3 is empty)
+        XCTAssertNil(LightGizmoGridCell.at(CGPoint(x: 700, y: 500), size: 3, in: sceneRect),
+                     "fourth cell is empty for size 3")
+        XCTAssertEqual(LightGizmoGridCell.at(CGPoint(x: 700, y: 100), size: 3, in: sceneRect),
+                       LightGizmoGridCell(columns: 2, rows: 2, index: 1))
+        XCTAssertEqual(LightGizmoGridCell.at(CGPoint(x: 100, y: 500), size: 3, in: sceneRect),
+                       LightGizmoGridCell(columns: 2, rows: 2, index: 2))
+
+        // Clamping outside the rect
+        XCTAssertEqual(LightGizmoGridCell.at(CGPoint(x: -50, y: 100), size: 2, in: sceneRect),
+                       LightGizmoGridCell(columns: 2, rows: 1, index: 0))
+
+        // Size 1: 1x1 index 0 covering whole scene rect
+        let single = LightGizmoGridCell.at(CGPoint(x: 300, y: 300), size: 1, in: sceneRect)
+        XCTAssertEqual(single, LightGizmoGridCell(columns: 1, rows: 1, index: 0))
+        XCTAssertEqual(single?.rect(in: sceneRect), sceneRect)
+
+        // Non-finite point -> nil
+        XCTAssertNil(LightGizmoGridCell.at(CGPoint(x: CGFloat.nan, y: 100), size: 2, in: sceneRect))
+        XCTAssertNil(LightGizmoGridCell.at(CGPoint(x: 100, y: CGFloat.infinity), size: 2, in: sceneRect))
+    }
+
+    func testCellProjection() throws {
+        let cam = LightCameraProjection(orthoscopic: false, fovDegrees: 20, cameraDistance: 100, letterboxAspect: 0)
+        let viewSize = CGSize(width: 800, height: 600)
+        let cell1 = LightGizmoGridCell(columns: 2, rows: 1, index: 1)
+
+        let pCell = try XCTUnwrap(LightGizmoProjection(camera: cam, viewSize: viewSize, cell: cell1))
+        XCTAssertEqual(pCell.cellRect, CGRect(x: 400, y: 0, width: 400, height: 600))
+        XCTAssertEqual(pCell.aspect, 400.0 / 600.0, accuracy: 1e-12)
+
+        // Eye point (0, 0, -100) projects to the cell centre (600, 300)
+        let projected = try XCTUnwrap(pCell.point(eye: SIMD3<Double>(0, 0, -100)))
+        XCTAssertEqual(Double(projected.x), 600, accuracy: 1e-9)
+        XCTAssertEqual(Double(projected.y), 300, accuracy: 1e-9)
+
+        // sceneNDC(point: (600, 300)) is (0.5, 0) over the whole scene
+        let sceneNdc = try XCTUnwrap(pCell.sceneNDC(point: CGPoint(x: 600, y: 300)))
+        XCTAssertEqual(sceneNdc.x, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(sceneNdc.y, 0.0, accuracy: 1e-9)
+
+        // viewNDC is unchanged
+        let viewNdc = pCell.viewNDC(point: CGPoint(x: 600, y: 300))
+        XCTAssertEqual(viewNdc.x, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(viewNdc.y, 0.0, accuracy: 1e-9)
+
+        // pointsPerAngstrom equals the no-cell value (same height)
+        let pNoCell = try XCTUnwrap(LightGizmoProjection(camera: cam, viewSize: viewSize, cell: nil))
+        XCTAssertEqual(try XCTUnwrap(pCell.pointsPerAngstrom(atDepth: -100)),
+                       try XCTUnwrap(pNoCell.pointsPerAngstrom(atDepth: -100)),
+                       accuracy: 1e-9)
+
+        // ray at (600, 300) is (0, 0, -1) direction
+        let ray = try XCTUnwrap(pCell.ray(at: CGPoint(x: 600, y: 300)))
+        XCTAssertEqual(ray.direction.x, 0, accuracy: 1e-9)
+        XCTAssertEqual(ray.direction.y, 0, accuracy: 1e-9)
+        XCTAssertEqual(ray.direction.z, -1, accuracy: 1e-9)
+
+        // With cell: nil, cellRect == sceneRect
+        XCTAssertEqual(pNoCell.cellRect, pNoCell.sceneRect)
+    }
+}

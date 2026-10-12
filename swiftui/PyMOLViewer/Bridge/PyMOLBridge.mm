@@ -717,6 +717,16 @@ float PyMOLBridge_GetLetterboxAspect(PyMOLHandle h)
     return r ? r->letterboxAspect() : 0.f;
 }
 
+int PyMOLBridge_GridSize(PyMOLHandle h)
+{
+    if (!h) return 0;
+    PyMOLGlobals *G = PyMOL_GetGlobals(INST(h));
+    if (!G) return 0;
+    auto mode = SettingGet<GridMode>(G, cSetting_grid_mode);
+    if (mode == GridMode::NoGrid) return 0;
+    return SceneGetGridSize(G, mode);
+}
+
 char *PyMOLBridge_GetFeedback(PyMOLHandle h)
 {
     if (!h) return nullptr;

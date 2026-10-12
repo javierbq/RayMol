@@ -374,6 +374,59 @@ final class LightGizmoLayoutTests: XCTestCase {
         XCTAssertEqual(b.projection.sceneRect, CGRect(x: 100, y: 0, width: 600, height: 600))
         assertPoint(b.centre, CGPoint(x: 400, y: 300), accuracy: 1e-3)
     }
+
+    func testGridModeShowsTheGizmoInTheCellUnderThePointer() throws {
+        let (_, controller) = gizmoRig()
+
+        // with gridMode: true and no cell, make is nil (today's rule)
+        let inputsNoCell = LightGizmoInputs(controller: controller, viewSize: viewSize,
+                                            gridMode: true, gridCell: nil, sceneShadowsOn: true)
+        XCTAssertNil(LightGizmoLayout.make(inputsNoCell))
+
+        // with gridMode: true, gridCell: index 1 of a 2x1 grid over the 800x600 view
+        let cell0 = LightGizmoGridCell(columns: 2, rows: 1, index: 0)
+        let cell1 = LightGizmoGridCell(columns: 2, rows: 1, index: 1)
+        let inputs0 = LightGizmoInputs(controller: controller, viewSize: viewSize,
+                                       gridMode: true, gridCell: cell0, sceneShadowsOn: true)
+        let inputs1 = LightGizmoInputs(controller: controller, viewSize: viewSize,
+                                       gridMode: true, gridCell: cell1, sceneShadowsOn: true)
+
+        let l0 = try XCTUnwrap(LightGizmoLayout.make(inputs0))
+        let l1 = try XCTUnwrap(LightGizmoLayout.make(inputs1))
+
+        let rightHalf = CGRect(x: 400, y: 0, width: 400, height: 600)
+        XCTAssertTrue(rightHalf.contains(l1.centre), "centre lies inside CGRect(400,0,400,600)")
+        XCTAssertEqual(l1.centre.x, l0.centre.x + 400, accuracy: 1e-3)
+        XCTAssertEqual(l1.centre.y, l0.centre.y, accuracy: 1e-3)
+
+        // every knob centre is inside the right half
+        for knob in l1.knobs {
+            XCTAssertTrue(rightHalf.contains(knob.centre), "knob \(knob.name) inside right half: \(knob.centre)")
+        }
+    }
+
+    func testGridCellStaysWithTheDragItBegan() {
+        let ui = LightGizmoUIState()
+        let cellA = LightGizmoGridCell(columns: 2, rows: 1, index: 0)
+        let cellB = LightGizmoGridCell(columns: 2, rows: 1, index: 1)
+
+        ui.follow(cellA, held: false)
+        XCTAssertEqual(ui.gridCell, cellA)
+
+        ui.follow(cellB, held: true)
+        XCTAssertEqual(ui.gridCell, cellA)
+
+        ui.follow(cellB, held: false)
+        XCTAssertEqual(ui.gridCell, cellB)
+
+        ui.follow(nil, held: false)
+        XCTAssertNil(ui.gridCell)
+
+        ui.follow(cellA, held: false)
+        XCTAssertEqual(ui.gridCell, cellA)
+        ui.reset()
+        XCTAssertNil(ui.gridCell)
+    }
 }
 
 // MARK: - Hit test

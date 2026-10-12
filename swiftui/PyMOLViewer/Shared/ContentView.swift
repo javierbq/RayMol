@@ -4443,7 +4443,8 @@ struct ContentView: View {
     // geometry), with the selected light's Shadow chip. Placed on MetalViewport
     // by macViewport and viewportView, each naming only this property. The
     // chip's Shadows hint reads the scene poll's Shadows switch and its Turn On
-    // sets it, as the inspector's do; grid_mode (the poll's) hides the gizmo.
+    // sets it, as the inspector's do; grid_mode (the poll's) shows the gizmo
+    // in the cell under the pointer (#697).
     // While the phone sheet snaps (#623) the viewport reshapes once at the
     // end with its drawable frozen meanwhile, so the gizmo fades out for that
     // snap and returns after the one reshape.

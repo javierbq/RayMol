@@ -114,7 +114,8 @@ final class LightGizmoLiveTests: XCTestCase {
         let setup = python(
             "if '_lgz_saved' not in globals():\n"
             + "    _lgz_saved = {_k: _c.get(_k) for _k in ('orthoscopic', 'field_of_view',\n"
-            + "                                            'metal_shadows', 'metal_raytrace')}\n"
+            + "                                            'metal_shadows', 'metal_raytrace',\n"
+            + "                                            'grid_mode')}\n"
             + "    _lgz_enabled = [_n for _n in _c.get_names('objects', enabled_only=1) if _n != 'lmt_pep']\n"
             + "for _n in _lgz_enabled:\n"
             + "    _c.disable(_n)\n"
@@ -1155,5 +1156,40 @@ final class LightGizmoLiveTests: XCTestCase {
         engine.lightsFrameRendered()
         XCTAssertTrue(controller.isBehind("rim"))
         XCTAssertEqual(rimBehind(), true)
+    }
+
+    // MARK: grid mode (#697)
+
+    func testGridModeGizmoFollowsTheCell() throws {
+        try buildScene()
+        addTeardownBlock { [weak self] in
+            self?.python("_c.delete('lgz_grid2')\n")
+            self?.engine.sceneState.values["grid_mode"] = nil
+        }
+        python("_c.create('lgz_grid2', 'lmt_pep')\n"
+             + "_c.set('grid_mode', 1)\n")
+        engine.sceneState.values["grid_mode"] = 1
+        enter()
+        engine.lightsFrameRendered()
+
+        let left = CGPoint(x: viewSize.width * 0.25, y: viewSize.height * 0.5)
+        let right = CGPoint(x: viewSize.width * 0.75, y: viewSize.height * 0.5)
+
+        let cell0 = try XCTUnwrap(engine.lightGizmoGridCell(at: left, viewSize: viewSize))
+        XCTAssertEqual(cell0.columns, 2)
+        XCTAssertEqual(cell0.rows, 1)
+        XCTAssertEqual(cell0.index, 0)
+
+        let cell1 = try XCTUnwrap(engine.lightGizmoGridCell(at: right, viewSize: viewSize))
+        XCTAssertEqual(cell1.columns, 2)
+        XCTAssertEqual(cell1.rows, 1)
+        XCTAssertEqual(cell1.index, 1)
+
+        XCTAssertNil(engine.lightGizmoLayout(viewSize: viewSize),
+                     "before any cell is followed, layout is nil")
+
+        engine.lightGizmoUI.follow(cell1, held: false)
+        let l = try XCTUnwrap(engine.lightGizmoLayout(viewSize: viewSize))
+        XCTAssertGreaterThan(l.centre.x, viewSize.width * 0.5, "centre in the right half")
     }
 }

@@ -193,9 +193,13 @@ struct LightGizmoInputs: Equatable {
     var projection: LightCameraProjection?
     /// The overlay's size (the viewport's bounds), in points.
     var viewSize: CGSize
-    /// `grid_mode` is on: each cell has its own view, which the whole-view
-    /// projection cannot match, so the gizmo hides.
+    /// `grid_mode` is on (the scene poll's): the gizmo shows in `gridCell`
+    /// (the cell under the pointer), or hides when nil (#697).
     var gridMode: Bool
+    /// The grid cell the gizmo shows in while grid_mode is on (#697): the one
+    /// under the pointer when a hover or press began; nil: none yet, the gizmo
+    /// hides.
+    var gridCell: LightGizmoGridCell?
     /// The scene's Shadows switch as last read (nil: unknown).
     var sceneShadowsOn: Bool?
     /// Edges covered by chrome drawn over the viewport (#693).
@@ -203,8 +207,8 @@ struct LightGizmoInputs: Equatable {
 
     init(isActive: Bool, isBusy: Bool, isOn: Bool, lights: [Light], selection: LightSelection,
          rigSize: Double?, eyeSpace: LightEyeSpace?, projection: LightCameraProjection?,
-         viewSize: CGSize, gridMode: Bool, sceneShadowsOn: Bool?,
-         chromeInsets: LightGizmoInsets = .zero) {
+         viewSize: CGSize, gridMode: Bool, gridCell: LightGizmoGridCell? = nil,
+         sceneShadowsOn: Bool?, chromeInsets: LightGizmoInsets = .zero) {
         self.isActive = isActive
         self.isBusy = isBusy
         self.isOn = isOn
@@ -215,13 +219,15 @@ struct LightGizmoInputs: Equatable {
         self.projection = projection
         self.viewSize = viewSize
         self.gridMode = gridMode
+        self.gridCell = gridCell
         self.sceneShadowsOn = sceneShadowsOn
         self.chromeInsets = chromeInsets
     }
 
     /// The controller's state now, for a view of `viewSize` points.
     @MainActor
-    init(controller: LightsController, viewSize: CGSize, gridMode: Bool, sceneShadowsOn: Bool?,
+    init(controller: LightsController, viewSize: CGSize, gridMode: Bool,
+         gridCell: LightGizmoGridCell? = nil, sceneShadowsOn: Bool?,
          chromeInsets: LightGizmoInsets = .zero) {
         self.init(
             isActive: controller.isActive, isBusy: controller.isBusy, isOn: controller.isOn,
@@ -232,7 +238,7 @@ struct LightGizmoInputs: Equatable {
             },
             selection: controller.selection, rigSize: controller.rig?.size,
             eyeSpace: controller.eye.eyeSpace, projection: controller.eye.projection,
-            viewSize: viewSize, gridMode: gridMode, sceneShadowsOn: sceneShadowsOn,
+            viewSize: viewSize, gridMode: gridMode, gridCell: gridCell, sceneShadowsOn: sceneShadowsOn,
             chromeInsets: chromeInsets)
     }
 }
@@ -359,13 +365,16 @@ struct LightGizmoLayout: Equatable {
     /// The layout for `inputs`, or nil (nothing drawn, every press goes to
     /// the camera) unless Lights mode is active, the rig is not busy (a movie
     /// export), has lights, the eye space and projection are published and
-    /// describe this rig, grid mode is off, and the rig centre projects.
+    /// describe this rig, grid mode is off, or a grid cell is given, and the
+    /// rig centre projects.
     static func make(_ inputs: LightGizmoInputs,
                      metrics: LightGizmoMetrics = LightGizmoMetrics()) -> LightGizmoLayout? {
-        guard inputs.isActive, !inputs.isBusy, !inputs.gridMode, !inputs.lights.isEmpty,
+        guard inputs.isActive, !inputs.isBusy, !inputs.gridMode || inputs.gridCell != nil,
+              !inputs.lights.isEmpty,
               let eye = inputs.eyeSpace, eye.hasFrame, eye.lights.count == inputs.lights.count,
               let camera = inputs.projection,
-              let projection = LightGizmoProjection(camera: camera, viewSize: inputs.viewSize)
+              let projection = LightGizmoProjection(camera: camera, viewSize: inputs.viewSize,
+                                                    cell: inputs.gridMode ? inputs.gridCell : nil)
         else { return nil }
         let centreEye = SIMD3<Double>(eye.centre)
         guard let centre = projection.point(eye: centreEye),
@@ -374,7 +383,7 @@ struct LightGizmoLayout: Equatable {
 
         // The display sphere.
         let maxR = metrics.sphereMaximumFraction
-            * min(projection.sceneRect.width, projection.sceneRect.height)
+            * min(projection.cellRect.width, projection.cellRect.height)
         let wanted = CGFloat(metrics.sphereScale * Double(eye.size) * perAngstrom)
         let sphereRadius = min(max(wanted.isFinite ? wanted : 0, min(metrics.sphereMinimum, maxR)), maxR)
         guard sphereRadius > 0 else { return nil }

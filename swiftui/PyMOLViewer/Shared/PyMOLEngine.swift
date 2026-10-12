@@ -3555,26 +3555,40 @@ final class PyMOLEngine: ObservableObject {
             })
     }
 
-    /// `grid_mode` is on, as the scene poll last read it: the gizmo hides
-    /// (each cell has its own view, which its whole-view projection cannot
-    /// match).
+    /// `grid_mode` is on, as the scene poll last read it: the gizmo shows in
+    /// `lightGizmoUI.gridCell` (the cell under the pointer), or hides when nil
+    /// (#697).
     var lightGizmoGridMode: Bool {
         (sceneState.values["grid_mode"] ?? 0) > 0.5
+    }
+
+    /// The grid cell under `p` (top-left points) in a view of `viewSize`
+    /// points (#697): nil unless grid_mode is on (the scene poll's) and the
+    /// camera is known; one 1x1 cell when the scene lays out fewer than two
+    /// cells. Bridge reads only, no Python; main thread.
+    func lightGizmoGridCell(at p: CGPoint, viewSize: CGSize) -> LightGizmoGridCell? {
+        guard isReady, let instance, lightGizmoGridMode else { return nil }
+        guard let camera = MainActor.assumeIsolated({ lightsController.eye.projection }),
+              let rect = LightGizmoProjection(camera: camera, viewSize: viewSize)?.sceneRect
+        else { return nil }
+        return LightGizmoGridCell.at(p, size: Self.gridSize(handle: instance), in: rect)
     }
 
     /// The light gizmo as it is drawn and hit now in a view of `viewSize`
     /// points (#622): the overlay and the viewport both build it here, from
     /// the controller's published eye space and projection, so what is drawn
     /// is what is hit-tested. nil when the gizmo is hidden (not in Lights
-    /// mode, a movie export, no lights, grid mode, no eye data). No bridge
-    /// or Python call.
+    /// mode, a movie export, no lights, grid mode without a cell, no eye data).
+    /// No bridge or Python call.
     func lightGizmoLayout(viewSize: CGSize,
                           metrics: LightGizmoMetrics = LightGizmoMetrics()) -> LightGizmoLayout? {
         guard interactionMode == .lights else { return nil }
         return MainActor.assumeIsolated {
             LightGizmoLayout.make(
                 LightGizmoInputs(controller: lightsController, viewSize: viewSize,
-                                 gridMode: lightGizmoGridMode, sceneShadowsOn: sceneShadowsOn,
+                                 gridMode: lightGizmoGridMode,
+                                 gridCell: lightGizmoUI.gridCell,
+                                 sceneShadowsOn: sceneShadowsOn,
                                  chromeInsets: lightGizmoUI.chromeInsets),
                 metrics: metrics)
         }
@@ -4276,6 +4290,11 @@ final class PyMOLEngine: ObservableObject {
     /// The live frame's letterbox aspect (0 = the scene fills the view).
     static func letterboxAspect(handle: UnsafeMutableRawPointer?) -> Float {
         PyMOLBridge_GetLetterboxAspect(handle)
+    }
+
+    /// The number of grid cells laid out (#697): 0 when grid_mode is off.
+    static func gridSize(handle: UnsafeMutableRawPointer?) -> Int {
+        Int(PyMOLBridge_GridSize(handle))
     }
 
     /// The letterbox aspect the live frame renders the scene into, which

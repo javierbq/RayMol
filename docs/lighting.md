@@ -561,6 +561,9 @@ molecule.
 - Option-click the molecule to place a highlight there (the `click=`
   helper: the mirror rule, or a rim light near the outline).
 - A **Shadow** chip beside the selected knob toggles its shadow.
+- In grid mode the gizmo is drawn in the cell under the pointer (on iPad
+  and iPhone, the cell you last touched). A drag stays in the cell it began
+  in (#697).
 
 ### The Atmosphere card
 
@@ -788,13 +791,13 @@ Open follow-ups of the lighting work (#610) that you may notice:
 - **Placement.** A highlight placed on a small patch can fit the beam to a
   few degrees (#723); set `beam=` to widen it.
 - **The app.** The gizmo's ring handles can land off-screen or under the bars
-  (#693). A plain click in Lights mode still picks atoms (#696). The gizmo is
-  not projected per cell in grid mode (#697). On iPad, an open camera dock can
-  lift the orbit card onto the key knob (#718), and typing in the inspector
-  can resize the viewport (#725). On iOS, the inspector's Orbit and Pitch
-  steppers are under 44 pt (#720), and on small rings the 44 pt ring band
-  covers the whole interior (#721). The Scene panel's Exposure help text does
-  not say what exposure scales under a rig (#733).
+  (#693). A plain click in Lights mode still picks atoms (#696). On iPad, an
+  open camera dock can lift the orbit card onto the key knob (#718), and
+  typing in the inspector can resize the viewport (#725). On iOS, the
+  inspector's Orbit and Pitch steppers are under 44 pt (#720), and on small
+  rings the 44 pt ring band covers the whole interior (#721). The Scene
+  panel's Exposure help text does not say what exposure scales under a rig
+  (#733).
 
 ## Regenerating the gallery
 
