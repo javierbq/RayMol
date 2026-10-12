@@ -113,7 +113,7 @@ MASTER_LITERALS = {
     'kMaterialImpostorSrc': 'ea5947e14500d7d5',  # #710: the rig lights the material's albedo
     'kMaterialSrc': 'da47cac063348d43',
     'kPostSrc': 'a3236d6afc3a38b1',  # #689: post_ssao_fog fades toward the bg_gradient
-    'kRTSrc': '4c0d300690b534ca',  # #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps
+    'kRTSrc': 'ca4ec2161386a787',  # #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps; #729: rt_reflect_tint keeps the metallic tint's hue under HDR
     'kScreenOverlaySrc': '9f09ecbdd4a9ddfa',  # #689: ramp gadgets drawn after the post chain
     # #635: retaken after sphere glass coverage split; #710: the rig lights
     # the material's albedo

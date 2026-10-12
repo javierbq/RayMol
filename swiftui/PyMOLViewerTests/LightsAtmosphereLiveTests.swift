@@ -1594,3 +1594,190 @@ final class ReflectionStudioShadowTests: XCTestCase {
         XCTAssertLessThanOrEqual(rt0Delta, 3, "rt0 mirror changes with studio shadow")
     }
 }
+
+/// Issue #729: Traced metallic reflection tint loses surface hue under HDR.
+/// Under an HDR light rig (kRTLightRig && kLightHdr), the metallic reflection tint
+/// in rt_composite scales down by its largest channel to at most 1 instead of clamping
+/// each channel individually. This preserves the surface's chroma near highlights
+/// rather than washing out toward white.
+@MainActor
+final class ReflectionHdrTintTests: XCTestCase {
+    private static let width = 400
+    private static let height = 300
+
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var sceneBuilt = false
+    private var savedView: [Float]?
+
+    override func tearDown() {
+        if sceneBuilt {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.delete('rt729*')
+            for _n, _v in globals().pop('_rt729_settings', {}).items():
+                _c.set(_n, _v)
+            _c.set_lights(globals().pop('_rt729_rig', None))
+            for _n in globals().pop('_rt729_enabled', []):
+                _c.enable(_n)
+            """)
+            sceneBuilt = false
+        }
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        super.tearDown()
+    }
+
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            throw XCTSkip("the PyMOL engine did not come up under the test host")
+        }
+    }
+
+    private func buildScene() {
+        savedView = engine.captureView()
+        sceneBuilt = true
+        engine.runPython("""
+        from pymol import cmd as _c
+        _rt729_enabled = _c.get_names('objects', enabled_only=1)
+        _rt729_settings = {_n: _c.get_setting_tuple(_n)[1][0] for _n in (
+            'bg_rgb', 'depth_cue', 'metal_shadows', 'metal_rt_transparent',
+            'metal_temporal_ao', 'metal_rt_ao_intensity', 'metal_rt_ao_radius',
+            'metal_light_hdr')}
+        _rt729_settings['bg_rgb'] = list(_c.get_setting_tuple('bg_rgb')[1])
+        _rt729_rig = _c.get_lights()
+        for _n in _rt729_enabled:
+            _c.disable(_n)
+        _c.set('bg_rgb', [0.0, 0.0, 0.0])
+        _c.set('depth_cue', 0)
+        _c.set('metal_temporal_ao', 0)
+        _c.set('metal_rt_transparent', 0)
+        _c.set('metal_light_hdr', 1)
+
+        # Mirror sphere: metallic, reflect 1.0, tint 1.0, rough 0.0
+        _c.pseudoatom('rt729m', pos=[4.0, 0.0, 0.0], vdw=4.5)
+        _c.show_as('spheres', 'rt729m')
+        _c.set_color('rt729gold', [1.0, 0.8, 0.3])
+        _c.color('rt729gold', 'rt729m')
+        _c.set('sphere_material', 'metallic', 'rt729m')
+        _c.set('sphere_material_reflect', 1.0, 'rt729m')
+        _c.set('sphere_material_tint', 1.0, 'rt729m')
+        _c.set('sphere_material_rough', 0.0, 'rt729m')
+
+        # Target sphere: grey80
+        _c.pseudoatom('rt729t', pos=[-4.0, 0.0, -2.0], vdw=3.5)
+        _c.show_as('spheres', 'rt729t')
+        _c.color('grey80', 'rt729t')
+
+        _c.set_lights({'enabled': True, 'ambient': 0.3, 'centre': [0.0, 0.0, 0.0], 'size': 20.0,
+                       'lights': [{'name': 'key', 'anchor': 'camera', 'orbit': -30.0, 'pitch': 20.0,
+                                   'radius': 3.0, 'beam': 80.0, 'highlight': 1.0, 'shadow': False,
+                                   'intensity': 3.0}]})
+
+        _c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                     0.0, 0.0, -60.0, 0.0, 0.0, 0.0, 20.0, 100.0, -20.0))
+        """)
+    }
+
+    private func render(rayTraced: Int) throws -> [UInt8] {
+        let png = NSTemporaryDirectory() + "issue_729_render.png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: Self.width, height: Self.height, rayTraced: rayTraced)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(
+            URL(fileURLWithPath: png) as CFURL, nil), "no export written")
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        XCTAssertEqual(image.width, Self.width)
+        XCTAssertEqual(image.height, Self.height)
+        let w = image.width, h = image.height
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return rgba
+    }
+
+    private func footprint(of name: String) throws -> [Bool] {
+        let others = ["rt729m", "rt729t"].filter { $0 != name }
+        for other in others {
+            engine.runPython("from pymol import cmd as _c\n_c.disable('\(other)')")
+        }
+        let px = try render(rayTraced: 0)
+        for other in others {
+            engine.runPython("from pymol import cmd as _c\n_c.enable('\(other)')")
+        }
+        return stride(from: 0, to: px.count, by: 4).map { max(px[$0], px[$0 + 1], px[$0 + 2]) > 3 }
+    }
+
+    private func maxDelta(_ a: [UInt8], _ b: [UInt8], in region: [Bool]) -> Int {
+        guard a.count == b.count, a.count == region.count * 4 else { return -1 }
+        var best = 0
+        for (p, inside) in region.enumerated() where inside {
+            for c in 0..<3 {
+                best = max(best, abs(Int(a[p * 4 + c]) - Int(b[p * 4 + c])))
+            }
+        }
+        return best
+    }
+
+    func testTracedMetallicTintKeepsHueUnderHdr() throws {
+        try requireEngine()
+        guard engine.rayTracingSupported else {
+            throw XCTSkip("Hardware ray tracing is not supported on this device")
+        }
+        buildScene()
+
+        let mirror = try footprint(of: "rt729m")
+        let rt0 = try render(rayTraced: 0)
+        let rt1a = try render(rayTraced: 1)
+        let rt1b = try render(rayTraced: 1)
+        guard maxDelta(rt1a, rt1b, in: mirror) == 0 else {
+            throw XCTSkip("two ray-traced frames of the same scene differ: not deterministic here")
+        }
+        let rt1 = rt1a
+
+        func chroma(_ r: Double, _ g: Double, _ b: Double) -> Double {
+            let maxC = max(r, g, b)
+            let minC = min(r, g, b)
+            guard maxC > 0.0 else { return 0.0 }
+            return (maxC - minC) / maxC
+        }
+
+        var sumRatio = 0.0
+        var n = 0
+        for (p, inside) in mirror.enumerated() where inside {
+            let r0 = Double(rt0[p * 4])
+            let g0 = Double(rt0[p * 4 + 1])
+            let b0 = Double(rt0[p * 4 + 2])
+            let max0 = max(r0, g0, b0)
+            guard max0 >= 160.0 else { continue }
+
+            let r1 = Double(rt1[p * 4])
+            let g1 = Double(rt1[p * 4 + 1])
+            let b1 = Double(rt1[p * 4 + 2])
+            let max1 = max(r1, g1, b1)
+            guard max1 >= 60.0 else { continue }
+
+            let c0 = chroma(r0, g0, b0)
+            guard c0 >= 0.2 else { continue }
+
+            let c1 = chroma(r1, g1, b1)
+            sumRatio += c1 / c0
+            n += 1
+        }
+        let ratio = n > 0 ? sumRatio / Double(n) : 0.0
+        print("729 pixels=\(n) ratio=\(ratio)")
+        XCTAssertGreaterThanOrEqual(n, 200)
+        XCTAssertGreaterThanOrEqual(ratio, 0.85, "the traced metallic reflection lost the surface's hue under HDR")
+    }
+}

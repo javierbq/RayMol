@@ -115,7 +115,7 @@ MASTER_054B525 = {
     'kMaterialImpostorSrc': '10727f58afb05138',  # #710: the rig lights the material's albedo
     'kMaterialSrc': 'daef7520c89422d7',  # #710: the rig lights the material's albedo
     'kPostSrc': 'a3236d6afc3a38b1',  # #689: post_ssao_fog fades toward the bg_gradient
-    'kRTSrc': '4c0d300690b534ca',  # #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps
+    'kRTSrc': 'ca4ec2161386a787',  # #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps; #729: rt_reflect_tint keeps the metallic tint's hue under HDR
     'kScreenOverlaySrc': '9f09ecbdd4a9ddfa',  # #689: ramp gadgets drawn after the post chain
     # #635: retaken after sphere glass coverage split; #710: the rig lights
     # the material's albedo
@@ -468,6 +468,41 @@ class TestShaders(HdrMSLCase):
             self.assertNotIn('mat_glass_cover(', hdr_view(body))
             self.assertIn('mat_glass_cover(', squash(remove_rig_statements(
                 fragments(self.msl[lib])[frag][1])))
+
+    def testReflectionTintKeepsHue(self):
+        """#729: under an HDR rig, the metallic reflection tint scales down
+        by its largest channel to keep the surface's hue near highlights."""
+        self.assertIn('rt_reflect_tint', self.rt)
+        self.assertEqual(
+            squash(self.rt['rt_reflect_tint'][1]),
+            '{constfloat3t=colRaw*1.6;if(kRTLightRig&&kLightHdr)returnt/max(max(t.r,max(t.g,t.b)),1.0);returnsaturate(t);}')
+        composite = squash(strip_comments(fragments(self.msl['kRTSrc'])['rt_composite'][1]))
+        self.assertIn('reflCol*=mix(float3(1.0),rt_reflect_tint(colRaw),tint);', composite)
+        self.assertNotIn('saturate(colRaw*1.6)', composite)
+
+        def tint_hdr(c):
+            t = tuple(x * 1.6 for x in c)
+            m = max(max(t), 1.0)
+            return tuple(x / m for x in t)
+
+        def tint_classic(c):
+            t = tuple(x * 1.6 for x in c)
+            return tuple(min(max(x, 0.0), 1.0) for x in t)
+
+        c1 = (0.9, 0.72, 0.27)
+        hdr1 = tint_hdr(c1)
+        classic1 = tint_classic(c1)
+        for i in range(3):
+            self.assertAlmostEqual(hdr1[i] / hdr1[0], c1[i] / c1[0], delta=1e-6)
+            self.assertAlmostEqual(classic1[i], (1.0, 1.0, 0.432)[i], delta=1e-6)
+
+        c2 = (0.5, 0.3, 0.1)
+        want2 = tuple(x * 1.6 for x in c2)
+        hdr2 = tint_hdr(c2)
+        classic2 = tint_classic(c2)
+        for i in range(3):
+            self.assertAlmostEqual(hdr2[i], want2[i], delta=1e-6)
+            self.assertAlmostEqual(classic2[i], want2[i], delta=1e-6)
 
 
 class TestMasterUnchanged(HdrMSLCase):
