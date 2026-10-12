@@ -405,8 +405,9 @@ class TestLightResponse(MaterialMSLCase):
         self.assertEqual((digest(knee_sig), digest(knee_body)), MASTER_SOFT_KNEE)
 
     def testTheRayTracerIsUntouched(self):
-        """kRTSrc keeps its #613 copies (and the neutral response) byte for
-        byte: master's whole-literal digest, once #624's tone field in its
+        """kRTSrc keeps its #613 copies byte for byte, and still has no
+        light_response or MaterialU (#709 hands its hits their response from
+        the occurrence table, rt_hit_response): master's whole-literal digest, once #624's tone field in its
         LightRigU mirror is taken out (lighting_air_msl.py TONE_FIELD_624) and
         #624's HDR edits put back (without_hdr_624: kLightHdr, the tone
         helpers' copies, light_finish's exposure and HDR arm)."""

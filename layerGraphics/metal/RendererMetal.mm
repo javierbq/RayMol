@@ -946,6 +946,19 @@ void RendererMetal::setRepMaterial(const MaterialParams& params)
   _repMat[2] = _repMatParams.rough;
 }
 
+// Issue #709: snapshot the occurrence's traced-reflection material terms.
+// Carries the 3 reflection terms {reflect, tint, rough} plus the 5 studio-light
+// response terms {wrap, diffuse, highlight, sharpness, tint} matching what
+// bindMaterialU / bindRepMaterial give the raster draw. Evaluated at record
+// time so what a reflection ray hits is shaded with its own material response.
+std::array<float, 8> RendererMetal::rtOccurrenceMaterial() const
+{
+  const MaterialLightResponse r = MaterialLightResponseFor(_repMatParams);
+  return {_repMat[0], _repMat[1], _repMat[2], r.wrap, r.diffuse, r.highlight,
+          MaterialLightSharpness(r.exponent, _lightRigOn ? _lightRigBlock.head[1] : 0.0f),
+          r.tint};
+}
+
 void RendererMetal::enableOitRefraction()
 {
   // Glass refraction's target (#588) is created the first time a glass-family
@@ -3324,7 +3337,7 @@ struct RTU {
   // Traced self-reflections (reflective materials): env 0 = bg colour / 1 = studio
   // gradient on miss; samples = rays/pixel for glossy materials (offscreen);
   // sphereCount = number of sphere instances (ids below it are spheres);
-  // matCount = rows in the material table; then the two-light model.
+  // matCount = rows in the material table (each row is two float4, #709); then the two-light model.
   float reflEnv, reflSamples, sphereCount, matCount;
   float lAmbient, lDirect, lReflect, lSpec;
   float lShin, pad4, pad5, pad6;   // -> 24 floats after lightViewProj
@@ -3435,9 +3448,8 @@ constant bool kRTTrans [[function_constant(0)]];
 // structs and of the helpers the hit shading needs. Each copy is kMaterialSrc's
 // code verbatim, comments aside; lighting_msl.py fails if one drifts. No
 // light_outline: the beam outlines are an overlay, and overlays never enter ray
-// tracing. Hits take the studio shadow maps (#664) under kRTLightShadow. The
-// response is light_response_neutral(), as on the bezier tube: #615's
-// light_response needs MaterialU, which this library has no copy of.
+// tracing. Hits take the studio shadow maps (#664) under kRTLightShadow. Hits
+// take their occurrence's studio response via rt_hit_response (#709).
 constant bool kRTLightRig [[function_constant(1)]];
 
 // HDR colour (#624): kMaterialSrc's kLightHdr, under the same name so the
@@ -3678,6 +3690,23 @@ __attribute__((unused)) static float3 light_finish(float3 c, float exposure) {
   return mat_soft_knee(c);
 }
 
+// The studio response of material table row mi (#709): row0 carries
+// {reflect, tint, rough, wrap}, row1 carries the studio response terms
+// {diffuse, highlight, sharpness, tint}. Returns light_response_neutral() when
+// mi is out of range.
+static LightResponse rt_hit_response(device const float4* mats, int mi, float matCount) {
+  if (mi < 0 || float(mi) >= matCount) return light_response_neutral();
+  const float4 a = mats[2 * mi];
+  const float4 b = mats[2 * mi + 1];
+  LightResponse r;
+  r.diffuse = b.x;
+  r.highlight = b.y;
+  r.sharpness = b.z;
+  r.tint = b.w;
+  r.wrap = a.w;
+  return r;
+}
+
 // A reflection hit's colour with the rig's light added. `shaded` is the hit's
 // classic colour, `base` its own colour; the hit point, its normal and the
 // reflected ray's direction are in MODEL space, where the rays are traced.
@@ -3686,32 +3715,33 @@ __attribute__((unused)) static float3 light_finish(float3 c, float exposure) {
 // The view vector is the way the ray came, -R, as for the classic highlight
 // of a hit. Called only under `if (kRTLightRig)`. Through light_finish at the
 // frame's exposure, as every raster rig path is (#624: T under kLightHdr).
+// Takes the hit surface's studio response r (#709).
 static float3 rt_rig_hit(constant LightRigU& rig, constant RTU& u,
-    float3 shaded, float3 base, float3 pModel, float3 nModel, float3 R) {
+    float3 shaded, float3 base, float3 pModel, float3 nModel, float3 R,
+    LightResponse r) {
   const float3x3 toEye = transpose(float3x3(u.invModelview[0].xyz,
                                             u.invModelview[1].xyz,
                                             u.invModelview[2].xyz));
   const float3 pEye = toEye * (pModel - u.invModelview[3].xyz);
   const float3 nEye = toEye * nModel;
   const float3 V = -normalize(toEye * R);
-  const LightTerms t = light_terms_view(rig, base, nEye, pEye, V,
-                                        light_response_neutral());
+  const LightTerms t = light_terms_view(rig, base, nEye, pEye, V, r);
   return light_finish(shaded + base * t.diffuse + t.specular, rig.tone.x);
 }
 
 // The shadowed variant of rt_rig_hit (#664): takes the studio shadow maps
-// and calls light_terms_view_shadowed.
+// and calls light_terms_view_shadowed with the hit's response r (#709).
 static float3 rt_rig_hit_shadowed(constant LightRigU& rig, constant RTU& u,
     depth2d_array<float> maps, sampler smp,
-    float3 shaded, float3 base, float3 pModel, float3 nModel, float3 R) {
+    float3 shaded, float3 base, float3 pModel, float3 nModel, float3 R,
+    LightResponse r) {
   const float3x3 toEye = transpose(float3x3(u.invModelview[0].xyz,
                                             u.invModelview[1].xyz,
                                             u.invModelview[2].xyz));
   const float3 pEye = toEye * (pModel - u.invModelview[3].xyz);
   const float3 nEye = toEye * nModel;
   const float3 V = -normalize(toEye * R);
-  const LightTerms t = light_terms_view_shadowed(rig, maps, smp, base, nEye, pEye, V,
-                                                 light_response_neutral());
+  const LightTerms t = light_terms_view_shadowed(rig, maps, smp, base, nEye, pEye, V, r);
   return light_finish(shaded + base * t.diffuse + t.specular, rig.tone.x);
 }
 
@@ -4195,7 +4225,7 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
         }
       }
     }
-    float4 mat = (mi >= 0 && float(mi) < u.matCount) ? mats[mi] : float4(0.0);
+    float4 mat = (mi >= 0 && float(mi) < u.matCount) ? mats[2 * mi] : float4(0.0);
     const float F0 = mat.x, tint = mat.y, rough = mat.z;
     if (F0 > 0.001) {
       float3 R0 = reflect(viewM, nSelf);
@@ -4242,13 +4272,16 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
           if (res.type == intersection_type::none) break;
           float3 hitP = rr.origin + R * res.distance;
           float3 hn, hc;
+          int hmi = -1;
           bool isSphere = float(res.instance_id) < u.sphereCount;
           if (isSphere) {
             float4 c = sph[2u * res.instance_id];
             hc = sph[2u * res.instance_id + 1u].rgb;
+            hmi = int(sph[2u * res.instance_id + 1u].w);
             hn = normalize(hitP - c.xyz);
           } else {
             uint prim = triBase + res.primitive_id;
+            hmi = int(triMat[prim]);
             hn = rt_interp_normal(triNrms, prim, res.triangle_barycentric_coord);
             if (dot(hn, R) > 0.0) hn = -hn;          // face the incoming ray
             hc = float3(triCols[prim]);
@@ -4267,11 +4300,14 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
           }
           reflCol = hc * min(inten, 1.0) + specv;
           // The light rig (#613) on top of the hit's classic colour, as the
-          // raster path puts it on top of the surface the mirror shows.
+          // raster path puts it on top of the surface the mirror shows (#709:
+          // using the hit surface's own studio light response).
           if (kRTLightRig)
             reflCol = kRTLightShadow
-                ? rt_rig_hit_shadowed(rig, u, lightShadowMaps, shadowSamp, reflCol, hc, hitP, hn, R)
-                : rt_rig_hit(rig, u, reflCol, hc, hitP, hn, R);
+                ? rt_rig_hit_shadowed(rig, u, lightShadowMaps, shadowSamp, reflCol, hc, hitP, hn, R,
+                                      rt_hit_response(mats, hmi, u.matCount))
+                : rt_rig_hit(rig, u, reflCol, hc, hitP, hn, R,
+                             rt_hit_response(mats, hmi, u.matCount));
           // Fade distant hits toward the environment so far-off geometry does
           // not read as a hard mirror image (cheap "reflection fog").
           reflCol = mix(reflCol, envCol, saturate(res.distance / 120.0));
@@ -4303,10 +4339,17 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
               specv = u.lSpec * pow(max(dot(hn, H), 0.0), max(u.lShin, 1.0));
             }
             float3 tcol = tc.rgb * min(inten, 1.0) + specv;
+            // Transparent occurrences have no material table (tocc indexes the
+            // transparent record, not mats), so this layer keeps the neutral
+            // response (#709).
             if (kRTLightRig)
               tcol = kRTLightShadow
-                  ? rt_rig_hit_shadowed(rig, u, lightShadowMaps, shadowSamp, tcol, tc.rgb, tr.origin + R * th.distance, hn, R)
-                  : rt_rig_hit(rig, u, tcol, tc.rgb, tr.origin + R * th.distance, hn, R);
+                  ? rt_rig_hit_shadowed(rig, u, lightShadowMaps, shadowSamp, tcol, tc.rgb,
+                                        tr.origin + R * th.distance, hn, R,
+                                        light_response_neutral())
+                  : rt_rig_hit(rig, u, tcol, tc.rgb,
+                               tr.origin + R * th.distance, hn, R,
+                               light_response_neutral());
             tcol = mix(tcol, envCol, saturate(th.distance / 120.0));
             reflCol = mix(reflCol, tcol, saturate(tc.a));
           }
@@ -4571,22 +4614,25 @@ void RendererMetal::buildSphereProtoAS()
 // atom, transform = translate(center)·scale(radius), MODEL space). Rebuilt only
 // when the accumulated sphere set changes — model-space centers are invariant
 // under camera rotation, so this does NOT rebuild while orbiting.
-// Upload the per-occurrence traced-reflection material table ({reflect, tint,
-// rough, 0} per RT geometry occurrence, indexed by the per-primitive occurrence
+// Upload the per-occurrence traced-reflection material table (#709: two float4,
+// 8 floats per RT geometry occurrence, indexed by the per-primitive occurrence
 // index the built AS carries). Tiny; rewritten whenever the record or a
 // material slider changes.
 void RendererMetal::uploadRTMaterials()
 {
   const size_t n = _rtBuiltMat.size();
-  const size_t bytes = std::max<size_t>(n, 1) * 4 * sizeof(float);
+  const size_t bytes = std::max<size_t>(n, 1) * 8 * sizeof(float);
   if (!_rtMatBuffer || _rtMatBuffer.length < bytes) {
     [_rtMatBuffer release];
     _rtMatBuffer = [_device newBufferWithLength:bytes options:MTLResourceStorageModeShared];
   }
   if (!_rtMatBuffer) return;
   float* dst = static_cast<float*>(_rtMatBuffer.contents);
-  if (n == 0) { dst[0] = dst[1] = dst[2] = dst[3] = 0.0f; return; }
-  std::memcpy(dst, _rtBuiltMat.data(), n * 4 * sizeof(float));
+  if (n == 0) {
+    for (int i = 0; i < 8; ++i) dst[i] = 0.0f;
+    return;
+  }
+  std::memcpy(dst, _rtBuiltMat.data(), n * 8 * sizeof(float));
 }
 
 // metal_rt_transparent (#532): record a transparent draw's use of cached RT

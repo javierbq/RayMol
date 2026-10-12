@@ -87,7 +87,8 @@ HELPERS = ('light_response_neutral', 'light_response', 'light_visibility',
            'light_glass_cover')
 # The ray tracer's copies (kRTSrc cannot take kMaterialSrc): the structs, and
 # the helpers its reflection hits need. No light_outline (overlays never
-# enter ray tracing), no light_apply, no light_response (needs MaterialU).
+# enter ray tracing), no light_apply, no light_response (needs MaterialU;
+# #709 uses rt_hit_response from the per-occurrence material table instead).
 # #664 adds verbatim copies of light_shadow_lookup, light_visibility_shadowed
 # and light_terms_view_shadowed.
 RT_COPIES = ('light_response_neutral', 'light_visibility', 'light_terms_view',
@@ -1542,17 +1543,19 @@ class TestRayTracedReflections(LightMSLCase):
         # 1: the opaque hit, after its classic colour, before the fog
         hit = re.search(r'reflCol\s*=\s*hc\s*\*\s*min\(inten,\s*1\.0\)\s*\+\s*specv;\s*'
                         r'if\s*\(\s*kRTLightRig\s*\)\s*reflCol\s*=\s*kRTLightShadow\s*\?\s*'
-                        r'rt_rig_hit_shadowed\(rig,\s*u,\s*lightShadowMaps,\s*shadowSamp,\s*reflCol,\s*hc,\s*hitP,\s*hn,\s*R\)\s*:\s*'
-                        r'rt_rig_hit\(rig,\s*u,\s*reflCol,\s*hc,\s*hitP,\s*hn,\s*R\);\s*'
+                        r'rt_rig_hit_shadowed\(rig,\s*u,\s*lightShadowMaps,\s*shadowSamp,\s*reflCol,\s*hc,\s*hitP,\s*hn,\s*R,\s*'
+                        r'rt_hit_response\(mats,\s*hmi,\s*u\.matCount\)\)\s*:\s*'
+                        r'rt_rig_hit\(rig,\s*u,\s*reflCol,\s*hc,\s*hitP,\s*hn,\s*R,\s*'
+                        r'rt_hit_response\(mats,\s*hmi,\s*u\.matCount\)\);\s*'
                         r'reflCol\s*=\s*mix\(reflCol,\s*envCol,', body)
         self.assertIsNotNone(hit)
         # 2: the transparent layer in front of it (kRTTrans), likewise
         layer = re.search(r'float3\s+tcol\s*=\s*tc\.rgb\s*\*\s*min\(inten,\s*1\.0\)\s*'
                           r'\+\s*specv;\s*if\s*\(\s*kRTLightRig\s*\)\s*tcol\s*=\s*kRTLightShadow\s*\?\s*'
                           r'rt_rig_hit_shadowed\(rig,\s*u,\s*lightShadowMaps,\s*shadowSamp,\s*tcol,\s*tc\.rgb,\s*tr\.origin\s*\+\s*'
-                          r'R\s*\*\s*th\.distance,\s*hn,\s*R\)\s*:\s*'
+                          r'R\s*\*\s*th\.distance,\s*hn,\s*R,\s*light_response_neutral\(\)\)\s*:\s*'
                           r'rt_rig_hit\(rig,\s*u,\s*tcol,\s*tc\.rgb,\s*tr\.origin\s*\+\s*'
-                          r'R\s*\*\s*th\.distance,\s*hn,\s*R\);\s*tcol\s*=\s*mix\(tcol,'
+                          r'R\s*\*\s*th\.distance,\s*hn,\s*R,\s*light_response_neutral\(\)\);\s*tcol\s*=\s*mix\(tcol,'
                           r'\s*envCol,', body)
         self.assertIsNotNone(layer)
         # both inside the reflection block, which matCount 0 skips
@@ -1563,24 +1566,24 @@ class TestRayTracedReflections(LightMSLCase):
     def testRigHitShading(self):
         """A hit: model to eye by the inverse modelview's transposed rotation
         (as the environment lookup does), the reflected ray's own view
-        vector, the neutral response (#615 needs MaterialU), then light_finish
+        vector, the hit's material response r (#709), then light_finish
         at the frame's exposure (the knee, or T under #624's kLightHdr); and
         nothing reads a function constant but light_finish's kLightHdr."""
         self.assertIn('rt_rig_hit', self.rt_functions)
         self.assertIn('rt_rig_hit_shadowed', self.rt_functions)
         sig, body = self.rt_functions['rt_rig_hit']
+        self.assertRegex(sig, r'LightResponse\s+r\s*\)\s*$')
         code = squash(body)
         for expr in ('constfloat3x3toEye=transpose(float3x3(u.invModelview[0].xyz,'
                      'u.invModelview[1].xyz,u.invModelview[2].xyz));',
                      'constfloat3pEye=toEye*(pModel-u.invModelview[3].xyz);',
                      'constfloat3nEye=toEye*nModel;',
                      'constfloat3V=-normalize(toEye*R);',
-                     'constLightTermst=light_terms_view(rig,base,nEye,pEye,V,'
-                     'light_response_neutral());',
+                     'constLightTermst=light_terms_view(rig,base,nEye,pEye,V,r);',
                      'returnlight_finish(shaded+base*t.diffuse+t.specular,rig.tone.x);'):
             self.assertIn(expr, code, expr)
         constant = re.compile(r'\bkRT\w+|\bkLight\w+|function_constant')
-        seen, todo = set(), ['rt_rig_hit', 'rt_rig_hit_shadowed']
+        seen, todo = set(), ['rt_rig_hit', 'rt_rig_hit_shadowed', 'rt_hit_response']
         while todo:
             name = todo.pop()
             if name in seen:
@@ -1602,6 +1605,53 @@ class TestRayTracedReflections(LightMSLCase):
                               'light_finish', 'mat_soft_knee',
                               'light_response_neutral', 'light_visibility',
                               'light_tone', 'light_tone_scalar'}, seen)
+
+    def testHitTakesItsMaterialResponse(self):
+        """#709: Traced reflection hits take their material's studio light response."""
+        self.assertIn('rt_hit_response', self.rt_functions)
+        sig, body = self.rt_functions['rt_hit_response']
+        self.assertRegex(sig, r'\(device\s+const\s+float4\*\s+mats,\s*int\s+mi,\s*float\s+matCount\)')
+        self.assertIn('return light_response_neutral();', body)
+        code = squash(body)
+        self.assertIn('if(mi<0||float(mi)>=matCount)returnlight_response_neutral();', code)
+        self.assertIn('constfloat4a=mats[2*mi];', code)
+        self.assertIn('constfloat4b=mats[2*mi+1];', code)
+        self.assertIn('r.diffuse=b.x;', code)
+        self.assertIn('r.highlight=b.y;', code)
+        self.assertIn('r.sharpness=b.z;', code)
+        self.assertIn('r.tint=b.w;', code)
+        self.assertIn('r.wrap=a.w;', code)
+
+        for name in ('rt_rig_hit', 'rt_rig_hit_shadowed'):
+            sig, body = self.rt_functions[name]
+            self.assertRegex(sig, r'LightResponse\s+r\s*\)\s*$')
+            self.assertNotIn('light_response_neutral', body)
+
+        _, comp_body = fragments(self.rt)['rt_composite']
+        self.assertRegex(comp_body, r'float4\s+mat\s*=\s*\(mi\s*>=\s*0\s*&&\s*float\(mi\)\s*<\s*u\.matCount\)\s*\?\s*mats\[2\s*\*\s*mi\]\s*:\s*float4\(0\.0\);')
+        self.assertRegex(comp_body, r'hmi\s*=\s*int\(sph\[2u\s*\*\s*res\.instance_id\s*\+\s*1u\]\.w\);')
+        self.assertRegex(comp_body, r'hmi\s*=\s*int\(triMat\[prim\]\);')
+        self.assertIn('rt_rig_hit_shadowed(rig, u, lightShadowMaps, shadowSamp, reflCol, hc, hitP, hn, R, rt_hit_response(mats, hmi, u.matCount))',
+                      re.sub(r'\s+', ' ', comp_body))
+        self.assertIn('rt_rig_hit(rig, u, reflCol, hc, hitP, hn, R, rt_hit_response(mats, hmi, u.matCount))',
+                      re.sub(r'\s+', ' ', comp_body))
+
+        # CPU side
+        header = strip_comments(read(METAL_H))
+        self.assertRegex(header, r'std::vector<std::array<float,\s*8>>\s+_rtFrameMat;')
+        self.assertRegex(header, r'std::vector<std::array<float,\s*8>>\s+_rtBuiltMat;')
+        self.assertIn('_rtFrameMat.push_back(rtOccurrenceMaterial());', squash(header))
+
+        upload = cpp_function(self.mm, 'RendererMetal::uploadRTMaterials')
+        self.assertIn('n * 8 * sizeof(float)', upload)
+
+        occ = cpp_function(self.mm, 'RendererMetal::rtOccurrenceMaterial')
+        self.assertIn('MaterialLightResponseFor(_repMatParams)', occ)
+        self.assertIn('MaterialLightSharpness(r.exponent, _lightRigOn ? _lightRigBlock.head[1] : 0.0f)', occ)
+        occ_sq = squash(occ)
+        self.assertIn('return{_repMat[0],_repMat[1],_repMat[2],r.wrap,r.diffuse,r.highlight,'
+                      'MaterialLightSharpness(r.exponent,_lightRigOn?_lightRigBlock.head[1]:0.0f),r.tint};',
+                      occ_sq)
 
     def testRTPipelines(self):
         code = strip_comments(self.mm)
