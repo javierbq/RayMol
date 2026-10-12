@@ -168,17 +168,22 @@ int ColorGetNext(PyMOLGlobals * G)
   if(next >= nAutoColor || next < 0)
     next = 0;
 
-  // The background the viewport actually shows: bg_rgb, or the average of
-  // the gradient's top and bottom when bg_gradient is on (as in
-  // ColorUpdateFrontFromSettings). Copied out of ColorGet's scratch buffer
+  // The background the viewport actually shows, resolved exactly as
+  // ColorUpdateFrontFromSettings does: the average of the gradient's top and
+  // bottom when bg_gradient is on; black (so nothing is skipped) under a
+  // background image; else bg_rgb. Copied out of ColorGet's scratch buffer
   // (#542) before any swatch lookup.
-  float bg[3];
+  float bg[3] = {0.0F, 0.0F, 0.0F};
+  const char *bg_image_filename =
+      SettingGet_s(G, nullptr, nullptr, cSetting_bg_image_filename);
+  bool bg_image = (bg_image_filename && bg_image_filename[0]) ||
+                  OrthoBackgroundDataIsSet(*G->Ortho);
   if (SettingGet_b(G, nullptr, nullptr, cSetting_bg_gradient)) {
     float bottom[3];
     copy3f(ColorGet(G, SettingGet_color(G, nullptr, nullptr, cSetting_bg_rgb_bottom)), bottom);
     const float *top = ColorGet(G, SettingGet_color(G, nullptr, nullptr, cSetting_bg_rgb_top));
     average3f(bottom, top, bg);
-  } else {
+  } else if (!bg_image) {
     copy3f(ColorGet(G, SettingGet_color(G, nullptr, nullptr, cSetting_bg_rgb)), bg);
   }
 

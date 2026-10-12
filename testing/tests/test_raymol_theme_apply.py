@@ -239,9 +239,10 @@ class TestAutoColorContrast(testing.PyMOLTestCase):
 
     def testRayTracedCartoonContrastsWithWhite(self):
         try:
+            import numpy as np
             from PIL import Image
         except ImportError:
-            self.skipTest('Pillow is not installed')
+            self.skipTest('Pillow or numpy is not installed')
 
         raymol_theme.set_palette(bg=(1.0, 1.0, 1.0))
         cmd.set('auto_color_next', 5)
@@ -255,7 +256,6 @@ class TestAutoColorContrast(testing.PyMOLTestCase):
             cmd.png(path, width=320, height=240, ray=1)
             img = Image.open(path).convert('RGB')
 
-        import numpy as np
         arr = np.array(img, dtype=float)
         bg = arr[0, 0]
         diff = np.abs(arr - bg)
