@@ -112,12 +112,13 @@ EXPECTED_RIG_FRAGMENTS = {
                              'cyl_impostor_fragment_oit'},
 }
 # The impostors' rig helpers: (library, rig copy, classic helper, the base
-# colour light_apply takes).
+# albedo light_apply takes, mat_impostor_rig_albedo, #710).
 IMPOSTOR_RIG_HELPERS = (
+    # #710: the rig lights the material's albedo (mat_impostor_rig_albedo)
     ('kSphereImpostorSrc', 'sphere_shade_material_rig', 'sphere_shade_material',
-     'in.color.rgb'),
+     'mat_impostor_rig_albedo(in.color.rgb, n, pt, mat)'),
     ('kCylinderImpostorSrc', 'cyl_shade_material_rig', 'cyl_shade_material',
-     'base'),
+     'mat_impostor_rig_albedo(base, n, pt, mat)'),
 )
 # A fragment shades colour with the classic lights when it calls one of these.
 LIT_MARKERS = ('vbo_material_shade', 'sphere_shade_material',

@@ -73,6 +73,7 @@ _air = _load('_lighting_material_msl_air', 'lighting_air_msl.py')
 shader_literals = _msl.shader_literals
 strip_comments = _msl.strip_comments
 msl_functions = _msl.msl_functions
+fragments = _msl.fragments
 cpp_function = _msl.cpp_function
 squash = _msl.squash
 
@@ -601,3 +602,75 @@ class TestClassicLight(MaterialMSLCase):
         self.assertLess(body.index('setLightClassicScale('),
                         body.index('SceneRenderAll('))
         self.assertEqual(strip_comments(source).count('setLightClassicScale('), 1)
+
+
+class TestRigAlbedo(MaterialMSLCase):
+    """The studio rig lights the procedural material's albedo (#710)."""
+
+    def testMatRigAlbedo(self):
+        self.assertIn('mat_rig_albedo', self.material)
+        body = squash(self.material['mat_rig_albedo'][1])
+        self.assertTrue(body.startswith('{if(!kMatProcedural)returnbase;'))
+        self.assertIn('mat_marble_albedo(base,pModel,m)', body)
+        self.assertIn('kMatRubberGrainHarmonic,kMatRubberGrainOffset', body)
+        self.assertIn('kMatClayGrainHarmonic,kMatClayGrainOffset', body)
+        self.assertIn('mat_clay_edge(nz,m)', body)
+        self.assertNotIn('mat_classic_light', body)
+
+    def testMatShadeProcedural(self):
+        body = squash(self.material['mat_shade_procedural'][1])
+        self.assertIn('0.85,kMatRubberGrainHarmonic,kMatRubberGrainOffset)', body)
+        self.assertIn('0.9,kMatClayGrainHarmonic,kMatClayGrainOffset)', body)
+        self.assertIn('returncol*mat_clay_edge(N.z,m);', body)
+        self.assertNotIn('3.1,7.0', body)
+        self.assertNotIn('2.7,5.0', body)
+
+    def testMatImpostorRigAlbedo(self):
+        funcs = msl_functions(self.msl['kMaterialImpostorSrc'])
+        self.assertIn('mat_impostor_rig_albedo', funcs)
+        body = squash(funcs['mat_impostor_rig_albedo'][1])
+        self.assertEqual(
+            body,
+            '{if(!kMatProcedural)returnbase;'
+            'returnmat_rig_albedo(base,N,(m.invModelview*float4(pEye,1.0)).xyz,m);}')
+
+    def testCallSites(self):
+        vbo = fragments(self.msl['kVBOSrc'])
+        vbo_frag = squash(vbo['vbo_fragment'][1])
+        vbo_oit = squash(vbo['vbo_fragment_oit'][1])
+        self.assertIn('light_apply_shadowed(shaded,albedo,', vbo_frag)
+        self.assertIn('light_apply(shaded,albedo,', vbo_frag)
+        self.assertIn('light_apply_shadowed(c.rgb,albedo,', vbo_oit)
+        self.assertIn('light_apply(c.rgb,albedo,', vbo_oit)
+        albedo_decl = 'constfloat3albedo=mat_rig_albedo(in.color.rgb,in.normalEye,in.posModel,mat);'
+        self.assertIn(albedo_decl, vbo_frag)
+        self.assertIn(albedo_decl, vbo_oit)
+
+        sph = msl_functions(self.msl['kSphereImpostorSrc'])
+        for name in ('sphere_shade_material_rig', 'sphere_shade_material_rig_shadowed'):
+            body = squash(sph[name][1])
+            self.assertIn('(rgb,mat_impostor_rig_albedo(in.color.rgb,n,pt,mat),n,pt,rig,', body)
+
+        cyl = msl_functions(self.msl['kCylinderImpostorSrc'])
+        for name in ('cyl_shade_material_rig', 'cyl_shade_material_rig_shadowed'):
+            body = squash(cyl[name][1])
+            self.assertIn('(rgb,mat_impostor_rig_albedo(base,n,pt,mat),n,pt,rig,', body)
+
+    def testNoRigCallLightsTheRawBase(self):
+        vbo = fragments(self.msl['kVBOSrc'])
+        for name, rgb in (('vbo_fragment', 'shaded'), ('vbo_fragment_oit', 'c.rgb')):
+            body = squash(vbo[name][1])
+            for fn in ('light_apply', 'light_apply_shadowed'):
+                self.assertNotIn('%s(%s,in.color.rgb' % (fn, rgb), body, name)
+        for lib, helpers, base in (
+                ('kSphereImpostorSrc', ('sphere_shade_material_rig',
+                                        'sphere_shade_material_rig_shadowed'),
+                 'in.color.rgb'),
+                ('kCylinderImpostorSrc', ('cyl_shade_material_rig',
+                                          'cyl_shade_material_rig_shadowed'),
+                 'base')):
+            functions = msl_functions(self.msl[lib])
+            for name in helpers:
+                body = squash(functions[name][1])
+                self.assertNotRegex(body, r'light_apply(_shadowed)?\(rgb,%s,'
+                                    % re.escape(base), name)

@@ -8215,6 +8215,21 @@ static float3 mat_marble_albedo(float3 base, float3 pModel, constant MaterialU& 
   return mix(stone, veinCol, vein * m.p[4]);
 }
 
+// The body materials' second grain octave (mat_grain's harmonic and offset)
+// and clay's grazing darkening, named so the classic shading
+// (mat_shade_procedural) and the studio rig's albedo (mat_rig_albedo, #710)
+// take the same pattern.
+constant float kMatClayGrainHarmonic = 2.7;
+constant float kMatClayGrainOffset = 5.0;
+constant float kMatRubberGrainHarmonic = 3.1;
+constant float kMatRubberGrainOffset = 7.0;
+
+// Clay's dry grazing darkening, from the z of the unit normal facing the
+// camera: p[2] at the silhouette, none face-on.
+static float mat_clay_edge(float nz, constant MaterialU& m) {
+  return 1.0 - m.p[2] * pow(1.0 - saturate(nz), 2.0);
+}
+
 // --- matte / clay / rubber -------------------------------------------------
 // One shading model with three parameter sets, replacing the default two-light
 // result entirely. `expo` compresses the diffuse falloff: 1.0 is plain Lambert
@@ -8251,7 +8266,8 @@ static float3 mat_shade_procedural(float3 base, float3 N, float3 pModel,
     // grazing angles. Both are tinted toward the base so they never read as a
     // glossy clear coat -- that is plastic, not rubber.
     float3 col = mat_body_shade(base, N, pModel, ambient, direct, reflectAmt,
-                                keyDir, m, 0.85, 3.1, 7.0);
+                                keyDir, m, 0.85,
+                                kMatRubberGrainHarmonic, kMatRubberGrainOffset);
     float3 L1 = normalize(keyDir);
     float3 H = normalize(L1 + float3(0.0, 0.0, 1.0));
     float n1 = max(dot(N, L1), 0.0);
@@ -8269,13 +8285,47 @@ static float3 mat_shade_procedural(float3 base, float3 N, float3 pModel,
     // Dead-matte ceramic: faint grain, no specular at all, and a dry grazing
     // darkening that reads as an unglazed porous body.
     float3 col = mat_body_shade(base, N, pModel, ambient, direct, reflectAmt,
-                                keyDir, m, 0.9, 2.7, 5.0);
-    return col * (1.0 - m.p[2] * pow(1.0 - saturate(N.z), 2.0));
+                                keyDir, m, 0.9,
+                                kMatClayGrainHarmonic, kMatClayGrainOffset);
+    return col * mat_clay_edge(N.z, m);
   }
   // matte (and any procedural mode this build cannot draw): Lambert and
   // nothing else. Every knob is zero, so the grain and the grazing terms fold
   // away -- this is the "kill the highlights" look users ask for first.
   return mat_matte_shade(base, N, pModel, ambient, direct, reflectAmt, keyDir, m);
+}
+
+// The albedo a procedural material's own shading lights, for the studio rig
+// (#710). The rig's diffuse lights THIS, not the raw base colour, so marble's
+// veins, the grain of matte, clay and rubber, and clay's edge darkening stay
+// under a rig at classic 0 instead of fading with the classic light. It is
+// the factor each classic shader applies to the base: marble's albedo before
+// its two-light model, the body materials' grain (and clay's edge) after
+// theirs. Rubber's highlight and sheen are light, not albedo, and stay out.
+// Every other family returns `base`; kMatProcedural is a function constant,
+// so their rig pipelines fold to exactly the call they made before.
+//
+// nEye: the eye-space normal, any length, either side. Clay's edge reads the
+// side facing the camera, as the classic VBO shading does once it has flipped
+// its normal two-sided; an impostor hit's normal already faces the camera
+// (|z| differs from the classic saturate(z) only on a sphere's last rim pixel
+// in perspective). pModel: the model-space point the pattern is evaluated at.
+__attribute__((unused)) static float3 mat_rig_albedo(float3 base, float3 nEye,
+    float3 pModel, constant MaterialU& m) {
+  if (!kMatProcedural) return base;
+  if (m.mode == kMatMode_marble) return mat_marble_albedo(base, pModel, m);
+  if (m.mode == kMatMode_rubber)
+    return base * mat_grain(pModel, m.p[0], m.p[1], kMatRubberGrainHarmonic,
+                            kMatRubberGrainOffset);
+  if (m.mode == kMatMode_clay) {
+    const float nl = length(nEye);
+    const float nz = nl > 1e-8 ? abs(nEye.z) / nl : 1.0;
+    return base * mat_grain(pModel, m.p[0], m.p[1], kMatClayGrainHarmonic,
+                            kMatClayGrainOffset) * mat_clay_edge(nz, m);
+  }
+  // matte (and any procedural mode this build cannot draw), as
+  // mat_matte_shade: its grain only.
+  return base * mat_grain(pModel, m.p[0], m.p[1], 1.0, 0.0);
 }
 
 // --- Studio light rig (#613, lighting epic #610) ------------------------------
@@ -8811,6 +8861,15 @@ static float3 mat_impostor_composite(float3 base, float3 N, float3 pEye,
   }
   return base * min(defaultIntensity, 1.0) + defaultSpecular;
 }
+
+// mat_rig_albedo at an impostor's eye-space hit (#710): the model-space point
+// from the inverse modelview, as a POINT, exactly as mat_impostor_composite
+// derives it.
+static float3 mat_impostor_rig_albedo(float3 base, float3 N, float3 pEye,
+    constant MaterialU& m) {
+  if (!kMatProcedural) return base;
+  return mat_rig_albedo(base, N, (m.invModelview * float4(pEye, 1.0)).xyz, m);
+}
 )";
 
 // Metal shader for VBO-based molecular geometry (cartoons, surfaces, etc.)
@@ -9017,14 +9076,17 @@ fragment float4 vbo_fragment(VBOVertexOut in [[stage_in]],
     const float3 shaded = vbo_material_shade(in.color.rgb, in.normalEye,
                                              in.posModel, lt, mat, envMap,
                                              envSmp);
+    // The rig lights the material's albedo, not the raw base (#710).
+    const float3 albedo = mat_rig_albedo(in.color.rgb, in.normalEye,
+                                         in.posModel, mat);
     // Studio shadow maps (#616): each light through its own map. The #613
     // rig pipelines specialise kLightShadow false and return below.
     if (kLightShadow)
-      return float4(light_apply_shadowed(shaded, in.color.rgb, in.normalEye,
+      return float4(light_apply_shadowed(shaded, albedo, in.normalEye,
                                          in.posEye, rig, lightShadowMaps,
                                          lightShadowSmp, light_response(mat)),
                     in.color.a);
-    return float4(light_apply(shaded, in.color.rgb, in.normalEye, in.posEye,
+    return float4(light_apply(shaded, albedo, in.normalEye, in.posEye,
                               rig, light_response(mat)),
                   in.color.a);
   }
@@ -9221,12 +9283,15 @@ fragment OITFragOut vbo_fragment_oit(VBOVertexOut in [[stage_in]],
     // The light rig (#613), on top of the classic shading; the coverage is
     // the material's, unchanged.
     if (kLightRig) {
+      // The rig lights the material's albedo, not the raw base (#710).
+      const float3 albedo = mat_rig_albedo(in.color.rgb, in.normalEye,
+                                           in.posModel, mat);
       // Studio shadow maps (#616) under kLightShadow; #613's call otherwise.
       c.rgb = kLightShadow
-          ? light_apply_shadowed(c.rgb, in.color.rgb, in.normalEye, in.posEye,
+          ? light_apply_shadowed(c.rgb, albedo, in.normalEye, in.posEye,
                                  rig, lightShadowMaps, lightShadowSmp,
                                  light_response(mat))
-          : light_apply(c.rgb, in.color.rgb, in.normalEye, in.posEye, rig,
+          : light_apply(c.rgb, albedo, in.normalEye, in.posEye, rig,
                           light_response(mat));
     }
     if (kMatGlass) {
@@ -11311,7 +11376,8 @@ static void sphere_shade_material(SphereVOut in, constant SphereU& u,
 }
 
 // The light rig's copy of sphere_shade_material (#613): the same statements,
-// then the rig's lights on top of the lit surface. An interior cap returns
+// then the rig's lights on top of the lit surface. The rig lights the
+// material's albedo (mat_impostor_rig_albedo, #710). An interior cap returns
 // before the light as it returns before the material, so caps stay as they
 // are. Called only under `if (kLightRig)`, so the classic pipelines drop it.
 static void sphere_shade_material_rig(SphereVOut in, constant SphereU& u,
@@ -11326,7 +11392,8 @@ static void sphere_shade_material_rig(SphereVOut in, constant SphereU& u,
   rgb = mat_impostor_composite(in.color.rgb, n, pt, u.lAmbient, u.lDirect,
                                u.lReflect, float3(u.klx, u.kly, u.klz), mat,
                                intensity, specular, u.lSSSWrap, envMap, envSmp);
-  rgb = light_apply(rgb, in.color.rgb, n, pt, rig, light_response(mat));
+  rgb = light_apply(rgb, mat_impostor_rig_albedo(in.color.rgb, n, pt, mat),
+                    n, pt, rig, light_response(mat));
 }
 
 // sphere_shade_material_rig with the studio shadow maps (#616): the maps
@@ -11345,8 +11412,9 @@ static void sphere_shade_material_rig_shadowed(SphereVOut in,
   rgb = mat_impostor_composite(in.color.rgb, n, pt, u.lAmbient, u.lDirect,
                                u.lReflect, float3(u.klx, u.kly, u.klz), mat,
                                intensity, specular, u.lSSSWrap, envMap, envSmp);
-  rgb = light_apply_shadowed(rgb, in.color.rgb, n, pt, rig, maps, smp,
-                             light_response(mat));
+  rgb = light_apply_shadowed(rgb,
+                             mat_impostor_rig_albedo(in.color.rgb, n, pt, mat),
+                             n, pt, rig, maps, smp, light_response(mat));
 }
 
 fragment SphereFOut sphere_impostor_fragment(SphereVOut in [[stage_in]],
@@ -12221,7 +12289,8 @@ static void cyl_shade_material_rig(CylVOut in, constant CylU& u,
   rgb = mat_impostor_composite(base, n, pt, u.lAmbient, u.lDirect, u.lReflect,
                                float3(u.klx, u.kly, u.klz), mat,
                                intensity, specular, u.lSSSWrap, envMap, envSmp);
-  rgb = light_apply(rgb, base, n, pt, rig, light_response(mat));
+  rgb = light_apply(rgb, mat_impostor_rig_albedo(base, n, pt, mat), n, pt,
+                    rig, light_response(mat));
 }
 
 // cyl_shade_material_rig with the studio shadow maps (#616); see
@@ -12238,8 +12307,8 @@ static void cyl_shade_material_rig_shadowed(CylVOut in, constant CylU& u,
   rgb = mat_impostor_composite(base, n, pt, u.lAmbient, u.lDirect, u.lReflect,
                                float3(u.klx, u.kly, u.klz), mat,
                                intensity, specular, u.lSSSWrap, envMap, envSmp);
-  rgb = light_apply_shadowed(rgb, base, n, pt, rig, maps, smp,
-                             light_response(mat));
+  rgb = light_apply_shadowed(rgb, mat_impostor_rig_albedo(base, n, pt, mat),
+                             n, pt, rig, maps, smp, light_response(mat));
 }
 
 fragment CylFOut cyl_impostor_fragment(CylVOut in [[stage_in]],

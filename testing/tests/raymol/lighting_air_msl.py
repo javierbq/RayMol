@@ -107,17 +107,18 @@ MASTER_LITERALS = {
     'kBezierTubeRigSrc': '8b5d47b1b8b9d31b',  # #663: bezier_tube_fragment_rig_shadow
     'kBezierTubeSrc': '0085bdbf88964ab4',
     'kConnectorShaderSrc': '40ef57a0e535d985',
-    'kCylinderImpostorSrc': 'd884d25157282af9',  # #641: cyl_shade caps from the capped solid's exit
+    'kCylinderImpostorSrc': '4d982d2b0a0712eb',  # #641 cut caps; #710 the rig lights the albedo
     'kEyeReconSrc': '34e775c149c8b075',
     'kLabelShaderSrc': 'ca5097bd2ad97d60',  # #736: label_fragment_oit, the OIT pass's variant
-    'kMaterialImpostorSrc': '5da7ac9fc2e8eb42',
+    'kMaterialImpostorSrc': 'ea5947e14500d7d5',  # #710: the rig lights the material's albedo
     'kMaterialSrc': 'da47cac063348d43',
     'kPostSrc': 'a3236d6afc3a38b1',  # #689: post_ssao_fog fades toward the bg_gradient
     'kRTSrc': 'c434543f02ae5906',  # #689: rt_composite's fog fades toward the bg_gradient
     'kScreenOverlaySrc': '9f09ecbdd4a9ddfa',  # #689: ramp gadgets drawn after the post chain
-    # #635: retaken after sphere glass coverage split
-    'kSphereImpostorSrc': '370fa7d7d0571acb',
-    'kVBOSrc': '728416d46e47293d',
+    # #635: retaken after sphere glass coverage split; #710: the rig lights
+    # the material's albedo
+    'kSphereImpostorSrc': '94fec70542219449',
+    'kVBOSrc': 'e0bb73ffd9bc762e',  # #710: the rig lights the material's albedo
 }
 # #615 (Materials own their response to studio lights) changes kMaterialSrc
 # itself: MaterialU carries the studio response, light_response reads it, the
@@ -128,7 +129,8 @@ MASTER_LITERALS = {
 # #615's head. #615 (re-take only when #615 changes kMaterialSrc);
 # lighting_material_msl.py pins what changed.
 CHANGED_BY_615 = {
-    'kMaterialSrc': '4f4f1e7f4c703bad',
+    # #710: the rig lights the material's albedo
+    'kMaterialSrc': 'daef7520c89422d7',
 }
 # #615 appends the material's classic scale to every mat_glass_shade call
 # (`, mat_classic_light(m)`). These four literals carry such calls and nothing

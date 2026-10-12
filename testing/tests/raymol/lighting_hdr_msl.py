@@ -109,17 +109,18 @@ MASTER_054B525 = {
     'kBezierTubeRigSrc': '8b5d47b1b8b9d31b',  # #663: bezier_tube_fragment_rig_shadow
     'kBezierTubeSrc': '0085bdbf88964ab4',
     'kConnectorShaderSrc': '40ef57a0e535d985',
-    'kCylinderImpostorSrc': '40ff878f5a16a0e9',  # #641: cyl_shade caps from the capped solid's exit
+    'kCylinderImpostorSrc': '0c647d97127eb3d6',  # #641 cut caps; #710 the rig lights the albedo
     'kEyeReconSrc': '34e775c149c8b075',
     'kLabelShaderSrc': 'ca5097bd2ad97d60',  # #736: label_fragment_oit, the OIT pass's variant
-    'kMaterialImpostorSrc': 'ad8142cda60dc979',
-    'kMaterialSrc': '4f4f1e7f4c703bad',
+    'kMaterialImpostorSrc': '10727f58afb05138',  # #710: the rig lights the material's albedo
+    'kMaterialSrc': 'daef7520c89422d7',  # #710: the rig lights the material's albedo
     'kPostSrc': 'a3236d6afc3a38b1',  # #689: post_ssao_fog fades toward the bg_gradient
     'kRTSrc': 'c434543f02ae5906',  # #689: rt_composite's fog fades toward the bg_gradient
     'kScreenOverlaySrc': '9f09ecbdd4a9ddfa',  # #689: ramp gadgets drawn after the post chain
-    # #635: retaken after sphere glass coverage split
-    'kSphereImpostorSrc': '70122d7482dedf17',
-    'kVBOSrc': '834ce9f8e90f5832',
+    # #635: retaken after sphere glass coverage split; #710: the rig lights
+    # the material's albedo
+    'kSphereImpostorSrc': 'a30bf487dd5fc082',
+    'kVBOSrc': '96597b558b9b9f98',  # #710: the rig lights the material's albedo
 }
 # The same digests (signature, body) of the material laws #624 leaves alone,
 # on master 054b525e9.
