@@ -400,7 +400,8 @@ def check_unchanged(none, haze, white_none, white_haze, subject='', need_white=F
     """On the background (BG_MARGIN px from the no-air twin's geometry) and
     outside the haze footprint (found on black, dilated) the white-background
     pair is byte-equal (and there is such an outside), no background pixel
-    gets darker in any channel, and no white pixel loses its 255.
+    gets darker in any channel, and no white background pixel loses its
+    255.
 
     #683: the haze's Beer-Lambert extinction dims the geometry behind it, so
     geometry pixels may get darker; the empty background is never attenuated,
@@ -415,7 +416,7 @@ def check_unchanged(none, haze, white_none, white_haze, subject='', need_white=F
     d = np.abs(_f(white_haze) - _f(white_none)).max(axis=2)
     top = int(d[outside].max()) if noutside else 0
     darker = int(((_f(white_haze) < _f(white_none)).any(axis=2) & bg).sum())
-    white = (_f(white_none) >= 255).all(axis=2)
+    white = (_f(white_none) >= 255).all(axis=2) & bg
     nwhite = int(white.sum())
     kept = bool((_f(white_haze)[white] >= 255).all()) if nwhite else True
     ok = (noutside > 0 and top == 0 and darker == 0 and kept

@@ -779,7 +779,10 @@ Open follow-ups of the lighting work (#610) that you may notice:
   At haze above 0 the molecule is darker than before #683 (intentional look
   change; haze 0 renders exactly as before). Strong backlit haze can still
   brighten the frame; lower the exposure, the haze or the light (see [Backlit
-  haze](#backlit-haze)). Transparent-background exports drop the air over the
+  haze](#backlit-haze)). The extinction reads the opaque depth only:
+  a transparent surface over the empty background is not dimmed, and one
+  over opaque geometry is dimmed with the geometry behind it (#683).
+  Transparent-background exports drop the air over the
   empty background (#684). Animated dust redraws the whole scene on every tick
   (#685). The dust seed has no control in the Atmosphere card (#740).
 - **Materials and HDR.** The studio diffuse lights a material's plain base
