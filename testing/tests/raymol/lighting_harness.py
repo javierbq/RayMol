@@ -640,7 +640,7 @@ class TestLightingHarness(testing.PyMOLTestCase):
             cmd.reinitialize()
 
     def testNoSceneFileWrapsSetLights(self):
-        pat = re.compile(r'_l\w*_set\b')
+        pat = re.compile(r'_l(?:g|\d+)_set\b')
         files = glob.glob(os.path.join(SCENES, '*.json'))
         self.assertGreaterEqual(len(files), 15)
         for filepath in files:
