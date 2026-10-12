@@ -169,6 +169,13 @@ struct LightsInspectorState: Equatable {
     /// The notice after a refused Shadow press (a 4th shadowed light).
     static let shadowCapNotice = "At most \(LightsController.maxShadowed) lights cast shadows. "
         + "Turn one off first."
+    /// What VoiceOver announces after a refused Shadow press (#672): the notice.
+    static let shadowCapAnnouncement = shadowCapNotice
+    /// Posts a VoiceOver announcement (macOS and iOS). Tests replace it to
+    /// record what would be spoken.
+    @MainActor static var announce: (String) -> Void = { text in
+        AccessibilityNotification.Announcement(text).post()
+    }
     /// The hint while the selected light casts a shadow the scene does not show.
     static let shadowsOffHint = "Shadows are off for this scene"
     /// The muted line under the header while the selected light's shadow has no map (#673).
@@ -1000,15 +1007,23 @@ struct LightsInspector: View {
         if let state = LightsInspectorState(controller, sceneShadowsOn: sceneShadowsOn) {
             switch presentation {
             case .card:
-                card(state)
+                announcingShadowCap(card(state))
             case .header:
-                headerBlock(state)
+                announcingShadowCap(headerBlock(state))
             case .rows:
                 content(state)
                     .tint(style.accent)
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("lights.inspector.rows")
             }
+        }
+    }
+
+    /// Announces shadow-cap refusals to VoiceOver (#672). Attached only to
+    /// presentations that can show the refusal notice (`.card`, `.header`).
+    private func announcingShadowCap<Content: View>(_ content: Content) -> some View {
+        content.onReceive(controller.shadowRefusalEvents) {
+            LightsInspectorState.announce(LightsInspectorState.shadowCapAnnouncement)
         }
     }
 
