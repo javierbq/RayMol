@@ -354,14 +354,15 @@ class TestShadowBlock(ShadowMSLCase):
                                    'light_terms_view_shadowed'):
                         # verbatim copies (lighting_msl.py RT_COPIES)
                         self.assertNotRegex(sig + body, r'\bkRTLightShadow\b|\blightShadow\w*')
-                    elif fn_name == 'rt_rig_hit_shadowed':
+                    elif fn_name in ('rt_rig_hit_shadowed', 'rt_rig_glass_hit_shadowed'):
                         self.assertIn('light_terms_view_shadowed(rig, maps, smp,', body)
                         self.assertNotRegex(sig + body, r'\bkRTLightShadow\b|\blightShadow\w*')
                     elif fn_name == 'rt_composite':
                         self.assertIn('depth2d_array<float> lightShadowMaps [[texture(5), function_constant(kRTLightShadow)]]', sig)
-                        self.assertEqual(len(re.findall(r'\blightShadowMaps\b', body)), 2)
+                        self.assertEqual(len(re.findall(r'\blightShadowMaps\b', body)), 3)
                         self.assertEqual(len(re.findall(r'\brt_rig_hit_shadowed\b', body)), 2)
-                        body_without = re.sub(r'\brt_rig_hit_shadowed\b|\blightShadowMaps\b', '', body)
+                        self.assertEqual(len(re.findall(r'\brt_rig_glass_hit_shadowed\b', body)), 1)
+                        body_without = re.sub(r'\brt_rig_hit_shadowed\b|\brt_rig_glass_hit_shadowed\b|\blightShadowMaps\b', '', body)
                         self.assertNotRegex(body_without, SHADOW_TOKENS, fn_name)
                     else:
                         self.assertNotRegex(sig + body, SHADOW_TOKENS, fn_name)
