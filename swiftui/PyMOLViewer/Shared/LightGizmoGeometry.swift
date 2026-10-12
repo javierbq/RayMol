@@ -77,6 +77,91 @@ struct LightCameraProjection: Equatable {
     var orthoHalfHeight: Double { max(1e-4, cameraDistance) * fovWidth / 2 }
 }
 
+// MARK: - The grid cell
+
+/// One cell of grid_mode's layout (#697): `columns` x `rows` cells over the scene rect, `index`
+/// row-major from the top-left (metal_pick._grid_slot's slot).
+struct LightGizmoGridCell: Equatable {
+    let columns: Int
+    let rows: Int
+    let index: Int
+
+    /// GridUpdate's (layer1/Scene.cpp) columns and rows for `size` cells at `aspect` (width/height):
+    /// (1, 1) for a size under 2.
+    static func shape(size: Int, aspect: Double) -> (columns: Int, rows: Int) {
+        guard size >= 2, aspect.isFinite, aspect > 0 else { return (1, 1) }
+        var nRow = 1
+        var nCol = 1
+        while (nRow * nCol) < size {
+            var asp1 = aspect * Double(nRow + 1) / Double(nCol)
+            var asp2 = aspect * Double(nRow) / Double(nCol + 1)
+            if asp1 < 1.0 { asp1 = 1.0 / asp1 }
+            if asp2 < 1.0 { asp2 = 1.0 / asp2 }
+            if abs(asp1) > abs(asp2) {
+                nCol += 1
+            } else {
+                nRow += 1
+            }
+        }
+        while (nCol - 1) * nRow >= size && size > 0 {
+            nCol -= 1
+        }
+        while (nRow - 1) * nCol >= size && size > 0 {
+            nRow -= 1
+        }
+        return (nCol, nRow)
+    }
+
+    /// The cell under `p` (view points, top-left origin) for `size` cells laid out over
+    /// `sceneRect` (the shape at sceneRect's aspect), clamped into the edge cells as
+    /// metal_pick._grid_slot does. A size under 2 is one cell (1x1, index 0: the scene draws no
+    /// grid). nil for a non-finite point, an empty rect, or a cell no object fills (index >= size).
+    static func at(_ p: CGPoint, size: Int, in sceneRect: CGRect) -> LightGizmoGridCell? {
+        guard p.x.isFinite, p.y.isFinite else { return nil }
+        guard sceneRect.width > 0, sceneRect.height > 0,
+              sceneRect.width.isFinite, sceneRect.height.isFinite,
+              !sceneRect.isNull, !sceneRect.isEmpty else { return nil }
+        if size < 2 {
+            return LightGizmoGridCell(columns: 1, rows: 1, index: 0)
+        }
+        let aspect = Double(sceneRect.width / sceneRect.height)
+        let (columns, rows) = shape(size: size, aspect: aspect)
+        guard columns > 0, rows > 0 else { return nil }
+        let u = Double(p.x - sceneRect.minX) / Double(sceneRect.width) * Double(columns)
+        let t = Double(p.y - sceneRect.minY) / Double(sceneRect.height) * Double(rows)
+        let col = min(max(Int(floor(u)), 0), columns - 1)
+        let row = min(max(Int(floor(t)), 0), rows - 1)
+        let index = row * columns + col
+        guard index < size else { return nil }
+        return LightGizmoGridCell(columns: columns, rows: rows, index: index)
+    }
+
+    /// The same cell once the grid may have changed (objects added or
+    /// removed, grid_max, a resize or rotation), for `size` cells over
+    /// `sceneRect`: itself while they still lay out its shape and fill it,
+    /// else the cell now under its old centre (nil when none).
+    func revalidated(size: Int, in sceneRect: CGRect) -> LightGizmoGridCell? {
+        guard sceneRect.width > 0, sceneRect.height > 0 else { return nil }
+        let shape = Self.shape(size: size, aspect: Double(sceneRect.width / sceneRect.height))
+        if shape.columns == columns, shape.rows == rows, index < max(size, 1) { return self }
+        let old = rect(in: sceneRect)
+        return Self.at(CGPoint(x: old.midX, y: old.midY), size: size, in: sceneRect)
+    }
+
+    /// Its rect within `sceneRect` (SceneGetGridViewport): column c spans
+    /// [c*W/columns, (c+1)*W/columns) from the left, row r [r*H/rows, (r+1)*H/rows) from the top.
+    func rect(in sceneRect: CGRect) -> CGRect {
+        guard columns > 0, rows > 0 else { return sceneRect }
+        let col = index % columns
+        let row = index / columns
+        let x0 = Double(sceneRect.minX) + Double(col) * Double(sceneRect.width) / Double(columns)
+        let x1 = Double(sceneRect.minX) + Double(col + 1) * Double(sceneRect.width) / Double(columns)
+        let y0 = Double(sceneRect.minY) + Double(row) * Double(sceneRect.height) / Double(rows)
+        let y1 = Double(sceneRect.minY) + Double(row + 1) * Double(sceneRect.height) / Double(rows)
+        return CGRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0)
+    }
+}
+
 // MARK: - The projection
 
 /// Eye space to view points (top-left origin, y down, as SwiftUI draws) for a
@@ -89,11 +174,14 @@ struct LightGizmoProjection: Equatable {
     let viewSize: CGSize
     /// Where the scene is drawn, in view points.
     let sceneRect: CGRect
+    /// Where eye space projects: the scene rect, or in grid_mode the cell's
+    /// rect within it (#697).
+    let cellRect: CGRect
 
     /// A perspective point must be at least this far in front of the eye.
     static let nearDepth = 1e-3
 
-    init?(camera: LightCameraProjection, viewSize: CGSize) {
+    init?(camera: LightCameraProjection, viewSize: CGSize, cell: LightGizmoGridCell? = nil) {
         let w = Double(viewSize.width), h = Double(viewSize.height)
         guard w.isFinite, h.isFinite, w > 0, h > 0 else { return nil }
         self.camera = camera
@@ -110,12 +198,17 @@ struct LightGizmoProjection: Equatable {
         } else {
             sceneRect = CGRect(origin: .zero, size: viewSize)
         }
+        if let cell {
+            cellRect = cell.rect(in: sceneRect)
+        } else {
+            cellRect = sceneRect
+        }
     }
 
-    /// The scene rect's width / height: the projection's aspect.
-    var aspect: Double { Double(sceneRect.width / sceneRect.height) }
+    /// The cell rect's width / height: the projection's aspect (#697).
+    var aspect: Double { Double(cellRect.width / cellRect.height) }
 
-    /// The scene NDC (x and y in [-1, 1] over the scene rect, +y up) of an
+    /// The NDC over the cell rect (x and y in [-1, 1], +y up) of an
     /// eye-space point; nil behind the near plane (perspective) or for a
     /// non-finite point.
     func sceneNDC(eye e: SIMD3<Double>) -> SIMD2<Double>? {
@@ -139,10 +232,10 @@ struct LightGizmoProjection: Equatable {
         point(eye: SIMD3<Double>(Double(eye.x), Double(eye.y), Double(eye.z)))
     }
 
-    /// The view point of a scene NDC (not clipped to the scene rect).
+    /// The view point of a scene NDC mapped over `cellRect` (#697).
     func point(sceneNDC s: SIMD2<Double>) -> CGPoint {
-        CGPoint(x: Double(sceneRect.minX) + (s.x + 1) / 2 * Double(sceneRect.width),
-                y: Double(sceneRect.minY) + (1 - s.y) / 2 * Double(sceneRect.height))
+        CGPoint(x: Double(cellRect.minX) + (s.x + 1) / 2 * Double(cellRect.width),
+                y: Double(cellRect.minY) + (1 - s.y) / 2 * Double(cellRect.height))
     }
 
     /// The scene NDC of a view point, not clipped to the scene rect (a point
@@ -170,12 +263,19 @@ struct LightGizmoProjection: Equatable {
               1 - 2 * Double(p.y) / Double(viewSize.height))
     }
 
+    /// The NDC of a view point over `cellRect` (x and y in [-1, 1], +y up),
+    /// not clipped to the cell rect (#697).
+    private func cellNDC(point p: CGPoint) -> SIMD2<Double> {
+        SIMD2(2 * Double(p.x - cellRect.minX) / Double(cellRect.width) - 1,
+              1 - 2 * Double(p.y - cellRect.minY) / Double(cellRect.height))
+    }
+
     /// The camera ray through a view point, in eye space: from the eye along
     /// unit(ndc.x t a, ndc.y t, -1) in perspective; from (ndc.x h a, ndc.y h,
     /// 0) along -z when orthoscopic. nil for a non-finite point.
     func ray(at p: CGPoint) -> (origin: SIMD3<Double>, direction: SIMD3<Double>)? {
         guard p.x.isFinite, p.y.isFinite else { return nil }
-        let s = unclampedSceneNDC(point: p)
+        let s = cellNDC(point: p)
         if camera.orthoscopic {
             let hh = camera.orthoHalfHeight
             return (SIMD3(s.x * hh * aspect, s.y * hh, 0), SIMD3(0, 0, -1))
@@ -190,7 +290,7 @@ struct LightGizmoProjection: Equatable {
     /// eye): what a length in the scene measures on screen there. nil behind
     /// the near plane in perspective.
     func pointsPerAngstrom(atDepth z: Double) -> Double? {
-        let half = Double(sceneRect.height) / 2
+        let half = Double(cellRect.height) / 2
         if camera.orthoscopic { return half / camera.orthoHalfHeight }
         let depth = -z
         guard z.isFinite, depth > Self.nearDepth else { return nil }

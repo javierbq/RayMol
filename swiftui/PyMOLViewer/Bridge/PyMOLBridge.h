@@ -233,6 +233,10 @@ int PyMOLBridge_SurfacePickRelease(PyMOLHandle instance);
 // as set by PyMOLBridge_SetLetterboxAspect; 0 = the scene fills the view (also
 // when there is no renderer yet).
 float PyMOLBridge_GetLetterboxAspect(PyMOLHandle instance);
+// The number of grid_mode cells the scene lays out (SceneGetGridSize, grid_max applied), or 0 when
+// grid_mode is off, on a null handle or before the core is up (#697). The grid is drawn only when
+// this is above 1. Plain C++, no Python; main thread only (it walks the scene's objects).
+int PyMOLBridge_GridSize(PyMOLHandle instance);
 
 // --- Getters ---
 void *PyMOLBridge_GetGlobals(PyMOLHandle instance);

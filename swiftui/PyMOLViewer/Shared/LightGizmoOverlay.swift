@@ -67,6 +67,8 @@ final class LightGizmoUIState: ObservableObject {
         var readout: String?
         /// The overlay's size in points, nil until it appears.
         var viewSize: CGSize?
+        /// The grid cell the gizmo shows in (#697), set by the viewport.
+        var gridCell: LightGizmoGridCell?
         /// The edges covered by chrome drawn over the viewport (#693).
         var chromeInsets = LightGizmoInsets.zero
         /// The pointer of the drag shown (top-left points), nil with no drag:
@@ -116,6 +118,21 @@ final class LightGizmoUIState: ObservableObject {
     var pointer: CGPoint? {
         get { values.pointer }
         set { update(\.pointer, newValue) }
+    }
+
+    var gridCell: LightGizmoGridCell? {
+        get { values.gridCell }
+        set { update(\.gridCell, newValue) }
+    }
+
+    /// Grid mode (#697): show the gizmo in `cell` (the one under the pointer) unless `held` (a gizmo
+    /// press, scroll or pinch is under way: it stays in the cell it began in). One publish at most.
+    /// True when the gizmo moved into `cell` (it was not drawn there before).
+    @discardableResult
+    func follow(_ cell: LightGizmoGridCell?, held: Bool) -> Bool {
+        guard !held, cell != values.gridCell else { return false }
+        update(\.gridCell, cell)
+        return cell != nil
     }
 
     /// The drag state of `session` (nil or ended: none) with the readout of
@@ -204,7 +221,8 @@ extension View {
 // MARK: - The overlay
 
 /// The gizmo over the viewport. Draws nothing unless the layout exists
-/// (Lights mode active with lights and eye data, not busy, not grid mode).
+/// (Lights mode active with lights and eye data, not busy, not grid mode
+/// without a cell).
 /// Observes the controller (selection, rig), its eye state (every published
 /// frame moves the knobs), its facing state (the VoiceOver values) and the UI
 /// state (hover, drag, readout).
@@ -214,7 +232,8 @@ struct LightGizmoOverlay: View {
     @ObservedObject var facing: LightsFacingState
     @ObservedObject var ui: LightGizmoUIState
     var style: LightsBarStyle
-    /// `grid_mode` is on (the scene poll's): the gizmo hides.
+    /// `grid_mode` is on (the scene poll's): the gizmo shows in `ui.gridCell`,
+    /// or hides when nil (#697).
     var gridMode: Bool
     /// The scene's Shadows switch as last read (nil: unknown, no hint).
     var sceneShadowsOn: Bool?
@@ -251,7 +270,8 @@ struct LightGizmoOverlay: View {
                     .accessibilityHidden(true)
                 if let layout = LightGizmoLayout.make(
                     LightGizmoInputs(controller: controller, viewSize: size, gridMode: gridMode,
-                                     sceneShadowsOn: sceneShadowsOn, chromeInsets: ui.chromeInsets),
+                                     gridCell: ui.gridCell, sceneShadowsOn: sceneShadowsOn,
+                                     chromeInsets: ui.chromeInsets),
                     metrics: metrics) {
                     gizmo(layout, state: LightGizmoState(controller, sceneShadowsOn: sceneShadowsOn))
                 }
