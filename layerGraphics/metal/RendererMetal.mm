@@ -3630,6 +3630,20 @@ static float3 rt_rig_hit_shadowed(constant LightRigU& rig, constant RTU& u,
   return light_finish(shaded + base * t.diffuse + t.specular, rig.tone.x);
 }
 
+// The metallic tint of a traced reflection (#729): the surface's raster
+// colour at 1.6x, the classic strength. The classic composite clamps each
+// channel, so a bright surface tints toward white. Under an HDR rig
+// (kRTLightRig && kLightHdr) it is instead scaled down by its largest
+// channel to at most 1: the same tint wherever no channel passes 1, and the
+// surface's own hue near a highlight, so the reflection keeps its chroma as
+// the rig's light does under T. colRaw is an 8-bit colour, never negative.
+static float3 rt_reflect_tint(float3 colRaw) {
+  const float3 t = colRaw * 1.6;
+  if (kRTLightRig && kLightHdr)
+    return t / max(max(t.r, max(t.g, t.b)), 1.0);
+  return saturate(t);
+}
+
 // Transmittance along a ray through the transparent structure: the product of
 // (1 - alpha) over the transparent reps it crosses. Each occurrence (one
 // recorded draw: one rep of one object) counts ONCE however many of its faces
@@ -4209,7 +4223,7 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
         reflAcc += reflCol;
       }
       float3 reflCol = reflAcc / float(NS);
-      reflCol *= mix(float3(1.0), saturate(colRaw * 1.6), tint);
+      reflCol *= mix(float3(1.0), rt_reflect_tint(colRaw), tint);
       float NdotV = saturate(dot(nSelf, -viewM));
       float F = F0 + (1.0 - F0) * pow(1.0 - NdotV, 5.0);
       col = mix(col, reflCol, F);
