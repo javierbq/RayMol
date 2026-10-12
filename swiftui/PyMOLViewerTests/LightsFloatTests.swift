@@ -943,6 +943,20 @@ final class LightsFieldFocusReportTests: XCTestCase {
         XCTAssertEqual(LightsFloatLayout.trailingBottomPadding(clearance: clearance, focused: true, keyboardOverlap: 20), clearance)
     }
 
+    func testOnlyADockedKeyboardLiftsTheColumn() {
+        let screen = CGRect(x: 0, y: 0, width: 1194, height: 834)
+        // Docked: reaches the screen's bottom edge.
+        XCTAssertTrue(LightsKeyboardDock.isDocked(keyboard: CGRect(x: 0, y: 434, width: 1194, height: 400),
+                                                  screen: screen))
+        // The floating mini keyboard and an undocked (split) one end above it.
+        XCTAssertFalse(LightsKeyboardDock.isDocked(keyboard: CGRect(x: 400, y: 300, width: 320, height: 250),
+                                                   screen: screen))
+        XCTAssertFalse(LightsKeyboardDock.isDocked(keyboard: CGRect(x: 0, y: 200, width: 1194, height: 400),
+                                                   screen: screen))
+        // An empty frame (some floating keyboards report one) is no keyboard.
+        XCTAssertFalse(LightsKeyboardDock.isDocked(keyboard: .zero, screen: screen))
+    }
+
     func testABottomTrailingCardOnlyTakesTheRoomTheLiftLeaves() {
         let gap = LightsFloatMetrics.gap
         // Unlifted: the card's height and the gap, as before #725.

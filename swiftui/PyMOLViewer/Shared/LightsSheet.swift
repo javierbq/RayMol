@@ -1134,8 +1134,17 @@ struct LightsColourPalette: View {
 
 // MARK: - The keyboard (iOS)
 
+/// Whether a keyboard frame is docked at the bottom of the screen (#725):
+/// not empty and reaching the screen's bottom edge. A floating or undocked
+/// iPad keyboard is not, and covers no bottom band. Pure.
+enum LightsKeyboardDock {
+    static func isDocked(keyboard: CGRect, screen: CGRect) -> Bool {
+        !keyboard.isEmpty && keyboard.maxY >= screen.maxY - 1
+    }
+}
+
 /// The keyboard's top edge in the window's coordinates, nil while it is
-/// hidden (iOS only; nothing on macOS). Read from the keyboard's frame
+/// hidden or not docked (iOS only; nothing on macOS). Read from the keyboard's frame
 /// notifications, converted from screen coordinates (an iPad Slide Over
 /// window is offset).
 struct LightsKeyboardTopReader: ViewModifier {
@@ -1147,6 +1156,9 @@ struct LightsKeyboardTopReader: ViewModifier {
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) {
                 note in
                 guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+                // A floating or undocked iPad keyboard (#725) covers no
+                // bottom band: no overlap then, like a hidden one.
+                guard Self.isDocked(frame) else { top = nil; return }
                 top = Self.windowY(screenY: frame.minY)
             }
             .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
@@ -1158,13 +1170,26 @@ struct LightsKeyboardTopReader: ViewModifier {
     }
 
     #if os(iOS)
+    /// The keyboard's frame (screen coordinates) is docked: not empty and
+    /// reaching the screen's bottom edge.
     @MainActor
-    private static func windowY(screenY: CGFloat) -> CGFloat {
-        let window = UIApplication.shared.connectedScenes
+    private static func isDocked(_ frame: CGRect) -> Bool {
+        guard !frame.isEmpty else { return false }
+        let screen = keyWindow?.screen.bounds ?? frame
+        return LightsKeyboardDock.isDocked(keyboard: frame, screen: screen)
+    }
+
+    @MainActor
+    private static var keyWindow: UIWindow? {
+        UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
             .flatMap(\.windows)
             .first { $0.isKeyWindow }
-        guard let window else { return screenY }
+    }
+
+    @MainActor
+    private static func windowY(screenY: CGFloat) -> CGFloat {
+        guard let window = keyWindow else { return screenY }
         return window.convert(CGPoint(x: 0, y: screenY), from: window.screen.coordinateSpace).y
     }
     #endif
