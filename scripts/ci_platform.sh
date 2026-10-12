@@ -10,7 +10,8 @@
 #
 # SIGNALS, both listed by Apple as "always available" to custom build scripts:
 #   CI_PRODUCT_PLATFORM  "iOS" | "macOS" | ...  the platform of the current action
-#   CI_XCODE_SCHEME      the scheme the action uses (PyMOLViewer_iOS / _macOS)
+#   CI_XCODE_SCHEME      the scheme the action uses: PyMOLViewer_iOS,
+#                        LightsUITests_iOS, UITests_iOS or PyMOLViewer_macOS
 # Either one is enough; when both are present they must agree.
 #
 # NEITHER PRESENT -> iOS, with a warning. Before the macOS workflow existed this
@@ -37,10 +38,10 @@ esac
 
 from_scheme=""
 case "$S" in
-  "")                ;;
-  PyMOLViewer_iOS)   from_scheme=iOS ;;
-  PyMOLViewer_macOS) from_scheme=macOS ;;
-  *) echo "ERROR: unsupported CI_XCODE_SCHEME='$S' (expected PyMOLViewer_iOS or PyMOLViewer_macOS)" >&2; exit 1 ;;
+  "")                                           ;;
+  PyMOLViewer_iOS|LightsUITests_iOS|UITests_iOS) from_scheme=iOS ;;
+  PyMOLViewer_macOS)                            from_scheme=macOS ;;
+  *) echo "ERROR: unsupported CI_XCODE_SCHEME='$S' (expected PyMOLViewer_iOS, LightsUITests_iOS, UITests_iOS or PyMOLViewer_macOS)" >&2; exit 1 ;;
 esac
 
 if [ -n "$from_platform" ] && [ -n "$from_scheme" ] && [ "$from_platform" != "$from_scheme" ]; then

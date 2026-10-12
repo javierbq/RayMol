@@ -2,14 +2,18 @@
 # ci_post_clone.sh — Xcode Cloud post-clone: stage everything xcodebuild needs
 # that is not in the repository, then build the C++ core.
 #
-# Serves TWO workflows, because Apple runs this one script for every action:
-#   iOS Beta (master)    PyMOLViewer_iOS   — deps_ios artifact + device core
-#   macOS Beta (master)  PyMOLViewer_macOS — deps_macos + Metal-only core, and
+# Serves TWO workflows (and three action consumers), because Apple runs this
+# one script for every action:
+#   iOS Beta (master)    Archive action (PyMOLViewer_iOS)   — deps_ios artifact + device core
+#                        Test action    (LightsUITests_iOS) — deps_ios artifact + simulator core
+#                        (test-without-building phase needs no core or deps)
+#   macOS Beta (master)  Archive action (PyMOLViewer_macOS) — deps_macos + Metal-only core, and
 #                        the project rewritten to its Mac App Store variant
 #                        (no Sparkle, RAYMOL_MAS_RESTRICTED): TestFlight for Mac
 #                        only accepts sandboxed App Store builds
-# scripts/ci_platform.sh decides which. Steps marked [iOS] / [macOS] run for
-# that platform only; everything else is shared.
+# scripts/ci_platform.sh decides the platform; scripts/ci_ios_slice.sh decides
+# the iOS core slice (device, simulator, or none). Steps marked [iOS] / [macOS]
+# run for that platform only; everything else is shared.
 #
 # Apple's environment, all of which this script depends on:
 #   * runs with swiftui/ci_scripts as the working directory, so we cd to the repo
@@ -30,6 +34,13 @@ REPO="javierbq/RayMol"
 
 PLATFORM="$(bash scripts/ci_platform.sh)"
 echo "== platform: $PLATFORM (CI_PRODUCT_PLATFORM='${CI_PRODUCT_PLATFORM:-}' CI_XCODE_SCHEME='${CI_XCODE_SCHEME:-}') =="
+
+if [ "$PLATFORM" = iOS ]; then
+  SLICE="$(bash scripts/ci_ios_slice.sh)"
+  echo "== slice: $SLICE (CI_XCODEBUILD_ACTION='${CI_XCODEBUILD_ACTION:-}') =="
+else
+  SLICE=""
+fi
 
 echo "== 1/7  Allow the mlx-swift build-tool plugin =="
 # Both platforms: Design mode links MPNNKit — and so mlx-swift — into the macOS
@@ -69,6 +80,11 @@ for KEY in IDESkipPackagePluginFingerprintValidatation IDESkipMacroFingerprintVa
     exit 1; }
   echo "  $KEY=1"
 done
+
+if [ "$SLICE" = "none" ]; then
+  echo "== test-without-building runs the products built by build-for-testing; skipping deps, version stamp, xcodegen, and core =="
+  exit 0
+fi
 
 echo "== 2/7  Toolchain =="
 # The COMPLETE set the iOS core build needs. Derived by reading
@@ -224,11 +240,15 @@ echo "== 5/7  Regenerate the Xcode project =="
 ( cd swiftui && xcodegen generate )
 
 if [ "$PLATFORM" = iOS ]; then
-  echo "== 6/7  [iOS] Build libpymol_core.a (device) =="
-  bash swiftui/build_ios.sh device
+  echo "== 6/7  [iOS] Build libpymol_core.a ($SLICE) =="
+  if [ "$SLICE" = device ]; then
+    bash swiftui/build_ios.sh device
+  else
+    bash swiftui/build_ios.sh
+  fi
 
   echo "== 7/7  [iOS] Assert build inputs before xcodebuild =="
-  bash scripts/assert_ios_build_inputs.sh "$CI_PRIMARY_REPOSITORY_PATH"
+  bash scripts/assert_ios_build_inputs.sh "$CI_PRIMARY_REPOSITORY_PATH" "$SLICE"
 else
   echo "== 6/7  [macOS] Build libpymol_core.a (Metal-only, arm64) =="
   # CLEAN=1 is what make_dmg.sh and the Mac App Store recipe use: an incremental
@@ -241,4 +261,8 @@ else
   bash scripts/assert_macos_build_inputs.sh "$CI_PRIMARY_REPOSITORY_PATH"
 fi
 
-echo "ci_post_clone OK — $PLATFORM $MKT ($CI_BUILD_NUMBER), $DEPS_ID"
+if [ "$PLATFORM" = iOS ]; then
+  echo "ci_post_clone OK — $PLATFORM ($SLICE) $MKT ($CI_BUILD_NUMBER), $DEPS_ID"
+else
+  echo "ci_post_clone OK — $PLATFORM $MKT ($CI_BUILD_NUMBER), $DEPS_ID"
+fi
