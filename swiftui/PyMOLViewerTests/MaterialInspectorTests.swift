@@ -1,5 +1,6 @@
 import XCTest
 import SwiftUI
+import ImageIO
 @testable import RayMol
 
 /// The Inspector's OBJECT-wide material controls (#498): the peel tri-state
@@ -171,7 +172,7 @@ final class MaterialInspectorTests: XCTestCase {
     }
 
     /// The gate that keeps Custom off a layer that has degraded to `default`
-    /// (glass on ball-and-stick): knobs come from the DRAWN
+    /// (a material id from a newer build): knobs come from the DRAWN
     /// material, and only when it is the one the setting names.
     func testCustomIsOfferedOnlyForTheMaterialTheLayerDraws() {
         let rough = MaterialKnobInfo(suffix: "rough", label: "Roughness", min: 0, max: 1)
@@ -523,5 +524,223 @@ final class SphereGlassGlintTests: XCTestCase {
         setupScene(dots: true)
         try assertClassicGlints(dots: true)
         try assertKeyLightGlint(dots: true)
+    }
+}
+
+/// Glass and frosted glass on ball-and-stick spheres (issue #834). The same
+/// scene as `SphereGlassRenderTests`, but the red 1 A ball at the centre is a
+/// `stick_ball` of a stick rep (radius = ratio 20 x stick_radius 0.05); the
+/// thin stick runs off to the right through a sliver of the centre box.
+@MainActor
+final class StickBallGlassRenderTests: XCTestCase {
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var sceneBuilt = false
+    private var savedView: [Float]?
+
+    override func tearDown() {
+        if sceneBuilt {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.delete('sb834')
+            _c.set('bg_rgb', globals().pop('_sb834_bg', [0.0, 0.0, 0.0]))
+            _c.set('ray_opaque_background', globals().pop('_sb834_ray_bg', 1))
+            for _n in globals().pop('_sb834_enabled', []):
+                _c.enable(_n)
+            """)
+            sceneBuilt = false
+        }
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        super.tearDown()
+    }
+
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            throw XCTSkip("the PyMOL engine did not come up under the test host")
+        }
+    }
+
+    private func setupScene() {
+        savedView = engine.captureView()
+        sceneBuilt = true
+        engine.runPython("""
+        from pymol import cmd as _c
+        _sb834_enabled = _c.get_names('objects', enabled_only=1)
+        _sb834_bg = list(_c.get_setting_tuple('bg_rgb')[1])
+        _sb834_ray_bg = _c.get_setting_int('ray_opaque_background')
+        for _n in _sb834_enabled:
+            _c.disable(_n)
+        _c.pseudoatom('sb834', name='A1', pos=[0.0, 0.0, 0.0])
+        _c.pseudoatom('sb834', name='A2', pos=[3.5, 0.0, 0.0])
+        _c.bond('sb834 and name A1', 'sb834 and name A2')
+        _c.show_as('sticks', 'sb834')
+        _c.color('red', 'sb834')
+        _c.set('stick_radius', 0.05, 'sb834')
+        _c.set('stick_ball', 1, 'sb834')
+        _c.set('stick_ball_ratio', 20.0, 'sb834')
+        _c.set('bg_rgb', [0.0, 0.0, 1.0])
+        _c.set('ray_opaque_background', 1)
+        _c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                     0.0, 0.0, -12.0, 0.0, 0.0, 0.0, 5.0, 100.0, -20.0))
+        """)
+    }
+
+    private func render(_ material: String) throws -> [UInt8] {
+        let w = 400, h = 300
+        engine.runPython("from pymol import cmd as _c\n_c.set('stick_material', '\(material)', 'sb834')")
+        let png = NSTemporaryDirectory() + "sb834_\(material)_\(UUID().uuidString).png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: w, height: h, rayTraced: 0)
+        guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: png) as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            XCTFail("no export written (\(material))")
+            return []
+        }
+        XCTAssertEqual(image.width, w)
+        XCTAssertEqual(image.height, h)
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return rgba
+    }
+
+    /// Mean RGB over the 40x40 box at the image centre.
+    private func centreBoxMeans(_ rgba: [UInt8]) -> (r: Double, g: Double, b: Double) {
+        boxMeans(rgba, x0: 180, y0: 130, size: 40)
+    }
+
+    /// Mean RGB over the `size` x `size` box with top-left corner `x0`, `y0`
+    /// in a 400x300 image.
+    private func boxMeans(_ rgba: [UInt8], x0: Int, y0: Int, size: Int,
+                          width: Int = 400) -> (r: Double, g: Double, b: Double) {
+        var sumR = 0.0, sumG = 0.0, sumB = 0.0
+        for y in y0..<(y0 + size) {
+            for x in x0..<(x0 + size) {
+                let idx = (y * width + x) * 4
+                sumR += Double(rgba[idx])
+                sumG += Double(rgba[idx + 1])
+                sumB += Double(rgba[idx + 2])
+            }
+        }
+        let total = Double(size * size)
+        return (sumR / total, sumG / total, sumB / total)
+    }
+
+    func testGlassStickBallShowsTheBackgroundThrough() throws {
+        try requireEngine()
+        setupScene()
+
+        let defPixels = try render("default")
+        let defMeans = centreBoxMeans(defPixels)
+        XCTAssertLessThan(defMeans.b, 40, "default centre box mean B should be < 40")
+        XCTAssertGreaterThan(defMeans.r, 120, "default centre box mean R should be > 120")
+
+        let glassPixels = try render("glass")
+        let glassMeans = centreBoxMeans(glassPixels)
+        print("834-centre default \(defMeans) glass \(glassMeans)")
+        XCTAssertGreaterThanOrEqual(glassMeans.b, defMeans.b + 80, "glass centre box mean B should be >= default B + 80")
+        XCTAssertGreaterThan(glassMeans.b, glassMeans.r, "glass centre box mean B should exceed mean R")
+    }
+
+    func testFrostedGlassStickBallDiffersFromClearGlass() throws {
+        try requireEngine()
+        setupScene()
+
+        let clear = try render("glass")
+        let frost = try render("frosted_glass")
+        let totalPixels = 400 * 300
+        var diffCount = 0
+        for i in 0..<totalPixels {
+            let dr = abs(Int(clear[i * 4]) - Int(frost[i * 4]))
+            let dg = abs(Int(clear[i * 4 + 1]) - Int(frost[i * 4 + 1]))
+            let db = abs(Int(clear[i * 4 + 2]) - Int(frost[i * 4 + 2]))
+            let maxDiff = max(dr, max(dg, db))
+            if maxDiff > 6 {
+                diffCount += 1
+            }
+        }
+        print("834-frost-diff \(diffCount)")
+        XCTAssertGreaterThan(diffCount, 1000, "frosted glass should differ from clear glass in > 1000 pixels")
+    }
+
+    /// Mean RGB over a 20x20 box 20 px right of and below the image centre:
+    /// inside the ball but clear of the sticks along the axes.
+    private func offAxisBoxMeans(_ rgba: [UInt8]) -> (r: Double, g: Double, b: Double) {
+        boxMeans(rgba, x0: 220, y0: 170, size: 20)
+    }
+
+    /// Gives the centre atom A1 three more bonds (four in all), in the image
+    /// plane, so RepCylBond meets its ball once per bond.
+    private func addThreeBondsToTheCentre() {
+        engine.runPython("""
+        from pymol import cmd as _c
+        for _i, _p in enumerate(([-3.5, 0.0, 0.0], [0.0, 3.5, 0.0], [0.0, -3.5, 0.0])):
+            _c.pseudoatom('sb834', name='E%d' % _i, pos=_p)
+            _c.bond('sb834 and name A1', 'sb834 and name E%d' % _i)
+        _c.show_as('sticks', 'sb834')
+        _c.color('red', 'sb834')
+        """)
+    }
+
+    /// RepCylBond emits an atom's ball once per bond and skipped a repeat only
+    /// when it was strictly smaller, so an atom with four bonds drew four
+    /// coincident glass balls: under OIT they stack to about 1 - 0.85^4, half
+    /// opaque, where a one-bond atom's ball is 15%. A glass ball has to look
+    /// the same whatever its bond count.
+    func testAGlassBallLooksTheSameWhateverItsBondCount() throws {
+        try requireEngine()
+        setupScene()
+
+        let one = offAxisBoxMeans(try render("glass"))
+        addThreeBondsToTheCentre()
+        let four = offAxisBoxMeans(try render("glass"))
+        print("834-bonds one \(one) four \(four)")
+        XCTAssertGreaterThan(one.b, one.r, "the one-bond glass ball shows the background")
+        XCTAssertEqual(four.r, one.r, accuracy: 8, "a four-bond ball is no redder")
+        XCTAssertEqual(four.b, one.b, accuracy: 8, "a four-bond ball is no less clear")
+    }
+
+    /// The printed hashes are compared by hand against the same test run on a
+    /// master core (see the PR); they are not pinned here, because the exact
+    /// bytes depend on the GPU. Jelly is hashed with one bond only: it is
+    /// translucent, so its four-bond ball changes on purpose (one ball, not
+    /// four stacked).
+    func testNonGlassStickBallsAreUnchanged() throws {
+        try requireEngine()
+        setupScene()
+
+        // One bond on the centre atom, then four: the four-bond scene covers
+        // the opaque balls RepCylBond no longer emits twice (#834).
+        for bonds in [1, 4] {
+            if bonds == 4 { addThreeBondsToTheCentre() }
+            var firstDefault: [UInt8] = []
+            let opaque = ["default", "matte", "plastic", "metallic"]
+            for name in bonds == 1 ? opaque + ["jelly"] : opaque {
+                let px = try render(name)
+                if name == "default" {
+                    firstDefault = px
+                }
+                var hash: UInt64 = 0xcbf29ce484222325
+                for byte in px { hash = (hash ^ UInt64(byte)) &* 0x100000001b3 }
+                print("834-hash \(bonds)-bond \(name) \(String(hash, radix: 16))")
+            }
+
+            _ = try render("glass")
+            let secondDefault = try render("default")
+            XCTAssertEqual(firstDefault, secondDefault, "second default render must be byte-identical to first default render (\(bonds) bonds)")
+        }
     }
 }

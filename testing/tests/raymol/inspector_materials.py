@@ -311,16 +311,19 @@ class TestCustomMaterial(testing.PyMOLTestCase):
         self.assertAlmostEqual(m['knobs']['knob5'], 0.25, places=4)
 
     def testADegradedLayerDrawsDefaultAndOffersNoKnobs(self):
-        """Glass on a ball-and-stick degrades to `default`: the layer draws
-        material 0, so the Inspector must not offer Custom there."""
-        cmd.set('stick_material', 'glass', 'm1')
-        cmd.set('stick_ball', 1, 'm1')
+        """A layer whose material id this build does not implement draws
+        `default`: the layer draws material 0, so the Inspector must not offer
+        Custom there. Glass with stick_ball 1 draws glass (#834)."""
+        cmd.set('stick_material', 99, 'm1')
+        self.assertEqual(cmd.get_setting_int('stick_material', 'm1'), 99)
+        self.assertNotIn(99, [i for i, _n in setting.get_material_names(0)])
         cmd.set('stick_material_rough', 0.5, 'm1')
         m = self.rep()['material']
         self.assertEqual(m['drawn'], 0)
         self.assertEqual(m['custom'], [])
-        cmd.set('stick_ball', 0, 'm1')
         by_name = {n: i for i, n in setting.get_material_names(1)}
+        cmd.set('stick_material', 'glass', 'm1')
+        cmd.set('stick_ball', 1, 'm1')
         self.assertEqual(self.rep()['material']['drawn'], by_name['glass'])
 
     def testALeftoverOverrideIsNotCustomButIsStillCleared(self):
