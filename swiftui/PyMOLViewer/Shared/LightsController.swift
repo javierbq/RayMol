@@ -363,6 +363,14 @@ final class LightsController: ObservableObject {
     /// lights already cast one. The inspector shows a notice while it is set;
     /// the next edit, a selection change or leaving the mode clears it.
     @Published private(set) var shadowRefused = false
+    /// Refused shadow writes so far (#672), a repeated press while the notice
+    /// already shows included. Never reset.
+    private(set) var shadowRefusals = 0
+    /// Sends once per refused shadow write, after `shadowRefused` is set: the
+    /// inspector posts its VoiceOver announcement on each. Not `@Published`:
+    /// a repeated refusal leaves the published state as it was and must not
+    /// republish it.
+    let shadowRefusalEvents = PassthroughSubject<Void, Never>()
     /// Bumped once each time a direct-manipulation gesture begins on the
     /// selected light (`beginGesture()`), never per tick. The inspector's
     /// Orbit and Pitch fields observe it and drop typed text.
@@ -896,6 +904,10 @@ final class LightsController: ObservableObject {
             noteEdit(key, ifChangedFrom: mirrorBefore)
         }
         noteShadowRefused(refusedShadow)
+        if refusedShadow {
+            shadowRefusals += 1
+            shadowRefusalEvents.send()
+        }
         return result
     }
 

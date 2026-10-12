@@ -1137,3 +1137,139 @@ final class LightsExposureRowTests: XCTestCase {
         XCTAssertEqual(height(nil), without, accuracy: 0.5)
     }
 }
+
+// MARK: - VoiceOver announcement (#672)
+
+@MainActor
+final class LightsInspectorAnnouncementTests: XCTestCase {
+    private var originalAnnounce: ((String) -> Void)?
+    private var announced: [String] = []
+    private var windows: [NSWindow] = []
+
+    override func setUp() {
+        super.setUp()
+        announced = []
+        originalAnnounce = LightsInspectorState.announce
+        LightsInspectorState.announce = { [weak self] text in
+            self?.announced.append(text)
+        }
+    }
+
+    override func tearDown() {
+        if let original = originalAnnounce {
+            LightsInspectorState.announce = original
+        }
+        for window in windows {
+            window.orderOut(nil)
+        }
+        windows = []
+        super.tearDown()
+    }
+
+    private func hostOffscreen<V: View>(_ view: V) -> NSHostingView<V> {
+        let host = NSHostingView(rootView: view)
+        let window = NSWindow(contentRect: NSRect(origin: NSPoint(x: -20000, y: -20000),
+                                                  size: NSSize(width: 320, height: 600)),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        windows.append(window)
+        host.layoutSubtreeIfNeeded()
+        return host
+    }
+
+    private func settle() {
+        for window in windows {
+            window.contentView?.layoutSubtreeIfNeeded()
+        }
+        RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+        for window in windows {
+            window.contentView?.layoutSubtreeIfNeeded()
+        }
+    }
+
+    private func fixture() -> (FakeRigStore, LightsController) {
+        let store = FakeRigStore()
+        store.setRig(["key", "fill", "rim"])
+        let controller = LightsController(seams: store.seams)
+        controller.begin()
+        store.lights.append(.init(name: "light4"))
+        for i in 0..<3 { store.lights[i].shadow = true }
+        controller.refresh()
+        controller.select(name: "light4")
+        return (store, controller)
+    }
+
+    func testTheAnnouncementIsTheNotice() {
+        XCTAssertEqual(LightsInspectorState.shadowCapAnnouncement,
+                       "At most 3 lights cast shadows. Turn one off first.")
+    }
+
+    func testEveryRefusedShadowWriteBumpsTheCounter() {
+        let (_, controller) = fixture()
+        var events = 0
+        let sink = controller.shadowRefusalEvents.sink { events += 1 }
+        defer { sink.cancel() }
+
+        XCTAssertEqual(controller.shadowRefusals, 0)
+        XCTAssertFalse(controller.shadowRefused)
+
+        XCTAssertEqual(controller.setShadow(true), .refused)
+        XCTAssertEqual(controller.shadowRefusals, 1)
+        XCTAssertTrue(controller.shadowRefused)
+
+        XCTAssertEqual(controller.setShadow(true), .refused)
+        XCTAssertEqual(controller.shadowRefusals, 2)
+        XCTAssertTrue(controller.shadowRefused)
+
+        XCTAssertEqual(controller.set(.intensity, 1.5), .ok)
+        XCTAssertEqual(controller.shadowRefusals, 2)
+        XCTAssertFalse(controller.shadowRefused)
+
+        controller.select(name: "rim")
+        XCTAssertEqual(controller.shadowRefusals, 2)
+        XCTAssertFalse(controller.shadowRefused)
+        XCTAssertEqual(controller.setShadow(false), .ok)
+        XCTAssertEqual(controller.shadowRefusals, 2)
+        XCTAssertEqual(events, 2, "one event per refused write, none for the rest")
+    }
+
+    func testTheCardAnnouncesEachRefusal() {
+        let (_, controller) = fixture()
+        let style = LightsInspectorSnapshotTests.style(dark: false)
+        _ = hostOffscreen(LightsInspector(controller: controller, style: style))
+        settle()
+        XCTAssertEqual(announced, [])
+
+        XCTAssertEqual(controller.setShadow(true), .refused)
+        settle()
+        XCTAssertEqual(announced, [LightsInspectorState.shadowCapNotice])
+
+        XCTAssertEqual(controller.setShadow(true), .refused)
+        settle()
+        XCTAssertEqual(announced, [LightsInspectorState.shadowCapNotice,
+                                   LightsInspectorState.shadowCapNotice])
+
+        XCTAssertEqual(controller.set(.intensity, 1.5), .ok)
+        settle()
+        XCTAssertEqual(announced, [LightsInspectorState.shadowCapNotice,
+                                   LightsInspectorState.shadowCapNotice])
+    }
+
+    func testOnlyTheHeaderAnnouncesOnTheSheet() {
+        let (_, controller) = fixture()
+        let style = LightsInspectorSnapshotTests.style(dark: false)
+        _ = hostOffscreen(
+            VStack {
+                LightsInspector(controller: controller, style: style, presentation: .header)
+                LightsInspector(controller: controller, style: style, presentation: .rows)
+            }
+        )
+        settle()
+        XCTAssertEqual(announced, [])
+
+        XCTAssertEqual(controller.setShadow(true), .refused)
+        settle()
+        XCTAssertEqual(announced, [LightsInspectorState.shadowCapNotice])
+    }
+}
