@@ -82,7 +82,7 @@ def without_finite_739(code):
 PRE_739 = {
     'kMaterialSrc': 'f4eb7866dc2af793',
     'kAirSrc': '4d768488fee43dc5',  # #686: per-cell air
-    'kRTSrc': '7fc20c535d9b044d',  # #732: AO in scene units under an HDR rig; #709: traced reflection hits take their material's studio response
+    'kRTSrc': '5d6587ba4f787bcb',  # #732: AO in scene units under an HDR rig; #709: traced reflection hits take their material's studio response; #852: AO and the cast shadow in scene units under an HDR rig
 }
 FINITE_COUNTS = {
     'kMaterialSrc': {'helpers': 2, 'finite3': 2, 'finite': 2},

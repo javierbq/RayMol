@@ -2708,3 +2708,222 @@ final class ReflectionHitMaterialTests: XCTestCase {
         XCTAssertLessThanOrEqual(rasterDelta, 3, "the raster mirror changed with the target's material")
     }
 }
+
+/// Issue #852: Cast shadows apply in scene units under an HDR light rig.
+/// Under an HDR rig, the whole-pixel cast shadow factor (both shadow map and
+/// ray-traced shadow) darkens scene light together with AO before the tone curve T:
+///   color = T(Tinv(color) * (ao * shade))
+/// rather than multiplying the tone-mapped display colour directly (color *= shade).
+/// Below T's knee (0.55), both T and Tinv are the identity so the calculation matches
+/// color * ao * shade exactly. In a cast shadow, occluding the scene light avoids
+/// darkening after compression, so an exposure blend gives e3 == T(3 * e1).
+@MainActor
+final class HdrCastShadowTests: XCTestCase {
+    private static let width = 400
+    private static let height = 300
+
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var sceneBuilt = false
+    private var savedView: [Float]?
+
+    override func tearDown() {
+        if sceneBuilt {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.delete('sh852*')
+            for _n, _v in globals().pop('_sh852_settings', {}).items():
+                _c.set(_n, _v)
+            _c.set_lights(globals().pop('_sh852_rig', None))
+            for _n in globals().pop('_sh852_enabled', []):
+                _c.enable(_n)
+            """)
+            sceneBuilt = false
+        }
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        super.tearDown()
+    }
+
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            throw XCTSkip("the PyMOL engine did not come up under the test host")
+        }
+    }
+
+    private func buildScene() {
+        savedView = engine.captureView()
+        sceneBuilt = true
+        engine.runPython("""
+        from pymol import cmd as _c
+        _sh852_enabled = _c.get_names('objects', enabled_only=1)
+        _sh852_settings = {_n: _c.get_setting_tuple(_n)[1][0] for _n in (
+            'bg_rgb', 'depth_cue', 'metal_shadows', 'metal_ssao', 'metal_msaa',
+            'metal_rt_transparent', 'metal_temporal_ao', 'metal_rt_ao_intensity',
+            'metal_rt_ao_radius', 'metal_light_hdr', 'metal_exposure',
+            'metal_rt_shadows', 'metal_rt_shadow_intensity', 'light')}
+        _sh852_settings['bg_rgb'] = list(_c.get_setting_tuple('bg_rgb')[1])
+        _sh852_settings['light'] = list(_c.get_setting_tuple('light')[1])
+        _sh852_rig = _c.get_lights()
+        for _n in _sh852_enabled:
+            _c.disable(_n)
+        _c.set('bg_rgb', [0.0, 0.0, 0.0])
+        _c.set('depth_cue', 0)
+        _c.set('metal_msaa', 0)
+        _c.set('metal_temporal_ao', 0)
+        _c.set('metal_rt_transparent', 0)
+        _c.set('metal_light_hdr', 1)
+        _c.set('metal_exposure', 1.0)
+        _c.set('metal_ssao', 0)
+        _c.set('metal_rt_ao_intensity', 0.0)
+        _c.set('metal_shadows', 0)
+        _c.set('metal_rt_shadows', 1)
+        _c.set('metal_rt_shadow_intensity', 0.45)
+        _c.set('light', [-0.4, -0.4, -1.0])
+
+        _c.pseudoatom('sh852r', pos=[0.0, 0.0, 0.0], vdw=5.0)
+        _c.show_as('spheres', 'sh852r')
+        _c.color('grey50', 'sh852r')
+
+        _c.pseudoatom('sh852o', pos=[2.78, 2.78, 11.96], vdw=1.5)
+        _c.show_as('spheres', 'sh852o')
+        _c.color('grey50', 'sh852o')
+
+        _c.set_lights({'enabled': True, 'ambient': 0.2, 'centre': [0, 0, 0], 'size': 20.0,
+                       'lights': [{'name': 'key', 'anchor': 'camera', 'orbit': -20.0, 'pitch': 15.0,
+                                   'radius': 3.0, 'beam': 80.0, 'highlight': 0.0, 'shadow': False,
+                                   'intensity': 1.0}]})
+
+        _c.set_view((1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -40, 0, 0, 0, 20, 60, -20))
+        """)
+    }
+
+    private func render(rayTraced: Int) throws -> [UInt8] {
+        let png = NSTemporaryDirectory() + "issue_852_render.png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: Self.width, height: Self.height, rayTraced: rayTraced)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(
+            URL(fileURLWithPath: png) as CFURL, nil), "no export written")
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        XCTAssertEqual(image.width, Self.width)
+        XCTAssertEqual(image.height, Self.height)
+        let w = image.width, h = image.height
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return rgba
+    }
+
+    /// Exact port of light_tone: scale the colour by light_tone_scalar(m) / m.
+    private func T(_ rgb: (Double, Double, Double)) -> (Double, Double, Double) {
+        let knee = 0.55
+        let white = 10.0
+        let m = max(rgb.0, max(rgb.1, rgb.2))
+        if m <= knee {
+            return rgb
+        }
+        if m >= white {
+            let scale = 1.0 / m
+            return (rgb.0 * scale, rgb.1 * scale, rgb.2 * scale)
+        }
+        let s = 1.0 - knee
+        let w = (white - knee) / s
+        let t = (m - knee) / s
+        let scalar = knee + s * t * (1.0 + t / (w * w)) / (1.0 + t)
+        let scale = scalar / m
+        return (rgb.0 * scale, rgb.1 * scale, rgb.2 * scale)
+    }
+
+    private func assertShadowInSceneUnits(rayTraced: Int) throws {
+        // Render noShadow at exposure 1 with metal_shadows 0
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set('metal_shadows', 0)
+        _c.set('metal_exposure', 1.0)
+        """)
+        let noShadow = try render(rayTraced: rayTraced)
+
+        // Then metal_shadows 1; e1 at exposure 1 (for RT render twice and XCTSkip if they differ)
+        engine.runPython("from pymol import cmd as _c\n_c.set('metal_shadows', 1)")
+        let e1: [UInt8]
+        if rayTraced == 1 {
+            let e1a = try render(rayTraced: 1)
+            let e1b = try render(rayTraced: 1)
+            guard e1a == e1b else {
+                throw XCTSkip("two ray-traced frames of the same scene differ: not deterministic here")
+            }
+            e1 = e1a
+        } else {
+            e1 = try render(rayTraced: 0)
+        }
+
+        // e3 at exposure 3
+        engine.runPython("from pymol import cmd as _c\n_c.set('metal_exposure', 3.0)")
+        let e3 = try render(rayTraced: rayTraced)
+
+        // Lit surface pixels the shadow darkens by at least 8 levels, below the
+        // knee once shadowed at exposure 1 (the shadow's fixed 0.45 leaves too
+        // narrow a band if the unshadowed light must be below it as well), and
+        // above the knee at exposure 3. With the shadow in scene units
+        // e1 = L * shade and e3 = T(3 * L * shade) = T(3 * e1); on master
+        // e3 = T(3 * L) * shade, tens of levels darker.
+        var n = 0
+        var maxErr = 0
+        for p in 0..<(Self.width * Self.height) {
+            let offset = p * 4
+            let rNo = Double(noShadow[offset])
+            let gNo = Double(noShadow[offset + 1])
+            let bNo = Double(noShadow[offset + 2])
+            let maxNo = max(rNo, max(gNo, bNo))
+            guard maxNo > 8.0 else { continue }
+
+            let r1 = Double(e1[offset])
+            let g1 = Double(e1[offset + 1])
+            let b1 = Double(e1[offset + 2])
+            let max1 = max(r1, max(g1, b1))
+            guard (maxNo - max1) >= 8.0 else { continue }
+            guard max1 <= 135.0 else { continue }
+            guard (3.0 * max1 / 255.0) >= 0.75 else { continue }
+
+            let pred = T((3.0 * r1 / 255.0, 3.0 * g1 / 255.0, 3.0 * b1 / 255.0))
+            let errR = abs(Int(e3[offset]) - Int(round(pred.0 * 255.0)))
+            let errG = abs(Int(e3[offset + 1]) - Int(round(pred.1 * 255.0)))
+            let errB = abs(Int(e3[offset + 2]) - Int(round(pred.2 * 255.0)))
+            let err = max(errR, max(errG, errB))
+            maxErr = max(maxErr, err)
+            n += 1
+        }
+
+        print("852 rt=\(rayTraced) pixels=\(n) maxErr=\(maxErr)")
+        XCTAssertGreaterThanOrEqual(n, 100, "too few shadow-darkened pixels to test")
+        XCTAssertLessThanOrEqual(maxErr, 4, "the cast shadow did not darken the scene light under the HDR rig: the shadowed pixel is not T(3 * shadowed)")
+    }
+
+    func testShadowMapShadowAppliesInSceneUnitsUnderHdr() throws {
+        try requireEngine()
+        buildScene()
+        try assertShadowInSceneUnits(rayTraced: 0)
+    }
+
+    func testTracedShadowAppliesInSceneUnitsUnderHdr() throws {
+        try requireEngine()
+        guard engine.rayTracingSupported else {
+            throw XCTSkip("Hardware ray tracing is not supported on this device")
+        }
+        buildScene()
+        try assertShadowInSceneUnits(rayTraced: 1)
+    }
+}
+

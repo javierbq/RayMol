@@ -1532,10 +1532,10 @@ class TestRayTracedReflections(LightMSLCase):
         guards = RT_RIG_GUARD.findall(body)
         self.assertEqual(len(guards), 2)
         classic = remove_rig_statements(body, RT_RIG_GUARD)
-        # #732: the HDR AO statement calls T and its inverse (the uniform
-        # aoHdr, not the rig, chooses it); take exactly that one out
-        hdr_ao = re.compile(r'if\s*\(\s*u\.aoHdr\s*>\s*0\.5\s*&&\s*ao\s*<\s*1\.0\s*\)\s*'
-                            r'col\s*=\s*light_tone\(light_tone_inverse\(col\)\s*\*\s*ao\);')
+        # #732, #852: the HDR AO and cast shadow statement calls T and its inverse
+        # (the uniform aoHdr, not the rig, chooses it); take exactly that one out
+        hdr_ao = re.compile(r'if\s*\(\s*u\.aoHdr\s*>\s*0\.5\s*&&\s*ao\s*\*\s*shade\s*<\s*1\.0\s*\)\s*'
+                            r'col\s*=\s*light_tone\(light_tone_inverse\(col\)\s*\*\s*\(ao\s*\*\s*shade\)\);')
         self.assertEqual(len(hdr_ao.findall(classic)), 1)
         classic = hdr_ao.sub('', classic, count=1)
         self.assertFalse(re.findall(r'\brig\b|rt_rig_hit|light_\w+|LightTerms',
