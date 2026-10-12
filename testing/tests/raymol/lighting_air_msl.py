@@ -874,6 +874,9 @@ class TestPostChain(AirMSLCase):
         self.assertIn('setScissorRect:', enc)
         self.assertIn('copyFromTexture:sceneSrc toTexture:dst', enc)
         self.assertIn('MTLLoadActionLoad', enc)
+        # #686: the march scissor takes the texels whose first pixel is the cell's
+        self.assertIn('std::clamp((x0 + 1L) / 2L, 0L, (long)targetW)', enc)
+        self.assertIn('std::clamp((y0 + 1L) / 2L, 0L, (long)targetH)', enc)
         # ... and no maps unless they were rendered, the stand-in then
         self.assertRegex(enc, r'const bool maps = lightShadowsReady\(\);\s*'
                               r'if \(!maps\)\s*rig\.head\[3\] = 0\.0f;')
@@ -1074,6 +1077,8 @@ class TestHalf(AirMSLCase):
         self.assertIn('for (int k = 0; k < 4; ++k)', body)
         # #686: texel reads clamped to cell's half-res rect (tlo, thi)
         self.assertIn('termTex.read(uint2(clamp(int2(b) + o, tlo, thi)))', body)
+        # #686: a texel is the cell's when its first pixel (2t) is
+        self.assertIn('const int2 tlo = int2((lo + 1u) / 2u);', body)
         self.assertIn('const float dz = abs(t.a - z);', body)
         self.assertIn('(o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y)', body)
         self.assertIn('max(kAirDepthSigma * (air.range.y - air.range.x), 1e-3)', body)

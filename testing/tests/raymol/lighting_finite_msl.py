@@ -81,7 +81,7 @@ def without_finite_739(code):
 # and whitespace removed, first 16 hex digits (lighting_air_msl.py digest).
 PRE_739 = {
     'kMaterialSrc': 'f4eb7866dc2af793',
-    'kAirSrc': '966b1609dbdd7a8c',  # #686: per-cell air
+    'kAirSrc': '4d768488fee43dc5',  # #686: per-cell air
     'kRTSrc': 'aa8162e29ff5e6b2',  # #732: AO in scene units under an HDR rig
 }
 FINITE_COUNTS = {

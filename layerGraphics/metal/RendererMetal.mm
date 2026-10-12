@@ -2672,7 +2672,10 @@ fragment float4 post_air_upsample(AirVOut in [[stage_in]],
   const uint2 lo = uint2(cell.xy * float2(size) + 0.5);
   const uint2 hi = max(uint2(cell.zw * float2(size) + 0.5), lo + 1u) - 1u;
   const int2 lim = int2(termTex.get_width(), termTex.get_height()) - 1;
-  const int2 tlo = int2(lo / 2u);
+  // #686: a half-res texel belongs to the cell holding its first pixel
+  // (2t), as encodeAirPass's march scissor does, so a cell never reads
+  // the texel its neighbour marched at an odd boundary.
+  const int2 tlo = int2((lo + 1u) / 2u);
   const int2 thi = max(min(int2(hi / 2u), lim), tlo);
   const float sigma = max(kAirDepthSigma * (air.range.y - air.range.x), 1e-3);
   float3 sum = float3(0.0);
@@ -13783,8 +13786,10 @@ id<MTLTexture> RendererMetal::encodeAirPass(id<MTLTexture> sceneSrc)
           sw = (NSUInteger)std::max(0L, x1 - x0);
           sh = (NSUInteger)std::max(0L, y1 - y0);
         } else {
-          const long hx0 = std::clamp(x0 / 2L, 0L, (long)targetW);
-          const long hy0 = std::clamp(y0 / 2L, 0L, (long)targetH);
+          // The texels whose first pixel (2t) is in the cell, so cells
+          // meeting on an odd pixel never share (and overwrite) a texel.
+          const long hx0 = std::clamp((x0 + 1L) / 2L, 0L, (long)targetW);
+          const long hy0 = std::clamp((y0 + 1L) / 2L, 0L, (long)targetH);
           const long hx1 = std::clamp((x1 + 1L) / 2L, 0L, (long)targetW);
           const long hy1 = std::clamp((y1 + 1L) / 2L, 0L, (long)targetH);
           sx = (NSUInteger)hx0;
