@@ -1909,7 +1909,8 @@ class TestMovieSceneFile(_BlendCase):
         self.original_set_lights = cmd.set_lights
 
     def tearDown(self):
-        cmd.set_lights = self.original_set_lights
+        self.assertNotIn('_l617_set', vars(cmd))
+        self.assertIs(cmd.set_lights, self.original_set_lights)
         for name in [n for n in dir(cmd) if n.startswith('_l617_')]:
             delattr(cmd, name)
         super().tearDown()
@@ -1936,7 +1937,13 @@ class TestMovieSceneFile(_BlendCase):
         self.assertEqual([j.tag for j in jobs], MOVIE_FILE_TAGS)
         out = os.path.join('out', 'l2')
         with open(MOVIE_FILE) as handle:
-            extra = json.load(handle)['extra']
+            spec = json.load(handle)
+            extra = spec['extra']
+            after_rig = spec['after_rig']
+        applier = [
+            "if getattr(cmd, '_l617_frame', 0) or getattr(cmd, '_l617_recall', False) or getattr(cmd, '_l617_direct', None): cmd._l617_build(cmd)"
+        ]
+        self.assertEqual(after_rig, applier)
         for job in jobs:
             render.check_path('tag', job.tag)
             render.check_path('scene script', render.script_path(out, job.tag))
@@ -1950,6 +1957,7 @@ class TestMovieSceneFile(_BlendCase):
             self.assertEqual(job.extra[:len(extra)], extra, job.tag)
             self.assertEqual(job.extra[-1], "cmd.color('grey80', 'm')",
                              job.tag)
+            self.assertEqual(job.after_rig, after_rig, job.tag)
 
     def testCheckPathRefusalSaysSubstring(self):
         # #646: the app's triggers are substrings, so 'presets' (has 'reset')
@@ -1987,8 +1995,8 @@ class TestMovieSceneFile(_BlendCase):
             if frame:
                 self.assertEqual(cmd.get_frame(), frame, tag)
                 self.assertEqual(cmd.get_movie_length(), 25, tag)
-            # wrapped once: the original stays reachable
-            self.assertIs(cmd._l617_set, self.original_set_lights)
+            self.assertNotIn('_l617_set', vars(cmd), tag)
+            self.assertIs(cmd.set_lights, self.original_set_lights, tag)
             got[tag] = (second, raymol_scenes.scene_lights('A'),
                         raymol_scenes.scene_lights('B'))
 

@@ -1,5 +1,5 @@
 {
- "comment": "#618 regression vs master (plans/618.md 10.2; gate.sh baseline-scenes, then render.py --compare, max 0): no air may show, and nothing may change, where the air is zero, off or suppressed. zero_<rep>_s<0|1>_rt<n>: a 2-light rig (a warm spot and a dim fill) with haze and dust 0 and every other air field non-default, on cartoon, surface, sticks, spheres and a bezier tube, without (s0, metal_shadows 0) and with (s1, the spot shadowed, metal_shadows 1) a shadowed light; zero_ortho, zero_oit (a 50% surface over the cartoon plus a glass surface) and zero_grid (grid_mode 1). rigoff_air_*: atmosphere sets haze 0.3 and dust 0.5, then the harness's --rig off path (lights three_point keeps the air; lights off): a rig that is off with lights and air. atmo_norig: atmosphere with no rig (an off rig with no lights; see its comment). suppressed_*: a rig that is on WITH air, but m disabled with only a _move_gizmo CGO shown (the overlay case, #686). The #618 settings (metal_light_air_time 2, metal_light_air_resolution 2, metal_light_air_shadow_filter 2) are set through _l618_opt in every scene: they exist only on the branch and change nothing without air. Every line runs on master; no _light_air_* helper is called. Same cmd.set_lights shim as lighting_618.json (rigs with an explicit centre and size, the extent of m). Checked in CI by testing/tests/raymol/lighting_air_check.py.",
+ "comment": "#618 regression vs master (plans/618.md 10.2; gate.sh baseline-scenes, then render.py --compare, max 0): no air may show, and nothing may change, where the air is zero, off or suppressed. zero_<rep>_s<0|1>_rt<n>: a 2-light rig (a warm spot and a dim fill) with haze and dust 0 and every other air field non-default, on cartoon, surface, sticks, spheres and a bezier tube, without (s0, metal_shadows 0) and with (s1, the spot shadowed, metal_shadows 1) a shadowed light; zero_ortho, zero_oit (a 50% surface over the cartoon plus a glass surface) and zero_grid (grid_mode 1). rigoff_air_*: atmosphere sets haze 0.3 and dust 0.5, then the harness's --rig off path (lights three_point keeps the air; lights off): a rig that is off with lights and air. atmo_norig: atmosphere with no rig (an off rig with no lights; see its comment). suppressed_*: a rig that is on WITH air, but m disabled with only a _move_gizmo CGO shown (the overlay case, #686). The #618 settings (metal_light_air_time 2, metal_light_air_resolution 2, metal_light_air_shadow_filter 2) are set through _l618_opt in every scene: they exist only on the branch and change nothing without air. Every line runs on master; no _light_air_* helper is called. Same after_rig line as lighting_618.json (rigs with an explicit centre and size, the extent of m). Checked in CI by testing/tests/raymol/lighting_air_check.py.",
  "base": null,
  "rig": "on",
  "size": [
@@ -12,8 +12,6 @@
   "_l618_c = [(a + b) / 2.0 for a, b in zip(_l618_mn, _l618_mx)]",
   "_l618_s = _l618_math.sqrt(sum((b - a) ** 2 for a, b in zip(_l618_mn, _l618_mx))) / 2.0",
   "_l618_opt = lambda name, value: cmd.set(name, value) if name in cmd.setting.get_name_list() else None",
-  "if not hasattr(cmd, '_l618_set'): cmd._l618_set = cmd.set_lights",
-  "cmd.set_lights = lambda rig, _c=cmd: _c._l618_set(rig if getattr(_c, '_l618_rig', None) is None else (_c._l618_rig(rig) if callable(_c._l618_rig) else _c._l618_rig))",
   "if hasattr(cmd, '_l618_get'): cmd.get_lights = cmd._l618_get",
   "_l618_spot = {'name': 'spot', 'orbit': -50.0, 'pitch': 45.0, 'radius': 3.0, 'beam': 30.0, 'softness': 0.45, 'color': [1.0, 0.8, 0.55], 'intensity': 2.0, 'highlight': 0.0, 'shadow': True}",
   "_l618_fill = {'name': 'fill', 'orbit': 60.0, 'pitch': 0.0, 'radius': 3.0, 'beam': 60.0, 'softness': 0.8, 'intensity': 0.2, 'highlight': 0.0}",
@@ -25,6 +23,9 @@
   "_l618_opt('metal_light_air_time', 2.0)",
   "_l618_opt('metal_light_air_resolution', 2)",
   "_l618_opt('metal_light_air_shadow_filter', 2)"
+ ],
+ "after_rig": [
+  "if getattr(cmd, '_l618_rig', None) is not None: cmd.set_lights(cmd._l618_rig(_lh_rig) if callable(cmd._l618_rig) else cmd._l618_rig)"
  ],
  "scenes": [
   {

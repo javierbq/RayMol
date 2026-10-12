@@ -81,10 +81,7 @@ def load_module(name, filename):
 
 
 def restore_shims():
-    """Undo the scene files' cmd.set_lights shim (what tearDown does)."""
-    original = vars(cmd).pop('_l624_set', None)
-    if original is not None:
-        cmd.set_lights = original
+    """Undo the scene files' rig state (what tearDown does)."""
     vars(cmd).pop('_l624_rig', None)
 
 
@@ -644,6 +641,7 @@ class TestSceneFiles(testing.PyMOLTestCase):
     def tearDown(self):
         restore_shims()
         cmd.set_lights(None)
+        self.assertNotIn('_l624_set', vars(cmd))
         self.assertIs(cmd.set_lights, self.original[0])
         self.assertIs(cmd.get_lights, self.original[1])
         super(TestSceneFiles, self).tearDown()
@@ -689,7 +687,13 @@ class TestSceneFiles(testing.PyMOLTestCase):
             self.assertEqual(spec['rig'], 'on', which)
             self.assertIsNone(spec['base'], which)
             self.assertIn('#624', spec['comment'])
+            applier = [
+                "if getattr(cmd, '_l624_rig', None) is not None: "
+                "cmd.set_lights(cmd._l624_rig(_lh_rig) if callable(cmd._l624_rig) else cmd._l624_rig)"
+            ]
+            self.assertEqual(spec.get('after_rig'), applier, which)
             for job in self.jobs[which]:
+                self.assertEqual(job.after_rig, applier, job.tag)
                 self.assertEqual(job.size, (1280, 720), job.tag)
                 tag_parts(job.tag)
         for job in self.jobs['l2']:
@@ -824,6 +828,8 @@ class TestSceneFiles(testing.PyMOLTestCase):
                 self.assertEqual(cmd.get_setting_int('material_env'), 2, job.tag)
             if re.match(r'^glass(_dark)?_i[13]_', base):
                 self.assertEqual(rig['ambient'], 0.0, job.tag)     # the recover pair
+            self.assertNotIn('_l624_set', vars(cmd), job.tag)
+            self.assertIs(cmd.set_lights, self.original[0], job.tag)
             restore_shims()
         self.assertEqual(ran, 122)
 
@@ -876,6 +882,8 @@ class TestSceneFiles(testing.PyMOLTestCase):
             self.assertEqual(cmd.get_setting_int('metal_tonemap'), int(tonemap), job.tag)
             self.assertAlmostEqual(cmd.get_setting_float('metal_exposure'),
                                    0.7 if tonemap else 1.0, places=6, msg=job.tag)
+            self.assertNotIn('_l624_set', vars(cmd), job.tag)
+            self.assertIs(cmd.set_lights, self.original[0], job.tag)
             restore_shims()
 
 

@@ -1,5 +1,5 @@
 {
- "comment": "#616 regression vs master (plans/616.md 10.2; gate.sh baseline-scenes, then render.py --compare, max 0): a rig whose lights are not shadowed must render exactly as master. <rep>_ns_ms<0|1>_rt<n>: the amber and cyan lights of lighting_616.json, unshadowed, on the 8 L1 representations plus a bezier tube, transparent sticks and spheres, orthographic and grid_mode, at metal_shadows 0 and 1 (where the whole-pixel shadow must survive) and metal_raytrace 0 and 1. rig3key_* / rig3all_*: the harness 3-light rig with the key, then all three lights, shadowed at metal_shadows 0 (studio shadows need metal_shadows). Every rig passes an explicit centre and size (the extent of m). Same cmd.set_lights shim as lighting_616.json.",
+ "comment": "#616 regression vs master (plans/616.md 10.2; gate.sh baseline-scenes, then render.py --compare, max 0): a rig whose lights are not shadowed must render exactly as master. <rep>_ns_ms<0|1>_rt<n>: the amber and cyan lights of lighting_616.json, unshadowed, on the 8 L1 representations plus a bezier tube, transparent sticks and spheres, orthographic and grid_mode, at metal_shadows 0 and 1 (where the whole-pixel shadow must survive) and metal_raytrace 0 and 1. rig3key_* / rig3all_*: the harness 3-light rig with the key, then all three lights, shadowed at metal_shadows 0 (studio shadows need metal_shadows). Every rig passes an explicit centre and size (the extent of m). Same after_rig line as lighting_616.json.",
  "base": null,
  "rig": "on",
  "size": [
@@ -21,9 +21,10 @@
   "_l616_m3 = {'name': 'magenta', 'orbit': 160.0, 'pitch': 45.0, 'radius': 3.0, 'beam': 60.0, 'softness': 0.3, 'color': [1.0, 0.2, 0.8], 'intensity': 1.0, 'highlight': 0.0}",
   "_l616_frame = lambda rig: dict(rig, centre=list(_l616_c), size=_l616_s)",
   "_l616_make = lambda lights, **kw: _l616_frame(dict({'version': 1, 'enabled': True, 'ambient': 0.05, 'classic': 0.0, 'lights': lights}, **kw))",
-  "_l616_opt = lambda name, value: cmd.set(name, value) if name in cmd.setting.get_name_list() else None",
-  "if not hasattr(cmd, '_l616_set'): cmd._l616_set = cmd.set_lights",
-  "cmd.set_lights = lambda rig, _c=cmd: _c._l616_set(rig if getattr(_c, '_l616_rig', None) is None else (_c._l616_rig(rig) if callable(_c._l616_rig) else _c._l616_rig))"
+  "_l616_opt = lambda name, value: cmd.set(name, value) if name in cmd.setting.get_name_list() else None"
+ ],
+ "after_rig": [
+  "if getattr(cmd, '_l616_rig', None) is not None: cmd.set_lights(cmd._l616_rig(_lh_rig) if callable(cmd._l616_rig) else cmd._l616_rig)"
  ],
  "scenes": [
   {
