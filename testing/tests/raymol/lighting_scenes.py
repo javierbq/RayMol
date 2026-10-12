@@ -1704,14 +1704,36 @@ class TestRecallBlend(_BlendCase):
         lighting._lights_recall_step(4, self.N)
         self.assertEqual(cmd.get_lights(), played_rigs[4])
 
-    def testAnEditCancelsTheBlend(self):
+    def testAnEditLandsTheBlendFirst(self):
+        # an edit mid-blend applies to the scene's rig, not a half-blended one
         lighting._lights_recall(self.b, force=True)
         lighting._lights_recall_step(10, self.N)
         lighting._light_set(0, 'intensity', 0.5)
-        edited = cmd.get_lights()
+        want = copy.deepcopy(self.b)
+        want['lights'][0]['intensity'] = 0.5
+        self.assertEqual(cmd.get_lights(), want)
         self.assertFalse(lighting._lights_recall_step(20, self.N))
-        self.assertEqual(cmd.get_lights(), edited)
+        self.assertEqual(cmd.get_lights(), want)
 
+        # an 'off' scene recalled mid-blend turns the scene's rig off
+        self.set_rig(self.a)
+        lighting._lights_recall(self.b, force=True)
+        lighting._lights_recall_step(10, self.N)
+        lighting._light_set(-1, 'enabled', 0)
+        self.assertEqual(cmd.get_lights(), dict(self.b, enabled=False))
+
+        # recenter recentres the scene's rig
+        self.set_rig(self.a)
+        lighting._lights_recall(self.b, force=True)
+        lighting._lights_recall_step(10, self.N)
+        lighting._lights_recenter()
+        got = cmd.get_lights()
+        self.assertEqual([l['name'] for l in got['lights']],
+                         [l['name'] for l in self.b['lights']])
+        self.assertEqual(got['air'], self.b['air'])
+        self.assertFalse(lighting._lights_recall_step(20, self.N))
+
+        # set_lights replaces the rig and drops the blend
         self.set_rig(self.a)
         lighting._lights_recall(self.b, force=True)
         lighting._lights_recall_step(10, self.N)

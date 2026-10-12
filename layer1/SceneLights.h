@@ -92,9 +92,11 @@ bool SceneLightsRecallAdvance(PyMOLGlobals* G, int cur, int n);
 /// finish; else SceneLightsRecallAdvance(cur_ani_elem, n_ani_elem).
 void SceneLightsRecallStep(PyMOLGlobals* G);
 
-/// #661: store the pending blend's `to` and clear it (SceneAbortAnimation: a
-/// camera cut or a user drag lands the rig on the scene's). Nothing pending
-/// -> nothing.
+/// #661: store the pending blend's `to` and clear it. A camera cut or user
+/// drag (SceneAbortAnimation), a light edit (SceneLightSet, which also covers
+/// a recall of an 'off' scene) and recenter land the rig on the scene's first;
+/// SceneSetLightRig replaces the whole rig and just drops the blend. Nothing
+/// pending -> nothing.
 void SceneLightsRecallFinish(PyMOLGlobals* G);
 
 /**

@@ -241,6 +241,9 @@ glm::dmat4 SceneGetWorldToEye(PyMOLGlobals* G)
 pymol::LightSetStatus SceneLightSet(PyMOLGlobals* G, int index,
     std::string_view field, const double* v, int n, std::string* msg)
 {
+  // An edit during a recall blend applies to the scene's rig (#661), not to
+  // a half-blended one with faded lights and the old dust speed.
+  SceneLightsRecallFinish(G);
   auto& rig = G->Scene->lightRig;
   if (!rig) {
     if (msg)
@@ -249,10 +252,8 @@ pymol::LightSetStatus SceneLightSet(PyMOLGlobals* G, int index,
   }
   auto status =
       pymol::LightRigSet(*rig, index, field, v, n, SceneGetWorldToEye(G), msg);
-  if (status == pymol::LightSetStatus::Ok) {
-    G->Scene->lightRecall.reset();
+  if (status == pymol::LightSetStatus::Ok)
     SceneInvalidate(G);
-  }
   return status;
 }
 
@@ -289,6 +290,7 @@ std::optional<std::string> SceneLightsJSON(PyMOLGlobals* G)
 
 pymol::Result<> SceneLightsRecenter(PyMOLGlobals* G)
 {
+  SceneLightsRecallFinish(G); // recenter the scene's rig (#661)
   auto& rig = G->Scene->lightRig;
   if (!rig)
     return pymol::make_error("no light rig");
@@ -297,7 +299,6 @@ pymol::Result<> SceneLightsRecenter(PyMOLGlobals* G)
   SceneLightRigCapture(G, centre, size);
   rig->centre = centre;
   rig->size = size;
-  G->Scene->lightRecall.reset();
   SceneInvalidate(G);
   return {};
 }
