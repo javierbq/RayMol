@@ -224,6 +224,11 @@ std::string LightRigNextName(const std::vector<std::string>& taken);
  */
 pymol::Result<> LightRigValidate(const LightRig& rig);
 
+/// Rigs `a` and `b` blended at eased position `e` (#617 semantics, #661
+/// port of raymol_scene_anim.blend_rigs). Pure; no validation; inputs are
+/// taken as given.
+LightRig LightRigBlend(const LightRig& a, const LightRig& b, double e);
+
 /* ---- placement helpers (spec §4.3) ------------------------------------- */
 
 /// Unit offset of a camera light from the rig centre, in eye space:

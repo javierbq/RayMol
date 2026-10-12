@@ -65,6 +65,7 @@ Z* -------------------------------------------------------------------
 #include "Renderer.h"
 #include "GFXManager.h"
 #include "Util2.h"
+#include "SceneLights.h"
 
 #ifdef _PYMOL_OPENVR
 #include"OpenVRMode.h"
@@ -328,6 +329,7 @@ void SceneAbortAnimation(PyMOLGlobals * G)
   if(I->cur_ani_elem < I->n_ani_elem) { /* allow user to override animation */
     I->cur_ani_elem = I->n_ani_elem;
   }
+  SceneLightsRecallFinish(G);
 }
 
 void ScenePrimeAnimation(PyMOLGlobals * G)
@@ -405,6 +407,7 @@ void SceneLoadAnimation(PyMOLGlobals * G, double duration, int hand)
     double now;
     int target = (int) (duration * 30);
     CScene *I = G->Scene;
+    ++I->AnimationSerial;
     if(target < 1)
       target = 1;
     if(target > MAX_ANI_ELEM)
@@ -4268,6 +4271,7 @@ int SceneReinitialize(PyMOLGlobals * G)
   SceneInvalidate(G);
   G->Scene->SceneVec.clear();
   G->Scene->lightRig.reset(); // `reinitialize` clears the rig (#611)
+  G->Scene->lightRecall.reset();
   return (ok);
 }
 
@@ -4586,6 +4590,7 @@ void SceneUpdateAnimation(PyMOLGlobals * G)
   if(rockFlag && (I->RenderTime != 0.0)) {
     SceneUpdateCameraRock(G, dirty);
   }
+  SceneLightsRecallStep(G);
 }
 
 int SceneGetDrawFlag(GridInfo * grid, int *slot_vla, int slot)

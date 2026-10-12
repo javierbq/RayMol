@@ -643,7 +643,7 @@ iOS](#performance-and-ios).
   outline, anchor, aim and the rig's on/off switch change at the cut.
 - **Limits.** The loop-wrap of a looping movie, from the last scene back to
   the first, does not blend the rig (#656). Recalling a scene with animation
-  in the live view switches the rig at once while the camera moves (#661).
+  blends the rig with the camera (dust speed changes when the move ends, #661).
 
 ```pymol
 lights three_point
@@ -788,8 +788,8 @@ Open follow-ups of the lighting work (#610) that you may notice:
   pure-green dash reads as a lit green, not (0, 255, 0). With
   `dash_as_cylinders` or `render_as_cylinders` off they are lines and stay
   unlit.
-- **Scenes and movies.** The loop-wrap of a looping movie (#656) and an
-  animated scene recall in the live view (#661) do not blend the rig.
+- **Scenes and movies.** The loop-wrap of a looping movie (#656) does not
+  blend the rig.
 - **Placement.** A highlight placed on a small patch can fit the beam to a
   few degrees (#723); set `beam=` to widen it.
 - **The app.** The gizmo's ring handles can land off-screen or under the bars

@@ -54,6 +54,43 @@ void SceneSetLightRig(PyMOLGlobals* G, std::optional<pymol::LightRig> rig);
  */
 pymol::Result<> SceneLightsReplace(PyMOLGlobals* G, pymol::LightRig rig);
 
+/// #661: the eased position of camera animation element `cur` of `n`: the
+/// curve SceneLoadAnimation gives the camera (ViewElemInterpolate, power 2,
+/// bias 1): x = cur/n clamped to [0,1]; x < 0.5: pow(2x, 2) / 2;
+/// x > 0.5: 1 - pow(2(1-x), 2) / 2; 0.5 -> 0.5.
+double SceneLightsRecallEase(int cur, int n);
+
+/// #661: recall a scene's rig. `target` gets SceneLightsReplace's frame capture
+/// and validation (error -> nothing changes, return the error). A target equal
+/// to the live rig writes nothing and drops any pending blend. Then, when a
+/// camera animation is running (cur_ani_elem < n_ani_elem) or `force` (tests:
+/// there is no camera animation without a GUI), and both the live rig and
+/// `target` are on (LightRigIsOn), the blend is recorded {from = live, to =
+/// target, serial = AnimationSerial} and the rig is left as it is (the camera's
+/// next frame steps it). Otherwise `target` is stored at once
+/// (SceneSetLightRig), as before #661.
+pymol::Result<> SceneLightsRecall(
+    PyMOLGlobals* G, pymol::LightRig target, bool force = false);
+
+/// #661: put the recall blend at camera element `cur` of `n`. Nothing pending
+/// -> false. n <= 0 or cur >= n -> finish (store `to` exactly, clear) and
+/// return false. Else store LightRigBlend(from, to, SceneLightsRecallEase(cur,
+/// n)) with air.dustSpeed = from's (the live dust clock is wall time x speed,
+/// so a ramp would race the dust: the speed steps when the blend finishes) and
+/// return true. Backwards steps are allowed (a movie scrubbed back re-steps the
+/// camera from element 0).
+bool SceneLightsRecallAdvance(PyMOLGlobals* G, int cur, int n);
+
+/// #661: SceneUpdateAnimation's step: nothing pending -> nothing; the pending
+/// blend's serial differs from AnimationSerial (a newer camera animation) ->
+/// finish; else SceneLightsRecallAdvance(cur_ani_elem, n_ani_elem).
+void SceneLightsRecallStep(PyMOLGlobals* G);
+
+/// #661: store the pending blend's `to` and clear it (SceneAbortAnimation: a
+/// camera cut or a user drag lands the rig on the scene's). Nothing pending
+/// -> nothing.
+void SceneLightsRecallFinish(PyMOLGlobals* G);
+
 /**
  * The rig frame for the current scene (spec §4.3, Q5): the box of the
  * enabled objects in the current state, that is the enabled atoms with
