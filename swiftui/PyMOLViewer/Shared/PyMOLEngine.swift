@@ -3525,6 +3525,23 @@ final class PyMOLEngine: ObservableObject {
         // draw(in:) runs on the main thread on both platforms (macOS: the
         // view's display link; iOS: MTKView's own loop).
         MainActor.assumeIsolated { lightsController.frameRendered() }
+        refreshLightGizmoGridCell()
+    }
+
+    /// Grid mode (#697): the gizmo's cell kept in step with the grid each
+    /// frame (objects added or removed, grid_max, a resize or rotation): the
+    /// same cell while the grid still lays it out, else the cell under its
+    /// old centre. Not while a gizmo press owns the pointer (a drag stays in
+    /// its cell). One bridge read, only while grid mode is on and a cell is
+    /// shown; no Python.
+    private func refreshLightGizmoGridCell() {
+        guard isReady, let instance, lightGizmoGridMode, !lightGizmoPointer.ownsPress else { return }
+        MainActor.assumeIsolated {
+            guard let cell = lightGizmoUI.gridCell, let size = lightGizmoUI.viewSize,
+                  let camera = lightsController.eye.projection,
+                  let rect = LightGizmoProjection(camera: camera, viewSize: size)?.sceneRect else { return }
+            lightGizmoUI.gridCell = cell.revalidated(size: Self.gridSize(handle: instance), in: rect)
+        }
     }
 
     /// The live camera as the light gizmo projects it (#622): the 25-float view

@@ -410,16 +410,17 @@ final class LightGizmoLayoutTests: XCTestCase {
         let cellA = LightGizmoGridCell(columns: 2, rows: 1, index: 0)
         let cellB = LightGizmoGridCell(columns: 2, rows: 1, index: 1)
 
-        ui.follow(cellA, held: false)
+        XCTAssertTrue(ui.follow(cellA, held: false), "the gizmo moves into A")
+        XCTAssertEqual(ui.gridCell, cellA)
+        XCTAssertFalse(ui.follow(cellA, held: false), "already in A: a press there may hit it")
+
+        XCTAssertFalse(ui.follow(cellB, held: true))
         XCTAssertEqual(ui.gridCell, cellA)
 
-        ui.follow(cellB, held: true)
-        XCTAssertEqual(ui.gridCell, cellA)
-
-        ui.follow(cellB, held: false)
+        XCTAssertTrue(ui.follow(cellB, held: false))
         XCTAssertEqual(ui.gridCell, cellB)
 
-        ui.follow(nil, held: false)
+        XCTAssertFalse(ui.follow(nil, held: false), "hiding is not a move into a cell")
         XCTAssertNil(ui.gridCell)
 
         ui.follow(cellA, held: false)

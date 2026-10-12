@@ -369,6 +369,25 @@ final class LightGizmoGridCellTests: XCTestCase {
         XCTAssertNil(LightGizmoGridCell.at(CGPoint(x: 100, y: CGFloat.infinity), size: 2, in: sceneRect))
     }
 
+    func testRevalidatedFollowsTheGrid() {
+        let scene = CGRect(x: 0, y: 0, width: 800, height: 600)
+        let right = LightGizmoGridCell(columns: 2, rows: 1, index: 1)
+        XCTAssertEqual(right.revalidated(size: 2, in: scene), right, "the grid is unchanged")
+        // A third object goes from a 2x2 grid to 2x1: the top-right cell's
+        // centre is in the right half.
+        let topRight = LightGizmoGridCell(columns: 2, rows: 2, index: 1)
+        XCTAssertEqual(topRight.revalidated(size: 2, in: scene), right)
+        // One object left: no grid, the whole scene.
+        XCTAssertEqual(right.revalidated(size: 1, in: scene), LightGizmoGridCell(columns: 1, rows: 1, index: 0))
+        // An object removed under the bottom-right cell of a 2x2: that cell is empty now.
+        let corner = LightGizmoGridCell(columns: 2, rows: 2, index: 3)
+        XCTAssertNil(corner.revalidated(size: 3, in: scene))
+        // A rotation to portrait: two objects stack (1x2), and the old right
+        // cell, laid over the new scene rect, is centred on their border.
+        let portrait = CGRect(x: 0, y: 0, width: 600, height: 800)
+        XCTAssertEqual(right.revalidated(size: 2, in: portrait), LightGizmoGridCell(columns: 1, rows: 2, index: 1))
+    }
+
     func testCellProjection() throws {
         let cam = LightCameraProjection(orthoscopic: false, fovDegrees: 20, cameraDistance: 100, letterboxAspect: 0)
         let viewSize = CGSize(width: 800, height: 600)

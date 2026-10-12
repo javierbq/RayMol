@@ -127,9 +127,12 @@ final class LightGizmoUIState: ObservableObject {
 
     /// Grid mode (#697): show the gizmo in `cell` (the one under the pointer) unless `held` (a gizmo
     /// press, scroll or pinch is under way: it stays in the cell it began in). One publish at most.
-    func follow(_ cell: LightGizmoGridCell?, held: Bool) {
-        guard !held else { return }
+    /// True when the gizmo moved into `cell` (it was not drawn there before).
+    @discardableResult
+    func follow(_ cell: LightGizmoGridCell?, held: Bool) -> Bool {
+        guard !held, cell != values.gridCell else { return false }
         update(\.gridCell, cell)
+        return cell != nil
     }
 
     /// The drag state of `session` (nil or ended: none) with the readout of

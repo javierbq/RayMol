@@ -1191,5 +1191,14 @@ final class LightGizmoLiveTests: XCTestCase {
         engine.lightGizmoUI.follow(cell1, held: false)
         let l = try XCTUnwrap(engine.lightGizmoLayout(viewSize: viewSize))
         XCTAssertGreaterThan(l.centre.x, viewSize.width * 0.5, "centre in the right half")
+
+        // The second object goes: the next frame drops the grid's right cell
+        // for the whole scene (one object, no grid).
+        engine.lightGizmoUI.viewSize = viewSize
+        python("_c.delete('lgz_grid2')\n")
+        engine.lightsFrameRendered()
+        XCTAssertEqual(engine.lightGizmoUI.gridCell, LightGizmoGridCell(columns: 1, rows: 1, index: 0))
+        let whole = try XCTUnwrap(engine.lightGizmoLayout(viewSize: viewSize))
+        XCTAssertEqual(whole.projection.cellRect, whole.projection.sceneRect, "projected over the whole scene")
     }
 }

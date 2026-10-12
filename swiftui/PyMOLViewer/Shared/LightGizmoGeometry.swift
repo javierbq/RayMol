@@ -136,6 +136,18 @@ struct LightGizmoGridCell: Equatable {
         return LightGizmoGridCell(columns: columns, rows: rows, index: index)
     }
 
+    /// The same cell once the grid may have changed (objects added or
+    /// removed, grid_max, a resize or rotation), for `size` cells over
+    /// `sceneRect`: itself while they still lay out its shape and fill it,
+    /// else the cell now under its old centre (nil when none).
+    func revalidated(size: Int, in sceneRect: CGRect) -> LightGizmoGridCell? {
+        guard sceneRect.width > 0, sceneRect.height > 0 else { return nil }
+        let shape = Self.shape(size: size, aspect: Double(sceneRect.width / sceneRect.height))
+        if shape.columns == columns, shape.rows == rows, index < max(size, 1) { return self }
+        let old = rect(in: sceneRect)
+        return Self.at(CGPoint(x: old.midX, y: old.midY), size: size, in: sceneRect)
+    }
+
     /// Its rect within `sceneRect` (SceneGetGridViewport): column c spans
     /// [c*W/columns, (c+1)*W/columns) from the left, row r [r*H/rows, (r+1)*H/rows) from the top.
     func rect(in sceneRect: CGRect) -> CGRect {

@@ -1109,17 +1109,20 @@ extension MetalViewport {
         }
 
         /// Grid mode (#697): the gizmo moves to the cell under `p` (top-left points), unless a gizmo
-        /// press, scroll or pinch is under way, which stays in the cell it began in.
-        private func lightGizmoFollow(_ p: CGPoint, in view: MTKView) {
-            guard let engine, engine.interactionMode == .lights else { return }
+        /// press, scroll or pinch is under way, which stays in the cell it began in. True when it
+        /// moved: it was not drawn under `p`, so the press, tap or gesture there must not hit it (a
+        /// touch with no hover first only brings the gizmo to its cell, and goes to the camera).
+        @discardableResult
+        private func lightGizmoFollow(_ p: CGPoint, in view: MTKView) -> Bool {
+            guard let engine, engine.interactionMode == .lights else { return false }
             #if os(iOS)
             let held = engine.lightGizmoPointer.ownsPress || lightScroll != nil || lightPinch != nil
                 || lightTwoFinger.isActive
             #else
             let held = engine.lightGizmoPointer.ownsPress || lightScroll != nil || lightPinch != nil
             #endif
-            guard !held else { return }
-            MainActor.assumeIsolated {
+            guard !held else { return false }
+            return MainActor.assumeIsolated {
                 engine.lightGizmoUI.follow(engine.lightGizmoGridCell(at: p, viewSize: view.bounds.size), held: false)
             }
         }
@@ -1216,8 +1219,8 @@ extension MetalViewport {
                 if pointer.ownsPress || pointer.candidate != nil { engine.lightGizmoPointer.cancel() }
                 return false
             }
-            lightGizmoFollow(p, in: view)
-            let layout = lightGizmoLayout(in: view)
+            let moved = lightGizmoFollow(p, in: view)
+            let layout = moved ? nil : lightGizmoLayout(in: view)
             let interaction = lightGizmoInteraction(engine)
             let route = MainActor.assumeIsolated {
                 engine.lightGizmoPointer.press(at: p, option: option, layout: layout, interaction: interaction,
@@ -1807,8 +1810,8 @@ extension MetalViewport {
             }
             guard engine.interactionMode == .lights else { return false }
             if isWheel {
-                lightGizmoFollow(p, in: view)
-                guard let layout = lightGizmoLayout(in: view),
+                let moved = lightGizmoFollow(p, in: view)
+                guard !moved, let layout = lightGizmoLayout(in: view),
                       let name = LightGizmoHitTest.knob(at: p, layout: layout) else { return false }
                 let wheel = event.scrollingDeltaY != 0 ? event.scrollingDeltaY : event.deltaY
                 guard wheel != 0 else { return true }
@@ -1825,8 +1828,8 @@ extension MetalViewport {
                 return true
             }
             guard phase == .began, !panActive else { return false }
-            lightGizmoFollow(p, in: view)
-            guard let layout = lightGizmoLayout(in: view) else { return false }
+            let moved = lightGizmoFollow(p, in: view)
+            guard !moved, let layout = lightGizmoLayout(in: view) else { return false }
             let interaction = lightGizmoInteraction(engine)
             guard var session = MainActor.assumeIsolated({ interaction.beginScroll(at: p, layout: layout) }) else {
                 return false
@@ -1849,8 +1852,8 @@ extension MetalViewport {
                 lightPinch = nil
                 guard engine.interactionMode == .lights else { return false }
                 let p = lightGizmoPoint(gesture.location(in: view), in: view)
-                lightGizmoFollow(p, in: view)
-                guard let layout = lightGizmoLayout(in: view) else { return false }
+                let moved = lightGizmoFollow(p, in: view)
+                guard !moved, let layout = lightGizmoLayout(in: view) else { return false }
                 let interaction = lightGizmoInteraction(engine)
                 guard let session = MainActor.assumeIsolated({ interaction.beginPinch(at: p, layout: layout) }) else {
                     return false
@@ -1958,8 +1961,8 @@ extension MetalViewport {
         /// centre (#699).
         private func lightGizmoTap(at p: CGPoint, option: Bool, in view: MTKView) -> Bool {
             guard let engine, engine.interactionMode == .lights else { return false }
-            lightGizmoFollow(p, in: view)
-            guard let layout = lightGizmoLayout(in: view) else { return false }
+            let moved = lightGizmoFollow(p, in: view)
+            guard !moved, let layout = lightGizmoLayout(in: view) else { return false }
             guard let target = LightGizmoHitTest.target(at: p, layout: layout) else {
                 lightAimTaps = LightAimDoubleTap()
                 guard option, LightTouchRouter.optionTap(at: p, layout: layout) else { return false }
@@ -1999,8 +2002,8 @@ extension MetalViewport {
                 }
                 let start = LightTouchGeometry.pressPoint(location: location,
                                                           translation: gesture.translation(in: view))
-                lightGizmoFollow(start, in: view)
-                let layout = lightGizmoLayout(in: view)
+                let moved = lightGizmoFollow(start, in: view)
+                let layout = moved ? nil : lightGizmoLayout(in: view)
                 let interaction = lightGizmoInteraction(engine)
                 let route = MainActor.assumeIsolated {
                     // A new pan is a new touch sequence.
@@ -2048,8 +2051,8 @@ extension MetalViewport {
             switch gesture.state {
             case .began:
                 guard engine.interactionMode == .lights || lightTwoFinger.isActive else { return false }
-                lightGizmoFollow(centroid, in: view)
-                let layout = lightGizmoLayout(in: view)
+                let moved = lightGizmoFollow(centroid, in: view)
+                let layout = moved ? nil : lightGizmoLayout(in: view)
                 let owner = lightTwoFinger.began(kind, centroid: centroid,
                                                  span: lightGizmoSpan(gesture, in: view)) { p in
                     layout.flatMap { LightGizmoHitTest.knob(at: p, layout: $0) }
@@ -2109,8 +2112,8 @@ extension MetalViewport {
         /// outside Lights mode, yes.
         private func lightGizmoLongPressMayBegin(at p: CGPoint, in view: MTKView) -> Bool {
             guard let engine, engine.interactionMode == .lights else { return true }
-            lightGizmoFollow(p, in: view)
-            return LightTouchRouter.shouldBeginLongPress(at: p, layout: lightGizmoLayout(in: view))
+            let moved = lightGizmoFollow(p, in: view)
+            return LightTouchRouter.shouldBeginLongPress(at: p, layout: moved ? nil : lightGizmoLayout(in: view))
         }
 
         /// A long-press at `p` in Lights mode (#623): true when the gizmo took
@@ -2120,8 +2123,8 @@ extension MetalViewport {
         /// through to today's atom context menu.
         private func lightGizmoLongPress(at p: CGPoint, in view: MTKView) -> Bool {
             guard let engine, engine.interactionMode == .lights else { return false }
-            lightGizmoFollow(p, in: view)
-            let layout = lightGizmoLayout(in: view)
+            let moved = lightGizmoFollow(p, in: view)
+            let layout = moved ? nil : lightGizmoLayout(in: view)
             let hasSelection = MainActor.assumeIsolated { engine.lightsController.selectedLight != nil }
             switch LightTouchRouter.longPress(at: p, layout: layout, hasSelection: hasSelection) {
             case .contextMenu:
