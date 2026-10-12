@@ -99,8 +99,15 @@ pymol::Result<> SceneLightsRecall(
     G->Scene->lightRecall.reset();
     return {};
   }
+  // Only the camera animation this recall started (not an orient or zoom
+  // still in flight when the recall set no view); consumed so a later recall
+  // cannot reuse it.
+  const bool ownAnimation =
+      G->Scene->recallAnimationSerial == G->Scene->AnimationSerial;
+  G->Scene->recallAnimationSerial = -1;
   bool animRunning =
-      (G->Scene->cur_ani_elem < G->Scene->n_ani_elem) || force;
+      (ownAnimation && G->Scene->cur_ani_elem < G->Scene->n_ani_elem) ||
+      force;
   if (animRunning && pymol::LightRigIsOn(live) &&
       pymol::LightRigIsOn(&target)) {
     G->Scene->lightRecall = CScene::LightRecall{
@@ -109,6 +116,13 @@ pymol::Result<> SceneLightsRecall(
     SceneSetLightRig(G, std::move(target));
   }
   return {};
+}
+
+void SceneLightsNoteRecallView(PyMOLGlobals* G, bool animated)
+{
+  CScene* I = G->Scene;
+  I->recallAnimationSerial =
+      animated && I->cur_ani_elem < I->n_ani_elem ? I->AnimationSerial : -1;
 }
 
 void SceneLightsRecallFinish(PyMOLGlobals* G)

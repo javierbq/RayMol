@@ -188,6 +188,11 @@ class CScene : public Block {
      to = the scene's rig, serial = AnimationSerial of that camera animation. */
   struct LightRecall { pymol::LightRig from, to; int serial = 0; };
   std::optional<LightRecall> lightRecall;
+  /* #661: AnimationSerial of the camera animation the last scene recall
+     started, or -1 when it started none (no view recalled, animate=0, no
+     GUI). SceneLightsRecall blends only along that animation, and consumes
+     it, so a recall never rides another command's camera move. */
+  int recallAnimationSerial{-1};
 
   /* Document generation (#649): bumped when the whole document is replaced
      (SceneReinitialize, a full ExecutiveSetSession), so the app can tell a

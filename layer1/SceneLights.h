@@ -63,7 +63,8 @@ double SceneLightsRecallEase(int cur, int n);
 /// #661: recall a scene's rig. `target` gets SceneLightsReplace's frame capture
 /// and validation (error -> nothing changes, return the error). A target equal
 /// to the live rig writes nothing and drops any pending blend. Then, when a
-/// camera animation is running (cur_ani_elem < n_ani_elem) or `force` (tests:
+/// camera animation started by the last scene recall is still running
+/// (SceneLightsNoteRecallView; consumed here) or `force` (tests:
 /// there is no camera animation without a GUI), and both the live rig and
 /// `target` are on (LightRigIsOn), the blend is recorded {from = live, to =
 /// target, serial = AnimationSerial} and the rig is left as it is (the camera's
@@ -71,6 +72,11 @@ double SceneLightsRecallEase(int cur, int n);
 /// (SceneSetLightRig), as before #661.
 pymol::Result<> SceneLightsRecall(
     PyMOLGlobals* G, pymol::LightRig target, bool force = false);
+
+/// #661: MovieSceneRecall's note of whether this recall started a camera
+/// animation (`animated`: it set the view with animate != 0). Records the
+/// animation's serial, or -1.
+void SceneLightsNoteRecallView(PyMOLGlobals* G, bool animated);
 
 /// #661: put the recall blend at camera element `cur` of `n`. Nothing pending
 /// -> false. n <= 0 or cur >= n -> finish (store `to` exactly, clear) and
