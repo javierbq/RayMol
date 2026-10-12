@@ -1402,7 +1402,7 @@ private:
   id<MTLBuffer> _rtTriColBuffer = nil;
   id<MTLBuffer> _rtTriNrmBuffer = nil;   // 9 floats/tri: world-space vertex normals
   id<MTLBuffer> _rtTriMatBuffer = nil;   // uint32/tri: occurrence index into the material table
-  id<MTLBuffer> _rtMatBuffer = nil;      // float4 per occurrence: {reflect, tint, rough, 0}
+  id<MTLBuffer> _rtMatBuffer = nil;      // 2 float4 per occurrence (#709): {reflect, tint, rough, wrap}, {diffuse, highlight, sharpness, tint}
   id<MTLBuffer> _rtSphereBuffer = nil;
   size_t _rtSphereInstCount = 0;
   id<MTLBuffer> _rtTriBuffer = nil;   // world-tri vertices (9 floats/tri), bound to rt_ao so the
