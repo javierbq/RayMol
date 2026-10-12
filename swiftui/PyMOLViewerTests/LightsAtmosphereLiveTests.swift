@@ -3494,6 +3494,17 @@ final class FlatQuadSeamTests: XCTestCase {
         """)
     }
 
+    // The quad and, in the same strip, a wall bent 90 degrees away from the
+    // camera along its top edge: buffer neighbours that DO share vertices with
+    // the quad but are not part of its plane (an L-shaped backdrop, a box).
+    private func loadBentQuad() {
+        engine.runPython("""
+        from pymol import cmd as _c
+        _b = [2.0, 5.0, 6.0, 0.8, 0.8, 0.8, 5.0, 0.0, 0.0, 1.0, 4.0, -10.0, -10.0, 0.0, 4.0, 10.0, -10.0, 0.0, 4.0, -10.0, 10.0, 0.0, 4.0, 10.0, 10.0, 0.0, 4.0, -10.0, 10.0, -10.0, 4.0, 10.0, 10.0, -10.0, 3.0]
+        _c.load_cgo(_b, 'seam668b', zoom=0)
+        """)
+    }
+
     private func loadNeighbour() {
         engine.runPython("""
         from pymol import cmd as _c
@@ -3652,6 +3663,42 @@ final class FlatQuadSeamTests: XCTestCase {
         }
         print("668 quad alone vs with neighbour max channel diff=\(maxDiff)")
         XCTAssertLessThanOrEqual(maxDiff, 1, "unrelated triangles changed the quad's traced AO")
+    }
+
+    func testABentNeighbourDoesNotTiltAQuadsTracedAO() throws {
+        try requireEngine()
+        guard engine.rayTracingSupported else {
+            throw XCTSkip("Hardware ray tracing is not supported on this device")
+        }
+        buildScene()
+        loadQuad()
+        let aloneA = try render(rayTraced: 1)
+        let aloneB = try render(rayTraced: 1)
+        guard aloneA == aloneB else {
+            throw XCTSkip("two ray-traced frames of the same scene differ: not deterministic here")
+        }
+        engine.runPython("from pymol import cmd as _c\n_c.delete('seam668q')")
+        loadBentQuad()
+        let bentA = try render(rayTraced: 1)
+        let bentB = try render(rayTraced: 1)
+        guard bentA == bentB else {
+            throw XCTSkip("two ray-traced frames of the same scene differ: not deterministic here")
+        }
+        let seam0 = seam(bentA, 0)
+        let seam1 = seam(bentA, 1)
+        var maxDiff = 0
+        for y in 60..<240 {
+            for x in 110..<290 {
+                let offset = (y * Self.width + x) * 4
+                for c in 0..<3 {
+                    maxDiff = max(maxDiff, abs(Int(aloneA[offset + c]) - Int(bentA[offset + c])))
+                }
+            }
+        }
+        print(String(format: "668 bent seam d0=%.3f d1=%.3f maxDiff=%d", seam0, seam1, maxDiff))
+        XCTAssertLessThanOrEqual(seam0, 1.0, "seam across diagonal d=0 next to a bent face")
+        XCTAssertLessThanOrEqual(seam1, 1.0, "seam across diagonal d=1 next to a bent face")
+        XCTAssertLessThanOrEqual(maxDiff, 1, "a face bent away from the quad changed the quad's traced AO")
     }
 
     func testTwistedStripKeepsItsSmoothedAO() throws {
