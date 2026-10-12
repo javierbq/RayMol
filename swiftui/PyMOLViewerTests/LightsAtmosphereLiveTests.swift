@@ -951,6 +951,201 @@ final class BezierTubeStudioShadowTests: XCTestCase {
             "tube must receive a shadow from the sphere (mean unoccluded=\(meanUnoccluded), occluded=\(meanOccluded))")
     }
 }
+
+/// Issue #714: glass under a shadowed studio key, and glass in the tracer.
+/// lighting_615.json's glass_surface_sh_* and glass_surface_*_rt1 rows show a
+/// glass surface alone, so they match their unshadowed and rt0 twins byte for
+/// byte: transparent geometry draws nothing into the studio shadow maps (the
+/// pre-pass is opaque only, SceneRenderLightShadowMaps) and, at
+/// metal_rt_transparent 0, is not in the ray-traced scene. Here an opaque
+/// sphere gives each path something to show in the glass:
+/// - the sphere stands between the shadowed key and the glass, so the glass
+///   must receive the sphere's studio shadow;
+/// - the glass stands in front of the sphere, from the camera and from the
+///   key, so with metal_rt_transparent 1 it must occlude the sphere in the
+///   traced AO, seen through the glass.
+@MainActor
+final class GlassStudioShadowAndTracerTests: XCTestCase {
+    private static let width = 400
+    private static let height = 300
+
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var sceneBuilt = false
+    private var savedView: [Float]?
+
+    override func tearDown() {
+        if sceneBuilt {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.delete('gs714*')
+            for _n, _v in globals().pop('_gs714_settings', {}).items():
+                _c.set(_n, _v)
+            _c.set_lights(globals().pop('_gs714_rig', None))
+            for _n in globals().pop('_gs714_enabled', []):
+                _c.enable(_n)
+            """)
+            sceneBuilt = false
+        }
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        super.tearDown()
+    }
+
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            throw XCTSkip("the PyMOL engine did not come up under the test host")
+        }
+    }
+
+    /// A grey80 glass surface (gs714g: one pseudoatom's surface) and an opaque
+    /// grey80 sphere (gs714s), on black, under one shadowed camera key at
+    /// orbit -30, pitch 20 (front, left and above), with an explicit centre
+    /// and size so the objects never move the light. Studio shadows start
+    /// off; ray tracing is chosen per render.
+    private func buildScene(glassAt glass: String, glassVdw: Double,
+                            sphereAt sphere: String, sphereScale: Double) {
+        savedView = engine.captureView()
+        sceneBuilt = true
+        engine.runPython("""
+        from pymol import cmd as _c
+        _gs714_enabled = _c.get_names('objects', enabled_only=1)
+        _gs714_settings = {_n: _c.get_setting_tuple(_n)[1][0] for _n in (
+            'bg_rgb', 'depth_cue', 'metal_shadows', 'metal_rt_transparent',
+            'metal_temporal_ao', 'metal_rt_ao_intensity', 'metal_rt_ao_radius')}
+        _gs714_settings['bg_rgb'] = list(_c.get_setting_tuple('bg_rgb')[1])
+        _gs714_rig = _c.get_lights()
+        for _n in _gs714_enabled:
+            _c.disable(_n)
+        _c.set('bg_rgb', [0.0, 0.0, 0.0])
+        _c.set('depth_cue', 0)
+        _c.set('metal_shadows', 0)
+        _c.set('metal_rt_transparent', 0)
+        _c.set('metal_temporal_ao', 0)
+        _c.pseudoatom('gs714s', pos=\(sphere), vdw=1.0)
+        _c.show_as('spheres', 'gs714s')
+        _c.set('sphere_scale', \(sphereScale), 'gs714s')
+        _c.pseudoatom('gs714g', pos=\(glass), vdw=\(glassVdw))
+        _c.show_as('surface', 'gs714g')
+        _c.set('surface_material', 'glass', 'gs714g')
+        _c.color('grey80', 'gs714s or gs714g')
+        _c.set_lights({'enabled': True, 'ambient': 0.06, 'centre': [0.0, 0.0, 0.0], 'size': 20.0,
+                       'lights': [{'name': 'key', 'anchor': 'camera', 'orbit': -30.0, 'pitch': 20.0,
+                                   'radius': 3.0, 'beam': 80.0, 'highlight': 1.0, 'shadow': True}]})
+        # The fixed camera, after the objects: the first object auto-zooms.
+        _c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                     0.0, 0.0, -60.0, 0.0, 0.0, 0.0, 20.0, 100.0, -20.0))
+        """)
+    }
+
+    private func render(rayTraced: Int) throws -> [UInt8] {
+        let png = NSTemporaryDirectory() + "issue_714_render.png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: Self.width, height: Self.height, rayTraced: rayTraced)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(
+            URL(fileURLWithPath: png) as CFURL, nil), "no export written")
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        XCTAssertEqual(image.width, Self.width)
+        XCTAssertEqual(image.height, Self.height)
+        let w = image.width, h = image.height
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return rgba
+    }
+
+    /// The pixels `name` covers: a render with only that object shown, where
+    /// any channel is above the black background's noise.
+    private func footprint(of name: String) throws -> [Bool] {
+        let other = name == "gs714g" ? "gs714s" : "gs714g"
+        engine.runPython("from pymol import cmd as _c\n_c.disable('\(other)')")
+        let px = try render(rayTraced: 0)
+        engine.runPython("from pymol import cmd as _c\n_c.enable('\(other)')")
+        return stride(from: 0, to: px.count, by: 4).map { max(px[$0], px[$0 + 1], px[$0 + 2]) > 3 }
+    }
+
+    /// The largest per-channel difference between two renders over `region`.
+    private func maxDelta(_ a: [UInt8], _ b: [UInt8], in region: [Bool]) -> Int {
+        guard a.count == b.count, a.count == region.count * 4 else { return -1 }
+        var best = 0
+        for (p, inside) in region.enumerated() where inside {
+            for c in 0..<3 {
+                best = max(best, abs(Int(a[p * 4 + c]) - Int(b[p * 4 + c])))
+            }
+        }
+        return best
+    }
+
+    /// The sphere (radius 2.5) sits on the key's line in front of the glass
+    /// (radius 6), as in BezierTubeStudioShadowTests' receive case: turning
+    /// the studio shadows on must darken the glass where the sphere shadows
+    /// it. The region is the glass's footprint minus the sphere's.
+    func testGlassReceivesTheStudioShadow() throws {
+        try requireEngine()
+        buildScene(glassAt: "[0.0, 0.0, 0.0]", glassVdw: 6.0,
+                   sphereAt: "[-5.6, 4.1, 9.7]", sphereScale: 2.5)
+        let glass = try footprint(of: "gs714g")
+        let sphere = try footprint(of: "gs714s")
+        let region = zip(glass, sphere).map { $0 && !$1 }
+        XCTAssertGreaterThan(region.filter { $0 }.count, 5000, "the glass is not in the frame")
+        let off = try render(rayTraced: 0)
+        engine.runPython("from pymol import cmd as _c\n_c.set('metal_shadows', 1)")
+        let on = try render(rayTraced: 0)
+        let delta = maxDelta(off, on, in: region)
+        print("714-shadow glass max delta=\(delta)")
+        XCTAssertGreaterThanOrEqual(delta, 10, "the glass receives no studio shadow from the sphere")
+    }
+
+    /// The glass (radius 5) in front of the sphere (radius 6), the key shadowed
+    /// and metal_rt_transparent 1: the ray-traced render must differ from the
+    /// raster one inside the glass's footprint, and from the ray-traced render
+    /// at metal_rt_transparent 0, so the difference is the glass in the tracer
+    /// (a lone convex sphere occludes nothing). The traced AO is turned up
+    /// (intensity 1, radius 8 A): at the defaults, glass (alpha 0.15) moves
+    /// the sphere behind it by about 7 levels.
+    func testGlassEntersTheTracer() throws {
+        try requireEngine()
+        guard engine.rayTracingSupported else {
+            throw XCTSkip("Hardware ray tracing is not supported on this device")
+        }
+        buildScene(glassAt: "[0.0, 0.0, 9.0]", glassVdw: 5.0,
+                   sphereAt: "[0.0, 0.0, 0.0]", sphereScale: 6.0)
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set('metal_shadows', 1)
+        _c.set('metal_rt_ao_intensity', 1.0)
+        _c.set('metal_rt_ao_radius', 8.0)
+        """)
+        let glass = try footprint(of: "gs714g")
+        XCTAssertGreaterThan(glass.filter { $0 }.count, 5000, "the glass is not in the frame")
+        engine.runPython("from pymol import cmd as _c\n_c.set('metal_rt_transparent', 1)")
+        let rt0 = try render(rayTraced: 0)
+        let rt1 = try render(rayTraced: 1)
+        let again = try render(rayTraced: 1)
+        guard maxDelta(rt1, again, in: glass) == 0 else {
+            throw XCTSkip("two ray-traced frames of the same scene differ: not deterministic here")
+        }
+        engine.runPython("from pymol import cmd as _c\n_c.set('metal_rt_transparent', 0)")
+        let opaqueOnly = try render(rayTraced: 1)
+        let traced = maxDelta(rt0, rt1, in: glass)
+        let byGlass = maxDelta(opaqueOnly, rt1, in: glass)
+        print("714-rt glass max delta rt1-rt0=\(traced) transparent1-0=\(byGlass)")
+        XCTAssertGreaterThanOrEqual(traced, 10, "rt1 and rt0 match in the glass at metal_rt_transparent 1")
+        XCTAssertGreaterThanOrEqual(byGlass, 10, "the glass is not in the ray-traced scene")
+    }
+}
 #endif
 
 /// Classic shadow-map impostor casters face the light (#665). The classic
