@@ -89,10 +89,7 @@ def load_module(name, filename):
 
 
 def restore_set_lights():
-    """Undo gallery.json's wrapper and drop every cmd._lg_* attribute."""
-    original = vars(cmd).get('_lg_set')
-    if original is not None:
-        cmd.set_lights = original
+    """Drop every cmd._lg_* attribute."""
     for name in [n for n in vars(cmd) if n.startswith('_lg_')]:
         delattr(cmd, name)
 
@@ -175,24 +172,30 @@ class TestSections(testing.PyMOLTestCase):
 
     def testGalleryUsesTheCommands(self):
         """Every lit scene builds its rig with cmd.lights / cmd.atmosphere
-        through cmd._lg_rig, never cmd.do or a rig dict; the wrapper is the
-        one line that calls the original set_lights."""
+        through after_rig lines, never cmd.do or a rig dict; no wrapper in extra."""
         extra = self.spec['extra']
-        self.assertIn("if not hasattr(cmd, '_lg_set'): cmd._lg_set = cmd.set_lights", extra)
-        self.assertIn("cmd._lg_rig = None", extra)
-        wrapper = [l for l in extra if l.startswith('cmd.set_lights = ')]
-        self.assertEqual(len(wrapper), 1)
+        self.assertNotIn('_lg_set', ' '.join(extra))
+        self.assertNotIn('cmd.set_lights = ', ' '.join(extra))
+        self.assertNotIn('cmd._lg_rig = None', extra)
+        self.assertFalse(any(l.startswith('cmd.set_lights = ') for l in extra))
         for entry in self.spec['scenes']:
             lines = entry.get('lines', [])
             text = ' '.join(lines)
             self.assertNotIn('cmd.do(', text, entry['tag'])
             self.assertNotIn('set_lights', text, entry['tag'])
+            self.assertNotIn('_lg_rig', text, entry['tag'])
             if entry['tag'] == 'rig_none':
                 self.assertEqual(entry.get('rig'), 'none')
+                self.assertNotIn('after_rig', entry)
                 continue
-            rig_lines = [l for l in lines if l.startswith('cmd._lg_rig = lambda: (')]
-            self.assertEqual(len(rig_lines), 1, entry['tag'])
-            self.assertIn('cmd.lights(', rig_lines[0], entry['tag'])
+            after_rig = entry.get('after_rig', [])
+            self.assertTrue(len(after_rig) >= 2, entry['tag'])
+            self.assertEqual(after_rig[0], 'cmd.set_lights(None)', entry['tag'])
+            for call in after_rig[1:]:
+                self.assertTrue('cmd.lights(' in call or 'cmd.atmosphere(' in call or 'cmd.turn(' in call,
+                                '%s: %s' % (entry['tag'], call))
+            self.assertTrue(any('cmd.lights(' in call or 'cmd.atmosphere(' in call for call in after_rig[1:]),
+                            entry['tag'])
 
     def testPathsPassTheRefusals(self):
         out = os.path.join(tempfile.gettempdir(), 'gallery_out')
@@ -286,7 +289,8 @@ class TestScenesRun(testing.PyMOLTestCase):
             rigs.append(cmd.get_lights())
         self.assertIsNone(self.render.check_marker(marker, tag, job.rig), tag)
         self.assertEqual(rigs[0], rigs[1], '%s: the second run left another rig' % tag)
-        self.assertIs(vars(cmd).get('_lg_set'), self.original, tag)
+        self.assertNotIn('_lg_set', vars(cmd), tag)
+        self.assertIs(cmd.set_lights, self.original, tag)
         self.assertEqual(cmd.count_atoms('m and inorganic'), 0, tag)
         self.assertEqual(cmd.get_setting_int('depth_cue'), 0, tag)
         self.assertEqual(cmd.get_setting_int('metal_shadows'), 1, tag)

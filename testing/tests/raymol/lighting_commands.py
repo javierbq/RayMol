@@ -3099,23 +3099,23 @@ RIG_OFF_FULL_FILE = os.path.join(SCENES, 'rig_off_full.json')
 # into the off rig.
 RIG_OFF_AIR = {'haze': 0.3, 'dust': 0.5, 'dust_size': 0.4, 'dust_speed': 1.0,
                'scatter': 0.55, 'seed': 7}
-# What the scene files' extra lines leave on the cmd module.
-SHIM_ATTRS = ('_l612_set', '_l612_preset', '_l612_kw')
+# What rig_off_full.json's extra lines leave on the cmd module.
+SHIM_ATTRS = ('_l612_kw',)
 
 
 @unittest.skipUnless(os.path.isfile(RENDER) and os.path.isfile(PDB),
                      'needs a RayMol checkout (scripts/lighting)')
 class TestSceneFiles(CommandsCase):
     """The scene files that drive the frozen harness (render.py) through the
-    commands. The harness runs a scene's lines before its rig block, so both
-    files wrap a function the rig block calls: lighting_612_rigs.json
-    wraps cmd.set_lights ("rig": "on") to apply a preset, and
+    commands. lighting_612_rigs.json applies each preset in its after_rig
+    lines, which run after the rig block (#745); it wraps nothing.
     rig_off_full.json wraps cmd.keyword['lights'][0] ("rig": "off") so that
-    `three_point` also pins key, aims fill at 'm' and outlines rim.
+    the rig block's `three_point` also pins key, aims fill at 'm' and
+    outlines rim.
 
     The CI workflow runs every test file in one process: a wrapper left
     behind would change later files (lighting_harness.py's off script), so
-    tearDown puts both functions back and deletes the attributes."""
+    tearDown puts the functions back and deletes the attributes."""
 
     @classmethod
     def setUpClass(cls):
@@ -3192,7 +3192,6 @@ class TestSceneFiles(CommandsCase):
 
     def testPresetsFile(self):
         render = self.render
-        extra = self.spec(PRESETS_FILE)['extra']
         jobs = render.scene_file_jobs(PRESETS_FILE)
         # every preset, in the order of `lights presets`, without and with
         # metal_raytrace
@@ -3207,9 +3206,10 @@ class TestSceneFiles(CommandsCase):
             self.assertEqual(
                 (job.rig, job.rep_lines, job.rt, job.shadows, job.size),
                 ('on', l1.rep_lines, l1.rt, l1.shadows, l1.size), job.tag)
-            self.assertEqual(job.extra, extra + [
-                "cmd._l612_preset = %r" % preset, "cmd.color('grey80', 'm')"],
-                job.tag)
+            self.assertEqual(job.extra, ["cmd.color('grey80', 'm')"], job.tag)
+            self.assertEqual(job.after_rig,
+                             ["cmd.set_lights(None)", "cmd.lights(%r)" % preset],
+                             job.tag)
 
     def testPresetsScenesRun(self):
         names = {p[0]: [l['name'] for l in p[3]] for p in PRESETS}
@@ -3229,9 +3229,8 @@ class TestSceneFiles(CommandsCase):
             colours = set()
             cmd.iterate('m', 'colours.add(color)', space={'colours': colours})
             self.assertEqual(colours, {grey80}, job.tag)
-            # wrapped once: the second run kept the original reachable
-            self.assertIs(cmd._l612_set, self.original_set_lights)
-            self.assertIsNot(cmd.set_lights, self.original_set_lights)
+            self.assertNotIn('_l612_set', vars(cmd), job.tag)
+            self.assertIs(cmd.set_lights, self.original_set_lights, job.tag)
             if preset == 'spotlight':
                 # its off-centre aim resolved to a point (run 1 == run 2)
                 self.assertEqual(light('spot')['aim'], 'point', job.tag)
@@ -3324,7 +3323,7 @@ class TestSceneFiles(CommandsCase):
             job = self.render.scene_file_jobs(path)[0]
             self.run_twice(job, os.path.join(self.tmp,
                                              os.path.basename(path)[:-5]))
-        self.assertIsNot(cmd.set_lights, lighting.set_lights)
+        self.assertIs(cmd.set_lights, lighting.set_lights)
         self.assertIsNot(cmd.keyword['lights'][0], lighting_commands.lights)
         self.restore()
         self.assertIs(cmd.set_lights, lighting.set_lights)

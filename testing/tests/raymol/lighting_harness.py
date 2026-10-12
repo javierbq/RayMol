@@ -15,11 +15,13 @@ Runs on a RayMol build:
 """
 import ast
 import contextlib
+import glob
 import importlib.util
 import io
 import json
 import os
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -556,6 +558,108 @@ class TestLightingHarness(testing.PyMOLTestCase):
             for got, want in zip(rim['position'], mx):
                 self.assertAlmostEqual(got, want + 10.0, places=4)
         self.assertIsNone(self.render.check_marker(marker, 'cartoon_rt0', 'off'))
+
+    def testAfterRigOrder(self):
+        path = os.path.join(self.tmp, 'order.json')
+        with open(path, 'w') as handle:
+            json.dump({
+                'base': 'l1',
+                'rig': 'on',
+                'after_rig': ['x_file = 1'],
+                'scenes': [{
+                    'tag': 'cartoon_rt0',
+                    'lines': ['x_line = 0'],
+                    'after_rig': ['x_scene = 2']
+                }]
+            }, handle)
+        jobs = {j.tag: j for j in self.render.scene_file_jobs(path)}
+        job = jobs['cartoon_rt0']
+        self.assertEqual(job.after_rig, ['x_file = 1', 'x_scene = 2'])
+        text = self.render.scene_script(ROOT, job, '/m.ran')
+        self.assertIn('x_line = 0', text)
+        self.assertIn('# rig:', text)
+        self.assertIn('_lh_got = cmd.get_lights()', text)
+        self.assertIn('# after_rig', text)
+        self.assertIn('# marker (last)', text)
+        self.assertIn('x_file = 1', text)
+        self.assertIn('x_scene = 2', text)
+        self.assertLess(text.index('x_line = 0'), text.index('# rig:'))
+        self.assertGreater(text.index('# after_rig'), text.index('_lh_got = cmd.get_lights()'))
+        self.assertLess(text.index('# after_rig'), text.index('# marker (last)'))
+        self.assertLess(text.index('x_file = 1'), text.index('x_scene = 2'))
+
+    def testAfterRigRefusals(self):
+        path = os.path.join(self.tmp, 'refusal.json')
+        for bad in ('not a list', [123], ['has\nnewline']):
+            with open(path, 'w') as handle:
+                json.dump({'base': 'l1', 'after_rig': bad}, handle)
+            with self.assertRaises(self.render.Refusal, msg='file: %r' % (bad,)):
+                self.render.scene_file_jobs(path)
+
+            with open(path, 'w') as handle:
+                json.dump({'base': 'l1', 'scenes': [{'tag': 'cartoon_rt0', 'after_rig': bad}]}, handle)
+            with self.assertRaises(self.render.Refusal, msg='scene: %r' % (bad,)):
+                self.render.scene_file_jobs(path)
+
+    def testNoAfterRigScriptUnchanged(self):
+        for rig in ('none', 'off'):
+            jobs = self.render.l1_jobs(rig)
+            for job in jobs:
+                self.assertEqual(job.after_rig, [], job.tag)
+                text = self.render.scene_script(ROOT, job, '/m.ran')
+                self.assertNotIn('# after_rig', text, job.tag)
+
+    def testAfterRigReplacesHarnessRigInProcess(self):
+        tag = 'cartoon_solo_rt0'
+        path = os.path.join(self.tmp, 'solo.json')
+        solo_rig = {'enabled': True, 'lights': [{'name': 'solo', 'orbit': 10.0}]}
+        with open(path, 'w') as handle:
+            json.dump({
+                'base': 'l1',
+                'rig': 'on',
+                'scenes': [{
+                    'tag': tag,
+                    'after_rig': ['cmd.set_lights(%r)' % (solo_rig,)]
+                }]
+            }, handle)
+        jobs = [j for j in self.render.scene_file_jobs(path) if j.tag == tag]
+        out = self.mkdir('solo_out')
+        self.render.write_scripts(ROOT, out, jobs)
+        script = self.render.script_path(out, tag)
+        marker = self.render.marker_path(out, tag)
+        try:
+            cmd.run(script)
+            cmd.run(script)
+            rig = cmd.get_lights()
+            self.assertIsNotNone(rig)
+            self.assertEqual(len(rig['lights']), 1)
+            self.assertEqual(rig['lights'][0]['name'], 'solo')
+            self.assertIsNone(self.render.check_marker(marker, tag, 'on'))
+        finally:
+            cmd.set_lights(None)
+            cmd.reinitialize()
+
+    def testNoSceneFileWrapsSetLights(self):
+        pat = re.compile(r'_l\w*_set\b')
+        files = glob.glob(os.path.join(SCENES, '*.json'))
+        self.assertGreaterEqual(len(files), 15)
+        for filepath in files:
+            with open(filepath) as handle:
+                spec = json.load(handle)
+            strings = []
+            if 'extra' in spec and isinstance(spec['extra'], list):
+                strings.extend(spec['extra'])
+            if 'after_rig' in spec and isinstance(spec['after_rig'], list):
+                strings.extend(spec['after_rig'])
+            for scene in spec.get('scenes', []):
+                if 'lines' in scene and isinstance(scene['lines'], list):
+                    strings.extend(scene['lines'])
+                if 'after_rig' in scene and isinstance(scene['after_rig'], list):
+                    strings.extend(scene['after_rig'])
+            for s in strings:
+                self.assertNotIn('cmd.set_lights =', s, filepath)
+                self.assertNotIn('= cmd.set_lights', s, filepath)
+                self.assertIsNone(pat.search(s), '%r in %s' % (s, filepath))
 
 
 if __name__ == '__main__':

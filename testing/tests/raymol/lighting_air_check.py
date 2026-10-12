@@ -86,10 +86,7 @@ def load_module(name, filename):
 
 
 def restore_shims():
-    """Undo the scene files' shims (what tearDown does)."""
-    original = vars(cmd).pop('_l618_set', None)
-    if original is not None:
-        cmd.set_lights = original
+    """Undo the scene files' rig state (what tearDown does)."""
     original = vars(cmd).pop('_l618_get', None)
     if original is not None:
         cmd.get_lights = original
@@ -532,6 +529,7 @@ class TestSceneFiles(testing.PyMOLTestCase):
     def tearDown(self):
         restore_shims()
         cmd.set_lights(None)
+        self.assertNotIn('_l618_set', vars(cmd))
         self.assertIs(cmd.set_lights, self.original[0])
         self.assertIs(cmd.get_lights, self.original[1])
         super(TestSceneFiles, self).tearDown()
@@ -576,7 +574,13 @@ class TestSceneFiles(testing.PyMOLTestCase):
             self.assertEqual(spec['rig'], 'on', which)
             self.assertIsNone(spec['base'], which)
             self.assertIn('#618', spec['comment'])
+            applier = [
+                "if getattr(cmd, '_l618_rig', None) is not None: "
+                "cmd.set_lights(cmd._l618_rig(_lh_rig) if callable(cmd._l618_rig) else cmd._l618_rig)"
+            ]
+            self.assertEqual(spec.get('after_rig'), applier, which)
             for job in self.jobs[which]:
+                self.assertEqual(job.after_rig, applier, job.tag)
                 self.assertEqual(job.size, (1280, 720), job.tag)
                 tag_parts(job.tag)
                 self.assertTrue(job.extra[-1].startswith(RIG_LINE), job.tag)
@@ -759,6 +763,8 @@ class TestSceneFiles(testing.PyMOLTestCase):
                                  ['_move_gizmo'])
             else:
                 self.fail('no expectation for %s' % job.tag)
+            self.assertNotIn('_l618_set', vars(cmd), job.tag)
+            self.assertIs(cmd.set_lights, self.original[0], job.tag)
             restore_shims()
 
     def testGetLightsShimOnlyHidesAnEmptyOffRig(self):

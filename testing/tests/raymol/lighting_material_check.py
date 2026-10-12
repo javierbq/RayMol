@@ -86,10 +86,7 @@ def load_module(name, filename):
 
 
 def restore_set_lights():
-    """Undo the scene files' shim (what tearDown does)."""
-    original = vars(cmd).pop('_l615_set', None)
-    if original is not None:
-        cmd.set_lights = original
+    """Undo the scene files' rig state (what tearDown does)."""
     vars(cmd).pop('_l615_rig', None)
 
 
@@ -579,12 +576,16 @@ class TestSceneFiles(testing.PyMOLTestCase):
             for job in self.jobs[which]:
                 self.assertEqual(job.size, sizes[which], job.tag)
                 self.assertEqual(job.extra[:len(spec['extra'])], spec['extra'], job.tag)
-                # every scene says which rig the shim installs, as its last line
+                # every scene says which rig after_rig installs, as its last line
                 own = job.extra[len(spec['extra']):]
                 self.assertEqual([l for l in own if l.startswith(RIG_LINE)], [own[-1]], job.tag)
-                # the shim, guarded (the app runs each script twice)
-                self.assertIn("if not hasattr(cmd, '_l615_set'): cmd._l615_set = cmd.set_lights",
-                              spec['extra'], which)
+            applier = [
+                "if getattr(cmd, '_l615_rig', None) is not None: "
+                "cmd.set_lights(cmd._l615_rig(_lh_rig) if callable(cmd._l615_rig) else cmd._l615_rig)"
+            ]
+            self.assertEqual(spec.get('after_rig'), applier, which)
+            for job in self.jobs[which]:
+                self.assertEqual(job.after_rig, applier, job.tag)
 
     def testPlanNamesOnlyDefinedTags(self):
         tags = {j.tag for j in self.jobs['checks']}
@@ -675,8 +676,8 @@ class TestSceneFiles(testing.PyMOLTestCase):
                 self.assertRigW(rig, var, sh, tag)
             # never any air (rig W carries none)
             self.assertIsNone(lighting._light_air_frame(offscreen=True), tag)
-            # the guard kept the real set_lights (no shim wrapping a shim)
-            self.assertIs(cmd._l615_set, self.original, tag)
+            self.assertNotIn('_l615_set', vars(cmd), tag)
+            self.assertIs(cmd.set_lights, self.original, tag)
         self.assertEqual(ran, 79)
 
     def testClassicTagsDifferOnlyInTheirInput(self):
