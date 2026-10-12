@@ -213,6 +213,22 @@ class TestAutoColorContrast(testing.PyMOLTestCase):
             self.assertAlmostEqual(c, e, delta=1e-3, msg=f'Expected hydrogen swatch, got {rgb}')
         self.assertEqual(cmd.get('auto_color_next'), '6')
 
+    def testGradientBackgroundIsWhatCounts(self):
+        # With bg_gradient on, the viewport shows bg_rgb_top/bottom, not
+        # bg_rgb: a light gradient over a dark bg_rgb must still skip hydrogen.
+        cmd.bg_color('black')
+        cmd.set('bg_gradient', 1)
+        cmd.set('bg_rgb_top', 'white')
+        cmd.set('bg_rgb_bottom', 'white')
+        cmd.set('auto_color_next', 5)
+        self._build_protein('p1')
+        rgb = self._carbon_rgb('p1')
+        max_dist = max(abs(c - 1.0) for c in rgb)
+        self.assertGreaterEqual(
+            max_dist, 0.3,
+            f'Carbon colour {rgb} too close to the white gradient (max channel dist {max_dist:.3f} < 0.3)'
+        )
+
     def testExplicitColourIsKept(self):
         raymol_theme.set_palette(bg=(1.0, 1.0, 1.0))
         self._build_protein('p1')
