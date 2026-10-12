@@ -744,3 +744,198 @@ final class StickBallGlassRenderTests: XCTestCase {
         }
     }
 }
+
+/// Under the studio light rig, the rig's diffuse lights the procedural
+/// material's albedo, not the raw base colour (#710). Marble's veins, the grain
+/// of matte, clay, and rubber, and clay's grazing-edge darkening stay visible
+/// under a rig at classic 0 instead of fading away.
+///
+/// Tested against a control render of the SAME material with its procedural knobs
+/// zeroed out (vein contrast for marble; grain amplitude and edge darkening for
+/// clay), preserving the material's studio light response (such as marble's wrap)
+/// while isolating the procedural pattern. Before the fix the two renders
+/// differed by at most 5 levels (the classic ambient's share of the pattern):
+/// marble moved no pixel by 30 and clay none by 12.
+@MainActor
+final class StudioRigAlbedoTests: XCTestCase {
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var sceneBuilt = false
+    private var savedView: [Float]?
+    private let w = 400, h = 300
+
+    override func tearDown() {
+        if sceneBuilt {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.delete('ra710')
+            for _n in globals().pop('_ra710_enabled', []):
+                _c.enable(_n)
+            _c.set('bg_rgb', globals().pop('_ra710_bg', [0.0, 0.0, 0.0]))
+            _c.set('ray_opaque_background', globals().pop('_ra710_ray_bg', 1))
+            _c.set_lights(globals().pop('_ra710_rig', None))
+            """)
+            sceneBuilt = false
+        }
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        super.tearDown()
+    }
+
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            throw XCTSkip("the PyMOL engine did not come up under the test host")
+        }
+        while !engine.metalRendererReady() && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.metalRendererReady() else {
+            throw XCTSkip("no Metal renderer under the test host")
+        }
+    }
+
+    private func setupScene(rep: String, material: String) {
+        savedView = engine.captureView()
+        sceneBuilt = true
+        let repSetup = rep == "sphere"
+            ? """
+            _c.show_as('spheres', 'ra710')
+            _c.set('sphere_scale', 1.0, 'ra710')
+            _c.set('sphere_material', '\(material)', 'ra710')
+            """
+            : """
+            _c.show_as('surface', 'ra710')
+            _c.set('surface_material', '\(material)', 'ra710')
+            """
+        engine.runPython("""
+        from pymol import cmd as _c
+        _ra710_enabled = _c.get_names('objects', enabled_only=1)
+        _ra710_bg = list(_c.get_setting_tuple('bg_rgb')[1])
+        _ra710_ray_bg = _c.get_setting_int('ray_opaque_background')
+        _ra710_rig = _c.get_lights()
+        for _n in _ra710_enabled:
+            _c.disable(_n)
+        _c.delete('ra710')
+        _c.pseudoatom('ra710', pos=[0.0, 0.0, 0.0])
+        _c.alter('ra710', 'vdw=5.0')
+        _c.color('grey80', 'ra710')
+        \(repSetup)
+        _c.set('bg_rgb', [0.0, 0.0, 0.0])
+        _c.set('ray_opaque_background', 1)
+        _c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                     0.0, 0.0, -40.0, 0.0, 0.0, 0.0, 20.0, 60.0, -20.0))
+        """)
+    }
+
+    private func setRig(orbit: Double, pitch: Double) {
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set_lights({'enabled': True, 'centre': [0.0, 0.0, 0.0], 'size': 10.0, 'classic': 0.0,
+                       'lights': [{'name': 'key', 'anchor': 'camera', 'orbit': \(orbit), 'pitch': \(pitch),
+                                   'intensity': 1.0, 'highlight': 0.0}]})
+        """)
+    }
+
+    private func render(_ tag: String) throws -> [UInt8] {
+        let png = NSTemporaryDirectory() + "ra710_\(tag)_\(UUID().uuidString).png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: w, height: h, rayTraced: 0)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(URL(fileURLWithPath: png) as CFURL, nil),
+                                   "no export written (\(tag))")
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil),
+                                  "export unreadable (\(tag))")
+        guard image.width == w, image.height == h else {
+            XCTFail("export is \(image.width)x\(image.height), not \(w)x\(h) (\(tag))")
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return rgba
+    }
+
+    private func measure(_ patterned: [UInt8], _ control: [UInt8], threshold: Int, caseName: String = #function) {
+        var lit = 0
+        var moved = 0
+        var maxDelta = 0
+        for i in 0..<(w * h) {
+            let cr = Int(control[i * 4])
+            let cg = Int(control[i * 4 + 1])
+            let cb = Int(control[i * 4 + 2])
+            let cMax = max(cr, max(cg, cb))
+            if cMax >= 20 {
+                lit += 1
+                let pr = Int(patterned[i * 4])
+                let pg = Int(patterned[i * 4 + 1])
+                let pb = Int(patterned[i * 4 + 2])
+                let delta = max(abs(pr - cr), max(abs(pg - cg), abs(pb - cb)))
+                maxDelta = max(maxDelta, delta)
+                if delta >= threshold {
+                    moved += 1
+                }
+            }
+        }
+        let fraction = lit > 0 ? Double(moved) / Double(lit) : 0.0
+        print("710-\(caseName): lit=\(lit) moved=\(moved) fraction=\(fraction) maxDelta=\(maxDelta)")
+        XCTAssertGreaterThanOrEqual(lit, 2000, "710-\(caseName): scene should be lit (#710)")
+        XCTAssertGreaterThanOrEqual(fraction, 0.02,
+            "710-\(caseName): procedural pattern albedo should show under the studio rig (#710)")
+    }
+
+    func testMarbleVeinsShowUnderTheRigOnSpheres() throws {
+        try requireEngine()
+        setupScene(rep: "sphere", material: "marble")
+        setRig(orbit: -30.0, pitch: 20.0)
+        let patterned = try render("marble_spheres_pattern")
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set('sphere_material_knob5', 0.0, 'ra710')
+        """)
+        let control = try render("marble_spheres_control")
+        measure(patterned, control, threshold: 30, caseName: "marble-spheres")
+    }
+
+    func testMarbleVeinsShowUnderTheRigOnASurface() throws {
+        try requireEngine()
+        setupScene(rep: "surface", material: "marble")
+        setRig(orbit: -30.0, pitch: 20.0)
+        let patterned = try render("marble_surface_pattern")
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set('surface_material_knob5', 0.0, 'ra710')
+        """)
+        let control = try render("marble_surface_control")
+        measure(patterned, control, threshold: 30, caseName: "marble-surface")
+    }
+
+    func testClayGrainAndEdgeShowUnderTheRigOnSpheres() throws {
+        try requireEngine()
+        setupScene(rep: "sphere", material: "clay")
+        setRig(orbit: -60.0, pitch: 20.0)
+        let patterned = try render("clay_spheres_pattern")
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set('sphere_material_knob1', 0.0, 'ra710')
+        _c.set('sphere_material_knob3', 0.0, 'ra710')
+        """)
+        let control = try render("clay_spheres_control")
+        // Clay's pattern is subtler than marble's veins: grain of 0.10 and an
+        // edge darkening that peaks where the light already grazes. Measured
+        // at 6.5% of lit pixels moving >= 12 levels with the fix; on master
+        // no pixel moves more than 3. A brighter light does not help: the
+        // tone knee compresses the difference.
+        measure(patterned, control, threshold: 12, caseName: "clay-spheres")
+    }
+}

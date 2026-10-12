@@ -158,21 +158,25 @@ SHADOW_TOKENS = re.compile(r'\bkLightShadow\b|\blightShadow\w*|\w+_shadowed\b')
 # never from this branch: with kLightShadow false every rig fragment, rig
 # helper and light helper must be exactly what #613 shipped.
 MASTER_613 = {
-    ('kVBOSrc', 'vbo_fragment'): ('1be74e6af4d56e9d', 'a40bc7ab03b56474'),
-    ('kVBOSrc', 'vbo_fragment_oit'): ('fa4a6d1608274485', '25ba2c47075b0478'),
+    # #710: retaken, the rig lights the material's albedo (mat_rig_albedo)
+    ('kVBOSrc', 'vbo_fragment'): ('1be74e6af4d56e9d', '9e7b204b31b48e14'),
+    # #710: retaken, the rig lights the material's albedo (mat_rig_albedo)
+    ('kVBOSrc', 'vbo_fragment_oit'): ('fa4a6d1608274485', '6672309308dbd574'),
     ('kSphereImpostorSrc', 'sphere_impostor_fragment'):
         ('8ff00c9aa8dab448', '3c25a1c606d32503'),
     # #635: retaken after sphere glass coverage split
     ('kSphereImpostorSrc', 'sphere_impostor_fragment_oit'):
         ('40c85eabe7e7fbde', '89450b8465627663'),
+    # #710: retaken, the rig lights the material's albedo (mat_rig_albedo)
     ('kSphereImpostorSrc', 'sphere_shade_material_rig'):
-        ('07c482db02f7600c', '7f29ebf73bd315ca'),
+        ('07c482db02f7600c', 'bdeb298db5e0fb3f'),
     ('kCylinderImpostorSrc', 'cyl_impostor_fragment'):
         ('ece804d6981b5b5c', 'e5df5087332f4379'),
     ('kCylinderImpostorSrc', 'cyl_impostor_fragment_oit'):
         ('99fab7e91e0cc052', '6837bc3562529bdb'),
+    # #710: retaken, the rig lights the material's albedo (mat_rig_albedo)
     ('kCylinderImpostorSrc', 'cyl_shade_material_rig'):
-        ('2eb0f1493ffb3b10', 'd201685b5438c819'),
+        ('2eb0f1493ffb3b10', 'fbd218eb47d2587e'),
     ('kMaterialSrc', 'light_response_neutral'):
         ('f9d29c479d573b42', '54a48318b1bd91ef'),
     # ('kMaterialSrc', 'light_response') is left out since #615: its body is
@@ -547,13 +551,16 @@ class TestFragments(ShadowMSLCase):
         the _shadowed function and the maps."""
         vbo = fragments(self.msl['kVBOSrc'])
         body = squash(vbo['vbo_fragment'][1])
+        # #710: the rig lights the material's albedo (mat_rig_albedo)
         self.assertIn(
             'if(kLightRig){constfloat3shaded=vbo_material_shade(in.color.rgb,'
             'in.normalEye,in.posModel,lt,mat,envMap,envSmp);'
-            'if(kLightShadow)returnfloat4(light_apply_shadowed(shaded,in.color.rgb,'
+            'constfloat3albedo=mat_rig_albedo(in.color.rgb,in.normalEye,'
+            'in.posModel,mat);'
+            'if(kLightShadow)returnfloat4(light_apply_shadowed(shaded,albedo,'
             'in.normalEye,in.posEye,rig,lightShadowMaps,lightShadowSmp,'
             'light_response(mat)),in.color.a);'
-            'returnfloat4(light_apply(shaded,in.color.rgb,in.normalEye,in.posEye,'
+            'returnfloat4(light_apply(shaded,albedo,in.normalEye,in.posEye,'
             'rig,light_response(mat)),in.color.a);}', body)
         body = squash(vbo['vbo_fragment_oit'][1])
         self.assertIn(
@@ -561,10 +568,13 @@ class TestFragments(ShadowMSLCase):
             'lightShadowMaps,lightShadowSmp,in.color.rgb,N,in.posEye,'
             'light_response(mat)):light_terms(rig,in.color.rgb,N,in.posEye,'
             'light_response(mat));', body)
+        # #710: the rig lights the material's albedo (mat_rig_albedo)
         self.assertIn(
-            'c.rgb=kLightShadow?light_apply_shadowed(c.rgb,in.color.rgb,'
+            'constfloat3albedo=mat_rig_albedo(in.color.rgb,in.normalEye,'
+            'in.posModel,mat);'
+            'c.rgb=kLightShadow?light_apply_shadowed(c.rgb,albedo,'
             'in.normalEye,in.posEye,rig,lightShadowMaps,lightShadowSmp,'
-            'light_response(mat)):light_apply(c.rgb,in.color.rgb,in.normalEye,'
+            'light_response(mat)):light_apply(c.rgb,albedo,in.normalEye,'
             'in.posEye,rig,light_response(mat));', body)
         three_way = re.compile(
             r'if\(kLightRig&&kLightShadow\)(\w+)_rig_shadowed\(([^;]*)\);'
