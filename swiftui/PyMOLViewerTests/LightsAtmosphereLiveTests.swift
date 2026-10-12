@@ -2488,3 +2488,223 @@ final class GridAirTests: XCTestCase {
             "halves total means left=\(leftTotalMean) right=\(rightTotalMean) differ by > 10%")
     }
 }
+
+/// Issue #709: Traced reflection hits take the neutral material response.
+/// At `metal_raytrace 1` with a studio rig on, `rt_composite` lights what a
+/// reflection ray hits with the rig. The hit must take ITS material's studio
+/// response (the per-occurrence table's response terms, as `bindMaterialU`
+/// gives the raster draw), not `light_response_neutral()`: a fully tinted
+/// metallic sphere (studio diffuse 1 - reflect * tint = 0) seen in a mirror
+/// must lose the rig's diffuse there as it does in the raster image.
+@MainActor
+final class ReflectionHitMaterialTests: XCTestCase {
+    private static let width = 400
+    private static let height = 300
+
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var sceneBuilt = false
+    private var savedView: [Float]?
+
+    override func tearDown() {
+        if sceneBuilt {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.delete('rh709*')
+            for _n, _v in globals().pop('_rh709_settings', {}).items():
+                _c.set(_n, _v)
+            _c.set_lights(globals().pop('_rh709_rig', None))
+            for _n in globals().pop('_rh709_enabled', []):
+                _c.enable(_n)
+            """)
+            sceneBuilt = false
+        }
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        super.tearDown()
+    }
+
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            throw XCTSkip("the PyMOL engine did not come up under the test host")
+        }
+    }
+
+    private func buildScene() {
+        savedView = engine.captureView()
+        sceneBuilt = true
+        engine.runPython("""
+        from pymol import cmd as _c
+        _rh709_enabled = _c.get_names('objects', enabled_only=1)
+        _rh709_settings = {_n: _c.get_setting_tuple(_n)[1][0] for _n in (
+            'depth_cue', 'metal_shadows', 'metal_rt_transparent', 'metal_temporal_ao')}
+        _rh709_settings['bg_rgb'] = list(_c.get_setting_tuple('bg_rgb')[1])
+        _rh709_rig = _c.get_lights()
+        for _n in _rh709_enabled:
+            _c.disable(_n)
+        _c.set('bg_rgb', [0.0, 0.0, 0.0])
+        _c.set('depth_cue', 0)
+        _c.set('metal_temporal_ao', 0)
+        _c.set('metal_shadows', 0)
+        _c.set('metal_rt_transparent', 0)
+
+        # Mirror sphere: metallic, reflect 1.0, tint 0.0, rough 0.0
+        _c.pseudoatom('rh709m', pos=[4.0, 0.0, 0.0], vdw=4.5)
+        _c.show_as('spheres', 'rh709m')
+        _c.set('sphere_material', 'metallic', 'rh709m')
+        _c.set('sphere_material_reflect', 1.0, 'rh709m')
+        _c.set('sphere_material_tint', 0.0, 'rh709m')
+        _c.set('sphere_material_rough', 0.0, 'rh709m')
+
+        # Target sphere: grey80, the default material until the test changes it
+        _c.pseudoatom('rh709t', pos=[-4.0, 0.0, -2.0], vdw=3.5)
+        _c.show_as('spheres', 'rh709t')
+        _c.color('grey80', 'rh709t')
+
+        _c.set_lights({'enabled': True, 'ambient': 0.06, 'centre': [0.0, 0.0, 0.0], 'size': 20.0,
+                       'lights': [{'name': 'key', 'anchor': 'camera', 'orbit': -30.0, 'pitch': 20.0,
+                                   'radius': 3.0, 'beam': 80.0, 'highlight': 1.0, 'shadow': False}]})
+
+        _c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                     0.0, 0.0, -60.0, 0.0, 0.0, 0.0, 20.0, 100.0, -20.0))
+        """)
+    }
+
+    /// The target as a fully tinted metal (studio diffuse 0), or back to default.
+    private func setTargetMetal(_ metal: Bool) {
+        if metal {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.set('sphere_material', 'metallic', 'rh709t')
+            _c.set('sphere_material_reflect', 1.0, 'rh709t')
+            _c.set('sphere_material_tint', 1.0, 'rh709t')
+            _c.set('sphere_material_rough', 1.0, 'rh709t')
+            """)
+        } else {
+            engine.runPython("""
+            from pymol import cmd as _c
+            for _n in ('sphere_material', 'sphere_material_reflect',
+                       'sphere_material_tint', 'sphere_material_rough'):
+                _c.unset(_n, 'rh709t')
+            """)
+        }
+    }
+
+    private func render(rayTraced: Int) throws -> [UInt8] {
+        let png = NSTemporaryDirectory() + "issue_709_render.png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: Self.width, height: Self.height, rayTraced: rayTraced)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(
+            URL(fileURLWithPath: png) as CFURL, nil), "no export written")
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        XCTAssertEqual(image.width, Self.width)
+        XCTAssertEqual(image.height, Self.height)
+        let w = image.width, h = image.height
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return rgba
+    }
+
+    private func footprint(of name: String) throws -> [Bool] {
+        let others = ["rh709m", "rh709t"].filter { $0 != name }
+        for other in others {
+            engine.runPython("from pymol import cmd as _c\n_c.disable('\(other)')")
+        }
+        let px = try render(rayTraced: 0)
+        for other in others {
+            engine.runPython("from pymol import cmd as _c\n_c.enable('\(other)')")
+        }
+        return stride(from: 0, to: px.count, by: 4).map { max(px[$0], px[$0 + 1], px[$0 + 2]) > 3 }
+    }
+
+    private func maxDelta(_ a: [UInt8], _ b: [UInt8], in region: [Bool]) -> Int {
+        guard a.count == b.count, a.count == region.count * 4 else { return -1 }
+        var best = 0
+        for (p, inside) in region.enumerated() where inside {
+            for c in 0..<3 {
+                best = max(best, abs(Int(a[p * 4 + c]) - Int(b[p * 4 + c])))
+            }
+        }
+        return best
+    }
+
+    private func meanSum(_ px: [UInt8], in region: [Bool]) -> Double {
+        var total = 0, count = 0
+        for (p, inside) in region.enumerated() where inside {
+            total += Int(px[p * 4]) + Int(px[p * 4 + 1]) + Int(px[p * 4 + 2])
+            count += 1
+        }
+        return count > 0 ? Double(total) / Double(count) : 0
+    }
+
+    func testReflectionHitTakesItsMaterialResponse() throws {
+        try requireEngine()
+        guard engine.rayTracingSupported else {
+            throw XCTSkip("Hardware ray tracing is not supported on this device")
+        }
+        buildScene()
+
+        let mirror = try footprint(of: "rh709m")
+        let target = try footprint(of: "rh709t")
+
+        var minX = Self.width, maxX = 0, minY = Self.height, maxY = 0
+        for y in 0..<Self.height {
+            for x in 0..<Self.width where mirror[y * Self.width + x] {
+                minX = min(minX, x)
+                maxX = max(maxX, x)
+                minY = min(minY, y)
+                maxY = max(maxY, y)
+            }
+        }
+        XCTAssertGreaterThan(maxX - minX, 40, "mirror sphere not found in frame")
+
+        // The mirror's third facing the target: its reflection is a crescent
+        // along the mirror's left rim, so the box reaches the rim.
+        let boxMaxX = minX + (maxX - minX) / 3
+        var box = [Bool](repeating: false, count: Self.width * Self.height)
+        for y in minY...maxY {
+            for x in minX...boxMaxX {
+                let idx = y * Self.width + x
+                box[idx] = mirror[idx] && !target[idx]
+            }
+        }
+        let boxCount = box.filter { $0 }.count
+        XCTAssertGreaterThan(boxCount, 100, "the box region inside the mirror is too small: \(boxCount)")
+
+        let rtDefault = try render(rayTraced: 1)
+        let rtDefault2 = try render(rayTraced: 1)
+        guard maxDelta(rtDefault, rtDefault2, in: box) == 0 else {
+            throw XCTSkip("two ray-traced frames of the same scene differ: not deterministic here")
+        }
+
+        setTargetMetal(true)
+        let rtMetal = try render(rayTraced: 1)
+        let rasterMetal = try render(rayTraced: 0)
+        setTargetMetal(false)
+        let rasterDefault = try render(rayTraced: 0)
+
+        let rtDelta = maxDelta(rtDefault, rtMetal, in: box)
+        let rasterDelta = maxDelta(rasterDefault, rasterMetal, in: box)
+        let meanDefault = meanSum(rtDefault, in: box)
+        let meanMetal = meanSum(rtMetal, in: box)
+        print("709 rt delta=\(rtDelta) raster delta=\(rasterDelta) mean default=\(meanDefault) metal=\(meanMetal)")
+
+        XCTAssertGreaterThanOrEqual(rtDelta, 20, "the traced reflection ignores the hit's material")
+        XCTAssertLessThan(meanMetal, meanDefault,
+                          "a metal whose studio diffuse is 0 must reflect darker than the default material")
+        XCTAssertLessThanOrEqual(rasterDelta, 3, "the raster mirror changed with the target's material")
+    }
+}

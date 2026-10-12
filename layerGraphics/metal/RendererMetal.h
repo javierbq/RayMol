@@ -1247,12 +1247,17 @@ private:
   //    surface-clipped-open cavities stop occluding (#425).
   std::vector<Mat4> _rtFrameXform;
   std::vector<std::array<float, 2>> _rtFrameClip;
-  // Per-occurrence traced-reflection material {reflect, tint, rough, 0}. NOT
-  // folded into the rebuild signature: the built AS stores each primitive's
-  // occurrence index, and the material table is refreshed from the current
-  // frame's record every frame, so dragging a material slider never rebuilds.
-  std::vector<std::array<float, 4>> _rtFrameMat;
-  std::vector<std::array<float, 4>> _rtBuiltMat;   // table uploaded for the built AS
+  // Per-occurrence traced-reflection material (#709): two float4 (8 floats) per
+  // occurrence. row0 = {reflect, tint, rough, lightWrap}, row1 = {lightDiffuse,
+  // lightHighlight, lightSharpness, lightTint}. NOT folded into the rebuild
+  // signature: the built AS stores each primitive's occurrence index, and the
+  // material table is refreshed from the current frame's record every frame, so
+  // dragging a material slider never rebuilds.
+  std::vector<std::array<float, 8>> _rtFrameMat;
+  std::vector<std::array<float, 8>> _rtBuiltMat;   // table uploaded for the built AS
+  // The next draw's row of that table: _repMat plus the studio response
+  // bindRepMaterial gives the raster draw (#709).
+  std::array<float, 8> rtOccurrenceMaterial() const;
   Mat4 _rtBaseModelView{};      // camera-only modelview (world -> eye)
   Mat4 _rtBaseModelViewInv{};   // its inverse (eye -> world)
 
@@ -1311,7 +1316,8 @@ private:
     std::memcpy(delta.data(), &d, 64);
     _rtFrameXform.push_back(delta);
     _rtFrameClip.push_back({_repClipFront, _repClipBack});
-    _rtFrameMat.push_back({_repMat[0], _repMat[1], _repMat[2], 0.0f});
+    // #709: snapshot this occurrence's full 8-float material response
+    _rtFrameMat.push_back(rtOccurrenceMaterial());
 
     _rtFrameSig ^= (uint64_t)reinterpret_cast<uintptr_t>(key);
     _rtFrameSig *= 1099511628211ULL;
@@ -1396,7 +1402,7 @@ private:
   id<MTLBuffer> _rtTriColBuffer = nil;
   id<MTLBuffer> _rtTriNrmBuffer = nil;   // 9 floats/tri: world-space vertex normals
   id<MTLBuffer> _rtTriMatBuffer = nil;   // uint32/tri: occurrence index into the material table
-  id<MTLBuffer> _rtMatBuffer = nil;      // float4 per occurrence: {reflect, tint, rough, 0}
+  id<MTLBuffer> _rtMatBuffer = nil;      // 2 float4 per occurrence (#709): {reflect, tint, rough, wrap}, {diffuse, highlight, sharpness, tint}
   id<MTLBuffer> _rtSphereBuffer = nil;
   size_t _rtSphereInstCount = 0;
   id<MTLBuffer> _rtTriBuffer = nil;   // world-tri vertices (9 floats/tri), bound to rt_ao so the
