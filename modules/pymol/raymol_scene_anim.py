@@ -824,8 +824,9 @@ def dust_speeds(marks=None, lights_track=None, entries=None):
     _entry_speed of its scene (the last mark wins if a frame has several);
     a frame with neither, or whose value is None, keeps the previous frame's
     speed. Frames before the first known speed take the FIRST known speed of
-    the movie (the live rig before it is unknown); with no known speed at
-    all, every frame is 0.0."""
+    the movie (the live rig before it is unknown). With no known speed at
+    all (no scene stores a rig) it is [], and the phase stays 0: the dust
+    keeps clock x speed, as before #687."""
     if marks is None:
         marks = _scene_marks
     if lights_track is None:
@@ -890,7 +891,7 @@ def dust_speeds(marks=None, lights_track=None, entries=None):
             break
 
     if first_known is None:
-        return [0.0] * L
+        return []
 
     out = []
     cur = first_known
@@ -1152,12 +1153,29 @@ def clear_authored(_self=cmd):
     frames = set(int(f) for f in _track)
     frames.update(int(f) for f, _n in _scene_marks)
     frames.update(int(f) for f in _lights_track)
-    frames.update(int(f) for f in _phase_frames)
+    # A hold frame (#687) carries only the phase write, and can be any frame
+    # of the movie, so its slot is edited, not blanked: a user's own command
+    # there survives a re-author (blanking is the fallback without a reader).
+    hold = sorted(set(int(f) for f in _phase_frames) - frames)
     try:
         length = int(_self.get_movie_length())
     except Exception:
         length = 0
     done = []
+    text = phase_command()
+    for f in hold:
+        if length > 0 and f > length:
+            continue
+        try:
+            slot = _frame_command(f, _self)
+        except Exception:
+            frames.add(f)
+            continue
+        try:
+            _self.mdo(f, slot.replace(';' + text, '').replace(text, ''))
+            done.append(f)
+        except Exception as e:
+            print('MOVIE_ERR:' + str(e))
     for f in sorted(frames):
         # Past the end of the current movie there is no Cmd[] slot to blank (a
         # shorter mset already dropped it); mdo would only print a Movie-Error.
@@ -1168,7 +1186,7 @@ def clear_authored(_self=cmd):
             done.append(f)
         except Exception as e:
             print('MOVIE_ERR:' + str(e))
-    return done
+    return sorted(done)
 
 
 def _wrap_length(wrap, _self):

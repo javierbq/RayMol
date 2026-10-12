@@ -1645,3 +1645,35 @@ class TestDustPhaseHoldFrames(unittest.TestCase):
                          wrap=False)
         self.assertNotIn(self.anim.phase_command(),
                          [c for _f, c in fake.appended])
+
+    def test_no_known_speed_keeps_phase_zero(self):
+        # scenes from before #617 store no rig: the live rig's dust keeps
+        # clock x speed (no restart at every keyframe)
+        self.anim._scene_marks[:] = [(1, 'A'), (25, 'B')]
+        self.assertEqual(self.anim.dust_speeds(), [])
+        self.assertEqual(self.anim.dust_phase(25, 30.0, [], 1.0), 0.0)
+
+        class At(FakeCmd):
+            def get_frame(self):
+                return 25
+
+            def get(self, name):
+                return '30.0'
+
+        at = At()
+        self.anim._write_phase(at)
+        self.assertEqual(at.sets, [('metal_light_air_phase', 0.0)])
+
+    def test_reauthor_keeps_a_user_command_on_a_hold_frame(self):
+        self.scenes._scene_lights['A'] = rig(1.0)
+        self.scenes._scene_lights['B'] = rig(3.0)
+        fake = self.LengthCmd(40)
+        kfs = [(1, 'A', 0.0), (25, 'B', 0.0), (40, 'B', 0.0)]
+        self.anim.author(kfs, _self=fake, wrap=False)
+        fake.mappend(30, 'turn y, 1')
+        self.anim.author(kfs, _self=fake, wrap=False)
+        slot = fake.get_frame_command(30)
+        self.assertIn('turn y, 1', slot)
+        self.assertEqual(slot.count(self.anim.phase_command()), 1)
+        self.assertEqual(fake.get_frame_command(31),
+                         ';' + self.anim.phase_command())

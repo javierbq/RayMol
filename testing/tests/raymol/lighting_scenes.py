@@ -1597,6 +1597,25 @@ class TestSceneMovieDustPhase(_BlendCase):
                                    msg="jump %d -> %d" % (start, f))
         self.assertGreater(times[32] - times[31], 2.9 / 30.0)  # B's speed
 
+    def testScenesWithoutARigKeepTheClock(self):
+        # #687 review: scenes stored without a rig entry (before #617) leave
+        # the live rig alone; its dust keeps clock x speed through every
+        # keyframe instead of restarting there
+        from pymol import raymol_scenes
+        rig = copy.deepcopy(MOVIE_A)
+        rig['air'] = dict(rig['air'], dust=0.5, dust_speed=2.0)
+        self.store('A', rig)
+        self.store('B', rig)
+        raymol_scenes._scene_lights.clear()
+        cmd.set('movie_fps', 30)
+        rebuild(scene_item(1, 'A'), scene_item(13, 'B'), scene_item(25, 'A'))
+        for f in (1, 12, 13, 14, 25, 20, 2):
+            cmd.frame(f)
+            air = lighting._light_air_frame(offscreen=True)
+            self.assertIsNotNone(air, f)
+            self.assertAlmostEqual(air['time'], (f - 1) / 30.0 * 2.0,
+                                   delta=1e-5, msg='frame %d' % f)
+
 
 # --- the L2 scene file (scripts/lighting/scenes/lighting_617_movie.json) ----
 
