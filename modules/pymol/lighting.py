@@ -298,11 +298,12 @@ def _light_air_clock(pinned=-1.0, offscreen=False, playing=False, frames=1,
             int(frames), int(frame), float(fps), float(wall))
 
 
-def _light_air_time(clock, speed, *, _self=cmd):
-    '''The dust time (#618): fmod(max(clock, 0) * max(speed, 0), 20000);
-    never negative.'''
+def _light_air_time(clock, speed, phase=0.0, *, _self=cmd):
+    '''The dust time (#618, #687): fmod(max(clock, 0) * max(speed, 0) + phase,
+    20000); never negative; 0 for a non-finite or non-positive result. Phase is
+    added only when finite.'''
     with _self.lockcm:
-        return _self._cmd.light_air_time(_self._COb, float(clock), float(speed))
+        return _self._cmd.light_air_time(_self._COb, float(clock), float(speed), float(phase))
 
 
 def _light_air_resolution(setting, mobile=False, *, _self=cmd):

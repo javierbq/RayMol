@@ -128,6 +128,10 @@ struct LightAirClockInputs {
   double wallSeconds = 0.0;
 };
 
+/// True when the dust clock is driven by movie time (not pinned, frames > 1,
+/// and either offscreen or playing).
+bool LightAirClockIsMovie(const LightAirClockInputs& in);
+
 /**
  * The dust clock (s), before dust_speed. In order: a pin (pinned >= 0);
  * movie time frame / fps when there is a movie (frames > 1) and the frame is
@@ -136,9 +140,10 @@ struct LightAirClockInputs {
  */
 double LightAirClock(const LightAirClockInputs& in);
 
-/// The dust time: fmod(max(clock, 0) x max(speed, 0), kLightAirTimeWrap).
-/// Never negative; 0 for a non-finite product.
-double LightAirTime(double clock, double speed);
+/// The dust time: fmod(max(clock, 0) x max(speed, 0) + phase, kLightAirTimeWrap).
+/// Never negative; 0 for a non-finite or non-positive result. Phase is added
+/// only when finite.
+double LightAirTime(double clock, double speed, double phase = 0.0);
 
 /// The dust pattern's offset for `seed`: fract(seed x golden ratio) x 1000,
 /// computed in double. 0 for seed 0.
@@ -157,11 +162,14 @@ bool LightAirAnimating(const LightAir& air, double pinned, bool playing,
  * The air block for the source, with the dust clock `clock` (s, before
  * dust_speed), `resolution` (LightAirResolution) and `shadowFilter`
  * (LightAirShadowFilter); `alpha` (metal_light_air_alpha, #684) sets view.z
- * to 1 so a transparent-background export keeps the air in its alpha (0 else).
+ * to 1 so a transparent-background export keeps the air in its alpha (0 else);
+ * `phase` (metal_light_air_phase, #687) is added to the dust time when the
+ * dust clock is the movie clock.
  * nullopt when the air shows nothing or its range is
  * empty (the rig is behind the camera). The renderer fills view.y and proj.
  */
 std::optional<LightAirBlock> LightAirPack(const LightAirSource& source,
-    double clock, int resolution, int shadowFilter, bool alpha = false);
+    double clock, int resolution, int shadowFilter, bool alpha = false,
+    double phase = 0.0);
 
 } // namespace pymol

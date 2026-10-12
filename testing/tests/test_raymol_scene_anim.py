@@ -1341,3 +1341,339 @@ class TestLoopWrap(unittest.TestCase):
         self.assertFalse(any(41 <= f <= 60 for f in frames))
         self.anim.author([], _self=fake)
 
+
+def rig(speed):
+    if speed is None:
+        return {'enabled': True, 'lights': [{'name': 'key'}]}
+    return {'enabled': True, 'lights': [{'name': 'key'}],
+            'air': {'haze': 0.0, 'dust': 0.5, 'dust_speed': speed}}
+
+
+class TestDustPhase(unittest.TestCase):
+    def setUp(self):
+        self.scenes, self.anim = load_modules()
+        self.scenes.clear_all()
+        self.anim._scene_marks[:] = []
+        self.anim._lights_track.clear()
+
+    def test_constant_speed(self):
+        # 1. Constant speed in every scene: every phase is 0.0 (exactly).
+        self.scenes._scene_lights['A'] = rig(2.0)
+        self.scenes._scene_lights['B'] = rig(2.0)
+        kfs = [(1, 'A', 0.0), (25, 'B', 0.0)]
+        self.anim._scene_marks[:] = [(1, 'A'), (25, 'B'), (48, 'B')]
+        self.anim._lights_track.update(self.anim.build_lights_track(kfs))
+        speeds = self.anim.dust_speeds()
+        self.assertEqual(len(speeds), 48)
+        for f in range(1, 49):
+            p = self.anim.dust_phase(f, 30.0, speeds)
+            self.assertEqual(p, 0.0, "frame %d" % f)
+
+    def test_speed_increase_smooth_transition(self):
+        # 2. A (speed 1) -> B (speed 3), keyframes 1 and 25, movie length 48
+        self.scenes._scene_lights['A'] = rig(1.0)
+        self.scenes._scene_lights['B'] = rig(3.0)
+        kfs = [(1, 'A', 0.0), (25, 'B', 0.0)]
+        self.anim._scene_marks[:] = [(1, 'A'), (25, 'B'), (48, 'B')]
+        self.anim._lights_track.update(self.anim.build_lights_track(kfs))
+        fps = 30.0
+        speeds = self.anim.dust_speeds()
+        self.assertEqual(len(speeds), 48)
+
+        def T(f):
+            s = speeds[f - 1]
+            p = self.anim.dust_phase(f, fps, speeds)
+            return (f - 1) / fps * s + p
+
+        def T_no_phase(f):
+            s = speeds[f - 1]
+            return (f - 1) / fps * s
+
+        max_step = max(speeds) / fps
+        for f in range(1, 48):
+            step = T(f + 1) - T(f)
+            self.assertGreaterEqual(step, -1e-9, "monotonic at frame %d" % f)
+            self.assertLessEqual(step, max_step + 1e-9, "step bound at frame %d" % f)
+            self.assertAlmostEqual(step, speeds[f - 1] / fps, delta=1e-9)
+
+        # Without phase, the jump across the transition is larger than max_step
+        no_phase_steps = [T_no_phase(f + 1) - T_no_phase(f) for f in range(1, 48)]
+        self.assertTrue(any(s > max_step + 1e-6 for s in no_phase_steps),
+                        "expected large jump without phase")
+
+    def test_determinism(self):
+        # 3. Determinism: compute dust_phase for F in shuffled and reverse order
+        self.scenes._scene_lights['A'] = rig(1.0)
+        self.scenes._scene_lights['B'] = rig(3.0)
+        kfs = [(1, 'A', 0.0), (25, 'B', 0.0)]
+        self.anim._scene_marks[:] = [(1, 'A'), (25, 'B'), (48, 'B')]
+        self.anim._lights_track.update(self.anim.build_lights_track(kfs))
+        speeds = self.anim.dust_speeds()
+        fps = 30.0
+
+        forward = [self.anim.dust_phase(f, fps, speeds) for f in range(1, 49)]
+        reverse = [self.anim.dust_phase(f, fps, speeds) for f in range(48, 0, -1)]
+        self.assertEqual(reverse, list(reversed(forward)))
+
+        import random
+        order = list(range(1, 49))
+        random.seed(42)
+        random.shuffle(order)
+        shuffled = {f: self.anim.dust_phase(f, fps, speeds) for f in order}
+        self.assertEqual([shuffled[f] for f in range(1, 49)], forward)
+
+    def test_speed_to_zero_holds_time(self):
+        # 4. Speed to 0: B speed 0 holds T constant
+        self.scenes._scene_lights['A'] = rig(2.0)
+        self.scenes._scene_lights['B'] = rig(0.0)
+        kfs = [(1, 'A', 0.0), (25, 'B', 0.0)]
+        self.anim._scene_marks[:] = [(1, 'A'), (25, 'B'), (48, 'B')]
+        self.anim._lights_track.update(self.anim.build_lights_track(kfs))
+        fps = 30.0
+        speeds = self.anim.dust_speeds()
+
+        def T(f):
+            s = speeds[f - 1]
+            p = self.anim.dust_phase(f, fps, speeds)
+            return (f - 1) / fps * s + p
+
+        val_at_cut = T(25)
+        self.assertGreater(val_at_cut, 0.0)
+        for f in range(25, 49):
+            self.assertAlmostEqual(T(f), val_at_cut, delta=1e-9)
+            if f < 48:
+                self.assertAlmostEqual(T(f + 1) - T(f), 0.0, delta=1e-9)
+
+    def test_speed_helpers(self):
+        # 5. _entry_speed / _blend_speed / _rig_speed
+        e_speed = self.anim._entry_speed
+        b_speed = self.anim._blend_speed
+        r_speed = self.anim._rig_speed
+
+        self.assertIsNone(e_speed(None))
+        self.assertEqual(e_speed('off'), 0.0)
+        self.assertEqual(e_speed({'enabled': False, 'lights': [{'name': 'k'}]}), 0.0)
+
+        # missing dust_speed -> 1.0
+        no_dust = {'enabled': True, 'lights': [{'name': 'k'}], 'air': {'haze': 0.1}}
+        self.assertEqual(r_speed(no_dust), 1.0)
+        no_air = {'enabled': True, 'lights': [{'name': 'k'}]}
+        self.assertEqual(r_speed(no_air), 1.0)
+
+        # clamp 12 -> 10, -1 -> 0
+        self.assertEqual(r_speed({'air': {'dust_speed': 12.0}}), 10.0)
+        self.assertEqual(r_speed({'air': {'dust_speed': -1.0}}), 0.0)
+
+        # one side without an air dict -> A's speed
+        ra = rig(2.5)
+        rb_no_air = {'enabled': True, 'lights': [{'name': 'k'}]}
+        self.assertEqual(b_speed(ra, rb_no_air, 0.5), 2.5)
+        ra_no_air = {'enabled': True, 'lights': [{'name': 'k'}]}
+        rb = rig(4.0)
+        self.assertEqual(b_speed(ra_no_air, rb, 0.5), 1.0)
+
+        # None entry -> None
+        self.assertIsNone(b_speed(None, rb, 0.5))
+
+        # t >= 1 -> B's speed
+        self.assertEqual(b_speed(ra, rb, 1.0), 4.0)
+        self.assertEqual(b_speed(ra, rb, 1.5), 4.0)
+
+    def test_missing_entries(self):
+        # 6. A scene without an entry between two with entries carries previous speed
+        self.scenes._scene_lights['A'] = rig(2.0)
+        self.scenes._scene_lights['B'] = None
+        self.scenes._scene_lights['C'] = rig(4.0)
+        marks = [(1, 'A'), (10, 'B'), (20, 'C')]
+        speeds = self.anim.dust_speeds(marks=marks, lights_track={})
+        self.assertEqual(len(speeds), 20)
+        for f in range(1, 20):
+            self.assertEqual(speeds[f - 1], 2.0, "frame %d" % f)
+        self.assertEqual(speeds[19], 4.0)
+
+        # Movie whose first scene has no entry uses first known speed
+        self.scenes._scene_lights['FIRST_NO_ENTRY'] = None
+        self.scenes._scene_lights['SECOND_ENTRY'] = rig(3.5)
+        marks2 = [(1, 'FIRST_NO_ENTRY'), (15, 'SECOND_ENTRY')]
+        speeds2 = self.anim.dust_speeds(marks=marks2, lights_track={})
+        self.assertEqual(len(speeds2), 15)
+        for f in range(1, 16):
+            self.assertEqual(speeds2[f - 1], 3.5, "frame %d" % f)
+
+    def test_write_phase_on_frame_commands(self):
+        # 7. lights_blend and enter_scene write the phase
+        class PhaseFakeCmd(FakeCmd):
+            def __init__(self, frame=10, fps='30.0'):
+                super().__init__()
+                self._frame = frame
+                self._fps = fps
+
+            def get_frame(self):
+                return self._frame
+
+            def get(self, name):
+                if name == 'movie_fps':
+                    return self._fps
+                return super().get(name)
+
+        self.scenes._scene_lights['A'] = rig(1.0)
+        self.scenes._scene_lights['B'] = rig(3.0)
+        self.anim._scene_marks[:] = [(1, 'A'), (25, 'B')]
+        self.anim._lights_track.update(self.anim.build_lights_track([(1, 'A', 0.0), (25, 'B', 0.0)]))
+
+        speeds = self.anim.dust_speeds()
+        expected_phase_10 = self.anim.dust_phase(10, 30.0, speeds)
+        expected_phase_25 = self.anim.dust_phase(25, 30.0, speeds)
+
+        # test lights_blend
+        fake_blend = PhaseFakeCmd(frame=10)
+        hex_a = self.anim._name_hex('A')
+        hex_b = self.anim._name_hex('B')
+        self.anim.lights_blend(hex_a, hex_b, 0.4, _self=fake_blend)
+        phase_sets = [val for setting, val in fake_blend.sets if setting == 'metal_light_air_phase']
+        self.assertEqual(len(phase_sets), 1)
+        self.assertAlmostEqual(phase_sets[0], expected_phase_10)
+
+        # test enter_scene
+        fake_scene = PhaseFakeCmd(frame=25)
+        b64_b = base64.b64encode(b'B').decode('ascii')
+        self.anim.enter_scene(b64_b, _self=fake_scene)
+        phase_sets2 = [val for setting, val in fake_scene.sets if setting == 'metal_light_air_phase']
+        self.assertEqual(len(phase_sets2), 1)
+        self.assertAlmostEqual(phase_sets2[0], expected_phase_25)
+
+        # FakeCmd without get_frame writes nothing and does not raise
+        plain_fake = FakeCmd()
+        self.anim.lights_blend(hex_a, hex_b, 0.4, _self=plain_fake)
+        self.assertNotIn('metal_light_air_phase', [s for s, _ in plain_fake.sets])
+        self.anim.enter_scene(b64_b, _self=plain_fake)
+        self.assertNotIn('metal_light_air_phase', [s for s, _ in plain_fake.sets])
+
+    def test_wrap_continuous(self):
+        # 8. Wrap: with wrap_length, looping movie's track gives continuous T
+        self.scenes._scene_lights['A'] = rig(1.0)
+        self.scenes._scene_lights['B'] = rig(3.0)
+        kfs = [(1, 'A', 0.0), (25, 'B', 0.0)]
+        L = 48
+        track = self.anim.build_lights_track(kfs, wrap_length=L)
+        marks = [(1, 'A'), (25, 'B')]
+        speeds = self.anim.dust_speeds(marks=marks, lights_track=track)
+        self.assertEqual(len(speeds), L)
+        fps = 30.0
+
+        def T(f):
+            s = speeds[f - 1]
+            p = self.anim.dust_phase(f, fps, speeds)
+            return (f - 1) / fps * s + p
+
+        max_step = max(speeds) / fps
+        for f in range(1, L):
+            step = T(f + 1) - T(f)
+            self.assertGreaterEqual(step, -1e-9)
+            self.assertLessEqual(step, max_step + 1e-9)
+            self.assertAlmostEqual(step, speeds[f - 1] / fps, delta=1e-9)
+
+
+class TestDustPhaseHoldFrames(unittest.TestCase):
+    """#687 review: a jump straight to a hold frame (no mark, no blend) runs
+    only that frame's command, so each hold frame writes its own phase; and
+    author() clears a phase left by a previous movie."""
+
+    class LengthCmd(FakeCmd):
+        def __init__(self, length):
+            FakeCmd.__init__(self)
+            self.length = length
+
+        def get_movie_length(self):
+            return self.length
+
+    def setUp(self):
+        self.scenes, self.anim = load_modules()
+        self.scenes.clear_all()
+        self.anim.reset()
+
+    def test_build_phase_frames(self):
+        build = self.anim.build_phase_frames
+        marks = [(1, 'A'), (25, 'B'), (40, 'B')]
+        track = {f: ('A', 'B', 0.5) for f in range(2, 25)}
+        self.assertEqual(build(marks, track, 42),
+                         list(range(26, 40)) + [41, 42])
+        self.assertEqual(build(marks, {}, 42), [])     # no rig blend: none
+        self.assertEqual(build(marks, track, 0), [])
+
+    def test_author_emits_and_strips_hold_commands(self):
+        self.scenes._scene_lights['A'] = rig(1.0)
+        self.scenes._scene_lights['B'] = rig(3.0)
+        fake = self.LengthCmd(40)
+        self.anim.author([(1, 'A', 0.0), (25, 'B', 0.0), (40, 'B', 0.0)],
+                         _self=fake, wrap=False)
+        hold = self.anim.phase_command()
+        self.assertEqual(sorted(f for f, c in fake.appended if c == hold),
+                         list(range(26, 40)))
+        # author() starts the new movie from phase 0
+        self.assertIn(('metal_light_air_phase', 0.0), fake.sets)
+        # the session strips them like the other commands
+        ours = self.anim._our_commands()
+        for f in range(26, 40):
+            self.assertEqual(ours[f], [hold])
+        # and clear_authored blanks them
+        self.assertTrue(set(range(26, 40)) <= set(self.anim.clear_authored(fake)))
+
+    def test_hold_frame_writes_its_phase(self):
+        self.scenes._scene_lights['A'] = rig(1.0)
+        self.scenes._scene_lights['B'] = rig(3.0)
+        fake = self.LengthCmd(40)
+        self.anim.author([(1, 'A', 0.0), (25, 'B', 0.0), (40, 'B', 0.0)],
+                         _self=fake, wrap=False)
+
+        class At(FakeCmd):
+            def get_frame(self):
+                return 33
+
+            def get(self, name):
+                return '30.0'
+
+        at = At()
+        self.anim.dust_hold(_self=at)
+        want = self.anim.dust_phase(33, 30.0, self.anim.dust_speeds())
+        self.assertNotEqual(want, 0.0)
+        self.assertEqual(at.sets, [('metal_light_air_phase', want)])
+
+    def test_no_rig_blend_no_hold_commands(self):
+        fake = self.LengthCmd(40)
+        self.anim.author([(1, 'A', 0.0), (25, 'B', 0.0)], _self=fake,
+                         wrap=False)
+        self.assertNotIn(self.anim.phase_command(),
+                         [c for _f, c in fake.appended])
+
+    def test_no_known_speed_keeps_phase_zero(self):
+        # scenes from before #617 store no rig: the live rig's dust keeps
+        # clock x speed (no restart at every keyframe)
+        self.anim._scene_marks[:] = [(1, 'A'), (25, 'B')]
+        self.assertEqual(self.anim.dust_speeds(), [])
+        self.assertEqual(self.anim.dust_phase(25, 30.0, [], 1.0), 0.0)
+
+        class At(FakeCmd):
+            def get_frame(self):
+                return 25
+
+            def get(self, name):
+                return '30.0'
+
+        at = At()
+        self.anim._write_phase(at)
+        self.assertEqual(at.sets, [('metal_light_air_phase', 0.0)])
+
+    def test_reauthor_keeps_a_user_command_on_a_hold_frame(self):
+        self.scenes._scene_lights['A'] = rig(1.0)
+        self.scenes._scene_lights['B'] = rig(3.0)
+        fake = self.LengthCmd(40)
+        kfs = [(1, 'A', 0.0), (25, 'B', 0.0), (40, 'B', 0.0)]
+        self.anim.author(kfs, _self=fake, wrap=False)
+        fake.mappend(30, 'turn y, 1')
+        self.anim.author(kfs, _self=fake, wrap=False)
+        slot = fake.get_frame_command(30)
+        self.assertIn('turn y, 1', slot)
+        self.assertEqual(slot.count(self.anim.phase_command()), 1)
+        self.assertEqual(fake.get_frame_command(31),
+                         ';' + self.anim.phase_command())

@@ -398,7 +398,10 @@ atmosphere off
   (N - 1) / `movie_fps` seconds), so a movie export is repeatable; an
   offscreen still with no movie uses time 0, whatever the state of a
   multi-state object (stepping states animates the dust only when a movie is
-  defined, #688); the live view uses the wall clock.
+  defined, #688); the live view uses the wall clock. In a scene movie, a
+  change of `dust_speed` between scenes keeps the dust moving smoothly: the
+  animator writes `metal_light_air_phase` so the dust time is the speed
+  integrated over the movie.
 - The air pass runs at half resolution by default on the Mac and on iOS
   (`metal_light_air_resolution`), and the haze takes one shadow tap per step
   (`metal_light_air_shadow_filter`); see [Settings](#settings).
@@ -638,7 +641,6 @@ iOS](#performance-and-ios).
 - **Limits.** The loop-wrap of a looping movie, from the last scene back to
   the first, does not blend the rig (#656). Recalling a scene with animation
   in the live view switches the rig at once while the camera moves (#661).
-  The dust jumps when `dust_speed` differs between two scenes (#687).
 
 ```pymol
 lights three_point
@@ -695,6 +697,7 @@ until #623's device run.
 | `metal_light_shadow_size` | Texels per side of each studio shadow map. Other values are clamped to 256 to 4096 (256 to 2048 on iOS) and rounded down to a power of two. | `0`: 2048 on the Mac, 1024 on iOS | no |
 | `metal_light_air_resolution` | The air pass's resolution: 1 full, 2 half; anything else reads as 0. | `0`: half on the Mac, half on iOS | no |
 | `metal_light_air_time` | Below 0 the dust follows its clock; 0 or more pins the clock to that many seconds, for repeatable renders. | `-1` | no |
+| `metal_light_air_phase` | Seconds added to the dust time while the movie clock drives the dust, so `dust_speed` changes between scenes do not jump; written per frame by the scene-movie animator. | `0` | no |
 | `metal_light_air_shadow_filter` | The haze's shadow lookup per step: 1 one tap, 2 the 3x3 lookup; anything else reads as 0. Dust motes always use the 3x3. | `0`: one tap on the Mac, one tap on iOS | no |
 | `metal_light_air_alpha` | Whether the air counts toward alpha in a transparent-background export: 1 on, so haze and dust over empty background stay in the PNG; anything else is off and the matte is depth only, which cuts the air out there. | `0`: off | no |
 | `metal_light_hdr` | The rig's colour: 1 HDR (exposure and a hue-preserving tone curve), 2 the 8-bit soft knee as before HDR; anything else reads as 0. | `0`: HDR on the Mac, HDR on iOS | no |
@@ -767,8 +770,7 @@ Open follow-ups of the lighting work (#610) that you may notice:
   lower the exposure, the haze or the light (#683, see [Backlit
   haze](#backlit-haze)). No air in grid mode (#686). Transparent-background
   exports drop the air over the empty background (#684). Animated dust
-  redraws the whole scene on every tick (#685). The dust jumps when
-  `dust_speed` is blended across scenes (#687). The dust seed has no control
+  redraws the whole scene on every tick (#685). The dust seed has no control
   in the Atmosphere card (#740).
 - **Materials and HDR.** The studio diffuse lights a material's plain base
   colour, not its procedural pattern (#710). Glass glints on sphere impostors

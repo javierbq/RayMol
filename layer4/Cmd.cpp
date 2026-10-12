@@ -5812,13 +5812,13 @@ static PyObject* CmdLightAirClock(PyObject* self, PyObject* args)
   return PyFloat_FromDouble(pymol::LightAirClock(in));
 }
 
-/// LightAirTime(clock, speed): the dust time in seconds.
+/// LightAirTime(clock, speed, phase = 0.0): the dust time in seconds.
 static PyObject* CmdLightAirTime(PyObject* self, PyObject* args)
 {
   PyMOLGlobals* G = nullptr;
-  double clock = 0.0, speed = 0.0;
-  API_SETUP_ARGS(G, self, args, "Odd", &self, &clock, &speed);
-  return PyFloat_FromDouble(pymol::LightAirTime(clock, speed));
+  double clock = 0.0, speed = 0.0, phase = 0.0;
+  API_SETUP_ARGS(G, self, args, "Odd|d", &self, &clock, &speed, &phase);
+  return PyFloat_FromDouble(pymol::LightAirTime(clock, speed, phase));
 }
 
 /// LightAirResolution(setting, mobile): 1 full or 2 half.

@@ -212,7 +212,7 @@ struct SceneLightAirOptions {
  * SceneGetLightShadowExtent, so overlays alone never get air); then reads
  * the dust clock (LightAirClock: metal_light_air_time, movie frame and
  * movie_fps, the renderer's offscreen flag, MoviePlaying on live frames only,
- * the wall clock) and metal_light_air_resolution and
+ * the wall clock) and metal_light_air_phase and metal_light_air_resolution and
  * metal_light_air_shadow_filter and metal_light_air_alpha, and packs
  * (LightAirPack). Writes nothing and
  * never requests a redraw.
