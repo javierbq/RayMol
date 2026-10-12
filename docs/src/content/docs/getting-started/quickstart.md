@@ -191,6 +191,10 @@ set transparency, 0.2, 1ubq
 
 ### Save a PyMOL session (.pse)
 To preserve your molecular state, representations, camera position, and custom colors:
+
+![An alert asking whether to replace the current session, with Save and Replace, Replace and Cancel](../../../assets/docs/open-session-alert.png)
+*Opening a `.pse` while you have unsaved work asks before replacing it.*
+
 - Choose **File ▸ Save Session** (`⌘S`) or **File ▸ Save Session As…** (`⇧⌘S`).
 - RayMol writes a standard PyMOL `.pse` session file (RayMol-only render settings are ignored by desktop PyMOL).
 

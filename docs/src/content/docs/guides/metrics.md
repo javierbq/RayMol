@@ -124,6 +124,9 @@ If an object contains multiple states (such as an ensemble from `n_models=5`), q
 
 Colors a molecular object using a stored residue-level metric array.
 
+![A predicted structure colored by per-residue pLDDT from blue to red](../../../assets/docs/metrics-plddt.png)
+*A Boltz-2 prediction colored by pLDDT with `metrics_color`.*
+
 ```text
 metrics_color key [, object [, run [, state [, palette [, minimum [, maximum [, selection [, tool]]]]]]]]
 ```

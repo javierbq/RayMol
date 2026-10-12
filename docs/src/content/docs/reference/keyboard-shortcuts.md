@@ -119,6 +119,9 @@ The startup script executes after default theme initialization, allowing you to 
 
 If you have an existing `~/.pymolrc` or `~/.pymolrc.py` and no `~/.raymolrc` is present, RayMol prompts you on first launch to import your existing settings. If you decline, RayMol records your choice in `~/.raymolrc.skip` and will not prompt you again.
 
+![A prompt asking whether to import your PyMOL startup script, with Not Now and Import](../../../assets/docs/raymolrc-import.png)
+*The one-time prompt to import `~/.pymolrc`.*
+
 ### Example `~/.raymolrc.py`
 
 ```python

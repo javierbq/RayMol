@@ -41,6 +41,9 @@ weight bundle from GitHub releases into a local on-device cache.
 
 The docked Predict bar accepts:
 
+![The Predict bar with a sequence field, predictor picker, model count, MSA toggle and Run button](../../../assets/docs/predict-bar.png)
+*The Predict bar, docked above the viewport.*
+
 - **Sequence**: Raw one-letter amino acid sequences (e.g. `MKTII...`). Separate
   multiple chains with a forward slash `/` (e.g. `SEQ1/SEQ2`). A comma cannot be
   used — the command parser reads it as an argument separator.
@@ -84,6 +87,9 @@ Click the sliders button (**Advanced options**) to expose:
 Structure predictors achieve higher accuracy when guided by multiple sequence
 alignments. RayMol can query ColabFold MSA servers directly from the interface:
 
+![The ALIGNMENTS section of the Objects tab listing a 20701 by 76 alignment](../../../assets/docs/predict-msa-alignments.png)
+*Retrieved alignments are listed in the Objects tab under ALIGNMENTS.*
+
 1. Enable the **MSA** toggle on the Predict bar.
 2. Under **MSA for:**, toggle which individual chains should receive an alignment.
    Mixed queries are supported: for instance, you can query an alignment for a
@@ -115,6 +121,10 @@ route requests to an internal private MSA server.
 
 Click **Run** to submit the job. Prediction runs asynchronously in the background
 without freezing the PyMOL rendering loop or blocking user interaction.
+
+<video src="/RayMol/media/predict-progress.mp4" autoplay loop muted playsinline aria-label="The progress tray showing two running predictions and a weight download"></video>
+
+*The progress tray tracks running predictions and weight downloads.*
 
 The floating **Progress Tray** displays active and queued tasks:
 
@@ -162,6 +172,9 @@ numbers, see the [Metrics guide](/RayMol/guides/metrics/).
 
 Inference memory scales quadratically with sequence length. RayMol enforces an
 internal memory preflight before initiating model allocation:
+
+![Chart of Boltz-2 prediction time and memory versus sequence length on an M3 Pro](../../../assets/docs/predict-benchmark-boltz2-m3pro.svg)
+*Boltz-2 (int8) time and peak memory by length on an M3 Pro, single sequence.*
 
 - If the estimate lands between 50% and 75% of the memory budget RayMol warns
   before running and offers **Run anyway** or **Cancel**. Above 75% the run is

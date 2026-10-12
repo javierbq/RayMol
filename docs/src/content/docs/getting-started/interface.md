@@ -41,6 +41,9 @@ The inspector groups session controls into five tabs accessible via the segmente
 
 Each molecular structure in the **Objects** inspector is represented by a row containing a visibility checkbox, the object name, and five dedicated action buttons: **A**, **S**, **H**, **L**, and **C**.
 
+![The C (color) menu of an object row, with by element, by chain, spectrum and named colors](../../../assets/docs/color-menu.png)
+*The **C** menu of an object row.*
+
 - **Visibility checkbox**: Tapping the checkbox or row title toggles rendering on or off (`enable` / `disable`).
 - **All row**: Positioned at the top of the list to simultaneously toggle or modify every loaded object in the session.
 - **A (Action)**: Manages object lifecycle, camera centering (**Zoom**, **Center**, **Orient**), standard presets (**Pretty**, **Publication**, **Ball and stick**), contact analysis (**Find polar contacts**, **Salt bridges**, **Halogen bonds**), structural alignment, hydrogen manipulation, and physical property computation.

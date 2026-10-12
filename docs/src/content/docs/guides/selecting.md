@@ -52,6 +52,9 @@ Visual picks automatically create or update a temporary selection named `sele`, 
 
 For bulk selections, use **Box Select** to draw a 2D bounding marquee over the structure:
 
+![A dashed selection box dragged over a rainbow cartoon, with selected atoms highlighted](../../../assets/docs/box-select.png)
+*Box Select: drag a rectangle to select everything inside it.*
+
 1. Activate Box Select: on macOS choose **Tools ▸ Box Select** (`⌃S`); on any platform click the lasso icon in the **Selections** inspector header.
 2. A rectangular overlay appears on the canvas. Drag its corners or edges to resize the box, or drag inside the marquee to reposition it.
 3. Every atom projected within the rectangle is immediately incorporated into `sele`.
@@ -104,6 +107,9 @@ dihedral dih01, resi 1 and name N, resi 1 and name CA, resi 1 and name C, resi 2
 ## Moving Objects with the 3D Gizmo
 
 To reposition or reorient an individual structure relative to the scene:
+
+![The Move gizmo with rotation rings and axis handles on a cartoon](../../../assets/docs/move-gizmo.png)
+*The Move gizmo: drag a ring to rotate or an arrow to translate.*
 
 1. Enter Move mode via **Tools ▸ Move Objects**, the **Tools** rail pill, or by pressing `⌃M`.
 2. If multiple structures are loaded, select the target object from the dropdown in the Move bar.

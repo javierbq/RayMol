@@ -82,6 +82,9 @@ scene pocket, delete
 RayMol's docked **Timeline** transforms PyMOL's frame transport into a visual
 composition editor:
 
+![The timeline editor with a model track, scene clips and transport controls](../../../assets/docs/timeline.png)
+*The timeline in the Movie tab.*
+
 - **macOS & iPad**: Open the **Movie** tab in the inspector. Select the
   expand button to dock the full-width timeline below the 3D viewport (on iPad,
   this button works only in landscape orientation). On macOS, you can also choose
@@ -195,6 +198,10 @@ together:
 ### Animated transitions between scenes
 
 During scene playback, RayMol smoothly blends between states:
+
+<video src="/RayMol/media/scenes-transition.mp4" autoplay loop muted playsinline aria-label="Two structures gliding from one saved placement to another"></video>
+
+*Recalling a scene animates objects to their stored placements.*
 
 - **Camera motion**: The viewpoint, focal length, and magnification interpolate
   smoothly between keyframes.

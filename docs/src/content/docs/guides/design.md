@@ -53,6 +53,9 @@ store under the keys `native_fit` and `certainty`.
 
 Hover over or click to pin any residue in the 3D viewport or sequence strip:
 
+![The Design bar with per-residue propensity pills over a structure colored by native fit](../../../assets/docs/design-propensity.png)
+*Design mode: per-residue propensities above a structure colored by native fit.*
+
 - **Propensity bar chart**: Shows the full 20-amino-acid probability distribution
   predicted by ProteinMPNN for that backbone position.
 - **Live sidechain preview**: Hovering over an amino acid bar in the inspector
@@ -85,6 +88,9 @@ While editing a working copy:
 ## Region redesign
 
 To redesign an entire loop, pocket, or binding interface:
+
+![The Design bar redesigning an 11-residue selection, with Compare, Keep and Discard](../../../assets/docs/design-redesign.png)
+*Redesigning a selected region.*
 
 1. Select the desired residues using PyMOL's standard selection syntax (e.g.
    `select sele, resi 45-60`) or by clicking them in the viewport.

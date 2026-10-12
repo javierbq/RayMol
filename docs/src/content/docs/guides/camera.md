@@ -14,6 +14,10 @@ viewport, through the inspector panel, or with standard PyMOL commands.
 
 RayMol provides two primary interfaces for adjusting the camera:
 
+<video src="/RayMol/media/camera-dock.mp4" autoplay loop muted playsinline aria-label="The camera dock cycling through Lens, Zoom and Depth of field controls"></video>
+
+*The camera dock: Lens, Zoom and Depth.*
+
 - **Camera dock**: Select the camera button (a circular frosted glass icon with
   a camera symbol, which appears once a structure is loaded) docked in the
   bottom-left corner of the 3D viewport. This reveals the Photos-style camera

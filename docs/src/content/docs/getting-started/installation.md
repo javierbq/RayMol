@@ -51,6 +51,12 @@ The Mac App Store build runs inside Apple's standard App Sandbox and updates aut
 
 Install the universal RayMol application directly from the [App Store](https://apps.apple.com/us/app/raymol/id6781513038).
 
+![RayMol on iPad in landscape, with the Inspector and a gold structure](../../../assets/docs/ipad.png)
+*RayMol on iPad.*
+
+![RayMol on iPhone with the Inspector as a bottom sheet](../../../assets/docs/iphone.png)
+*RayMol on iPhone.*
+
 The mobile edition features:
 - Native Metal rendering with touch gestures for rotation, panning, zooming, and clipping.
 - Adaptive layouts for portrait and landscape orientations.

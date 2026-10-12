@@ -13,6 +13,13 @@ Physical material shaders, real-time refraction, and transparency peeling run in
 
 RayMol provides nine dedicated materials across three functional families, plus the default PyMOL shading:
 
+<video src="/RayMol/media/materials-gold.mp4" autoplay loop muted playsinline aria-label="A myoglobin model rendered in a gold material, slowly rotating"></video>
+
+*A metallic material with the Gold Look.*
+
+![A p53–DNA complex with gold DNA, plastic and metallic cartoons and a frosted-glass surface](../../../assets/docs/materials-mixed.png)
+*Several materials in one scene: metallic, plastic and frosted glass.*
+
 | Material | Family | Representations | Visual characteristics |
 | :--- | :--- | :--- | :--- |
 | `default` | Standard | All | PyMOL's classic Phong shading, pixel-for-pixel unchanged. |
@@ -29,6 +36,9 @@ RayMol provides nine dedicated materials across three functional families, plus 
 ## Material assignments in the Inspector
 
 In the **Inspector**, each style layer row (**Cartoon**, **Surface**, **Sticks**, **Spheres**) includes a **Material** dropdown menu:
+
+![The RayMol window with the Inspector's Cartoon layer showing the Material and Look menus](../../../assets/docs/materials-inspector.png)
+*A cartoon layer's Material and Look menus in the Inspector.*
 
 1. Click the **Material** menu on any layer and choose a material (such as `metallic` or `glass`).
 2. Choose **Custom…** from the menu to reveal fine-tuning sliders for that specific layer. While customized, the menu displays **Custom (material)**.
@@ -61,6 +71,9 @@ Each material exposes specific shader knobs when opened in **Custom…**:
 
 **Looks** are curated one-click visual presets. Applying a Look sets the target layer's material, configures its Custom knobs, and applies a rich base coat of atom color (`look_<name>`) to the underlying atoms.
 
+![HIV protease in a white marble material with an orange inhibitor](../../../assets/docs/materials-marble.png)
+*The Marble (statuary) Look.*
+
 Available Looks include:
 - **Gold:** Deep metallic gold (`metallic`) with high reflection and fine polish.
 - **Copper:** Warm burnished copper (`metallic`).
@@ -73,6 +86,10 @@ Available Looks include:
 ### Apply a Look
 
 Click the **Look** selector chip adjacent to the layer's Material menu in the Inspector, or run `apply_look` in the command prompt:
+
+<video src="/RayMol/media/materials-apply-look.mp4" autoplay loop muted playsinline aria-label="Choosing a metallic material and then the Gold Look in the Inspector"></video>
+
+*Picking a material, then a Look, from a layer's row.*
 
 ```text
 apply_look gold, myprotein, cartoon
@@ -87,6 +104,9 @@ Because a Look applies its color directly to the underlying residue atoms, carto
 ## Side chain material inheritance
 
 When displaying a cartoon alongside sticks or spheres (such as in cartoon-plus-side-chains representations), sticks and spheres automatically inherit the cartoon's material and Custom tuning:
+
+![Close-up of a gold cartoon whose side chains are also gold](../../../assets/docs/materials-sidechains.jpg)
+*Side chains follow the cartoon's material until you give them their own.*
 
 - The Inspector's stick or sphere Material row displays **Cartoon's (material)**.
 - If you assign an explicit material to sticks or spheres, inheritance breaks.
