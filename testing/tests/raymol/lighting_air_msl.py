@@ -309,16 +309,18 @@ HDR_EDITS_624 = (
     ('sphere_glass', 'returnlight_outline(light_finish(body+hi,rig.tone.x),pt,rig);',
      'returnlight_outline(mat_soft_knee(body+hi),pt,rig);'),
     # the air composite: two arms, the exposure, the upsample's rig
-    ('air_signature', 'float3post_air_finish(float3c,float3a,floate)',
+    # #683: Beer-Lambert extinction (the transmittance tr)
+    ('air_signature', 'float3post_air_finish(float3c,float3a,floattr,floate)',
      'float3post_air_finish(float3c,float3a)'),
     ('air_body', '{if(kLightHdr){constfloat3add=light_finite3(a)?max(a,float3(0.0))'
-                 '*e:float3(0.0);returnmax(saturate(c),light_tone(light_tone_inverse('
-                 'saturate(c))+add));}returnc+max(mat_soft_knee(c+a)-mat_soft_knee(c),'
-                 'float3(0.0));}',
+                 '*e:float3(0.0);constfloat3s=light_tone_inverse(saturate(c))*tr;'
+                 'constfloat3base=tr<1.0?light_tone(s):saturate(c);'
+                 'returnmax(base,light_tone(s+add));}constfloat3ct=c*tr;'
+                 'returnct+max(mat_soft_knee(ct+a)-mat_soft_knee(ct),float3(0.0));}',
      '{returnc+max(light_finish(c+a)-light_finish(c),float3(0.0));}'),
-    ('air_full', 'post_air_finish(c.rgb,t.rgb,rig.tone.x)',
+    ('air_full', 'post_air_finish(c.rgb,t.rgb,tr,rig.tone.x)',
      'post_air_finish(c.rgb,t.rgb)'),
-    ('air_upsample', 'post_air_finish(c.rgb,a,rig.tone.x)',
+    ('air_upsample', 'post_air_finish(c.rgb,a,tr,rig.tone.x)',
      'post_air_finish(c.rgb,a)'),
     ('air_upsample_rig', 'texture2d<float>termTex[[texture(3)]],constantLightAirU&'
                          'air[[buffer(0)]],constantLightRigU&rig[[buffer(1)]])',
@@ -642,8 +644,8 @@ class TestLibrary(AirMSLCase):
         self.assertIn('colorTex.read(px)', body)
         self.assertIn('depthTex.read(px)', body)
         self.assertNotIn('.sample(', body)
-        # (#624: at the frame's exposure, the rig block's tone.x)
-        self.assertIn('returnfloat4(post_air_finish(c.rgb,t.rgb,rig.tone.x),c.a);',
+        # (#624, #683: at the frame's exposure, the rig block's tone.x, with tr)
+        self.assertIn('returnfloat4(post_air_finish(c.rgb,t.rgb,tr,rig.tone.x),c.a);',
                       squash(body))
 
 
@@ -788,20 +790,22 @@ class TestModel(AirMSLCase):
         self.assertIn('(air.range.y - air.range.x) / float(kAirDustLayers)', dust)
         self.assertIn('if (z >= zHi) break;', dust)
 
-    def testCompositeOnlyAddsLight(self):
-        # #624: under kLightHdr the air is added in scene units, T(Tinv(c) +
-        # e a), never negative and nothing non-finite, and never under c in
-        # any channel (T scales by the largest channel: coloured air must not
-        # lower the others); otherwise #618's composite through the rig's
-        # 8-bit knee, light_finish's false arm written out (lighting_hdr_msl.py
-        # pins both arms)
+    def testCompositeAttenuatesThenAddsLight(self):
+        # #683: the surface colour is first attenuated by tr (Beer-Lambert
+        # extinction), then the air's light is added; under kLightHdr in
+        # scene units: T(Tinv(c) * tr + e * a), never under T(Tinv(c) * tr) in
+        # any channel; with tr == 1 both arms are exactly what they were before
+        # #683.
         sig, finish = self.fn('post_air_finish')
-        self.assertIn('float3post_air_finish(float3c,float3a,floate)', squash(sig))
+        self.assertIn('float3post_air_finish(float3c,float3a,floattr,floate)', squash(sig))
         self.assertEqual(squash(finish),
                          '{if(kLightHdr){constfloat3add=light_finite3(a)?'
-                         'max(a,float3(0.0))*e:float3(0.0);returnmax(saturate(c),'
-                         'light_tone(light_tone_inverse(saturate(c))+add));}'
-                         'returnc+max(mat_soft_knee(c+a)-mat_soft_knee(c),float3(0.0));}')
+                         'max(a,float3(0.0))*e:float3(0.0);'
+                         'constfloat3s=light_tone_inverse(saturate(c))*tr;'
+                         'constfloat3base=tr<1.0?light_tone(s):saturate(c);'
+                         'returnmax(base,light_tone(s+add));}'
+                         'constfloat3ct=c*tr;'
+                         'returnct+max(mat_soft_knee(ct+a)-mat_soft_knee(ct),float3(0.0));}')
         _, full = self.fn('post_air_full')
         self.assertIn('post_air_finish(', full)
 
@@ -1069,7 +1073,8 @@ class TestHalf(AirMSLCase):
                     r'constant\s+LightRigU\s*&\s*rig\s*\[\[\s*buffer\(1\)\s*\]\]'):
             self.assertRegex(sig, arg)
         self.assertIn('colorTex.read(px)', body)
-        self.assertIn('const float z = post_air_stop(depthTex.read(px), air);', body)
+        self.assertIn('const float d = depthTex.read(px);', body)
+        self.assertIn('const float z = post_air_stop(d, air);', body)
         self.assertNotIn('.sample(', body)
         # the four nearest texels, each its bilinear weight times a Gaussian
         # on the eye depth where it stopped
@@ -1086,7 +1091,7 @@ class TestHalf(AirMSLCase):
         # the nearest-depth fallback, then the composite, alpha kept
         self.assertIn('if (dz < best)', body)
         self.assertIn('const float3 a = wsum > 1e-4 ? sum / wsum : nearest;', body)
-        self.assertIn('return float4(post_air_finish(c.rgb, a, rig.tone.x), c.a);', body)
+        self.assertIn('return float4(post_air_finish(c.rgb, a, tr, rig.tone.x), c.a);', body)
 
     def testStopIsTheTermsRange(self):
         _, stop = self.fn('post_air_stop')
@@ -1454,6 +1459,68 @@ class TestBridgeAndApp(AirMSLCase):
             self.assertEqual(count, 1, pattern.pattern)
         self.assertEqual(digest(draw), MASTER_DRAW,
                          'draw(in:) differs from master beyond the air\'s three edits')
+
+
+class TestExtinction683(AirMSLCase):
+    """#683: Beer-Lambert extinction along the view ray."""
+
+    def testTransmittanceHelper(self):
+        """The haze's transmittance at this pixel (Beer-Lambert, #683)."""
+        self.assertIn('post_air_transmittance', self.functions)
+        sig, body = self.fn('post_air_transmittance')
+        sq = squash(body)
+        self.assertIn('if(!(air.medium.x>0.0)||!(d<0.99999))return1.0;', sq)
+        self.assertIn('constfloattau=air.medium.x*((zHi-zLo)*tPerZ);', sq)
+        self.assertIn('if(!(tau>0.0)||!light_finite(tau))return1.0;', sq)
+        self.assertTrue(sq.endswith('returnexp(-tau);}'))
+        _, term = self.fn('post_air_term')
+        first, last = 'const float camNear', 'const float zHi'
+        term_range = squash(statements(term, first, last)).replace(
+            'd<0.99999?post_linear_depth(d,A,B,ortho):camFar',
+            'post_linear_depth(d,A,B,ortho)')
+        self.assertEqual(squash(statements(body, first, last)), term_range)
+
+    def testHazeStepsAreAttenuated(self):
+        """Haze steps are attenuated by the haze in front of them (Beer-Lambert)."""
+        _, haze = self.fn('post_air_haze')
+        self.assertIn('const float tr = exp(-air.medium.x * ((z - zLo) * tPerZ));', haze)
+        self.assertIn('acc += (dens * tr) * post_air_light(', haze)
+
+    def testDustIsAttenuated(self):
+        """Dust motes are attenuated by the haze in front of them (Beer-Lambert)."""
+        _, dust = self.fn('post_air_dust')
+        self.assertIn('constfloattr=air.medium.x>0.0?exp(-air.medium.x*((z-zLo)*tPerZ)):1.0;',
+                      squash(dust))
+        self.assertIn('0.9 * tw * tr)', dust)
+
+    def testCompositesPassTheTransmittance(self):
+        """Both composites compute transmittance and pass it to post_air_finish."""
+        _, full = self.fn('post_air_full')
+        _, upsample = self.fn('post_air_upsample')
+        call = 'post_air_transmittance(d, in.uv, cell, air)'
+        self.assertEqual(full.count(call), 1)
+        self.assertEqual(upsample.count(call), 1)
+        self.assertIn('post_air_finish(c.rgb, t.rgb, tr, rig.tone.x)', full)
+        self.assertIn('post_air_finish(c.rgb, a, tr, rig.tone.x)', upsample)
+
+    def testMarchMatchesTheComposite(self):
+        """In-scatter plus surface transmittance conserves energy under Beer-Lambert."""
+        import math
+        m = re.search(r'constant\s+int\s+kAirHazeSteps\s*=\s*(\d+);', self.air_code)
+        self.assertIsNotNone(m)
+        steps = int(m.group(1))
+        for tau in (0.05, 0.5, 1.0, 2.63):
+            for j in (0.0, 0.5, 0.999):
+                dz = tau / steps
+                inscatter = sum(dz * math.exp(-(k + j) * dz) for k in range(steps))
+                err = abs(inscatter + math.exp(-tau) - 1.0)
+                if j == 0.5:
+                    self.assertLessEqual(err, 0.03, 'tau=%s j=%s err=%s' % (tau, j, err))
+                else:
+                    self.assertLessEqual(err, 0.06, 'tau=%s j=%s err=%s' % (tau, j, err))
+        old_inscatter = sum(1.0 / steps for _ in range(steps))
+        old_total = old_inscatter + 1.0
+        self.assertGreater(old_total, 1.5)
 
 
 class TestDustOnlyTicks(testing.PyMOLTestCase):

@@ -410,8 +410,11 @@ enum AtmosphereHint: String, Equatable {
     /// The rig has lights and is off while the air is on.
     case lightsOff = "lights_off"
     /// The rig is on, haze is above about 0.3, and a light that shines is
-    /// behind the molecule: the picture can wash out (#683; this hint stays
-    /// until that is fixed).
+    /// behind the molecule: the picture can wash out. #683's extinction
+    /// bounds the haze's light and dims the molecule behind it, but a backlit
+    /// haze at exposure 1 still lifts the background almost to the molecule's
+    /// level (scene haze683_e1: molecule 195, background 190), so the hint
+    /// stays.
     case backlitHaze = "backlit"
 
     /// Haze above this with a backlight shows the hint (#683's "above about

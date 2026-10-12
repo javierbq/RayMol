@@ -298,13 +298,16 @@ class TestStructure(DocCase):
                 checked += 1
         self.assertGreaterEqual(checked, 10)
 
-    def testBacklitHazeIsAnOpenLimit(self):
-        # #683 (backlit haze, no extinction) is open: HDR and exposure soften
-        # it but do not fix it, so Known limits lists it and the Backlit haze
-        # text says it is open rather than citing it as history.
+    def testBacklitHazeIsAKnownLimit(self):
+        # #683 gave the haze Beer-Lambert extinction, which bounds its light
+        # and dims the molecule behind it, but a backlit haze can still wash
+        # the picture out: Known limits still lists it, and the Backlit haze
+        # text names the extinction without calling the wash-out fixed.
         self.assertIn('#683', flat(section(self.doc, 'Known limits')))
         backlit = flat(subsection(self.doc, 'Backlit haze'))
-        self.assertIn('#683, open', backlit)
+        self.assertIn('Beer-Lambert extinction (#683)', backlit)
+        self.assertNotIn('#683, open', backlit)
+        self.assertNotIn('no extinction', flat(self.doc))
         for word in ('fixed', 'resolved', 'closed'):
             self.assertNotIn(word, backlit)
 

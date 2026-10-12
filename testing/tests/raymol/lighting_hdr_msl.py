@@ -107,7 +107,7 @@ HDR_CONSTANT = re.compile(r'\bkLightHdr\b')
 # literal, comments stripped and whitespace removed, the first 16 hex digits.
 # Taken from master with these parsers, never from this branch.
 MASTER_054B525 = {
-    'kAirSrc': 'a8d76055522b4f53',  # #686: per-cell air
+    'kAirSrc': 'be5a334023581d20',  # #686: per-cell air; #683: Beer-Lambert extinction (re-taken at #683's head)
     'kBezierTubeRigSrc': '8b5d47b1b8b9d31b',  # #663: bezier_tube_fragment_rig_shadow
     'kBezierTubeSrc': '0085bdbf88964ab4',
     'kConnectorShaderSrc': '40ef57a0e535d985',
@@ -171,11 +171,15 @@ TONE_INVERSE_BODY = ('{if(!light_finite3(c))returnfloat3(0.0);'
                      'c=clamp(c,float3(0.0),float3(1.0));'
                      'constfloatm=max(c.r,max(c.g,c.b));if(m<=kLightToneKnee)returnc;'
                      'returnc*light_tone_scalar_inverse(m)/m;}')
+# #683: the surface is attenuated by the transmittance tr first (Beer-Lambert)
 AIR_FINISH = (
-    'staticfloat3post_air_finish(float3c,float3a,floate)',
+    'staticfloat3post_air_finish(float3c,float3a,floattr,floate)',
     '{if(kLightHdr){constfloat3add=light_finite3(a)?max(a,float3(0.0))*e:float3(0.0);'
-    'returnmax(saturate(c),light_tone(light_tone_inverse(saturate(c))+add));}'
-    'returnc+max(mat_soft_knee(c+a)-mat_soft_knee(c),float3(0.0));}')
+    'constfloat3s=light_tone_inverse(saturate(c))*tr;'
+    'constfloat3base=tr<1.0?light_tone(s):saturate(c);'
+    'returnmax(base,light_tone(s+add));}'
+    'constfloat3ct=c*tr;'
+    'returnct+max(mat_soft_knee(ct+a)-mat_soft_knee(ct),float3(0.0));}')
 
 # The specialisers that set kMaterialSrc's constants, and the RT builders.
 MATERIAL_SPECIALISERS = ('RendererMetal::materialFragmentFunction',
@@ -426,11 +430,11 @@ class TestShaders(HdrMSLCase):
     def testAir(self):
         self.assertEqual(self.fn(self.air, 'post_air_finish'), AIR_FINISH)
         sig, full = self.fn(self.air, 'post_air_full')
-        self.assertIn('returnfloat4(post_air_finish(c.rgb,t.rgb,rig.tone.x),c.a);', full)
+        self.assertIn('returnfloat4(post_air_finish(c.rgb,t.rgb,tr,rig.tone.x),c.a);', full)
         sig, upsample = self.fn(self.air, 'post_air_upsample')
         self.assertIn('constantLightAirU&air[[buffer(0)]],'
                       'constantLightRigU&rig[[buffer(1)]])', sig)
-        self.assertIn('returnfloat4(post_air_finish(c.rgb,a,rig.tone.x),c.a);', upsample)
+        self.assertIn('returnfloat4(post_air_finish(c.rgb,a,tr,rig.tone.x),c.a);', upsample)
         # the rig block's index in the air library, bound to every air pass
         self.assertRegex(self.code, r'constexpr NSUInteger kAirRigBufferIndex = 1;')
         encode = cpp_function(self.mm, 'RendererMetal::encodeAirPass')

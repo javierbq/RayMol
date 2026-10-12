@@ -56,13 +56,16 @@ exercises each on synthetic images, a pass and a fail):
              Without the far-plane pull-back the air there reads lit.
   in_beams   the pixels the dust changes (hazedust against haze) number at
              least IN_BEAMS_PX, and IN_BEAMS_SHARE of them lie inside the haze
-             footprint (haze against none) dilated by IN_BEAMS_DILATE px.
+             footprint (pixels the haze changes against none, by ADD_MIN
+             either way since #683's extinction) dilated by IN_BEAMS_DILATE px.
   colour     cross_dust's motes take their light's colour: in A's footprint
              (red-only haze in cross_none) red-dominant, in B's blue-dominant.
-  unchanged  the composite adds light and changes nothing else:
-             whitebg_haze == whitebg_none outside cross_none's footprint
-             (against cross_noair, dilated; the same lights and haze), no
-             pixel gets darker, and every white pixel stays 255.
+  unchanged  on the background the composite adds light and changes nothing
+             else: whitebg_haze == whitebg_none outside cross_none's
+             footprint (against cross_noair, dilated; the same lights and
+             haze), no background pixel gets darker, and every white pixel
+             stays 255. #683: the geometry may darken (Beer-Lambert
+             extinction); the background is never attenuated.
   moves      consecutive frames of the dust strip differ.
   clock      t2_haze == t4_haze (haze is still); t2_dust != t4_dust; still ==
              movie_f1; movie_f16 == movie_f16b == pinned05; movie_f17 !=
@@ -355,14 +358,16 @@ def check_reach(noair, none, x, box, channel='r', subject=''):
 
 def check_in_beams(none, haze, hazedust, subject=''):
     """Dust lights only inside the beams: the pixels it changes lie in the
-    haze footprint."""
+    haze footprint (the pixels the haze changes, by ADD_MIN in a channel:
+    since #683 the haze dims the geometry it does not light, so a beam over
+    the molecule can lower a pixel rather than raise it)."""
     bad = _same_size('in_beams', subject, none, haze, hazedust)
     if bad:
         return bad
     np = _np()
     changed = np.abs(_f(hazedust) - _f(haze)).max(axis=2) > 0
     n = int(changed.sum())
-    fp = dilate(footprint(haze, none), IN_BEAMS_DILATE)
+    fp = dilate(np.abs(added(haze, none)).max(axis=2) >= ADD_MIN, IN_BEAMS_DILATE)
     share = float((changed & fp).sum()) / n if n else 0.0
     return Result('in_beams', subject, n >= IN_BEAMS_PX and share >= IN_BEAMS_SHARE,
                   'dust changes %d px (>= %d), %s inside the haze footprint (>= %s)' % (
@@ -392,25 +397,32 @@ def check_colour(noair, none, dust, subject=''):
 
 
 def check_unchanged(none, haze, white_none, white_haze, subject='', need_white=False):
-    """Outside the haze footprint (found on black, dilated) the white-background
-    pair is byte-equal (and there is such an outside), no pixel of it gets
-    darker in any channel, and no white pixel loses its 255."""
+    """On the background (BG_MARGIN px from the no-air twin's geometry) and
+    outside the haze footprint (found on black, dilated) the white-background
+    pair is byte-equal (and there is such an outside), no background pixel
+    gets darker in any channel, and no white background pixel loses its
+    255.
+
+    #683: the haze's Beer-Lambert extinction dims the geometry behind it, so
+    geometry pixels may get darker; the empty background is never attenuated,
+    which is what this checks. (Before #683 it held on every pixel.)"""
     bad = _same_size('unchanged', subject, none, haze, white_none, white_haze)
     if bad:
         return bad
     np = _np()
-    outside = ~dilate(footprint(haze, none), UNCHANGED_DILATE)
+    bg = background(none)
+    outside = ~dilate(footprint(haze, none), UNCHANGED_DILATE) & bg
     noutside = int(outside.sum())
     d = np.abs(_f(white_haze) - _f(white_none)).max(axis=2)
     top = int(d[outside].max()) if noutside else 0
-    darker = int((_f(white_haze) < _f(white_none)).any(axis=2).sum())
-    white = (_f(white_none) >= 255).all(axis=2)
+    darker = int(((_f(white_haze) < _f(white_none)).any(axis=2) & bg).sum())
+    white = (_f(white_none) >= 255).all(axis=2) & bg
     nwhite = int(white.sum())
     kept = bool((_f(white_haze)[white] >= 255).all()) if nwhite else True
     ok = (noutside > 0 and top == 0 and darker == 0 and kept
           and (nwhite >= WHITE_PX or not need_white))
     return Result('unchanged', subject, ok,
-                  'outside the footprint (%d px, > 0) max |d| %d (== 0); %d px darker '
+                  'background outside the footprint (%d px, > 0) max |d| %d (== 0); %d background px darker '
                   '(== 0); %d white px%s, %s' % (
                       noutside, top, darker, nwhite,
                       ' (>= %d)' % WHITE_PX if need_white else '',

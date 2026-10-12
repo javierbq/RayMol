@@ -2927,3 +2927,218 @@ final class HdrCastShadowTests: XCTestCase {
     }
 }
 
+
+/// Issue #683: Beer-Lambert extinction along the view ray.
+@MainActor
+final class AirExtinctionTests: XCTestCase {
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var savedExportRenderActive = false
+    private var savedView: [Float]?
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        try LightsLive.requireEngine()
+        savedExportRenderActive = engine.exportRenderActive
+        engine.exportRenderActive = true
+        savedView = engine.captureView()
+        engine.runPython("""
+        from pymol import cmd as _c
+        _ext683_settings = {_n: _c.get_setting_tuple(_n)[1][0] for _n in (
+            'metal_light_air_time', 'metal_raytrace', 'metal_temporal_ao',
+            'metal_light_hdr', 'metal_exposure', 'metal_light_air_resolution')}
+        _ext683_bg = _c.get('bg_rgb')
+        _c.set('bg_rgb', 'black')
+        _c.set('metal_raytrace', 0)
+        _c.set('metal_temporal_ao', 0)
+        _c.set('metal_light_air_time', 1.25)
+        _c.set('metal_light_air_resolution', 1)
+        """)
+        LightsLive.addPeptide()
+        engine.runPython("from pymol import cmd as _c\n_c.orient('lmt_pep')")
+        waitForInFlight()
+    }
+
+    override func tearDown() {
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c._cmd.set_metal_air_debug_poison(_c._COb, 0)
+        for _n, _v in globals().pop('_ext683_settings', {}).items():
+            _c.set(_n, _v)
+        if '_ext683_bg' in globals():
+            _c.set('bg_rgb', globals().pop('_ext683_bg'))
+        """)
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        engine.exportRenderActive = savedExportRenderActive
+        LightsLive.tearDown()
+        super.tearDown()
+    }
+
+    private func waitForInFlight() {
+        let deadline = Date().addingTimeInterval(5.0)
+        while engine.metalFramesInFlight > 0 && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTAssertEqual(engine.metalFramesInFlight, 0, "frames in flight did not retire within 5 s")
+    }
+
+    private func export(_ name: String, rayTraced: Int = 0) throws -> [UInt8] {
+        let png = NSTemporaryDirectory() + "issue_683_\(name).png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: 400, height: 300, rayTraced: rayTraced)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(
+            URL(fileURLWithPath: png) as CFURL, nil), "no export written")
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        let w = image.width, h = image.height
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return rgba
+    }
+
+    private func fnv1a(_ bytes: [UInt8]) -> UInt64 {
+        var hash: UInt64 = 1469598103934665603
+        for b in bytes {
+            hash ^= UInt64(b)
+            hash &*= 1099511628211
+        }
+        return hash
+    }
+
+    private func rig(haze: Double, dust: Double, intensity: Double) {
+        let dict = """
+        {'enabled': True, 'centre': list(_lmt_cmd.centerofmass('lmt_pep')), 'size': 10.0,
+         'ambient': 0.5, 'classic': 0.5,
+         'air': {'haze': \(haze), 'dust': \(dust), 'dust_size': 0.5, 'dust_speed': 2.0,
+                 'scatter': 0.0, 'seed': 7},
+         'lights': [{'name': 'key', 'orbit': 0.0, 'pitch': 0.0, 'intensity': \(intensity),
+                     'shadow': False}]}
+        """
+        LightsLive.setRig(dict)
+    }
+
+    func testHazeAttenuatesTheSurfaceExponentially() throws {
+        engine.runPython("from pymol import cmd as _c\n_c.set('metal_light_hdr', 2)")
+        rig(haze: 0.0, dust: 0.0, intensity: 0.0)
+        let I0 = try export("exp_haze0")
+        rig(haze: 0.3, dust: 0.0, intensity: 0.0)
+        let I1 = try export("exp_haze1")
+        rig(haze: 0.6, dust: 0.0, intensity: 0.0)
+        let I2 = try export("exp_haze2")
+        rig(haze: 0.9, dust: 0.0, intensity: 0.0)
+        let I3 = try export("exp_haze3")
+
+        func lum(_ px: [UInt8], _ i: Int) -> Double {
+            0.2126 * Double(px[i]) + 0.7152 * Double(px[i + 1]) + 0.0722 * Double(px[i + 2])
+        }
+
+        let width = 400
+        let height = 300
+        var count = 0
+        var sum1 = 0.0
+        var sum2 = 0.0
+        var sum3 = 0.0
+
+        for p in 0..<(width * height) {
+            let i = p * 4
+            let L0 = lum(I0, i)
+            if L0 >= 60.0 {
+                count += 1
+                let L1 = lum(I1, i)
+                let L2 = lum(I2, i)
+                let L3 = lum(I3, i)
+                sum1 += log(max(L1, 0.5) / L0)
+                sum2 += log(max(L2, 0.5) / L0)
+                sum3 += log(max(L3, 0.5) / L0)
+            }
+        }
+
+        XCTAssertGreaterThanOrEqual(count, 500, "at least 500 lit molecule pixels required")
+        let m1 = sum1 / Double(count)
+        let m2 = sum2 / Double(count)
+        let m3 = sum3 / Double(count)
+        print(String(format: "683-ext m1 %.4f m2 %.4f m3 %.4f count %d", m1, m2, m3, count))
+
+        XCTAssertLessThan(m1, -0.05, "the haze must attenuate the surface")
+        XCTAssertLessThanOrEqual(abs(m2 / m1 - 2.0), 0.15, "optical depth must scale linearly with haze (m2/m1)")
+        XCTAssertLessThanOrEqual(abs(m3 / m1 - 3.0), 0.3, "optical depth must scale linearly with haze (m3/m1)")
+
+        var nearLit = [Bool](repeating: false, count: width * height)
+        for y in 0..<height {
+            for x in 0..<width {
+                let idx = (y * width + x) * 4
+                if lum(I0, idx) > 0.0 {
+                    let y0 = max(0, y - 3), y1 = min(height - 1, y + 3)
+                    let x0 = max(0, x - 3), x1 = min(width - 1, x + 3)
+                    for ny in y0...y1 {
+                        for nx in x0...x1 {
+                            nearLit[ny * width + nx] = true
+                        }
+                    }
+                }
+            }
+        }
+
+        // The empty background is never attenuated and the unlit haze adds
+        // nothing: it stays black.
+        var background = 0
+        var changed = 0
+        for p in 0..<(width * height) where !nearLit[p] {
+            let idx = p * 4
+            guard I0[idx] == 0 && I0[idx + 1] == 0 && I0[idx + 2] == 0 else { continue }
+            background += 1
+            if I3[idx] != 0 || I3[idx + 1] != 0 || I3[idx + 2] != 0 { changed += 1 }
+        }
+        XCTAssertGreaterThan(background, 10_000, "the export must show black background")
+        XCTAssertEqual(changed, 0, "background pixels changed under haze 0.9")
+    }
+
+    func testZeroDensityIsANoOpKnee() throws {
+        engine.runPython("from pymol import cmd as _c\n_c.set('metal_light_hdr', 2)")
+        rig(haze: 0.0, dust: 0.0, intensity: 0.0)
+        let off = try export("zero_knee_off")
+        rig(haze: 0.0, dust: 0.8, intensity: 0.0)
+        let dustOnly = try export("zero_knee_dust")
+        XCTAssertEqual(fnv1a(off), fnv1a(dustOnly), "zero density must be byte-identical at knee")
+        XCTAssertEqual(off, dustOnly, "arrays must match byte-for-byte")
+    }
+
+    func testZeroDensityIsANoOpHDR() throws {
+        engine.runPython("from pymol import cmd as _c\n_c.set('metal_light_hdr', 1)")
+        rig(haze: 0.0, dust: 0.0, intensity: 0.0)
+        let off = try export("zero_hdr_off")
+        rig(haze: 0.0, dust: 0.8, intensity: 0.0)
+        let dustOnly = try export("zero_hdr_dust")
+        XCTAssertEqual(off.count, dustOnly.count, "byte counts must match")
+        var maxDiff = 0
+        for i in 0..<min(off.count, dustOnly.count) {
+            let diff = abs(Int(off[i]) - Int(dustOnly[i]))
+            if diff > maxDiff {
+                maxDiff = diff
+            }
+        }
+        print("683-zero hdr max byte diff=\(maxDiff)")
+        XCTAssertLessThanOrEqual(maxDiff, 1, "HDR composite with zero density must round-trip within 1 level")
+    }
+
+    func testPoisonedDensityKeepsTheSurface() throws {
+        engine.runPython("from pymol import cmd as _c\n_c.set('metal_light_hdr', 2)")
+        rig(haze: 0.0, dust: 0.0, intensity: 0.0)
+        let off = try export("poison_off")
+        rig(haze: 0.6, dust: 0.0, intensity: 0.0)
+        engine.runPython("from pymol import cmd as _c\n_c._cmd.set_metal_air_debug_poison(_c._COb, 1)")
+        let poisoned = try export("poison_on")
+        XCTAssertEqual(fnv1a(off), fnv1a(poisoned), "poisoned density must be byte-identical to off")
+        XCTAssertEqual(off, poisoned, "arrays must match byte-for-byte")
+    }
+}
+
