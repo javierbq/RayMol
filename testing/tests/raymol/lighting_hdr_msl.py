@@ -116,8 +116,8 @@ MASTER_054B525 = {
     'kLabelShaderSrc': 'ca5097bd2ad97d60',  # #736: label_fragment_oit, the OIT pass's variant
     'kMaterialImpostorSrc': '10727f58afb05138',  # #710: the rig lights the material's albedo
     'kMaterialSrc': '98346bdc0203becb',  # #739: NaN guards as bit tests (light_finite); #710: the rig lights the material's albedo
-    'kPostSrc': '7edc202ebe444208',  # #689: post_ssao_fog fades toward the bg_gradient; #732: AO in scene units under an HDR rig
-    'kRTSrc': '7f531313ca624200',  # #739: NaN guards as bit tests (light_finite); #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps; #729: rt_reflect_tint keeps the metallic tint's hue under HDR; #732: AO in scene units under an HDR rig; #709: traced reflection hits take their material's studio response
+    'kPostSrc': 'd59b86052b35d529',  # #689: post_ssao_fog fades toward the bg_gradient; #732: AO in scene units under an HDR rig; #852: AO and the cast shadow in scene units under an HDR rig
+    'kRTSrc': '003f7e5d08b90cc8',  # #739: NaN guards as bit tests (light_finite); #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps; #729: rt_reflect_tint keeps the metallic tint's hue under HDR; #732: AO in scene units under an HDR rig; #709: traced reflection hits take their material's studio response; #852: AO and the cast shadow in scene units under an HDR rig
     'kScreenOverlaySrc': '9f09ecbdd4a9ddfa',  # #689: ramp gadgets drawn after the post chain
     # #635: retaken after sphere glass coverage split; #710: the rig lights
     # the material's albedo
@@ -522,8 +522,12 @@ class TestShaders(HdrMSLCase):
         light_tone(light_tone_inverse(color) * ao))."""
         post_fog = squash(strip_comments(fragments(self.msl['kPostSrc'])['post_ssao_fog'][1]))
         rt_comp = squash(strip_comments(fragments(self.msl['kRTSrc'])['rt_composite'][1]))
-        post_target = 'if(u.aoHdr>0.5&&ao<1.0)color=light_tone(light_tone_inverse(color)*ao);elsecolor*=ao;'
-        rt_target = 'if(u.aoHdr>0.5&&ao<1.0)col=light_tone(light_tone_inverse(col)*ao);elsecol*=ao;'
+        post_target = ('if(u.aoHdr>0.5&&ao*shade<1.0)color='
+                       'light_tone(light_tone_inverse(color)*(ao*shade));'
+                       'else{color*=ao;color*=shade;}')
+        rt_target = ('if(u.aoHdr>0.5&&ao*shade<1.0)col='
+                     'light_tone(light_tone_inverse(col)*(ao*shade));'
+                     'else{col*=ao;col*=shade;}')
         self.assertEqual(post_fog.count(post_target), 1)
         self.assertEqual(rt_comp.count(rt_target), 1)
         self.assertEqual(len(re.findall(r'\*=\s*ao;', post_fog)), 1)
@@ -578,6 +582,36 @@ class TestShaders(HdrMSLCase):
         ratio_res = [x / res_b[0] for x in res_b]
         for rc, rr in zip(ratio_c, ratio_res):
             self.assertAlmostEqual(rc, rr, delta=1e-5)
+
+    def testCastShadowInSceneUnits(self):
+        """#852: under an HDR rig, the cast shadow applies in scene units
+        together with AO (one tone/untone round trip)."""
+        post_fog = squash(strip_comments(fragments(self.msl['kPostSrc'])['post_ssao_fog'][1]))
+        rt_comp = squash(strip_comments(fragments(self.msl['kRTSrc'])['rt_composite'][1]))
+        post_target = ('if(u.aoHdr>0.5&&ao*shade<1.0)color='
+                       'light_tone(light_tone_inverse(color)*(ao*shade));'
+                       'else{color*=ao;color*=shade;}')
+        rt_target = ('if(u.aoHdr>0.5&&ao*shade<1.0)col='
+                     'light_tone(light_tone_inverse(col)*(ao*shade));'
+                     'else{col*=ao;col*=shade;}')
+
+        target_expr = 'shade=1.0-shadow*u.shadowIntensity;'
+        self.assertEqual(post_fog.count(target_expr), 1)
+        self.assertEqual(rt_comp.count(target_expr), 2)
+        self.assertEqual(post_fog.count('shadow*u.shadowIntensity'), 1)
+        self.assertEqual(rt_comp.count('shadow*u.shadowIntensity'), 2)
+        self.assertNotIn('*=(1.0-shadow*u.shadowIntensity)', post_fog)
+        self.assertNotIn('*=(1.0-shadow*u.shadowIntensity)', rt_comp)
+        self.assertEqual(post_fog.count('floatshade=1.0;'), 1)
+        self.assertEqual(rt_comp.count('floatshade=1.0;'), 1)
+
+        # Combined statement comes after the last shade= assignment and before
+        # fog / reflections
+        self.assertLess(post_fog.rindex('shade='), post_fog.index(post_target))
+        self.assertLess(post_fog.index(post_target), post_fog.index('u.fogEnabled'))
+
+        self.assertLess(rt_comp.rindex('shade='), rt_comp.index(rt_target))
+        self.assertLess(rt_comp.index(rt_target), rt_comp.index('u.matCount'))
 
 
 class TestMasterUnchanged(HdrMSLCase):

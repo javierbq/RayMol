@@ -1946,7 +1946,7 @@ struct PostU {
   float shadowBias;      // metal_shadow_bias: user multiplier on the self-shadow bias
   float projOrtho;       // >0.5: orthographic projection (linear eye-z / no foreshortening)
   float klx, kly, klz;   // key-light dir (toward light, eye space) = -normalize(cSetting_light)
-  float aoHdr, pad1;     // aoHdr > 0.5: an HDR rig frame, AO in scene units (#732); pad1 keeps the 16-byte multiple
+  float aoHdr, pad1;     // aoHdr > 0.5: an HDR rig frame, AO and cast shadow in scene units (#732, #852); pad1 keeps the 16-byte multiple
   float gtR, gtG, gtB, gradOn;  // #689 bg_gradient top colour, on flag
   float gbR, gbG, gbB, gradY0;  // #689 bottom colour, first row (uv)
   float gradH, gradP0, gradP1, gradP2; // #689 rows spanned (uv); padding
@@ -1999,12 +1999,7 @@ fragment float4 post_ssao_fog(PostVOut in [[stage_in]],
     ao = clamp(1.0 - occ * u.aoIntensity, 0.0, 1.0);
   }
 
-  // Under an HDR rig (#732) the colour is T(e * L): occlude the light, not the
-  // display value. Below T's knee this is color * ao exactly.
-  if (u.aoHdr > 0.5 && ao < 1.0)
-    color = light_tone(light_tone_inverse(color) * ao);
-  else
-    color *= ao;
+  float shade = 1.0;  // cast-shadow factor (1 = lit), applied with ao below (#852)
 
   // Real shadow map: reconstruct the eye-space surface point, project it into
   // the light's clip space, and PCF-compare against the stored light-POV depth.
@@ -2068,9 +2063,19 @@ fragment float4 post_ssao_fog(PostVOut in [[stage_in]],
             lit += shadowTex.sample_compare(shadowSamp, suv + off, fragDepth - sep);
           }
         float shadow = (1.0 - lit / 16.0) * faceGate;    // 0 lit .. 1 occluded
-        color *= (1.0 - shadow * u.shadowIntensity);
+        shade = 1.0 - shadow * u.shadowIntensity;
       }
     }
+  }
+
+  // AO and the cast shadow darken together. Under an HDR rig (#732, #852) the
+  // colour is T(e * L): occlude the light, not the display value, in one round
+  // trip. Below T's knee this is color * ao * shade exactly.
+  if (u.aoHdr > 0.5 && ao * shade < 1.0)
+    color = light_tone(light_tone_inverse(color) * (ao * shade));
+  else {
+    color *= ao;
+    color *= shade;
   }
 
   if (u.fogEnabled > 0.5 && d < 0.99999) {
@@ -3332,7 +3337,7 @@ struct RTU {
   float aoCrease;          // metal_ssao under RT: crease-term intensity (0 = off), #436
   float aoCreaseRadiusPx;  // crease ring radius in pixels (== PostU.aoRadiusPx)
   float aoExemptEnabled;   // >0.5: aoMaskTex marks cartoon/ribbon pixels that skip it (#79)
-  float aoHdr;             // > 0.5: an HDR rig frame, AO in scene units (#732)
+  float aoHdr;             // > 0.5: an HDR rig frame, AO and cast shadow in scene units (#732, #852)
                            // -> 12 floats after lightViewProj (still a 16-byte multiple)
   // Traced self-reflections (reflective materials): env 0 = bg colour / 1 = studio
   // gradient on miss; samples = rays/pixel for glossy materials (offscreen);
@@ -4118,12 +4123,7 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
     }
   }
 
-  // Under an HDR rig (#732) the colour is T(e * L): occlude the light, not the
-  // display value. Below T's knee this is col * ao exactly.
-  if (u.aoHdr > 0.5 && ao < 1.0)
-    col = light_tone(light_tone_inverse(col) * ao);
-  else
-    col *= ao;
+  float shade = 1.0;  // cast-shadow factor (1 = lit), applied with ao below (#852)
 
   // Cast shadows. Two paths share the shadowIntensity gate:
   //  - metal_rt_shadows (u.rtShadow): use the hard shadow ray traced in rt_ao
@@ -4145,7 +4145,7 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
     float selfSphere = aoTex.sample(s, in.uv).b;
     float faceGate = selfSphere > 0.5 ? smoothstep(0.0, 0.35, dot(nModel, Lm)) : 1.0;
     float shadow = (1.0 - vis) * faceGate;
-    col *= (1.0 - shadow * u.shadowIntensity);
+    shade = 1.0 - shadow * u.shadowIntensity;
   } else if (u.shadowIntensity > 0.0) {
     // Default RT path shadow-map fallback: same scale-aware, normal-offset,
     // Angstrom-bias treatment as post_ssao_fog, so cartoons get proper
@@ -4175,9 +4175,19 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
             lit += shadowTex.sample_compare(shadowSamp, suv + off, fragDepth - sep);
           }
         float shadow = (1.0 - lit / 16.0) * faceGate;
-        col *= (1.0 - shadow * u.shadowIntensity);
+        shade = 1.0 - shadow * u.shadowIntensity;
       }
     }
+  }
+
+  // AO and the cast shadow darken together. Under an HDR rig (#732, #852) the
+  // colour is T(e * L): occlude the light, not the display value, in one round
+  // trip. Below T's knee this is col * ao * shade exactly.
+  if (u.aoHdr > 0.5 && ao * shade < 1.0)
+    col = light_tone(light_tone_inverse(col) * (ao * shade));
+  else {
+    col *= ao;
+    col *= shade;
   }
 
   // Traced self-reflections (each draw's material reflect / tint / rough).

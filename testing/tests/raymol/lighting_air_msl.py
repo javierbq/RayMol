@@ -112,8 +112,8 @@ MASTER_LITERALS = {
     'kLabelShaderSrc': 'ca5097bd2ad97d60',  # #736: label_fragment_oit, the OIT pass's variant
     'kMaterialImpostorSrc': 'ea5947e14500d7d5',  # #710: the rig lights the material's albedo
     'kMaterialSrc': 'da47cac063348d43',
-    'kPostSrc': '7edc202ebe444208',  # #689: post_ssao_fog fades toward the bg_gradient; #732: AO in scene units under an HDR rig
-    'kRTSrc': '7f531313ca624200',  # #739: NaN guards as bit tests (light_finite); #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps; #729: rt_reflect_tint keeps the metallic tint's hue under HDR; #732: AO in scene units under an HDR rig; #709: traced reflection hits take their material's studio response
+    'kPostSrc': 'd59b86052b35d529',  # #689: post_ssao_fog fades toward the bg_gradient; #732: AO in scene units under an HDR rig; #852: AO and the cast shadow in scene units under an HDR rig
+    'kRTSrc': '003f7e5d08b90cc8',  # #739: NaN guards as bit tests (light_finite); #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps; #729: rt_reflect_tint keeps the metallic tint's hue under HDR; #732: AO in scene units under an HDR rig; #709: traced reflection hits take their material's studio response; #852: AO and the cast shadow in scene units under an HDR rig
     'kScreenOverlaySrc': '9f09ecbdd4a9ddfa',  # #689: ramp gadgets drawn after the post chain
     # #635: retaken after sphere glass coverage split; #710: the rig lights
     # the material's albedo
