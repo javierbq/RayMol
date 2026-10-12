@@ -256,6 +256,7 @@ public:
   bool beginAirOnlyFrame() override;
   bool airCacheStats(int& sceneFrames, int& postChains,
                      int& airFrames, bool forget) override;
+  bool setAirDebugPoison(bool on) override;
   // The live frame being begun renders only because the dust moves (the
   // bridge's airTick). Only such a frame keeps its pre-air image, so a camera
   // drag or a redisplay never pays the copy. endFrame clears it.
@@ -1067,6 +1068,8 @@ private:
   int _rtAOAccumFrames = 0;
   // Test-only counters (airCacheStats).
   int _statSceneFrames = 0, _statPostChains = 0, _statAirFrames = 0;
+  // Test-only (#739): setAirDebugPoison.
+  bool _airDebugPoison = false;
   // Temporal AO frames needed before a frame's image may be kept.
   static constexpr int kAirCacheAOFrames = 32;
   bool airCacheUsable() const;

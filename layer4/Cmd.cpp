@@ -5873,6 +5873,25 @@ static PyObject* CmdGetMetalAirCacheStats(PyObject* self, PyObject* args)
   return Py_BuildValue("(iii)", scene_frames, post_chains, air_frames);
 }
 
+/// Test-only (#739): while on, the air pass's haze density reads +inf, so its
+/// term is non-finite and the NaN guards must drop it. None with no Metal
+/// renderer.
+static PyObject* CmdSetMetalAirDebugPoison(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  int on = 0;
+  API_SETUP_ARGS(G, self, args, "Oi", &self, &on);
+  bool ok = false;
+  APIEnterBlocked(G);
+  if (G->Renderer) {
+    ok = G->Renderer->setAirDebugPoison(on != 0);
+  }
+  APIExitBlocked(G);
+  if (!ok)
+    return APIAutoNone(Py_None);
+  return PyBool_FromLong(1);
+}
+
 /* ---- end the air (#618) ------------------------------------------------- */
 
 /* ---- HDR colour (#624) ----------------------------------------------------
@@ -8069,6 +8088,7 @@ static PyMethodDef Cmd_methods[] = {
   {"light_air_shadow_filter", CmdLightAirShadowFilter, METH_VARARGS},
   {"light_air_animating", CmdLightAirAnimating, METH_VARARGS},
   {"get_metal_air_cache_stats", CmdGetMetalAirCacheStats, METH_VARARGS},
+  {"set_metal_air_debug_poison", CmdSetMetalAirDebugPoison, METH_VARARGS},
   /* HDR colour (#624) */
   {"light_tone", CmdLightTone, METH_VARARGS},
   {"light_tone_scalar", CmdLightToneScalar, METH_VARARGS},
