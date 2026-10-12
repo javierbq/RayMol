@@ -61,6 +61,7 @@ checkout a missing source file fails).
     pymol -ckqy testing/testing.py --run testing/tests/raymol/lighting_hdr_msl.py
 """
 import importlib.util
+import math
 import os
 import re
 
@@ -99,6 +100,7 @@ digest = _air.digest
 without_hdr_624 = _air.without_hdr_624
 
 TONE_HELPERS = _msl.TONE_HELPERS
+FINITE_HELPERS = _msl.FINITE_HELPERS
 HDR_CONSTANT = re.compile(r'\bkLightHdr\b')
 
 # Master 054b525e9 (#615's merge, this branch's base): sha256 of each shader
@@ -114,8 +116,8 @@ MASTER_054B525 = {
     'kLabelShaderSrc': 'ca5097bd2ad97d60',  # #736: label_fragment_oit, the OIT pass's variant
     'kMaterialImpostorSrc': '10727f58afb05138',  # #710: the rig lights the material's albedo
     'kMaterialSrc': '98346bdc0203becb',  # #739: NaN guards as bit tests (light_finite); #710: the rig lights the material's albedo
-    'kPostSrc': 'a3236d6afc3a38b1',  # #689: post_ssao_fog fades toward the bg_gradient
-    'kRTSrc': '7252f19e54e7e56c',  # #739: NaN guards as bit tests (light_finite); #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps; #729: rt_reflect_tint keeps the metallic tint's hue under HDR
+    'kPostSrc': '7edc202ebe444208',  # #689: post_ssao_fog fades toward the bg_gradient; #732: AO in scene units under an HDR rig
+    'kRTSrc': 'ebd1cc56e0db82c6',  # #739: NaN guards as bit tests (light_finite); #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps; #729: rt_reflect_tint keeps the metallic tint's hue under HDR; #732: AO in scene units under an HDR rig
     'kScreenOverlaySrc': '9f09ecbdd4a9ddfa',  # #689: ramp gadgets drawn after the post chain
     # #635: retaken after sphere glass coverage split; #710: the rig lights
     # the material's albedo
@@ -139,6 +141,7 @@ EDIT_COUNTS = {
                      'finish_body': 1, 'apply_exposure': 2, 'glints_body': 1},
     'kRTSrc': {'functions': 4, 'declarations': 3, 'finish_signature': 1,
                'finish_body': 1, 'hit_exposure': 2},
+    'kPostSrc': {'functions': 4, 'declarations': 2},  # #732: the tone helpers for HDR AO
     'kVBOSrc': {'vbo_cover': 1},
     'kCylinderImpostorSrc': {'cyl_cover': 1},
     # #635: sphere glass coverage split uses the same HDR cover statement as cylinder
@@ -147,7 +150,7 @@ EDIT_COUNTS = {
                 'air_upsample': 1, 'air_upsample_rig': 1,
                 'alpha_functions': 2},   # #684: post_air_alpha, post_air_alpha_merge
 }
-UNTOUCHED = ('kPostSrc', 'kEyeReconSrc', 'kBezierTubeSrc', 'kBezierTubeRigSrc',
+UNTOUCHED = ('kEyeReconSrc', 'kBezierTubeSrc', 'kBezierTubeRigSrc',
              'kLabelShaderSrc', 'kConnectorShaderSrc', 'kMaterialImpostorSrc')
 
 # The planned bodies (whitespace removed).
@@ -303,7 +306,7 @@ class TestConstants(HdrMSLCase):
         white = cpp_float(tone_h, 'kLightToneWhite')
         self.assertIsNotNone(knee)
         self.assertIsNotNone(white)
-        for lib in ('kMaterialSrc', 'kRTSrc'):
+        for lib in ('kMaterialSrc', 'kRTSrc', 'kPostSrc'):
             code = strip_comments(self.msl[lib])
             self.assertEqual(msl_float(code, 'kLightToneKnee'), knee, lib)
             self.assertEqual(msl_float(code, 'kLightToneWhite'), white, lib)
@@ -322,6 +325,16 @@ class TestConstants(HdrMSLCase):
         # no glass helper in the ray tracer (it shades no glass with the rig)
         self.assertNotIn('light_glass_cover', self.rt)
         self.assertNotIn('light_glass_glints', self.rt)
+        # #732: kPostSrc's copies of the tone helpers (and the finite tests
+        # they call) are verbatim as well, and it has no other light_ helper
+        post = msl_functions(self.msl['kPostSrc'])
+        for name in FINITE_HELPERS + TONE_HELPERS:
+            sig, body = self.fn(post, name)
+            msig, mbody = self.fn(self.material, name)
+            self.assertEqual(attribute.sub('', sig), attribute.sub('', msig), name)
+            self.assertEqual(body, mbody, name)
+        self.assertEqual(sorted(fn for fn in post if fn.startswith('light_')),
+                         sorted(FINITE_HELPERS + TONE_HELPERS))
 
 
 class TestShaders(HdrMSLCase):
@@ -503,6 +516,68 @@ class TestShaders(HdrMSLCase):
         for i in range(3):
             self.assertAlmostEqual(hdr2[i], want2[i], delta=1e-6)
             self.assertAlmostEqual(classic2[i], want2[i], delta=1e-6)
+
+    def testAmbientOcclusionInSceneUnits(self):
+        """#732: under an HDR rig, AO applies in scene units (color =
+        light_tone(light_tone_inverse(color) * ao))."""
+        post_fog = squash(strip_comments(fragments(self.msl['kPostSrc'])['post_ssao_fog'][1]))
+        rt_comp = squash(strip_comments(fragments(self.msl['kRTSrc'])['rt_composite'][1]))
+        post_target = 'if(u.aoHdr>0.5&&ao<1.0)color=light_tone(light_tone_inverse(color)*ao);elsecolor*=ao;'
+        rt_target = 'if(u.aoHdr>0.5&&ao<1.0)col=light_tone(light_tone_inverse(col)*ao);elsecol*=ao;'
+        self.assertEqual(post_fog.count(post_target), 1)
+        self.assertEqual(rt_comp.count(rt_target), 1)
+        self.assertEqual(len(re.findall(r'\*=\s*ao;', post_fog)), 1)
+        self.assertEqual(len(re.findall(r'\*=\s*ao;', rt_comp)), 1)
+
+        post_code = squash(strip_comments(self.msl['kPostSrc']))
+        rt_code = squash(strip_comments(self.msl['kRTSrc']))
+        self.assertIn('floataoHdr,pad1;', post_code)
+        self.assertIn('floataoHdr;', rt_code)
+
+        run_post = cpp_function(self.mm, 'RendererMetal::runPostChain')
+        self.assertEqual(run_post.count('u.aoHdr = _lightHdrOn ? 1.0f : 0.0f;'), 2)
+        self.assertNotIn('pad0', run_post)
+        self.assertNotIn('pad3', run_post)
+
+        def T(c):
+            m = max(c)
+            if m <= 0.55:
+                return c
+            s = 1.0 - 0.55
+            w = (10.0 - 0.55) / s
+            t = (m - 0.55) / s
+            y = 0.55 + s * t * (1.0 + t / (w * w)) / (1.0 + t)
+            return tuple(x * y / m for x in c)
+
+        def Tinv(c):
+            m = max(c)
+            if m <= 0.55:
+                return c
+            s = 1.0 - 0.55
+            w = (10.0 - 0.55) / s
+            u = (m - 0.55) / s
+            t = 2.0 * u / ((1.0 - u) + math.sqrt((1.0 - u) * (1.0 - u) + 4.0 * u / (w * w)))
+            y = 0.55 + s * t
+            return tuple(x * y / m for x in c)
+
+        # (a) for c=(0.5,0.4,0.2), ao=0.6, T(Tinv(c)*ao) == c*ao (1e-6)
+        ca = (0.5, 0.4, 0.2)
+        ao = 0.6
+        res_a = T(tuple(x * ao for x in Tinv(ca)))
+        for x, y in zip(res_a, (x * ao for x in ca)):
+            self.assertAlmostEqual(x, y, delta=1e-6)
+
+        # (b) for c=(0.9,0.6,0.3), ao=0.6, T(Tinv(c)*ao) is brighter than c*ao in
+        # every channel and keeps c's channel ratios (1e-5).
+        cb = (0.9, 0.6, 0.3)
+        res_b = T(tuple(x * ao for x in Tinv(cb)))
+        cb_ao = tuple(x * ao for x in cb)
+        for rb, cbao in zip(res_b, cb_ao):
+            self.assertGreater(rb, cbao)
+        ratio_c = [x / cb[0] for x in cb]
+        ratio_res = [x / res_b[0] for x in res_b]
+        for rc, rr in zip(ratio_c, ratio_res):
+            self.assertAlmostEqual(rc, rr, delta=1e-5)
 
 
 class TestMasterUnchanged(HdrMSLCase):

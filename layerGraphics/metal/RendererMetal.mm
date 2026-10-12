@@ -1855,6 +1855,58 @@ fragment float4 post_fxaa(PostVOut in [[stage_in]],
   return float4(rgbB, 1.0);
 }
 
+// HDR AO (#732) needs T and its inverse: kMaterialSrc's tone helpers and the
+// finite tests they call, verbatim (as in kRTSrc). lighting_hdr_msl.py fails
+// if a copy drifts.
+constant float kLightToneKnee = 0.55;
+constant float kLightToneWhite = 10.0;
+
+// Finite tests that fast math cannot fold (#739).
+__attribute__((unused)) static bool light_finite(float x) {
+  return (as_type<uint>(x) & 0x7f800000u) != 0x7f800000u;
+}
+
+__attribute__((unused)) static bool light_finite3(float3 c) {
+  return all((as_type<uint3>(c) & 0x7f800000u) != 0x7f800000u);
+}
+
+__attribute__((unused)) static float light_tone_scalar(float m) {
+  m = (light_finite(m) && m > 0.0) ? m : 0.0;
+  if (m <= kLightToneKnee) return m;
+  if (m >= kLightToneWhite) return 1.0;
+  const float s = 1.0 - kLightToneKnee;
+  const float w = (kLightToneWhite - kLightToneKnee) / s;
+  const float t = (m - kLightToneKnee) / s;
+  return kLightToneKnee + s * t * (1.0 + t / (w * w)) / (1.0 + t);
+}
+
+__attribute__((unused)) static float light_tone_scalar_inverse(float y) {
+  y = (light_finite(y) && y > 0.0) ? y : 0.0;
+  if (y <= kLightToneKnee) return y;
+  if (y >= 1.0) return kLightToneWhite;
+  const float s = 1.0 - kLightToneKnee;
+  const float w = (kLightToneWhite - kLightToneKnee) / s;
+  const float u = (y - kLightToneKnee) / s;
+  const float t = 2.0 * u / ((1.0 - u) + sqrt((1.0 - u) * (1.0 - u) + 4.0 * u / (w * w)));
+  return kLightToneKnee + s * t;
+}
+
+__attribute__((unused)) static float3 light_tone(float3 c) {
+  if (!light_finite3(c)) return float3(0.0);
+  c = max(c, float3(0.0));
+  const float m = max(c.r, max(c.g, c.b));
+  if (m <= kLightToneKnee) return c;
+  return c * light_tone_scalar(m) / m;
+}
+
+__attribute__((unused)) static float3 light_tone_inverse(float3 c) {
+  if (!light_finite3(c)) return float3(0.0);
+  c = clamp(c, float3(0.0), float3(1.0));
+  const float m = max(c.r, max(c.g, c.b));
+  if (m <= kLightToneKnee) return c;
+  return c * light_tone_scalar_inverse(m) / m;
+}
+
 // SSAO (depth-difference / crease shading) + depth-cue fog, in one pass.
 // Reads the scene color + scene depth, darkens creases where neighbors are
 // modestly closer to the camera, then fades toward the background color with
@@ -1880,7 +1932,7 @@ struct PostU {
   float shadowBias;      // metal_shadow_bias: user multiplier on the self-shadow bias
   float projOrtho;       // >0.5: orthographic projection (linear eye-z / no foreshortening)
   float klx, kly, klz;   // key-light dir (toward light, eye space) = -normalize(cSetting_light)
-  float pad0, pad1;      // 16-byte multiple: the C++ mirror must be >= this size
+  float aoHdr, pad1;     // aoHdr > 0.5: an HDR rig frame, AO in scene units (#732); pad1 keeps the 16-byte multiple
   float gtR, gtG, gtB, gradOn;  // #689 bg_gradient top colour, on flag
   float gbR, gbG, gbB, gradY0;  // #689 bottom colour, first row (uv)
   float gradH, gradP0, gradP1, gradP2; // #689 rows spanned (uv); padding
@@ -1932,7 +1984,13 @@ fragment float4 post_ssao_fog(PostVOut in [[stage_in]],
                                     u.projA, u.projB, u.projOrtho);
     ao = clamp(1.0 - occ * u.aoIntensity, 0.0, 1.0);
   }
-  color *= ao;
+
+  // Under an HDR rig (#732) the colour is T(e * L): occlude the light, not the
+  // display value. Below T's knee this is color * ao exactly.
+  if (u.aoHdr > 0.5 && ao < 1.0)
+    color = light_tone(light_tone_inverse(color) * ao);
+  else
+    color *= ao;
 
   // Real shadow map: reconstruct the eye-space surface point, project it into
   // the light's clip space, and PCF-compare against the stored light-POV depth.
@@ -3247,7 +3305,8 @@ struct RTU {
   float aoCrease;          // metal_ssao under RT: crease-term intensity (0 = off), #436
   float aoCreaseRadiusPx;  // crease ring radius in pixels (== PostU.aoRadiusPx)
   float aoExemptEnabled;   // >0.5: aoMaskTex marks cartoon/ribbon pixels that skip it (#79)
-  float pad3;              // -> 12 floats after lightViewProj (still a 16-byte multiple)
+  float aoHdr;             // > 0.5: an HDR rig frame, AO in scene units (#732)
+                           // -> 12 floats after lightViewProj (still a 16-byte multiple)
   // Traced self-reflections (reflective materials): env 0 = bg colour / 1 = studio
   // gradient on miss; samples = rays/pixel for glossy materials (offscreen);
   // sphereCount = number of sphere instances (ids below it are spheres);
@@ -4014,7 +4073,13 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
       ao = min(ao, clamp(1.0 - occ * u.aoCrease, 0.0, 1.0));
     }
   }
-  col *= ao;
+
+  // Under an HDR rig (#732) the colour is T(e * L): occlude the light, not the
+  // display value. Below T's knee this is col * ao exactly.
+  if (u.aoHdr > 0.5 && ao < 1.0)
+    col = light_tone(light_tone_inverse(col) * ao);
+  else
+    col *= ao;
 
   // Cast shadows. Two paths share the shadowIntensity gate:
   //  - metal_rt_shadows (u.rtShadow): use the hard shadow ray traced in rt_ao
@@ -5284,7 +5349,7 @@ void RendererMetal::runPostChain()
       float aoCrease;            // matches MSL RTU: crease-term intensity (0 = off)
       float aoCreaseRadiusPx;    // matches MSL RTU: crease ring radius (px)
       float aoExemptEnabled;     // matches MSL RTU: cartoon mask bound at texture(4)
-      float pad3;                // matches MSL RTU padding (16-byte multiple)
+      float aoHdr;               // matches MSL RTU: HDR rig frame, AO in scene units (#732)
       float reflEnv, reflSamples, sphereCount, matCount;   // traced reflections (see MSL RTU)
       float lAmbient, lDirect, lReflect, lSpec;
       float lShin, pad4, pad5, pad6;
@@ -5364,7 +5429,7 @@ void RendererMetal::runPostChain()
     u.aoCrease = doAO ? kSSAOIntensity : 0.0f;
     u.aoCreaseRadiusPx = (float)_rtH * kSSAORadiusFrac;
     u.aoExemptEnabled = aoMaskReady ? 1.0f : 0.0f;
-    u.pad3 = 0.0f;
+    u.aoHdr = _lightHdrOn ? 1.0f : 0.0f;
     // Traced self-reflections: materials come from the per-occurrence table
     // (each draw's reflect/tint/rough); only the global knobs and the
     // hit-shading light model travel in the uniform. matCount 0 = nothing
@@ -5569,12 +5634,12 @@ void RendererMetal::runPostChain()
       float shadowBias;        // matches MSL PostU: metal_shadow_bias multiplier
       float projOrtho;         // matches MSL PostU: 1 = orthographic (#139)
       float klx, kly, klz;     // matches MSL PostU: key-light dir (toward light)
-      float pad0, pad1;        // matches MSL PostU padding (16-byte multiple)
+      float aoHdr, pad1;       // matches MSL PostU: HDR rig frame, AO in scene units (#732)
       float gtR, gtG, gtB, gradOn;   // matches MSL PostU (#689)
       float gbR, gbG, gbB, gradY0;
       float gradH, gradP0, gradP1, gradP2;
     } u;
-    u.pad0 = 0.0f; u.pad1 = 0.0f;
+    u.aoHdr = _lightHdrOn ? 1.0f : 0.0f; u.pad1 = 0.0f;
     u.gtR = _bgGradTop[0]; u.gtG = _bgGradTop[1]; u.gtB = _bgGradTop[2];
     u.gradOn = _bgGradOn ? 1.0f : 0.0f;
     u.gbR = _bgGradBottom[0]; u.gbG = _bgGradBottom[1];

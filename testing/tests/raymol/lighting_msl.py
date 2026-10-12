@@ -334,7 +334,8 @@ class TestLightBlock(LightMSLCase):
         # helpers; it must not carry its own)
         self.assertIn('kBezierTubeRigSrc', self.msl)
         # (kRTSrc carries copies, which TestRayTracedReflections pins as
-        # verbatim)
+        # verbatim; #732: kPostSrc carries verbatim copies of FINITE_HELPERS
+        # and TONE_HELPERS for HDR AO, which lighting_hdr_msl.py pins)
         for name, literal in self.msl.items():
             if name in ('kMaterialSrc', 'kRTSrc'):
                 continue
@@ -343,8 +344,13 @@ class TestLightBlock(LightMSLCase):
             for struct in STRUCTS:
                 self.assertNotRegex(code, r'\bstruct\s+%s\b' % struct, name)
             for fn in msl_functions(literal):
+                if name == 'kPostSrc' and fn in FINITE_HELPERS + TONE_HELPERS:
+                    continue
                 self.assertFalse(fn.startswith('light_'),
                                  '%s defines %s' % (name, fn))
+        post = [fn for fn in msl_functions(self.msl['kPostSrc'])
+                if fn.startswith('light_')]
+        self.assertEqual(sorted(post), sorted(FINITE_HELPERS + TONE_HELPERS))
         rt = [fn for fn in msl_functions(self.msl['kRTSrc'])
               if fn.startswith('light_')]
         self.assertEqual(sorted(rt), sorted(c for c in RT_COPIES
@@ -1525,6 +1531,12 @@ class TestRayTracedReflections(LightMSLCase):
         guards = RT_RIG_GUARD.findall(body)
         self.assertEqual(len(guards), 2)
         classic = remove_rig_statements(body, RT_RIG_GUARD)
+        # #732: the HDR AO statement calls T and its inverse (the uniform
+        # aoHdr, not the rig, chooses it); take exactly that one out
+        hdr_ao = re.compile(r'if\s*\(\s*u\.aoHdr\s*>\s*0\.5\s*&&\s*ao\s*<\s*1\.0\s*\)\s*'
+                            r'col\s*=\s*light_tone\(light_tone_inverse\(col\)\s*\*\s*ao\);')
+        self.assertEqual(len(hdr_ao.findall(classic)), 1)
+        classic = hdr_ao.sub('', classic, count=1)
         self.assertFalse(re.findall(r'\brig\b|rt_rig_hit|light_\w+|LightTerms',
                                     classic))
         # 1: the opaque hit, after its classic colour, before the fog

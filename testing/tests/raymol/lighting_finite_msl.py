@@ -12,9 +12,10 @@ Tests:
 * testNoRawFiniteTests: no raw isfinite, isnan, or isinf call in any shader
   literal;
 * testHelpers: light_finite and light_finite3 defined in kMaterialSrc and
-  kRTSrc with the squashed signatures and bodies, and nowhere else;
-* testGuardSites: every NaN guard site in kAirSrc, kMaterialSrc and kRTSrc
-  uses the helper;
+  kRTSrc with the squashed signatures and bodies, verbatim in kPostSrc
+  (#732, its HDR AO calls the tone helpers), and nowhere else;
+* testGuardSites: every NaN guard site in kAirSrc, kMaterialSrc, kRTSrc and
+  kPostSrc (#732) uses the helper;
 * testOnlyTheGuardsChanged: without_finite_739 removes the helpers and
   replaces the helper calls with the old isfinite calls, restoring master's
   pre-#739 digests exactly;
@@ -81,7 +82,7 @@ def without_finite_739(code):
 PRE_739 = {
     'kMaterialSrc': 'f4eb7866dc2af793',
     'kAirSrc': '76c81c3eed7a614d',
-    'kRTSrc': 'd9d3cf7f211d3a07',
+    'kRTSrc': 'aa8162e29ff5e6b2',  # #732: AO in scene units under an HDR rig
 }
 FINITE_COUNTS = {
     'kMaterialSrc': {'helpers': 2, 'finite3': 2, 'finite': 2},
@@ -137,16 +138,19 @@ class TestFiniteGuards(FiniteMSLCase):
                 self.assertIn(want_sigs[fn_name], squash(sig), f'{lib_name} {fn_name} signature')
                 self.assertEqual(squash(body), want_bodies[fn_name], f'{lib_name} {fn_name} body')
 
-        # kRTSrc's copies equal kMaterialSrc's (squashed sig and body)
+        # kRTSrc's and kPostSrc's (#732) copies equal kMaterialSrc's
+        # (squashed sig and body)
         mat_fns = msl_functions(self.msl['kMaterialSrc'])
-        rt_fns = msl_functions(self.msl['kRTSrc'])
-        for fn_name in ('light_finite', 'light_finite3'):
-            self.assertEqual(squash(mat_fns[fn_name][0]), squash(rt_fns[fn_name][0]))
-            self.assertEqual(squash(mat_fns[fn_name][1]), squash(rt_fns[fn_name][1]))
+        for copy in ('kRTSrc', 'kPostSrc'):
+            copy_fns = msl_functions(self.msl[copy])
+            for fn_name in ('light_finite', 'light_finite3'):
+                self.assertIn(fn_name, copy_fns, f'{copy} missing {fn_name}')
+                self.assertEqual(squash(mat_fns[fn_name][0]), squash(copy_fns[fn_name][0]))
+                self.assertEqual(squash(mat_fns[fn_name][1]), squash(copy_fns[fn_name][1]))
 
         # No other literal defines them (kAirSrc included)
         for name, literal in sorted(self.msl.items()):
-            if name in ('kMaterialSrc', 'kRTSrc'):
+            if name in ('kMaterialSrc', 'kRTSrc', 'kPostSrc'):
                 continue
             fns = msl_functions(literal)
             self.assertNotIn('light_finite', fns, f'{name} defines light_finite')
@@ -167,7 +171,7 @@ class TestFiniteGuards(FiniteMSLCase):
         self.assertIn('constfloat3add=light_finite3(a)?max(a,float3(0.0))*e:float3(0.0);',
                       post_air_finish_body)
 
-        for lib_name in ('kMaterialSrc', 'kRTSrc'):
+        for lib_name in ('kMaterialSrc', 'kRTSrc', 'kPostSrc'):
             fns = msl_functions(self.msl[lib_name])
             scalar_body = squash(fns['light_tone_scalar'][1])
             self.assertTrue(scalar_body.startswith('{m=(light_finite(m)&&m>0.0)?m:0.0;'),
