@@ -1109,7 +1109,8 @@ extension MetalViewport {
         }
 
         /// Grid mode (#697): the gizmo moves to the cell under `p` (top-left points), unless a gizmo
-        /// press, scroll or pinch is under way, which stays in the cell it began in. True when it
+        /// press, scroll or pinch is under way, which stays in the cell it began in, or `p` is on the
+        /// gizmo as drawn (rings, handles and labels may reach over the cell's edge). True when it
         /// moved: it was not drawn under `p`, so the press, tap or gesture there must not hit it (a
         /// touch with no hover first only brings the gizmo to its cell, and goes to the camera).
         @discardableResult
@@ -1122,6 +1123,11 @@ extension MetalViewport {
             let held = engine.lightGizmoPointer.ownsPress || lightScroll != nil || lightPinch != nil
             #endif
             guard !held else { return false }
+            // A press on the gizmo as drawn keeps its cell, so a ring, handle
+            // or label reaching over the cell's edge can still be grabbed.
+            if let layout = lightGizmoLayout(in: view), LightGizmoHitTest.target(at: p, layout: layout) != nil {
+                return false
+            }
             return MainActor.assumeIsolated {
                 engine.lightGizmoUI.follow(engine.lightGizmoGridCell(at: p, viewSize: view.bounds.size), held: false)
             }
