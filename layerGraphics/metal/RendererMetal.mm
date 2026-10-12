@@ -2465,10 +2465,36 @@ static void post_air_ray(float2 uv, float4 cell, constant LightAirU& air,
   }
 }
 
+// #683: the haze's transmittance at this pixel (Beer-Lambert): exp(-sigma d),
+// sigma the haze density per A (medium.x) and d the path through the air
+// along the view ray, from where the air starts to where the march stops
+// (post_air_term's span). The empty background (window depth d >= 0.99999)
+// is never attenuated, so a bg_rgb behind the haze keeps its colour. Exactly
+// 1 with no haze, on an empty span, and when the optical depth is not finite
+// (the NaN rule: a poisoned density leaves the frame as with no air).
+static float post_air_transmittance(float d, float2 uv, float4 cell,
+                                    constant LightAirU& air) {
+  if (!(air.medium.x > 0.0) || !(d < 0.99999)) return 1.0;
+  const float A = air.proj.x, B = air.proj.y, ortho = air.view.y;
+  const float camNear = post_linear_depth(0.0, A, B, ortho);
+  const float camFar = post_linear_depth(1.0, A, B, ortho);
+  const float zSurf = post_linear_depth(d, A, B, ortho);
+  const float zLo = max(air.range.x, camNear);
+  const float zHi = min(min(air.range.y, camFar), zSurf);
+  if (!(zHi > zLo)) return 1.0;
+  float3 ro, rd;
+  post_air_ray(uv, cell, air, ro, rd);
+  const float tPerZ = 1.0 / max(-rd.z, 1e-4);
+  const float tau = air.medium.x * ((zHi - zLo) * tPerZ);
+  if (!(tau > 0.0) || !light_finite(tau)) return 1.0;
+  return exp(-tau);
+}
+
 // The haze between eye depths zLo and zHi: kAirHazeSteps jittered steps (the
-// jitter is fixed per pixel), each the beams' light times a patchy density,
-// times the density per A and the step's length. The density has no time
-// term, so haze alone never moves (and never asks for a redraw).
+// jitter is fixed per pixel), each the beams' light attenuated by the haze in
+// front of it (Beer-Lambert extinction) times a patchy density, times the
+// density per A and the step's length. The density has no time term, so haze
+// alone never moves (and never asks for a redraw).
 static float3 post_air_haze(float3 ro, float3 rd, float zLo, float zHi,
     float2 frag, constant LightAirU& air, constant LightRigU& rig,
     depth2d_array<float> maps, sampler smp) {
@@ -2482,8 +2508,11 @@ static float3 post_air_haze(float3 ro, float3 rd, float zLo, float zHi,
     const float z = zLo + (float(k) + jitter) * dz;
     const float3 x = ro + rd * (z * tPerZ);
     const float dens = 0.55 + 0.9 * mat_noise(x * scale);
-    acc += dens * post_air_light(x, -rd, g, kAirHazePhaseCap, false, air, rig,
-                                 maps, smp);
+    // #683: what this step scatters reaches the eye through the haze in
+    // front of it (Beer-Lambert).
+    const float tr = exp(-air.medium.x * ((z - zLo) * tPerZ));
+    acc += (dens * tr) * post_air_light(x, -rd, g, kAirHazePhaseCap, false, air, rig,
+                                        maps, smp);
   }
   return acc * (air.medium.x * dz * tPerZ);
 }
@@ -2496,7 +2525,8 @@ static float3 post_air_haze(float3 ro, float3 rd, float zLo, float zHi,
 // twinkles; all of it follows the dust time (motion.x), so a pinned or movie
 // clock gives the same motes. Off the focus depth a mote grows and fades (a
 // cheap defocus), capped at 0.2 cell so the cell edge never slices it. Lit as
-// the haze is, with a sharper forward lobe.
+// the haze is, with a sharper forward lobe, and attenuated by the haze in front
+// of it.
 static float3 post_air_dust(float3 ro, float3 rd, float zLo, float zHi,
     constant LightAirU& air, constant LightRigU& rig,
     depth2d_array<float> maps, sampler smp) {
@@ -2542,7 +2572,11 @@ static float3 post_air_dust(float3 ro, float3 rd, float zLo, float zHi,
     const float3 xp = x + float3((c - f) * cell, 0.0);
     const float3 lit = post_air_light(xp, -rd, g, kAirDustPhaseCap, true, air,
                                       rig, maps, smp);
-    add += lit * (a * (size * size) / (r * r) * 0.9 * tw);
+    // #683: the haze in front of the mote dims it (Beer-Lambert); exactly 1
+    // with no haze.
+    const float tr = air.medium.x > 0.0
+        ? exp(-air.medium.x * ((z - zLo) * tPerZ)) : 1.0;
+    add += lit * (a * (size * size) / (r * r) * 0.9 * tw * tr);
   }
   return add;
 }
@@ -2574,27 +2608,29 @@ static float4 post_air_term(float2 uv, float2 frag, float d, float4 cell,
   return float4(max(add, float3(0.0)), zHi);
 }
 
-// The composite: the air only ADDS light. Under kLightHdr (#624) it adds in
-// scene units: the colour back through T's inverse, plus the air at the
-// frame's exposure `e` (tone.x), through T again, and never under the colour
-// in any channel. T scales a colour by its largest channel, so coloured air
-// over a bright pixel would otherwise LOWER the others (white under red haze
-// lost green and blue: #618's guard that the air never dims a pixel); with
-// the max, white stays white, a pixel the air misses round-trips within one
-// 8-bit level (exactly at or below the knee), and the air rolls off with the
-// light instead of saturating. A non-finite air term adds nothing (the NaN
-// rule). Otherwise the rig's 8-bit knee as before #624:
-// the colour through mat_soft_knee with the air, minus the colour through it
-// without, never negative, added to the colour as it was. With no air (a = 0)
-// that is c exactly, so a pixel the air does not reach round-trips the 8-bit
-// target unchanged, white included; a bright pixel takes little extra and
-// nothing is dimmed.
-static float3 post_air_finish(float3 c, float3 a, float e) {
+// The composite (#683): the colour behind the air is first dimmed by the
+// haze's transmittance tr (post_air_transmittance; 1 on the empty background
+// and with no haze), then the air's light is added. Under kLightHdr (#624)
+// in scene units: the colour back through T's inverse, times tr, plus the air
+// at the frame's exposure `e` (tone.x), through T again, and never under the
+// dimmed colour in any channel. T scales a colour by its largest channel, so
+// coloured air over a bright pixel would otherwise LOWER the others (white
+// under red haze lost green and blue); with the max the air never takes
+// light away. A non-finite air term adds nothing (the NaN rule). Otherwise
+// the rig's 8-bit knee as before #624, on the dimmed colour ct: ct through
+// mat_soft_knee with the air, minus ct through it without, never negative,
+// added to ct. With tr == 1 both arms are exactly what they were before #683
+// (x * 1.0 == x), so haze 0 renders as it did, and a pixel the air does not
+// reach round-trips unchanged.
+static float3 post_air_finish(float3 c, float3 a, float tr, float e) {
   if (kLightHdr) {
     const float3 add = light_finite3(a) ? max(a, float3(0.0)) * e : float3(0.0);
-    return max(saturate(c), light_tone(light_tone_inverse(saturate(c)) + add));
+    const float3 s = light_tone_inverse(saturate(c)) * tr;
+    const float3 base = tr < 1.0 ? light_tone(s) : saturate(c);
+    return max(base, light_tone(s + add));
   }
-  return c + max(mat_soft_knee(c + a) - mat_soft_knee(c), float3(0.0));
+  const float3 ct = c * tr;
+  return ct + max(mat_soft_knee(ct + a) - mat_soft_knee(ct), float3(0.0));
 }
 
 // The air at full resolution: colour and depth read at this pixel (never
@@ -2611,7 +2647,8 @@ fragment float4 post_air_full(AirVOut in [[stage_in]],
   const float4 c = colorTex.read(px);
   const float d = depthTex.read(px);
   const float4 t = post_air_term(in.uv, in.position.xy, d, cell, air, rig, maps, smp);
-  return float4(post_air_finish(c.rgb, t.rgb, rig.tone.x), c.a);
+  const float tr = post_air_transmittance(d, in.uv, cell, air);
+  return float4(post_air_finish(c.rgb, t.rgb, tr, rig.tone.x), c.a);
 }
 
 // Half resolution (metal_light_air_resolution 2, the default on both) is two
@@ -2682,7 +2719,8 @@ fragment float4 post_air_upsample(AirVOut in [[stage_in]],
     constant LightRigU& rig [[buffer(1)]]) {
   const uint2 px = uint2(in.position.xy);
   const float4 c = colorTex.read(px);
-  const float z = post_air_stop(depthTex.read(px), air);
+  const float d = depthTex.read(px);
+  const float z = post_air_stop(d, air);
   const float2 h = in.position.xy * 0.5 - 0.5;
   const float2 b = floor(h);
   const float2 f = h - b;
@@ -2715,7 +2753,8 @@ fragment float4 post_air_upsample(AirVOut in [[stage_in]],
     }
   }
   const float3 a = wsum > 1e-4 ? sum / wsum : nearest;
-  return float4(post_air_finish(c.rgb, a, rig.tone.x), c.a);
+  const float tr = post_air_transmittance(d, in.uv, cell, air);
+  return float4(post_air_finish(c.rgb, a, tr, rig.tone.x), c.a);
 }
 
 // What the air added to a pixel, as an alpha (#684, metal_light_air_alpha): the

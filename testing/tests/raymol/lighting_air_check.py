@@ -258,6 +258,14 @@ class TestChecks(testing.PyMOLTestCase):
             outside[66 + i % 5, 2 + i * 2] += 9
         self.assertFalse(self.c.check_in_beams(none, haze, outside).ok)
         self.assertFalse(self.c.check_in_beams(none, haze, haze).ok)    # no dust
+        # #683: the haze dims a geometry pixel it does not light; motes there
+        # are still inside the footprint
+        dim = haze.copy()
+        dim[GEO] -= 30
+        over = dim.copy()
+        for i in range(60):
+            over[27 + i // 7, 55 + (i % 7) * 2] += 9
+        self.assertTrue(self.c.check_in_beams(none, dim, over).ok)
 
     def colour_set(self, a_rgb=(30, 0, 2), b_rgb=(2, 0, 30)):
         noair = scene_none()
@@ -300,10 +308,17 @@ class TestChecks(testing.PyMOLTestCase):
         # no white where white is required
         self.assertFalse(c.check_unchanged(none, haze, none, haze, need_white=True).ok)
         self.assertTrue(c.check_unchanged(none, haze, none, haze, need_white=False).ok)
-        # a geometry pixel inside the footprint gets darker (a whole-pixel knee)
+        # a background pixel inside the footprint gets darker
         darker = wh.copy()
-        darker[30, 60] = 110
+        darker[15, 20] = (240, 255, 255)
         self.assertFalse(c.check_unchanged(none, haze, wn, darker).ok)
+        # #683: the geometry may darken (extinction); the background may not
+        dimmed = wh.copy()
+        dimmed[GEO] = 90
+        self.assertTrue(c.check_unchanged(none, haze, wn, dimmed, need_white=True).ok)
+        bgdim = wh.copy()
+        bgdim[68, 5] = (200, 200, 200)
+        self.assertFalse(c.check_unchanged(none, haze, wn, bgdim).ok)
         # the air lights every pixel: no outside to compare, nothing checked
         everywhere = plus(none, (slice(None), slice(None)), (3, 3, 3))
         self.assertFalse(c.check_unchanged(none, everywhere, wn, wh).ok)

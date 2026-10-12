@@ -408,15 +408,19 @@ atmosphere off
 
 ### Backlit haze
 
-Haze above about 0.3 with a light behind the molecule (a rim or back light
-aimed near the camera) can wash the picture out: the air only adds light, and
-forward scattering is strongest looking into the beam. Lower the haze, move
-the light, or lower the exposure (`set metal_exposure, 0.6`): under HDR,
-exposure scales the air with the lit scene, and the molecule keeps its
-colour and contrast. The haze itself is unchanged: it still has no
-extinction (#683, open; see [Known limits](#known-limits)). With the 8-bit
-knee (`metal_light_hdr 2`), the frame clips to white instead. The app's
-Atmosphere card shows a hint while this applies.
+The haze has Beer-Lambert extinction (#683): it dims the molecule behind it
+by `exp(-sigma d)` (where `sigma` is the haze density and `d` is the path length
+through the air along the view ray) and the light it scatters is dimmed by the
+haze in front of it, so the in-scattered light is bounded and the molecule keeps
+contrast against the background; the empty background is never dimmed. Haze 0
+renders exactly as before; at haze above 0 the molecule is darker than before
+#683 (an intentional look change). Forward scattering is strongest looking into
+the beam, so strong backlit haze can still brighten the frame: lowering the
+exposure (`set metal_exposure, 0.6`), moving the light, or lowering the haze
+helps. Under HDR, exposure scales the air with the lit scene, and the molecule
+keeps its colour and contrast. With the 8-bit knee (`metal_light_hdr 2`), strong
+backlit haze can still push bright pixels toward white. The app's Atmosphere
+card shows a hint while this applies.
 
 ```pymol
 lights three_point
@@ -768,9 +772,13 @@ Open follow-ups of the lighting work (#610) that you may notice:
   ray-tracing structure (#662), and a rig created while the Move gizmo is
   shown frames it too (#669). The frame also counts enabled objects whose
   representations are all hidden (#690).
-- **The air.** The haze only adds light (it has no extinction), so haze
-  above about 0.3 with a light behind the molecule washes the picture out;
-  lower the exposure, the haze or the light (#683, see [Backlit
+- **The air.** The haze has Beer-Lambert extinction (#683): it dims the
+  molecule behind it by `exp(-sigma d)` and the light it scatters is dimmed by
+  the haze in front of it, so the in-scattered light is bounded and the molecule
+  keeps contrast against the background; the empty background is never dimmed.
+  At haze above 0 the molecule is darker than before #683 (intentional look
+  change; haze 0 renders exactly as before). Strong backlit haze can still
+  brighten the frame; lower the exposure, the haze or the light (see [Backlit
   haze](#backlit-haze)). Transparent-background exports drop the air over the
   empty background (#684). Animated dust redraws the whole scene on every tick
   (#685). The dust seed has no control in the Atmosphere card (#740).
