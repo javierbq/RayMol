@@ -101,6 +101,7 @@ enum AppShortcuts: CaseIterable {
     case moveTool
     case measureTool
     case boxSelect
+    case lightsTool
     case designTool
     case predictTool
     case binderDesignTool
@@ -151,6 +152,9 @@ enum AppShortcuts: CaseIterable {
         case .moveTool: return KeyboardShortcut("m", modifiers: .control)
         case .measureTool: return KeyboardShortcut("e", modifiers: .control)
         case .boxSelect: return KeyboardShortcut("s", modifiers: .control)
+        // ⌃L (#873): PyMOL's CTRL-L (zoom next ligand) moved to CTRL-G so this
+        // key reaches the menu; see shortcut_dict.py.
+        case .lightsTool: return KeyboardShortcut("l", modifiers: .control)
         case .designTool: return KeyboardShortcut("d", modifiers: .control)
         case .predictTool: return KeyboardShortcut("p", modifiers: .control)
         case .binderDesignTool: return KeyboardShortcut("b", modifiers: .control)
@@ -182,6 +186,7 @@ enum AppShortcuts: CaseIterable {
         case .moveTool: return "Move Objects"
         case .measureTool: return "Measure Distances"
         case .boxSelect: return "Box Select"
+        case .lightsTool: return "Lights Mode"
         case .designTool: return "Design Mode"
         case .predictTool: return "Predict Mode"
         case .binderDesignTool: return "Binder Design"
@@ -202,7 +207,7 @@ enum AppShortcuts: CaseIterable {
         switch self {
         case .openFile, .fetchPDB, .saveSession, .saveSessionAs, .exportImage, .copyImage:
             return .file
-        case .moveTool, .measureTool, .boxSelect, .designTool, .predictTool, .binderDesignTool:
+        case .moveTool, .measureTool, .boxSelect, .lightsTool, .designTool, .predictTool, .binderDesignTool:
             return .tools
         case .consolePane, .sequencePane, .sidePanel:
             return .panes
@@ -662,8 +667,8 @@ struct PyMOLApp: App {
             // Mouse, Design, Predict, Binder Design -- that relationship was
             // invisible, and a tool's shortcut could only be found by opening the
             // menu it happened to live in. One menu makes the exclusion set legible
-            // and puts the key equivalents on screen together (Lights, #619, has
-            // none: ⌃L is PyMOL's CTRL-L).
+            // and puts the key equivalents on screen together (Lights is ⌃L since
+            // #873; PyMOL's CTRL-L ligand zoom moved to CTRL-G).
             //
             // It also matches the in-app Tools pill, which already carries this
             // exact list (`ContentView.interactionToolItems`) under this exact
@@ -703,6 +708,7 @@ struct PyMOLApp: App {
                     engine.setInteractionMode(engine.interactionMode == .lights ? .viewing : .lights)
                 }
                 .disabled(isDesignLocked)
+                .keyboardShortcut(AppShortcuts.lightsTool)
                 #if RAYMOL_MPNN
                 Button(engine.designMode ? "Exit Design Mode" : "Enter Design Mode") {
                     engine.setDesignMode(!engine.designMode)

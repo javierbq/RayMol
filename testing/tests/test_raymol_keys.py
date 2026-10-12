@@ -111,6 +111,25 @@ class AuditShadowedTests(unittest.TestCase):
         self.assertIn("Binder Design", lines[0])
         self.assertNotIn("Box Select", lines[0])
 
+    def test_warns_for_lights_on_ctrl_l(self):
+        # ⌃L is Lights mode since #873, so a user CTRL-L binding shadows it.
+        fake = FakeCmd({"CTRL-L": "zoom"})
+        lines = raymol_keys.audit_shadowed(_self=fake)
+        self.assertEqual(len(lines), 1)
+        self.assertIn("CTRL-L", lines[0])
+        self.assertIn("Lights Mode", lines[0])
+
+    def test_stock_bindings_leave_ctrl_l_to_the_menu(self):
+        # #873: PyMOL's stock CTRL-L (zoom next ligand) would fire before the
+        # Tools menu and swallow ⌃L, so the default moved to CTRL-G. No stock
+        # binding may sit on an app ⌃ shortcut, or the audit warns on every
+        # launch and the menu key never fires.
+        from pymol.shortcut_dict import shortcut_dict_ref
+        self.assertNotIn("CTRL-L", shortcut_dict_ref)
+        self.assertEqual(shortcut_dict_ref["CTRL-G"][0], "util.ligand_zoom()")
+        for key in raymol_keys.APP_SHORTCUTS:
+            self.assertNotIn(key, shortcut_dict_ref, key)
+
     def test_empty_binding_is_not_a_shadow(self):
         # cmd.set_key(key, '') is how a binding is CLEARED; it shadows nothing.
         fake = FakeCmd({"CTRL-M": ""})

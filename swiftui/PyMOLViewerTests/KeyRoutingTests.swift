@@ -343,6 +343,7 @@ final class AppShortcutsTests: XCTestCase {
         XCTAssertEqual(AppShortcuts.hint(AppShortcuts.predictTool), "⌃P")
         XCTAssertEqual(AppShortcuts.hint(AppShortcuts.binderDesignTool), "⌃B")
         XCTAssertEqual(AppShortcuts.hint(AppShortcuts.boxSelect), "⌃S")
+        XCTAssertEqual(AppShortcuts.hint(AppShortcuts.lightsTool), "⌃L")  // #873
         XCTAssertEqual(AppShortcuts.hint(AppShortcuts.consolePane), "⌘1")
         XCTAssertEqual(AppShortcuts.hint(AppShortcuts.sequencePane), "⌘2")
         XCTAssertEqual(AppShortcuts.hint(AppShortcuts.sidePanel), "⌘3")
