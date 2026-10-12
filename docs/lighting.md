@@ -408,19 +408,19 @@ atmosphere off
 
 ### Backlit haze
 
-The haze has Beer-Lambert extinction (#683): it dims the molecule behind it
-by `exp(-sigma d)` (where `sigma` is the haze density and `d` is the path length
-through the air along the view ray) and the light it scatters is dimmed by the
-haze in front of it, so the in-scattered light is bounded and the molecule keeps
-contrast against the background; the empty background is never dimmed. Haze 0
-renders exactly as before; at haze above 0 the molecule is darker than before
-#683 (an intentional look change). Forward scattering is strongest looking into
-the beam, so strong backlit haze can still brighten the frame: lowering the
-exposure (`set metal_exposure, 0.6`), moving the light, or lowering the haze
-helps. Under HDR, exposure scales the air with the lit scene, and the molecule
-keeps its colour and contrast. With the 8-bit knee (`metal_light_hdr 2`), strong
-backlit haze can still push bright pixels toward white. The app's Atmosphere
-card shows a hint while this applies.
+Haze above about 0.3 with a light behind the molecule (a rim or back light
+aimed near the camera) can still wash the picture out: forward scattering is
+strongest looking into the beam. The haze has Beer-Lambert extinction (#683):
+it dims what lies behind it by `exp(-sigma d)` (`sigma` the haze density, `d`
+the path through the air along the view ray), and the light it scatters is
+dimmed by the haze in front of it, so the haze's light is bounded and the
+molecule sits darker than its glow. The empty background is never dimmed.
+Haze 0 renders exactly as before; above 0 the molecule is darker than it was
+before #683 (an intentional look change). Lower the haze, move the light, or
+lower the exposure (`set metal_exposure, 0.6`): under HDR, exposure scales
+the air with the lit scene, and the molecule keeps its colour and contrast.
+With the 8-bit knee (`metal_light_hdr 2`), bright pixels can still reach
+white. The app's Atmosphere card shows a hint while this applies.
 
 ```pymol
 lights three_point
