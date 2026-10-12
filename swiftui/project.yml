@@ -161,6 +161,23 @@ schemes:
         - PyMOLViewerUITests
       gatherCoverageData: false
 
+  # Xcode Cloud's Test action on "iOS Beta (master)" (#722): LightsGestureUITests
+  # only, so the real-recognizer routing tests run on every master change without
+  # the rest of the UI suite. ci_post_clone.sh builds the SIMULATOR core when it
+  # sees this scheme (scripts/ci_ios_slice.sh); docs/ios-beta-pipeline.md has the
+  # App Store Connect setup.
+  LightsUITests_iOS:
+    build:
+      targets:
+        PyMOLViewer_iOS: [test, build]
+        PyMOLViewerUITests: [test, build]
+    test:
+      targets:
+        - name: PyMOLViewerUITests
+          selectedTests:
+            - LightsGestureUITests
+      gatherCoverageData: false
+
   # Inference-enabled variant: the tests that run REAL on-host MLX inference, which
   # every other scheme skips so the fast suite never blocks on weight loading. The
   # gates have to live here rather than in the shell environment — a unit-test bundle

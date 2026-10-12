@@ -24,6 +24,9 @@ Store path (`swiftui/archive_appstore.sh`).
    `INTERNAL_ONLY` — permanently internal-only, never App Store eligible — and
    whether the post-action truly auto-distributes is unverified. See
    *Build distribution audience* below before relying on either.
+4. The Test action (`LightsUITests_iOS`) builds a simulator core instead and
+   runs `LightsGestureUITests` on a simulator; see
+   [UI test action](#ui-test-action-lightsgestureuitests) below.
 
 ## macOS beta (`macOS Beta (master)`)
 
@@ -145,6 +148,7 @@ Product RayMol, App ID `6781513038`, repository `javierbq/RayMol`.
 | Auto-cancel Builds | **On** |
 | Environment | Xcode latest release, macOS latest |
 | Action | **Archive**, scheme `PyMOLViewer_iOS`, platform iOS |
+| Action | **Test**, scheme `LightsUITests_iOS`, platform iOS, simulators iPhone + iPad (latest iOS) — see [UI test action](#ui-test-action-lightsgestureuitests) |
 | Build distribution audience | `INTERNAL_ONLY` — **permanent per build**, see note below |
 | Restrict Editing | **On** (`isLockedForEditing: true`; Apple requires it for review-eligible builds — see ordering note below) |
 | Post-action | TestFlight **internal** testing → group `Beta` |
@@ -219,6 +223,62 @@ A files/folders condition is only available for branch, pull-request and tag
 changes — not for schedules. That is a deliberate reason this pipeline is
 change-triggered rather than time-triggered; Xcode Cloud cannot skip a
 scheduled build when nothing changed.
+
+## UI test action (LightsGestureUITests)
+
+**What runs and why (#722, from #623):** the tests in
+`LightsGestureUITests` send real touches through XCUITest to verify
+real-recognizer routing and gesture arbitration without running the rest of the
+full UI suite on every commit. The edge-pinch device check remains manual (see
+the #610 checklist).
+
+**How `ci_post_clone.sh` handles each phase:**
+
+Every action in an Xcode Cloud workflow runs in its own fresh clone and executes
+`ci_post_clone.sh`. A Test action runs in two phases:
+
+| Action / Phase | `CI_XCODEBUILD_ACTION` | What `ci_post_clone.sh` does |
+| --- | --- | --- |
+| `build-for-testing` | `build-for-testing` | Builds simulator core (`bash swiftui/build_ios.sh`), runs `scripts/assert_ios_build_inputs.sh <root> simulator` |
+| `test-without-building` | `test-without-building` | Exits after step 1 (plugin trust); uses prebuilt products, so no deps or core are needed |
+| `archive` | `archive` | Builds device core (`bash swiftui/build_ios.sh device`), runs `assert_ios_build_inputs.sh <root> device` as before |
+
+**One-time App Store Connect setup:**
+
+1. Open App Store Connect → Apps → RayMol → Xcode Cloud → Manage Workflows →
+   *iOS Beta (master)*. The workflow is locked (Restrict Editing,
+   `isLockedForEditing: true`), so it is read-only. Unlock it first: as an
+   Admin or Account Holder, clear **Restrict Editing** in the workflow's
+   General section, or PATCH `ciWorkflows/<id>` with
+   `"isLockedForEditing": false` (the same request
+   `scripts/asc_xcode_cloud_workflow.py --lock` sends, with `false`).
+2. Edit Workflow → Actions → **+** → **Test**.
+3. Scheme: `LightsUITests_iOS`. Platform: iOS. Test Plan / tests:
+   "Use Scheme Settings" (the scheme already selects only `LightsGestureUITests`).
+4. Requirement: **Required to pass** makes a red UI test fail the build run;
+   choose **Not Required to Pass** if a flaky UI test must never hold up the
+   archive's TestFlight post-action. Whether a failed Test action blocks the
+   TestFlight post-action under either setting is unverified; check the first
+   red run.
+5. Destinations: add two simulators, OS version **Latest Release**: one iPhone
+   (the newest "Pro" model Xcode Cloud lists) and one iPad (the newest
+   "iPad Pro 13-inch"). The tests branch on idiom (the sheet's grabber on
+   iPhone, the float's grip on iPad), so both idioms matter.
+6. Save, then re-lock:
+   ```bash
+   python3 scripts/asc_xcode_cloud_workflow.py --lock --update-id <ID> --write
+   ```
+7. Start a build on `master` (Start Build in the UI) and confirm in the Test
+   action's log: `== platform: iOS ... ==`, `slice: simulator`,
+   `iOS build inputs OK ... simulator`, then the `LightsGestureUITests` results (one
+   set per destination).
+
+*Note:* Nothing on this page about the Test action has run on Xcode Cloud yet;
+it is unverified until the owner adds the action. Locally, the scheme runs the
+tests on a simulator and `ci_post_clone.sh`'s simulator path builds and asserts
+the simulator core. If `CI_XCODEBUILD_ACTION` turns out to be unset in
+Xcode Cloud's post-clone environment, `scripts/ci_ios_slice.sh` falls back to
+`CI_XCODE_SCHEME` and still correctly selects the `simulator` core.
 
 ## Two Xcode Cloud API constraints worth knowing
 
@@ -399,7 +459,9 @@ ever updated, exclude assets matching `deps_ios-*.tar.gz` explicitly.
 | macOS: `NOT MAS: ... Sparkle` from `assert_macos_build_inputs.sh` | `apply_mas_restrictions.sh` did not run before `xcodegen`, or a Sparkle entry was added outside the `RAYMOL_SPARKLE_BEGIN/END` markers. |
 | macOS: upload rejected with error 90296 (App Sandbox) | Same cause as above: a Sparkle helper reached the archive. |
 | macOS: a Mac App Store release upload says its build number must be higher | A macOS beta already used a higher number. Number the release above the highest macOS build on App Store Connect (see *Build numbers* in the macOS section). |
-| `ERROR: unsupported CI_PRODUCT_PLATFORM` / `disagrees with CI_XCODE_SCHEME` | `scripts/ci_platform.sh` only knows the two RayMol schemes. A new workflow needs an entry there first. |
+| `ERROR: unsupported CI_PRODUCT_PLATFORM` / `disagrees with CI_XCODE_SCHEME` | `scripts/ci_platform.sh` only knows the supported schemes (PyMOLViewer_iOS, LightsUITests_iOS, UITests_iOS, PyMOLViewer_macOS). A new workflow needs an entry there first. |
+| `ERROR: unsupported CI_XCODEBUILD_ACTION` | `scripts/ci_ios_slice.sh` only knows the five xcodebuild actions; add the new one there. |
+| Test action fails to link `libpymol_core.a` built for iOS | `ci_post_clone.sh` built the device core; check the log's `slice:` line, the scheme name in the Test action, and `scripts/ci_ios_slice.sh`. |
 | A build appears in TestFlight but testers were not notified | The `INTERNAL_ONLY` audience does not attach a build to a group; only the UI post-action does, and its auto-distribution is unverified. Add the build to group `Beta` manually in App Store Connect. |
 
 ## Local checks
@@ -411,5 +473,14 @@ needs no workflow edit):
 for t in scripts/tests/run_*_test.sh; do bash "$t" || echo "FAILED: $t"; done
 ```
 
-The macOS-specific suites are `run_ci_platform_test.sh`,
+The CI pipeline suites are `run_ci_platform_test.sh`, `run_ci_ios_slice_test.sh`,
+`run_assert_ios_build_inputs_test.sh`, `run_ci_post_clone_plugin_trust_test.sh`,
 `run_apply_mas_restrictions_test.sh` and `run_assert_macos_build_inputs_test.sh`.
+
+To test the `LightsUITests_iOS` scheme locally on a simulator (requires
+`bash swiftui/build_ios.sh` first; any installed iPhone or iPad simulator):
+
+```bash
+xcodebuild test -project swiftui/PyMOLViewer.xcodeproj -scheme LightsUITests_iOS \
+  -destination 'platform=iOS Simulator,name=iPhone 18 Pro' -skipPackagePluginValidation -skipMacroValidation
+```
