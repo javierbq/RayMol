@@ -21,6 +21,9 @@
 //   the default knobs stay free). It keeps its height (layoutPriority 1): the
 //   inspector scrolls first. It draws in Lights mode with no light too, alone
 //   at the top inset (no orbit card, no inspector).
+// - #718: on a short viewport an open CameraDock collapses the orbit card
+//   to its header (LightsFloatLayout.dockCollapsesCard), so it stays off
+//   the key knob; it expands back when the dock closes.
 // - VoiceOver: the grip is an element with the corner as its value and one
 //   `Move to <corner>` action per other corner.
 // Empty space passes touches through to the viewport (the camera's).
@@ -97,6 +100,16 @@ enum LightsFloatMetrics {
     /// The orbit card as the float draws it on iOS (44 pt header, 284 wide):
     /// a test pins it to the rendered card.
     static let orbitCardSize = CGSize(width: LightsOrbitView.width, height: 252)
+    /// The orbit card collapsed to its header on iOS (the 44 pt header plus
+    /// its 2 pt bottom padding); a test pins it to the rendered card.
+    static let orbitCardCollapsedHeight: CGFloat = 46
+    /// A bottom card that an open CameraDock lifts so its top would rise
+    /// above this fraction of the viewport's height collapses to its header
+    /// (#718): three_point's key knob (+35° pitch) sits about a quarter of
+    /// the height from the top with the display sphere at its maximum, so a
+    /// card reaching above the top third covers its 44 pt target (the 11-inch
+    /// and mini viewports); taller viewports keep the card as it was.
+    static let dockCollapseLine: CGFloat = 1.0 / 3
     /// The inspector card collapsed to its header on iOS (44 pt targets): a
     /// test pins it to the rendered card.
     static let inspectorHeaderHeight: CGFloat = 44
@@ -179,6 +192,26 @@ enum LightsFloatLayout {
         bottomClearance(trailing: corner.isTrailing, chrome: chrome)
     }
 
+    /// #718: whether an open CameraDock collapses the orbit card to its
+    /// header: the card is in a bottom corner, the dock lifts it (the dock's
+    /// clearance beats the clearance without it), and the expanded card's
+    /// top would then rise above `dockCollapseLine` of the height. It never
+    /// changes the card's own collapsed state (the user's preference); the
+    /// card expands back when this turns false.
+    static func dockCollapsesCard(corner: LightsFloatCorner, container: CGSize,
+                                  chrome: ViewportChromeHeights,
+                                  cardHeight: CGFloat = LightsFloatMetrics.orbitCardSize.height) -> Bool {
+        guard corner.isBottom, chrome.dock > 0, container.height > 0 else { return false }
+        var closed = chrome
+        closed.dock = 0
+        guard bottomClearance(corner: corner, chrome: chrome) > bottomClearance(corner: corner, chrome: closed) else {
+            return false
+        }
+        let top = container.height - LightsFloatMetrics.inset
+            - bottomClearance(corner: corner, chrome: chrome) - cardHeight
+        return top < container.height * LightsFloatMetrics.dockCollapseLine
+    }
+
     /// The corner whose quadrant holds `point`.
     static func nearest(to point: CGPoint, in container: CGSize) -> LightsFloatCorner {
         LightsFloatCorner(trailing: point.x >= container.width / 2, bottom: point.y >= container.height / 2)
@@ -206,7 +239,9 @@ enum LightsFloatLayout {
     /// light) is `.zero` and leaves no room behind: the Atmosphere card then
     /// moves up to the top inset. `inspectorHintLines` counts the hint lines
     /// under the header (0 or 1: `LightsInspectorState.showsNoCastersHint`),
-    /// which add to the collapsed inspector's height.
+    /// which add to the collapsed inspector's height. On a short viewport an
+    /// open CameraDock auto-collapses the bottom orbit card to its header
+    /// (#718, `dockCollapsesCard`), so it stays off the key knob.
     static func frames(corner: LightsFloatCorner, container: CGSize, inspectorCollapsed: Bool,
                        chrome: ViewportChromeHeights = ViewportChromeHeights(),
                        cardSize: CGSize = LightsFloatMetrics.orbitCardSize,
@@ -218,11 +253,14 @@ enum LightsFloatLayout {
         let width = LightsInspector.width
         let trailingBottom = container.height - inset - bottomClearance(trailing: true, chrome: chrome)
         let leadingBottom = container.height - inset - bottomClearance(trailing: false, chrome: chrome)
+        let collapsedByDock = dockCollapsesCard(corner: corner, container: container, chrome: chrome,
+                                                cardHeight: cardSize.height)
+        let effectiveCardHeight = collapsedByDock ? LightsFloatMetrics.orbitCardCollapsedHeight : cardSize.height
         let cardX = corner.isTrailing ? container.width - inset - cardSize.width : inset
         let cardY = corner.isBottom
-            ? (corner.isTrailing ? trailingBottom : leadingBottom) - cardSize.height
+            ? (corner.isTrailing ? trailingBottom : leadingBottom) - effectiveCardHeight
             : inset
-        let card = showsCard ? CGRect(x: cardX, y: cardY, width: cardSize.width, height: cardSize.height) : .zero
+        let card = showsCard ? CGRect(x: cardX, y: cardY, width: cardSize.width, height: effectiveCardHeight) : .zero
         let top = showsCard && corner == .topTrailing ? card.maxY + gap : inset
         let limit = showsCard && corner == .bottomTrailing ? card.minY - gap : trailingBottom
         let x = container.width - inset - width
@@ -355,6 +393,8 @@ struct LightsFloatingTools: View {
         let inset = LightsFloatMetrics.inset, gap = LightsFloatMetrics.gap
         let trailingClearance = LightsFloatLayout.bottomClearance(trailing: true, chrome: chrome)
         let cardClearance = LightsFloatLayout.bottomClearance(corner: corner, chrome: chrome)
+        let dockCollapsed = LightsFloatLayout.dockCollapsesCard(corner: corner, container: containerSize,
+                                                               chrome: chrome)
         ZStack {
             // The inspector, top-trailing; stacked under or over a trailing
             // card (non-hit-testable spacers hold the card's room).
@@ -381,7 +421,7 @@ struct LightsFloatingTools: View {
             // The orbit card: one view in every corner (its collapse state
             // survives a move), offset while its grip is dragged.
             LightsOrbitView(controller: controller, style: style, initiallyCollapsed: false,
-                            grip: grip)
+                            dockCollapsed: dockCollapsed, grip: grip)
                 .lightsFloatCard(offset: dragOffset, space: Self.space)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: corner.alignment)
                 .padding(inset)
