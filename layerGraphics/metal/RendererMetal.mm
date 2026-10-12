@@ -3432,9 +3432,22 @@ static bool rt_find_cell(float2 uv, constant RTU& u, constant RTGridU& g,
 // single facet's normal then flips between neighbours and stripes the shadow.
 // The 3-facet average cancels the alternation (for a caster in a different
 // strip the average is still a sane local normal).
+// #668: only neighbours connected by a shared vertex are averaged, so unrelated
+// buffer neighbours do not tilt flat quads.
 static float3 rt_facet_normal(device const packed_float3* tris, uint q) {
   float3 a = float3(tris[3 * q]), b = float3(tris[3 * q + 1]), c = float3(tris[3 * q + 2]);
   return normalize(cross(b - a, c - a));
+}
+// #668: true when world-tris a and b share a vertex (the triangle buffer
+// concatenates every object's triangles, so buffer neighbours are not
+// necessarily mesh neighbours).
+static bool rt_tris_touch(device const packed_float3* tris, uint a, uint b) {
+  for (uint i = 0; i < 3; ++i)
+    for (uint j = 0; j < 3; ++j) {
+      float3 d = float3(tris[3 * a + i]) - float3(tris[3 * b + j]);
+      if (dot(d, d) < 1e-8) return true;
+    }
+  return false;
 }
 static float3 rt_tri_normal_smooth(device const packed_float3* tris, uint p, uint n) {
   float3 fp = rt_facet_normal(tris, p);
@@ -3443,9 +3456,17 @@ static float3 rt_tri_normal_smooth(device const packed_float3* tris, uint p, uin
   // alternating tilt of a twisted quad's two triangles cancels even when the
   // twist per ring is large). Winding is not guaranteed consistent between
   // neighbours: align each to fp.
+  // Walk each way (#668): a neighbour counts only while it shares a vertex
+  // with the last one taken, so a quad next to an unrelated object in the
+  // buffer keeps its own (flat) normal and its two triangles agree.
+  uint lo = p, hi = p;
   for (uint k = 1; k <= 2; ++k) {
-    if (p >= k)     { float3 f = rt_facet_normal(tris, p - k); acc += (dot(f, fp) < 0.0) ? -f : f; }
-    if (p + k < n)  { float3 f = rt_facet_normal(tris, p + k); acc += (dot(f, fp) < 0.0) ? -f : f; }
+    if (lo == p + 1 - k && p >= k && rt_tris_touch(tris, p - k, p - k + 1)) {
+      float3 f = rt_facet_normal(tris, p - k); acc += (dot(f, fp) < 0.0) ? -f : f; lo = p - k;
+    }
+    if (hi == p + k - 1 && p + k < n && rt_tris_touch(tris, p + k, p + k - 1)) {
+      float3 f = rt_facet_normal(tris, p + k); acc += (dot(f, fp) < 0.0) ? -f : f; hi = p + k;
+    }
   }
   return normalize(acc);
 }
