@@ -8,6 +8,7 @@
 #endif
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
@@ -2483,7 +2484,8 @@ static float4 post_air_term(float2 uv, float2 frag, float d,
   const float zSurf = d < 0.99999 ? post_linear_depth(d, A, B, ortho) : camFar;
   const float zLo = max(air.range.x, camNear);
   const float zHi = min(min(air.range.y, camFar), zSurf);
-  if (!(zHi > zLo) || !isfinite(zHi - zLo)) return float4(0.0, 0.0, 0.0, zSurf);
+  if (!(zHi > zLo) || !light_finite(zHi - zLo))
+    return float4(0.0, 0.0, 0.0, zSurf);
   float3 ro, rd;
   post_air_ray(uv, air, ro, rd);
   float3 add = float3(0.0);
@@ -2491,7 +2493,7 @@ static float4 post_air_term(float2 uv, float2 frag, float d,
     add += post_air_haze(ro, rd, zLo, zHi, frag, air, rig, maps, smp);
   if (air.medium.y > 0.0)
     add += post_air_dust(ro, rd, zLo, zHi, air, rig, maps, smp);
-  if (!all(isfinite(add))) add = float3(0.0);
+  if (!light_finite3(add)) add = float3(0.0);
   return float4(max(add, float3(0.0)), zHi);
 }
 
@@ -2512,7 +2514,7 @@ static float4 post_air_term(float2 uv, float2 frag, float d,
 // nothing is dimmed.
 static float3 post_air_finish(float3 c, float3 a, float e) {
   if (kLightHdr) {
-    const float3 add = all(isfinite(a)) ? max(a, float3(0.0)) * e : float3(0.0);
+    const float3 add = light_finite3(a) ? max(a, float3(0.0)) * e : float3(0.0);
     return max(saturate(c), light_tone(light_tone_inverse(saturate(c)) + add));
   }
   return c + max(mat_soft_knee(c + a) - mat_soft_knee(c), float3(0.0));
@@ -2550,7 +2552,7 @@ static float post_air_stop(float d, constant LightAirU& air) {
   const float zSurf = d < 0.99999 ? post_linear_depth(d, A, B, ortho) : camFar;
   const float zLo = max(air.range.x, camNear);
   const float zHi = min(min(air.range.y, camFar), zSurf);
-  if (!(zHi > zLo) || !isfinite(zHi - zLo)) return zSurf;
+  if (!(zHi > zLo) || !light_finite(zHi - zLo)) return zSurf;
   return zHi;
 }
 
@@ -3551,8 +3553,18 @@ __attribute__((unused)) static float3 mat_soft_knee(float3 c) {
 constant float kLightToneKnee = 0.55;
 constant float kLightToneWhite = 10.0;
 
+// Finite tests that fast math cannot fold, a verbatim copy of kMaterialSrc's
+// (#739).
+__attribute__((unused)) static bool light_finite(float x) {
+  return (as_type<uint>(x) & 0x7f800000u) != 0x7f800000u;
+}
+
+__attribute__((unused)) static bool light_finite3(float3 c) {
+  return all((as_type<uint3>(c) & 0x7f800000u) != 0x7f800000u);
+}
+
 __attribute__((unused)) static float light_tone_scalar(float m) {
-  m = (isfinite(m) && m > 0.0) ? m : 0.0;
+  m = (light_finite(m) && m > 0.0) ? m : 0.0;
   if (m <= kLightToneKnee) return m;
   if (m >= kLightToneWhite) return 1.0;
   const float s = 1.0 - kLightToneKnee;
@@ -3562,7 +3574,7 @@ __attribute__((unused)) static float light_tone_scalar(float m) {
 }
 
 __attribute__((unused)) static float light_tone_scalar_inverse(float y) {
-  y = (isfinite(y) && y > 0.0) ? y : 0.0;
+  y = (light_finite(y) && y > 0.0) ? y : 0.0;
   if (y <= kLightToneKnee) return y;
   if (y >= 1.0) return kLightToneWhite;
   const float s = 1.0 - kLightToneKnee;
@@ -3573,7 +3585,7 @@ __attribute__((unused)) static float light_tone_scalar_inverse(float y) {
 }
 
 __attribute__((unused)) static float3 light_tone(float3 c) {
-  if (!all(isfinite(c))) return float3(0.0);
+  if (!light_finite3(c)) return float3(0.0);
   c = max(c, float3(0.0));
   const float m = max(c.r, max(c.g, c.b));
   if (m <= kLightToneKnee) return c;
@@ -3581,7 +3593,7 @@ __attribute__((unused)) static float3 light_tone(float3 c) {
 }
 
 __attribute__((unused)) static float3 light_tone_inverse(float3 c) {
-  if (!all(isfinite(c))) return float3(0.0);
+  if (!light_finite3(c)) return float3(0.0);
   c = clamp(c, float3(0.0), float3(1.0));
   const float m = max(c.r, max(c.g, c.b));
   if (m <= kLightToneKnee) return c;
@@ -8663,13 +8675,26 @@ constant bool kLightHdr [[function_constant(3)]];
 constant float kLightToneKnee = 0.55;
 constant float kLightToneWhite = 10.0;
 
+// Finite tests that fast math cannot fold (#739). The libraries compile with
+// Metal's default fast math, which may assume no NaN or inf and so fold
+// isfinite and isnan away. These read the bits instead: a float is not finite
+// exactly when its exponent bits are all ones. Every NaN guard of the light
+// helpers and the air (and kRTSrc's copies) uses them.
+__attribute__((unused)) static bool light_finite(float x) {
+  return (as_type<uint>(x) & 0x7f800000u) != 0x7f800000u;
+}
+
+__attribute__((unused)) static bool light_finite3(float3 c) {
+  return all((as_type<uint3>(c) & 0x7f800000u) != 0x7f800000u);
+}
+
 // T1(m): the identity up to the knee, then an extended-Reinhard shoulder, C1
 // at the knee (slope 1), exactly 1 at the white point and 1 beyond. With
 // s = 1 - k, w = (W - k) / s and t = (m - k) / s:
 // T1 = k + s t (1 + t / w^2) / (1 + t). Non-finite and negative input reads
 // as 0 (the NaN rule: a NaN would not stay local under OIT).
 __attribute__((unused)) static float light_tone_scalar(float m) {
-  m = (isfinite(m) && m > 0.0) ? m : 0.0;
+  m = (light_finite(m) && m > 0.0) ? m : 0.0;
   if (m <= kLightToneKnee) return m;
   if (m >= kLightToneWhite) return 1.0;
   const float s = 1.0 - kLightToneKnee;
@@ -8682,7 +8707,7 @@ __attribute__((unused)) static float light_tone_scalar(float m) {
 // the knee: u = (y - k) / s, t = 2u / ((1 - u) + sqrt((1 - u)^2 + 4u / w^2)).
 // The identity to the knee, W at 1 (and above). NaN rule as above.
 __attribute__((unused)) static float light_tone_scalar_inverse(float y) {
-  y = (isfinite(y) && y > 0.0) ? y : 0.0;
+  y = (light_finite(y) && y > 0.0) ? y : 0.0;
   if (y <= kLightToneKnee) return y;
   if (y >= 1.0) return kLightToneWhite;
   const float s = 1.0 - kLightToneKnee;
@@ -8699,7 +8724,7 @@ __attribute__((unused)) static float light_tone_scalar_inverse(float y) {
 // exactly 1 at or beyond W. A colour with any non-finite channel is black;
 // negative channels read as 0.
 __attribute__((unused)) static float3 light_tone(float3 c) {
-  if (!all(isfinite(c))) return float3(0.0);
+  if (!light_finite3(c)) return float3(0.0);
   c = max(c, float3(0.0));
   const float m = max(c.r, max(c.g, c.b));
   if (m <= kLightToneKnee) return c;
@@ -8710,7 +8735,7 @@ __attribute__((unused)) static float3 light_tone(float3 c) {
 // light in scene units over a colour already through T. Tinv(1) = W, so
 // white stays white. NaN rule as light_tone.
 __attribute__((unused)) static float3 light_tone_inverse(float3 c) {
-  if (!all(isfinite(c))) return float3(0.0);
+  if (!light_finite3(c)) return float3(0.0);
   c = clamp(c, float3(0.0), float3(1.0));
   const float m = max(c.r, max(c.g, c.b));
   if (m <= kLightToneKnee) return c;
@@ -13603,6 +13628,7 @@ bool RendererMetal::ensureAirTerm(NSUInteger w, NSUInteger h)
 id<MTLTexture> RendererMetal::encodeAirPass(id<MTLTexture> sceneSrc)
 {
   LightAirBlock air = _lightAirBlock;
+  if (_airDebugPoison) air.medium[0] = std::numeric_limits<float>::infinity();
   air.view[1] = _projOrtho;
   air.proj[0] = _projA;
   air.proj[1] = _projB;
@@ -13793,6 +13819,12 @@ bool RendererMetal::airCacheStats(int& sceneFrames, int& postChains,
   sceneFrames = _statSceneFrames;
   postChains = _statPostChains;
   airFrames = _statAirFrames;
+  return true;
+}
+
+bool RendererMetal::setAirDebugPoison(bool on)
+{
+  _airDebugPoison = on;
   return true;
 }
 

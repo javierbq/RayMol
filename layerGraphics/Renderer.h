@@ -530,6 +530,10 @@ public:
   // pre-air image first. Default: false (no counters).
   virtual bool airCacheStats(int& sceneFrames, int& postChains,
                              int& airFrames, bool forget) { return false; }
+  // Test-only (#739, _cmd.set_metal_air_debug_poison): while on, the air
+  // pass's haze density reads +inf, so its term is non-finite and the NaN
+  // guards must drop it. Default: false (no renderer to poison).
+  virtual bool setAirDebugPoison(bool on) { return false; }
 
   // PyMOL key-light direction (cSetting_light). The direction toward the light
   // used for shading and shadow casting is -normalize(light). Default: no-op

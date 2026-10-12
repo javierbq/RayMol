@@ -1781,3 +1781,264 @@ final class ReflectionHdrTintTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(ratio, 0.85, "the traced metallic reflection lost the surface's hue under HDR")
     }
 }
+
+/// #739: Metal fast-math bit-test NaN guards drop non-finite air terms.
+@MainActor
+final class FiniteGuardLiveTests: XCTestCase {
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var mtkView: MTKView!
+    private var testWindow: NSWindow?
+    private var savedExportRenderActive = false
+    private var savedView: [Float]?
+
+    override func setUpWithError() throws {
+        try super.setUpWithError()
+        try LightsLive.requireEngine()
+        savedExportRenderActive = engine.exportRenderActive
+        engine.exportRenderActive = true
+        savedView = engine.captureView()
+        engine.runPython("""
+        from pymol import cmd as _c
+        _fg739_settings = {_n: _c.get_setting_tuple(_n)[1][0] for _n in (
+            'metal_light_air_time', 'metal_raytrace', 'metal_temporal_ao',
+            'metal_light_hdr', 'metal_exposure')}
+        _c.set('metal_raytrace', 0)
+        _c.set('metal_temporal_ao', 0)
+        _c.set('metal_light_air_time', 1.25)
+        """)
+        LightsLive.addPeptide()
+
+        let view = MTKView(frame: CGRect(x: 0, y: 0, width: 200, height: 150),
+                           device: MTLCreateSystemDefaultDevice())
+        view.framebufferOnly = false
+        view.isPaused = true
+        view.enableSetNeedsDisplay = true
+        view.drawableSize = CGSize(width: 400, height: 300)
+        self.mtkView = view
+
+        let presented = engine.renderMetalFrame(view: view, width: 400, height: 300, airTick: false)
+        if !presented {
+            let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 200, height: 150),
+                               styleMask: .borderless,
+                               backing: .buffered,
+                               defer: false)
+            win.contentView = view
+            win.orderBack(nil)
+            self.testWindow = win
+            let retried = engine.renderMetalFrame(view: view, width: 400, height: 300, airTick: false)
+            XCTAssertTrue(retried, "frame must present in hosted window")
+        }
+        waitForInFlight()
+    }
+
+    override func tearDown() {
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c._cmd.set_metal_air_debug_poison(_c._COb, 0)
+        """)
+        if let win = testWindow {
+            win.orderOut(nil)
+            win.contentView = nil
+            testWindow = nil
+        }
+        mtkView = nil
+        engine.runPython("""
+        from pymol import cmd as _c
+        for _n, _v in globals().pop('_fg739_settings', {}).items():
+            _c.set(_n, _v)
+        """)
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        engine.exportRenderActive = savedExportRenderActive
+        LightsLive.tearDown()
+        super.tearDown()
+    }
+
+    private func waitForInFlight() {
+        let deadline = Date().addingTimeInterval(5.0)
+        while engine.metalFramesInFlight > 0 && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        XCTAssertEqual(engine.metalFramesInFlight, 0, "frames in flight did not retire within 5 s")
+    }
+
+    @discardableResult
+    private func frame(airTick: Bool = false, width: Int = 400, height: Int = 300) -> Bool {
+        let targetSize = CGSize(width: width, height: height)
+        if mtkView.drawableSize != targetSize {
+            mtkView.drawableSize = targetSize
+        }
+        let presented = engine.renderMetalFrame(view: mtkView, width: width, height: height, airTick: airTick)
+        XCTAssertTrue(presented, "every frame the tests count must return presented == true")
+        waitForInFlight()
+        return presented
+    }
+
+    private func capture(_ name: String) throws -> [UInt8] {
+        let path = NSTemporaryDirectory() + "issue_739_\(name).png"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        engine.capturePNG(path)
+        frame(airTick: false)
+        let deadline = Date().addingTimeInterval(5.0)
+        while !FileManager.default.fileExists(atPath: path) && Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: path), "capturePNG file \(path) not created")
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(
+            URL(fileURLWithPath: path) as CFURL, nil), "no image source")
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        let w = image.width, h = image.height
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return rgba
+    }
+
+    private func fnv1a(_ bytes: [UInt8]) -> UInt64 {
+        var hash: UInt64 = 1469598103934665603
+        for b in bytes {
+            hash ^= UInt64(b)
+            hash &*= 1099511628211
+        }
+        return hash
+    }
+
+    private func isNonUniform(_ bytes: [UInt8]) -> Bool {
+        guard bytes.count >= 4 else { return false }
+        let first = (bytes[0], bytes[1], bytes[2], bytes[3])
+        for i in stride(from: 4, to: bytes.count, by: 4) {
+            if (bytes[i], bytes[i+1], bytes[i+2], bytes[i+3]) != first {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func rig(haze: Double, dust: Double) {
+        let dict = """
+        {'enabled': True, 'centre': [0.0, 0.0, 0.0], 'size': 10.0,
+         'ambient': 0.1, 'classic': 0.25,
+         'air': {'haze': \(haze), 'dust': \(dust), 'dust_size': 0.5, 'dust_speed': 2.0,
+                 'scatter': -0.25, 'seed': 7},
+         'lights': [
+           {'name': 'key', 'orbit': 12.5, 'pitch': 3.0, 'radius': 2.0, 'shadow': True},
+           {'name': 'fill', 'orbit': -60.0, 'pitch': 20.0, 'aim': 'point',
+            'aim_point': [1.0, 2.0, 3.0], 'aim_selection': 'resn "ALA"',
+            'color': [0.5, 0.75, 1.0], 'warmth': 4000.0},
+           {'name': 'rim', 'anchor': 'pinned', 'position': [5.0, 6.0, -30.0],
+            'outline': True, 'beam': 30.0, 'softness': 0.1}]}
+        """
+        LightsLive.setRig(dict)
+    }
+
+    private func poison(_ on: Bool) {
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c._cmd.set_metal_air_debug_poison(_c._COb, \(on ? 1 : 0))
+        """)
+    }
+
+    func testPoisonedHazeDrawsTheAirOffFrameKnee() throws {
+        engine.runPython("from pymol import cmd as _c\n_c.set('metal_light_hdr', 2)")
+        rig(haze: 0.0, dust: 0.0)
+        let off = try capture("knee_off")
+        rig(haze: 0.6, dust: 0.0)
+        let clean = try capture("knee_clean")
+        poison(true)
+        let poisoned = try capture("knee_poisoned")
+
+        XCTAssertTrue(isNonUniform(off), "the scene must have drawn (non-uniform)")
+        XCTAssertNotEqual(fnv1a(clean), fnv1a(off), "clean haze must differ from haze off")
+        XCTAssertEqual(fnv1a(poisoned), fnv1a(off), "the guards drop a non-finite air term")
+
+        let hOff = fnv1a(off)
+        let hPoisoned = fnv1a(poisoned)
+        print(String(format: "739-poison knee off %016llx poisoned %016llx", hOff, hPoisoned))
+    }
+
+    func testPoisonedHazeDrawsTheAirOffFrameHDR() throws {
+        engine.runPython("from pymol import cmd as _c\n_c.set('metal_light_hdr', 1)")
+        rig(haze: 0.0, dust: 0.0)
+        let off = try capture("hdr_off")
+        rig(haze: 0.6, dust: 0.0)
+        let clean = try capture("hdr_clean")
+        poison(true)
+        let poisoned = try capture("hdr_poisoned")
+
+        XCTAssertTrue(isNonUniform(off), "the scene must have drawn (non-uniform)")
+        XCTAssertNotEqual(fnv1a(clean), fnv1a(off), "clean haze must differ from haze off")
+        XCTAssertEqual(poisoned.count, off.count, "byte counts must match")
+
+        var maxDiff: Int = 0
+        for i in 0..<min(poisoned.count, off.count) {
+            let diff = abs(Int(poisoned[i]) - Int(off[i]))
+            if diff > maxDiff {
+                maxDiff = diff
+            }
+        }
+        print("739-poison hdr max byte diff=\(maxDiff)")
+        XCTAssertLessThanOrEqual(maxDiff, 1, "HDR composite with non-finite air must round-trip within 1 level")
+        let hOff = fnv1a(off)
+        let hPoisoned = fnv1a(poisoned)
+        print(String(format: "739-poison hdr off %016llx poisoned %016llx", hOff, hPoisoned))
+    }
+
+    /// An offscreen export (engine.renderHiResPNG, as the glass tracer
+    /// tests use): deterministic, and ray traced when `rayTraced` is 1.
+    private func export(_ name: String, rayTraced: Int) throws -> [UInt8] {
+        let png = NSTemporaryDirectory() + "issue_739_\(name).png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: 400, height: 300, rayTraced: rayTraced)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(
+            URL(fileURLWithPath: png) as CFURL, nil), "no export written")
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        let w = image.width, h = image.height
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return rgba
+    }
+
+    /// Two exports of one scene: equal and drawn; prints the hash, which the
+    /// reviewer compares against master's shaders out of band (#739: finite
+    /// frames are byte-identical).
+    private func hashScene(_ name: String, rayTraced: Int) throws {
+        let a = try export("\(name)_a", rayTraced: rayTraced)
+        let b = try export("\(name)_b", rayTraced: rayTraced)
+        XCTAssertEqual(fnv1a(a), fnv1a(b), "two \(name) exports must be equal")
+        XCTAssertTrue(isNonUniform(a), "the \(name) export must have drawn")
+        print(String(format: "739-hash %@ %016llx", name, fnv1a(a)))
+    }
+
+    func testNormalFrameHashes() throws {
+        engine.runPython("from pymol import cmd as _c\n_c.set('metal_light_hdr', 1)")
+        rig(haze: 0.0, dust: 0.0)
+        try hashScene("rig", rayTraced: 0)
+        rig(haze: 0.6, dust: 0.5)
+        try hashScene("air", rayTraced: 0)
+        guard engine.rayTracingSupported else {
+            print("739-hash rt skipped")
+            return
+        }
+        rig(haze: 0.0, dust: 0.0)
+        try hashScene("rt", rayTraced: 1)
+        rig(haze: 0.6, dust: 0.5)
+        try hashScene("rt-air", rayTraced: 1)
+    }
+}

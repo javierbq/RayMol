@@ -113,7 +113,7 @@ MASTER_LITERALS = {
     'kMaterialImpostorSrc': 'ea5947e14500d7d5',  # #710: the rig lights the material's albedo
     'kMaterialSrc': 'da47cac063348d43',
     'kPostSrc': 'a3236d6afc3a38b1',  # #689: post_ssao_fog fades toward the bg_gradient
-    'kRTSrc': 'ca4ec2161386a787',  # #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps; #729: rt_reflect_tint keeps the metallic tint's hue under HDR
+    'kRTSrc': '7252f19e54e7e56c',  # #739: NaN guards as bit tests (light_finite); #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps; #729: rt_reflect_tint keeps the metallic tint's hue under HDR
     'kScreenOverlaySrc': '9f09ecbdd4a9ddfa',  # #689: ramp gadgets drawn after the post chain
     # #635: retaken after sphere glass coverage split; #710: the rig lights
     # the material's albedo
@@ -129,8 +129,9 @@ MASTER_LITERALS = {
 # #615's head. #615 (re-take only when #615 changes kMaterialSrc);
 # lighting_material_msl.py pins what changed.
 CHANGED_BY_615 = {
-    # #710: the rig lights the material's albedo
-    'kMaterialSrc': 'daef7520c89422d7',
+    # #739: NaN guards as bit tests (light_finite); #710: the rig lights the
+    # material's albedo
+    'kMaterialSrc': '98346bdc0203becb',
 }
 # #615 appends the material's classic scale to every mat_glass_shade call
 # (`, mat_classic_light(m)`). These four literals carry such calls and nothing
@@ -310,7 +311,7 @@ HDR_EDITS_624 = (
     # the air composite: two arms, the exposure, the upsample's rig
     ('air_signature', 'float3post_air_finish(float3c,float3a,floate)',
      'float3post_air_finish(float3c,float3a)'),
-    ('air_body', '{if(kLightHdr){constfloat3add=all(isfinite(a))?max(a,float3(0.0))'
+    ('air_body', '{if(kLightHdr){constfloat3add=light_finite3(a)?max(a,float3(0.0))'
                  '*e:float3(0.0);returnmax(saturate(c),light_tone(light_tone_inverse('
                  'saturate(c))+add));}returnc+max(mat_soft_knee(c+a)-mat_soft_knee(c),'
                  'float3(0.0));}',
@@ -793,7 +794,7 @@ class TestModel(AirMSLCase):
         sig, finish = self.fn('post_air_finish')
         self.assertIn('float3post_air_finish(float3c,float3a,floate)', squash(sig))
         self.assertEqual(squash(finish),
-                         '{if(kLightHdr){constfloat3add=all(isfinite(a))?'
+                         '{if(kLightHdr){constfloat3add=light_finite3(a)?'
                          'max(a,float3(0.0))*e:float3(0.0);returnmax(saturate(c),'
                          'light_tone(light_tone_inverse(saturate(c))+add));}'
                          'returnc+max(mat_soft_knee(c+a)-mat_soft_knee(c),float3(0.0));}')
@@ -806,8 +807,8 @@ class TestModel(AirMSLCase):
                      'post_linear_depth(1.0, A, B, ortho)',
                      'const float zLo = max(air.range.x, camNear);',
                      'const float zHi = min(min(air.range.y, camFar), zSurf);',
-                     'if (!(zHi > zLo) || !isfinite(zHi - zLo))',
-                     'if (!all(isfinite(add))) add = float3(0.0);',
+                     'if (!(zHi > zLo) || !light_finite(zHi - zLo))',
+                     'if (!light_finite3(add)) add = float3(0.0);',
                      'max(add, float3(0.0))'):
             self.assertIn(text, term)
         # every pow base and every length is floored; -rd.z too
@@ -1067,7 +1068,7 @@ class TestHalf(AirMSLCase):
         self.assertEqual(squash(statements(stop, first, last)),
                          squash(statements(term, first, last)))
         # an empty range stops at the surface, as the term's .a does
-        self.assertIn('if (!(zHi > zLo) || !isfinite(zHi - zLo)) return zSurf;', stop)
+        self.assertIn('if (!(zHi > zLo) || !light_finite(zHi - zLo)) return zSurf;', stop)
         self.assertRegex(stop, r'return zHi;\s*\}$')
         self.assertIn('return float4(0.0, 0.0, 0.0, zSurf);', term)
         self.assertIn('return float4(max(add, float3(0.0)), zHi);', term)

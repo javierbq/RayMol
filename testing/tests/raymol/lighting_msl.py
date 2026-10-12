@@ -73,12 +73,16 @@ _sources = _load_shader_sources()
 shader_literals = _sources.shader_literals
 strip_comments = _sources._strip_comments
 
+# Finite bit tests that fast math cannot fold (#739), in kMaterialSrc and
+# copied into kRTSrc.
+FINITE_HELPERS = ('light_finite', 'light_finite3')
 # HDR colour's tone helpers (#624), in kMaterialSrc and copied into kRTSrc.
 TONE_HELPERS = ('light_tone_scalar', 'light_tone_scalar_inverse', 'light_tone',
                 'light_tone_inverse')
 # Every helper of the light block, in kMaterialSrc.
 HELPERS = ('light_response_neutral', 'light_response', 'light_visibility',
-           'light_terms_view', 'light_terms') + TONE_HELPERS + (
+           'light_terms_view', 'light_terms') + FINITE_HELPERS + (
+           TONE_HELPERS) + (
            'light_finish', 'light_outline', 'light_apply', 'light_glass_glints',
            'light_glass_cover')
 # The ray tracer's copies (kRTSrc cannot take kMaterialSrc): the structs, and
@@ -89,7 +93,7 @@ HELPERS = ('light_response_neutral', 'light_response', 'light_visibility',
 RT_COPIES = ('light_response_neutral', 'light_visibility', 'light_terms_view',
              'light_shadow_lookup', 'light_visibility_shadowed',
              'light_terms_view_shadowed',
-             'mat_soft_knee') + TONE_HELPERS + ('light_finish',)
+             'mat_soft_knee') + FINITE_HELPERS + TONE_HELPERS + ('light_finish',)
 # The function constants a light helper may read (#624): kLightHdr alone,
 # through light_finish, light_glass_glints and light_glass_cover's helpers.
 # Every library function that reaches it comes from a specialiser that sets

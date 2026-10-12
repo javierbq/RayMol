@@ -105,7 +105,7 @@ HDR_CONSTANT = re.compile(r'\bkLightHdr\b')
 # literal, comments stripped and whitespace removed, the first 16 hex digits.
 # Taken from master with these parsers, never from this branch.
 MASTER_054B525 = {
-    'kAirSrc': 'bb28757fec4568af',
+    'kAirSrc': '4fccf58f05d2d1e3',  # #739: NaN guards as bit tests (light_finite)
     'kBezierTubeRigSrc': '8b5d47b1b8b9d31b',  # #663: bezier_tube_fragment_rig_shadow
     'kBezierTubeSrc': '0085bdbf88964ab4',
     'kConnectorShaderSrc': '40ef57a0e535d985',
@@ -113,9 +113,9 @@ MASTER_054B525 = {
     'kEyeReconSrc': '34e775c149c8b075',
     'kLabelShaderSrc': 'ca5097bd2ad97d60',  # #736: label_fragment_oit, the OIT pass's variant
     'kMaterialImpostorSrc': '10727f58afb05138',  # #710: the rig lights the material's albedo
-    'kMaterialSrc': 'daef7520c89422d7',  # #710: the rig lights the material's albedo
+    'kMaterialSrc': '98346bdc0203becb',  # #739: NaN guards as bit tests (light_finite); #710: the rig lights the material's albedo
     'kPostSrc': 'a3236d6afc3a38b1',  # #689: post_ssao_fog fades toward the bg_gradient
-    'kRTSrc': 'ca4ec2161386a787',  # #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps; #729: rt_reflect_tint keeps the metallic tint's hue under HDR
+    'kRTSrc': '7252f19e54e7e56c',  # #739: NaN guards as bit tests (light_finite); #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps; #729: rt_reflect_tint keeps the metallic tint's hue under HDR
     'kScreenOverlaySrc': '9f09ecbdd4a9ddfa',  # #689: ramp gadgets drawn after the post chain
     # #635: retaken after sphere glass coverage split; #710: the rig lights
     # the material's albedo
@@ -161,16 +161,16 @@ GLASS_COVER = (
     'constfloatcover=saturate(a+(1.0-a)*h);'
     'constfloat3S=(body*a+hi)/max(cover,1e-4);'
     'returnfloat4(light_tone(e*S),cover);}')
-TONE_BODY = ('{if(!all(isfinite(c)))returnfloat3(0.0);c=max(c,float3(0.0));'
+TONE_BODY = ('{if(!light_finite3(c))returnfloat3(0.0);c=max(c,float3(0.0));'
              'constfloatm=max(c.r,max(c.g,c.b));if(m<=kLightToneKnee)returnc;'
              'returnc*light_tone_scalar(m)/m;}')
-TONE_INVERSE_BODY = ('{if(!all(isfinite(c)))returnfloat3(0.0);'
+TONE_INVERSE_BODY = ('{if(!light_finite3(c))returnfloat3(0.0);'
                      'c=clamp(c,float3(0.0),float3(1.0));'
                      'constfloatm=max(c.r,max(c.g,c.b));if(m<=kLightToneKnee)returnc;'
                      'returnc*light_tone_scalar_inverse(m)/m;}')
 AIR_FINISH = (
     'staticfloat3post_air_finish(float3c,float3a,floate)',
-    '{if(kLightHdr){constfloat3add=all(isfinite(a))?max(a,float3(0.0))*e:float3(0.0);'
+    '{if(kLightHdr){constfloat3add=light_finite3(a)?max(a,float3(0.0))*e:float3(0.0);'
     'returnmax(saturate(c),light_tone(light_tone_inverse(saturate(c))+add));}'
     'returnc+max(mat_soft_knee(c+a)-mat_soft_knee(c),float3(0.0));}')
 
@@ -345,7 +345,7 @@ class TestShaders(HdrMSLCase):
                              msl_name)
             # the NaN rule: non-finite and negative read as 0
             var = first[3]
-            self.assertTrue(body.startswith('{%s=(isfinite(%s)&&%s>0.0)?%s:0.0;'
+            self.assertTrue(body.startswith('{%s=(light_finite(%s)&&%s>0.0)?%s:0.0;'
                                             % ((var,) * 4)), msl_name)
         self.assertEqual(self.fn(self.material, 'light_tone')[1], TONE_BODY)
         self.assertEqual(self.fn(self.material, 'light_tone_inverse')[1],
