@@ -34,11 +34,20 @@ struct LightsOrbitView: View {
     @ObservedObject var controller: LightsController
     var style: LightsBarStyle
 
+    /// The iPad float (#718) collapses the card to its header while an open
+    /// CameraDock would lift it onto the knobs on a short viewport; the
+    /// user's own `collapsed` is kept and shows again when this turns false;
+    /// the chevron still expands the card over the dock.
+    var dockCollapsed: Bool = false
+    @State private var expandedOverDock = false
+
     /// Collapsed to its header (with a one-line summary). Plain view state,
     /// seeded per mode entry and never persisted.
     @State private var collapsed: Bool
     /// 44 on iOS (the chevron a 44 pt target, #623), 0 on macOS.
     @Environment(\.lightsTouchMinimum) private var touchMinimum
+
+    private var isCollapsed: Bool { dockCollapsed && !expandedOverDock ? true : collapsed }
 
     static let width: CGFloat = LightsInspector.width
     /// The header row's height on macOS; on iOS the 44 pt chevron sets it.
@@ -52,9 +61,10 @@ struct LightsOrbitView: View {
     var grip: LightsOrbitGrip?
 
     init(controller: LightsController, style: LightsBarStyle, initiallyCollapsed: Bool = false,
-         grip: LightsOrbitGrip? = nil) {
+         dockCollapsed: Bool = false, grip: LightsOrbitGrip? = nil) {
         self.controller = controller
         self.style = style
+        self.dockCollapsed = dockCollapsed
         self.grip = grip
         _collapsed = State(initialValue: initiallyCollapsed)
     }
@@ -71,8 +81,8 @@ struct LightsOrbitView: View {
             header(state)
                 .padding(.horizontal, Self.inset)
                 .padding(.top, touchMinimum > 0 ? 0 : 8)
-                .padding(.bottom, collapsed && touchMinimum == 0 ? 8 : 2)
-            if !collapsed {
+                .padding(.bottom, isCollapsed && touchMinimum == 0 ? 8 : 2)
+            if !isCollapsed {
                 OrbitCanvases(controller: controller, eye: controller.eye, style: style)
                     .padding(.horizontal, Self.inset)
                     .padding(.bottom, 10)
@@ -87,6 +97,7 @@ struct LightsOrbitView: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel(state.containerLabel)
         .accessibilityIdentifier(LightsOrbitState.identifier)
+        .onChange(of: dockCollapsed) { _, _ in expandedOverDock = false }
     }
 
     // `Orbit` over the plan and `Pitch` over the arc (spec decision 11); the
@@ -99,7 +110,7 @@ struct LightsOrbitView: View {
                         .opacity(state.isOn ? 1 : 0.45)
                         .accessibilityHidden(true)
                     title(LightsOrbitState.orbitTitle)
-                    if collapsed {
+                    if isCollapsed {
                         OrbitCollapsedSummary(controller: controller, eye: controller.eye, style: style)
                     } else {
                         Text(verbatim: state.selected.name)
@@ -110,8 +121,8 @@ struct LightsOrbitView: View {
                     }
                     Spacer(minLength: 2)
                 }
-                .frame(width: collapsed ? nil : LightsOrbitMetrics.planSize.width + Self.gap, alignment: .leading)
-                if !collapsed {
+                .frame(width: isCollapsed ? nil : LightsOrbitMetrics.planSize.width + Self.gap, alignment: .leading)
+                if !isCollapsed {
                     title(LightsOrbitState.pitchTitle)
                     Spacer(minLength: 2)
                 }
@@ -156,8 +167,18 @@ struct LightsOrbitView: View {
     }
 
     private var collapseButton: some View {
-        Button { withAnimation(.easeOut(duration: 0.15)) { collapsed.toggle() } } label: {
-            Image(systemName: collapsed ? "chevron.down" : "chevron.up")
+        Button {
+            withAnimation(.easeOut(duration: 0.15)) {
+                if dockCollapsed && !expandedOverDock {
+                    // The user expands it over the dock: their choice, for as long as the dock collapses it.
+                    expandedOverDock = true
+                    collapsed = false
+                } else {
+                    collapsed.toggle()
+                }
+            }
+        } label: {
+            Image(systemName: isCollapsed ? "chevron.down" : "chevron.up")
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundColor(style.text.opacity(0.7))
                 .frame(width: 18, height: 18)
@@ -165,8 +186,8 @@ struct LightsOrbitView: View {
                 .lightsTouchTarget()
         }
         .buttonStyle(.plain)
-        .help(LightsOrbitState.collapseLabel(collapsed: collapsed))
-        .accessibilityLabel(LightsOrbitState.collapseLabel(collapsed: collapsed))
+        .help(LightsOrbitState.collapseLabel(collapsed: isCollapsed))
+        .accessibilityLabel(LightsOrbitState.collapseLabel(collapsed: isCollapsed))
         .accessibilityIdentifier(LightsOrbitState.collapseIdentifier)
     }
 }

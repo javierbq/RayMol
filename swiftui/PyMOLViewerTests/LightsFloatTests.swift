@@ -242,6 +242,76 @@ final class LightsFloatLayoutTests: XCTestCase {
         }
     }
 
+    /// #718: an open CameraDock collapses the orbit card on short viewports,
+    /// keeping the key knob free while still resting on the dock.
+    func testAnOpenDockCollapsesTheCardOnShortViewports() throws {
+        let store = FakeRigStore()
+        lightsFloatThreePoint(store)
+        lightsFloatCloseCamera(store)
+        let controller = LightsController(seams: store.seams)
+        controller.eyeDemand = .everyFrame
+        controller.begin()
+        let dock = ViewportChromeHeights(bottomLeading: 58, dock: 132)
+        for size in [CGSize(width: 834, height: 560), CGSize(width: 744, height: 520)] {
+            let layout = try XCTUnwrap(LightGizmoLayout.make(
+                LightGizmoInputs(controller: controller, viewSize: size, gridMode: false, sceneShadowsOn: true),
+                metrics: LightGizmoMetrics(slop: 14, minimumTarget: 44)))
+            let f = L.frames(corner: .default, container: size, inspectorCollapsed: true, chrome: dock)
+            let key = try XCTUnwrap(layout.knobs.first { $0.name == "key" })
+            let r = layout.metrics.reach(key.radius)
+            let keyRect = CGRect(x: key.centre.x - r, y: key.centre.y - r, width: 2 * r, height: 2 * r)
+            XCTAssertFalse(f.card.intersects(keyRect), "\(size): card covers key knob")
+            XCTAssertEqual(L.coveredKnobs(layout: layout, frames: f.all), [], "\(size)")
+            XCTAssertEqual(f.card.maxY, size.height - 8 - 132, accuracy: 1e-9, "\(size)")
+        }
+    }
+
+    /// #718: the pure dock collapse rule and its effect on frames.
+    func testTheDockCollapseRule() {
+        let dock = ViewportChromeHeights(bottomLeading: 58, dock: 132)
+        for size in [CGSize(width: 834, height: 560), CGSize(width: 744, height: 520)] {
+            for corner in [LightsFloatCorner.bottomLeading, .bottomTrailing] {
+                XCTAssertTrue(L.dockCollapsesCard(corner: corner, container: size, chrome: dock),
+                              "\(size) \(corner)")
+                let f = L.frames(corner: corner, container: size, inspectorCollapsed: true, chrome: dock)
+                XCTAssertEqual(f.card.height, M.orbitCardCollapsedHeight, "\(size) \(corner)")
+            }
+            for corner in [LightsFloatCorner.topLeading, .topTrailing] {
+                XCTAssertFalse(L.dockCollapsesCard(corner: corner, container: size, chrome: dock),
+                               "\(size) \(corner)")
+                let f = L.frames(corner: corner, container: size, inspectorCollapsed: true, chrome: dock)
+                XCTAssertEqual(f.card.height, M.orbitCardSize.height, "\(size) \(corner)")
+            }
+
+            for corner in LightsFloatCorner.allCases {
+                XCTAssertFalse(L.dockCollapsesCard(corner: corner, container: size,
+                                                   chrome: lightsFloatCameraChrome),
+                               "\(size) \(corner)")
+                let f = L.frames(corner: corner, container: size, inspectorCollapsed: true,
+                                 chrome: lightsFloatCameraChrome)
+                XCTAssertEqual(f.card.height, M.orbitCardSize.height, "\(size) \(corner)")
+            }
+            let blClosed = L.frames(corner: .bottomLeading, container: size, inspectorCollapsed: true,
+                                    chrome: lightsFloatCameraChrome)
+            XCTAssertEqual(blClosed.card.origin,
+                           CGPoint(x: 8, y: size.height - 8 - 66 - 252),
+                           "\(size) today's layout")
+        }
+
+        let tallSize = CGSize(width: 1180, height: 760)
+        XCTAssertFalse(L.dockCollapsesCard(corner: .bottomLeading, container: tallSize, chrome: dock))
+        let tallFrames = L.frames(corner: .bottomLeading, container: tallSize, inspectorCollapsed: true,
+                                  chrome: dock)
+        XCTAssertEqual(tallFrames.card.height, 252)
+        XCTAssertEqual(tallFrames.card.maxY, 760 - 8 - 132, accuracy: 1e-9)
+
+        let lowDock = ViewportChromeHeights(bottomLeading: 58, dock: 30)
+        XCTAssertFalse(L.dockCollapsesCard(corner: .bottomLeading, container: CGSize(width: 744, height: 520),
+                                           chrome: lowDock))
+
+        XCTAssertFalse(L.dockCollapsesCard(corner: .bottomLeading, container: .zero, chrome: dock))
+    }
+
     func testCoveredKnobsUseTheTouchReach() throws {
         let store = FakeRigStore()
         lightsFloatThreePoint(store)
@@ -296,10 +366,13 @@ final class LightsFloatLayoutTests: XCTestCase {
             let alone = L.frames(corner: .default, container: size, inspectorCollapsed: true,
                                  chrome: lightsFloatCameraChrome, showsCard: false, showsInspector: false)
             XCTAssertEqual(alone.atmosphere.minY, M.inset, name)
-            // (An open CameraDock lifts the card by its height; on the
-            // smaller viewports the card then reaches the key knob, which
-            // the default rule does not promise to keep free: the dock is
-            // a transient panel.)
+            // #718: an open CameraDock auto-collapses the orbit card where it
+            // would reach the key knob on short viewports, so every default
+            // knob stays free.
+            let docked = L.frames(corner: .default, container: size, inspectorCollapsed: true,
+                                  chrome: ViewportChromeHeights(bottomLeading: 58, dock: 132))
+            XCTAssertEqual(L.coveredKnobs(layout: layout, frames: docked.all), [],
+                           "\(name): open dock covers a knob")
             // Every knob stays inside the view (none hides off-screen either).
             for knob in layout.knobs {
                 XCTAssertTrue(CGRect(origin: .zero, size: size).contains(knob.centre), "\(name) \(knob.name)")
@@ -341,6 +414,19 @@ final class LightsFloatLayoutTests: XCTestCase {
                                   hint: "", identifier: "", actions: []))
             .environment(\.lightsTouchMinimum, 44))
         XCTAssertEqual(gripped.fittingSize.height, M.orbitCardSize.height, accuracy: 0.5)
+
+        // #718: initially collapsed and dock-collapsed cards match the collapsed height.
+        let collapsed = NSHostingView(rootView: LightsOrbitView(
+            controller: controller, style: style, initiallyCollapsed: true)
+            .environment(\.lightsTouchMinimum, 44))
+        XCTAssertEqual(collapsed.fittingSize.width, M.orbitCardSize.width, accuracy: 0.5)
+        XCTAssertEqual(collapsed.fittingSize.height, M.orbitCardCollapsedHeight, accuracy: 0.5)
+
+        let dockCollapsed = NSHostingView(rootView: LightsOrbitView(
+            controller: controller, style: style, dockCollapsed: true)
+            .environment(\.lightsTouchMinimum, 44))
+        XCTAssertEqual(dockCollapsed.fittingSize.width, M.orbitCardSize.width, accuracy: 0.5)
+        XCTAssertEqual(dockCollapsed.fittingSize.height, M.orbitCardCollapsedHeight, accuracy: 0.5)
     }
 
     /// #726: the Atmosphere card collapsed is its 44 pt header, 284 wide, in
@@ -550,6 +636,10 @@ final class LightsFloatSnapshotTests: XCTestCase {
             Shot(name: "corner_tr_inspector_expanded_834x560", corner: .topTrailing, inspectorCollapsed: false),
             Shot(name: "default_bl_dock_open_834x560",
                  chrome: ViewportChromeHeights(bottomLeading: 58, dock: 132)),
+            Shot(name: "default_bl_dock_open_744x520_mini", size: CGSize(width: 744, height: 520),
+                 chrome: ViewportChromeHeights(bottomLeading: 58, dock: 132)),
+            Shot(name: "default_bl_dock_open_1180x760_tall", size: CGSize(width: 1180, height: 760),
+                 chrome: ViewportChromeHeights(bottomLeading: 58, dock: 132)),
             // #726: the Atmosphere card expanded under the collapsed
             // inspector, alone with no light (collapsed and expanded), and
             // backlit with its warning glyph in the collapsed header.
@@ -623,6 +713,11 @@ final class LightsFloatSnapshotTests: XCTestCase {
                                                 ? LightsFloatMetrics.atmosphereHeaderHeight : frames.atmosphere.height,
                                             showsCard: !shot.noLights, showsInspector: !shot.noLights,
                                             inspectorHintLines: hintLines)
+        if !shot.noLights && LightsFloatLayout.dockCollapsesCard(corner: shot.corner, container: shot.size,
+                                                               chrome: shot.chrome) {
+            XCTAssertEqual(frames.card.height, LightsFloatMetrics.orbitCardCollapsedHeight, accuracy: 0.5,
+                           "\(shot.name): the dock collapses the card")
+        }
         // #726: the Atmosphere card under the inspector (or alone at the
         // top inset), its header 44 pt while collapsed, in every hint state.
         XCTAssertEqual(frames.atmosphere.minX, want.atmosphere.minX, accuracy: 0.5, "\(shot.name) atmosphere")
