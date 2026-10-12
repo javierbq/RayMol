@@ -210,6 +210,30 @@ final class LightsGestureUITests: XCTestCase {
         XCTAssertLessThan(card.frame.midY, view.midY, "the card is not in the top half: \(card.frame)")
     }
 
+    func testFloatFieldFocusKeepsTheViewport() throws {
+        guard isPad else { throw XCTSkip("iPad only: the float") }
+        app.launchEnvironment["PYMOL_AUTOLIGHTS_EDIT"] = "corner:bl;expand"
+        _ = try launchInLights()
+        let before = viewport().frame
+        let field = element("lights.inspector.orbit.field")
+        XCTAssertTrue(field.waitForExistence(timeout: 10), "the orbit field is missing")
+        field.tap()
+        let keyboard = app.keyboards.firstMatch
+        if !keyboard.waitForExistence(timeout: 5) {
+            throw XCTSkip("no software keyboard (a hardware keyboard is connected)")
+        }
+        settle(1.0)
+        attach("float-field-focus")
+        let after = viewport().frame
+        XCTAssertEqual(after.minX, before.minX, accuracy: 0.5, "viewport minX changed")
+        XCTAssertEqual(after.minY, before.minY, accuracy: 0.5, "viewport minY changed")
+        XCTAssertEqual(after.width, before.width, accuracy: 0.5, "viewport width changed")
+        XCTAssertEqual(after.height, before.height, accuracy: 0.5, "viewport height changed")
+        XCTAssertLessThanOrEqual(field.frame.maxY, keyboard.frame.minY,
+                                 "the orbit field is not above the keyboard")
+        print("LIGHTS_UITEST_FOCUS before=\(before) after=\(after) field=\(field.frame) keyboard=\(keyboard.frame)")
+    }
+
     // MARK: - The probe
 
     private struct ProbeTimeout: Error, CustomStringConvertible {

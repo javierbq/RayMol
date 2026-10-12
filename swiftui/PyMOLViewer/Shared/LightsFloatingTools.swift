@@ -24,6 +24,9 @@
 // - #718: on a short viewport an open CameraDock collapses the orbit card
 //   to its header (LightsFloatLayout.dockCollapsesCard), so it stays off
 //   the key knob; it expands back when the dock closes.
+// - While a field of the float has the keyboard, the float reports it
+//   (`onFieldFocus`) so ContentView keeps the viewport's size, and lifts the
+//   trailing column above the keyboard (#725).
 // - VoiceOver: the grip is an element with the corner as its value and one
 //   `Move to <corner>` action per other corner.
 // Empty space passes touches through to the viewport (the camera's).
@@ -190,6 +193,15 @@ enum LightsFloatLayout {
 
     static func bottomClearance(corner: LightsFloatCorner, chrome: ViewportChromeHeights) -> CGFloat {
         bottomClearance(trailing: corner.isTrailing, chrome: chrome)
+    }
+
+    /// The trailing column's bottom padding (#725): the chrome's clearance,
+    /// or, while a field of the float has the keyboard, at least the
+    /// keyboard's overlap plus the inset gap, so the inspector (which scrolls
+    /// in what is left) and the Atmosphere card stay above it.
+    static func trailingBottomPadding(clearance: CGFloat, focused: Bool, keyboardOverlap: CGFloat) -> CGFloat {
+        guard focused, keyboardOverlap > 0 else { return clearance }
+        return max(clearance, keyboardOverlap + LightsFloatMetrics.gap)
     }
 
     /// #718: whether an open CameraDock collapses the orbit card to its
@@ -371,6 +383,9 @@ struct LightsFloatingTools: View {
     /// coordinates when they change, never per drag tick (the drag only
     /// offsets); reported with no orbit card too (`card` is `.zero` then).
     var onFrames: (LightsFloatLayout.Frames) -> Void = { _ in }
+    /// True while an Orbit/Pitch or Atmosphere field of the float has the
+    /// keyboard; the owner then keeps the viewport's size (#725).
+    var onFieldFocus: (Bool) -> Void = { _ in }
 
     /// The grip drag's translation; reset (animated) on release and on a
     /// cancel, so a cancelled drag leaves nothing behind.
@@ -381,6 +396,11 @@ struct LightsFloatingTools: View {
     /// The card's laid-out frame and the viewport's size, for the drop.
     @State private var cardFrame: CGRect = .zero
     @State private var containerSize: CGSize = .zero
+    /// A field of the float has the keyboard (#725); the keyboard's top
+    /// and the float's bottom in the window, for the trailing column's lift.
+    @State private var fieldFocused = false
+    @State private var keyboardTop: CGFloat?
+    @State private var bottom: CGFloat = 0
     /// The orbit card and the inspector draw (a light, a selected light):
     /// without them their room and gaps go (the Atmosphere card moves up).
     @State private var cardShown = true
@@ -392,6 +412,10 @@ struct LightsFloatingTools: View {
     var body: some View {
         let inset = LightsFloatMetrics.inset, gap = LightsFloatMetrics.gap
         let trailingClearance = LightsFloatLayout.bottomClearance(trailing: true, chrome: chrome)
+        let overlap = LightsSheetModel.keyboardOverlap(bottom: bottom, keyboardTop: keyboardTop)
+        let trailingPadding = LightsFloatLayout.trailingBottomPadding(clearance: trailingClearance,
+                                                                      focused: fieldFocused,
+                                                                      keyboardOverlap: overlap)
         let cardClearance = LightsFloatLayout.bottomClearance(corner: corner, chrome: chrome)
         let dockCollapsed = LightsFloatLayout.dockCollapsesCard(corner: corner, container: containerSize,
                                                                chrome: chrome)
@@ -416,7 +440,7 @@ struct LightsFloatingTools: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             .padding(inset)
-            .padding(.bottom, trailingClearance)
+            .padding(.bottom, trailingPadding)
 
             // The orbit card: one view in every corner (its collapse state
             // survives a move), offset while its grip is dragged.
@@ -432,6 +456,9 @@ struct LightsFloatingTools: View {
             Color.clear
                 .onAppear { containerSize = g.size }
                 .onChange(of: g.size) { _, size in containerSize = size }
+                // The float's bottom in the window, for the keyboard's
+                // overlap (#725).
+                .onChange(of: g.frame(in: .global).maxY, initial: true) { _, maxY in bottom = maxY }
         })
         .coordinateSpace(name: Self.space)
         .onPreferenceChange(LightsFloatFramesKey.self) { frames in
@@ -448,6 +475,19 @@ struct LightsFloatingTools: View {
             }
             onFrames(LightsFloatLayout.Frames(card: card ?? .zero, inspector: inspector ?? .zero,
                                               atmosphere: atmosphere ?? .zero))
+        }
+        .onPreferenceChange(LightsFieldFocusKey.self) { focused in
+            guard focused != fieldFocused else { return }
+            fieldFocused = focused
+            onFieldFocus(focused)
+        }
+        .modifier(LightsKeyboardTopReader(top: $keyboardTop))
+        // Safety net: never leave the keyboard rule on.
+        .onDisappear {
+            if fieldFocused {
+                fieldFocused = false
+                onFieldFocus(false)
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(LightsFloatState.identifier)

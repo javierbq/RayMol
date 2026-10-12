@@ -427,9 +427,9 @@ struct AtmosphereSliderRow: View {
         .onChange(of: focused) { _, now in
             if now { editor.begin() } else { commit() }
         }
-        // The iPhone sheet and the side panel keep the scene's size while a
-        // field has the keyboard (#623), and scroll the focused row into
-        // view above it.
+        // The iPhone sheet, the side panel and the iPad float keep the scene's
+        // size while a field has the keyboard (#623, #725), and scroll the
+        // focused row into view above it.
         .preference(key: LightsFieldFocusKey.self, value: focused)
         .preference(key: LightsSheetScrollTargetKey.self, value: focused ? AtmosphereCardIDs.row(p) : nil)
     }

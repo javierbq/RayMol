@@ -535,7 +535,13 @@ class TestOrbitSource(testing.PyMOLTestCase):
         view = body(float_tools, 'struct LightsFloatingTools: View')
         self.assertIsNotNone(view, 'LightsFloatingTools not found')
         self.assertIn('LightsFloatLayout.bottomClearance(trailing: true, chrome: chrome)', view)
-        self.assertIn('.padding(.bottom, trailingClearance)', view)
+        # The clearance is the floor of the trailing column's padding; a
+        # focused field only lifts it above the keyboard (#725).
+        self.assertIn('LightsFloatLayout.trailingBottomPadding(clearance: trailingClearance', view)
+        self.assertIn('.padding(.bottom, trailingPadding)', view)
+        lift = body(float_tools, 'static func trailingBottomPadding(')
+        self.assertIsNotNone(lift, 'trailingBottomPadding not found')
+        self.assertIn('max(clearance,', lift)
         help_button = re.search(r'questionmark\.circle\.fill"\)\s*'
                                 r'\.font\(\.system\(size:\s*([0-9.]+)\)\)\s*'
                                 r'\.foregroundStyle\([^\n]*\)\s*\.padding\(([0-9.]+)\)', content)

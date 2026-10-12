@@ -826,3 +826,120 @@ final class LightsFloatSnapshotTests: XCTestCase {
         return true
     }
 }
+
+// MARK: - Field focus reporting (#725)
+
+@MainActor
+final class LightsFieldFocusReportTests: XCTestCase {
+    private class FocusableWindow: NSWindow {
+        override var canBecomeKey: Bool { true }
+        override var canBecomeMain: Bool { true }
+    }
+
+    private final class FocusRecorder {
+        var values: [Bool] = []
+    }
+
+    private func findEditableTextField(in view: NSView) -> NSTextField? {
+        if let textField = view as? NSTextField, textField.isEditable {
+            return textField
+        }
+        for subview in view.subviews {
+            if let found = findEditableTextField(in: subview) {
+                return found
+            }
+        }
+        return nil
+    }
+
+    private func checkFieldFocus(named name: String, makeView: (FocusRecorder) -> AnyView) throws {
+        let recorder = FocusRecorder()
+        let rootView = makeView(recorder)
+            .frame(width: 834, height: 1000)
+            .environment(\.lightsTouchMinimum, 44)
+        let host = NSHostingView(rootView: rootView)
+        let window = FocusableWindow(contentRect: NSRect(x: -20000, y: -20000, width: 834, height: 1000),
+                                     styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer {
+            window.orderOut(nil)
+        }
+        window.makeKey()
+        host.layoutSubtreeIfNeeded()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        host.layoutSubtreeIfNeeded()
+
+        let field = try XCTUnwrap(findEditableTextField(in: host), "\(name): no editable text field found")
+        let focused = window.makeFirstResponder(field)
+        XCTAssertTrue(focused, "\(name): could not make text field first responder")
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        XCTAssertEqual(recorder.values.last, true, "\(name): onFieldFocus did not report true on focus")
+
+        window.makeFirstResponder(nil)
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        XCTAssertEqual(recorder.values.last, false, "\(name): onFieldFocus did not report false on blur")
+    }
+
+    func testEveryPresentationReportsFieldFocus() throws {
+        // 1. LightsFloatingTools
+        try checkFieldFocus(named: "LightsFloatingTools") { recorder in
+            let store = FakeRigStore()
+            lightsFloatThreePoint(store)
+            let controller = LightsController(seams: store.seams)
+            controller.begin()
+            let style = LightsInspectorSnapshotTests.style(dark: false)
+            return AnyView(LightsFloatingTools(controller: controller,
+                                               style: style,
+                                               corner: .constant(.bottomLeading),
+                                               chrome: lightsFloatCameraChrome,
+                                               inspectorStartsCollapsed: false,
+                                               onFieldFocus: { recorder.values.append($0) }))
+        }
+
+        // 2. LightsSheet .bottom
+        try checkFieldFocus(named: "LightsSheet .bottom") { recorder in
+            let store = FakeRigStore()
+            lightsFloatThreePoint(store)
+            let controller = LightsController(seams: store.seams)
+            controller.begin()
+            let style = LightsInspectorSnapshotTests.style(dark: false)
+            let heights = LightsSheetHeights(compact: 100, expanded: 800, compactContent: 600)
+            return AnyView(LightsSheet(controller: controller,
+                                       style: style,
+                                       placement: .bottom,
+                                       detent: .constant(.expanded),
+                                       heights: heights,
+                                       onFieldFocus: { recorder.values.append($0) }))
+        }
+
+        // 3. LightsSheet .side
+        try checkFieldFocus(named: "LightsSheet .side") { recorder in
+            let store = FakeRigStore()
+            lightsFloatThreePoint(store)
+            let controller = LightsController(seams: store.seams)
+            controller.begin()
+            let style = LightsInspectorSnapshotTests.style(dark: false)
+            let heights = LightsSheetHeights(compact: 0, expanded: 800, compactContent: 0)
+            return AnyView(LightsSheet(controller: controller,
+                                       style: style,
+                                       placement: .side,
+                                       detent: .constant(.expanded),
+                                       heights: heights,
+                                       onFieldFocus: { recorder.values.append($0) }))
+        }
+    }
+
+    func testTrailingBottomPaddingLiftsAboveTheKeyboard() {
+        let clearance: CGFloat = 58
+        let gap = LightsFloatMetrics.gap
+        // unfocused -> clearance even with an overlap
+        XCTAssertEqual(LightsFloatLayout.trailingBottomPadding(clearance: clearance, focused: false, keyboardOverlap: 300), clearance)
+        // focused with overlap 0 -> clearance
+        XCTAssertEqual(LightsFloatLayout.trailingBottomPadding(clearance: clearance, focused: true, keyboardOverlap: 0), clearance)
+        // focused with overlap 300 and clearance 58 -> 300 + gap
+        XCTAssertEqual(LightsFloatLayout.trailingBottomPadding(clearance: clearance, focused: true, keyboardOverlap: 300), 300 + gap)
+        // focused with overlap 20 and clearance 58 -> 58
+        XCTAssertEqual(LightsFloatLayout.trailingBottomPadding(clearance: clearance, focused: true, keyboardOverlap: 20), clearance)
+    }
+}
