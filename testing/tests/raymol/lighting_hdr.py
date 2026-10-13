@@ -108,6 +108,24 @@ def scalar(values, inverse=False):
                                           bool(inverse))
 
 
+def aces(values, inverse=False):
+    """LightAces (or LightAcesInverse) of each [r, g, b]."""
+    with cmd.lockcm:
+        return cmd._cmd.light_tone(cmd._COb, [list(map(float, v)) for v in values],
+                                   bool(inverse), True)
+
+
+def aces1(rgb, inverse=False):
+    return aces([rgb], inverse)[0]
+
+
+def aces_scalar(values, inverse=False):
+    """LightAcesScalar (or LightAcesScalarInverse) of each value."""
+    with cmd.lockcm:
+        return cmd._cmd.light_tone_scalar(cmd._COb, [float(v) for v in values],
+                                          bool(inverse), True)
+
+
 def exposure(x):
     with cmd.lockcm:
         return cmd._cmd.light_tone_exposure(cmd._COb, float(x))
@@ -150,6 +168,22 @@ def model_inverse(y):
     u = (y - KNEE) / s
     t = 2.0 * u / ((1.0 - u) + math.sqrt((1.0 - u) ** 2 + 4.0 * u / (w * w)))
     return KNEE + s * t
+
+
+def model_aces_scalar(m):
+    if not math.isfinite(m) or m <= 0.0:
+        return 0.0
+    val = m * (2.51 * m + 0.03) / (m * (2.43 * m + 0.59) + 0.14)
+    return min(val, 1.0)
+
+
+def model_aces_inverse(y):
+    if not math.isfinite(y) or y <= 0.0:
+        return 0.0
+    y = min(y, 1.0)
+    a = 2.51 - 2.43 * y
+    b = 0.03 - 0.59 * y
+    return 0.28 * y / (b + math.sqrt(b * b + 0.56 * a * y))
 
 
 def frange(lo, hi, n):
@@ -318,6 +352,77 @@ class TestCurve(testing.PyMOLTestCase):
     def testInverseClipsToOne(self):
         self.assertEqual(tone1([2.0, 0.5, 0.0], inverse=True),
                          tone1([1.0, 0.5, 0.0], inverse=True))
+
+
+class TestAces(testing.PyMOLTestCase):
+    """The ACES tone curve (#735): pure C++ LightAces* tested through _cmd."""
+
+    def testScalar(self):
+        xs = frange(0.0, 12.0, 400)
+        got = aces_scalar(xs)
+        want = [model_aces_scalar(f32(x)) for x in xs]
+        for x, g, w in zip(xs, got, want):
+            self.assertAlmostEqual(g, w, delta=4 * ULP1, msg=x)
+        # monotone non-decreasing
+        for i in range(len(got) - 1):
+            self.assertLessEqual(got[i], got[i + 1])
+        # exactly 1.0 at 7.3 and 100
+        self.assertEqual(aces_scalar([7.3, 100.0]), [1.0, 1.0])
+        # NaN/inf/negative -> 0
+        self.assertEqual(aces_scalar([NAN, INF, -1.0, -100.0]), [0.0, 0.0, 0.0, 0.0])
+
+    def testInverse(self):
+        ys = frange(0.001, 1.0, 200)
+        inv = aces_scalar(ys, inverse=True)
+        round_trip = aces_scalar(inv)
+        for y, rt in zip(ys, round_trip):
+            self.assertAlmostEqual(rt, y, delta=2e-6, msg=y)
+        # inverse(1.0) is where the curve reaches 1: the positive root of
+        # 0.08 x^2 - 0.56 x - 0.14 = 0, about 7.2417
+        inv1 = aces_scalar([1.0], inverse=True)[0]
+        self.assertAlmostEqual(inv1, (0.56 + math.sqrt(0.56 ** 2 + 4 * 0.08 * 0.14)) / 0.16,
+                               delta=1e-4)
+        self.assertAlmostEqual(inv1, model_aces_inverse(1.0), delta=1e-4)
+        # inverse(2.0) == inverse(1.0)
+        inv2 = aces_scalar([2.0], inverse=True)[0]
+        self.assertEqual(inv2, inv1)
+
+    def testHuePreserving(self):
+        colors = [[5.0, 1.5, 0.5], [0.3, 0.2, 0.05], [20.0, 4.0, 1.0]]
+        for c in colors:
+            m = max(c)
+            s = aces_scalar([m])[0]
+            want = [x * s / m for x in c]
+            got = aces([c])[0]
+            for g, w in zip(got, want):
+                self.assertAlmostEqual(g, w, delta=1e-6)
+            for i in (1, 2):
+                self.assertAlmostEqual(got[i] / got[0], c[i] / c[0], delta=1e-6)
+        # per-channel ACES of [5, 1.5, 0.5] gives g/r ratio above 0.8 while LightAces keeps 0.3
+        c = [5.0, 1.5, 0.5]
+        per_channel = aces_scalar(c)
+        self.assertGreater(per_channel[1] / per_channel[0], 0.8)
+        self.assertAlmostEqual(aces([c])[0][1] / aces([c])[0][0], 0.3, delta=1e-6)
+
+    def testRoundTrip(self):
+        colors = [[5.0, 1.5, 0.5], [0.3, 0.2, 0.05], [6.5, 2.0, 1.0], [1.0, 0.5, 0.2]]
+        for c in colors:
+            mapped = aces([c])[0]
+            recovered = aces([mapped], inverse=True)[0]
+            for r, orig in zip(recovered, c):
+                self.assertAlmostEqual(r, orig, delta=2e-5)
+
+    def testNonFiniteAndDefaults(self):
+        for bad in ([NAN, 1.0, 0.5], [1.0, INF, 0.5], [1.0, 0.5, -INF]):
+            self.assertEqual(aces([bad]), [[0.0, 0.0, 0.0]])
+            self.assertEqual(aces([bad], inverse=True), [[0.0, 0.0, 0.0]])
+        # the 3-argument calls equal the explicit False 4th argument (T unchanged)
+        sample = [[1.0, 0.5, 0.2], [5.0, 2.0, 1.0]]
+        self.assertEqual(tone(sample), cmd._cmd.light_tone(cmd._COb, sample, False, False))
+        self.assertEqual(tone(sample, inverse=True), cmd._cmd.light_tone(cmd._COb, sample, True, False))
+        s_sample = [0.5, 1.5, 5.0]
+        self.assertEqual(scalar(s_sample), cmd._cmd.light_tone_scalar(cmd._COb, s_sample, False, False))
+        self.assertEqual(scalar(s_sample, inverse=True), cmd._cmd.light_tone_scalar(cmd._COb, s_sample, True, False))
 
 
 @unittest.skipUnless(HAVE_NUMPY, 'needs numpy (check_hdr.py)')
@@ -509,6 +614,22 @@ class TestFrame(FrameCase):
         got = light_hdr()
         self.assertEqual([got['exposure'], 1.0 if got['hdr'] else 0.0], tone4[:2])
 
+    def testAcesFlag(self):
+        self.rig()
+        try:
+            cmd.set('metal_exposure', 1.0)
+            cmd.set('metal_light_hdr', 1)
+            cmd.set('metal_tonemap', 0)
+            self.assertEqual(self.frame()['rig']['tone'], [1.0, 1.0, 0.0, 0.0])
+            cmd.set('metal_tonemap', 1)
+            self.assertEqual(self.frame()['rig']['tone'], [1.0, 1.0, 1.0, 0.0])
+            cmd.set('metal_light_hdr', 2)
+            self.assertEqual(self.frame()['rig']['tone'], [1.0, 0.0, 0.0, 0.0])
+        finally:
+            cmd.set('metal_tonemap', 0)
+            cmd.set('metal_light_hdr', 0)
+            cmd.set('metal_exposure', 1.0)
+
 
 class TestSource(testing.PyMOLTestCase):
 
@@ -559,10 +680,11 @@ class TestSource(testing.PyMOLTestCase):
         self.assertLess(fill, body.index('LightShadowPlan'))
         self.assertNotIn('metal_light_hdr', body)
         self.assertNotIn('metal_exposure', body)
-        # the fill reads the two settings, each once, and nothing else
+        # the fill reads the settings and nothing else
         fill = function_body(scene, 'SceneLightsToneFill')
         self.assertEqual(re.findall(r'cSetting_\w+', fill),
-                         ['cSetting_metal_exposure', 'cSetting_metal_light_hdr'])
+                         ['cSetting_metal_exposure', 'cSetting_metal_light_hdr',
+                          'cSetting_metal_tonemap'])
         self.assertIn('pymol::LightToneExposure(', fill)
         self.assertIn('kSceneLightsMobile', fill)
         self.assertEqual(scene.count('cSetting_metal_light_hdr'), 1)

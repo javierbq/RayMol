@@ -80,13 +80,13 @@ def without_finite_739(code):
 # Master f1855ac28 (#739's base): sha256 of each literal, comments stripped
 # and whitespace removed, first 16 hex digits (lighting_air_msl.py digest).
 PRE_739 = {
-    'kMaterialSrc': 'f4eb7866dc2af793',
-    'kAirSrc': 'a63a1f3e60e93f00',  # #810: dust_glow and dust_opacity (post_air_dust's gain and cover, post_air_mote, post_air_dust_cover, the alpha's cover); #686: per-cell air; #683: Beer-Lambert extinction (re-taken at #683's head)
-    'kRTSrc': '1682e93fe9543bab',  # #732: AO in scene units under an HDR rig; #709: traced reflection hits take their material's studio response; #852: AO and the cast shadow in scene units under an HDR rig; #855: traced hits take the transparent table, the procedural albedo and the glass glints; #668: rt_tri_normal_smooth averages only connected neighbours on the same smooth surface
+    'kMaterialSrc': '661ffa502bc23eb7',  # #735: ACES as the rig's scene-unit curve
+    'kAirSrc': 'a2a4c7fd5d9cc0db',  # #810: dust_glow and dust_opacity (post_air_dust's gain and cover, post_air_mote, post_air_dust_cover, the alpha's cover); #686: per-cell air; #683: Beer-Lambert extinction (re-taken at #683's head); #735: ACES as the rig's scene-unit curve
+    'kRTSrc': '4babb15c2592607f',  # #732: AO in scene units under an HDR rig; #709: traced reflection hits take their material's studio response; #852: AO and the cast shadow in scene units under an HDR rig; #855: traced hits take the transparent table, the procedural albedo and the glass glints; #668: rt_tri_normal_smooth averages only connected neighbours on the same smooth surface; #735: ACES as the rig's scene-unit curve
 }
 FINITE_COUNTS = {
-    'kMaterialSrc': {'helpers': 2, 'finite3': 2, 'finite': 2},
-    'kRTSrc': {'helpers': 2, 'finite3': 3, 'finite': 2},  # #855
+    'kMaterialSrc': {'helpers': 2, 'finite3': 4, 'finite': 4},  # #735: the ACES helpers
+    'kRTSrc': {'helpers': 2, 'finite3': 5, 'finite': 4},  # #855; #735: the ACES helpers
     'kAirSrc': {'helpers': 0, 'finite3': 2, 'finite': 5},  # #810: two guards in post_air_dust_cover; #683: post_air_transmittance's guard
 }
 
@@ -185,6 +185,18 @@ class TestFiniteGuards(FiniteMSLCase):
             tone_inv_body = squash(fns['light_tone_inverse'][1])
             self.assertTrue(tone_inv_body.startswith('{if(!light_finite3(c))returnfloat3(0.0);'),
                             f'{lib_name} light_tone_inverse')
+            aces_scalar_body = squash(fns['light_aces_scalar'][1])
+            self.assertTrue(aces_scalar_body.startswith('{m=(light_finite(m)&&m>0.0)?m:0.0;'),
+                            f'{lib_name} light_aces_scalar')
+            aces_inv_body = squash(fns['light_aces_scalar_inverse'][1])
+            self.assertTrue(aces_inv_body.startswith('{y=(light_finite(y)&&y>0.0)?min(y,1.0):0.0;'),
+                            f'{lib_name} light_aces_scalar_inverse')
+            aces_body = squash(fns['light_aces'][1])
+            self.assertTrue(aces_body.startswith('{if(!light_finite3(c))returnfloat3(0.0);'),
+                            f'{lib_name} light_aces')
+            aces_inv_body2 = squash(fns['light_aces_inverse'][1])
+            self.assertTrue(aces_inv_body2.startswith('{if(!light_finite3(c))returnfloat3(0.0);'),
+                            f'{lib_name} light_aces_inverse')
 
     def testOnlyTheGuardsChanged(self):
         for name in ('kMaterialSrc', 'kRTSrc', 'kAirSrc'):

@@ -5998,13 +5998,15 @@ PyObject* LightToneList(const std::vector<float>& v)
 } // namespace
 
 /// LightTone (or LightToneInverse when `inverse`) of each [r, g, b] in
-/// `values`: a list of [r, g, b] lists.
+/// `values`: a list of [r, g, b] lists. When `aces` is true, calls LightAces
+/// (or LightAcesInverse) instead (#735).
 static PyObject* CmdLightTone(PyObject* self, PyObject* args)
 {
   PyMOLGlobals* G = nullptr;
   PyObject* values = nullptr;
   int inverse = 0;
-  API_SETUP_ARGS(G, self, args, "OOp", &self, &values, &inverse);
+  int aces = 0;
+  API_SETUP_ARGS(G, self, args, "OOp|p", &self, &values, &inverse, &aces);
   unique_PyObject_ptr seq(PySequence_Fast(values, "values must be a sequence"));
   if (!seq)
     return nullptr;
@@ -6022,7 +6024,8 @@ static PyObject* CmdLightTone(PyObject* self, PyObject* args)
     }
     const std::array<float, 3> c{rgb[0], rgb[1], rgb[2]};
     const std::array<float, 3> t =
-        inverse ? pymol::LightToneInverse(c) : pymol::LightTone(c);
+        aces ? (inverse ? pymol::LightAcesInverse(c) : pymol::LightAces(c))
+             : (inverse ? pymol::LightToneInverse(c) : pymol::LightTone(c));
     PyObject* item = LightToneList({t[0], t[1], t[2]});
     if (!item)
       return nullptr;
@@ -6032,18 +6035,21 @@ static PyObject* CmdLightTone(PyObject* self, PyObject* args)
 }
 
 /// LightToneScalar (or LightToneScalarInverse when `inverse`) of each float
-/// in `values`.
+/// in `values`. When `aces` is true, calls LightAcesScalar (or
+/// LightAcesScalarInverse) instead (#735).
 static PyObject* CmdLightToneScalar(PyObject* self, PyObject* args)
 {
   PyMOLGlobals* G = nullptr;
   PyObject* values = nullptr;
   int inverse = 0;
-  API_SETUP_ARGS(G, self, args, "OOp", &self, &values, &inverse);
+  int aces = 0;
+  API_SETUP_ARGS(G, self, args, "OOp|p", &self, &values, &inverse, &aces);
   std::vector<float> v;
   if (!LightToneFloats(values, v))
     return nullptr;
   for (float& x : v)
-    x = inverse ? pymol::LightToneScalarInverse(x) : pymol::LightToneScalar(x);
+    x = aces ? (inverse ? pymol::LightAcesScalarInverse(x) : pymol::LightAcesScalar(x))
+             : (inverse ? pymol::LightToneScalarInverse(x) : pymol::LightToneScalar(x));
   return LightToneList(v);
 }
 
