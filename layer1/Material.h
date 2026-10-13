@@ -323,11 +323,19 @@ MaterialRayParams MaterialRayParamsFor(int id);
  *   - `highlight` scales each light's own `highlight`;
  *   - `exponent` is the highlight's Blinn-Phong exponent (>= 1), or 0 for
  *     "the scene's shininess" (default's model);
- *   - `tint` mixes the highlight from the light's colour (0) toward the base
+ *   - `tint` mixes the highlight from the light's colour (0) toward the tint
  *     colour (1);
- *   - `wrap` lets the diffuse reach past the terminator.
+ *   - `wrap` lets the diffuse reach past the terminator;
+ *   - `highlight2` scales the second specular lobe (0 = none);
+ *   - `exponent2` is the second lobe's Blinn-Phong exponent (>= 1), or 0 for
+ *     "the scene's shininess";
+ *   - `tint2` mixes the second lobe from the light's colour (0) toward the tint
+ *     colour (1);
+ *   - `tintGain`: both lobes tint toward the same tint colour,
+ *     `saturate(base * tintGain)`, or `base` exactly at gain 1, each by its own
+ *     amount (`tint` and `tint2`).
  *
- * The neutral response {1, 1, 0, 0, 0} is `default`'s, and also what an
+ * The neutral response {1, 1, 0, 0, 0, 0, 0, 0, 1} is `default`'s, and also what an
  * unknown family, or a mode that is no material of its family, gets.
  * Inputs are clamped here (reflect, tint and rough to 0..1, as
  * RendererMetal::setRepMaterial does; p-derived highlights at >= 0; jelly's
@@ -340,6 +348,10 @@ struct MaterialLightResponse {
   float exponent = 0.0f;
   float tint = 0.0f;
   float wrap = 0.0f;
+  float highlight2 = 0.0f; // the second lobe's strength (0 = none)
+  float exponent2 = 0.0f;  // its Blinn-Phong exponent (>= 1), 0 = the scene's shininess
+  float tint2 = 0.0f;      // how far the second lobe tints toward the tint colour (0..1)
+  float tintGain = 1.0f;   // the tint colour is saturate(base * tintGain); 1 = base itself
 };
 
 MaterialLightResponse MaterialLightResponseFor(const MaterialParams& p);

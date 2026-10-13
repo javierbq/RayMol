@@ -6115,7 +6115,8 @@ static PyObject* CmdGetLightHdr(PyObject* self, PyObject* args)
 /// tuple _cmd.get_material_draw_params returns -- (family, mode, reflect,
 /// tint, rough, (p0..p5)) -- and `shininess` the frame's (get_light_frame's
 /// 'shininess'). Returns {'diffuse', 'highlight', 'exponent', 'tint',
-/// 'wrap', 'sharpness'}. Pure: reads and writes nothing.
+/// 'wrap', 'sharpness', 'highlight2', 'exponent2', 'tint2', 'tint_gain',
+/// 'sharpness2'}. Pure: reads and writes nothing.
 static PyObject* CmdMaterialLightResponse(PyObject* self, PyObject* args)
 {
   PyMOLGlobals* G = nullptr;
@@ -6125,10 +6126,13 @@ static PyObject* CmdMaterialLightResponse(PyObject* self, PyObject* args)
       &p.mode, &p.reflect, &p.tint, &p.rough, &p.p[0], &p.p[1], &p.p[2],
       &p.p[3], &p.p[4], &p.p[5], &shininess);
   const MaterialLightResponse r = MaterialLightResponseFor(p);
-  return Py_BuildValue("{sdsdsdsdsdsd}", "diffuse", double(r.diffuse),
+  return Py_BuildValue("{sdsdsdsdsdsdsdsdsdsdsd}", "diffuse", double(r.diffuse),
       "highlight", double(r.highlight), "exponent", double(r.exponent),
       "tint", double(r.tint), "wrap", double(r.wrap), "sharpness",
-      double(MaterialLightSharpness(r.exponent, shininess)));
+      double(MaterialLightSharpness(r.exponent, shininess)),
+      "highlight2", double(r.highlight2), "exponent2", double(r.exponent2),
+      "tint2", double(r.tint2), "tint_gain", double(r.tintGain),
+      "sharpness2", double(MaterialLightSharpness(r.exponent2, shininess)));
 }
 
 /* ---- end material light response (#615) -------------------------------- */

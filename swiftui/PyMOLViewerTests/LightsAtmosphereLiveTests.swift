@@ -4536,3 +4536,610 @@ final class SoftShadowSizeTests: XCTestCase {
         XCTAssertEqual(delta, 0, "raster render should ignore size")
     }
 }
+
+/// #712 A (#731): under an HDR rig a material's own soft knee is the identity,
+/// so its highlight is compressed once, by T, not twice.
+@MainActor
+final class MaterialHdrKneeTests: XCTestCase {
+    private static let width = 400
+    private static let height = 300
+
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var sceneBuilt = false
+    private var savedView: [Float]?
+
+    override func tearDown() {
+        if sceneBuilt {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.delete('mk712*')
+            for _n, _v in globals().pop('_mk712_settings', {}).items():
+                _c.set(_n, _v)
+            for _n in globals().pop('_mk712_enabled', []):
+                _c.enable(_n)
+            """)
+            LightsLive.tearDown()
+            sceneBuilt = false
+        }
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        super.tearDown()
+    }
+
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            throw XCTSkip("the PyMOL engine did not come up under the test host")
+        }
+    }
+
+    private func buildScene(asSurface: Bool = false) {
+        savedView = engine.captureView()
+        sceneBuilt = true
+        engine.runPython("""
+        from pymol import cmd as _c
+        _mk712_enabled = _c.get_names('objects', enabled_only=1)
+        _mk712_settings = {_n: _c.get_setting_tuple(_n)[1][0] for _n in (
+            'depth_cue', 'metal_temporal_ao', 'metal_raytrace', 'metal_shadows',
+            'material_env', 'metal_light_hdr', 'metal_exposure')}
+        _mk712_settings['bg_rgb'] = list(_c.get_setting_tuple('bg_rgb')[1])
+        for _n in _mk712_enabled:
+            _c.disable(_n)
+        _c.set('bg_rgb', [0.0, 0.0, 0.0])
+        _c.set('depth_cue', 0)
+        _c.set('metal_temporal_ao', 0)
+        _c.set('metal_raytrace', 0)
+        _c.set('metal_shadows', 0)
+        _c.set('material_env', 1)
+        _c.set('metal_light_hdr', 1)
+        _c.set('metal_exposure', 0.5)
+
+        _c.pseudoatom('mk712s', pos=[0.0, 0.0, 0.0], vdw=4.0)
+        _c.color('white', 'mk712s')
+        """)
+
+        if asSurface {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.show_as('surface', 'mk712s')
+            _c.set('surface_material', 'metallic', 'mk712s')
+            _c.set('surface_material_reflect', 1.0, 'mk712s')
+            _c.set('surface_material_tint', 0.0, 'mk712s')
+            _c.set('surface_material_rough', 0.0, 'mk712s')
+            """)
+        } else {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.show_as('spheres', 'mk712s')
+            _c.set('sphere_material', 'metallic', 'mk712s')
+            _c.set('sphere_material_reflect', 1.0, 'mk712s')
+            _c.set('sphere_material_tint', 0.0, 'mk712s')
+            _c.set('sphere_material_rough', 0.0, 'mk712s')
+            """)
+        }
+
+        let rigDict = """
+        {'enabled': True, 'ambient': 0.0, 'classic': 1.0,
+         'centre': [0.0, 0.0, 0.0], 'size': 10.0,
+         'lights': [{'name': 'key', 'intensity': 0.0, 'highlight': 0.0}]}
+        """
+        LightsLive.setRig(rigDict)
+
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                     0.0, 0.0, -40.0, 0.0, 0.0, 0.0, 20.0, 60.0, -20.0))
+        """)
+    }
+
+    private func render(rayTraced: Int = 0) throws -> [UInt8] {
+        let png = NSTemporaryDirectory() + "issue_712_render.png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: Self.width, height: Self.height, rayTraced: rayTraced)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(
+            URL(fileURLWithPath: png) as CFURL, nil), "no export written")
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        XCTAssertEqual(image.width, Self.width)
+        XCTAssertEqual(image.height, Self.height)
+        let w = image.width, h = image.height
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return rgba
+    }
+
+    /// The object's footprint (largest channel above 3) and its brightest channel.
+    private func measure(_ px: [UInt8]) -> (count: Int, peak: Int) {
+        var count = 0
+        var best = 0
+        for i in stride(from: 0, to: px.count, by: 4) {
+            let m = Int(max(px[i], px[i + 1], px[i + 2]))
+            if m > 3 {
+                count += 1
+                best = max(best, m)
+            }
+        }
+        return (count, best)
+    }
+
+    /// At exposure 0.5 T is the identity below its knee (0.55), so a pixel
+    /// shows 0.5 * c, c the fragment's colour in scene units. Before #712 c had
+    /// already been through mat_soft_knee, which is always below 1.0, so no
+    /// pixel could exceed 0.5 * 255 = 127.5; with the knee the identity, a
+    /// highlight above 1.0 shows above that. Measured on an M-series Mac:
+    /// master 113 (sphere) and 110 (surface), #712 180 and 159. The floor 140
+    /// sits between the cap and the smaller of the two.
+    private static let peakFloor = 140
+
+    /// The impostor path (mat_impostor_composite's reflective branch).
+    func testHighlightIsNotKneedTwiceUnderHdr() throws {
+        try requireEngine()
+        buildScene(asSurface: false)
+        let (count, peak) = measure(try render(rayTraced: 0))
+        print("712-knee peak=\(peak)")
+        XCTAssertGreaterThanOrEqual(count, 2000, "the sphere footprint has too few pixels")
+        XCTAssertGreaterThanOrEqual(peak, Self.peakFloor,
+                                    "the sphere's highlight was knee-compressed twice under the HDR rig")
+    }
+
+    /// The lit-VBO path (vbo_material_shade's reflective branch): the same
+    /// pseudoatom as a surface.
+    func testSurfaceHighlightIsNotKneedTwiceUnderHdr() throws {
+        try requireEngine()
+        buildScene(asSurface: true)
+        let (count, peak) = measure(try render(rayTraced: 0))
+        print("712-knee surface peak=\(peak)")
+        XCTAssertGreaterThanOrEqual(count, 2000, "the surface footprint has too few pixels")
+        XCTAssertGreaterThanOrEqual(peak, Self.peakFloor,
+                                    "the surface's highlight was knee-compressed twice under the HDR rig")
+    }
+}
+
+/// Issue #712 Part B: Second specular lobe and highlight tint gain, raster
+/// and traced. Each test renders one scene with the rig light's highlight at 1
+/// and at 0 (classic 0), so the difference is the rig's highlight terms alone.
+/// Measured on an M-series Mac (master -> #712): jelly sheen max delta 0 -> 37,
+/// plastic coat 0 -> 108 (whiteness 0.06), traced coat 0 -> 32, rubber tint
+/// ratio R/B 1.76 -> 1.99 (expected 1.757 and 1.985), traced 1.70 -> 1.98.
+/// The ratio floor 1.87 sits between the two expectations.
+@MainActor
+final class MaterialSecondLobeTests: XCTestCase {
+    private static let width = 400
+    private static let height = 300
+
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var sceneBuilt = false
+    private var savedView: [Float]?
+
+    override func tearDown() {
+        if sceneBuilt {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.delete('sl712*')
+            for _n, _v in globals().pop('_sl712_settings', {}).items():
+                _c.set(_n, _v)
+            _c.set_lights(globals().pop('_sl712_rig', None))
+            for _n in globals().pop('_sl712_enabled', []):
+                _c.enable(_n)
+            """)
+            sceneBuilt = false
+        }
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        super.tearDown()
+    }
+
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            throw XCTSkip("the PyMOL engine did not come up under the test host")
+        }
+    }
+
+    private func buildCommonScene() {
+        savedView = engine.captureView()
+        sceneBuilt = true
+        engine.runPython("""
+        from pymol import cmd as _c
+        _sl712_enabled = _c.get_names('objects', enabled_only=1)
+        _sl712_settings = {_n: _c.get_setting_tuple(_n)[1][0] for _n in (
+            'depth_cue', 'metal_temporal_ao', 'metal_shadows', 'metal_rt_transparent',
+            'material_env', 'metal_light_hdr', 'metal_exposure')}
+        _sl712_settings['bg_rgb'] = list(_c.get_setting_tuple('bg_rgb')[1])
+        _sl712_rig = _c.get_lights()
+        for _n in _sl712_enabled:
+            _c.disable(_n)
+        _c.set('bg_rgb', [0.0, 0.0, 0.0])
+        _c.set('depth_cue', 0)
+        _c.set('metal_temporal_ao', 0)
+        _c.set('metal_shadows', 0)
+        _c.set('metal_rt_transparent', 0)
+        _c.set('material_env', 1)
+        _c.set('metal_light_hdr', 1)
+        _c.set('metal_exposure', 1.0)
+        _c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                     0.0, 0.0, -60.0, 0.0, 0.0, 0.0, 20.0, 100.0, -20.0))
+        """)
+    }
+
+    private func rig(highlight: Double, intensity: Double) {
+        let rigDict = """
+        {'enabled': True, 'ambient': 0.0, 'classic': 0.0, 'centre': [0.0, 0.0, 0.0],
+         'size': 20.0, 'lights': [{'name': 'key', 'anchor': 'camera', 'orbit': -25.0,
+         'pitch': 20.0, 'radius': 3.0, 'beam': 80.0, 'intensity': \(intensity),
+         'highlight': \(highlight), 'shadow': False}]}
+        """
+        LightsLive.setRig(rigDict)
+    }
+
+    private func render(rayTraced: Int = 0) throws -> [UInt8] {
+        let png = NSTemporaryDirectory() + "sl712_render_\(UUID().uuidString).png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: Self.width, height: Self.height, rayTraced: rayTraced)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(
+            URL(fileURLWithPath: png) as CFURL, nil), "no export written")
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        XCTAssertEqual(image.width, Self.width)
+        XCTAssertEqual(image.height, Self.height)
+        let w = image.width, h = image.height
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return rgba
+    }
+
+    private func footprint(of name: String, all: [String]) throws -> [Bool] {
+        let others = all.filter { $0 != name }
+        for other in others {
+            engine.runPython("from pymol import cmd as _c\n_c.disable('\(other)')")
+        }
+        let px = try render(rayTraced: 0)
+        for other in others {
+            engine.runPython("from pymol import cmd as _c\n_c.enable('\(other)')")
+        }
+        return stride(from: 0, to: px.count, by: 4).map { max(px[$0], px[$0 + 1], px[$0 + 2]) > 3 }
+    }
+
+    private func maxDelta(_ a: [UInt8], _ b: [UInt8], in region: [Bool]) -> Int {
+        guard a.count == b.count, a.count == region.count * 4 else { return -1 }
+        var best = 0
+        for (p, inside) in region.enumerated() where inside {
+            for c in 0..<3 {
+                best = max(best, abs(Int(a[p * 4 + c]) - Int(b[p * 4 + c])))
+            }
+        }
+        return best
+    }
+
+    private func dilate(_ mask: [Bool], radius: Int) -> [Bool] {
+        var dilated = [Bool](repeating: false, count: mask.count)
+        let w = Self.width, h = Self.height
+        for y in 0..<h {
+            for x in 0..<w {
+                if mask[y * w + x] {
+                    let minY = max(0, y - radius), maxY = min(h - 1, y + radius)
+                    let minX = max(0, x - radius), maxX = min(w - 1, x + radius)
+                    for ny in minY...maxY {
+                        for nx in minX...maxX {
+                            dilated[ny * w + nx] = true
+                        }
+                    }
+                }
+            }
+        }
+        return dilated
+    }
+
+    private func T1_inv(_ y: Double) -> Double {
+        let knee = 0.55
+        let white = 10.0
+        let s = 1.0 - knee
+        let w = (white - knee) / s
+        if y <= knee { return y }
+        if y >= 1.0 { return white }
+        let u = (y - knee) / s
+        let t = 2.0 * u / ((1.0 - u) + sqrt((1.0 - u) * (1.0 - u) + 4.0 * u / (w * w)))
+        return knee + s * t
+    }
+
+    private func T_inv(_ rgb: (Double, Double, Double)) -> (Double, Double, Double) {
+        let m = max(rgb.0, max(rgb.1, rgb.2))
+        let knee = 0.55
+        if m <= knee { return rgb }
+        let scale = T1_inv(m) / m
+        return (rgb.0 * scale, rgb.1 * scale, rgb.2 * scale)
+    }
+
+    func testJellySheenLobeRaster() throws {
+        try requireEngine()
+        buildCommonScene()
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.pseudoatom('sl712j', pos=[0.0, 0.0, 0.0], vdw=4.0)
+        _c.show_as('spheres', 'sl712j')
+        _c.color('grey50', 'sl712j')
+        _c.set_color('sl712j_col', [0.8, 0.3, 0.2])
+        _c.color('sl712j_col', 'sl712j')
+        _c.set('sphere_material', 'jelly', 'sl712j')
+        _c.set('sphere_material_knob3', 0.0, 'sl712j')
+        """)
+
+        let fp = try footprint(of: "sl712j", all: ["sl712j"])
+        XCTAssertGreaterThan(fp.filter { $0 }.count, 500, "sl712j footprint too small")
+
+        rig(highlight: 1.0, intensity: 2.0)
+        let hi1 = try render(rayTraced: 0)
+        rig(highlight: 0.0, intensity: 2.0)
+        let hi0 = try render(rayTraced: 0)
+
+        var maxDeltaVal = 0
+        for (p, inside) in fp.enumerated() where inside {
+            for c in 0..<3 {
+                let d = abs(Int(hi1[p * 4 + c]) - Int(hi0[p * 4 + c]))
+                maxDeltaVal = max(maxDeltaVal, d)
+            }
+        }
+        print("712-sheen max=\(maxDeltaVal)")
+        XCTAssertGreaterThanOrEqual(maxDeltaVal, 8, "jelly broad sheen lobe delta too small")
+    }
+
+    func testPlasticCoatLobeRaster() throws {
+        try requireEngine()
+        buildCommonScene()
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.pseudoatom('sl712p', pos=[0.0, 0.0, 0.0], vdw=4.0)
+        _c.show_as('spheres', 'sl712p')
+        _c.set_color('sl712p_col', [0.2, 0.4, 0.8])
+        _c.color('sl712p_col', 'sl712p')
+        _c.set('sphere_material', 'plastic', 'sl712p')
+        _c.set('sphere_material_reflect', 0.0, 'sl712p')
+        """)
+
+        let fp = try footprint(of: "sl712p", all: ["sl712p"])
+        XCTAssertGreaterThan(fp.filter { $0 }.count, 500, "sl712p footprint too small")
+
+        rig(highlight: 1.0, intensity: 2.0)
+        let hi1 = try render(rayTraced: 0)
+        rig(highlight: 0.0, intensity: 2.0)
+        let hi0 = try render(rayTraced: 0)
+
+        var maxDeltaVal = 0
+        var count8 = 0
+        var sumWhiteness = 0.0
+
+        for (p, inside) in fp.enumerated() where inside {
+            let r1 = Int(hi1[p * 4]), g1 = Int(hi1[p * 4 + 1]), b1 = Int(hi1[p * 4 + 2])
+            let r0 = Int(hi0[p * 4]), g0 = Int(hi0[p * 4 + 1]), b0 = Int(hi0[p * 4 + 2])
+            let maxD = max(abs(r1 - r0), max(abs(g1 - g0), abs(b1 - b0)))
+            maxDeltaVal = max(maxDeltaVal, maxD)
+            if maxD >= 8 {
+                count8 += 1
+                let c1 = T_inv((Double(r1) / 255.0, Double(g1) / 255.0, Double(b1) / 255.0))
+                let c0 = T_inv((Double(r0) / 255.0, Double(g0) / 255.0, Double(b0) / 255.0))
+                let lr = abs(c1.0 - c0.0), lg = abs(c1.1 - c0.1), lb = abs(c1.2 - c0.2)
+                let lmax = max(lr, max(lg, lb))
+                let lmin = min(lr, min(lg, lb))
+                if lmax > 0.0 {
+                    sumWhiteness += (lmax - lmin) / lmax
+                }
+            }
+        }
+        let meanWhiteness = count8 > 0 ? sumWhiteness / Double(count8) : 1.0
+        print("712-coat max=\(maxDeltaVal) count=\(count8) mean=\(meanWhiteness)")
+        XCTAssertGreaterThanOrEqual(maxDeltaVal, 8, "plastic coat lobe delta too small")
+        XCTAssertGreaterThan(count8, 0, "no pixels with delta >= 8")
+        XCTAssertLessThanOrEqual(meanWhiteness, 0.15, "plastic coat lobe is not white")
+    }
+
+    func testRubberTintGainRaster() throws {
+        try requireEngine()
+        buildCommonScene()
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.pseudoatom('sl712r', pos=[0.0, 0.0, 0.0], vdw=4.0)
+        _c.show_as('spheres', 'sl712r')
+        _c.set_color('sl712r_col', [0.5, 0.25, 0.1])
+        _c.color('sl712r_col', 'sl712r')
+        _c.set('sphere_material', 'rubber', 'sl712r')
+        _c.set('sphere_material_knob1', 0.0, 'sl712r')
+        _c.set('sphere_material_knob4', 0.0, 'sl712r')
+        """)
+
+        let fp = try footprint(of: "sl712r", all: ["sl712r"])
+        XCTAssertGreaterThan(fp.filter { $0 }.count, 500, "sl712r footprint too small")
+
+        rig(highlight: 1.0, intensity: 0.6)
+        let hi1 = try render(rayTraced: 0)
+        rig(highlight: 0.0, intensity: 0.6)
+        let hi0 = try render(rayTraced: 0)
+
+        var sumR = 0.0
+        var sumB = 0.0
+        var n = 0
+
+        for (p, inside) in fp.enumerated() where inside {
+            let r1 = Int(hi1[p * 4]), g1 = Int(hi1[p * 4 + 1]), b1 = Int(hi1[p * 4 + 2])
+            let r0 = Int(hi0[p * 4]), g0 = Int(hi0[p * 4 + 1]), b0 = Int(hi0[p * 4 + 2])
+            guard r1 < 135 && g1 < 135 && b1 < 135 && r0 < 135 && g0 < 135 && b0 < 135 else { continue }
+            let db = abs(b1 - b0)
+            guard db >= 4 else { continue }
+            let dr = abs(r1 - r0)
+            sumR += Double(dr)
+            sumB += Double(db)
+            n += 1
+        }
+        let ratio = n > 0 ? sumR / sumB : 0.0
+        print("712-tint ratio=\(ratio) n=\(n)")
+        XCTAssertGreaterThanOrEqual(n, 100, "too few pixels for rubber tint ratio")
+        XCTAssertGreaterThanOrEqual(ratio, 1.87, "rubber tint ratio below expectation")
+    }
+
+    func testRubberTintGainTraced() throws {
+        try requireEngine()
+        guard engine.rayTracingSupported else {
+            throw XCTSkip("Hardware ray tracing is not supported on this device")
+        }
+        buildCommonScene()
+        engine.runPython("""
+        from pymol import cmd as _c
+        # Mirror sphere
+        _c.pseudoatom('sl712m', pos=[4.0, 0.0, 0.0], vdw=4.5)
+        _c.show_as('spheres', 'sl712m')
+        _c.color('white', 'sl712m')
+        _c.set('sphere_material', 'metallic', 'sl712m')
+        _c.set('sphere_material_reflect', 1.0, 'sl712m')
+        _c.set('sphere_material_tint', 1.0, 'sl712m')
+        _c.set('sphere_material_rough', 0.0, 'sl712m')
+
+        # Rubber target sphere
+        _c.pseudoatom('sl712r', pos=[-4.0, 0.0, -2.0], vdw=3.5)
+        _c.show_as('spheres', 'sl712r')
+        _c.set_color('sl712r_col', [0.5, 0.25, 0.1])
+        _c.color('sl712r_col', 'sl712r')
+        _c.set('sphere_material', 'rubber', 'sl712r')
+        _c.set('sphere_material_knob1', 0.0, 'sl712r')
+        _c.set('sphere_material_knob4', 0.0, 'sl712r')
+        """)
+
+        let mirrorFootprint = try footprint(of: "sl712m", all: ["sl712m", "sl712r"])
+
+        rig(highlight: 1.0, intensity: 0.6)
+        let hi1_rt0 = try render(rayTraced: 0)
+        rig(highlight: 0.0, intensity: 0.6)
+        let hi0_rt0 = try render(rayTraced: 0)
+
+        var mirrorOwnH = [Bool](repeating: false, count: Self.width * Self.height)
+        for p in 0..<mirrorOwnH.count where mirrorFootprint[p] {
+            if hi1_rt0[p * 4] != hi0_rt0[p * 4] ||
+               hi1_rt0[p * 4 + 1] != hi0_rt0[p * 4 + 1] ||
+               hi1_rt0[p * 4 + 2] != hi0_rt0[p * 4 + 2] {
+                mirrorOwnH[p] = true
+            }
+        }
+        let dilatedOwnH = dilate(mirrorOwnH, radius: 2)
+        let region = zip(mirrorFootprint, dilatedOwnH).map { $0 && !$1 }
+
+        rig(highlight: 1.0, intensity: 0.6)
+        let rt1a = try render(rayTraced: 1)
+        let rt1b = try render(rayTraced: 1)
+        guard maxDelta(rt1a, rt1b, in: region) == 0 else {
+            throw XCTSkip("two ray-traced frames of the same scene differ: not deterministic here")
+        }
+        rig(highlight: 0.0, intensity: 0.6)
+        let rt0a = try render(rayTraced: 1)
+        let rt0b = try render(rayTraced: 1)
+        guard maxDelta(rt0a, rt0b, in: region) == 0 else {
+            throw XCTSkip("two ray-traced frames of the same scene differ: not deterministic here")
+        }
+
+        var sumR = 0.0
+        var sumB = 0.0
+        var n = 0
+
+        for (p, inside) in region.enumerated() where inside {
+            let db = abs(Int(rt1a[p * 4 + 2]) - Int(rt0a[p * 4 + 2]))
+            guard db >= 2 else { continue }
+            let dr = abs(Int(rt1a[p * 4]) - Int(rt0a[p * 4]))
+            sumR += Double(dr)
+            sumB += Double(db)
+            n += 1
+        }
+        let ratio = n > 0 ? sumR / sumB : 0.0
+        print("712-rt tint ratio=\(ratio) n=\(n)")
+        XCTAssertGreaterThanOrEqual(n, 30, "too few pixels for traced rubber tint ratio")
+        XCTAssertGreaterThanOrEqual(ratio, 1.87, "traced rubber tint ratio below expectation")
+    }
+
+    func testPlasticCoatLobeTraced() throws {
+        try requireEngine()
+        guard engine.rayTracingSupported else {
+            throw XCTSkip("Hardware ray tracing is not supported on this device")
+        }
+        buildCommonScene()
+        engine.runPython("""
+        from pymol import cmd as _c
+        # Mirror sphere
+        _c.pseudoatom('sl712m', pos=[4.0, 0.0, 0.0], vdw=4.5)
+        _c.show_as('spheres', 'sl712m')
+        _c.color('white', 'sl712m')
+        _c.set('sphere_material', 'metallic', 'sl712m')
+        _c.set('sphere_material_reflect', 1.0, 'sl712m')
+        _c.set('sphere_material_tint', 1.0, 'sl712m')
+        _c.set('sphere_material_rough', 0.0, 'sl712m')
+
+        # Plastic target sphere
+        _c.pseudoatom('sl712p', pos=[-4.0, 0.0, -2.0], vdw=3.5)
+        _c.show_as('spheres', 'sl712p')
+        _c.set_color('sl712p_col', [0.2, 0.4, 0.8])
+        _c.color('sl712p_col', 'sl712p')
+        _c.set('sphere_material', 'plastic', 'sl712p')
+        _c.set('sphere_material_reflect', 0.0, 'sl712p')
+        """)
+
+        let mirrorFootprint = try footprint(of: "sl712m", all: ["sl712m", "sl712p"])
+
+        rig(highlight: 1.0, intensity: 2.0)
+        let hi1_rt0 = try render(rayTraced: 0)
+        rig(highlight: 0.0, intensity: 2.0)
+        let hi0_rt0 = try render(rayTraced: 0)
+
+        var mirrorOwnH = [Bool](repeating: false, count: Self.width * Self.height)
+        for p in 0..<mirrorOwnH.count where mirrorFootprint[p] {
+            if hi1_rt0[p * 4] != hi0_rt0[p * 4] ||
+               hi1_rt0[p * 4 + 1] != hi0_rt0[p * 4 + 1] ||
+               hi1_rt0[p * 4 + 2] != hi0_rt0[p * 4 + 2] {
+                mirrorOwnH[p] = true
+            }
+        }
+        let dilatedOwnH = dilate(mirrorOwnH, radius: 2)
+        let region = zip(mirrorFootprint, dilatedOwnH).map { $0 && !$1 }
+
+        rig(highlight: 1.0, intensity: 2.0)
+        let rt1a = try render(rayTraced: 1)
+        let rt1b = try render(rayTraced: 1)
+        guard maxDelta(rt1a, rt1b, in: region) == 0 else {
+            throw XCTSkip("two ray-traced frames of the same scene differ: not deterministic here")
+        }
+        rig(highlight: 0.0, intensity: 2.0)
+        let rt0a = try render(rayTraced: 1)
+        let rt0b = try render(rayTraced: 1)
+        guard maxDelta(rt0a, rt0b, in: region) == 0 else {
+            throw XCTSkip("two ray-traced frames of the same scene differ: not deterministic here")
+        }
+
+        var maxDeltaVal = 0
+        for (p, inside) in region.enumerated() where inside {
+            for c in 0..<3 {
+                let d = abs(Int(rt1a[p * 4 + c]) - Int(rt0a[p * 4 + c]))
+                maxDeltaVal = max(maxDeltaVal, d)
+            }
+        }
+        print("712-rt coat max=\(maxDeltaVal)")
+        XCTAssertGreaterThanOrEqual(maxDeltaVal, 4, "traced plastic coat lobe delta too small")
+    }
+}

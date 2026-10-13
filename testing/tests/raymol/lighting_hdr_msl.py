@@ -115,15 +115,15 @@ MASTER_054B525 = {
     'kCylinderImpostorSrc': '0c647d97127eb3d6',  # #641 cut caps; #710 the rig lights the albedo
     'kEyeReconSrc': '34e775c149c8b075',
     'kLabelShaderSrc': 'ca5097bd2ad97d60',  # #736: label_fragment_oit, the OIT pass's variant
-    'kMaterialImpostorSrc': '10727f58afb05138',  # #710: the rig lights the material's albedo
-    'kMaterialSrc': '98346bdc0203becb',  # #739: NaN guards as bit tests (light_finite); #710: the rig lights the material's albedo
+    'kMaterialImpostorSrc': 'd4584d2a284268b1',  # #710: the rig lights the material's albedo; #712: mat_inner_knee
+    'kMaterialSrc': '2606fd925247ab1f',  # #739: NaN guards as bit tests (light_finite); #710: the rig lights the material's albedo; #712: mat_inner_knee, kLightHdr moved
     'kPostSrc': '1ed0138bf670bdba',  # #689: post_ssao_fog fades toward the bg_gradient; #732: AO in scene units under an HDR rig; #852: AO and the cast shadow in scene units under an HDR rig; #735: ACES as the rig's scene-unit curve
-    'kRTSrc': '8c5d35f298c657bd',  # #739: NaN guards as bit tests (light_finite); #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps; #729: rt_reflect_tint keeps the metallic tint's hue under HDR; #732: AO in scene units under an HDR rig; #709: traced reflection hits take their material's studio response; #852: AO and the cast shadow in scene units under an HDR rig; #855: traced hits take the transparent table, the procedural albedo and the glass glints; #668: rt_tri_normal_smooth averages only connected neighbours on the same smooth surface; #735: ACES as the rig's scene-unit curve; #741: traced soft shadows from light size
+    'kRTSrc': '4cd38cd96c090929',  # #739: NaN guards as bit tests (light_finite); #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps; #729: rt_reflect_tint keeps the metallic tint's hue under HDR; #732: AO in scene units under an HDR rig; #709: traced reflection hits take their material's studio response; #852: AO and the cast shadow in scene units under an HDR rig; #855: traced hits take the transparent table, the procedural albedo and the glass glints; #668: rt_tri_normal_smooth averages only connected neighbours on the same smooth surface; #735: ACES as the rig's scene-unit curve; #741: traced soft shadows from light size; #712 B: five float4 material rows (kRTMatRow), second lobe and tint gain in LightResponse and light_terms_view*
     'kScreenOverlaySrc': '9f09ecbdd4a9ddfa',  # #689: ramp gadgets drawn after the post chain
     # #635: retaken after sphere glass coverage split; #710: the rig lights
     # the material's albedo
     'kSphereImpostorSrc': 'a30bf487dd5fc082',
-    'kVBOSrc': '96597b558b9b9f98',  # #710: the rig lights the material's albedo
+    'kVBOSrc': 'd694f4ad50509017',  # #710: the rig lights the material's albedo; #712: mat_inner_knee
 }
 # The same digests (signature, body) of the material laws #624 leaves alone,
 # on master 054b525e9.
@@ -131,8 +131,8 @@ MASTER_LAWS = {
     'mat_soft_knee': ('74cb65ae1e37a5c5', '532407fdae17cad5'),
     'mat_glass_cover': ('0b2202961d7fabe3', 'f267a4ccd591fb9e'),
     'mat_glass_shade': ('3a63f86596630e16', '665872d4636070ea'),
-    'mat_env_specular': ('90db4c60a2451436', '7e5f92848d45ef5f'),
-    'mat_jelly_shade': ('9046ca7a8083ec47', '1a8176fe37f54771'),
+    'mat_env_specular': ('90db4c60a2451436', 'e70e77b28f607b7b'),  # #712: mat_inner_knee
+    'mat_jelly_shade': ('9046ca7a8083ec47', '9aba6e15c670b61d'),  # #712: mat_inner_knee; #712 B: named constants kMatJellySheen and kMatJellyTintGain
 }
 # The allowlist: how many times each of #624's edits (lighting_air_msl.py
 # HDR_EDITS_624; the new functions and declarations) applies in each literal.
@@ -248,6 +248,9 @@ def hdr_view(body):
                   body, flags=re.S)
     body = re.sub(r'if\s*\(\s*kLightRig\s*&&\s*kLightHdr\s*\)\s*(\w+\s*=[^;]*;)'
                   r'\s*else\s*\w+\s*=[^;]*;', r'\1', body)
+    # #712: mat_inner_knee's HDR arm is the identity
+    body = re.sub(r'^\{\s*if\s*\(\s*kLightRig\s*&&\s*kLightHdr\s*\)\s*(return[^;]*;).*\}$', r'{\1}',
+                  body, flags=re.S)
     return body
 
 
@@ -291,10 +294,12 @@ class TestConstants(HdrMSLCase):
         for code, index in ((material, '3'), (rt, '2')):
             owners = re.findall(r'(\w+)\s*\[\[\s*function_constant\(%s\)' % index, code)
             self.assertEqual(owners, ['kLightHdr'])
-        # declared after the rig's structs (the light block) and before its
-        # first reader, light_finish
-        self.assertLess(material.index('struct LightRigU {'),
+        # #712: declared after kLightRig's declaration, before mat_inner_knee
+        # and before light_finish
+        self.assertLess(material.index('kLightRig [[function_constant(1)]]'),
                         material.index('kLightHdr [[function_constant(3)]]'))
+        self.assertLess(material.index('kLightHdr [[function_constant(3)]]'),
+                        material.index(self.material['mat_inner_knee'][0].strip()))
         self.assertLess(material.index('kLightHdr [[function_constant(3)]]'),
                         material.index(self.material['light_finish'][0].strip()))
         # nowhere else: every other literal reads kMaterialSrc's (or none)
@@ -1161,3 +1166,60 @@ class TestBlock(HdrMSLCase):
             code = strip_comments(self.msl[lib])
             mirror = re.search(r'struct\s+LightRigU\s*\{(.*?)\};', code, re.S).group(1)
             self.assertTrue(squash(mirror).endswith('float4shadowTile;float4tone;'), lib)
+
+
+class TestMaterialKneeUnderHdr712(HdrMSLCase):
+
+    def testMatInnerKneeDefinition(self):
+        """#712: mat_inner_knee exists in kMaterialSrc and its squashed body is
+        {if(kLightRig&&kLightHdr)returnc;returnmat_soft_knee(c);}."""
+        self.assertIn('mat_inner_knee', self.material)
+        sig, body = self.material['mat_inner_knee']
+        self.assertEqual(squash(body),
+                         '{if(kLightRig&&kLightHdr)returnc;returnmat_soft_knee(c);}')
+
+    def testDeclarationOrder(self):
+        """#712: in kMaterialSrc, kLightHdr [[function_constant(3)]] is declared
+        after kLightRig [[function_constant(1)]] and before mat_inner_knee."""
+        material = strip_comments(self.msl['kMaterialSrc'])
+        rig_idx = material.index('kLightRig [[function_constant(1)]]')
+        hdr_idx = material.index('kLightHdr [[function_constant(3)]]')
+        self.assertIn('mat_inner_knee', self.material)
+        inner_idx = material.index(self.material['mat_inner_knee'][0].strip())
+        self.assertLess(rig_idx, hdr_idx)
+        self.assertLess(hdr_idx, inner_idx)
+
+    def testInnerKneeCallSites(self):
+        """#712: mat_env_specular and mat_jelly_shade (kMaterialSrc),
+        mat_impostor_composite (kMaterialImpostorSrc) and vbo_material_shade
+        (kVBOSrc) contain no mat_soft_knee( call, and contain mat_inner_knee(
+        exactly 1, 1, 2 and 2 times respectively."""
+        impostor_fns = msl_functions(self.msl['kMaterialImpostorSrc'])
+        vbo_fns = msl_functions(self.msl['kVBOSrc'])
+        targets = (
+            ('mat_env_specular', self.material, 1),
+            ('mat_jelly_shade', self.material, 1),
+            ('mat_impostor_composite', impostor_fns, 2),
+            ('vbo_material_shade', vbo_fns, 2),
+        )
+        for name, fns, expected_count in targets:
+            self.assertIn(name, fns)
+            body = fns[name][1]
+            self.assertNotIn('mat_soft_knee(', body, name)
+            self.assertEqual(body.count('mat_inner_knee('), expected_count, name)
+
+    def testSoftKneeCallers(self):
+        """#712: mat_soft_knee( is called (outside its own definition) in
+        kMaterialSrc only by mat_inner_knee, mat_glass_cover and light_finish,
+        and in kMaterialImpostorSrc and kVBOSrc by nothing."""
+        callers = [name for name, (_, body) in sorted(self.material.items())
+                   if name != 'mat_soft_knee' and 'mat_soft_knee(' in body]
+        self.assertEqual(callers, ['light_finish', 'mat_glass_cover', 'mat_inner_knee'])
+
+        mat_src = strip_comments(self.msl['kMaterialSrc'])
+        soft_def = self.material['mat_soft_knee'][0] + self.material['mat_soft_knee'][1]
+        self.assertEqual(len(re.findall(r'\bmat_soft_knee\(', mat_src.replace(soft_def, ''))), 3)
+
+        for lib in ('kMaterialImpostorSrc', 'kVBOSrc'):
+            code = strip_comments(self.msl[lib])
+            self.assertNotIn('mat_soft_knee(', code, lib)
