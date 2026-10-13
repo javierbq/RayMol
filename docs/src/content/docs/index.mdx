@@ -4,6 +4,9 @@ description: Molecular visualization built natively for Apple Silicon with real-
 template: splash
 hero:
   tagline: Hardware-accelerated molecular graphics powered by the PyMOL engine and Metal.
+  image:
+    file: ../../assets/docs/hero-gold.png
+    alt: A myoglobin heme pocket rendered in gold in the RayMol window
   actions:
     - text: Get Started
       link: /RayMol/getting-started/installation/
@@ -21,18 +24,35 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 
 <CardGrid stagger>
   <Card title="Metal Real-Time Rendering" icon="rocket">
-    Hardware ray-traced ambient occlusion and shadows, weighted-blended transparency, and real-time shadow mapping on supported Apple Silicon devices.
+    Hardware ray-traced ambient occlusion and shadows, order-independent weighted-blended transparency, and Metal-accelerated viewport rendering on Apple Silicon.
+    <a class="card-link" href="/RayMol/guides/rendering-export/">Rendering & Export →</a>
   </Card>
-  <Card title="Built on PyMOL" icon="document">
-    The genuine open-source PyMOL core, an embedded Python 3.13 runtime, and native `.pse` session support in a modern Apple-platform interface.
+  <Card title="Materials & Looks" icon="sun">
+    Physically inspired materials per layer (matte, plastic, metallic, glass, marble, clay and more) and one-click Looks such as Gold, Chrome and Marble.
+    <a class="card-link" href="/RayMol/guides/materials/">Materials & Looks →</a>
   </Card>
-  <Card title="Built-in MCP Server" icon="setting">
-    Direct Model Context Protocol integration lets supported AI apps inspect and manipulate molecular scenes through explicit tool calls.
+  <Card title="Studio Lights (beta)" icon="star">
+    Up to six spot lights you place around the molecule, each with its own colour, beam and shadow, shining through haze and floating dust. Not yet in a released version.
+    <a class="card-link" href="/RayMol/guides/lighting/">Studio Lights →</a>
   </Card>
-  <Card title="Glycobiology Tools" icon="seti:svg">
-    Explore glycans with SNFG colors and Metal-rendered symbols, residue picking, and bond-derived topology analysis in the development preview.
+  <Card title="Structure Prediction & Design" icon="puzzle">
+    Run state-of-the-art ML models on-device with MLX, including Boltz-2 and (on macOS) Protenix structure prediction, alongside ProteinMPNN sequence design.
+    <a class="card-link" href="/RayMol/guides/predict/">Structure Prediction →</a>
+  </Card>
+  <Card title="PyMOL Engine & Python" icon="document">
+    The genuine open-source PyMOL core with an embedded Python 3.13 runtime, PyMOL `.pse` sessions, and familiar command syntax.
+    <a class="card-link" href="/RayMol/reference/commands/">Commands & Python API →</a>
+  </Card>
+  <Card title="AI Control via MCP" icon="setting">
+    A built-in Model Context Protocol server connects AI assistants directly to RayMol to inspect molecular scenes, select residues, and execute commands. Available in the direct-download macOS build (Homebrew/DMG).
+    <a class="card-link" href="/RayMol/guides/mcp-setup/">MCP setup →</a>
+  </Card>
+  <Card title="Analysis Notes & Glycobiology" icon="pencil">
+    Document observations with 3D camera and scene links, inline #tags, and live residue/contact/measurement inserts, alongside native SNFG 3D glycan symbols and topology analysis.
+    <a class="card-link" href="/RayMol/guides/analysis-notes/">Analysis Notes →</a>
   </Card>
   <Card title="Native Across Apple Platforms" icon="laptop">
-    A shared SwiftUI and Metal codebase designed for macOS, iPad, and iPhone.
+    A unified SwiftUI and Metal interface tailored for macOS desktop workflows, iPad touch interaction, and iPhone inspection on the go.
+    <a class="card-link" href="/RayMol/getting-started/installation/">Installation →</a>
   </Card>
 </CardGrid>
