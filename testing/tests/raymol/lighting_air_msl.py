@@ -112,8 +112,8 @@ MASTER_LITERALS = {
     'kLabelShaderSrc': 'ca5097bd2ad97d60',  # #736: label_fragment_oit, the OIT pass's variant
     'kMaterialImpostorSrc': 'ea5947e14500d7d5',  # #710: the rig lights the material's albedo
     'kMaterialSrc': 'da47cac063348d43',
-    'kPostSrc': 'd59b86052b35d529',  # #689: post_ssao_fog fades toward the bg_gradient; #732: AO in scene units under an HDR rig; #852: AO and the cast shadow in scene units under an HDR rig
-    'kRTSrc': '0cbe2ececfd5b481',  # #739: NaN guards as bit tests (light_finite); #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps; #729: rt_reflect_tint keeps the metallic tint's hue under HDR; #732: AO in scene units under an HDR rig; #709: traced reflection hits take their material's studio response; #852: AO and the cast shadow in scene units under an HDR rig; #855: traced hits take the transparent table, the procedural albedo and the glass glints; #668: rt_tri_normal_smooth averages only connected neighbours on the same smooth surface
+    'kPostSrc': '1ed0138bf670bdba',  # #689: post_ssao_fog fades toward the bg_gradient; #732: AO in scene units under an HDR rig; #852: AO and the cast shadow in scene units under an HDR rig; #735: ACES as the rig's scene-unit curve
+    'kRTSrc': 'ab37f303f10f2682',  # #739: NaN guards as bit tests (light_finite); #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps; #729: rt_reflect_tint keeps the metallic tint's hue under HDR; #732: AO in scene units under an HDR rig; #709: traced reflection hits take their material's studio response; #852: AO and the cast shadow in scene units under an HDR rig; #855: traced hits take the transparent table, the procedural albedo and the glass glints; #668: rt_tri_normal_smooth averages only connected neighbours on the same smooth surface; #735: ACES as the rig's scene-unit curve
     'kScreenOverlaySrc': '9f09ecbdd4a9ddfa',  # #689: ramp gadgets drawn after the post chain
     # #635: retaken after sphere glass coverage split; #710: the rig lights
     # the material's albedo
@@ -143,8 +143,8 @@ CLASSIC_LIGHT_LITERALS = ('kVBOSrc', 'kSphereImpostorSrc', 'kCylinderImpostorSrc
 # included, comments stripped); on this branch with the air's statement
 # taken out (AIR_STATEMENTS).
 MASTER_FUNCTIONS = {
-    ('RendererMetal.mm', 'RendererMetal::runPostChain'): '4abd4d7a6688e84f',  # #689: gradient fog uniforms, screen overlays after the matte; #664: the RT rig composite's shadow variant and its maps; #732: AO in scene units under an HDR rig; #855: binds transparent occurrence and material tables
-    ('RendererMetal.mm', 'RendererMetal::beginFrame'): 'a45b7220f160c07e',  # #665: closes the classic pass's caster view; #736: clears the labels deferred out of a peel pass; #689: the gradient and the screen overlays; #855: clears the transparent material table
+    ('RendererMetal.mm', 'RendererMetal::runPostChain'): 'b143e96513b391bd',  # #689: gradient fog uniforms, screen overlays after the matte; #664: the RT rig composite's shadow variant and its maps; #732: AO in scene units under an HDR rig; #855: binds transparent occurrence and material tables; #735: ACES as the rig's scene-unit curve
+    ('RendererMetal.mm', 'RendererMetal::beginFrame'): 'a45b7220f160c07e',  # #665: closes the classic pass's caster view; #736: clears the labels deferred out of a peel pass; #689: the gradient and the screen overlays; #855: clears the transparent material table; #735: ACES as the rig's scene-unit curve
     ('SceneRender.cpp', 'SceneRenderMetal'): '0a1d6df2f4b2383e',  # #665: the classic pre-pass opens with the light's view; #433/#662: classic pre-pass excludes overlays; #689: draws the bg_gradient
     ('SceneLights.cpp', 'SceneLightsFrame'): '5fb060d63ab0d96b',
 }
@@ -171,7 +171,8 @@ STATEMENTS_624 = {
     'SceneLightsFrame': re.compile(
         r'if\s*\(\s*frame\.rig\s*\)\s*SceneLightsToneFill\(G,\s*\*frame\.rig\);'),
     # beginFrame clears the frame's HDR colour with the rig (Part 4)
-    'RendererMetal::beginFrame': re.compile(r'_lightHdrOn\s*=\s*false\s*;'),
+    'RendererMetal::beginFrame': re.compile(
+        r'_lightHdrOn\s*=\s*false\s*;\s*(?:_lightAcesOn\s*=\s*false\s*;)?'),
 }
 # #666's statement, taken out the same way (exactly one match):
 # SceneRenderMetal forgets the studio maps' key in a frame without them.
@@ -278,49 +279,55 @@ TONE_FIELD_LITERALS = ('kMaterialSrc', 'kRTSrc')
 # and declarations (kLightHdr, the tone constants) are removed; every other
 # edit is (name, new, old). lighting_hdr_msl.py pins how many times each
 # applies in each literal (an explicit allowlist) and the new text itself.
-HDR_NEW_FUNCTIONS_624 = ('light_tone_scalar', 'light_tone_scalar_inverse',
-                         'light_tone', 'light_tone_inverse', 'light_glass_cover')
+HDR_NEW_FUNCTIONS_624 = (
+    'light_tone_scalar', 'light_tone_scalar_inverse',
+    'light_tone', 'light_tone_inverse', 'light_glass_cover',
+    'light_aces_scalar', 'light_aces_scalar_inverse',
+    'light_aces', 'light_aces_inverse',
+    'light_curve_scalar', 'light_curve', 'light_curve_inverse')
 HDR_DECLARATIONS_624 = re.compile(
     r'constantboolkLightHdr\[\[function_constant\(\d\)\]\];'
-    r'|constantfloatkLightTone(?:Knee|White)=[0-9.]+;')
+    r'|constantfloatkLightTone(?:Knee|White)=[0-9.]+;'
+    r'|constantfloatkLightAces(?:[A-E]|Clip)=[0-9.]+;')
 HDR_EDITS_624 = (
     # light_finish takes the frame's exposure and gains the HDR arm
-    ('finish_signature', 'float3light_finish(float3c,floatexposure)',
+    ('finish_signature', 'float3light_finish(float3c,float4tone)',
      'float3light_finish(float3c)'),
-    ('finish_body', '{if(kLightHdr)returnlight_tone(c*exposure);'
+    ('finish_body', '{if(kLightHdr)returnlight_curve(c*tone.x,tone.z);'
                     'returnmat_soft_knee(c);}',
      '{returnmat_soft_knee(c);}'),
     # ...which light_apply, light_apply_shadowed and rt_rig_hit hand it
-    ('apply_exposure', 'light_finish(rgb+base*t.diffuse+t.specular,rig.tone.x)',
+    ('apply_exposure', 'light_finish(rgb+base*t.diffuse+t.specular,rig.tone)',
      'light_finish(rgb+base*t.diffuse+t.specular)'),
-    ('hit_exposure', 'light_finish(shaded+base*t.diffuse+t.specular,rig.tone.x)',
+    ('hit_exposure', 'light_finish(shaded+base*t.diffuse+t.specular,rig.tone)',
      'light_finish(shaded+base*t.diffuse+t.specular)'),
     # glass's rig glints: linear under HDR
     ('glints_body', '{if(kLightHdr)return2.0*s;returnfloat3(1.0)-exp(-2.0*s);}',
      '{returnfloat3(1.0)-exp(-2.0*s);}'),
     # the rig glass covers (vbo_fragment_oit, cyl_impostor_fragment_oit)
     ('vbo_cover', 'if(kLightRig&&kLightHdr)c=light_glass_cover(body,hi,in.color.a,'
-                  'rig.tone.x);elsec=mat_glass_cover(body,hi,in.color.a);',
+                  'rig.tone);elsec=mat_glass_cover(body,hi,in.color.a);',
      'c=mat_glass_cover(body,hi,in.color.a);'),
     ('cyl_cover', 'float4g;if(kLightRig&&kLightHdr)g=light_glass_cover(body,hi,a,'
-                  'rig.tone.x);elseg=mat_glass_cover(body,hi,a);',
+                  'rig.tone);elseg=mat_glass_cover(body,hi,a);',
      'float4g=mat_glass_cover(body,hi,a);'),
     # the sphere glass helpers through the rig's seam
     ('sphere_glass', 'returnlight_outline(light_finish(body+hi,rig.tone.x),pt,rig);',
      'returnlight_outline(mat_soft_knee(body+hi),pt,rig);'),
     # the air composite: two arms, the exposure, the upsample's rig
     # #683: Beer-Lambert extinction (the transmittance tr)
-    ('air_signature', 'float3post_air_finish(float3c,float3a,floattr,floate)',
+    ('air_signature', 'float3post_air_finish(float3c,float3a,floattr,float4tone)',
      'float3post_air_finish(float3c,float3a)'),
-    ('air_body', '{if(kLightHdr){constfloat3add=light_finite3(a)?max(a,float3(0.0))'
-                 '*e:float3(0.0);constfloat3s=light_tone_inverse(saturate(c))*tr;'
-                 'constfloat3base=tr<1.0?light_tone(s):saturate(c);'
-                 'returnmax(base,light_tone(s+add));}constfloat3ct=c*tr;'
+    ('air_body', '{if(kLightHdr){constfloate=tone.x;'
+                 'constfloat3add=light_finite3(a)?max(a,float3(0.0))*e:float3(0.0);'
+                 'constfloat3s=light_curve_inverse(saturate(c),tone.z)*tr;'
+                 'constfloat3base=tr<1.0?light_curve(s,tone.z):saturate(c);'
+                 'returnmax(base,light_curve(s+add,tone.z));}constfloat3ct=c*tr;'
                  'returnct+max(mat_soft_knee(ct+a)-mat_soft_knee(ct),float3(0.0));}',
      '{returnc+max(light_finish(c+a)-light_finish(c),float3(0.0));}'),
-    ('air_full', 'post_air_finish(c.rgb,t.rgb,tr,rig.tone.x)',
+    ('air_full', 'post_air_finish(c.rgb,t.rgb,tr,rig.tone)',
      'post_air_finish(c.rgb,t.rgb)'),
-    ('air_upsample', 'post_air_finish(c.rgb,a,tr,rig.tone.x)',
+    ('air_upsample', 'post_air_finish(c.rgb,a,tr,rig.tone)',
      'post_air_finish(c.rgb,a)'),
     ('air_upsample_rig', 'texture2d<float>termTex[[texture(3)]],constantLightAirU&'
                          'air[[buffer(0)]],constantLightRigU&rig[[buffer(1)]])',
@@ -619,14 +626,14 @@ class TestLibrary(AirMSLCase):
         self.assertNotIn('/*', self.air)
 
     def testCallsTheSharedHelpers(self):
-        # (#624: the composite's two arms call T, its inverse and the knee
+        # (#624, #735: the composite's two arms call the curve, its inverse and the knee
         # where they called light_finish)
         for helper in ('post_eye_pos(', 'post_linear_depth(', 'light_shadow_lookup(',
-                       'light_tone(', 'light_tone_inverse(', 'mat_soft_knee(',
+                       'light_curve(', 'light_curve_inverse(', 'mat_soft_knee(',
                        'mat_hash(', 'mat_noise('):
             self.assertIn(helper, self.air_code, helper)
         for copy in ('float mat_hash(', 'float mat_noise(', 'float3 post_eye_pos(',
-                     'LightRigU {', 'float3 light_tone(', 'float3 mat_soft_knee('):
+                     'LightRigU {', 'float3 light_curve(', 'float3 mat_soft_knee('):
             self.assertNotIn(copy, self.air_code, copy)
 
     def testTheFragmentAndItsArguments(self):
@@ -645,8 +652,8 @@ class TestLibrary(AirMSLCase):
         self.assertIn('colorTex.read(px)', body)
         self.assertIn('depthTex.read(px)', body)
         self.assertNotIn('.sample(', body)
-        # (#624, #683: at the frame's exposure, the rig block's tone.x, with tr)
-        self.assertIn('returnfloat4(post_air_finish(c.rgb,t.rgb,tr,rig.tone.x),c.a);',
+        # (#624, #683, #735: at the frame's rig.tone, with tr)
+        self.assertIn('returnfloat4(post_air_finish(c.rgb,t.rgb,tr,rig.tone),c.a);',
                       squash(body))
 
 
@@ -792,19 +799,20 @@ class TestModel(AirMSLCase):
         self.assertIn('if (z >= zHi) break;', dust)
 
     def testCompositeAttenuatesThenAddsLight(self):
-        # #683: the surface colour is first attenuated by tr (Beer-Lambert
+        # #683, #735: the surface colour is first attenuated by tr (Beer-Lambert
         # extinction), then the air's light is added; under kLightHdr in
-        # scene units: T(Tinv(c) * tr + e * a), never under T(Tinv(c) * tr) in
+        # scene units: curve(curve_inv(c) * tr + e * a), never under curve(curve_inv(c) * tr) in
         # any channel; with tr == 1 both arms are exactly what they were before
         # #683.
         sig, finish = self.fn('post_air_finish')
-        self.assertIn('float3post_air_finish(float3c,float3a,floattr,floate)', squash(sig))
+        self.assertIn('float3post_air_finish(float3c,float3a,floattr,float4tone)', squash(sig))
         self.assertEqual(squash(finish),
-                         '{if(kLightHdr){constfloat3add=light_finite3(a)?'
+                         '{if(kLightHdr){constfloate=tone.x;'
+                         'constfloat3add=light_finite3(a)?'
                          'max(a,float3(0.0))*e:float3(0.0);'
-                         'constfloat3s=light_tone_inverse(saturate(c))*tr;'
-                         'constfloat3base=tr<1.0?light_tone(s):saturate(c);'
-                         'returnmax(base,light_tone(s+add));}'
+                         'constfloat3s=light_curve_inverse(saturate(c),tone.z)*tr;'
+                         'constfloat3base=tr<1.0?light_curve(s,tone.z):saturate(c);'
+                         'returnmax(base,light_curve(s+add,tone.z));}'
                          'constfloat3ct=c*tr;'
                          'returnct+max(mat_soft_knee(ct+a)-mat_soft_knee(ct),float3(0.0));}')
         _, full = self.fn('post_air_full')
@@ -1092,7 +1100,7 @@ class TestHalf(AirMSLCase):
         # the nearest-depth fallback, then the composite, alpha kept
         self.assertIn('if (dz < best)', body)
         self.assertIn('const float3 a = wsum > 1e-4 ? sum / wsum : nearest;', body)
-        self.assertIn('return float4(post_air_finish(c.rgb, a, tr, rig.tone.x), c.a);', body)
+        self.assertIn('return float4(post_air_finish(c.rgb, a, tr, rig.tone), c.a);', body)
 
     def testStopIsTheTermsRange(self):
         _, stop = self.fn('post_air_stop')
@@ -1504,8 +1512,8 @@ class TestExtinction683(AirMSLCase):
         call = 'post_air_transmittance(d, in.uv, cell, air)'
         self.assertEqual(full.count(call), 1)
         self.assertEqual(upsample.count(call), 1)
-        self.assertIn('post_air_finish(c.rgb, t.rgb, tr, rig.tone.x)', full)
-        self.assertIn('post_air_finish(c.rgb, a, tr, rig.tone.x)', upsample)
+        self.assertIn('post_air_finish(c.rgb, t.rgb, tr, rig.tone)', full)
+        self.assertIn('post_air_finish(c.rgb, a, tr, rig.tone)', upsample)
 
     def testMarchMatchesTheComposite(self):
         """In-scatter plus surface transmittance conserves energy under Beer-Lambert."""

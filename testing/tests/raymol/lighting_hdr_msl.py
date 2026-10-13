@@ -100,6 +100,7 @@ digest = _air.digest
 without_hdr_624 = _air.without_hdr_624
 
 TONE_HELPERS = _msl.TONE_HELPERS
+ACES_HELPERS = _msl.ACES_HELPERS
 FINITE_HELPERS = _msl.FINITE_HELPERS
 HDR_CONSTANT = re.compile(r'\bkLightHdr\b')
 
@@ -116,8 +117,8 @@ MASTER_054B525 = {
     'kLabelShaderSrc': 'ca5097bd2ad97d60',  # #736: label_fragment_oit, the OIT pass's variant
     'kMaterialImpostorSrc': '10727f58afb05138',  # #710: the rig lights the material's albedo
     'kMaterialSrc': '98346bdc0203becb',  # #739: NaN guards as bit tests (light_finite); #710: the rig lights the material's albedo
-    'kPostSrc': 'd59b86052b35d529',  # #689: post_ssao_fog fades toward the bg_gradient; #732: AO in scene units under an HDR rig; #852: AO and the cast shadow in scene units under an HDR rig
-    'kRTSrc': '0cbe2ececfd5b481',  # #739: NaN guards as bit tests (light_finite); #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps; #729: rt_reflect_tint keeps the metallic tint's hue under HDR; #732: AO in scene units under an HDR rig; #709: traced reflection hits take their material's studio response; #852: AO and the cast shadow in scene units under an HDR rig; #855: traced hits take the transparent table, the procedural albedo and the glass glints; #668: rt_tri_normal_smooth averages only connected neighbours on the same smooth surface
+    'kPostSrc': '1ed0138bf670bdba',  # #689: post_ssao_fog fades toward the bg_gradient; #732: AO in scene units under an HDR rig; #852: AO and the cast shadow in scene units under an HDR rig; #735: ACES as the rig's scene-unit curve
+    'kRTSrc': 'ab37f303f10f2682',  # #739: NaN guards as bit tests (light_finite); #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps; #729: rt_reflect_tint keeps the metallic tint's hue under HDR; #732: AO in scene units under an HDR rig; #709: traced reflection hits take their material's studio response; #852: AO and the cast shadow in scene units under an HDR rig; #855: traced hits take the transparent table, the procedural albedo and the glass glints; #668: rt_tri_normal_smooth averages only connected neighbours on the same smooth surface; #735: ACES as the rig's scene-unit curve
     'kScreenOverlaySrc': '9f09ecbdd4a9ddfa',  # #689: ramp gadgets drawn after the post chain
     # #635: retaken after sphere glass coverage split; #710: the rig lights
     # the material's albedo
@@ -137,11 +138,11 @@ MASTER_LAWS = {
 # HDR_EDITS_624; the new functions and declarations) applies in each literal.
 # A literal not named here has none.
 EDIT_COUNTS = {
-    'kMaterialSrc': {'functions': 5, 'declarations': 3, 'finish_signature': 1,
+    'kMaterialSrc': {'functions': 12, 'declarations': 9, 'finish_signature': 1,
                      'finish_body': 1, 'apply_exposure': 2, 'glints_body': 1},
-    'kRTSrc': {'functions': 5, 'declarations': 3, 'finish_signature': 1,
-               'finish_body': 1, 'hit_exposure': 2, 'glints_body': 1},  # #855
-    'kPostSrc': {'functions': 4, 'declarations': 2},  # #732: the tone helpers for HDR AO
+    'kRTSrc': {'functions': 12, 'declarations': 9, 'finish_signature': 1,
+               'finish_body': 1, 'hit_exposure': 2, 'glints_body': 1},  # #855; #735: the ACES helpers
+    'kPostSrc': {'functions': 11, 'declarations': 8},  # #732, #735: the tone and ACES helpers for HDR AO
     'kVBOSrc': {'vbo_cover': 1},
     'kCylinderImpostorSrc': {'cyl_cover': 1},
     # #635: sphere glass coverage split uses the same HDR cover statement as cylinder
@@ -154,16 +155,17 @@ UNTOUCHED = ('kEyeReconSrc', 'kBezierTubeSrc', 'kBezierTubeRigSrc',
              'kLabelShaderSrc', 'kConnectorShaderSrc', 'kMaterialImpostorSrc')
 
 # The planned bodies (whitespace removed).
-LIGHT_FINISH = ('__attribute__((unused))staticfloat3light_finish(float3c,floatexposure)',
-                '{if(kLightHdr)returnlight_tone(c*exposure);returnmat_soft_knee(c);}')
+LIGHT_FINISH = ('__attribute__((unused))staticfloat3light_finish(float3c,float4tone)',
+                '{if(kLightHdr)returnlight_curve(c*tone.x,tone.z);returnmat_soft_knee(c);}')
 GLINTS_BODY = '{if(kLightHdr)return2.0*s;returnfloat3(1.0)-exp(-2.0*s);}'
 GLASS_COVER = (
     '__attribute__((unused))staticfloat4light_glass_cover(float3body,float3hi,'
-    'floata,floate)',
-    '{constfloath=light_tone_scalar(e*max(hi.r,max(hi.g,hi.b)));'
+    'floata,float4tone)',
+    '{constfloate=tone.x;'
+    'constfloath=light_curve_scalar(e*max(hi.r,max(hi.g,hi.b)),tone.z);'
     'constfloatcover=saturate(a+(1.0-a)*h);'
     'constfloat3S=(body*a+hi)/max(cover,1e-4);'
-    'returnfloat4(light_tone(e*S),cover);}')
+    'returnfloat4(light_curve(e*S,tone.z),cover);}')
 TONE_BODY = ('{if(!light_finite3(c))returnfloat3(0.0);c=max(c,float3(0.0));'
              'constfloatm=max(c.r,max(c.g,c.b));if(m<=kLightToneKnee)returnc;'
              'returnc*light_tone_scalar(m)/m;}')
@@ -171,13 +173,14 @@ TONE_INVERSE_BODY = ('{if(!light_finite3(c))returnfloat3(0.0);'
                      'c=clamp(c,float3(0.0),float3(1.0));'
                      'constfloatm=max(c.r,max(c.g,c.b));if(m<=kLightToneKnee)returnc;'
                      'returnc*light_tone_scalar_inverse(m)/m;}')
-# #683: the surface is attenuated by the transmittance tr first (Beer-Lambert)
+# #683, #735: the surface is attenuated by the transmittance tr first (Beer-Lambert)
 AIR_FINISH = (
-    'staticfloat3post_air_finish(float3c,float3a,floattr,floate)',
-    '{if(kLightHdr){constfloat3add=light_finite3(a)?max(a,float3(0.0))*e:float3(0.0);'
-    'constfloat3s=light_tone_inverse(saturate(c))*tr;'
-    'constfloat3base=tr<1.0?light_tone(s):saturate(c);'
-    'returnmax(base,light_tone(s+add));}'
+    'staticfloat3post_air_finish(float3c,float3a,floattr,float4tone)',
+    '{if(kLightHdr){constfloate=tone.x;'
+    'constfloat3add=light_finite3(a)?max(a,float3(0.0))*e:float3(0.0);'
+    'constfloat3s=light_curve_inverse(saturate(c),tone.z)*tr;'
+    'constfloat3base=tr<1.0?light_curve(s,tone.z):saturate(c);'
+    'returnmax(base,light_curve(s+add,tone.z));}'
     'constfloat3ct=c*tr;'
     'returnct+max(mat_soft_knee(ct+a)-mat_soft_knee(ct),float3(0.0));}')
 
@@ -315,27 +318,32 @@ class TestConstants(HdrMSLCase):
             self.assertEqual(msl_float(code, 'kLightToneKnee'), knee, lib)
             self.assertEqual(msl_float(code, 'kLightToneWhite'), white, lib)
             self.assertEqual(len(re.findall(r'constant\s+float\s+kLightTone\w+', code)), 2)
+            for letter in ('A', 'B', 'C', 'D', 'E', 'Clip'):
+                val = cpp_float(tone_h, 'kLightAces%s' % letter)
+                self.assertIsNotNone(val)
+                self.assertEqual(msl_float(code, 'kLightAces%s' % letter), val, lib)
+            self.assertEqual(len(re.findall(r'constant\s+float\s+kLightAces\w+', code)), 6)
         # within the tuning range D2 allows
         self.assertTrue(0.5 <= knee <= 0.8, knee)
         self.assertTrue(6.0 <= white <= 16.0, white)
 
     def testRTCopiesAreVerbatim(self):
         attribute = re.compile(r'__attribute__\(\(unused\)\)')
-        for name in TONE_HELPERS + ('light_finish', 'light_glass_cover', 'light_glass_glints'):
+        for name in TONE_HELPERS + ACES_HELPERS + ('light_finish', 'light_glass_cover', 'light_glass_glints'):
             sig, body = self.fn(self.rt, name)
             msig, mbody = self.fn(self.material, name)
             self.assertEqual(attribute.sub('', sig), attribute.sub('', msig), name)
             self.assertEqual(body, mbody, name)
-        # #732: kPostSrc's copies of the tone helpers (and the finite tests
-        # they call) are verbatim as well, and it has no other light_ helper
+        # #732, #735: kPostSrc's copies of the tone and ACES helpers (and the
+        # finite tests they call) are verbatim as well, and it has no other light_ helper
         post = msl_functions(self.msl['kPostSrc'])
-        for name in FINITE_HELPERS + TONE_HELPERS:
+        for name in FINITE_HELPERS + TONE_HELPERS + ACES_HELPERS:
             sig, body = self.fn(post, name)
             msig, mbody = self.fn(self.material, name)
             self.assertEqual(attribute.sub('', sig), attribute.sub('', msig), name)
             self.assertEqual(body, mbody, name)
         self.assertEqual(sorted(fn for fn in post if fn.startswith('light_')),
-                         sorted(FINITE_HELPERS + TONE_HELPERS))
+                         sorted(FINITE_HELPERS + TONE_HELPERS + ACES_HELPERS))
 
 
 class TestShaders(HdrMSLCase):
@@ -351,16 +359,23 @@ class TestShaders(HdrMSLCase):
         for msl_name, cpp_name, first in (
                 ('light_tone_scalar', 'LightToneScalar', 'if(m<=kLightToneKnee)'),
                 ('light_tone_scalar_inverse', 'LightToneScalarInverse',
-                 'if(y<=kLightToneKnee)')):
+                 'if(y<=kLightToneKnee)'),
+                ('light_aces_scalar', 'LightAcesScalar',
+                 'if(m>=kLightAcesClip)return1.0;'),
+                ('light_aces_scalar_inverse', 'LightAcesScalarInverse',
+                 'constfloata=kLightAcesA-kLightAcesC*y;')):
             _, body = self.fn(self.material, msl_name)
             want = cpp_like_msl(cpp_function(cpp, cpp_name))
             self.assertIn(first, want)
             self.assertEqual(body[body.index(first):], want[want.index(first):],
                              msl_name)
             # the NaN rule: non-finite and negative read as 0
-            var = first[3]
-            self.assertTrue(body.startswith('{%s=(light_finite(%s)&&%s>0.0)?%s:0.0;'
-                                            % ((var,) * 4)), msl_name)
+            if 'inverse' in msl_name and 'aces' in msl_name:
+                self.assertTrue(body.startswith('{y=(light_finite(y)&&y>0.0)?min(y,1.0):0.0;'), msl_name)
+            else:
+                var = first[3] if 'if(' in first else ('m' if 'scalar' in msl_name else 'y')
+                self.assertTrue(body.startswith('{%s=(light_finite(%s)&&%s>0.0)?%s:0.0;'
+                                                % ((var,) * 4)), msl_name)
         self.assertEqual(self.fn(self.material, 'light_tone')[1], TONE_BODY)
         self.assertEqual(self.fn(self.material, 'light_tone_inverse')[1],
                          TONE_INVERSE_BODY)
@@ -368,7 +383,7 @@ class TestShaders(HdrMSLCase):
         # c * T1(m) / m
         rescale = squash(cpp_function(cpp, 'LightToneRescale'))
         self.assertIn('c[0]*y/m,c[1]*y/m,c[2]*y/m', rescale)
-        for name in TONE_HELPERS:
+        for name in TONE_HELPERS + ACES_HELPERS:
             sig, _ = self.material[name]
             self.assertRegex(sig, r'^\s*__attribute__\(\(unused\)\)\s+static\s', name)
             # no pow (exact at the knee; no NaN from a negative base)
@@ -378,18 +393,18 @@ class TestShaders(HdrMSLCase):
         for name in ('light_apply', 'light_apply_shadowed'):
             _, body = self.fn(self.material, name)
             self.assertIn('light_outline(light_finish(rgb+base*t.diffuse+t.specular,'
-                          'rig.tone.x),pEye,rig);', body, name)
+                          'rig.tone),pEye,rig);', body, name)
         _, hit = self.fn(self.rt, 'rt_rig_hit')
         self.assertIn('returnlight_finish(shaded+base*t.diffuse+t.specular,'
-                      'rig.tone.x);', hit)
-        # every light_finish call in every library passes the exposure
+                      'rig.tone);', hit)
+        # every light_finish call in every library passes the tone
         for lib, literal in self.msl.items():
             code = squash(strip_comments(literal))
             for m in re.finditer(r'light_finish\(', code):
                 if code[:m.start()].endswith('float3'):
                     continue   # the definition
                 close = _msl.match_paren(code, m.end() - 1)
-                self.assertTrue(code[:close].endswith(',rig.tone.x'),
+                self.assertTrue(code[:close].endswith(',rig.tone'),
                                 '%s: %s' % (lib, code[m.start():close + 1]))
 
     def testGlass(self):
@@ -400,18 +415,18 @@ class TestShaders(HdrMSLCase):
         # outline after either
         vbo = squash(fragments(self.msl['kVBOSrc'])['vbo_fragment_oit'][1])
         self.assertIn('if(kLightRig&&kLightHdr)c=light_glass_cover(body,hi,in.color.a,'
-                      'rig.tone.x);elsec=mat_glass_cover(body,hi,in.color.a);'
+                      'rig.tone);elsec=mat_glass_cover(body,hi,in.color.a);'
                       'if(kLightRig)c.rgb=light_outline(c.rgb,in.posEye,rig);', vbo)
         cyl = squash(fragments(self.msl['kCylinderImpostorSrc'])
                      ['cyl_impostor_fragment_oit'][1])
         self.assertIn('float4g;if(kLightRig&&kLightHdr)g=light_glass_cover(body,hi,a,'
-                      'rig.tone.x);elseg=mat_glass_cover(body,hi,a);rgb=g.rgb;'
+                      'rig.tone);elseg=mat_glass_cover(body,hi,a);rgb=g.rgb;'
                       'if(kLightRig)rgb=light_outline(rgb,pt,rig);', cyl)
         sphere = squash(fragments(self.msl['kSphereImpostorSrc'])
                         ['sphere_impostor_fragment_oit'][1])
         # #635: sphere impostor glass branch uses the same cover statement
         self.assertIn('float4g;if(kLightRig&&kLightHdr)g=light_glass_cover(body,hi,a,'
-                      'rig.tone.x);elseg=mat_glass_cover(body,hi,a);rgb=g.rgb;'
+                      'rig.tone);elseg=mat_glass_cover(body,hi,a);rgb=g.rgb;'
                       'if(kLightRig)rgb=light_outline(rgb,pt,rig);', sphere)
         for lib in self.msl:
             code = squash(strip_comments(self.msl[lib]))
@@ -427,11 +442,11 @@ class TestShaders(HdrMSLCase):
     def testAir(self):
         self.assertEqual(self.fn(self.air, 'post_air_finish'), AIR_FINISH)
         sig, full = self.fn(self.air, 'post_air_full')
-        self.assertIn('returnfloat4(post_air_finish(c.rgb,t.rgb,tr,rig.tone.x),c.a);', full)
+        self.assertIn('returnfloat4(post_air_finish(c.rgb,t.rgb,tr,rig.tone),c.a);', full)
         sig, upsample = self.fn(self.air, 'post_air_upsample')
         self.assertIn('constantLightAirU&air[[buffer(0)]],'
                       'constantLightRigU&rig[[buffer(1)]])', sig)
-        self.assertIn('returnfloat4(post_air_finish(c.rgb,a,tr,rig.tone.x),c.a);', upsample)
+        self.assertIn('returnfloat4(post_air_finish(c.rgb,a,tr,rig.tone),c.a);', upsample)
         # the rig block's index in the air library, bound to every air pass
         self.assertRegex(self.code, r'constexpr NSUInteger kAirRigBufferIndex = 1;')
         encode = cpp_function(self.mm, 'RendererMetal::encodeAirPass')
@@ -519,15 +534,15 @@ class TestShaders(HdrMSLCase):
             self.assertAlmostEqual(classic2[i], want2[i], delta=1e-6)
 
     def testAmbientOcclusionInSceneUnits(self):
-        """#732: under an HDR rig, AO applies in scene units (color =
-        light_tone(light_tone_inverse(color) * ao))."""
+        """#732, #735: under an HDR rig, AO applies in scene units (color =
+        light_curve(light_curve_inverse(color, u.aoAces) * ao, u.aoAces))."""
         post_fog = squash(strip_comments(fragments(self.msl['kPostSrc'])['post_ssao_fog'][1]))
         rt_comp = squash(strip_comments(fragments(self.msl['kRTSrc'])['rt_composite'][1]))
         post_target = ('if(u.aoHdr>0.5&&ao*shade<1.0)color='
-                       'light_tone(light_tone_inverse(color)*(ao*shade));'
+                       'light_curve(light_curve_inverse(color,u.aoAces)*(ao*shade),u.aoAces);'
                        'else{color*=ao;color*=shade;}')
         rt_target = ('if(u.aoHdr>0.5&&ao*shade<1.0)col='
-                     'light_tone(light_tone_inverse(col)*(ao*shade));'
+                     'light_curve(light_curve_inverse(col,u.aoAces)*(ao*shade),u.aoAces);'
                      'else{col*=ao;col*=shade;}')
         self.assertEqual(post_fog.count(post_target), 1)
         self.assertEqual(rt_comp.count(rt_target), 1)
@@ -536,13 +551,17 @@ class TestShaders(HdrMSLCase):
 
         post_code = squash(strip_comments(self.msl['kPostSrc']))
         rt_code = squash(strip_comments(self.msl['kRTSrc']))
-        self.assertIn('floataoHdr,pad1;', post_code)
+        self.assertIn('floataoHdr,aoAces;', post_code)
         self.assertIn('floataoHdr;', rt_code)
+        self.assertIn('tMatCount,aoAces,pad6;', rt_code)
 
         run_post = cpp_function(self.mm, 'RendererMetal::runPostChain')
         self.assertEqual(run_post.count('u.aoHdr = _lightHdrOn ? 1.0f : 0.0f;'), 2)
+        self.assertEqual(run_post.count('u.aoAces = _lightAcesOn ? 1.0f : 0.0f;'), 2)
         self.assertNotIn('pad0', run_post)
+        self.assertNotIn('pad1', run_post)
         self.assertNotIn('pad3', run_post)
+        self.assertNotIn('pad4', run_post)
 
         def T(c):
             m = max(c)
@@ -590,10 +609,10 @@ class TestShaders(HdrMSLCase):
         post_fog = squash(strip_comments(fragments(self.msl['kPostSrc'])['post_ssao_fog'][1]))
         rt_comp = squash(strip_comments(fragments(self.msl['kRTSrc'])['rt_composite'][1]))
         post_target = ('if(u.aoHdr>0.5&&ao*shade<1.0)color='
-                       'light_tone(light_tone_inverse(color)*(ao*shade));'
+                       'light_curve(light_curve_inverse(color,u.aoAces)*(ao*shade),u.aoAces);'
                        'else{color*=ao;color*=shade;}')
         rt_target = ('if(u.aoHdr>0.5&&ao*shade<1.0)col='
-                     'light_tone(light_tone_inverse(col)*(ao*shade));'
+                     'light_curve(light_curve_inverse(col,u.aoAces)*(ao*shade),u.aoAces);'
                      'else{col*=ao;col*=shade;}')
 
         target_expr = 'shade=1.0-shadow*u.shadowIntensity;'
@@ -1038,29 +1057,43 @@ class TestFrame(HdrMSLCase):
 
     def testDerivedFromTheBlock(self):
         self.assertRegex(self.header, r'bool _lightHdrOn = false;')
+        self.assertRegex(self.header, r'bool _lightAcesOn = false;')
         set_rig = cpp_function(self.mm, 'RendererMetal::setLightRig')
         on = set_rig.index('_lightRigOn = rig && rig->head[0] >= 1.0f;')
         hdr = set_rig.index('_lightHdrOn = _lightRigOn && rig->tone[1] > 0.5f;')
+        aces = set_rig.index('_lightAcesOn = _lightHdrOn && rig->tone[2] > 0.5f;')
         self.assertLess(on, hdr)
+        self.assertLess(hdr, aces)
         self.assertEqual(depth_at(set_rig, hdr), 1)
+        self.assertEqual(depth_at(set_rig, aces), 1)
         begin = cpp_function(self.mm, 'RendererMetal::beginFrame')
-        self.assertRegex(begin, r'_lightRigOn = false;\s*_lightHdrOn = false;')
+        self.assertRegex(begin, r'_lightRigOn = false;\s*_lightHdrOn = false;\s*_lightAcesOn = false;')
         # written nowhere else
         writers = set()
         for m in re.finditer(r'\b_lightHdrOn\s*=(?!=)', self.code):
             writers.add(re.findall(r'^[\w<>:\*\s]*RendererMetal::(\w+)\s*\(',
                                    self.code[:m.start()], re.M)[-1])
         self.assertEqual(writers, {'setLightRig', 'beginFrame'})
-        # read by the rig draws, runPostChain (the exposure hand-off and the
+        aces_writers = set()
+        for m in re.finditer(r'\b_lightAcesOn\s*=(?!=)', self.code):
+            aces_writers.add(re.findall(r'^[\w<>:\*\s]*RendererMetal::(\w+)\s*\(',
+                                        self.code[:m.start()], re.M)[-1])
+        self.assertEqual(aces_writers, {'setLightRig', 'beginFrame'})
+        # read by the rig draws, setLightRig (for _lightAcesOn), runPostChain (the exposure hand-off and the
         # RT rig composite) and the air (Part 5) only
         readers = set()
         for m in re.finditer(r'\b_lightHdrOn\b(?!\s*=(?!=))', self.code):
             readers.add(re.findall(r'^[\w<>:\*\s]*RendererMetal::(\w+)\s*\(',
                                    self.code[:m.start()], re.M)[-1])
-        self.assertEqual(readers, {'runPostChain', 'drawVBO', 'drawVBOIndexed',
+        self.assertEqual(readers, {'setLightRig', 'runPostChain', 'drawVBO', 'drawVBOIndexed',
                                    'drawSphereImpostors', 'drawCylinderImpostors',
                                    'drawBezierTubes', 'ensureAirPipelines',
                                    'encodeAirPass'})
+        aces_readers = set()
+        for m in re.finditer(r'\b_lightAcesOn\b(?!\s*=(?!=))', self.code):
+            aces_readers.add(re.findall(r'^[\w<>:\*\s]*RendererMetal::(\w+)\s*\(',
+                                        self.code[:m.start()], re.M)[-1])
+        self.assertEqual(aces_readers, {'runPostChain'})
 
     def testPostChainIsMastersWithoutTheHandOff(self):
         post = cpp_function(self.mm, 'RendererMetal::runPostChain')
@@ -1071,7 +1104,9 @@ class TestFrame(HdrMSLCase):
         self.assertLess(decl.end(), post.index('bool exposureActive ='))
         self.assertRegex(post, r'bool exposureActive = \(postExposure < 0\.999f \|\| '
                                r'postExposure > 1\.001f\);')
+        self.assertIn('const bool postAces = _tonemapEnabled && !_lightAcesOn;', post)
         self.assertIn('u.exposure = postExposure;', post)
+        self.assertIn('u.tonemap = postAces ? 1.0f : 0.0f;', post)
         self.assertNotRegex(post, r'\b_exposure\b(?!\s*;)')
         body = _air.AIR_STATEMENTS['RendererMetal::runPostChain'].sub('', post, count=1)
         body, declarations, uses = _air.without_post_exposure_624(body)

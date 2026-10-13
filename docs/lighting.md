@@ -508,9 +508,14 @@ channel; there is no float render target.
   differently from before.
 - **No rig, a rig that is off, or `metal_light_hdr 2`:** exposure is the
   whole-frame multiplier it always was.
-- `metal_tonemap` (**Filmic tone-map** in the Scene panel's Effects) applies
-  its ACES curve after the rig's curve, at exposure 1, since the exposure is
-  already applied.
+- `metal_tonemap` (**Filmic tone-map** in the Scene panel's Effects): under
+  a rig with HDR on, ACES replaces the rig's curve T (#735). It maps the lit
+  scene in scene units, after the exposure, on the largest channel as T
+  does, so a bright highlight keeps its hue instead of going pastel; AO, the
+  cast shadow and the air use its inverse. What the rig does not light (the
+  background, labels) is left as it is, as with ACES off. Without a
+  rig, with a rig that is off, or at `metal_light_hdr 2`, ACES is the
+  whole-frame per-channel pass it always was.
 - `metal_light_hdr`: 0 is the platform default (HDR on the Mac and on iOS;
   the iOS value is provisional until #623's device run); 1 HDR; 2 the 8-bit
   soft knee, exactly as before HDR; any other value reads as 0. It is read
@@ -737,7 +742,7 @@ until #623's device run.
 | `metal_gpu_timing` | Debug readout of GPU frame times: 0 off, 1 a summary about once a second, 2 every frame (see [Performance and iOS](#performance-and-ios)). | `0` | no |
 | `metal_shadows` | The scene's Shadows switch; studio shadows need it on. | `on` | yes |
 | `metal_exposure` | Exposure: under a rig with HDR, it scales the lit scene and the air; otherwise the whole frame. | `1` | yes |
-| `metal_tonemap` | The filmic (ACES) tone curve, after the rig's own. | `off` | yes |
+| `metal_tonemap` | The filmic (ACES) tone curve: under a rig with HDR it is the rig's curve, in scene units (#735); otherwise a whole-frame pass. | `off` | yes |
 
 The `metal_light_*` settings and `metal_gpu_timing` are read only while they
 matter (a rig on, a shadowed light, the air drawn) and are not part of a
@@ -816,8 +821,8 @@ Open follow-ups of the lighting work (#610) that you may notice:
   do not show (#713). The materials' own classic terms pass their 8-bit knee
   before the rig's curve (#731); the traced rig composite keeps some classic
   terms in display units (#729); ambient occlusion is composited after the
-  tone curve (#732). Bloom, EDR output, 16-bit export and ACES in scene units
-  are not done (#735).
+  tone curve (#732). Bloom (#859), EDR output (#860) and 16-bit export
+  (#861) are not done.
 - **Measurement dashes are lit (#738).** Distance, angle and dihedral dashes
   are cylinder geometry, so under a rig they take its lighting like sticks
   do, not display-referred like labels and lines (owner decision). A

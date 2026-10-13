@@ -79,10 +79,14 @@ FINITE_HELPERS = ('light_finite', 'light_finite3')
 # HDR colour's tone helpers (#624), in kMaterialSrc and copied into kRTSrc.
 TONE_HELPERS = ('light_tone_scalar', 'light_tone_scalar_inverse', 'light_tone',
                 'light_tone_inverse')
+# ACES curve helpers (#735), in kMaterialSrc and copied into kRTSrc and kPostSrc.
+ACES_HELPERS = ('light_aces_scalar', 'light_aces_scalar_inverse', 'light_aces',
+                'light_aces_inverse', 'light_curve_scalar', 'light_curve',
+                'light_curve_inverse')
 # Every helper of the light block, in kMaterialSrc.
 HELPERS = ('light_response_neutral', 'light_response', 'light_visibility',
            'light_terms_view', 'light_terms') + FINITE_HELPERS + (
-           TONE_HELPERS) + (
+           TONE_HELPERS) + ACES_HELPERS + (
            'light_finish', 'light_outline', 'light_apply', 'light_glass_glints',
            'light_glass_cover')
 # The ray tracer's copies (kRTSrc cannot take kMaterialSrc): the structs, and
@@ -96,7 +100,7 @@ RT_COPIES = ('light_response_neutral', 'light_visibility', 'light_terms_view',
              'light_terms_view_shadowed',
              'mat_soft_knee', 'mat_glass_cover', 'mat_hash', 'mat_noise',
              'mat_fbm', 'mat_turb', 'mat_octave_fade',
-             'light_glass_glints', 'light_glass_cover') + FINITE_HELPERS + TONE_HELPERS + ('light_finish',)
+             'light_glass_glints', 'light_glass_cover') + FINITE_HELPERS + TONE_HELPERS + ACES_HELPERS + ('light_finish',)
 # The function constants a light helper may read (#624): kLightHdr alone,
 # through light_finish, light_glass_glints and light_glass_cover's helpers.
 # Every library function that reaches it comes from a specialiser that sets
@@ -347,13 +351,13 @@ class TestLightBlock(LightMSLCase):
             for struct in STRUCTS:
                 self.assertNotRegex(code, r'\bstruct\s+%s\b' % struct, name)
             for fn in msl_functions(literal):
-                if name == 'kPostSrc' and fn in FINITE_HELPERS + TONE_HELPERS:
+                if name == 'kPostSrc' and fn in FINITE_HELPERS + TONE_HELPERS + ACES_HELPERS:
                     continue
                 self.assertFalse(fn.startswith('light_'),
                                  '%s defines %s' % (name, fn))
         post = [fn for fn in msl_functions(self.msl['kPostSrc'])
                 if fn.startswith('light_')]
-        self.assertEqual(sorted(post), sorted(FINITE_HELPERS + TONE_HELPERS))
+        self.assertEqual(sorted(post), sorted(FINITE_HELPERS + TONE_HELPERS + ACES_HELPERS))
         rt = [fn for fn in msl_functions(self.msl['kRTSrc'])
               if fn.startswith('light_')]
         self.assertEqual(sorted(rt), sorted(c for c in RT_COPIES
@@ -1534,10 +1538,10 @@ class TestRayTracedReflections(LightMSLCase):
         guards = RT_RIG_GUARD.findall(body)
         self.assertEqual(len(guards), 2)
         classic = remove_rig_statements(body, RT_RIG_GUARD)
-        # #732, #852: the HDR AO and cast shadow statement calls T and its inverse
+        # #732, #852, #735: the HDR AO and cast shadow statement calls the curve and its inverse
         # (the uniform aoHdr, not the rig, chooses it); take exactly that one out
         hdr_ao = re.compile(r'if\s*\(\s*u\.aoHdr\s*>\s*0\.5\s*&&\s*ao\s*\*\s*shade\s*<\s*1\.0\s*\)\s*'
-                            r'col\s*=\s*light_tone\(light_tone_inverse\(col\)\s*\*\s*\(ao\s*\*\s*shade\)\);')
+                            r'col\s*=\s*light_curve\(light_curve_inverse\(col,\s*u\.aoAces\)\s*\*\s*\(ao\s*\*\s*shade\),\s*u\.aoAces\);')
         self.assertEqual(len(hdr_ao.findall(classic)), 1)
         classic = hdr_ao.sub('', classic, count=1)
         self.assertFalse(re.findall(r'\brig\b|rt_rig_hit|light_\w+|LightTerms|rt_hit_albedo|rt_hit_material|RTHitMaterial',
@@ -1599,7 +1603,7 @@ class TestRayTracedReflections(LightMSLCase):
                      'constfloat3nEye=toEye*nModel;',
                      'constfloat3V=-normalize(toEye*R);',
                      'constLightTermst=light_terms_view(rig,base,nEye,pEye,V,r);',
-                     'returnlight_finish(shaded+base*t.diffuse+t.specular,rig.tone.x);'):
+                     'returnlight_finish(shaded+base*t.diffuse+t.specular,rig.tone);'):
             self.assertIn(expr, code, expr)
         constant = re.compile(r'\bkRT\w+|\bkLight\w+|function_constant')
         seen, todo = set(), ['rt_rig_hit', 'rt_rig_hit_shadowed', 'rt_hit_response',
@@ -1615,8 +1619,8 @@ class TestRayTracedReflections(LightMSLCase):
                 # their one kLightHdr (#624; #855's glass hits), set by both RT builders
                 self.assertEqual(len(HDR_CONSTANT.findall(body)), 1, name)
                 body = HDR_CONSTANT.sub('', body)
-            # (the tone constants and RT family constants are plain constants, not function ones)
-            body = re.sub(r'\bkLightTone(?:Knee|White)\b', '', body)
+            # (the tone, ACES and RT family constants are plain constants, not function ones)
+            body = re.sub(r'\bkLightTone(?:Knee|White)\b|\bkLightAces(?:[A-E]|Clip)\b', '', body)
             body = re.sub(r'\bkRTFamily(?:Procedural|Glass)\b', '', body)
             self.assertNotRegex(body, constant, name)
             todo += [c for c in re.findall(r'\b((?:light|mat|rt)_\w+)\s*\(',
@@ -1743,8 +1747,8 @@ class TestRayTracedReflections(LightMSLCase):
         rt_curr = cpp_function(self.mm, 'RendererMetal::rayTracingCurrent')
         self.assertIn('_rtTFrameMat == _rtTBuiltMat', rt_curr)
 
-        self.assertRegex(self.rt_code, r'float\s+lShin,\s*tMatCount,\s*pad5,\s*pad6;')
-        self.assertRegex(run_post, r'float\s+lShin,\s*tMatCount,\s*pad5,\s*pad6;')
+        self.assertRegex(self.rt_code, r'float\s+lShin,\s*tMatCount,\s*aoAces,\s*pad6;')
+        self.assertRegex(run_post, r'float\s+lShin,\s*tMatCount,\s*aoAces,\s*pad6;')
         self.assertIn('u.tMatCount = doRTTrans ? (float)_rtTBuiltMat.size() : 0.0f;', run_post)
 
     def testGlassHitTakesTheGlints(self):
@@ -1755,7 +1759,7 @@ class TestRayTracedReflections(LightMSLCase):
             code = squash(body)
             self.assertIn('constfloat3body=shaded+base*kMatGlassBaseAttenuation*t.diffuse;', code)
             self.assertIn('constfloat3hi=light_glass_glints(t.specular)*(kMatGlassReflection*saturate(knob));', code)
-            self.assertIn('if(kLightHdr)returnlight_glass_cover(body,hi,a,rig.tone.x);', code)
+            self.assertIn('if(kLightHdr)returnlight_glass_cover(body,hi,a,rig.tone);', code)
             self.assertIn('returnmat_glass_cover(body,hi,a);', code)
 
         sig, body = self.rt_functions['rt_rig_glass_hit']

@@ -1224,6 +1224,7 @@ void RendererMetal::beginFrame()
   _lightRigOn = false;
   // So is its HDR colour (#624), derived from it by setLightRig.
   _lightHdrOn = false;
+  _lightAcesOn = false;
   // So is whether its studio shadow maps (#616) are this frame's: the map
   // pass or reuseLightShadowMaps (#666, the last pass's maps, kept across
   // frames) sets it again.
@@ -1879,6 +1880,12 @@ fragment float4 post_fxaa(PostVOut in [[stage_in]],
 // if a copy drifts.
 constant float kLightToneKnee = 0.55;
 constant float kLightToneWhite = 10.0;
+constant float kLightAcesA = 2.51;
+constant float kLightAcesB = 0.03;
+constant float kLightAcesC = 2.43;
+constant float kLightAcesD = 0.59;
+constant float kLightAcesE = 0.14;
+constant float kLightAcesClip = 8.0;
 
 // Finite tests that fast math cannot fold (#739).
 __attribute__((unused)) static bool light_finite(float x) {
@@ -1926,6 +1933,48 @@ __attribute__((unused)) static float3 light_tone_inverse(float3 c) {
   return c * light_tone_scalar_inverse(m) / m;
 }
 
+// The ACES tone curve (Narkowicz 2015 fit, #735), hue-preserving: the largest
+// channel goes through light_aces_scalar and the other channels follow it
+// (c * light_aces_scalar(m) / m), keeping bright highlights saturated.
+__attribute__((unused)) static float light_aces_scalar(float m) {
+  m = (light_finite(m) && m > 0.0) ? m : 0.0;
+  if (m >= kLightAcesClip) return 1.0;
+  return min(m * (kLightAcesA * m + kLightAcesB) / (m * (kLightAcesC * m + kLightAcesD) + kLightAcesE), 1.0);
+}
+__attribute__((unused)) static float light_aces_scalar_inverse(float y) {
+  y = (light_finite(y) && y > 0.0) ? min(y, 1.0) : 0.0;
+  const float a = kLightAcesA - kLightAcesC * y;
+  const float b = kLightAcesB - kLightAcesD * y;
+  return 2.0 * kLightAcesE * y / (b + sqrt(b * b + 4.0 * kLightAcesE * a * y));
+}
+__attribute__((unused)) static float3 light_aces(float3 c) {
+  if (!light_finite3(c)) return float3(0.0);
+  c = max(c, float3(0.0));
+  const float m = max(c.r, max(c.g, c.b));
+  if (m <= 0.0) return float3(0.0);
+  return c * light_aces_scalar(m) / m;
+}
+__attribute__((unused)) static float3 light_aces_inverse(float3 c) {
+  if (!light_finite3(c)) return float3(0.0);
+  c = clamp(c, float3(0.0), float3(1.0));
+  const float m = max(c.r, max(c.g, c.b));
+  if (m <= 0.0) return float3(0.0);
+  return c * light_aces_scalar_inverse(m) / m;
+}
+// The rig's curve (#735): ACES when `aces` (tone.z) is set, else T.
+__attribute__((unused)) static float light_curve_scalar(float m, float aces) {
+  if (aces > 0.5) return light_aces_scalar(m);
+  return light_tone_scalar(m);
+}
+__attribute__((unused)) static float3 light_curve(float3 c, float aces) {
+  if (aces > 0.5) return light_aces(c);
+  return light_tone(c);
+}
+__attribute__((unused)) static float3 light_curve_inverse(float3 c, float aces) {
+  if (aces > 0.5) return light_aces_inverse(c);
+  return light_tone_inverse(c);
+}
+
 // SSAO (depth-difference / crease shading) + depth-cue fog, in one pass.
 // Reads the scene color + scene depth, darkens creases where neighbors are
 // modestly closer to the camera, then fades toward the background color with
@@ -1951,7 +2000,7 @@ struct PostU {
   float shadowBias;      // metal_shadow_bias: user multiplier on the self-shadow bias
   float projOrtho;       // >0.5: orthographic projection (linear eye-z / no foreshortening)
   float klx, kly, klz;   // key-light dir (toward light, eye space) = -normalize(cSetting_light)
-  float aoHdr, pad1;     // aoHdr > 0.5: an HDR rig frame, AO and cast shadow in scene units (#732, #852); pad1 keeps the 16-byte multiple
+  float aoHdr, aoAces;   // aoHdr > 0.5: an HDR rig frame, AO and cast shadow in scene units (#732, #852); aoAces > 0.5: ACES is the curve (#735)
   float gtR, gtG, gtB, gradOn;  // #689 bg_gradient top colour, on flag
   float gbR, gbG, gbB, gradY0;  // #689 bottom colour, first row (uv)
   float gradH, gradP0, gradP1, gradP2; // #689 rows spanned (uv); padding
@@ -2075,9 +2124,11 @@ fragment float4 post_ssao_fog(PostVOut in [[stage_in]],
 
   // AO and the cast shadow darken together. Under an HDR rig (#732, #852) the
   // colour is T(e * L): occlude the light, not the display value, in one round
-  // trip. Below T's knee this is color * ao * shade exactly.
+  // trip. Below T's knee this is color * ao * shade exactly. With ACES as the
+  // rig's curve (#735, aoAces) the round trip is through ACES and its inverse,
+  // the curve the rig fragments went through.
   if (u.aoHdr > 0.5 && ao * shade < 1.0)
-    color = light_tone(light_tone_inverse(color) * (ao * shade));
+    color = light_curve(light_curve_inverse(color, u.aoAces) * (ao * shade), u.aoAces);
   else {
     color *= ao;
     color *= shade;
@@ -2677,12 +2728,13 @@ static float4 post_air_term(float2 uv, float2 frag, float d, float4 cell,
 // added to ct. With tr == 1 both arms are exactly what they were before #683
 // (x * 1.0 == x), so haze 0 renders as it did, and a pixel the air does not
 // reach round-trips unchanged.
-static float3 post_air_finish(float3 c, float3 a, float tr, float e) {
+static float3 post_air_finish(float3 c, float3 a, float tr, float4 tone) {
   if (kLightHdr) {
+    const float e = tone.x;
     const float3 add = light_finite3(a) ? max(a, float3(0.0)) * e : float3(0.0);
-    const float3 s = light_tone_inverse(saturate(c)) * tr;
-    const float3 base = tr < 1.0 ? light_tone(s) : saturate(c);
-    return max(base, light_tone(s + add));
+    const float3 s = light_curve_inverse(saturate(c), tone.z) * tr;
+    const float3 base = tr < 1.0 ? light_curve(s, tone.z) : saturate(c);
+    return max(base, light_curve(s + add, tone.z));
   }
   const float3 ct = c * tr;
   return ct + max(mat_soft_knee(ct + a) - mat_soft_knee(ct), float3(0.0));
@@ -2734,7 +2786,7 @@ fragment float4 post_air_full(AirVOut in [[stage_in]],
   const float d = depthTex.read(px);
   const float4 t = post_air_term(in.uv, in.position.xy, d, cell, air, rig, maps, smp);
   const float tr = post_air_transmittance(d, in.uv, cell, air) * post_air_dust_cover(d, in.uv, cell, air);
-  return float4(post_air_finish(c.rgb, t.rgb, tr, rig.tone.x), c.a);
+  return float4(post_air_finish(c.rgb, t.rgb, tr, rig.tone), c.a);
 }
 
 // Half resolution (metal_light_air_resolution 2, the default on both) is two
@@ -2840,7 +2892,7 @@ fragment float4 post_air_upsample(AirVOut in [[stage_in]],
   }
   const float3 a = wsum > 1e-4 ? sum / wsum : nearest;
   const float tr = post_air_transmittance(d, in.uv, cell, air) * post_air_dust_cover(d, in.uv, cell, air);
-  return float4(post_air_finish(c.rgb, a, tr, rig.tone.x), c.a);
+  return float4(post_air_finish(c.rgb, a, tr, rig.tone), c.a);
 }
 
 // What the air added to a pixel, as an alpha (#684, metal_light_air_alpha): the
@@ -3335,6 +3387,7 @@ void RendererMetal::setLightRig(const LightRigBlock* rig)
   // metal_light_hdr) is 1 for an HDR frame and 0 at the 8-bit knee. Read
   // only with the rig on.
   _lightHdrOn = _lightRigOn && rig->tone[1] > 0.5f;
+  _lightAcesOn = _lightHdrOn && rig->tone[2] > 0.5f;
 }
 
 void RendererMetal::setLightClassicScale(float scale)
@@ -3475,7 +3528,7 @@ struct RTU {
   // matCount = rows in the material table (each row is four float4, #855); then the two-light model.
   float reflEnv, reflSamples, sphereCount, matCount;
   float lAmbient, lDirect, lReflect, lSpec;
-  float lShin, tMatCount, pad5, pad6;   // tMatCount: rows in the transparent material table, #855; 0 without kRTTrans
+  float lShin, tMatCount, aoAces, pad6;   // tMatCount: rows in the transparent material table, #855; 0 without kRTTrans; aoAces > 0.5: ACES is the curve (#735)
   float4 gradTop;     // #689 bg_gradient top colour, w = on flag
   float4 gradBottom;  // #689 bottom colour, w = 0
   float4 gradSpan;    // #689 x = first row, y = rows spanned (uv); zw = 0
@@ -3812,6 +3865,12 @@ __attribute__((unused)) static float3 mat_soft_knee(float3 c) {
 
 constant float kLightToneKnee = 0.55;
 constant float kLightToneWhite = 10.0;
+constant float kLightAcesA = 2.51;
+constant float kLightAcesB = 0.03;
+constant float kLightAcesC = 2.43;
+constant float kLightAcesD = 0.59;
+constant float kLightAcesE = 0.14;
+constant float kLightAcesClip = 8.0;
 
 // Finite tests that fast math cannot fold, a verbatim copy of kMaterialSrc's
 // (#739).
@@ -3860,8 +3919,50 @@ __attribute__((unused)) static float3 light_tone_inverse(float3 c) {
   return c * light_tone_scalar_inverse(m) / m;
 }
 
-__attribute__((unused)) static float3 light_finish(float3 c, float exposure) {
-  if (kLightHdr) return light_tone(c * exposure);
+// The ACES tone curve (Narkowicz 2015 fit, #735), hue-preserving: the largest
+// channel goes through light_aces_scalar and the other channels follow it
+// (c * light_aces_scalar(m) / m), keeping bright highlights saturated.
+__attribute__((unused)) static float light_aces_scalar(float m) {
+  m = (light_finite(m) && m > 0.0) ? m : 0.0;
+  if (m >= kLightAcesClip) return 1.0;
+  return min(m * (kLightAcesA * m + kLightAcesB) / (m * (kLightAcesC * m + kLightAcesD) + kLightAcesE), 1.0);
+}
+__attribute__((unused)) static float light_aces_scalar_inverse(float y) {
+  y = (light_finite(y) && y > 0.0) ? min(y, 1.0) : 0.0;
+  const float a = kLightAcesA - kLightAcesC * y;
+  const float b = kLightAcesB - kLightAcesD * y;
+  return 2.0 * kLightAcesE * y / (b + sqrt(b * b + 4.0 * kLightAcesE * a * y));
+}
+__attribute__((unused)) static float3 light_aces(float3 c) {
+  if (!light_finite3(c)) return float3(0.0);
+  c = max(c, float3(0.0));
+  const float m = max(c.r, max(c.g, c.b));
+  if (m <= 0.0) return float3(0.0);
+  return c * light_aces_scalar(m) / m;
+}
+__attribute__((unused)) static float3 light_aces_inverse(float3 c) {
+  if (!light_finite3(c)) return float3(0.0);
+  c = clamp(c, float3(0.0), float3(1.0));
+  const float m = max(c.r, max(c.g, c.b));
+  if (m <= 0.0) return float3(0.0);
+  return c * light_aces_scalar_inverse(m) / m;
+}
+// The rig's curve (#735): ACES when `aces` (tone.z) is set, else T.
+__attribute__((unused)) static float light_curve_scalar(float m, float aces) {
+  if (aces > 0.5) return light_aces_scalar(m);
+  return light_tone_scalar(m);
+}
+__attribute__((unused)) static float3 light_curve(float3 c, float aces) {
+  if (aces > 0.5) return light_aces(c);
+  return light_tone(c);
+}
+__attribute__((unused)) static float3 light_curve_inverse(float3 c, float aces) {
+  if (aces > 0.5) return light_aces_inverse(c);
+  return light_tone_inverse(c);
+}
+
+__attribute__((unused)) static float3 light_finish(float3 c, float4 tone) {
+  if (kLightHdr) return light_curve(c * tone.x, tone.z);
   return mat_soft_knee(c);
 }
 
@@ -4016,11 +4117,12 @@ __attribute__((unused)) static float3 light_glass_glints(float3 s) {
 }
 
 __attribute__((unused)) static float4 light_glass_cover(float3 body, float3 hi,
-    float a, float e) {
-  const float h = light_tone_scalar(e * max(hi.r, max(hi.g, hi.b)));
+    float a, float4 tone) {
+  const float e = tone.x;
+  const float h = light_curve_scalar(e * max(hi.r, max(hi.g, hi.b)), tone.z);
   const float cover = saturate(a + (1.0 - a) * h);
   const float3 S = (body * a + hi) / max(cover, 1e-4);
-  return float4(light_tone(e * S), cover);
+  return float4(light_curve(e * S, tone.z), cover);
 }
 
 static float4 rt_rig_glass_hit(constant LightRigU& rig, constant RTU& u,
@@ -4035,7 +4137,7 @@ static float4 rt_rig_glass_hit(constant LightRigU& rig, constant RTU& u,
   const LightTerms t = light_terms_view(rig, base, nEye, pEye, V, r);
   const float3 body = shaded + base * kMatGlassBaseAttenuation * t.diffuse;
   const float3 hi = light_glass_glints(t.specular) * (kMatGlassReflection * saturate(knob));
-  if (kLightHdr) return light_glass_cover(body, hi, a, rig.tone.x);
+  if (kLightHdr) return light_glass_cover(body, hi, a, rig.tone);
   return mat_glass_cover(body, hi, a);
 }
 
@@ -4052,7 +4154,7 @@ static float4 rt_rig_glass_hit_shadowed(constant LightRigU& rig, constant RTU& u
   const LightTerms t = light_terms_view_shadowed(rig, maps, smp, base, nEye, pEye, V, r);
   const float3 body = shaded + base * kMatGlassBaseAttenuation * t.diffuse;
   const float3 hi = light_glass_glints(t.specular) * (kMatGlassReflection * saturate(knob));
-  if (kLightHdr) return light_glass_cover(body, hi, a, rig.tone.x);
+  if (kLightHdr) return light_glass_cover(body, hi, a, rig.tone);
   return mat_glass_cover(body, hi, a);
 }
 
@@ -4075,7 +4177,7 @@ static float3 rt_rig_hit(constant LightRigU& rig, constant RTU& u,
   const float3 nEye = toEye * nModel;
   const float3 V = -normalize(toEye * R);
   const LightTerms t = light_terms_view(rig, base, nEye, pEye, V, r);
-  return light_finish(shaded + base * t.diffuse + t.specular, rig.tone.x);
+  return light_finish(shaded + base * t.diffuse + t.specular, rig.tone);
 }
 
 // The shadowed variant of rt_rig_hit (#664): takes the studio shadow maps
@@ -4091,7 +4193,7 @@ static float3 rt_rig_hit_shadowed(constant LightRigU& rig, constant RTU& u,
   const float3 nEye = toEye * nModel;
   const float3 V = -normalize(toEye * R);
   const LightTerms t = light_terms_view_shadowed(rig, maps, smp, base, nEye, pEye, V, r);
-  return light_finish(shaded + base * t.diffuse + t.specular, rig.tone.x);
+  return light_finish(shaded + base * t.diffuse + t.specular, rig.tone);
 }
 
 // The metallic tint of a traced reflection (#729): the surface's raster
@@ -4528,9 +4630,11 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
 
   // AO and the cast shadow darken together. Under an HDR rig (#732, #852) the
   // colour is T(e * L): occlude the light, not the display value, in one round
-  // trip. Below T's knee this is col * ao * shade exactly.
+  // trip. Below T's knee this is col * ao * shade exactly. With ACES as the
+  // rig's curve (#735, aoAces) the round trip is through ACES and its inverse,
+  // the curve the rig fragments went through.
   if (u.aoHdr > 0.5 && ao * shade < 1.0)
-    col = light_tone(light_tone_inverse(col) * (ao * shade));
+    col = light_curve(light_curve_inverse(col, u.aoAces) * (ao * shade), u.aoAces);
   else {
     col *= ao;
     col *= shade;
@@ -5805,7 +5909,7 @@ void RendererMetal::runPostChain()
       float aoHdr;               // matches MSL RTU: HDR rig frame, AO in scene units (#732)
       float reflEnv, reflSamples, sphereCount, matCount;   // traced reflections (see MSL RTU)
       float lAmbient, lDirect, lReflect, lSpec;
-      float lShin, tMatCount, pad5, pad6;
+      float lShin, tMatCount, aoAces, pad6;
       float gradTop[4];          // matches MSL RTU (#689)
       float gradBottom[4];
       float gradSpan[4];
@@ -5883,6 +5987,7 @@ void RendererMetal::runPostChain()
     u.aoCreaseRadiusPx = (float)_rtH * kSSAORadiusFrac;
     u.aoExemptEnabled = aoMaskReady ? 1.0f : 0.0f;
     u.aoHdr = _lightHdrOn ? 1.0f : 0.0f;
+    u.aoAces = _lightAcesOn ? 1.0f : 0.0f;
     // Traced self-reflections: materials come from the per-occurrence table
     // (each draw's reflect/tint/rough); only the global knobs and the
     // hit-shading light model travel in the uniform. matCount 0 = nothing
@@ -5896,7 +6001,7 @@ void RendererMetal::runPostChain()
     u.lAmbient = _lightAmbient; u.lDirect = _lightDirect; u.lReflect = _lightReflect;
     u.lSpec = _lightSpecular; u.lShin = _lightShininess;
     u.tMatCount = doRTTrans ? (float)_rtTBuiltMat.size() : 0.0f;
-    u.pad5 = u.pad6 = 0.0f;
+    u.pad6 = 0.0f;
 
     // Pass A: trace AO -> _rtAO (R16Float).
     // MRC: all per-frame render-pass descriptors in runPostChain use the
@@ -6090,12 +6195,12 @@ void RendererMetal::runPostChain()
       float shadowBias;        // matches MSL PostU: metal_shadow_bias multiplier
       float projOrtho;         // matches MSL PostU: 1 = orthographic (#139)
       float klx, kly, klz;     // matches MSL PostU: key-light dir (toward light)
-      float aoHdr, pad1;       // matches MSL PostU: HDR rig frame, AO in scene units (#732)
+      float aoHdr, aoAces;     // matches MSL PostU: HDR rig frame, AO in scene units (#732, #735)
       float gtR, gtG, gtB, gradOn;   // matches MSL PostU (#689)
       float gbR, gbG, gbB, gradY0;
       float gradH, gradP0, gradP1, gradP2;
     } u;
-    u.aoHdr = _lightHdrOn ? 1.0f : 0.0f; u.pad1 = 0.0f;
+    u.aoHdr = _lightHdrOn ? 1.0f : 0.0f; u.aoAces = _lightAcesOn ? 1.0f : 0.0f;
     u.gtR = _bgGradTop[0]; u.gtG = _bgGradTop[1]; u.gtB = _bgGradTop[2];
     u.gradOn = _bgGradOn ? 1.0f : 0.0f;
     u.gbR = _bgGradBottom[0]; u.gbG = _bgGradBottom[1];
@@ -6394,17 +6499,18 @@ void RendererMetal::runPostChain()
   // ahead of the !_offscreen block so the offscreen PNG capture (which reads
   // sceneSrc directly) is processed identically to the live view. Exposure is
   // independent of the tone-map toggle, so the pass also runs when exposure != 1.
-  // HDR colour (#624): in an HDR rig frame the rig shaders apply the exposure
-  // in scene units (the block's tone.x), so this pass exposes at 1 (ACES
-  // only, when metal_tonemap is on). Without a rig, or at the 8-bit knee,
-  // postExposure is metal_exposure, as before #624.
+  // HDR colour (#624, #735): in an HDR rig frame the rig shaders apply the exposure
+  // in scene units (the block's tone.x). When metal_tonemap is on, ACES is the rig's
+  // curve (tone.z) so this pass applies neither exposure nor ACES. Without a rig,
+  // or at the 8-bit knee, postExposure is metal_exposure, as before #624.
   const float postExposure = _lightHdrOn ? 1.0f : _exposure;
+  const bool postAces = _tonemapEnabled && !_lightAcesOn;
   bool exposureActive = (postExposure < 0.999f || postExposure > 1.001f);
-  if ((_tonemapEnabled || exposureActive) && _tonemapPipeline) {
+  if ((postAces || exposureActive) && _tonemapPipeline) {
     id<MTLTexture> dst = (sceneSrc == _sceneColor) ? _postColor : _sceneColor;
     struct { float exposure; float tonemap; float _p0, _p1; } u;
     u.exposure = postExposure;
-    u.tonemap = _tonemapEnabled ? 1.0f : 0.0f;
+    u.tonemap = postAces ? 1.0f : 0.0f;
     u._p0 = u._p1 = 0.0f;
     MTLRenderPassDescriptor* pd = [MTLRenderPassDescriptor renderPassDescriptor];
     pd.colorAttachments[0].texture = dst;
@@ -9195,6 +9301,12 @@ constant bool kLightHdr [[function_constant(3)]];
 // lighting_hdr_msl.py pins them equal).
 constant float kLightToneKnee = 0.55;
 constant float kLightToneWhite = 10.0;
+constant float kLightAcesA = 2.51;
+constant float kLightAcesB = 0.03;
+constant float kLightAcesC = 2.43;
+constant float kLightAcesD = 0.59;
+constant float kLightAcesE = 0.14;
+constant float kLightAcesClip = 8.0;
 
 // Finite tests that fast math cannot fold (#739). The libraries compile with
 // Metal's default fast math, which may assume no NaN or inf and so fold
@@ -9263,14 +9375,56 @@ __attribute__((unused)) static float3 light_tone_inverse(float3 c) {
   return c * light_tone_scalar_inverse(m) / m;
 }
 
+// The ACES tone curve (Narkowicz 2015 fit, #735), hue-preserving: the largest
+// channel goes through light_aces_scalar and the other channels follow it
+// (c * light_aces_scalar(m) / m), keeping bright highlights saturated.
+__attribute__((unused)) static float light_aces_scalar(float m) {
+  m = (light_finite(m) && m > 0.0) ? m : 0.0;
+  if (m >= kLightAcesClip) return 1.0;
+  return min(m * (kLightAcesA * m + kLightAcesB) / (m * (kLightAcesC * m + kLightAcesD) + kLightAcesE), 1.0);
+}
+__attribute__((unused)) static float light_aces_scalar_inverse(float y) {
+  y = (light_finite(y) && y > 0.0) ? min(y, 1.0) : 0.0;
+  const float a = kLightAcesA - kLightAcesC * y;
+  const float b = kLightAcesB - kLightAcesD * y;
+  return 2.0 * kLightAcesE * y / (b + sqrt(b * b + 4.0 * kLightAcesE * a * y));
+}
+__attribute__((unused)) static float3 light_aces(float3 c) {
+  if (!light_finite3(c)) return float3(0.0);
+  c = max(c, float3(0.0));
+  const float m = max(c.r, max(c.g, c.b));
+  if (m <= 0.0) return float3(0.0);
+  return c * light_aces_scalar(m) / m;
+}
+__attribute__((unused)) static float3 light_aces_inverse(float3 c) {
+  if (!light_finite3(c)) return float3(0.0);
+  c = clamp(c, float3(0.0), float3(1.0));
+  const float m = max(c.r, max(c.g, c.b));
+  if (m <= 0.0) return float3(0.0);
+  return c * light_aces_scalar_inverse(m) / m;
+}
+// The rig's curve (#735): ACES when `aces` (tone.z) is set, else T.
+__attribute__((unused)) static float light_curve_scalar(float m, float aces) {
+  if (aces > 0.5) return light_aces_scalar(m);
+  return light_tone_scalar(m);
+}
+__attribute__((unused)) static float3 light_curve(float3 c, float aces) {
+  if (aces > 0.5) return light_aces(c);
+  return light_tone(c);
+}
+__attribute__((unused)) static float3 light_curve_inverse(float3 c, float aces) {
+  if (aces > 0.5) return light_aces_inverse(c);
+  return light_tone_inverse(c);
+}
+
 // The rig path's one seam: a rig fragment's whole colour (decision 15's
 // scaled classic terms plus the rig) goes through here once. Under kLightHdr,
 // the exposure in scene units and T (HDR, #624); otherwise mat_soft_knee
 // (#494), the 8-bit soft knee the rig had before #624, so several bright
 // lights compress toward white instead of clipping flat. (Clear and frosted
 // glass take light_glass_cover instead, or mat_glass_cover's knee.)
-__attribute__((unused)) static float3 light_finish(float3 c, float exposure) {
-  if (kLightHdr) return light_tone(c * exposure);
+__attribute__((unused)) static float3 light_finish(float3 c, float4 tone) {
+  if (kLightHdr) return light_curve(c * tone.x, tone.z);
   return mat_soft_knee(c);
 }
 
@@ -9324,7 +9478,7 @@ __attribute__((unused)) static float3 light_apply(float3 rgb, float3 base,
     float3 nEye, float3 pEye, constant LightRigU& rig, LightResponse r) {
   const LightTerms t = light_terms(rig, base, nEye, pEye, r);
   return light_outline(light_finish(rgb + base * t.diffuse + t.specular,
-                                    rig.tone.x),
+                                    rig.tone),
                        pEye, rig);
 }
 
@@ -9350,11 +9504,12 @@ __attribute__((unused)) static float3 light_glass_glints(float3 s) {
 // `kLightRig && kLightHdr` and mat_glass_cover otherwise. The divide is by at
 // least 1e-4, and T zeroes anything non-finite (the NaN rule).
 __attribute__((unused)) static float4 light_glass_cover(float3 body, float3 hi,
-    float a, float e) {
-  const float h = light_tone_scalar(e * max(hi.r, max(hi.g, hi.b)));
+    float a, float4 tone) {
+  const float e = tone.x;
+  const float h = light_curve_scalar(e * max(hi.r, max(hi.g, hi.b)), tone.z);
   const float cover = saturate(a + (1.0 - a) * h);
   const float3 S = (body * a + hi) / max(cover, 1e-4);
-  return float4(light_tone(e * S), cover);
+  return float4(light_curve(e * S, tone.z), cover);
 }
 
 // --- Studio shadow maps (#616) -------------------------------------------------
@@ -9477,7 +9632,7 @@ __attribute__((unused)) static float3 light_apply_shadowed(float3 rgb,
     depth2d_array<float> maps, sampler smp, LightResponse r) {
   const LightTerms t = light_terms_shadowed(rig, maps, smp, base, nEye, pEye, r);
   return light_outline(light_finish(rgb + base * t.diffuse + t.specular,
-                                    rig.tone.x),
+                                    rig.tone),
                        pEye, rig);
 }
 
@@ -9963,7 +10118,7 @@ fragment OITFragOut vbo_fragment_oit(VBOVertexOut in [[stage_in]],
     // HDR (#624): body and glints composed in scene units, one tone curve at
     // the frame's exposure; mat_glass_cover's knee otherwise, as before.
     if (kLightRig && kLightHdr)
-      c = light_glass_cover(body, hi, in.color.a, rig.tone.x);
+      c = light_glass_cover(body, hi, in.color.a, rig.tone);
     else
       c = mat_glass_cover(body, hi, in.color.a);
     if (kLightRig) c.rgb = light_outline(c.rgb, in.posEye, rig);
@@ -12177,7 +12332,7 @@ fragment SphereOITOut sphere_impostor_fragment_oit(SphereVOut in [[stage_in]],
       }
       float4 g;
       if (kLightRig && kLightHdr)
-        g = light_glass_cover(body, hi, a, rig.tone.x);
+        g = light_glass_cover(body, hi, a, rig.tone);
       else
         g = mat_glass_cover(body, hi, a);
       rgb = g.rgb;
@@ -13073,7 +13228,7 @@ fragment CylOITOut cyl_impostor_fragment_oit(CylVOut in [[stage_in]],
       // HDR (#624): as on the VBO glass (vbo_fragment_oit).
       float4 g;
       if (kLightRig && kLightHdr)
-        g = light_glass_cover(body, hi, a, rig.tone.x);
+        g = light_glass_cover(body, hi, a, rig.tone);
       else
         g = mat_glass_cover(body, hi, a);
       rgb = g.rgb;

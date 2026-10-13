@@ -367,7 +367,10 @@ void SceneLightsToneFill(PyMOLGlobals* G, pymol::LightRigBlock& block)
                       kSceneLightsMobile)
                       ? 1.0f
                       : 0.0f;
-  block.tone[2] = 0.0f;
+  block.tone[2] = block.tone[1] > 0.5f &&
+                  SettingGetGlobal_b(G, cSetting_metal_tonemap)
+                      ? 1.0f
+                      : 0.0f;
   block.tone[3] = 0.0f;
 }
 

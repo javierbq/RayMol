@@ -3995,3 +3995,316 @@ final class DustLookTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(op1AlphaCount, 50, "at opacity 1, at least 50 background pixels gain alpha > 0")
     }
 }
+
+/// Issue #735: ACES as the rig's scene-unit curve under HDR studio lighting.
+@MainActor
+final class HdrAcesSceneCurveTests: XCTestCase {
+    private static let width = 400
+    private static let height = 300
+
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var sceneBuilt = false
+    private var savedView: [Float]?
+
+    override func tearDown() {
+        if sceneBuilt {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.delete('ac735*')
+            for _n, _v in globals().pop('_ac735_settings', {}).items():
+                _c.set(_n, _v)
+            _c.set_lights(globals().pop('_ac735_rig', None))
+            for _n in globals().pop('_ac735_enabled', []):
+                _c.enable(_n)
+            """)
+            sceneBuilt = false
+        }
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        super.tearDown()
+    }
+
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            throw XCTSkip("the PyMOL engine did not come up under the test host")
+        }
+    }
+
+    private func buildScene() {
+        savedView = engine.captureView()
+        sceneBuilt = true
+        engine.runPython("""
+        from pymol import cmd as _c
+        _ac735_enabled = _c.get_names('objects', enabled_only=1)
+        _ac735_settings = {_n: _c.get_setting_tuple(_n)[1][0] for _n in (
+            'bg_rgb', 'depth_cue', 'metal_msaa', 'metal_temporal_ao', 'metal_ssao',
+            'metal_rt_ao_intensity', 'metal_shadows', 'metal_rt_shadows',
+            'metal_rt_transparent', 'specular', 'metal_light_hdr', 'metal_tonemap',
+            'metal_exposure')}
+        _ac735_settings['bg_rgb'] = list(_c.get_setting_tuple('bg_rgb')[1])
+        _ac735_rig = _c.get_lights()
+        for _n in _ac735_enabled:
+            _c.disable(_n)
+        _c.set('bg_rgb', [0.0, 0.0, 0.0])
+        _c.set('depth_cue', 0)
+        _c.set('metal_msaa', 0)
+        _c.set('metal_temporal_ao', 0)
+        _c.set('metal_ssao', 0)
+        _c.set('metal_rt_ao_intensity', 0.0)
+        _c.set('metal_shadows', 0)
+        _c.set('metal_rt_shadows', 0)
+        _c.set('metal_rt_transparent', 0)
+        _c.set('specular', 0.0)
+        _c.set('metal_light_hdr', 1)
+
+        _c.pseudoatom('ac735s', pos=[0.0, 0.0, 0.0], vdw=5.0)
+        _c.show_as('spheres', 'ac735s')
+        _c.set_color('ac735c', [1.0, 0.3, 0.1])
+        _c.color('ac735c', 'ac735s')
+
+        _c.set_view((1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -40, 0, 0, 0, 20, 60, -20))
+        """)
+    }
+
+    private func render(rayTraced: Int) throws -> [UInt8] {
+        let png = NSTemporaryDirectory() + "issue_735_render.png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: Self.width, height: Self.height, rayTraced: rayTraced)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(
+            URL(fileURLWithPath: png) as CFURL, nil), "no export written")
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        XCTAssertEqual(image.width, Self.width)
+        XCTAssertEqual(image.height, Self.height)
+        let w = image.width, h = image.height
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return rgba
+    }
+
+    private func assertAcesKeepsHue(rayTraced: Int) throws {
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set_lights({'enabled': True, 'ambient': 0.2, 'centre': [0.0, 0.0, 0.0], 'size': 20.0,
+                       'lights': [{'name': 'key', 'anchor': 'camera', 'orbit': -20.0, 'pitch': 15.0,
+                                   'radius': 3.0, 'beam': 80.0, 'highlight': 0.0, 'shadow': False,
+                                   'intensity': 3.0}]})
+        _c.set('metal_tonemap', 1)
+        _c.set('metal_exposure', 2.0)
+        """)
+
+        let rendered: [UInt8]
+        if rayTraced == 1 {
+            let r1 = try render(rayTraced: 1)
+            let r2 = try render(rayTraced: 1)
+            guard r1 == r2 else {
+                throw XCTSkip("two ray-traced frames of the same scene differ: not deterministic here")
+            }
+            rendered = r1
+        } else {
+            rendered = try render(rayTraced: 0)
+        }
+
+        var pixels = 0
+        var maxHueErr = 0.0
+        for p in 0..<(Self.width * Self.height) {
+            let offset = p * 4
+            let r = Double(rendered[offset])
+            let g = Double(rendered[offset + 1])
+            let b = Double(rendered[offset + 2])
+            guard r >= 200.0, r > g, r > b else { continue }
+            let errG = abs(g / r - 0.3)
+            let errB = abs(b / r - 0.1)
+            let hueErr = max(errG, errB)
+            if hueErr > maxHueErr {
+                maxHueErr = hueErr
+            }
+            pixels += 1
+        }
+
+        print("735 rt=\(rayTraced) pixels=\(pixels) maxHueErr=\(maxHueErr)")
+        XCTAssertGreaterThanOrEqual(pixels, 200, "too few bright highlight pixels to test")
+        XCTAssertLessThanOrEqual(maxHueErr, 0.04, "the highlight lost its hue: ACES ran per channel on display values")
+    }
+
+    func testAcesKeepsHueUnderHdrRig() throws {
+        try requireEngine()
+        buildScene()
+        try assertAcesKeepsHue(rayTraced: 0)
+    }
+
+    func testTracedAcesKeepsHueUnderHdrRig() throws {
+        try requireEngine()
+        guard engine.rayTracingSupported else {
+            throw XCTSkip("Hardware ray tracing is not supported on this device")
+        }
+        buildScene()
+        try assertAcesKeepsHue(rayTraced: 1)
+    }
+
+    private func narkowiczAces(_ x: Double) -> Double {
+        let a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14
+        return (x * (a * x + b)) / (x * (c * x + d) + e)
+    }
+
+    func testAcesWithoutRigIsThePostPass() throws {
+        try requireEngine()
+        buildScene()
+
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set_lights(None)
+        _c.set('metal_tonemap', 0)
+        _c.set('metal_exposure', 1.0)
+        """)
+        let imgA = try render(rayTraced: 0)
+
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set('metal_tonemap', 1)
+        _c.set('metal_exposure', 1.5)
+        """)
+        let imgB = try render(rayTraced: 0)
+
+        var pixels = 0
+        var maxDiff = 0
+        for p in 0..<(Self.width * Self.height) {
+            let offset = p * 4
+            let rA = Double(imgA[offset])
+            let gA = Double(imgA[offset + 1])
+            let bA = Double(imgA[offset + 2])
+            let maxA = max(rA, max(gA, bA))
+            guard maxA > 8.0 else { continue }
+
+            for ch in 0..<3 {
+                let aVal = Double(imgA[offset + ch])
+                let bVal = Int(imgB[offset + ch])
+                let inVal = 1.5 * aVal / 255.0
+                let acesVal = max(0.0, min(1.0, narkowiczAces(inVal)))
+                let expected = Int(round(255.0 * acesVal))
+                let diff = abs(bVal - expected)
+                if diff > maxDiff {
+                    maxDiff = diff
+                }
+            }
+            pixels += 1
+        }
+
+        print("735 no-rig pixels=\(pixels) maxDiff=\(maxDiff)")
+        XCTAssertGreaterThanOrEqual(pixels, 1000, "too few pixels to test post pass parity")
+        XCTAssertLessThanOrEqual(maxDiff, 3, "without a rig the frame is no longer the per-channel ACES post pass")
+    }
+
+    /// Hue-preserving ACES on the largest channel, as light_aces (MSL).
+    private func acesHue(_ c: [Double]) -> [Double] {
+        let m = c.max() ?? 0.0
+        guard m > 0.0 else { return [0.0, 0.0, 0.0] }
+        let y = min(narkowiczAces(m), 1.0)
+        return c.map { $0 * y / m }
+    }
+
+    /// Its inverse on a display colour, as light_aces_inverse (MSL).
+    private func acesHueInverse(_ c: [Double]) -> [Double] {
+        let c = c.map { min(max($0, 0.0), 1.0) }
+        let m = c.max() ?? 0.0
+        guard m > 0.0 else { return [0.0, 0.0, 0.0] }
+        let a = 2.51 - 2.43 * m
+        let b = 0.03 - 0.59 * m
+        let x = 0.28 * m / (b + (b * b + 0.56 * a * m).squareRoot())
+        return c.map { $0 * x / m }
+    }
+
+    /// The cast shadow (and AO) darken the scene light through the ACTIVE
+    /// curve's inverse: with ACES as the rig's curve, a shadowed pixel at
+    /// exposure 1 is A(L * shade), so at exposure 3 it must be
+    /// A(3 * Ainv(e1)). Had the shadow pass kept T's inverse while the rig
+    /// mapped through ACES, e1 would be A(Tinv(A(L)) * shade) and this
+    /// prediction would miss by tens of levels. On master, ACES ran after
+    /// the rig per channel and the prediction misses as well.
+    private func assertShadowThroughAcesInverse(rayTraced: Int) throws {
+        engine.runPython("""
+        from pymol import cmd as _c
+        _ac735_settings['metal_rt_shadow_intensity'] = _c.get_setting_tuple('metal_rt_shadow_intensity')[1][0]
+        _ac735_settings['light'] = list(_c.get_setting_tuple('light')[1])
+        _c.delete('ac735s')
+        _c.pseudoatom('ac735r', pos=[0.0, 0.0, 0.0], vdw=5.0)
+        _c.show_as('spheres', 'ac735r')
+        _c.color('ac735c', 'ac735r')
+        _c.pseudoatom('ac735o', pos=[2.78, 2.78, 11.96], vdw=1.5)
+        _c.show_as('spheres', 'ac735o')
+        _c.color('ac735c', 'ac735o')
+        _c.set('metal_rt_shadows', 1)
+        _c.set('metal_rt_shadow_intensity', 0.45)
+        _c.set('light', [-0.4, -0.4, -1.0])
+        _c.set('metal_tonemap', 1)
+        _c.set_lights({'enabled': True, 'ambient': 0.2, 'centre': [0, 0, 0], 'size': 20.0,
+                       'lights': [{'name': 'key', 'anchor': 'camera', 'orbit': -20.0, 'pitch': 15.0,
+                                   'radius': 3.0, 'beam': 80.0, 'highlight': 0.0, 'shadow': False,
+                                   'intensity': 1.0}]})
+        _c.set('metal_shadows', 0)
+        _c.set('metal_exposure', 1.0)
+        """)
+        let noShadow = try render(rayTraced: rayTraced)
+        engine.runPython("from pymol import cmd as _c\n_c.set('metal_shadows', 1)")
+        let e1: [UInt8]
+        if rayTraced == 1 {
+            let a = try render(rayTraced: 1)
+            let b = try render(rayTraced: 1)
+            guard a == b else {
+                throw XCTSkip("two ray-traced frames of the same scene differ: not deterministic here")
+            }
+            e1 = a
+        } else {
+            e1 = try render(rayTraced: 0)
+        }
+        engine.runPython("from pymol import cmd as _c\n_c.set('metal_exposure', 3.0)")
+        let e3 = try render(rayTraced: rayTraced)
+
+        var n = 0
+        var maxErr = 0
+        for p in 0..<(Self.width * Self.height) {
+            let o = p * 4
+            let no = (0..<3).map { Double(noShadow[o + $0]) }
+            let one = (0..<3).map { Double(e1[o + $0]) }
+            let maxNo = no.max()!, max1 = one.max()!
+            // shadowed (darker by 8+ levels), not near black, and below the
+            // clip at exposure 3's input
+            guard maxNo - max1 >= 8.0, max1 >= 24.0, max1 <= 200.0 else { continue }
+            let pred = acesHue(acesHueInverse(one.map { $0 / 255.0 }).map { 3.0 * $0 })
+            let err = (0..<3).map { abs(Int(e3[o + $0]) - Int((pred[$0] * 255.0).rounded())) }.max()!
+            maxErr = max(maxErr, err)
+            n += 1
+        }
+        print("735 shadow rt=\(rayTraced) pixels=\(n) maxErr=\(maxErr)")
+        XCTAssertGreaterThanOrEqual(n, 100, "too few shadowed pixels to test")
+        XCTAssertLessThanOrEqual(maxErr, 3, "the cast shadow did not darken the scene light through ACES's inverse")
+    }
+
+    func testShadowUsesTheAcesInverse() throws {
+        try requireEngine()
+        buildScene()
+        try assertShadowThroughAcesInverse(rayTraced: 0)
+    }
+
+    func testTracedShadowUsesTheAcesInverse() throws {
+        try requireEngine()
+        guard engine.rayTracingSupported else {
+            throw XCTSkip("Hardware ray tracing is not supported on this device")
+        }
+        buildScene()
+        try assertShadowThroughAcesInverse(rayTraced: 1)
+    }
+}

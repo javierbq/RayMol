@@ -1044,6 +1044,10 @@ private:
   // shaders (runPostChain then exposes at 1). Off with the rig, and at every
   // beginFrame.
   bool _lightHdrOn = false;
+  // ACES is the rig's curve (#735): rig is on, HDR is on, and metal_tonemap is on
+  // (the block's tone[2] is 1). Tone curve is ACES instead of T; post pass 3.5
+  // does not re-apply ACES.
+  bool _lightAcesOn = false;
   // The rig's classic scale this frame (#615; setLightClassicScale, right
   // after setLightRig), for MaterialU.lightClassic. Read only while
   // _lightRigOn, which beginFrame clears and SceneRenderMetal sets just

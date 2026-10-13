@@ -33,6 +33,11 @@
  * not finite reads as 0, and negatives read as 0, so T's output is always in
  * 0..1.
  *
+ * ACES tone curve (#735): under a rig with HDR on and metal_tonemap on, ACES
+ * becomes the rig's scene-unit curve instead of T, indicated by tone.z == 1.
+ * Like T, it is hue-preserving on the largest channel, keeping bright saturated
+ * highlights from going pastel.
+ *
  * The constants are named once here, and once in each MSL copy (kMaterialSrc
  * and kRTSrc, layerGraphics/metal/RendererMetal.mm); the MSL functions mirror
  * these operation for operation, in float. A source test pins them equal, and
@@ -56,6 +61,16 @@ inline constexpr float kLightToneWhite = 10.0f;
 /// LightToneExposure clamps metal_exposure to 0..this.
 inline constexpr float kLightToneMaxExposure = 16.0f;
 
+/// ACES tone curve constants (Narkowicz fit, #735).
+inline constexpr float kLightAcesA = 2.51f;
+inline constexpr float kLightAcesB = 0.03f;
+inline constexpr float kLightAcesC = 2.43f;
+inline constexpr float kLightAcesD = 0.59f;
+inline constexpr float kLightAcesE = 0.14f;
+/// LightAcesScalar returns 1 from here on: past the curve's white point
+/// (~7.2417, where it reaches 1), so a huge input never overflows to NaN.
+inline constexpr float kLightAcesClip = 8.0f;
+
 /// metal_light_hdr values: 1 on, 2 off (the 8-bit soft knee); 0 and anything
 /// else is the platform default (LightHdrOn).
 inline constexpr int kLightHdrOn = 1;
@@ -77,6 +92,24 @@ std::array<float, 3> LightTone(std::array<float, 3> c);
 /// T's inverse on a display colour (channels clipped to 0..1 first; NaN rule
 /// as LightTone).
 std::array<float, 3> LightToneInverse(std::array<float, 3> c);
+
+/// The ACES tone curve (#735, Narkowicz 2015 fit): min(m(Am+B)/(m(Cm+D)+E), 1).
+/// Non-finite and negative input reads as 0.
+float LightAcesScalar(float m);
+
+/// The ACES scalar curve's inverse on 0..1: the positive root of the quadratic,
+/// rationalised for stability near 0. Non-finite and negative input reads as 0;
+/// input >= 1 maps to the white point (~7.2417).
+float LightAcesScalarInverse(float y);
+
+/// The rig's ACES curve (#735): hue-preserving, scaling by the largest channel
+/// through LightAcesScalar. A colour with any non-finite channel is black;
+/// negative channels read as 0.
+std::array<float, 3> LightAces(std::array<float, 3> c);
+
+/// The inverse of LightAces on a display colour (channels clipped to 0..1 first;
+/// NaN rule as LightAces).
+std::array<float, 3> LightAcesInverse(std::array<float, 3> c);
 
 /// The exposure a rig frame applies in scene units: metal_exposure clamped to
 /// 0..kLightToneMaxExposure; non-finite reads as 1.

@@ -92,8 +92,8 @@ struct LightRigBlock {
   /// This draw's shadow tile in slice uv: u0, v0, du, dv (#616; set per draw
   /// by the renderer, 0 here)
   float shadowTile[4];
-  /// x exposure (scene units), y 1 = HDR else 0 (the 8-bit soft knee), z and
-  /// w 0 (#624; SceneLightsToneFill)
+  /// x exposure (scene units), y 1 = HDR else 0 (the 8-bit soft knee),
+  /// z 1 = ACES is the curve (HDR and metal_tonemap, #735), w 0
   float tone[4];
 };
 
