@@ -3,6 +3,10 @@ title: Studio Lights & Atmosphere
 description: Place directional spot lights, cast colored shadows, and illuminate haze and floating dust around molecular structures.
 ---
 
+:::caution[Beta]
+Studio lights are in beta. They are on RayMol's development branch but not yet in a released version, and the commands, controls and defaults may still change before they ship.
+:::
+
 Studio lights introduce a dedicated photography lighting rig to RayMol. Instead of relying solely on PyMOL's fixed camera-relative shading, you can position up to six independent spot lights around your structure, tint them by color temperature or RGB values, cast colored shadows, and illuminate atmospheric haze and floating dust.
 
 :::note

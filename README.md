@@ -9,7 +9,7 @@
 ## Highlights
 
 - **Metal renderer & hardware ray tracing** — Real-time ray-cast spheres and cylinders, smooth spline cartoons, order-independent transparency, and hardware-accelerated ambient occlusion and shadows on Apple Silicon (`metal_raytrace`, on by default where supported).
-- **Studio lights & atmosphere** (next release) — Up to six spot lights per scene with customizable beam widths, warmth, and colored shadows, plus volumetric haze and floating dust drift (`lights` and `atmosphere`).
+- **Studio lights & atmosphere** (beta, not yet released) — Up to six spot lights per scene with customizable beam widths, warmth, and colored shadows, plus volumetric haze and floating dust drift (`lights` and `atmosphere`).
 - **Materials & Looks** — Per-object materials (matte, plastic, metallic, glass, frosted glass, jelly, marble, clay, rubber) with realistic refraction and reflections, plus one-click Looks (gold, copper, statuary marble, terracotta).
 - **Camera lens & depth of field** — True focal length and dolly-zoom camera controls (wide-angle to telephoto) and scatter-based bokeh depth of field with autofocus on active selections.
 - **Timeline movie studio** — Docked multi-track timeline editor for animating camera keyframes, scene cuts, and multi-state (NMR/MD) ensemble playback.

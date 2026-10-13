@@ -163,7 +163,11 @@ RayMol provides a camera depth-of-field post-processing filter that produces pho
 
 ---
 
-## Studio Light Rig & Atmosphere
+## Studio Light Rig & Atmosphere (beta)
+
+:::caution[Beta]
+Studio lights are not yet in a released version; these settings may change before they ship.
+:::
 
 These settings govern the multi-light studio rig and atmospheric volumetric rendering configured via the `lights` and `atmosphere` commands.
 

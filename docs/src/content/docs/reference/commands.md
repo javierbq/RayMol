@@ -29,14 +29,14 @@ RayMol adds specialized commands for studio lighting, physically-based materials
 
 Commands for configuring studio lighting rigs, atmospheric haze and dust, and offline video exports.
 
-#### `lights`
+#### `lights` (beta)
 Configure a studio lighting rig of up to six directional spotlights placed around the scene.
 - **Syntax**: `lights [preset | name | keyword] [, field=value, ...]`
 - **Keywords**: `add`, `remove`, `presets`, `recenter`, `on`, `off`, `clear`
 - **Fields**: `orbit`, `pitch`, `radius`, `beam`, `softness`, `color`, `rgb`, `warmth`, `intensity`, `highlight`, `falloff`, `shadow`, `outline`, `aim`, `pin`, `target=sele`, `highlight=sele`, `click=x/y`, `rim=deg`
 - **Example**: `lights three_point` or `lights key, orbit=-45, pitch=35, color=warm, intensity=1.2`
 
-#### `atmosphere`
+#### `atmosphere` (beta)
 Control the air and atmospheric medium (haze and floating dust) illuminated by studio lights. Haze and dust are drawn only by the live Metal renderer — `ray` output and `grid_mode` views never show them.
 - **Syntax**: `atmosphere [off | field=value, ...]`
 - **Fields**: `haze` (0–1), `dust` (0–1), `dust_size` (0.05–2), `dust_speed` (0–10), `scatter` (-0.9–0.9), `seed` (0–1000000)

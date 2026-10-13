@@ -44,8 +44,8 @@ export default defineConfig({
           label: 'Rendering',
           items: [
             { label: 'Rendering & Export', slug: 'guides/rendering-export' },
-            { label: 'Studio Lights & Atmosphere', slug: 'guides/lighting' },
             { label: 'Materials & Looks', slug: 'guides/materials' },
+            { label: 'Studio Lights & Atmosphere', slug: 'guides/lighting', badge: { text: 'Beta', variant: 'caution' } },
             { label: 'Camera, Lens & Depth of Field', slug: 'guides/camera' },
             { label: 'Movies & Scenes', slug: 'guides/movies' },
           ],

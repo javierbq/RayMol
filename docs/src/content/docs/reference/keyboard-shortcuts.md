@@ -75,7 +75,7 @@ When interacting directly with the 3D canvas (macOS only; viewport keys work whi
 | `Page Up` / `Page Down` | Cycle through stored scenes |
 | `Home` | Zoom to everything |
 | `End` | Play / pause the movie |
-| Arrow keys (in **Tools ▸ Enter Lights Mode**, with a light selected) | Orbit (left/right) or pitch (up/down) the selected light by 1° (`⇧`-arrow nudges by 10°) |
+| Arrow keys (in **Tools ▸ Enter Lights Mode**, beta, with a light selected) | Orbit (left/right) or pitch (up/down) the selected light by 1° (`⇧`-arrow nudges by 10°) |
 
 ## PyMOL Key Bindings & `set_key`
 

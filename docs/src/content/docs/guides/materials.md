@@ -9,6 +9,29 @@ Color conveys what an atom or domain **is**; a material determines what it is **
 Physical material shaders, real-time refraction, and transparency peeling run in hardware on RayMol's Metal renderer. The classic CPU `ray` command maps materials to PyMOL's procedural ray textures.
 :::
 
+## Set a material or a Look
+
+Materials and Looks are set per object, on one style layer at a time (**Cartoon**, **Surface**, **Sticks** or **Spheres**).
+
+**In the Inspector**
+
+1. Make sure the layer is shown, for example **S ▸ cartoon** on the object's row.
+2. In the **Objects** tab, expand the object with the **›** arrow beside its name. Its layers appear as chips; **+** adds one.
+3. Select the layer's chip (for example **Cartoon**) to open its settings.
+4. Open the **Material** menu and pick a material, such as `metallic`, `glass` or `marble`.
+5. Or click the **Look** button beside the Material menu and pick **Gold**, **Copper**, **Bronze**, **Steel**, **Chrome**, **Marble (statuary)** or **Clay (terracotta)**. A Look sets the material, tunes it and colours the layer's atoms in one step.
+6. To fine-tune, choose **Custom…** in the Material menu and adjust the sliders that appear under the row. **Reset** returns to the material's own values.
+
+**From the console**
+
+```text
+set cartoon_material, metallic, 1ubq     # material for one layer of one object
+apply_look gold, 1ubq, cartoon           # or a complete Look
+set cartoon_material_rough, 0.3, 1ubq    # tune one knob (see Custom knobs below)
+```
+
+Sticks and spheres follow the cartoon's material until you give them their own (see [Side chain material inheritance](#side-chain-material-inheritance)). Materials are saved with sessions and scenes.
+
 ## The material catalog
 
 RayMol provides nine dedicated materials across three functional families, plus the default PyMOL shading:
@@ -229,7 +252,7 @@ When rendering static figures using PyMOL's CPU ray tracer (`ray` or `png ..., r
 
 Setting an explicit `ray_texture` value on an object overrides the material's default CPU mapping.
 
-## Interaction with studio lights
+## Interaction with studio lights (beta)
 
 When studio lights are enabled, materials react realistically according to their physical parameters:
 - Matte and clay surfaces absorb light without creating specular glare.
