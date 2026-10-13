@@ -1399,6 +1399,7 @@ private:
   id<MTLTexture> _rtSoft = nil;     // RGBA16Float, _rtAO's size, made lazily
   id<MTLRenderPipelineState> _rtSoftPipeline = nil;
   bool _rtSoftTried = false;
+  bool _rtSoftBroken = false;       // a soft pipeline failed to build: maps stay
   bool ensureRTSoftPipeline();
   // The light rig on traced reflection hits (#613): rt_composite specialised
   // with kRTLightRig, [transparent][hdr][shadow][soft] (kRTTrans; kLightHdr,

@@ -3442,8 +3442,11 @@ void RendererMetal::setLightSoftShadows(const float* r)
   }
   // Decided before any draw, from state the previous frame left, so raster and
   // post chain agree. If the post chain then cannot run the soft pass the
-  // traced lights are unshadowed for that one frame (#741).
-  _lightSoftFrame = anyTraced && _rtEnabled && _rtReady && _rtLib && _rtResolvePipeline;
+  // traced lights are unshadowed for that one frame (#741). Once the soft pass
+  // or a soft composite has failed to build (_rtSoftBroken, each is tried
+  // once), the lights keep their maps for the rest of the session.
+  _lightSoftFrame = anyTraced && !_rtSoftBroken && _rtEnabled && _rtReady &&
+                    _rtLib && _rtResolvePipeline;
 }
 
 void RendererMetal::setGpuTiming(int mode)
@@ -6199,6 +6202,7 @@ bool RendererMetal::ensureRTSoftPipeline()
   }
   if (!_rtSoftPipeline) {
     NSLog(@"RendererMetal RT: soft shadow pipeline failed: %@", err);
+    _rtSoftBroken = true;
   }
   [vtx release];
   [fsoft release];
@@ -6554,6 +6558,8 @@ void RendererMetal::runPostChain()
           sLoggedFallback = true;
           NSLog(@"RendererMetal RT: soft rig composite failed, falling back to non-soft");
         }
+        // From the next frame on the traced lights keep their maps (#741).
+        _rtSoftBroken = true;
         id<MTLRenderPipelineState>* fallback = &_rtResolvePipelineRig[rigT][rigH][rigS][0];
         bool* fallbackTried = &_rtRigTried[rigT][rigH][rigS][0];
         if (!*fallback && !*fallbackTried) {
