@@ -138,11 +138,11 @@ MASTER_LAWS = {
 # HDR_EDITS_624; the new functions and declarations) applies in each literal.
 # A literal not named here has none.
 EDIT_COUNTS = {
-    'kMaterialSrc': {'functions': 12, 'declarations': 8, 'finish_signature': 1,
+    'kMaterialSrc': {'functions': 12, 'declarations': 9, 'finish_signature': 1,
                      'finish_body': 1, 'apply_exposure': 2, 'glints_body': 1},
-    'kRTSrc': {'functions': 12, 'declarations': 8, 'finish_signature': 1,
+    'kRTSrc': {'functions': 12, 'declarations': 9, 'finish_signature': 1,
                'finish_body': 1, 'hit_exposure': 2, 'glints_body': 1},  # #855; #735: the ACES helpers
-    'kPostSrc': {'functions': 11, 'declarations': 7},  # #732, #735: the tone and ACES helpers for HDR AO
+    'kPostSrc': {'functions': 11, 'declarations': 8},  # #732, #735: the tone and ACES helpers for HDR AO
     'kVBOSrc': {'vbo_cover': 1},
     'kCylinderImpostorSrc': {'cyl_cover': 1},
     # #635: sphere glass coverage split uses the same HDR cover statement as cylinder
@@ -318,11 +318,11 @@ class TestConstants(HdrMSLCase):
             self.assertEqual(msl_float(code, 'kLightToneKnee'), knee, lib)
             self.assertEqual(msl_float(code, 'kLightToneWhite'), white, lib)
             self.assertEqual(len(re.findall(r'constant\s+float\s+kLightTone\w+', code)), 2)
-            for letter in 'ABCDE':
+            for letter in ('A', 'B', 'C', 'D', 'E', 'Clip'):
                 val = cpp_float(tone_h, 'kLightAces%s' % letter)
                 self.assertIsNotNone(val)
                 self.assertEqual(msl_float(code, 'kLightAces%s' % letter), val, lib)
-            self.assertEqual(len(re.findall(r'constant\s+float\s+kLightAces\w+', code)), 5)
+            self.assertEqual(len(re.findall(r'constant\s+float\s+kLightAces\w+', code)), 6)
         # within the tuning range D2 allows
         self.assertTrue(0.5 <= knee <= 0.8, knee)
         self.assertTrue(6.0 <= white <= 16.0, white)
@@ -361,7 +361,7 @@ class TestShaders(HdrMSLCase):
                 ('light_tone_scalar_inverse', 'LightToneScalarInverse',
                  'if(y<=kLightToneKnee)'),
                 ('light_aces_scalar', 'LightAcesScalar',
-                 'returnmin(m*(kLightAcesA*m+kLightAcesB)'),
+                 'if(m>=kLightAcesClip)return1.0;'),
                 ('light_aces_scalar_inverse', 'LightAcesScalarInverse',
                  'constfloata=kLightAcesA-kLightAcesC*y;')):
             _, body = self.fn(self.material, msl_name)

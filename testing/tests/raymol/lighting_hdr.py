@@ -368,6 +368,9 @@ class TestAces(testing.PyMOLTestCase):
             self.assertLessEqual(got[i], got[i + 1])
         # exactly 1.0 at 7.3 and 100
         self.assertEqual(aces_scalar([7.3, 100.0]), [1.0, 1.0])
+        # past the white point it is 1, however large (no overflow to NaN)
+        self.assertEqual(aces_scalar([8.0, 1e20, 3e38]), [1.0, 1.0, 1.0])
+        self.assertEqual(aces([[1e20, 0.0, 0.0]]), [[1.0, 0.0, 0.0]])
         # NaN/inf/negative -> 0
         self.assertEqual(aces_scalar([NAN, INF, -1.0, -100.0]), [0.0, 0.0, 0.0, 0.0])
 

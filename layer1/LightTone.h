@@ -67,6 +67,9 @@ inline constexpr float kLightAcesB = 0.03f;
 inline constexpr float kLightAcesC = 2.43f;
 inline constexpr float kLightAcesD = 0.59f;
 inline constexpr float kLightAcesE = 0.14f;
+/// LightAcesScalar returns 1 from here on: past the curve's white point
+/// (~7.2417, where it reaches 1), so a huge input never overflows to NaN.
+inline constexpr float kLightAcesClip = 8.0f;
 
 /// metal_light_hdr values: 1 on, 2 off (the 8-bit soft knee); 0 and anything
 /// else is the platform default (LightHdrOn).

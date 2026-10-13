@@ -1885,6 +1885,7 @@ constant float kLightAcesB = 0.03;
 constant float kLightAcesC = 2.43;
 constant float kLightAcesD = 0.59;
 constant float kLightAcesE = 0.14;
+constant float kLightAcesClip = 8.0;
 
 // Finite tests that fast math cannot fold (#739).
 __attribute__((unused)) static bool light_finite(float x) {
@@ -1937,6 +1938,7 @@ __attribute__((unused)) static float3 light_tone_inverse(float3 c) {
 // (c * light_aces_scalar(m) / m), keeping bright highlights saturated.
 __attribute__((unused)) static float light_aces_scalar(float m) {
   m = (light_finite(m) && m > 0.0) ? m : 0.0;
+  if (m >= kLightAcesClip) return 1.0;
   return min(m * (kLightAcesA * m + kLightAcesB) / (m * (kLightAcesC * m + kLightAcesD) + kLightAcesE), 1.0);
 }
 __attribute__((unused)) static float light_aces_scalar_inverse(float y) {
@@ -3868,6 +3870,7 @@ constant float kLightAcesB = 0.03;
 constant float kLightAcesC = 2.43;
 constant float kLightAcesD = 0.59;
 constant float kLightAcesE = 0.14;
+constant float kLightAcesClip = 8.0;
 
 // Finite tests that fast math cannot fold, a verbatim copy of kMaterialSrc's
 // (#739).
@@ -3921,6 +3924,7 @@ __attribute__((unused)) static float3 light_tone_inverse(float3 c) {
 // (c * light_aces_scalar(m) / m), keeping bright highlights saturated.
 __attribute__((unused)) static float light_aces_scalar(float m) {
   m = (light_finite(m) && m > 0.0) ? m : 0.0;
+  if (m >= kLightAcesClip) return 1.0;
   return min(m * (kLightAcesA * m + kLightAcesB) / (m * (kLightAcesC * m + kLightAcesD) + kLightAcesE), 1.0);
 }
 __attribute__((unused)) static float light_aces_scalar_inverse(float y) {
@@ -9302,6 +9306,7 @@ constant float kLightAcesB = 0.03;
 constant float kLightAcesC = 2.43;
 constant float kLightAcesD = 0.59;
 constant float kLightAcesE = 0.14;
+constant float kLightAcesClip = 8.0;
 
 // Finite tests that fast math cannot fold (#739). The libraries compile with
 // Metal's default fast math, which may assume no NaN or inf and so fold
@@ -9375,6 +9380,7 @@ __attribute__((unused)) static float3 light_tone_inverse(float3 c) {
 // (c * light_aces_scalar(m) / m), keeping bright highlights saturated.
 __attribute__((unused)) static float light_aces_scalar(float m) {
   m = (light_finite(m) && m > 0.0) ? m : 0.0;
+  if (m >= kLightAcesClip) return 1.0;
   return min(m * (kLightAcesA * m + kLightAcesB) / (m * (kLightAcesC * m + kLightAcesD) + kLightAcesE), 1.0);
 }
 __attribute__((unused)) static float light_aces_scalar_inverse(float y) {

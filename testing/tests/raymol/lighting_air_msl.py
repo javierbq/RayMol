@@ -288,7 +288,7 @@ HDR_NEW_FUNCTIONS_624 = (
 HDR_DECLARATIONS_624 = re.compile(
     r'constantboolkLightHdr\[\[function_constant\(\d\)\]\];'
     r'|constantfloatkLightTone(?:Knee|White)=[0-9.]+;'
-    r'|constantfloatkLightAces[A-E]=[0-9.]+;')
+    r'|constantfloatkLightAces(?:[A-E]|Clip)=[0-9.]+;')
 HDR_EDITS_624 = (
     # light_finish takes the frame's exposure and gains the HDR arm
     ('finish_signature', 'float3light_finish(float3c,float4tone)',

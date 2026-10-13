@@ -1620,7 +1620,7 @@ class TestRayTracedReflections(LightMSLCase):
                 self.assertEqual(len(HDR_CONSTANT.findall(body)), 1, name)
                 body = HDR_CONSTANT.sub('', body)
             # (the tone, ACES and RT family constants are plain constants, not function ones)
-            body = re.sub(r'\bkLightTone(?:Knee|White)\b|\bkLightAces[A-E]\b', '', body)
+            body = re.sub(r'\bkLightTone(?:Knee|White)\b|\bkLightAces(?:[A-E]|Clip)\b', '', body)
             body = re.sub(r'\bkRTFamily(?:Procedural|Glass)\b', '', body)
             self.assertNotRegex(body, constant, name)
             todo += [c for c in re.findall(r'\b((?:light|mat|rt)_\w+)\s*\(',

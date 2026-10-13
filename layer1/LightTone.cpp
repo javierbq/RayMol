@@ -86,6 +86,8 @@ std::array<float, 3> LightToneInverse(std::array<float, 3> c)
 float LightAcesScalar(float m)
 {
   m = LightToneClean(m);
+  if (m >= kLightAcesClip)
+    return 1.0f; // past the white point (~7.24); keeps huge m from overflowing
   return std::min(m * (kLightAcesA * m + kLightAcesB) /
                       (m * (kLightAcesC * m + kLightAcesD) + kLightAcesE),
                   1.0f);
