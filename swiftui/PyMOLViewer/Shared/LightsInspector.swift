@@ -87,7 +87,7 @@ enum LightInspectorFormat {
         case .pitch: return angle(value, plus: true)
         case .radius: return radius(value, frameSize: frameSize)
         case .warmth: return kelvin(value)
-        case .intensity, .softness: return fraction(value)
+        case .intensity, .softness, .size: return fraction(value)
         }
     }
 
@@ -97,7 +97,7 @@ enum LightInspectorFormat {
         case .orbit, .pitch, .beam: return spokenAngle(value)
         case .radius: return spokenRadius(value, frameSize: frameSize)
         case .warmth: return spokenKelvin(value)
-        case .intensity, .softness: return fraction(value)
+        case .intensity, .softness, .size: return fraction(value)
         }
     }
 
@@ -180,6 +180,8 @@ struct LightsInspectorState: Equatable {
     static let shadowsOffHint = "Shadows are off for this scene"
     /// The muted line under the header while the selected light's shadow has no map (#673).
     static let noCastersHint = "No casters in this light's beam"
+    static let sizeHelp = "Size: how big the light is. Bigger lights cast softer shadows in ray-traced renders on a Mac"
+    static let sizeMobileNote = "Size softens shadows only in ray-traced renders on a Mac. On iPhone and iPad shadows stay sharp."
     static let turnOnTitle = "Turn On"
     static let turnOnLabel = "Turn on scene shadows"
     static let turnOnHelp = "Turn on the scene's Shadows switch, so lights with Shadow cast them"
@@ -333,7 +335,7 @@ struct LightsInspectorState: Equatable {
         return "\(name) slot=\(slot) pin=\(isPinned ? 1 : 0) shadow=\(isShadowed ? 1 : 0) on=\(isOn ? 1 : 0)"
             + " orbit=\(v(.orbit, "%.1f")) pitch=\(v(.pitch, "%.1f")) radius=\(v(.radius, "%.2f"))"
             + " intensity=\(v(.intensity, "%.2f")) warmth=\(v(.warmth, "%.0f"))"
-            + " beam=\(v(.beam, "%.1f")) softness=\(v(.softness, "%.2f"))"
+            + " beam=\(v(.beam, "%.1f")) softness=\(v(.softness, "%.2f")) size=\(v(.size, "%.2f"))"
             + " color=\(rgb) swatch=\(swatch) edit=\(canEdit ? 1 : 0) revert=\(canRevertLight ? 1 : 0)"
             + (notice == nil ? "" : " notice=shadow_cap") + (showsShadowsHint ? " hint=shadows_off" : "")
             + (showsNoCastersHint ? " hint=no_casters" : "")
@@ -1220,6 +1222,24 @@ struct LightsInspector: View {
         .accessibilityIdentifier("lights.inspector.no_casters_hint")
     }
 
+#if os(iOS)
+    private func sizeNoteRow() -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "info.circle")
+                .font(.system(size: 10))
+                .foregroundColor(style.text.opacity(0.55))
+                .accessibilityHidden(true)
+            Text(LightsInspectorState.sizeMobileNote)
+                .font(.system(size: 11))
+                .foregroundColor(style.text.opacity(0.55))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("lights.inspector.size_note")
+    }
+#endif
+
     // Text items with a checkmark on the selected one: macOS menus draw only
     // text and template images, so the identity dot lives in the header.
     private func lightMenu(_ state: LightsInspectorState) -> some View {
@@ -1298,6 +1318,11 @@ struct LightsInspector: View {
             Rectangle().fill(style.text.opacity(0.12)).frame(height: 0.5)
             slider(.beam, state)
             slider(.softness, state)
+            slider(.size, state)
+                .help(LightsInspectorState.sizeHelp)
+#if os(iOS)
+            sizeNoteRow()
+#endif
             footer(state)
         }
         .disabled(!state.canEdit)

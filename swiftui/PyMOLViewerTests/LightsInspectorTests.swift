@@ -68,9 +68,10 @@ final class LightInspectorFormatTests: XCTestCase {
             .warmth: ("3800 K", "3800 kelvin"),
             .beam: ("40°", "40 degrees"),
             .softness: ("0.50", "0.50"),
+            .size: ("0.25", "0.25"),
         ]
         let values: [LightParameter: Double] = [.orbit: -45, .pitch: 35, .radius: 3, .intensity: 1.8,
-                                                .warmth: 3800, .beam: 40, .softness: 0.5]
+                                                .warmth: 3800, .beam: 40, .softness: 0.5, .size: 0.25]
         for p in LightParameter.allCases {
             XCTAssertEqual(LightInspectorFormat.text(p, values[p]!, frameSize: 14), expected[p]!.0, "\(p)")
             XCTAssertEqual(LightInspectorFormat.spoken(p, values[p]!, frameSize: 14), expected[p]!.1, "\(p)")
@@ -262,15 +263,16 @@ final class LightsInspectorStateTests: XCTestCase {
         store.lights[1].warmth = 3800
         store.lights[1].beam = 40
         store.lights[1].softness = 0.5
+        store.lights[1].size = 0.25
         controller.begin()
         controller.select(name: "fill")
         let state = try XCTUnwrap(LightsInspectorState(controller))
         XCTAssertEqual(state.name, "fill")
         XCTAssertEqual(state.index, 1)
         XCTAssertEqual(state.rows.map(\.parameter), LightParameter.allCases)
-        XCTAssertEqual(state.rows.map(\.value), [-45, 35, 3, 1.8, 3800, 40, 0.5])
+        XCTAssertEqual(state.rows.map(\.value), [-45, 35, 3, 1.8, 3800, 40, 0.5, 0.25])
         XCTAssertEqual(state.rows.map(\.text),
-                       ["−45°", "+35°", "3.0× · 30 Å", "1.80", "3800 K", "40°", "0.50"])
+                       ["−45°", "+35°", "3.0× · 30 Å", "1.80", "3800 K", "40°", "0.50", "0.25"])
         XCTAssertFalse(state.isPinned)
         XCTAssertEqual(state.pinValue, "Off")
     }
@@ -371,7 +373,7 @@ final class LightsInspectorStateTests: XCTestCase {
         XCTAssertEqual(state.containerLabel, "Light inspector, key")
         XCTAssertEqual(state.summary,
                        "key slot=0 pin=0 shadow=0 on=1 orbit=-45.0 pitch=35.0 radius=3.00 intensity=1.80"
-                       + " warmth=3800 beam=40.0 softness=0.50 color=0.000,1.000,1.000 swatch=Cyan"
+                       + " warmth=3800 beam=40.0 softness=0.50 size=0.00 color=0.000,1.000,1.000 swatch=Cyan"
                        + " edit=1 revert=0")
         XCTAssertEqual(state.summary, try XCTUnwrap(LightsInspectorState(controller)).summary, "stable")
     }
@@ -466,6 +468,13 @@ final class LightsInspectorStateTests: XCTestCase {
         XCTAssertFalse(state3.showsNoCastersHint)
         XCTAssertTrue(state3.showsShadowsHint)
         XCTAssertTrue(state3.summary.hasSuffix(" hint=shadows_off"), state3.summary)
+    }
+
+    func testSizeNotesExist() {
+        XCTAssertFalse(LightsInspectorState.sizeHelp.isEmpty)
+        XCTAssertFalse(LightsInspectorState.sizeMobileNote.isEmpty)
+        XCTAssertTrue(LightsInspectorState.sizeHelp.contains("Size"))
+        XCTAssertTrue(LightsInspectorState.sizeMobileNote.contains("iPhone"))
     }
 }
 
@@ -633,7 +642,7 @@ final class LightsInspectorAccessibilityTests: XCTestCase {
         XCTAssertEqual(LightsInspectorState.fieldLabel(.orbit), "Orbit in degrees")
         XCTAssertEqual(LightsInspectorState.fieldLabel(.pitch), "Pitch in degrees")
         XCTAssertEqual(state.rows.map(\.parameter.label),
-                       ["Orbit", "Pitch", "Radius", "Intensity", "Warmth", "Beam", "Softness"])
+                       ["Orbit", "Pitch", "Radius", "Intensity", "Warmth", "Beam", "Softness", "Size"])
         XCTAssertEqual(state.row(.orbit)?.spoken, "-45 degrees")
         XCTAssertEqual(state.row(.pitch)?.spoken, "35 degrees")
         XCTAssertEqual(state.row(.radius)?.spoken, "3.0 scene sizes, 30 angstroms")

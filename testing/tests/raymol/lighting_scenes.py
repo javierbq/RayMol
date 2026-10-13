@@ -885,6 +885,22 @@ class TestBlendValues(_BlendCase):
         self.assertTrue(self.light(end, 'newb')['shadow'])
         self.assertNotIn('solo', [l['name'] for l in end['lights']])
 
+    def testSizeLerpsForMatchedLightAndOneSidedKeepsSize(self):
+        """#741: size lerps at e = 0.5 for a matched light; a one-sided light keeps its size."""
+        a = rig({'enabled': True, 'lights': [
+            {'name': 'key', 'size': 0.2},
+            {'name': 'solo', 'size': 0.8}]})
+        b = rig({'enabled': True, 'lights': [
+            {'name': 'key', 'size': 0.6},
+            {'name': 'newb', 'size': 0.5}]})
+        m = anim.blend_rigs(a, b, 0.5)
+        key = self.light(m, 'key')
+        self.assertAlmostEqual(key['size'], 0.4)
+        solo = self.light(m, 'solo')
+        self.assertAlmostEqual(solo['size'], 0.8)
+        newb = self.light(m, 'newb')
+        self.assertAlmostEqual(newb['size'], 0.5)
+
     def testStepFields(self):
         a = rig({'enabled': True, 'lights': [
             {'name': 'key', 'orbit': -40.0, 'pitch': 20.0, 'outline': True},

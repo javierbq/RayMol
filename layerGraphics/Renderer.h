@@ -469,6 +469,11 @@ public:
   // endLightShadowMaps() reopens the scene pass. Defaults: no-op (the GL
   // renderer has no studio shadows).
   virtual void setLightShadowFrame(bool /*studioShadows*/, int /*mapSize*/) {}
+  // Traced soft shadows (#741): this frame's source radius per block light
+  // (kLightRigBlockSlots floats, eye Å; 0 = the light keeps its map), or
+  // nullptr. SceneRenderMetal calls it once per frame, after
+  // setLightShadowFrame(). Default: no-op (GL has no ray tracing).
+  virtual void setLightSoftShadows(const float* /*radius*/) {}
   virtual bool beginLightShadowMap(int /*slot*/, const float* /*view*/)
   {
     return false;

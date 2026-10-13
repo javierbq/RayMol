@@ -1100,7 +1100,8 @@ PyObject* LightFrameAsPyDict(
         setItem(d.get(), "highlight", PyFloat_FromDouble(l[12])) &&
         setItem(d.get(), "falloff", PyFloat_FromDouble(l[13])) &&
         setItem(d.get(), "falloff_ref", PyFloat_FromDouble(l[14])) &&
-        setItem(d.get(), "outline", PyBool_FromLong(l[15] >= 0.5f));
+        setItem(d.get(), "outline", PyBool_FromLong(l[15] >= 0.5f)) &&
+        setItem(d.get(), "soft_radius", PyFloat_FromDouble(frame.softRadius[i]));
     if (!ok || PyList_Append(lights, d.get()) != 0) // lights is borrowed
       return nullptr;
   }

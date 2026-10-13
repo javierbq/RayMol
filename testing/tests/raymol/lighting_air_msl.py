@@ -113,7 +113,7 @@ MASTER_LITERALS = {
     'kMaterialImpostorSrc': 'ea5947e14500d7d5',  # #710: the rig lights the material's albedo
     'kMaterialSrc': 'da47cac063348d43',
     'kPostSrc': '1ed0138bf670bdba',  # #689: post_ssao_fog fades toward the bg_gradient; #732: AO in scene units under an HDR rig; #852: AO and the cast shadow in scene units under an HDR rig; #735: ACES as the rig's scene-unit curve
-    'kRTSrc': 'ab37f303f10f2682',  # #739: NaN guards as bit tests (light_finite); #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps; #729: rt_reflect_tint keeps the metallic tint's hue under HDR; #732: AO in scene units under an HDR rig; #709: traced reflection hits take their material's studio response; #852: AO and the cast shadow in scene units under an HDR rig; #855: traced hits take the transparent table, the procedural albedo and the glass glints; #668: rt_tri_normal_smooth averages only connected neighbours on the same smooth surface; #735: ACES as the rig's scene-unit curve
+    'kRTSrc': '8c5d35f298c657bd',  # #739: NaN guards as bit tests (light_finite); #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps; #729: rt_reflect_tint keeps the metallic tint's hue under HDR; #732: AO in scene units under an HDR rig; #709: traced reflection hits take their material's studio response; #852: AO and the cast shadow in scene units under an HDR rig; #855: traced hits take the transparent table, the procedural albedo and the glass glints; #668: rt_tri_normal_smooth averages only connected neighbours on the same smooth surface; #735: ACES as the rig's scene-unit curve; #741: traced soft shadows from light size
     'kScreenOverlaySrc': '9f09ecbdd4a9ddfa',  # #689: ramp gadgets drawn after the post chain
     # #635: retaken after sphere glass coverage split; #710: the rig lights
     # the material's albedo
@@ -238,6 +238,23 @@ def without_post_exposure_624(body):
     body, declarations = POST_EXPOSURE_624.subn('', body)
     body, uses = re.subn(r'\bpostExposure\b', '_exposure', body)
     return body, declarations, uses
+
+
+# #741: traced soft shadows statements in runPostChain, taken out so master
+# digests hold.
+def without_soft_shadows_741(body):
+    pass_a6 = re.compile(r'bool\s+rtSoftReady\s*=.*?\[esoft endEncoding\];\s*\}', re.S)
+    body = pass_a6.sub('', body, count=1)
+    body = re.sub(r'if\s*\(usingSoftComposite\)\s*\{.*?\}', '', body, flags=re.S)
+    body = body.replace('(u.matCount > 0.5f || doSoft)', 'u.matCount > 0.5f')
+    body = re.sub(r'const\s+int\s+rigSoft\s*=\s*doSoft\s*\?\s*1\s*:\s*0\s*;', '', body)
+    body = body.replace('[rigSoft]', '')
+    body = body.replace(', doSoft', '')
+    body = body.replace('bool usingSoftComposite = false;\n', '')
+    body = body.replace('usingSoftComposite = (rigSoft == 1);\n', '')
+    fallback = re.compile(r'else\s+if\s*\(rigSoft\s*==\s*1\)\s*\{.*?if\s*\(\s*\*fallback\s*\)\s*\{\s*composite\s*=\s*\*fallback;\s*rtRig\s*=\s*true;\s*\}\s*\}', re.S)
+    body = fallback.sub('', body, count=1)
+    return body
 
 
 # #624's RT rig composite choice in runPostChain (Part 5): the rig composites
@@ -483,12 +500,25 @@ class TestMasterUnchanged(AirMSLCase):
                 body = STATEMENTS_666[name].sub('', body, count=1)
             # #624's exposure hand-off and RT rig composite choice, put back
             if name == 'RendererMetal::runPostChain':
+                body = without_soft_shadows_741(body)
                 body, declarations, uses = without_post_exposure_624(body)
                 self.assertEqual((declarations, uses), (1, POST_EXPOSURE_USES_624))
                 body, choices, builds = without_rt_rig_hdr_624(body)
                 self.assertEqual((choices, builds), (1, 1))
                 body, alpha = without_air_alpha_684(body)
                 self.assertEqual(alpha, [1, 1])
+            # #741: softRadius filling in SceneLightsFrame
+            if name == 'SceneLightsFrame':
+                body = re.sub(
+                    r'const\s+std::size_t\s+nLights\s*=.*?;'
+                    r'\s*const\s+double\s+rigSize\s*=.*?;'
+                    r'\s*for\s*\(std::size_t\s+i\s*=\s*0;\s*i\s*<\s*nLights;\s*\+\+i\)\s*\{.*?\}',
+                    '', body, flags=re.S)
+            # #741: soft shadows handoff in SceneRenderMetal
+            if name == 'SceneRenderMetal':
+                body = re.sub(
+                    r'G->Renderer->setLightSoftShadows\(lights\.softRadius\.data\(\)\);',
+                    '', body)
             # #685's statements, taken out as the air's is
             if name in STATEMENTS_685:
                 for stmt in STATEMENTS_685[name]:

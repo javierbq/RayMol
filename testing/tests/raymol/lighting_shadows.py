@@ -1025,6 +1025,48 @@ class TestGpuTime(ShadowCase):
         self.assertEqual(stats['p95'], 124.0)    # ceil(0.95 x 120) = 114th of 11..130
 
 
+class TestSoftShadows(ShadowCase):
+    """Issue #741: traced per-light soft shadows."""
+
+    def testSoftRadiusHelper(self):
+        self.assertEqual(lighting._light_soft_radius(0.5, 20.0, True, True), 0.0)
+        self.assertEqual(lighting._light_soft_radius(0.5, 20.0, True, False), 10.0)
+        self.assertEqual(lighting._light_soft_radius(0.5, 20.0, False, False), 0.0)
+        self.assertEqual(lighting._light_soft_radius(0.0, 20.0, True, False), 0.0)
+
+    def testLightFrameSoftRadiusAndBlock(self):
+        self.load_m()
+        cmd.set('metal_shadows', 1)
+        self.rig([
+            light('key', orbit=-40.0, pitch=30.0, shadow=True, size=0.5),
+            light('fill', orbit=50.0, pitch=20.0, shadow=False, size=0.5),
+            light('rim', orbit=150.0, pitch=20.0, shadow=True, size=0.0),
+        ])
+        rig_info = cmd.get_lights()
+        rig_size = rig_info['size']
+        frame = lighting._light_frame(M)
+        self.assertAlmostEqual(frame['rig']['lights'][0]['soft_radius'], 0.5 * rig_size, places=4)
+        self.assertEqual(frame['rig']['lights'][1]['soft_radius'], 0.0)
+        self.assertEqual(frame['rig']['lights'][2]['soft_radius'], 0.0)
+
+        # with metal_shadows off, soft_radius is 0
+        cmd.set('metal_shadows', 0)
+        frame_off = lighting._light_frame(M)
+        self.assertEqual(frame_off['rig']['lights'][0]['soft_radius'], 0.0)
+        self.assertEqual(frame_off['rig']['lights'][1]['soft_radius'], 0.0)
+        self.assertEqual(frame_off['rig']['lights'][2]['soft_radius'], 0.0)
+
+        # the 172-float block is identical between size 0 and size 0.5 (GPU block never carries size)
+        cmd.set('metal_shadows', 1)
+        self.rig([light('key', orbit=-40.0, pitch=30.0, shadow=True, size=0.0)])
+        block_size0 = lighting._light_frame(M)['rig']['block']
+        self.rig([light('key', orbit=-40.0, pitch=30.0, shadow=True, size=0.5)])
+        block_size05 = lighting._light_frame(M)['rig']['block']
+        self.assertEqual(len(block_size0), 172)
+        self.assertEqual(len(block_size05), 172)
+        self.assertEqual(block_size0, block_size05)
+
+
 class TestSource(testing.PyMOLTestCase):
     """What the pure files may use, and where the plan is read."""
 

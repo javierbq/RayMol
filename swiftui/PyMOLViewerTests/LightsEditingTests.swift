@@ -15,13 +15,13 @@ import XCTest
 final class LightParameterTests: XCTestCase {
     func testFieldsAreTheCoreNames() {
         XCTAssertEqual(LightParameter.allCases.map(\.field),
-                       ["orbit", "pitch", "radius", "intensity", "warmth", "beam", "softness"])
+                       ["orbit", "pitch", "radius", "intensity", "warmth", "beam", "softness", "size"])
     }
 
     func testRangesAreTheCores() {
         let expected: [LightParameter: ClosedRange<Double>] = [
             .orbit: -180...180, .pitch: -90...90, .radius: 0.5...8, .intensity: 0...4,
-            .warmth: 1500...15000, .beam: 1...170, .softness: 0...1,
+            .warmth: 1500...15000, .beam: 1...170, .softness: 0...1, .size: 0...1,
         ]
         for parameter in LightParameter.allCases {
             XCTAssertEqual(parameter.range, expected[parameter], parameter.field)
@@ -38,13 +38,13 @@ final class LightParameterTests: XCTestCase {
 
     func testLabelsFollowDecision11() {
         XCTAssertEqual(LightParameter.allCases.map(\.label),
-                       ["Orbit", "Pitch", "Radius", "Intensity", "Warmth", "Beam", "Softness"])
+                       ["Orbit", "Pitch", "Radius", "Intensity", "Warmth", "Beam", "Softness", "Size"])
     }
 
     func testQuantaAndRounding() {
         let quanta: [LightParameter: Double] = [
             .orbit: 1, .pitch: 1, .radius: 0.01, .intensity: 0.01, .warmth: 10,
-            .beam: 0.5, .softness: 0.01,
+            .beam: 0.5, .softness: 0.01, .size: 0.01,
         ]
         for parameter in LightParameter.allCases {
             XCTAssertEqual(parameter.quantum, quanta[parameter], parameter.field)
@@ -53,6 +53,7 @@ final class LightParameterTests: XCTestCase {
         XCTAssertEqual(LightParameter.radius.rounded(3.004), 3.0, accuracy: 1e-12)
         XCTAssertEqual(LightParameter.warmth.rounded(3804), 3800)
         XCTAssertEqual(LightParameter.beam.rounded(40.3), 40.5)
+        XCTAssertEqual(LightParameter.size.rounded(0.254), 0.25, accuracy: 1e-12)
     }
 }
 
@@ -331,7 +332,7 @@ final class LightsEditTests: XCTestCase {
         controller.select(name: "fill")
         let values: [LightParameter: Double] = [
             .orbit: -45, .pitch: 35, .radius: 3, .intensity: 1.8, .warmth: 3800,
-            .beam: 40, .softness: 0.5,
+            .beam: 40, .softness: 0.5, .size: 0.25,
         ]
         for parameter in LightParameter.allCases {
             let before = store.numberWrites.count

@@ -68,6 +68,10 @@ struct Light {
   /// Full cone angle in degrees; never changed by a radius edit (decision 8).
   double beam = 45.0;
   double softness = 0.4;
+  /// Light source radius in rig sizes: 0 = a point (hard shadows); larger
+  /// lights cast softer shadows in ray-traced Mac renders (#741). No effect on
+  /// raster renders or on iOS.
+  double size = 0.0;
   glm::dvec3 color{1.0}; ///< sRGB, each 0..1
   double warmth = 6500.0;  ///< kelvin; 6500 is neutral
   double intensity = 1.0;
@@ -157,6 +161,7 @@ enum class LightFieldId {
   Falloff,
   Shadow,
   Outline,
+  LightSize,
 };
 
 struct LightField {

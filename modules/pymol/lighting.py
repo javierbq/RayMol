@@ -38,9 +38,9 @@ scene movies carry on the interior frames of each transition
 
 Per-light shadow maps (#616): ``_light_frame`` also returns the frame's
 studio shadow plan, and ``_light_shadow_frustum``, ``_light_shadow_map_size``,
-``_light_shadow_tile``, ``_light_shadow_casters``, ``_gpu_time_summary``,
-``_gpu_time_replay`` and ``_gpu_frame_stats`` reach the same C++ as the
-renderer.
+``_light_soft_radius``, ``_light_shadow_tile``, ``_light_shadow_casters``,
+``_gpu_time_summary``, ``_gpu_time_replay`` and ``_gpu_frame_stats`` reach the
+same C++ as the renderer.
 
 The air (#618): ``_light_air_frame`` returns the air block a frame packs
 (haze and dust, in eye space and rig sizes), and ``_light_air_clock``,
@@ -73,13 +73,15 @@ PYMOL API
              'dust_glow', 'dust_opacity'},
      'lights': [{'name', 'anchor', 'orbit', 'pitch', 'radius', 'position',
                  'aim', 'aim_point', 'aim_selection', 'beam', 'softness',
-                 'color', 'warmth', 'intensity', 'highlight', 'falloff',
-                 'shadow', 'outline'}, ...]}
+                 'size', 'color', 'warmth', 'intensity', 'highlight',
+                 'falloff', 'shadow', 'outline'}, ...]}
 
     'centre' and 'size' are the rig frame (world Angstrom): the box
     midpoint and half-diagonal of the enabled objects, captured when the
     first light is added and again only on re-centre. A light's 'radius' is
-    in multiples of 'size'.
+    in multiples of 'size'. A light's 'size' is its source radius in scene sizes,
+    0 to 1, default 0 (sharp); it softens shadows in ray-traced Mac renders
+    (metal_raytrace 1).
 
 SEE ALSO
 
@@ -216,7 +218,7 @@ def _light_frame(matrix=None, grid=None, *, _self=cmd):
                      'lights': [{'name', 'position', 'shadow_slot',
                                  'direction', 'cos_outer', 'radiance',
                                  'cos_inner', 'highlight', 'falloff',
-                                 'falloff_ref', 'outline'}, ...]},
+                                 'falloff_ref', 'outline', 'soft_radius'}, ...]},
      'shadows': None or {'count', 'size', 'tiles', 'first_slot',
                          'slots': [{'slot', 'light', 'name', 'view',
                                     'proj', 'view_proj', 'tan_half_fov',
@@ -240,7 +242,8 @@ def _light_frame(matrix=None, grid=None, *, _self=cmd):
 
     Studio shadows are on ('studio_shadows') when the rig is on,
     metal_shadows is on and a light has `shadow`; the whole-pixel shadow is
-    then off. 'shadows' is the plan: the first three shadowed lights with
+    then off. 'soft_radius' is the light's traced soft-shadow radius in
+    eye/world Å (#741). 'shadows' is the plan: the first three shadowed lights with
     casters in front of them get map slots 0, 1, 2 ('shadow_slot', -1
     otherwise, and head[3] the count), with frusta fitted to the casters
     without overlays (_light_shadow_casters).'''
@@ -359,6 +362,16 @@ def _light_shadow_map_size(setting, mobile=False, *, _self=cmd):
     with _self.lockcm:
         return _self._cmd.light_shadow_map_size(
             _self._COb, int(setting), bool(mobile))
+
+
+def _light_soft_radius(size, rig_size, shadow=True, mobile=False, *, _self=cmd):
+    '''The traced soft-shadow radius of a light with `size` under a rig of
+    `rig_size` (#741): size * rig_size (Å) when `shadow` is on, size > 0, the
+    product is finite and positive, and `mobile` is False; else 0 (the light
+    keeps its shadow map).'''
+    with _self.lockcm:
+        return _self._cmd.light_soft_radius(
+            _self._COb, float(size), float(rig_size), bool(shadow), bool(mobile))
 
 
 def _light_shadow_tile(cell, tiles, size, *, _self=cmd):

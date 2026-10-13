@@ -113,4 +113,10 @@ LightRigBlock LightRigPack(
 std::optional<LightRigBlock> LightRigFrameBlock(
     const LightRig* rig, const glm::dmat4& worldToEye, float shininess);
 
+/// The traced soft-shadow radius of `light` (#741), in eye/world Å: its
+/// size times the rig size, when the light casts a studio shadow
+/// (`shadow`), size > 0, the product is finite and positive, and the
+/// platform is not mobile; else 0 (the light keeps its shadow map).
+float LightSoftRadius(const Light& light, double rigSize, bool mobile);
+
 } // namespace pymol

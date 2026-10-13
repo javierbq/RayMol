@@ -102,7 +102,7 @@ int PyMOLBridge_TurnZ(PyMOLHandle instance, float degrees);
 // when there is no rig. Free with PyMOLBridge_FreeFeedback.
 char *PyMOLBridge_LightsJSON(PyMOLHandle instance);
 // Set one number field of light `index` (>= 0), or of the rig and its air
-// (index -1): orbit, pitch, radius, beam, softness, warmth, intensity,
+// (index -1): orbit, pitch, radius, beam, softness, size, warmth, intensity,
 // highlight, falloff, shadow, outline, anchor (0 camera, 1 pin where it is
 // now), aim (0 centre, 1 point); enabled, ambient, classic, haze, dust,
 // dust_size, dust_speed, scatter, seed, dust_glow, dust_opacity. Numbers are clamped into range.

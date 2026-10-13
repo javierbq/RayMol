@@ -82,11 +82,11 @@ def without_finite_739(code):
 PRE_739 = {
     'kMaterialSrc': '322e275d69f73b97',  # #735: ACES as the rig's scene-unit curve
     'kAirSrc': 'a2a4c7fd5d9cc0db',  # #810: dust_glow and dust_opacity (post_air_dust's gain and cover, post_air_mote, post_air_dust_cover, the alpha's cover); #686: per-cell air; #683: Beer-Lambert extinction (re-taken at #683's head); #735: ACES as the rig's scene-unit curve
-    'kRTSrc': '1482be0b00b38476',  # #732: AO in scene units under an HDR rig; #709: traced reflection hits take their material's studio response; #852: AO and the cast shadow in scene units under an HDR rig; #855: traced hits take the transparent table, the procedural albedo and the glass glints; #668: rt_tri_normal_smooth averages only connected neighbours on the same smooth surface; #735: ACES as the rig's scene-unit curve
+    'kRTSrc': '87f88a7314c16291',  # #732: AO in scene units under an HDR rig; #709: traced reflection hits take their material's studio response; #852: AO and the cast shadow in scene units under an HDR rig; #855: traced hits take the transparent table, the procedural albedo and the glass glints; #668: rt_tri_normal_smooth averages only connected neighbours on the same smooth surface; #735: ACES as the rig's scene-unit curve; #741: traced soft shadows from light size
 }
 FINITE_COUNTS = {
     'kMaterialSrc': {'helpers': 2, 'finite3': 4, 'finite': 4},  # #735: the ACES helpers
-    'kRTSrc': {'helpers': 2, 'finite3': 5, 'finite': 4},  # #855; #735: the ACES helpers
+    'kRTSrc': {'helpers': 2, 'finite3': 8, 'finite': 6},  # #855; #735: the ACES helpers; #741
     'kAirSrc': {'helpers': 0, 'finite3': 2, 'finite': 5},  # #810: two guards in post_air_dust_cover; #683: post_air_transmittance's guard
 }
 

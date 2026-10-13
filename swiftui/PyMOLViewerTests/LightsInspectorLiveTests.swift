@@ -85,7 +85,7 @@ final class LightsInspectorLiveTests: XCTestCase {
         // The sliders, dials and typed fields: `set`, one per parameter.
         let targets: [LightParameter: Double] = [
             .orbit: -45, .pitch: 35, .radius: 3, .intensity: 1.8,
-            .warmth: 3800, .beam: 40, .softness: 0.5,
+            .warmth: 3800, .beam: 40, .softness: 0.5, .size: 0.25,
         ]
         for parameter in LightParameter.allCases {
             let target = try XCTUnwrap(targets[parameter])

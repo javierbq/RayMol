@@ -89,6 +89,7 @@ DEFAULT_LIGHT = {
     'aim_selection': '', 'beam': 45.0, 'softness': 0.4,
     'color': [1.0, 1.0, 1.0], 'warmth': 6500.0, 'intensity': 1.0,
     'highlight': 0.5, 'falloff': 2.0, 'shadow': False, 'outline': False,
+    'size': 0.0,
 }
 AIR_DEFAULTS = {'haze': 0.0, 'dust': 0.0, 'dust_size': 0.35,
                 'dust_speed': 1.0, 'scatter': 0.55, 'seed': 0,
@@ -706,7 +707,7 @@ class TestQueries(CommandsCase):
             self.assertIn('key: camera, orbit -45, pitch 35, radius 4 '
                           '(%.1f A), aim centre' % (4.0 * result['size']),
                           text)
-            self.assertIn('beam 55, softness 0.5, color 1/1/1, warmth 4500, '
+            self.assertIn('beam 55, softness 0.5, size 0, color 1/1/1, warmth 4500, '
                           'intensity 1.15', text)
             self.assertIn('air: haze 0, dust 0, dust_size 0.35', text)
         text = do('lights')
@@ -817,6 +818,9 @@ class TestRigFields(CommandsCase):
             self.assertError(r"centre is captured from the molecules; "
                              r"'lights recenter'", cmd.lights,
                              centre=[0, 0, 0])
+            self.assertError(r"size is a light field: lights <light>, size=0\.3 "
+                             r"\(the rig's size is captured from the molecules; 'lights recenter' captures it again\)",
+                             cmd.lights, size=0.3)
             self.assertError(r'aim_point is set by aim=', cmd.lights,
                              aim_point=[1, 2, 3])
             self.assertError(r'haze is an atmosphere field: atmosphere '
@@ -831,6 +835,19 @@ class TestRigFields(CommandsCase):
                              cmd.lights, ambient=float('inf'))
             self.assertError(r'ambient is given twice', cmd.lights,
                              ambient=0.1, Ambient=0.2)
+
+    def testLightSizeField(self):
+        self.load()
+        cmd.lights('three_point')
+        cmd.lights('key', size=0.3)
+        self.assertAlmostEqual(cmd.get_lights()['lights'][0]['size'], 0.3)
+        # lights size=0.3 errors with both hints
+        msg = self.assertError(r'size is a light field', cmd.lights, size=0.3)
+        self.assertIn('recenter', msg)
+        self.assertIn('lights <light>, size=', msg)
+        # the listing shows size
+        _, text = output(cmd.lights, 'key')
+        self.assertIn('size 0.3', text)
 
 
 # --- atmosphere -------------------------------------------------------------
@@ -1739,7 +1756,7 @@ class TestErrors(CommandsCase):
                          'key', enabled=1)
         self.assertError(r'key: centre is captured', cmd.lights, 'key',
                          centre=[0, 0, 0])
-        self.assertError(r'key: size is captured', cmd.lights, 'key', size=3)
+        self.assertError(r'key: size=3 is out of range 0 to 1', cmd.lights, 'key', size=3)
         self.assertError(r'key: orbit= needs a value', cmd.lights, 'key',
                          orbit='')
 

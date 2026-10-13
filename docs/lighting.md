@@ -204,6 +204,7 @@ field, still accepted.
 | `falloff` | | 0 to 2 | 2 | Brightness goes as (aim distance / distance)^falloff: 2 is inverse square, 0 none. |
 | `shadow` | | 0 or 1 | 0 | The light casts its own shadow (at most 3 lights do). `lights add` and the + button give a new light `shadow=1` while fewer than 3 lights cast shadows; `shadow=0` on `lights add` wins. |
 | `outline` | `cue` | 0 or 1 | 0 | Draw the beam's edge on the molecules. |
+| `size` | | 0 to 1, scene sizes | 0 | Light source radius in scene sizes; softens shadows in ray-traced Mac renders (`metal_raytrace 1`). No effect on raster renders or on iOS. |
 | `aim` | | `centre`, a point or a selection | centre | Where the light points: the rig centre, a world point `x/y/z` in Å, or a selection's centroid (resolved once). |
 | `anchor` | | `camera` or `pinned` | camera | Whether the light follows the camera or stays put in the scene. |
 | `pin` | | 0 or 1 | | `pin=1` pins the light where it is now; `pin=0` makes it a camera light again (stored as `anchor`). |
@@ -484,6 +485,32 @@ is (see below).
   platform default (2048 on the Mac, 1024 on iOS); other values are clamped
   to 256 to 4096 (256 to 2048 on iOS) and rounded down to a power of two.
 
+### Soft shadows (Mac, ray tracing)
+
+A light's `size` is its source radius in scene sizes (multiples of the rig's
+`size`, like `radius`), from 0 to 1, default 0 (sharp). On a Mac with Metal ray
+tracing on (`metal_raytrace 1`), a light with `shadow` on, the scene's
+`metal_shadows` on and `size > 0` gets its shadow on opaque surfaces from
+shadow rays traced towards a disc of that radius around the light (an area
+light), instead of its shadow map. Small size: sharp shadow; large size: soft
+penumbra.
+
+- **Tracing and sample budget.** Tracing runs 8 rays per traced light per pixel
+  live at `metal_rt_scale`, and 16 rays per light in exports. Traced reflection
+  hits trace the shadowed lights too, with 1 ray per light live and 4 in exports.
+- **Denoising.** The pass uses frame-stable rotated Hammersley disc samples
+  combined with the ambient-occlusion pass's 5×5 depth-aware bilateral blur to
+  smooth penumbrae across object surfaces.
+- **Opaque casters and receivers only.** Opaque geometry casts and receives the
+  traced soft shadows. Transparent surfaces (OIT glass and jelly) and the haze
+  keep the shadow maps, and a transparent caster does not darken a traced soft
+  shadow (with `metal_rt_transparent` on, its shadow from a light of size 0
+  still comes from the map).
+- **Raster renders and iOS keep hard maps.** On iPhone and iPad, and on any
+  raster render without ray tracing, `size` has no visible effect: shadows stay
+  sharp from their shadow maps (as the iOS inspector notes). Size 0 renders
+  identically everywhere.
+
 ```pymol
 lights three_point
 lights rim, shadow=1
@@ -578,8 +605,8 @@ beside a pitch arc for the selected light.
 **The inspector.** It sits under the orbit view and holds the selected
 light's exact values: **Orbit** and **Pitch** (a dial, a field and a stepper:
 the stepper moves 5 degrees, and the Up and Down arrow keys in a field 1
-degree), sliders for **Radius**, **Intensity**, **Warmth**, **Beam** and
-**Softness**, colour swatches and a picker, the **Shadow** and **Pin**
+degree), sliders for **Radius**, **Intensity**, **Warmth**, **Beam**,
+**Softness** and **Size**, colour swatches and a picker, the **Shadow** and **Pin**
 toggles, **Revert this light** and **Delete**. A Shadow press on a fourth
 light says that at most 3 lights cast shadows; when the scene's **Shadows**
 switch is off, a hint offers **Turn On**.
@@ -777,6 +804,7 @@ the statistics afresh.
 - `metal_light_air_shadow_filter` (1, one tap);
 - `metal_light_hdr 2` (the 8-bit knee);
 - fewer shadowed lights.
+- Traced soft shadows (`size > 0`, #741) run on RT-capable Macs only; size 0 costs nothing, and iOS keeps the shadow maps.
 
 **Launch switches.** For calibrating the dust's redraw rate, the app reads
 two environment variables once at launch:
@@ -794,10 +822,10 @@ The iOS defaults (1024 shadow maps, half-resolution air, one tap, HDR on,
 Open follow-ups of the lighting work (#610) that you may notice:
 
 - **Shadows.** Bezier tube cartoons neither cast nor receive studio shadows
-  (#663). Traced reflection hits are not studio-shadowed (#664) and take the
-  `default` material's light response (#709). Shadows have one softness, set
-  by the 3x3 filter; soft shadows from a light's size are planned (#741,
-  #742).
+  (#663). Traced reflection hits are shadowed by the studio lights under
+  ray tracing (#846), with soft shadows following light size (#741). On iOS
+  and raster renders, shadows have one softness, set by the 3x3 filter; traced
+  soft shadows are Mac RT-only (#741).
 - **Overlays.** The Lights-mode overlays never cast, but the Move gizmo and
   gadgets still enter PyMOL's classic Metal shadow pre-pass and the
   ray-tracing structure (#662), and a rig created while the Move gizmo is

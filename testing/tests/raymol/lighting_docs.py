@@ -117,6 +117,7 @@ LABELS = {
     'Warmth': os.path.join(SHARED, 'LightsEditing.swift'),
     'Beam': os.path.join(SHARED, 'LightsEditing.swift'),
     'Softness': os.path.join(SHARED, 'LightsEditing.swift'),
+    'Size': os.path.join(SHARED, 'LightsEditing.swift'),
     'Shadow': os.path.join(SHARED, 'LightsInspector.swift'),
     'Pin': os.path.join(SHARED, 'LightsInspector.swift'),
     'Turn On': os.path.join(SHARED, 'LightsInspector.swift'),

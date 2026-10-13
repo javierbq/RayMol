@@ -53,6 +53,8 @@ struct LightRigSnapshot: Decodable, Equatable {
         /// Full cone, degrees.
         var beam: Double
         var softness: Double
+        /// Light source radius in rig sizes; softens shadows in Mac ray-traced renders (#741).
+        var size: Double = 0
         /// sRGB, 0...1.
         var color: SIMD3<Double>
         /// Kelvin.
@@ -65,7 +67,7 @@ struct LightRigSnapshot: Decodable, Equatable {
 
         enum CodingKeys: String, CodingKey {
             case name, anchor, orbit, pitch, radius, position, aim
-            case beam, softness, color, warmth, intensity, highlight, falloff
+            case beam, softness, size, color, warmth, intensity, highlight, falloff
             case shadow, outline
             case aimPoint = "aim_point"
             case aimSelection = "aim_selection"

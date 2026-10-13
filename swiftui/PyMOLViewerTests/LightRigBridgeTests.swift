@@ -132,15 +132,15 @@ final class LightRigBridgeTests: XCTestCase {
              "air":{"haze":0.25,"dust":0.0,"dust_size":0.35,"dust_speed":1.0,"scatter":0.55,"seed":3,"dust_glow":1.0,"dust_opacity":0.0},
              "lights":[
               {"name":"key","anchor":"camera","orbit":-45.0,"pitch":35.0,"radius":4.0,"position":[0.0,0.0,0.0],
-               "aim":"centre","aim_point":[0.0,0.0,0.0],"aim_selection":"","beam":45.0,"softness":0.4,
+               "aim":"centre","aim_point":[0.0,0.0,0.0],"aim_selection":"","beam":45.0,"softness":0.4,"size":0.25,
                "color":[1.0,1.0,1.0],"warmth":6500.0,"intensity":1.0,"highlight":0.5,"falloff":2.0,
                "shadow":true,"outline":false},
               {"name":"fill","anchor":"camera","orbit":60.0,"pitch":10.0,"radius":3.0,"position":[0.0,0.0,0.0],
-               "aim":"point","aim_point":[1.0,2.0,3.0],"aim_selection":"organic","beam":90.0,"softness":0.8,
+               "aim":"point","aim_point":[1.0,2.0,3.0],"aim_selection":"organic","beam":90.0,"softness":0.8,"size":0.0,
                "color":[0.5,0.75,1.0],"warmth":4000.0,"intensity":0.5,"highlight":0.25,"falloff":1.0,
                "shadow":false,"outline":false},
               {"name":"rim","anchor":"pinned","orbit":0.0,"pitch":30.0,"radius":4.0,"position":[5.0,6.0,-7.0],
-               "aim":"centre","aim_point":[0.0,0.0,0.0],"aim_selection":"","beam":30.0,"softness":0.1,
+               "aim":"centre","aim_point":[0.0,0.0,0.0],"aim_selection":"","beam":30.0,"softness":0.1,"size":0.0,
                "color":[1.0,0.9,0.8],"warmth":9000.0,"intensity":2.0,"highlight":1.0,"falloff":0.0,
                "shadow":false,"outline":true}]}
             """
@@ -155,6 +155,8 @@ final class LightRigBridgeTests: XCTestCase {
         XCTAssertEqual(rig.lights.map(\.aim), [.centre, .point, .centre])
         XCTAssertEqual(rig.lights[0].orbit, -45)
         XCTAssertTrue(rig.lights[0].shadow)
+        XCTAssertEqual(rig.lights[0].size, 0.25)
+        XCTAssertEqual(rig.lights[1].size, 0.0)
         XCTAssertEqual(rig.lights[1].aimPoint, SIMD3(1, 2, 3))
         XCTAssertEqual(rig.lights[1].aimSelection, "organic")
         XCTAssertEqual(rig.lights[1].color, SIMD3(0.5, 0.75, 1.0))
