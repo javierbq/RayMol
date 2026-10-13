@@ -40,3 +40,19 @@
 @media (max-width: 50rem) {
   .sl-markdown-content .media-grid { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* Landing-page feature cards: the whole card is clickable via its link. */
+.sl-markdown-content .card { position: relative; }
+.sl-markdown-content .card .card-link {
+  font-weight: 600;
+  text-decoration: none;
+  color: var(--sl-color-text-accent);
+}
+.sl-markdown-content .card .card-link::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+}
+.sl-markdown-content .card:has(.card-link):hover {
+  border-color: var(--sl-color-text-accent);
+}
