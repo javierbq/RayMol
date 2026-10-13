@@ -2875,6 +2875,7 @@ void SceneRenderMetal(PyMOLGlobals* G)
     // Studio shadows (#616): whether they are on (the whole-pixel shadow is
     // then off) and each map's size. Two scalars; false and 0 with no rig.
     G->Renderer->setLightShadowFrame(lights.studioShadows, lights.shadowMapSize);
+    G->Renderer->setLightSoftShadows(lights.softRadius.data());
     // GPU frame times (#616, metal_gpu_timing; with or without a rig, so
     // #623 can time the frame without one too). At 0, the default, the
     // renderer adds nothing to the frame.

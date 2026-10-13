@@ -80,7 +80,6 @@ _CAPTURED = ("is captured from the molecules; 'lights recenter' captures "
 SET_ELSEWHERE = {
     'enabled': "is set by 'lights on' and 'lights off'",
     'centre': _CAPTURED,
-    'size': _CAPTURED,
     'version': 'is not a field (get_lights reports the format version)',
     'aim_point': 'is set by aim= (centre, a point x/y/z or a selection) and '
                  'the placement helpers',
@@ -430,6 +429,10 @@ def _field_error(where, name, value, table, context):
             return _error(where, '%s is a light field: apply the preset, '
                           'then edit a light (lights <name>, %s=%s)' % (
                               name, name, _shown(value)))
+        if name == 'size':
+            return _error(where, "size is a light field: lights <light>, "
+                          "size=%s (the rig's size %s)" % (
+                              _shown(value), _CAPTURED))
         return _error(where, 'which light? %s is a light field: '
                       'lights <name>, %s=%s or lights add, <name>, %s=%s' % (
                           name, name, _shown(value), name, _shown(value)))
@@ -1468,8 +1471,8 @@ def _light_lines(light, eye, size):
         aim = 'aim centre'
     return [
         '   %s%s: %s, %s' % (name, tag, place, aim),
-        '      beam %s, softness %s, color %s, warmth %s, intensity %s' % (
-            _g(light['beam']), _g(light['softness']),
+        '      beam %s, softness %s, size %s, color %s, warmth %s, intensity %s' % (
+            _g(light['beam']), _g(light['softness']), _g(light['size']),
             '/'.join(_g(c) for c in light['color']), _g(light['warmth']),
             _g(light['intensity'])),
         '      highlight %s, falloff %s, shadow %s, outline %s' % (
@@ -1600,6 +1603,9 @@ LIGHT FIELDS
     beam             degrees, full cone, 1 to 170, default 45; it stays
                      fixed when radius changes
     softness (soft)  fraction of the cone that fades out, 0 to 1, default 0.4
+    size             light source radius in scene sizes, 0 to 1, default 0
+                     (sharp). Softens shadows only in ray-traced Mac renders
+                     (metal_raytrace 1).
     color (colour)   sRGB, each channel 0 to 1, default white: a PyMOL
                      colour name, 0xRRGGBB or r/g/b. color=warm, neutral
                      or cool set white with warmth 3200, 6500 or 9000 K.

@@ -148,6 +148,7 @@ const std::vector<LightField>& LightRigFields()
       F(I::Falloff, S::Light, "falloff", K::Float, 0.0, 2.0),
       U(I::Shadow, S::Light, "shadow", K::Bool),
       U(I::Outline, S::Light, "outline", K::Bool),
+      F(I::LightSize, S::Light, "size", K::Float, 0.0, 1.0),
   };
   return fields;
 }
@@ -256,6 +257,8 @@ LightValue LightFieldGet(const Light& light, const LightField& field)
     return scalar(light.shadow ? 1.0 : 0.0);
   case I::Outline:
     return scalar(light.outline ? 1.0 : 0.0);
+  case I::LightSize:
+    return scalar(light.size);
   default:
     assert(!"not a light field");
     return {};
@@ -428,6 +431,9 @@ void LightFieldPut(Light& light, const LightField& field, const LightValue& in)
     break;
   case I::Outline:
     light.outline = v != 0.0;
+    break;
+  case I::LightSize:
+    light.size = v;
     break;
   default:
     assert(!"not a light field");
@@ -738,6 +744,7 @@ LightRig LightRigBlend(const LightRig& a, const LightRig& b, double e)
       Light outL = la;
       outL.beam = lerp(la.beam, lb.beam, e);
       outL.softness = lerp(la.softness, lb.softness, e);
+      outL.size = lerp(la.size, lb.size, e);
       outL.highlight = lerp(la.highlight, lb.highlight, e);
       outL.falloff = lerp(la.falloff, lb.falloff, e);
       outL.warmth = lerp(la.warmth, lb.warmth, e);

@@ -5650,6 +5650,19 @@ static PyObject* CmdLightShadowMapSize(PyObject* self, PyObject* args)
   return PyLong_FromLong(pymol::LightShadowMapSize(setting, mobile != 0));
 }
 
+/// LightSoftRadius(size, rig_size, shadow, mobile): float (#741)
+static PyObject* CmdLightSoftRadius(PyObject* self, PyObject* args)
+{
+  PyMOLGlobals* G = nullptr;
+  double size = 0.0, rig_size = 0.0;
+  int shadow = 1, mobile = 0;
+  API_SETUP_ARGS(G, self, args, "Oddpp", &self, &size, &rig_size, &shadow, &mobile);
+  pymol::Light light;
+  light.size = size;
+  light.shadow = (shadow != 0);
+  return PyFloat_FromDouble(pymol::LightSoftRadius(light, rig_size, mobile != 0));
+}
+
 /// LightShadowTileRect(cell, tiles, size): {'x', 'y', 'size', 'uv'}.
 static PyObject* CmdLightShadowTile(PyObject* self, PyObject* args)
 {
@@ -8143,6 +8156,7 @@ static PyMethodDef Cmd_methods[] = {
   {"light_warmth_rgb", CmdLightWarmthRGB, METH_VARARGS},
   {"light_shadow_frustum", CmdLightShadowFrustum, METH_VARARGS},
   {"light_shadow_map_size", CmdLightShadowMapSize, METH_VARARGS},
+  {"light_soft_radius", CmdLightSoftRadius, METH_VARARGS},
   {"light_shadow_tile", CmdLightShadowTile, METH_VARARGS},
   {"get_light_shadow_casters", CmdGetLightShadowCasters, METH_VARARGS},
   {"gpu_time_summary", CmdGpuTimeSummary, METH_VARARGS},

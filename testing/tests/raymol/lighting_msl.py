@@ -1524,15 +1524,15 @@ class TestRayTracedReflections(LightMSLCase):
                                        r'function_constant\(3\)\s*\]\];')
         self.assertNotRegex(self.rt_code, r'\bkLightRig\b')
         frags = fragments(self.rt)
-        self.assertEqual(sorted(frags), ['rt_ao', 'rt_composite'])
+        self.assertEqual(sorted(frags), ['rt_ao', 'rt_composite', 'rt_light_soft'])
         sig, body = frags['rt_composite']
         self.assertRegex(sig, RT_RIG_ARGUMENT)
         self.assertRegex(sig, r'depth2d_array<float>\s+lightShadowMaps\s*\[\[\s*'
                               r'texture\(5\)\s*,\s*function_constant\(kRTLightShadow\)\s*\]\]')
         self.assertNotRegex(frags['rt_ao'][0] + frags['rt_ao'][1],
                             r'LightRigU|kRTLightRig|\brig\b|rt_rig_hit|lightShadowMaps|kRTLightShadow|_shadowed')
-        # buffer(13) is the rig's alone
-        self.assertEqual(len(re.findall(r'buffer\(13\)', self.rt_code)), 1)
+        # buffer(13) is the rig's alone (in rt_composite and rt_light_soft)
+        self.assertEqual(len(re.findall(r'buffer\(13\)', self.rt_code)), 2)
         # every rig statement under the constant, and what is left is free of
         # the rig: the classic specialisation is today's composite
         guards = RT_RIG_GUARD.findall(body)
@@ -1544,6 +1544,10 @@ class TestRayTracedReflections(LightMSLCase):
                             r'col\s*=\s*light_curve\(light_curve_inverse\(col,\s*u\.aoAces\)\s*\*\s*\(ao\s*\*\s*shade\),\s*u\.aoAces\);')
         self.assertEqual(len(hdr_ao.findall(classic)), 1)
         classic = hdr_ao.sub('', classic, count=1)
+        # #741: traced soft shadows
+        soft_ao = re.compile(r'if\s*\(\s*kRTLightSoft\s*&&\s*light_finite3\(softR\)\s*\)\s*\{.*?\}', re.S)
+        self.assertEqual(len(soft_ao.findall(classic)), 1)
+        classic = soft_ao.sub('', classic, count=1)
         self.assertFalse(re.findall(r'\brig\b|rt_rig_hit|light_\w+|LightTerms|rt_hit_albedo|rt_hit_material|RTHitMaterial',
                                     classic))
         # 1: the opaque hit, after its classic colour, before the fog
@@ -1551,11 +1555,14 @@ class TestRayTracedReflections(LightMSLCase):
                         r'if\s*\(\s*kRTLightRig\s*\)\s*\{\s*'
                         r'const\s+float3\s+ha\s*=\s*rt_hit_albedo\(hc,\s*hn,\s*R,\s*hitP,\s*rt_hit_material\(mats,\s*hmi,\s*u\.matCount\),\s*'
                         r'u\.projOrtho\s*>\s*0\.5\s*\?\s*pxSize\s*:\s*pxSize\s*\*\s*\(dEye0\s*\+\s*res\.distance\)\);\s*'
-                        r'reflCol\s*=\s*kRTLightShadow\s*\?\s*'
+                        r'reflCol\s*=\s*kRTLightSoft\s*\?\s*'
+                        r'rt_rig_hit_soft\(rig,\s*u,\s*soft,\s*accel,\s*mask,\s*rot,\s*reflCol,\s*ha,\s*hitP,\s*hn,\s*R,\s*'
+                        r'rt_hit_response\(mats,\s*hmi,\s*u\.matCount\)\)\s*:\s*'
+                        r'\(kRTLightShadow\s*\?\s*'
                         r'rt_rig_hit_shadowed\(rig,\s*u,\s*lightShadowMaps,\s*shadowSamp,\s*reflCol,\s*ha,\s*hitP,\s*hn,\s*R,\s*'
                         r'rt_hit_response\(mats,\s*hmi,\s*u\.matCount\)\)\s*:\s*'
                         r'rt_rig_hit\(rig,\s*u,\s*reflCol,\s*ha,\s*hitP,\s*hn,\s*R,\s*'
-                        r'rt_hit_response\(mats,\s*hmi,\s*u\.matCount\)\);\s*\}\s*'
+                        r'rt_hit_response\(mats,\s*hmi,\s*u\.matCount\)\)\);\s*\}\s*'
                         r'reflCol\s*=\s*mix\(reflCol,\s*envCol,', body)
         self.assertIsNotNone(hit)
         # 2: the transparent layer in front of it (kRTTrans), likewise
@@ -1566,17 +1573,21 @@ class TestRayTracedReflections(LightMSLCase):
                           r'const\s+LightResponse\s+tresp\s*=\s*rt_hit_response\(tmats,\s*tmi,\s*u\.tMatCount\);\s*'
                           r'const\s+float3\s+tp\s*=\s*tr\.origin\s*\+\s*R\s*\*\s*th\.distance;\s*'
                           r'if\s*\(\s*tm\.family\s*==\s*kRTFamilyGlass\s*&&\s*tm\.mode\s*!=\s*kMatMode_jelly\s*\)\s*\{\s*'
-                          r'const\s+float4\s+gc\s*=\s*kRTLightShadow\s*\?\s*'
+                          r'const\s+float4\s+gc\s*=\s*kRTLightSoft\s*\?\s*'
+                          r'rt_rig_glass_hit_soft\(rig,\s*u,\s*soft,\s*accel,\s*mask,\s*rot,\s*tcol,\s*tc\.rgb,\s*tp,\s*hn,\s*R,\s*tresp,\s*ta,\s*tm\.p\[0\]\)\s*:\s*'
+                          r'\(kRTLightShadow\s*\?\s*'
                           r'rt_rig_glass_hit_shadowed\(rig,\s*u,\s*lightShadowMaps,\s*shadowSamp,\s*tcol,\s*tc\.rgb,\s*tp,\s*hn,\s*R,\s*tresp,\s*ta,\s*tm\.p\[0\]\)\s*:\s*'
-                          r'rt_rig_glass_hit\(rig,\s*u,\s*tcol,\s*tc\.rgb,\s*tp,\s*hn,\s*R,\s*tresp,\s*ta,\s*tm\.p\[0\]\);\s*'
+                          r'rt_rig_glass_hit\(rig,\s*u,\s*tcol,\s*tc\.rgb,\s*tp,\s*hn,\s*R,\s*tresp,\s*ta,\s*tm\.p\[0\]\)\);\s*'
                           r'tcol\s*=\s*gc\.rgb;\s*'
                           r'ta\s*=\s*gc\.a;\s*'
                           r'\}\s*else\s*\{\s*'
                           r'const\s+float3\s+talb\s*=\s*rt_hit_albedo\(tc\.rgb,\s*hn,\s*R,\s*tp,\s*tm,\s*'
                           r'u\.projOrtho\s*>\s*0\.5\s*\?\s*pxSize\s*:\s*pxSize\s*\*\s*\(dEye0\s*\+\s*th\.distance\)\);\s*'
-                          r'tcol\s*=\s*kRTLightShadow\s*\?\s*'
+                          r'tcol\s*=\s*kRTLightSoft\s*\?\s*'
+                          r'rt_rig_hit_soft\(rig,\s*u,\s*soft,\s*accel,\s*mask,\s*rot,\s*tcol,\s*talb,\s*tp,\s*hn,\s*R,\s*tresp\)\s*:\s*'
+                          r'\(kRTLightShadow\s*\?\s*'
                           r'rt_rig_hit_shadowed\(rig,\s*u,\s*lightShadowMaps,\s*shadowSamp,\s*tcol,\s*talb,\s*tp,\s*hn,\s*R,\s*tresp\)\s*:\s*'
-                          r'rt_rig_hit\(rig,\s*u,\s*tcol,\s*talb,\s*tp,\s*hn,\s*R,\s*tresp\);\s*'
+                          r'rt_rig_hit\(rig,\s*u,\s*tcol,\s*talb,\s*tp,\s*hn,\s*R,\s*tresp\)\);\s*'
                           r'\}\s*\}\s*'
                           r'tcol\s*=\s*mix\(tcol,\s*envCol,\s*saturate\(th\.distance\s*/\s*120\.0\)\);\s*'
                           r'reflCol\s*=\s*mix\(reflCol,\s*tcol,\s*ta\);', body)
@@ -1803,26 +1814,27 @@ class TestRayTracedReflections(LightMSLCase):
                       build)
         for released in ('[fc release];', '[pd release];', '[vtx release];', '[fco release];'):
             self.assertIn(released, variant)
-        # #624 (re-taken): the rig composites are [transparent][hdr][shadow], every
+        # #624, #741: the rig composites are [transparent][hdr][shadow][soft], every
         # slot released
         dtor = cpp_function(self.mm, 'RendererMetal::~RendererMetal')
         self.assertRegex(dtor, r'for \(int t = 0; t < 2; \+\+t\)\s*'
                                r'for \(int h = 0; h < 2; \+\+h\)\s*'
                                r'for \(int s = 0; s < 2; \+\+s\)\s*'
-                               r'\[_rtResolvePipelineRig\[t\]\[h\]\[s\] release\];')
+                               r'for \(int so = 0; so < 2; \+\+so\)\s*'
+                               r'\[_rtResolvePipelineRig\[t\]\[h\]\[s\]\[so\] release\];')
 
     def testRigCompositeChosenAndBoundOnlyWhenOn(self):
         code = strip_comments(self.mm)
-        # one binding, under rtRig; one builder call, under the rig and a
-        # reflective frame; one attempt per variant
-        self.assertEqual(code.count('atIndex:kRTLightRigBufferIndex'), 1)
-        self.assertEqual(len(re.findall(r'(?<!::)buildRTRigComposite\(', code)), 1)
+        # two bindings (soft pass and composite), under rtRig / doSoft; two builder calls (variant and fallback);
+        # one attempt per variant
+        self.assertEqual(code.count('atIndex:kRTLightRigBufferIndex'), 2)
+        self.assertEqual(len(re.findall(r'(?<!::)buildRTRigComposite\(', code)), 2)
         post = cpp_function(self.mm, 'RendererMetal::runPostChain')
         start = post.index('id<MTLRenderPipelineState> composite =')
         self.assertRegex(post[start:], r'^id<MTLRenderPipelineState> composite =\s*'
                                        r'doRTTrans \? _rtResolvePipelineT : _rtResolvePipeline;'
                                        r'\s*bool rtRig = false;')
-        block = re.search(r'if\s*\(\s*_lightRigOn\s*&&\s*u\.matCount\s*>\s*0\.5f\s*\)\s*\{',
+        block = re.search(r'if\s*\(\s*_lightRigOn\s*&&\s*\(u\.matCount\s*>\s*0\.5f\s*\|\|\s*doSoft\)\s*\)\s*\{',
                           post)
         self.assertIsNotNone(block)
         end = match_brace(post, block.end() - 1)
@@ -1830,21 +1842,22 @@ class TestRayTracedReflections(LightMSLCase):
         self.assertIn('*tried = true;', inside)
         self.assertLess(inside.index('*tried = true;'), inside.index('buildRTRigComposite('))
         self.assertIn('rtRig = true;', inside)
-        self.assertEqual(len(re.findall(r'rtRig\s*=\s*true', post)), 1)
+        self.assertEqual(len(re.findall(r'rtRig\s*=\s*true', post)), 2)
         self.assertEqual(len(re.findall(r'\[er setRenderPipelineState:', post)), 1)
         self.assertIn('[er setRenderPipelineState:composite];', post)
         # which composite variant the rig path uses (613-R2-3): the transparent
         # or default pipeline slot, flag and builder argument all follow
         # doRTTrans; and (#624, re-taken) the HDR or knee slot, flag and
         # argument all follow _lightHdrOn; and (#664) the shadow slot follows
-        # rtShadow
+        # rtShadow; and (#741) the soft slot follows doSoft
         self.assertRegex(inside, r'const int rigT = doRTTrans \? 1 : 0;\s*'
                                  r'const int rigH = _lightHdrOn \? 1 : 0;\s*'
-                                 r'rigS = rtShadow \? 1 : 0;')
-        self.assertRegex(inside, r'rigComposite\s*=\s*&_rtResolvePipelineRig\[rigT\]\[rigH\]\[rigS\];')
-        self.assertRegex(inside, r'tried\s*=\s*&_rtRigTried\[rigT\]\[rigH\]\[rigS\];')
+                                 r'rigS = rtShadow \? 1 : 0;\s*'
+                                 r'const int rigSoft = doSoft \? 1 : 0;')
+        self.assertRegex(inside, r'rigComposite\s*=\s*&_rtResolvePipelineRig\[rigT\]\[rigH\]\[rigS\]\[rigSoft\];')
+        self.assertRegex(inside, r'tried\s*=\s*&_rtRigTried\[rigT\]\[rigH\]\[rigS\]\[rigSoft\];')
         self.assertRegex(inside, r'\*rigComposite\s*=\s*buildRTRigComposite\(doRTTrans, '
-                                 r'_lightHdrOn,\s*rtShadow\);')
+                                 r'_lightHdrOn,\s*rtShadow,\s*doSoft\);')
         builder = cpp_function(self.mm, 'RendererMetal::buildRTRigComposite')
         self.assertRegex(builder, r'bool t = transparent;\s*\[fc setConstantValue:&t '
                                   r'type:MTLDataTypeBool atIndex:0\];')

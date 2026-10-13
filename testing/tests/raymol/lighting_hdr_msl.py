@@ -118,7 +118,7 @@ MASTER_054B525 = {
     'kMaterialImpostorSrc': '10727f58afb05138',  # #710: the rig lights the material's albedo
     'kMaterialSrc': '98346bdc0203becb',  # #739: NaN guards as bit tests (light_finite); #710: the rig lights the material's albedo
     'kPostSrc': '1ed0138bf670bdba',  # #689: post_ssao_fog fades toward the bg_gradient; #732: AO in scene units under an HDR rig; #852: AO and the cast shadow in scene units under an HDR rig; #735: ACES as the rig's scene-unit curve
-    'kRTSrc': 'ab37f303f10f2682',  # #739: NaN guards as bit tests (light_finite); #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps; #729: rt_reflect_tint keeps the metallic tint's hue under HDR; #732: AO in scene units under an HDR rig; #709: traced reflection hits take their material's studio response; #852: AO and the cast shadow in scene units under an HDR rig; #855: traced hits take the transparent table, the procedural albedo and the glass glints; #668: rt_tri_normal_smooth averages only connected neighbours on the same smooth surface; #735: ACES as the rig's scene-unit curve
+    'kRTSrc': 'd6c7f66af2375d79',  # #739: NaN guards as bit tests (light_finite); #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps; #729: rt_reflect_tint keeps the metallic tint's hue under HDR; #732: AO in scene units under an HDR rig; #709: traced reflection hits take their material's studio response; #852: AO and the cast shadow in scene units under an HDR rig; #855: traced hits take the transparent table, the procedural albedo and the glass glints; #668: rt_tri_normal_smooth averages only connected neighbours on the same smooth surface; #735: ACES as the rig's scene-unit curve; #741: traced soft shadows from light size
     'kScreenOverlaySrc': '9f09ecbdd4a9ddfa',  # #689: ramp gadgets drawn after the post chain
     # #635: retaken after sphere glass coverage split; #710: the rig lights
     # the material's albedo
@@ -141,7 +141,7 @@ EDIT_COUNTS = {
     'kMaterialSrc': {'functions': 12, 'declarations': 9, 'finish_signature': 1,
                      'finish_body': 1, 'apply_exposure': 2, 'glints_body': 1},
     'kRTSrc': {'functions': 12, 'declarations': 9, 'finish_signature': 1,
-               'finish_body': 1, 'hit_exposure': 2, 'glints_body': 1},  # #855; #735: the ACES helpers
+               'finish_body': 1, 'hit_exposure': 3, 'glints_body': 1},  # #855; #735: the ACES helpers; #741
     'kPostSrc': {'functions': 11, 'declarations': 8},  # #732, #735: the tone and ACES helpers for HDR AO
     'kVBOSrc': {'vbo_cover': 1},
     'kCylinderImpostorSrc': {'cyl_cover': 1},
@@ -188,7 +188,8 @@ AIR_FINISH = (
 MATERIAL_SPECIALISERS = ('RendererMetal::materialFragmentFunction',
                          'bezierTubeRigFunction', 'airFunction')
 RT_SPECIALISERS = ('RendererMetal::buildRTPipelines',
-                   'RendererMetal::buildRTRigComposite')
+                   'RendererMetal::buildRTRigComposite',
+                   'RendererMetal::ensureRTSoftPipeline')
 # The libraries built with kMaterialSrc (and kMaterialImpostorSrc for the
 # impostors): their functions can reach the light helpers.
 MATERIAL_LIBRARIES = ('kVBOSrc', 'kSphereImpostorSrc', 'kCylinderImpostorSrc',
@@ -431,9 +432,9 @@ class TestShaders(HdrMSLCase):
         for lib in self.msl:
             code = squash(strip_comments(self.msl[lib]))
             calls = len(re.findall(r'(?<!static)(?<!float4)light_glass_cover\(', code))
-            # #635: kSphereImpostorSrc now has 1 call to light_glass_cover; #855: kRTSrc has 2
+            # #635: kSphereImpostorSrc now has 1 call to light_glass_cover; #855, #741: kRTSrc has 3
             self.assertEqual(calls, {'kVBOSrc': 1, 'kCylinderImpostorSrc': 1,
-                                     'kSphereImpostorSrc': 1, 'kRTSrc': 2}.get(lib, 0),
+                                     'kSphereImpostorSrc': 1, 'kRTSrc': 3}.get(lib, 0),
                              lib)
         # the classic glints' own curve (mat_glass_shade) is a material law
         _, shade = self.fn(self.material, 'mat_glass_shade')
@@ -686,16 +687,18 @@ class TestSpecialisers(HdrMSLCase):
                                         r'bool lightHdr\)' % name)
         # the classic RT pipelines never; the rig composite as its caller asks
         for name, value in (('RendererMetal::buildRTPipelines', 'false'),
-                            ('RendererMetal::buildRTRigComposite', 'hdr')):
+                            ('RendererMetal::buildRTRigComposite', 'hdr'),
+                            ('RendererMetal::ensureRTSoftPipeline', 'false')):
             fn = cpp_function(self.mm, name)
             self.assertEqual(self.setting(fn, 'kRTLightHdrConstantIndex'), value, name)
         for name, value in (('RendererMetal::buildRTPipelines', 'false'),
-                            ('RendererMetal::buildRTRigComposite', 'shadow')):
+                            ('RendererMetal::buildRTRigComposite', 'shadow'),
+                            ('RendererMetal::ensureRTSoftPipeline', 'false')):
             fn = cpp_function(self.mm, name)
             self.assertEqual(self.setting(fn, 'kRTLightShadowConstantIndex'), value, name)
         self.assertRegex(self.code, r'RendererMetal::buildRTRigComposite\(bool transparent, '
-                                    r'bool hdr, bool shadow\)')
-        self.assertRegex(self.header, r'buildRTRigComposite\(bool transparent, bool hdr, bool shadow\);')
+                                    r'bool hdr, bool shadow, bool soft\)')
+        self.assertRegex(self.header, r'buildRTRigComposite\(bool transparent, bool hdr, bool shadow, bool soft\);')
         # no other specialisation of these libraries: each site sets both
         # constants, and every one is in a function named above
         self.assertEqual(self.code.count('atIndex:kLightHdrConstantIndex]'),
@@ -754,7 +757,8 @@ class TestSpecialisers(HdrMSLCase):
         # frame's choice
         rt = [squash(r) for r in re.findall(r'(?<![\w:])buildRTRigComposite\(([^;]*)\);',
                                             code)]
-        self.assertEqual(rt, ['doRTTrans,_lightHdrOn,rtShadow'])
+        self.assertEqual(rt, ['doRTTrans,_lightHdrOn,rtShadow,doSoft',
+                              'doRTTrans,_lightHdrOn,rtShadow,false'])
 
     def testNothingUnspecialisedReachesIt(self):
         """A function fetched with plain newFunctionWithName: never reads
@@ -815,10 +819,10 @@ class TestCaches(HdrMSLCase):
                             r' = \{\};')
         # one tried flag for both tube variants
         self.assertRegex(h, r'bool _bezierTubeRigTried = false;')
-        # Part 5: the RT rig composites and their tried flags [transparent][hdr][shadow] (#664)
-        self.assertRegex(h, r'id<MTLRenderPipelineState> _rtResolvePipelineRig\[2\]\[2\]\[2\]'
+        # Part 5: the RT rig composites and their tried flags [transparent][hdr][shadow][soft] (#664, #741)
+        self.assertRegex(h, r'id<MTLRenderPipelineState> _rtResolvePipelineRig\[2\]\[2\]\[2\]\[2\]'
                             r' = \{\};')
-        self.assertRegex(h, r'bool _rtRigTried\[2\]\[2\]\[2\] = \{\};')
+        self.assertRegex(h, r'bool _rtRigTried\[2\]\[2\]\[2\]\[2\] = \{\};')
         self.assertNotRegex(h, r'_rtResolvePipelineTRig|_rtRigTTried')
         # Part 5: the air's composites [hdr], the march and the attempt single
         for member in ('_airFullPipeline', '_airUpsamplePipeline'):
@@ -974,8 +978,9 @@ class TestCaches(HdrMSLCase):
         self.assertEqual(build.count('[_rtLib newFunctionWithName:'), 2)
         self.assertIn('hdr ? " HDR" : ""', build)
         self.assertIn('shadow ? " shadow" : ""', build)
+        self.assertIn('soft ? " soft" : ""', build)
         post = cpp_function(self.mm, 'RendererMetal::runPostChain')
-        block = re.search(r'if\s*\(\s*_lightRigOn\s*&&\s*u\.matCount\s*>\s*0\.5f\s*\)\s*\{',
+        block = re.search(r'if\s*\(\s*_lightRigOn\s*&&\s*\(u\.matCount\s*>\s*0\.5f\s*\|\|\s*doSoft\)\s*\)\s*\{',
                           post)
         self.assertIsNotNone(block)
         inside = post[block.end():_msl.match_brace(post, block.end() - 1)]
@@ -985,12 +990,13 @@ class TestCaches(HdrMSLCase):
                                  r'const int rigT = doRTTrans \? 1 : 0;\s*'
                                  r'const int rigH = _lightHdrOn \? 1 : 0;\s*'
                                  r'rigS = rtShadow \? 1 : 0;\s*'
+                                 r'const int rigSoft = doSoft \? 1 : 0;\s*'
                                  r'id<MTLRenderPipelineState>\* rigComposite = '
-                                 r'&_rtResolvePipelineRig\[rigT\]\[rigH\]\[rigS\];\s*'
-                                 r'bool\* tried = &_rtRigTried\[rigT\]\[rigH\]\[rigS\];\s*'
+                                 r'&_rtResolvePipelineRig\[rigT\]\[rigH\]\[rigS\]\[rigSoft\];\s*'
+                                 r'bool\* tried = &_rtRigTried\[rigT\]\[rigH\]\[rigS\]\[rigSoft\];\s*'
                                  r'if \(!\*rigComposite && !\*tried\) \{\s*\*tried = true;\s*'
                                  r'\*rigComposite = buildRTRigComposite\(doRTTrans, '
-                                 r'_lightHdrOn,\s*rtShadow\);\s*\}')
+                                 r'_lightHdrOn,\s*rtShadow,\s*doSoft\);\s*\}')
         # the slots are read nowhere else
         for member in ('_rtResolvePipelineRig', '_rtRigTried'):
             owners = set()
@@ -1004,7 +1010,8 @@ class TestCaches(HdrMSLCase):
         self.assertRegex(dtor, r'for \(int t = 0; t < 2; \+\+t\)\s*'
                                r'for \(int h = 0; h < 2; \+\+h\)\s*'
                                r'for \(int s = 0; s < 2; \+\+s\)\s*'
-                               r'\[_rtResolvePipelineRig\[t\]\[h\]\[s\] release\];')
+                               r'for \(int so = 0; so < 2; \+\+so\)\s*'
+                               r'\[_rtResolvePipelineRig\[t\]\[h\]\[s\]\[so\] release\];')
 
     def testAirFromOneCompile(self):
         """Part 5: ensureAirPipelines makes both kLightHdr variants of the two
@@ -1109,6 +1116,7 @@ class TestFrame(HdrMSLCase):
         self.assertIn('u.tonemap = postAces ? 1.0f : 0.0f;', post)
         self.assertNotRegex(post, r'\b_exposure\b(?!\s*;)')
         body = _air.AIR_STATEMENTS['RendererMetal::runPostChain'].sub('', post, count=1)
+        body = _air.without_soft_shadows_741(body)
         body, declarations, uses = _air.without_post_exposure_624(body)
         self.assertEqual((declarations, uses), (1, _air.POST_EXPOSURE_USES_624))
         # Part 5: the RT rig composite choice, put back
@@ -1132,6 +1140,11 @@ class TestFrame(HdrMSLCase):
             statement = table['SceneLightsFrame']
             self.assertEqual(len(statement.findall(body)), 1)
             body = statement.sub('', body, count=1)
+        # #741: softRadius filling
+        stmt_741 = re.compile(r'const\s+std::size_t\s+nLights\s*=.*?;'
+                              r'\s*const\s+double\s+rigSize\s*=.*?;'
+                              r'\s*for\s*\(std::size_t\s+i\s*=\s*0;\s*i\s*<\s*nLights;\s*\+\+i\)\s*\{.*?\}', re.S)
+        body = stmt_741.sub('', body, count=1)
         self.assertEqual(digest(body),
                          _air.MASTER_FUNCTIONS[('SceneLights.cpp', 'SceneLightsFrame')])
 

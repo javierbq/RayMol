@@ -153,6 +153,8 @@ final class FakeRigStore {
         var radius = 4.0
         var beam = 45.0
         var softness = 0.4
+        /// The light's source size (#741).
+        var size = 0.0
         var warmth = 6500.0
         var intensity = 1.0
         var shadow = false
@@ -171,7 +173,7 @@ final class FakeRigStore {
 
     /// The core's ranges (layer1/LightRig.cpp) and its shadow cap.
     static let ranges: [String: ClosedRange<Double>] = [
-        "pitch": -90...90, "radius": 0.5...8, "beam": 1...170, "softness": 0...1,
+        "pitch": -90...90, "radius": 0.5...8, "beam": 1...170, "softness": 0...1, "size": 0...1,
         "warmth": 1500...15000, "intensity": 0...4,
     ]
     static let maxShadowed = 3
@@ -280,7 +282,7 @@ final class FakeRigStore {
             + "\"aim\":\"\(light.aimPoint == nil ? "centre" : "point")\","
             + "\"aim_point\":\(Self.vec(light.aimPoint ?? .zero)),\"aim_selection\":\"\","
             + "\"beam\":\(Self.num(light.beam)),"
-            + "\"softness\":\(Self.num(light.softness)),\"color\":\(Self.vec(light.color)),"
+            + "\"softness\":\(Self.num(light.softness)),\"size\":\(Self.num(light.size)),\"color\":\(Self.vec(light.color)),"
             + "\"warmth\":\(Self.num(light.warmth)),\"intensity\":\(Self.num(light.intensity)),"
             + "\"highlight\":0.5,\"falloff\":2.0,\"shadow\":\(light.shadow),\"outline\":false}"
         }.joined(separator: ",")
@@ -374,7 +376,7 @@ final class FakeRigStore {
     private static func light(from snapshot: LightRigSnapshot.Light) -> Light {
         Light(name: snapshot.name, orbit: snapshot.orbit, color: snapshot.color,
               pinned: snapshot.anchor == .pinned, pitch: snapshot.pitch,
-              radius: snapshot.radius, beam: snapshot.beam, softness: snapshot.softness,
+              radius: snapshot.radius, beam: snapshot.beam, softness: snapshot.softness, size: snapshot.size,
               warmth: snapshot.warmth, intensity: snapshot.intensity, shadow: snapshot.shadow,
               aimPoint: snapshot.aim == .point ? snapshot.aimPoint : nil)
     }
@@ -522,6 +524,7 @@ final class FakeRigStore {
             if light.pinned { eyePlacements[key] = place }
         case "beam": light.beam = value.clamped(to: Self.ranges[field]!)
         case "softness": light.softness = value.clamped(to: Self.ranges[field]!)
+        case "size": light.size = value.clamped(to: Self.ranges[field]!)
         case "warmth": light.warmth = value.clamped(to: Self.ranges[field]!)
         case "intensity": light.intensity = value.clamped(to: Self.ranges[field]!)
         case "anchor":

@@ -947,7 +947,7 @@ class TestPipelines(ShadowMSLCase):
         post = self.body('RendererMetal::runPostChain')
         self.assertRegex(post, r'const bool rtShadow = lightShadowsReady\(\) && '
                                r'\(int\)_lightRigBlock\.shadowGrid\[1\] <= 0;')
-        self.assertRegex(post, r'buildRTRigComposite\(doRTTrans,\s*_lightHdrOn,\s*rtShadow\)')
+        self.assertRegex(post, r'buildRTRigComposite\(doRTTrans,\s*_lightHdrOn,\s*rtShadow,\s*doSoft\)')
         # binds _lightShadowArray at kRTLightShadowTextureIndex only under the shadow variant
         bind_block = re.search(r'if\s*\(\s*rigS\s*\)\s*\{[^}]*\[er\s+setFragmentTexture:_lightShadowArray\s+'
                                r'atIndex:kRTLightShadowTextureIndex\];\s*\}', post)

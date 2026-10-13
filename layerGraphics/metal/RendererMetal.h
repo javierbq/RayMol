@@ -206,6 +206,8 @@ public:
   // of one array (beginLightShadowMap per slot), and one scene-pass reopen
   // (endLightShadowMaps) ends them.
   void setLightShadowFrame(bool studioShadows, int mapSize) override;
+  // Traced soft shadows (#741): see Renderer.h.
+  void setLightSoftShadows(const float* radius) override;
   bool beginLightShadowMap(int slot, const float* view) override;
   void setLightShadowViewport(int x, int y, int w, int h) override;
   void endLightShadowMaps() override;
@@ -1391,16 +1393,24 @@ private:
   void buildRTPipelines(bool transparent, id<MTLRenderPipelineState>* ao,
       id<MTLRenderPipelineState>* composite);
   void releaseRayTracingTransAS();
+  // Traced soft shadows (#741), set by setLightSoftShadows each frame.
+  float _lightSoftRadius[6] = {};   // eye Å; > 0 only for a traced light
+  bool _lightSoftFrame = false;     // a light is traced this frame
+  id<MTLTexture> _rtSoft = nil;     // RGBA16Float, _rtAO's size, made lazily
+  id<MTLRenderPipelineState> _rtSoftPipeline = nil;
+  bool _rtSoftTried = false;
+  bool ensureRTSoftPipeline();
   // The light rig on traced reflection hits (#613): rt_composite specialised
-  // with kRTLightRig, [transparent][hdr][shadow] (kRTTrans; kLightHdr, #624: 1
-  // for an HDR frame, 0 for the 8-bit knee; kRTLightShadow, #664: 1 for studio
-  // shadows on reflection hits, 0 otherwise), each built from the retained
-  // _rtLib the first time a rig-on frame of that kind has something reflective
-  // (one attempt each, _rtRigTried). Used only then; every other frame keeps
-  // _rtResolvePipeline / _rtResolvePipelineT.
-  id<MTLRenderPipelineState> _rtResolvePipelineRig[2][2][2] = {};
-  bool _rtRigTried[2][2][2] = {};
-  id<MTLRenderPipelineState> buildRTRigComposite(bool transparent, bool hdr, bool shadow);
+  // with kRTLightRig, [transparent][hdr][shadow][soft] (kRTTrans; kLightHdr,
+  // #624: 1 for an HDR frame, 0 for the 8-bit knee; kRTLightShadow, #664: 1 for
+  // studio shadows on reflection hits, 0 otherwise; kRTLightSoft, #741: 1 for
+  // traced soft shadows, 0 otherwise), each built from the retained _rtLib the
+  // first time a rig-on frame of that kind has something reflective or soft
+  // shadows (one attempt each, _rtRigTried). Used only then; every other frame
+  // keeps _rtResolvePipeline / _rtResolvePipelineT.
+  id<MTLRenderPipelineState> _rtResolvePipelineRig[2][2][2][2] = {};
+  bool _rtRigTried[2][2][2][2] = {};
+  id<MTLRenderPipelineState> buildRTRigComposite(bool transparent, bool hdr, bool shadow, bool soft);
 
   // Drop the cached RT geometry derived from a CPU buffer that is about to be
   // freed (or whose contents changed). Handles both primary and alias keys.

@@ -203,6 +203,9 @@ struct SceneLightFrame {
   /// haze or dust is above 0. Nothing else is read for it here: the gates
   /// (grid, geometry), the clock and the settings are SceneLightsAir's.
   std::optional<pymol::LightAirSource> airSource;
+  /// Traced soft shadows (#741): per block light, LightSoftRadius while
+  /// studioShadows, else 0; never part of the GPU block.
+  std::array<float, pymol::kLightRigBlockSlots> softRadius{};
 };
 
 /**

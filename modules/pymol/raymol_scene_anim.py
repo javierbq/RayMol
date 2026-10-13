@@ -533,7 +533,7 @@ def blend_rigs(a, b, e, _self=cmd):
     centre, size, ambient, classic and the air's haze, dust, dust_size,
     dust_speed, scatter, dust_glow and dust_opacity lerp (seed stays A's). Lights match by name
     ignoring case and keep A's spelling. A matched light lerps beam,
-    softness, highlight, falloff, warmth and intensity, colour in linear RGB,
+    softness, size, highlight, falloff, warmth and intensity, colour in linear RGB,
     and orbit (shortest path), pitch and radius when both are camera lights,
     its position (an arc about the blended centre) when both are pinned, and
     its aim point when both aim at points; anchor, aim, aim_selection, shadow

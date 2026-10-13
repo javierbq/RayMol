@@ -4308,3 +4308,231 @@ final class HdrAcesSceneCurveTests: XCTestCase {
         try assertShadowThroughAcesInverse(rayTraced: 1)
     }
 }
+
+/// Issue #741: Traced per-light soft shadows driven by light `size`.
+@MainActor
+final class SoftShadowSizeTests: XCTestCase {
+    private static let width = 400
+    private static let height = 300
+
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var sceneBuilt = false
+    private var savedView: [Float]?
+
+    override func tearDown() {
+        if sceneBuilt {
+            engine.runPython("""
+            from pymol import cmd as _c
+            _c.delete('ss741*')
+            for _n, _v in globals().pop('_ss741_settings', {}).items():
+                _c.set(_n, _v)
+            _c.set_lights(globals().pop('_ss741_rig', None))
+            for _n in globals().pop('_ss741_enabled', []):
+                _c.enable(_n)
+            """)
+            sceneBuilt = false
+        }
+        if let savedView {
+            engine.restoreView(savedView, animate: 0)
+            self.savedView = nil
+        }
+        super.tearDown()
+    }
+
+    private func requireEngine() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            throw XCTSkip("the PyMOL engine did not come up under the test host")
+        }
+    }
+
+    private func buildScene(shadow: Bool, size: Double? = nil) {
+        savedView = engine.captureView()
+        sceneBuilt = true
+        let sizeExpr = size.map { ", 'size': \($0)" } ?? ""
+        engine.runPython("""
+        from pymol import cmd as _c
+        _ss741_enabled = _c.get_names('objects', enabled_only=1)
+        _ss741_settings = {_n: _c.get_setting_tuple(_n)[1][0] for _n in (
+            'bg_rgb', 'depth_cue', 'metal_temporal_ao', 'metal_ssao',
+            'metal_rt_ao_intensity', 'metal_shadows', 'metal_rt_transparent')}
+        _ss741_settings['bg_rgb'] = list(_c.get_setting_tuple('bg_rgb')[1])
+        _ss741_rig = _c.get_lights()
+        for _n in _ss741_enabled:
+            _c.disable(_n)
+        _c.set('bg_rgb', [0.0, 0.0, 0.0])
+        _c.set('depth_cue', 0)
+        _c.set('metal_temporal_ao', 0)
+        _c.set('metal_ssao', 0)
+        _c.set('metal_rt_ao_intensity', 0)
+        _c.set('metal_shadows', 1)
+        _c.set('metal_rt_transparent', 0)
+
+        # Receiver pseudoatom: grey80, vdw 12
+        _c.pseudoatom('ss741r', pos=[0.0, 0.0, 0.0], vdw=12.0)
+        _c.show_as('spheres', 'ss741r')
+        _c.color('grey80', 'ss741r')
+
+        # Caster pseudoatom: grey80, vdw 2
+        _c.pseudoatom('ss741c', pos=[-11.9, 8.9, 11.9], vdw=2.0)
+        _c.show_as('spheres', 'ss741c')
+        _c.color('grey80', 'ss741c')
+
+        _c.set_lights({'enabled': True, 'ambient': 0.06, 'centre': [0.0, 0.0, 0.0], 'size': 20.0,
+                       'lights': [{'name': 'key', 'anchor': 'pinned',
+                                   'position': [-40.0, 30.0, 40.0],
+                                   'beam': 90.0, 'shadow': \(shadow ? "True" : "False")\(sizeExpr)}]})
+
+        _c.set_view((1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
+                     0.0, 0.0, -110.0, 0.0, 0.0, 0.0, 70.0, 150.0, -20.0))
+        """)
+    }
+
+    private func setRig(shadow: Bool, size: Double? = nil) {
+        let sizeExpr = size.map { ", 'size': \($0)" } ?? ""
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.set_lights({'enabled': True, 'ambient': 0.06, 'centre': [0.0, 0.0, 0.0], 'size': 20.0,
+                       'lights': [{'name': 'key', 'anchor': 'pinned',
+                                   'position': [-40.0, 30.0, 40.0],
+                                   'beam': 90.0, 'shadow': \(shadow ? "True" : "False")\(sizeExpr)}]})
+        """)
+    }
+
+    private func render(rayTraced: Int) throws -> [UInt8] {
+        let png = NSTemporaryDirectory() + "issue_741_render.png"
+        defer { try? FileManager.default.removeItem(atPath: png) }
+        engine.renderHiResPNG(png, width: Self.width, height: Self.height, rayTraced: rayTraced)
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(
+            URL(fileURLWithPath: png) as CFURL, nil), "no export written")
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        XCTAssertEqual(image.width, Self.width)
+        XCTAssertEqual(image.height, Self.height)
+        let w = image.width, h = image.height
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        let drawn = rgba.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8,
+                bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return true
+        }
+        XCTAssertTrue(drawn)
+        return rgba
+    }
+
+    private func maxDelta(_ a: [UInt8], _ b: [UInt8]) -> Int {
+        guard a.count == b.count else { return -1 }
+        var best = 0
+        for i in 0..<a.count {
+            if i % 4 == 3 { continue }
+            best = max(best, abs(Int(a[i]) - Int(b[i])))
+        }
+        return best
+    }
+
+    func testPenumbraWidensWithSize() throws {
+        try requireEngine()
+        guard engine.rayTracingSupported else {
+            throw XCTSkip("Hardware ray tracing is not supported on this device")
+        }
+        buildScene(shadow: false, size: 0.0)
+
+        // Determinism skip: two rt1 renders with the same settings must match
+        let rt1Ref1 = try render(rayTraced: 1)
+        let rt1Ref2 = try render(rayTraced: 1)
+        guard maxDelta(rt1Ref1, rt1Ref2) == 0 else {
+            throw XCTSkip("two ray-traced frames of the same scene differ: not deterministic here")
+        }
+
+        let litRef = rt1Ref1
+
+        // Caster footprint: render with only ss741c enabled, rt0, max channel > 3
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.disable('ss741r')
+        _c.enable('ss741c')
+        """)
+        let casterImg = try render(rayTraced: 0)
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.enable('ss741r')
+        """)
+
+        let pixelCount = Self.width * Self.height
+        var region = [Bool](repeating: false, count: pixelCount)
+        for p in 0..<pixelCount {
+            let litMax = max(litRef[p * 4], litRef[p * 4 + 1], litRef[p * 4 + 2])
+            let casterMax = max(casterImg[p * 4], casterImg[p * 4 + 1], casterImg[p * 4 + 2])
+            if litMax > 20 && casterMax <= 3 {
+                region[p] = true
+            }
+        }
+
+        func penumbraCount(size: Double) throws -> (count: Int, dmax: Int) {
+            setRig(shadow: true, size: size)
+            let shadowed = try render(rayTraced: 1)
+            var diffs = [Int](repeating: 0, count: pixelCount)
+            var currentDmax = 0
+            for p in 0..<pixelCount where region[p] {
+                var d = 0
+                for c in 0..<3 {
+                    d = max(d, Int(litRef[p * 4 + c]) - Int(shadowed[p * 4 + c]))
+                }
+                diffs[p] = max(d, 0)
+                currentDmax = max(currentDmax, diffs[p])
+            }
+            let lo = Double(currentDmax) * 0.15
+            let hi = Double(currentDmax) * 0.85
+            var penumbra = 0
+            for p in 0..<pixelCount where region[p] {
+                let v = Double(diffs[p])
+                if v > lo && v < hi {
+                    penumbra += 1
+                }
+            }
+            return (penumbra, currentDmax)
+        }
+
+        let res0 = try penumbraCount(size: 0.0)
+        let res025 = try penumbraCount(size: 0.25)
+        let res08 = try penumbraCount(size: 0.8)
+
+        print("741 penumbra counts: size 0=\(res0.count) (dmax=\(res0.dmax)), size 0.25=\(res025.count) (dmax=\(res025.dmax)), size 0.8=\(res08.count) (dmax=\(res08.dmax))")
+
+        XCTAssertGreaterThan(res0.dmax, 40, "the shadow does not exist at size 0")
+        XCTAssertGreaterThan(res025.count, res0.count, "penumbra did not widen from size 0 to 0.25")
+        XCTAssertGreaterThan(Double(res08.count), 1.5 * Double(res025.count), "penumbra did not widen significantly from 0.25 to 0.8")
+    }
+
+    func testSizeZeroMatchesNoSizeKey() throws {
+        try requireEngine()
+        guard engine.rayTracingSupported else {
+            throw XCTSkip("Hardware ray tracing is not supported on this device")
+        }
+        buildScene(shadow: true, size: 0.0)
+        let imgSizeZero = try render(rayTraced: 1)
+
+        setRig(shadow: true, size: nil)
+        let imgNoKey = try render(rayTraced: 1)
+
+        let delta = maxDelta(imgSizeZero, imgNoKey)
+        XCTAssertEqual(delta, 0, "size 0 does not match no size key")
+    }
+
+    func testRasterIgnoresSize() throws {
+        try requireEngine()
+        buildScene(shadow: true, size: 0.0)
+        let rt0Size0 = try render(rayTraced: 0)
+
+        setRig(shadow: true, size: 0.8)
+        let rt0Size08 = try render(rayTraced: 0)
+
+        let delta = maxDelta(rt0Size0, rt0Size08)
+        XCTAssertEqual(delta, 0, "raster render should ignore size")
+    }
+}

@@ -405,6 +405,15 @@ SceneLightFrame SceneLightsFrame(PyMOLGlobals* G, const glm::dmat4& worldToEye,
   if (frame.rig && SceneLightsAnyShadowed(*rig, *frame.rig) &&
       SettingGetGlobal_b(G, cSetting_metal_shadows)) {
     frame.studioShadows = true;
+    const std::size_t nLights = std::min({
+        static_cast<std::size_t>(std::max(int(frame.rig->head[0]), 0)),
+        rig->lights.size(),
+        static_cast<std::size_t>(6)});
+    const double rigSize = rig->size.value_or(0.0);
+    for (std::size_t i = 0; i < nLights; ++i) {
+      frame.softRadius[i] = pymol::LightSoftRadius(
+          rig->lights[i], rigSize, kSceneLightsMobile);
+    }
     frame.shadowMapSize = pymol::LightShadowMapSize(
         SettingGetGlobal_i(G, cSetting_metal_light_shadow_size),
         kSceneLightsMobile);

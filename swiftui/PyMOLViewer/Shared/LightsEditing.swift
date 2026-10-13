@@ -49,7 +49,7 @@ struct LightNudge: Equatable {
 /// One numeric control of the selected light: a core light field of kind
 /// float or angle.
 enum LightParameter: String, CaseIterable {
-    case orbit, pitch, radius, intensity, warmth, beam, softness
+    case orbit, pitch, radius, intensity, warmth, beam, softness, size
 
     /// The core field name.
     var field: String { rawValue }
@@ -66,6 +66,7 @@ enum LightParameter: String, CaseIterable {
         case .warmth: return 1500...15000
         case .beam: return 1...170
         case .softness: return 0...1
+        case .size: return 0...1
         }
     }
 
@@ -96,6 +97,7 @@ enum LightParameter: String, CaseIterable {
         case .warmth: return "Warmth"
         case .beam: return "Beam"
         case .softness: return "Softness"
+        case .size: return "Size"
         }
     }
 
@@ -104,7 +106,7 @@ enum LightParameter: String, CaseIterable {
     var quantum: Double {
         switch self {
         case .orbit, .pitch: return 1
-        case .radius, .intensity, .softness: return 0.01
+        case .radius, .intensity, .softness, .size: return 0.01
         case .warmth: return 10
         case .beam: return 0.5
         }
@@ -163,6 +165,7 @@ extension LightRigSnapshot.Light {
         case .warmth: return warmth
         case .beam: return beam
         case .softness: return softness
+        case .size: return size
         }
     }
 }

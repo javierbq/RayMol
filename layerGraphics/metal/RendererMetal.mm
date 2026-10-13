@@ -70,6 +70,13 @@ constexpr NSUInteger kRTLightHdrConstantIndex = 2;
 // and the composite's lightShadowMaps texture(5).
 constexpr NSUInteger kRTLightShadowConstantIndex = 3;
 constexpr NSUInteger kRTLightShadowTextureIndex = 5;
+// Traced soft shadows (#741): kRTSrc's kRTLightSoft, soft texture(6),
+// RTSoftU buffer(15), and ray budgets.
+constexpr NSUInteger kRTLightSoftConstantIndex = 4;
+constexpr NSUInteger kRTSoftBufferIndex = 15;
+constexpr NSUInteger kRTSoftTextureIndex = 6;
+constexpr int kRTSoftRaysLive = 8, kRTSoftRaysExport = 16;
+constexpr int kRTSoftHitRaysLive = 1, kRTSoftHitRaysExport = 4;
 
 // The air pass (#618; kAirSrc): its own library and its own index space. The
 // air block (pymol::LightAirBlock, MSL LightAirU) and a copy of the rig block
@@ -640,11 +647,13 @@ RendererMetal::~RendererMetal()
   [_exportAlphaPipeline release];
   [_rtAOPipeline release];            [_rtResolvePipeline release];
   [_rtAOPipelineT release];           [_rtResolvePipelineT release];
-  // the rig composites (#613), [transparent][hdr][shadow] (#624, #664)
+  [_rtSoft release];                  [_rtSoftPipeline release];
+  // the rig composites (#613), [transparent][hdr][shadow][soft] (#624, #664, #741)
   for (int t = 0; t < 2; ++t)
     for (int h = 0; h < 2; ++h)
       for (int s = 0; s < 2; ++s)
-        [_rtResolvePipelineRig[t][h][s] release];
+        for (int so = 0; so < 2; ++so)
+          [_rtResolvePipelineRig[t][h][s][so] release];
   [_rtLib release];
   releaseRayTracingTransAS();
   [_rtAOAccumPipeline release];       [_labelPipeline release];
@@ -1066,6 +1075,16 @@ void RendererMetal::bindLightRig(id<MTLRenderCommandEncoder> enc, int ortho)
     }
     [enc setFragmentTexture:_lightShadowArray atIndex:kLightShadowTextureIndex];
     [enc setFragmentSamplerState:_shadowSampler atIndex:kLightShadowSamplerIndex];
+  }
+  // Traced soft shadows (#741): opaque raster draws leave a traced light
+  // unshadowed and the RT composite darkens it by the traced visibility;
+  // transparent (OIT) draws and the haze keep the map.
+  if (_lightSoftFrame && !_oitActive) {
+    for (int i = 0; i < 6; ++i) {
+      if (_lightSoftRadius[i] > 0.0f) {
+        block.light[i].pos[3] = -1.0f;
+      }
+    }
   }
   [enc setFragmentBytes:&block length:sizeof(block) atIndex:kLightRigBufferIndex];
 }
@@ -2947,6 +2966,7 @@ void RendererMetal::ensureRTAOTargets(NSUInteger w, NSUInteger h)
     return;
   // MRC: release the previous set before reallocating (see ensurePostTargets).
   [_rtAO release];        [_rtAOHistory release];   [_rtAOAccum release];
+  [_rtSoft release];      _rtSoft = nil;
   MTLTextureDescriptor* aod = [MTLTextureDescriptor
       texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
                                    width:tw height:th mipmapped:NO];
@@ -2979,6 +2999,7 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   [_peelDepth release];
   [_rtAO release];          [_dofTex release];
   [_rtAOHistory release];   [_rtAOAccum release];
+  [_rtSoft release];
   [_surfaceCoverageTex release];
   [_aoExemptMaskTex release];
   // The air's alpha (#684) is a full-size target too: made again, at the new
@@ -2992,6 +3013,7 @@ void RendererMetal::ensurePostTargets(NSUInteger w, NSUInteger h)
   _surfaceCoverageTex = nil;
   _aoExemptMaskTex = nil;
   _rtAO = nil;              _dofTex = nil;
+  _rtSoft = nil;
   _rtAOHistory = _rtAOAccum = nil;
   _rtAOHistoryValid = false;  // resized AO targets: history is stale, hard-reset
 
@@ -3404,6 +3426,26 @@ void RendererMetal::setLightShadowFrame(bool studioShadows, int mapSize)
   _lightShadowSize = studioShadows && mapSize > 0 ? mapSize : 0;
 }
 
+void RendererMetal::setLightSoftShadows(const float* r)
+{
+  std::fill(std::begin(_lightSoftRadius), std::end(_lightSoftRadius), 0.0f);
+  _lightSoftFrame = false;
+  if (!_lightRigOn || !r)
+    return;
+  bool anyTraced = false;
+  const int n = std::min(int(_lightRigBlock.head[0]), 6);
+  for (int i = 0; i < n; ++i) {
+    if (std::isfinite(r[i]) && r[i] > 0.0f && _lightRigBlock.light[i].pos[3] >= 0.0f) {
+      _lightSoftRadius[i] = r[i];
+      anyTraced = true;
+    }
+  }
+  // Decided before any draw, from state the previous frame left, so raster and
+  // post chain agree. If the post chain then cannot run the soft pass the
+  // traced lights are unshadowed for that one frame (#741).
+  _lightSoftFrame = anyTraced && _rtEnabled && _rtReady && _rtLib && _rtResolvePipeline;
+}
+
 void RendererMetal::setGpuTiming(int mode)
 {
   // metal_gpu_timing, every frame: 0 off, 1 a summary per ~1 s window,
@@ -3692,6 +3734,19 @@ constant bool kLightHdr [[function_constant(2)]];
 // the rig composite of a frame whose maps are ready and which has no grid.
 // Everywhere else it is false, so those frames compile to what they did before.
 constant bool kRTLightShadow [[function_constant(3)]];
+
+// Traced soft shadows (#741): true only for the rig composite of a frame with
+// a traced light (size > 0); every other pipeline compiles as before.
+constant bool kRTLightSoft [[function_constant(4)]];
+
+// The traced lights (#741), bound at buffer 15 for rt_light_soft and the
+// kRTLightSoft composite. radius[i / 4][i % 4] is light i's source radius
+// (eye = model Å): > 0 a traced area light, 0 a hard traced point (a
+// shadowed light that keeps its map), < 0 no shadow.
+struct RTSoftU {
+  float4 head;       // x rays per traced light per pixel, y per reflection hit, z w 0
+  float4 radius[2];
+};
 
 struct LightRigLight {
   float4 pos;       // xyz eye-space position (A); w shadow slot (#616)
@@ -4243,6 +4298,54 @@ static float rt_trans_T(ray r, primitive_acceleration_structure tas,
   return T;
 }
 
+// Light i's source radius from RTSoftU (#741).
+static float rt_soft_radius(constant RTSoftU& soft, int i) {
+  return soft.radius[i / 4][i % 4];
+}
+
+// The fraction of light i's disc that point p (model space, normal n) sees
+// (#741): K rays from p to points spread over a disc of the light's source
+// radius around it, facing p (radius 0: one ray to the light). Opaque casters
+// only. `rot` rotates the sample pattern (per pixel, frame-stable).
+static float rt_soft_vis(constant LightRigU& rig, constant RTU& u,
+    constant RTSoftU& soft, instance_acceleration_structure accel, uint mask,
+    int i, float3 p, float3 n, int K, float rot) {
+  const float R = max(rt_soft_radius(soft, i), 0.0);
+  const float3 Lm = (u.invModelview * float4(rig.L[i].pos.xyz, 1.0)).xyz;
+  const float3 toL = Lm - p;
+  const float dl = length(toL);
+  if (!(light_finite(dl) && dl > 1e-3) || !light_finite(R)) return 1.0;
+  const float3 c = toL / dl;
+  const float3 upv = abs(c.z) < 0.9 ? float3(0, 0, 1) : float3(1, 0, 0);
+  const float3 tx = normalize(cross(upv, c));
+  const float3 ty = cross(c, tx);
+  const int N = R > 0.0 ? max(K, 1) : 1;
+  const float3 o = p + n * 0.02;
+  const float skip = max(0.3 * u.shadowBias, 0.05);
+  intersector<instancing> it;
+  it.assume_geometry_type(geometry_type::triangle);
+  it.accept_any_intersection(true);
+  float lit = 0.0;
+  for (int k = 0; k < N; ++k) {
+    const float2 h = rt_hammersley(uint(k), uint(N));
+    const float r = R * sqrt(h.x);
+    const float phi = 6.2831853 * fract(h.y + rot);
+    const float3 target = Lm + tx * (r * cos(phi)) + ty * (r * sin(phi));
+    float3 dir = target - o;
+    const float len = length(dir);
+    if (!(len > 1e-3)) { lit += 1.0; continue; }
+    dir /= len;
+    ray sr;
+    sr.origin = o;
+    sr.direction = dir;
+    sr.min_distance = skip / max(abs(dot(n, dir)), 0.15);
+    sr.max_distance = len;
+    auto res = it.intersect(sr, accel, mask);
+    if (res.type == intersection_type::none) lit += 1.0;
+  }
+  return lit / float(N);
+}
+
 // Pass A: trace ambient-occlusion rays, write the raw AO term to an R16Float
 // target. Deterministic Hammersley directions (frame-stable -> no shimmer) with
 // a cheap per-pixel rotation so residual error is a fine pattern the composite
@@ -4473,6 +4576,208 @@ fragment float4 rt_ao(PostVOut in [[stage_in]],
   return float4(ao, vis, selfSphere, 1.0);
 }
 
+// Pass A.6 (#741): traced soft shadows. For each pixel, the per-channel
+// ratio by which the traced lights' occlusion darkens the opaque colour:
+//   (A + sum_i w_i v_i) / (A + sum_i w_i)
+// with w_i light i's unshadowed diffuse radiance here (colour, cone, falloff,
+// N.L, as light_terms_view; neutral response), v_i the traced visibility of a
+// traced light (radius > 0) and 1 for every other light, and A the classic
+// terms (ambient, plus the classic headlight and key while the rig's classic
+// is above 0). The raster leaves the traced lights unshadowed on opaque
+// surfaces (bindLightRig), so the composite multiplies this in, after a
+// depth-aware blur. Never above 1. rgb = ratio, a = 1.
+fragment float4 rt_light_soft(PostVOut in [[stage_in]],
+    depth2d<float> depthTex [[texture(1)]],
+    sampler s [[sampler(0)]],
+    instance_acceleration_structure accel [[buffer(0)]],
+    constant RTU& u [[buffer(1)]],
+    device const packed_float3* tris [[buffer(2)]],
+    constant RTGridU& g [[buffer(3)]],
+    constant LightRigU& rig [[buffer(13)]],
+    constant RTSoftU& soft [[buffer(15)]]) {
+  float d = depthTex.sample(s, in.uv);
+  if (d >= 0.99999 || d <= 0.0015) return float4(1.0, 1.0, 1.0, 1.0);  // no occlusion
+
+  // grid_mode (#478): find the cell this pixel is drawn in. Every ray below is
+  // traced with that cell's instance mask, so objects that live in other cells
+  // (same world space, different viewport) can neither occlude nor shadow it,
+  // and the eye-space reconstruction measures ndc against the cell's own rect,
+  // so the ray origins sit on the surface actually drawn there.
+  uint ci, mask; float4 cell;
+  if (!rt_find_cell(in.uv, u, g, ci, mask, cell)) return float4(1.0, 1.0, 1.0, 1.0);
+  // This cell's world-triangle mesh: where it starts in `tris`, how many, and
+  // its top-level instance id (-1 = the cell has no triangles).
+  const uint triCount = g.cell[ci].tri.y;
+  const int triInst = int(g.cell[ci].tri.z);
+  device const packed_float3* ctris = tris + 3u * g.cell[ci].tri.x;
+
+  // Eye-space position + robust normal (matches post_ssao_fog reconstruction).
+  // post_eye_normal avoids the cross-silhouette derivative blow-up that plain
+  // cross(dfdx,dfdy) produces, which otherwise mis-orients the AO hemisphere /
+  // ray-origin bias in a 1-2px band along every silhouette.
+  float3 pEye = post_eye_pos(in.uv, d, u.projA, u.projB, u.projX, u.projY, u.projOrtho, cell);
+  float2 invres = 1.0 / float2(depthTex.get_width(), depthTex.get_height());
+  // SMOOTH normal (bilateral over the facets, silhouette-preserving), like the
+  // shadow-map path: the plain per-triangle reconstruction made the ray-origin
+  // offset and the light-facing test flip per triangle on coarse cartoon
+  // strands -> "triangles under shadows" in the traced-shadow path too.
+  float3 nEye = post_eye_normal_smooth(depthTex, s, in.uv, invres, d, pEye,
+                                       u.projA, u.projB, u.projX, u.projY, u.projOrtho, cell);
+
+  float3 pModel = (u.invModelview * float4(pEye, 1.0)).xyz;
+  float3 nModel = normalize((u.invModelview * float4(nEye, 0.0)).xyz);
+
+  // The pixel's OWN surface normal for everything that orients rays from it
+  // (AO hemisphere + origin offset, shadow self-hit tests). The depth-
+  // reconstructed nModel still steps per triangle on a twisted ribbon (the two
+  // triangles of a quad tilt in alternate directions), which striped both the
+  // AO and the shadow term ring by ring on strongly twisted strands
+  // (cartoon_flat_sheets off). So find the triangle this pixel actually lies
+  // on with a primary ray (eye -> pixel) and use its strip-smoothed facet
+  // normal; pixels on sphere impostors (analytic depth) keep nModel.
+  float3 nSelf = nModel;
+  {
+    float3 camM, dirM;
+    if (u.projOrtho > 0.5) {
+      dirM = normalize((u.invModelview * float4(0.0, 0.0, -1.0, 0.0)).xyz);
+      camM = pModel - dirM * 1000.0;
+    } else {
+      camM = (u.invModelview * float4(0.0, 0.0, 0.0, 1.0)).xyz;
+      dirM = normalize(pModel - camM);
+    }
+    float const dEye = length(pModel - camM);
+    intersector<instancing> pit;
+    pit.assume_geometry_type(geometry_type::triangle);
+    pit.accept_any_intersection(false);
+    ray pr;
+    pr.origin = camM;
+    pr.direction = dirM;
+    pr.min_distance = 0.0;
+    pr.max_distance = dEye + 0.5;
+    auto pres = pit.intersect(pr, accel, mask);
+    if (pres.type != intersection_type::none && triInst >= 0
+        && int(pres.instance_id) == triInst
+        && abs(pres.distance - dEye) < 0.5) {
+      nSelf = rt_tri_normal_smooth(ctris, pres.primitive_id, triCount);
+      if (dot(nSelf, nModel) < 0.0) nSelf = -nSelf;   // face the camera side
+    }
+  }
+
+  const float pl = length(pEye);
+  const float3 V = (u.projOrtho > 0.5 || pl <= 1e-6) ? float3(0.0, 0.0, 1.0) : -pEye / pl;
+  const float nl = length(nEye);
+  float3 N = nl > 1e-8 ? nEye / nl : V;
+  if (dot(N, V) < 0.0) N = -N;
+  const float3 kl = float3(u.klx, u.kly, u.klz);
+  const float kll = length(kl);
+  const float A = max(u.lAmbient, 0.0)
+      + max(u.lDirect, 0.0) * saturate(N.z)
+      + (kll > 1e-6 ? max(u.lReflect, 0.0) * saturate(dot(N, kl / kll)) : 0.0);
+  float3 total = float3(A);
+  float3 lit = total;
+  const int K = max(int(soft.head.x), 1);
+  const float rot = rt_hash(in.uv * 1024.0 + 31.0);
+  const int n = int(rig.head.x);
+  for (int i = 0; i < 6; ++i) {
+    if (i >= n) break;
+    const float3 Lv = rig.L[i].pos.xyz - pEye;
+    const float d = max(length(Lv), 1e-3);
+    const float3 Ld = Lv / d;
+    const float band = max(rig.L[i].radiance.w - rig.L[i].axis.w, 1e-7);
+    const float s = saturate((dot(-Ld, rig.L[i].axis.xyz) - rig.L[i].axis.w) / band);
+    const float spot = s * s * (3.0 - 2.0 * s);
+    const float ndl = dot(N, Ld);
+    const float fall = rig.L[i].misc.y > 0.0
+        ? min(pow(rig.L[i].misc.z / d, rig.L[i].misc.y), 1e4) : 1.0;
+    if (spot <= 0.0 || ndl <= 0.0) continue;
+    const float3 w = rig.L[i].radiance.rgb * (spot * fall * ndl);
+    if (!light_finite3(w)) continue;
+    total += w;
+    lit += rt_soft_radius(soft, i) > 0.0
+        ? w * rt_soft_vis(rig, u, soft, accel, mask, i, pModel, nSelf, K,
+                          fract(rot + 0.618034 * float(i)))
+        : w;
+  }
+  const float3 ratio = lit / max(total, float3(1e-6));
+  return float4(light_finite3(ratio) ? saturate(ratio) : float3(1.0), 1.0);
+}
+
+// Traced soft shadows on reflection hits (#741, #846 extended):
+// light_terms_view_shadowed's loop calling rt_soft_vis for shadowed lights.
+static LightTerms rt_light_terms_soft(
+    constant LightRigU& rig, constant RTU& u, constant RTSoftU& soft,
+    instance_acceleration_structure accel, uint mask,
+    float3 pModel, float3 nModel, float rot,
+    float3 base, float3 nEye, float3 pEye, float3 V, LightResponse r) {
+  LightTerms t;
+  t.diffuse = float3(0.0);
+  t.specular = float3(0.0);
+  const int n = int(rig.head.x);
+  const float nl = length(nEye);
+  float3 N = nl > 1e-8 ? nEye / nl : V;
+  if (dot(N, V) < 0.0) N = -N;
+  const float shin = max(rig.head.y * r.sharpness, 1.0);
+  for (int i = 0; i < 6; ++i) {
+    if (i >= n) break;
+    const float3 Lv = rig.L[i].pos.xyz - pEye;
+    const float d = max(length(Lv), 1e-3);
+    const float3 Ld = Lv / d;
+    const float band = max(rig.L[i].radiance.w - rig.L[i].axis.w, 1e-7);
+    const float s = saturate((dot(-Ld, rig.L[i].axis.xyz) - rig.L[i].axis.w) / band);
+    const float spot = s * s * (3.0 - 2.0 * s);
+    const float ndl = dot(N, Ld);
+    const float wd = saturate((ndl + r.wrap) / (1.0 + r.wrap));
+    if (spot <= 0.0 || wd <= 0.0) continue;
+    const float fall = rig.L[i].misc.y > 0.0
+        ? min(pow(rig.L[i].misc.z / d, rig.L[i].misc.y), 1e4) : 1.0;
+    const float vis = rt_soft_radius(soft, i) >= 0.0
+        ? rt_soft_vis(rig, u, soft, accel, mask, i, pModel, nModel, int(soft.head.y), rot)
+        : 1.0;
+    const float3 rad = rig.L[i].radiance.rgb * (spot * fall * vis);
+    t.diffuse += rad * (wd * r.diffuse);
+    const float3 H = Ld + V;
+    if (ndl > 0.0 && dot(H, H) > 1e-8) {
+      t.specular += rad * (rig.L[i].misc.x * r.highlight *
+                           pow(saturate(dot(N, normalize(H))), shin));
+    }
+  }
+  t.specular *= mix(float3(1.0), base, r.tint);
+  return t;
+}
+
+static float4 rt_rig_glass_hit_soft(constant LightRigU& rig, constant RTU& u,
+    constant RTSoftU& soft, instance_acceleration_structure accel, uint mask,
+    float rot, float3 shaded, float3 base, float3 pModel, float3 nModel, float3 R,
+    LightResponse r, float a, float knob) {
+  const float3x3 toEye = transpose(float3x3(u.invModelview[0].xyz,
+                                            u.invModelview[1].xyz,
+                                            u.invModelview[2].xyz));
+  const float3 pEye = toEye * (pModel - u.invModelview[3].xyz);
+  const float3 nEye = toEye * nModel;
+  const float3 V = -normalize(toEye * R);
+  const LightTerms t = rt_light_terms_soft(
+      rig, u, soft, accel, mask, pModel, nModel, rot, base, nEye, pEye, V, r);
+  const float3 body = shaded + base * kMatGlassBaseAttenuation * t.diffuse;
+  const float3 hi = light_glass_glints(t.specular) * (kMatGlassReflection * saturate(knob));
+  if (kLightHdr) return light_glass_cover(body, hi, a, rig.tone);
+  return mat_glass_cover(body, hi, a);
+}
+
+static float3 rt_rig_hit_soft(constant LightRigU& rig, constant RTU& u,
+    constant RTSoftU& soft, instance_acceleration_structure accel, uint mask,
+    float rot, float3 shaded, float3 base, float3 pModel, float3 nModel, float3 R,
+    LightResponse r) {
+  const float3x3 toEye = transpose(float3x3(u.invModelview[0].xyz,
+                                            u.invModelview[1].xyz,
+                                            u.invModelview[2].xyz));
+  const float3 pEye = toEye * (pModel - u.invModelview[3].xyz);
+  const float3 nEye = toEye * nModel;
+  const float3 V = -normalize(toEye * R);
+  const LightTerms t = rt_light_terms_soft(
+      rig, u, soft, accel, mask, pModel, nModel, rot, base, nEye, pEye, V, r);
+  return light_finish(shaded + base * t.diffuse + t.specular, rig.tone);
+}
+
 // Pass B: composite. Read scene color, DEPTH-AWARE-BLUR the raw AO term (5x5,
 // silhouette-preserving) to remove the Monte-Carlo speckle, apply it, then the
 // shadow-map PCF and depth-cue fog (identical to the old single-pass resolve).
@@ -4499,7 +4804,9 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
     device const uint* tocc [[buffer(12), function_constant(kRTTrans)]],
     device const float4* tmats [[buffer(14), function_constant(kRTTrans)]],
     constant LightRigU& rig [[buffer(13), function_constant(kRTLightRig)]],
-    depth2d_array<float> lightShadowMaps [[texture(5), function_constant(kRTLightShadow)]]) {
+    depth2d_array<float> lightShadowMaps [[texture(5), function_constant(kRTLightShadow)]],
+    texture2d<float> softTex [[texture(6), function_constant(kRTLightSoft)]],
+    constant RTSoftU& soft [[buffer(15), function_constant(kRTLightSoft)]]) {
   float3 col = colorTex.sample(s, in.uv).rgb;
   float3 colRaw = col;   // lit colour before AO/shadow: tints the reflection
   float d = depthTex.sample(s, in.uv);
@@ -4524,6 +4831,7 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
   float2 texel = 1.0 / float2(aoTex.get_width(), aoTex.get_height());
   float ztol = max(0.5 * u.aoRadius, 0.5);
   float aoSum = 0.0, visSum = 0.0, wSum = 0.0;
+  float3 softSum = float3(0.0);
   for (int j = -2; j <= 2; ++j)
     for (int i = -2; i <= 2; ++i) {
       float2 uv = in.uv + float2(i, j) * texel;
@@ -4545,10 +4853,12 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
       float2 rg = aoTex.sample(s, uv).rg;
       aoSum += rg.r * w;
       visSum += rg.g * w;
+      if (kRTLightSoft) softSum += softTex.sample(s, uv).rgb * w;
       wSum += w;
     }
   float ao = wSum > 0.0 ? (aoSum / wSum) : aoTex.sample(s, in.uv).r;
   float vis = wSum > 0.0 ? (visSum / wSum) : aoTex.sample(s, in.uv).g;
+  const float3 softR = kRTLightSoft ? (wSum > 0.0 ? softSum / wSum : softTex.sample(s, in.uv).rgb) : float3(1.0);
 
   // Screen-space crease term (metal_ssao), kept ON under ray tracing (#436).
   // The traced hemisphere AO is physically right but SMOOTH: on packed spheres
@@ -4628,6 +4938,14 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
     }
   }
 
+  // Traced soft shadows (#741): the blurred ratio, in scene units under an
+  // HDR rig through the rig's curve (#735), as the AO is.
+  if (kRTLightSoft && light_finite3(softR)) {
+    const float3 sr = saturate(softR);
+    if (u.aoHdr > 0.5) col = light_curve(light_curve_inverse(col, u.aoAces) * sr, u.aoAces);
+    else col *= sr;
+  }
+
   // AO and the cast shadow darken together. Under an HDR rig (#732, #852) the
   // colour is T(e * L): occlude the light, not the display value, in one round
   // trip. Below T's knee this is col * ao * shade exactly. With ACES as the
@@ -4702,6 +5020,7 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
       float3 reflAcc = float3(0.0);
       int NS = rough > 0.0 ? max(int(u.reflSamples), 1) : 1;
       for (int si = 0; si < NS; ++si) {
+        const float rot = rt_hash(in.uv * 733.0 + float(si));
         float3 R = R0;
         if (rough > 0.0) {   // glossy: jitter inside a cone (frame-stable)
           float2 hx = float2(fract(rt_hash(in.uv * 977.0) + float(si) * 0.618034),
@@ -4773,11 +5092,14 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
           if (kRTLightRig) {
             const float3 ha = rt_hit_albedo(hc, hn, R, hitP, rt_hit_material(mats, hmi, u.matCount),
                 u.projOrtho > 0.5 ? pxSize : pxSize * (dEye0 + res.distance));
-            reflCol = kRTLightShadow
-                ? rt_rig_hit_shadowed(rig, u, lightShadowMaps, shadowSamp, reflCol, ha, hitP, hn, R,
-                                      rt_hit_response(mats, hmi, u.matCount))
-                : rt_rig_hit(rig, u, reflCol, ha, hitP, hn, R,
-                             rt_hit_response(mats, hmi, u.matCount));
+            reflCol = kRTLightSoft
+                ? rt_rig_hit_soft(rig, u, soft, accel, mask, rot, reflCol, ha, hitP, hn, R,
+                                  rt_hit_response(mats, hmi, u.matCount))
+                : (kRTLightShadow
+                    ? rt_rig_hit_shadowed(rig, u, lightShadowMaps, shadowSamp, reflCol, ha, hitP, hn, R,
+                                          rt_hit_response(mats, hmi, u.matCount))
+                    : rt_rig_hit(rig, u, reflCol, ha, hitP, hn, R,
+                                 rt_hit_response(mats, hmi, u.matCount)));
           }
           // Fade distant hits toward the environment so far-off geometry does
           // not read as a hard mirror image (cheap "reflection fog").
@@ -4817,17 +5139,21 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
               const LightResponse tresp = rt_hit_response(tmats, tmi, u.tMatCount);
               const float3 tp = tr.origin + R * th.distance;
               if (tm.family == kRTFamilyGlass && tm.mode != kMatMode_jelly) {
-                const float4 gc = kRTLightShadow
-                    ? rt_rig_glass_hit_shadowed(rig, u, lightShadowMaps, shadowSamp, tcol, tc.rgb, tp, hn, R, tresp, ta, tm.p[0])
-                    : rt_rig_glass_hit(rig, u, tcol, tc.rgb, tp, hn, R, tresp, ta, tm.p[0]);
+                const float4 gc = kRTLightSoft
+                    ? rt_rig_glass_hit_soft(rig, u, soft, accel, mask, rot, tcol, tc.rgb, tp, hn, R, tresp, ta, tm.p[0])
+                    : (kRTLightShadow
+                        ? rt_rig_glass_hit_shadowed(rig, u, lightShadowMaps, shadowSamp, tcol, tc.rgb, tp, hn, R, tresp, ta, tm.p[0])
+                        : rt_rig_glass_hit(rig, u, tcol, tc.rgb, tp, hn, R, tresp, ta, tm.p[0]));
                 tcol = gc.rgb;
                 ta = gc.a;
               } else {
                 const float3 talb = rt_hit_albedo(tc.rgb, hn, R, tp, tm,
                     u.projOrtho > 0.5 ? pxSize : pxSize * (dEye0 + th.distance));
-                tcol = kRTLightShadow
-                    ? rt_rig_hit_shadowed(rig, u, lightShadowMaps, shadowSamp, tcol, talb, tp, hn, R, tresp)
-                    : rt_rig_hit(rig, u, tcol, talb, tp, hn, R, tresp);
+                tcol = kRTLightSoft
+                    ? rt_rig_hit_soft(rig, u, soft, accel, mask, rot, tcol, talb, tp, hn, R, tresp)
+                    : (kRTLightShadow
+                        ? rt_rig_hit_shadowed(rig, u, lightShadowMaps, shadowSamp, tcol, talb, tp, hn, R, tresp)
+                        : rt_rig_hit(rig, u, tcol, talb, tp, hn, R, tresp));
               }
             }
             tcol = mix(tcol, envCol, saturate(th.distance / 120.0));
@@ -5765,6 +6091,8 @@ void RendererMetal::buildRTPipelines(bool transparent,
   [fc setConstantValue:&hdr type:MTLDataTypeBool atIndex:kRTLightHdrConstantIndex];
   bool shadow = false;
   [fc setConstantValue:&shadow type:MTLDataTypeBool atIndex:kRTLightShadowConstantIndex];
+  bool soft = false;
+  [fc setConstantValue:&soft type:MTLDataTypeBool atIndex:kRTLightSoftConstantIndex];
   id<MTLFunction> vtx = [_rtLib newFunctionWithName:@"rt_vertex"];
   id<MTLFunction> fao = [_rtLib newFunctionWithName:@"rt_ao" constantValues:fc error:&err];
   id<MTLFunction> fco = fao ? [_rtLib newFunctionWithName:@"rt_composite" constantValues:fc error:&err] : nil;
@@ -5803,7 +6131,7 @@ void RendererMetal::buildRTPipelines(bool transparent,
 // retained _rtLib, so none compiles the library again. Returns +1, or nil
 // after logging; the caller tries each once and draws the classic composite
 // otherwise.
-id<MTLRenderPipelineState> RendererMetal::buildRTRigComposite(bool transparent, bool hdr, bool shadow)
+id<MTLRenderPipelineState> RendererMetal::buildRTRigComposite(bool transparent, bool hdr, bool shadow, bool soft)
 {
   if (!_rtLib)
     return nil;
@@ -5817,6 +6145,8 @@ id<MTLRenderPipelineState> RendererMetal::buildRTRigComposite(bool transparent, 
   [fc setConstantValue:&h type:MTLDataTypeBool atIndex:kRTLightHdrConstantIndex];
   bool s = shadow;
   [fc setConstantValue:&s type:MTLDataTypeBool atIndex:kRTLightShadowConstantIndex];
+  bool so = soft;
+  [fc setConstantValue:&so type:MTLDataTypeBool atIndex:kRTLightSoftConstantIndex];
   id<MTLFunction> vtx = [_rtLib newFunctionWithName:@"rt_vertex"];
   id<MTLFunction> fco = [_rtLib newFunctionWithName:@"rt_composite" constantValues:fc error:&err];
   [fc release];
@@ -5830,11 +6160,49 @@ id<MTLRenderPipelineState> RendererMetal::buildRTRigComposite(bool transparent, 
     [pd release];
   }
   if (!pipeline)
-    NSLog(@"RendererMetal RT: light-rig %s%s%s composite failed: %@",
+    NSLog(@"RendererMetal RT: light-rig %s%s%s%s composite failed: %@",
           transparent ? "transparent" : "default", hdr ? " HDR" : "",
-          shadow ? " shadow" : "", err);
+          shadow ? " shadow" : "", soft ? " soft" : "", err);
   [vtx release]; [fco release];
   return pipeline;
+}
+
+bool RendererMetal::ensureRTSoftPipeline()
+{
+  if (_rtSoftPipeline)
+    return true;
+  if (_rtSoftTried || !_rtLib)
+    return false;
+  _rtSoftTried = true;
+  NSError* err = nil;
+  MTLFunctionConstantValues* fc = [[MTLFunctionConstantValues alloc] init];
+  bool c0 = false;
+  [fc setConstantValue:&c0 type:MTLDataTypeBool atIndex:0];
+  bool c1 = true;
+  [fc setConstantValue:&c1 type:MTLDataTypeBool atIndex:kRTLightRigConstantIndex];
+  bool c2 = false;
+  [fc setConstantValue:&c2 type:MTLDataTypeBool atIndex:kRTLightHdrConstantIndex];
+  bool c3 = false;
+  [fc setConstantValue:&c3 type:MTLDataTypeBool atIndex:kRTLightShadowConstantIndex];
+  bool c4 = false;
+  [fc setConstantValue:&c4 type:MTLDataTypeBool atIndex:kRTLightSoftConstantIndex];
+  id<MTLFunction> vtx = [_rtLib newFunctionWithName:@"rt_vertex"];
+  id<MTLFunction> fsoft = [_rtLib newFunctionWithName:@"rt_light_soft" constantValues:fc error:&err];
+  [fc release];
+  if (vtx && fsoft) {
+    MTLRenderPipelineDescriptor* pd = [[MTLRenderPipelineDescriptor alloc] init];
+    pd.vertexFunction = vtx;
+    pd.fragmentFunction = fsoft;
+    pd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA16Float;
+    _rtSoftPipeline = [_device newRenderPipelineStateWithDescriptor:pd error:&err];
+    [pd release];
+  }
+  if (!_rtSoftPipeline) {
+    NSLog(@"RendererMetal RT: soft shadow pipeline failed: %@", err);
+  }
+  [vtx release];
+  [fsoft release];
+  return _rtSoftPipeline != nil;
 }
 
 // Screen-space AO (metal_ssao) tuning shared by the raster pass (post_ssao_fog)
@@ -6081,6 +6449,69 @@ void RendererMetal::runPostChain()
       _rtAOTemporalRan = true;
     }
 
+    // Pass A.6 (#741): traced soft shadows.
+    bool rtSoftReady = false;
+    if (_lightSoftFrame && _lightRigOn && _rtAO) {
+      if (!_rtSoft || _rtSoft.width != _rtAO.width || _rtSoft.height != _rtAO.height) {
+        [_rtSoft release];
+        MTLTextureDescriptor* sd = [MTLTextureDescriptor
+            texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
+                                         width:_rtAO.width height:_rtAO.height mipmapped:NO];
+        sd.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+        sd.storageMode = MTLStorageModePrivate;
+        _rtSoft = [_device newTextureWithDescriptor:sd];
+      }
+      rtSoftReady = (_rtSoft != nil);
+    }
+    const bool doSoft = _lightSoftFrame && _lightRigOn && ensureRTSoftPipeline() && rtSoftReady;
+    struct RTSoftU {
+      float head[4];
+      float radius[8];
+    } su;
+    static_assert(sizeof(RTSoftU) == 48, "RTSoftU must be 48 bytes");
+    su.head[0] = float(_offscreen ? kRTSoftRaysExport : kRTSoftRaysLive);
+    su.head[1] = float(_offscreen ? kRTSoftHitRaysExport : kRTSoftHitRaysLive);
+    su.head[2] = 0.0f;
+    su.head[3] = 0.0f;
+    for (int i = 0; i < 6; ++i) {
+      su.radius[i] = _lightSoftRadius[i] > 0.0f
+          ? _lightSoftRadius[i]
+          : (_lightRigBlock.light[i].pos[3] >= 0.0f ? 0.0f : -1.0f);
+    }
+    su.radius[6] = -1.0f;
+    su.radius[7] = -1.0f;
+
+    if (doSoft) {
+      MTLRenderPassDescriptor* psoft = [MTLRenderPassDescriptor renderPassDescriptor];
+      psoft.colorAttachments[0].texture = _rtSoft;
+      psoft.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+      psoft.colorAttachments[0].storeAction = MTLStoreActionStore;
+      id<MTLRenderCommandEncoder> esoft =
+          [_cmdBuffer renderCommandEncoderWithDescriptor:psoft];
+      [esoft setRenderPipelineState:_rtSoftPipeline];
+      [esoft setFragmentTexture:_sceneDepth atIndex:1];
+      [esoft setFragmentSamplerState:_postSampler atIndex:0];
+      if (_rtSphereProtoAS)
+        [esoft useResource:_rtSphereProtoAS usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
+      for (id<MTLAccelerationStructure> as : _rtTriProtoASs)
+        [esoft useResource:as usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
+      [esoft setFragmentAccelerationStructure:_rtInstanceAS atBufferIndex:0];
+      [esoft setFragmentBytes:&u length:sizeof(u) atIndex:1];
+      if (_rtTriBuffer) {
+        [esoft setFragmentBuffer:_rtTriBuffer offset:0 atIndex:2];
+      } else {
+        float dummyTri[9] = {0};
+        [esoft setFragmentBytes:dummyTri length:sizeof(dummyTri) atIndex:2];
+      }
+      [esoft setFragmentBytes:&gu length:sizeof(gu) atIndex:3];
+      LightRigBlock softRigBlock = _lightRigBlock;
+      softRigBlock.head[2] = _projOrtho > 0.5f ? 1.0f : 0.0f;
+      [esoft setFragmentBytes:&softRigBlock length:sizeof(softRigBlock) atIndex:kRTLightRigBufferIndex];
+      [esoft setFragmentBytes:&su length:sizeof(su) atIndex:kRTSoftBufferIndex];
+      [esoft drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+      [esoft endEncoding];
+    }
+
     // Pass B: depth-aware-blur the AO + shadow/fog composite -> _postColor.
     MTLRenderPassDescriptor* pd = [MTLRenderPassDescriptor renderPassDescriptor];
     pd.colorAttachments[0].texture = _postColor;
@@ -6088,34 +6519,58 @@ void RendererMetal::runPostChain()
     pd.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> er =
         [_cmdBuffer renderCommandEncoderWithDescriptor:pd];
-    // The light rig on the reflection hits (#613): its composite only while a
-    // rig is on AND something reflects (the rig code lives in the reflection
-    // block, which matCount 0 skips). Otherwise, or if the variant cannot be
-    // built, today's composite. The variant follows the frame: transparent or
-    // not, and HDR colour or the knee (#624, _lightHdrOn).
+    // The light rig on the reflection hits (#613) and soft shadows (#741): its
+    // composite when a rig is on AND (something reflects OR soft shadows run).
+    // Otherwise, or if the variant cannot be built, today's composite. The
+    // variant follows the frame: transparent or not, HDR colour or the knee
+    // (#624, _lightHdrOn), studio shadows on hits (#664), and soft shadows (#741).
     id<MTLRenderPipelineState> composite =
         doRTTrans ? _rtResolvePipelineT : _rtResolvePipeline;
     bool rtRig = false;
     int rigS = 0;
-    if (_lightRigOn && u.matCount > 0.5f) {
+    bool usingSoftComposite = false;
+    if (_lightRigOn && (u.matCount > 0.5f || doSoft)) {
       // Grid mode (shadowGrid[1] > 0) deliberately keeps the unshadowed variant:
       // the composite is one full-screen pass, but the maps hold one tile per cell.
       const bool rtShadow = lightShadowsReady() && (int)_lightRigBlock.shadowGrid[1] <= 0;
       const int rigT = doRTTrans ? 1 : 0;
       const int rigH = _lightHdrOn ? 1 : 0;
       rigS = rtShadow ? 1 : 0;
-      id<MTLRenderPipelineState>* rigComposite = &_rtResolvePipelineRig[rigT][rigH][rigS];
-      bool* tried = &_rtRigTried[rigT][rigH][rigS];
+      const int rigSoft = doSoft ? 1 : 0;
+      id<MTLRenderPipelineState>* rigComposite = &_rtResolvePipelineRig[rigT][rigH][rigS][rigSoft];
+      bool* tried = &_rtRigTried[rigT][rigH][rigS][rigSoft];
       if (!*rigComposite && !*tried) {
         *tried = true;
-        *rigComposite = buildRTRigComposite(doRTTrans, _lightHdrOn, rtShadow);
+        *rigComposite = buildRTRigComposite(doRTTrans, _lightHdrOn, rtShadow, doSoft);
       }
       if (*rigComposite) {
         composite = *rigComposite;
         rtRig = true;
+        usingSoftComposite = (rigSoft == 1);
+      } else if (rigSoft == 1) {
+        // Fall back to non-soft selection (#741)
+        static bool sLoggedFallback = false;
+        if (!sLoggedFallback) {
+          sLoggedFallback = true;
+          NSLog(@"RendererMetal RT: soft rig composite failed, falling back to non-soft");
+        }
+        id<MTLRenderPipelineState>* fallback = &_rtResolvePipelineRig[rigT][rigH][rigS][0];
+        bool* fallbackTried = &_rtRigTried[rigT][rigH][rigS][0];
+        if (!*fallback && !*fallbackTried) {
+          *fallbackTried = true;
+          *fallback = buildRTRigComposite(doRTTrans, _lightHdrOn, rtShadow, false);
+        }
+        if (*fallback) {
+          composite = *fallback;
+          rtRig = true;
+        }
       }
     }
     [er setRenderPipelineState:composite];
+    if (usingSoftComposite) {
+      [er setFragmentTexture:_rtSoft atIndex:kRTSoftTextureIndex];
+      [er setFragmentBytes:&su length:sizeof(su) atIndex:kRTSoftBufferIndex];
+    }
     if (doRTTrans) {
       [er useResource:_rtTransAS usage:MTLResourceUsageRead stages:MTLRenderStageFragment];
       [er setFragmentAccelerationStructure:_rtTransAS atBufferIndex:9];

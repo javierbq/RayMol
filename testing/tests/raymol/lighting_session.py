@@ -45,7 +45,7 @@ THREE_LIGHTS_PLUS_AIR = {
             'dust_opacity': 0.25},
     'lights': [
         {'name': 'key', 'anchor': 'camera', 'orbit': -35.5, 'pitch': 30.2,
-         'radius': 3.3, 'beam': 50.0, 'softness': 0.45,
+         'radius': 3.3, 'beam': 50.0, 'softness': 0.45, 'size': 0.5,
          'color': [1.0, 0.95, 0.9], 'warmth': 5200.0, 'intensity': 1.2,
          'highlight': 0.6, 'falloff': 1.5, 'shadow': True},
         {'name': 'fill', 'anchor': 'camera', 'orbit': 60.0, 'pitch': 10.5,
@@ -100,7 +100,7 @@ V1_FIELDS = {
     'light': ['name', 'anchor', 'orbit', 'pitch', 'radius', 'position', 'aim',
               'aim_point', 'aim_selection', 'beam', 'softness', 'color',
               'warmth', 'intensity', 'highlight', 'falloff', 'shadow',
-              'outline'],
+              'outline', 'size'],
 }
 
 
@@ -222,6 +222,24 @@ class TestLightSession(testing.PyMOLTestCase):
         cmd.reinitialize()
         cmd.set_session(session)
         self.assertEqual(cmd.get_lights(), rig)
+        self.assertEqual(cmd.get_lights()['lights'][0]['size'], 0.5)
+
+    def testVersion1LightListWithoutTrailingSizeLoadsWithZero(self):
+        """A session saved before #741 has 18 fields per light (no 'size'):
+        the loader takes the known prefix and defaults 'size' to 0.0."""
+        self.load_1rx1()
+        rig = self.set_rig()
+        session = cmd.get_session()
+        # Truncate each light list in the session key to 18 elements
+        for light_list in session['light_rig'][3]:
+            del light_list[18:]
+            self.assertEqual(len(light_list), 18)
+        cmd.set_lights(None)
+        cmd.set_session(session)
+        loaded = cmd.get_lights()
+        self.assertIsNotNone(loaded)
+        for light in loaded['lights']:
+            self.assertEqual(light['size'], 0.0)
 
     def testGetSetSessionRestoresRig(self):
         """The snapshot pattern (appkit_theme_preview: get_session, change
@@ -287,14 +305,14 @@ class TestLightSession(testing.PyMOLTestCase):
             self.assertEqual(key[2], [0.25, 0.4, 0.6, 2.5, -0.3, 1234, 2.0, 0.25])
             self.assertEqual(len(key[3]), 3)
             for light in key[3]:
-                self.assertEqual(len(light), 18)
+                self.assertEqual(len(light), 19)
             key_light, fill, rim = key[3]
             self.assertEqual(key_light[0], 'key')
-            self.assertEqual(key_light[16:], [1, 0])          # shadow, outline
+            self.assertEqual(key_light[16:], [1, 0, 0.5])          # shadow, outline, size
             self.assertEqual(fill[6:9], [1, [21.3, 33.1, 11.7], 'organic'])
             self.assertEqual(rim[1], 1)                       # pinned
             self.assertEqual(rim[5], [-12.5, 60.25, -4.1])    # position
-            self.assertEqual(rim[16:], [0, 1])
+            self.assertEqual(rim[16:], [0, 1, 0.0])
 
     def testSessionLayoutIsFrozen(self):
         """The version 1 slots never move: four top-level slots, and each

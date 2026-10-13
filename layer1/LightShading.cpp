@@ -151,4 +151,14 @@ std::optional<LightRigBlock> LightRigFrameBlock(
   return LightRigPack(*rig, LightRigResolve(*rig, worldToEye), shininess);
 }
 
+float LightSoftRadius(const Light& light, double rigSize, bool mobile)
+{
+  if (mobile || !light.shadow || !(light.size > 0.0))
+    return 0.0f;
+  const double r = light.size * rigSize;
+  if (!std::isfinite(r) || !(r > 0.0))
+    return 0.0f;
+  return float(r);
+}
+
 } // namespace pymol
