@@ -4701,7 +4701,10 @@ fragment float4 rt_light_soft(PostVOut in [[stage_in]],
                           fract(rot + 0.618034 * float(i)))
         : w;
   }
-  const float3 ratio = lit / max(total, float3(1e-6));
+  // A channel nothing lights here (no classic term, every light off or
+  // facing away) keeps the raster colour: 1, not 0/0 (#741).
+  const float3 ratio = select(float3(1.0), lit / max(total, float3(1e-6)),
+                              total > float3(1e-6));
   return float4(light_finite3(ratio) ? saturate(ratio) : float3(1.0), 1.0);
 }
 
