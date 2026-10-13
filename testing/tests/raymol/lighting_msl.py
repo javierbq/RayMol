@@ -458,7 +458,8 @@ class TestLightBlock(LightMSLCase):
                 # Blinn-Phong in the light's colour, at the light's own
                 # highlight strength times the material's
                 'constfloat3H=Ld+V;',
-                't.specular+=rad*(rig.L[i].misc.x*r.highlight*pow(saturate(dot(N,normalize(H))),shin));',
+                'constfloatndh=saturate(dot(N,normalize(H)));',  # #712
+                't.specular+=rad*(rig.L[i].misc.x*r.highlight*pow(ndh,shin));',  # #712
                 'constfloatshin=max(rig.head.y*r.sharpness,1.0);',
                 # two-sided, toward the viewer
                 'if(dot(N,V)<0.0)N=-N;'):
@@ -1630,9 +1631,9 @@ class TestRayTracedReflections(LightMSLCase):
                 # their one kLightHdr (#624; #855's glass hits), set by both RT builders
                 self.assertEqual(len(HDR_CONSTANT.findall(body)), 1, name)
                 body = HDR_CONSTANT.sub('', body)
-            # (the tone, ACES and RT family constants are plain constants, not function ones)
+            # (the tone, ACES, RT row stride (#712) and RT family constants are plain constants, not function ones)
             body = re.sub(r'\bkLightTone(?:Knee|White)\b|\bkLightAces(?:[A-E]|Clip)\b', '', body)
-            body = re.sub(r'\bkRTFamily(?:Procedural|Glass)\b', '', body)
+            body = re.sub(r'\bkRTFamily(?:Procedural|Glass)\b|\bkRTMatRow\b', '', body)  # #712
             self.assertNotRegex(body, constant, name)
             todo += [c for c in re.findall(r'\b((?:light|mat|rt)_\w+)\s*\(',
                                            self.rt_functions[name][1])
@@ -1651,13 +1652,18 @@ class TestRayTracedReflections(LightMSLCase):
         self.assertIn('return light_response_neutral();', body)
         code = squash(body)
         self.assertIn('if(mi<0||float(mi)>=matCount)returnlight_response_neutral();', code)
-        self.assertIn('constfloat4a=mats[4*mi];', code)
-        self.assertIn('constfloat4b=mats[4*mi+1];', code)
+        self.assertIn('constfloat4a=mats[kRTMatRow*mi];', code)  # #712
+        self.assertIn('constfloat4b=mats[kRTMatRow*mi+1];', code)  # #712
+        self.assertIn('constfloat4e=mats[kRTMatRow*mi+4];', code)  # #712
         self.assertIn('r.diffuse=b.x;', code)
         self.assertIn('r.highlight=b.y;', code)
         self.assertIn('r.sharpness=b.z;', code)
         self.assertIn('r.tint=b.w;', code)
         self.assertIn('r.wrap=a.w;', code)
+        self.assertIn('r.highlight2=e.x;', code)  # #712
+        self.assertIn('r.sharpness2=e.y;', code)  # #712
+        self.assertIn('r.tint2=e.z;', code)  # #712
+        self.assertIn('r.tintGain=e.w;', code)  # #712
 
         for name in ('rt_rig_hit', 'rt_rig_hit_shadowed'):
             sig, body = self.rt_functions[name]
@@ -1665,7 +1671,7 @@ class TestRayTracedReflections(LightMSLCase):
             self.assertNotIn('light_response_neutral', body)
 
         _, comp_body = fragments(self.rt)['rt_composite']
-        self.assertRegex(comp_body, r'float4\s+mat\s*=\s*\(mi\s*>=\s*0\s*&&\s*float\(mi\)\s*<\s*u\.matCount\)\s*\?\s*mats\[4\s*\*\s*mi\]\s*:\s*float4\(0\.0\);')
+        self.assertRegex(comp_body, r'float4\s+mat\s*=\s*\(mi\s*>=\s*0\s*&&\s*float\(mi\)\s*<\s*u\.matCount\)\s*\?\s*mats\[kRTMatRow\s*\*\s*mi\]\s*:\s*float4\(0\.0\);')  # #712
         self.assertRegex(comp_body, r'hmi\s*=\s*int\(sph\[2u\s*\*\s*res\.instance_id\s*\+\s*1u\]\.w\);')
         self.assertRegex(comp_body, r'hmi\s*=\s*int\(triMat\[prim\]\);')
         self.assertIn('rt_rig_hit_shadowed(rig, u, lightShadowMaps, shadowSamp, reflCol, ha, hitP, hn, R, rt_hit_response(mats, hmi, u.matCount))',
@@ -1675,12 +1681,12 @@ class TestRayTracedReflections(LightMSLCase):
 
         # CPU side
         header = strip_comments(read(METAL_H))
-        self.assertRegex(header, r'std::vector<std::array<float,\s*16>>\s+_rtFrameMat;')
-        self.assertRegex(header, r'std::vector<std::array<float,\s*16>>\s+_rtBuiltMat;')
+        self.assertRegex(header, r'std::vector<RTMatRow>\s+_rtFrameMat;')  # #712
+        self.assertRegex(header, r'std::vector<RTMatRow>\s+_rtBuiltMat;')  # #712
         self.assertIn('_rtFrameMat.push_back(rtOccurrenceMaterial());', squash(header))
 
         upload = cpp_function(self.mm, 'RendererMetal::uploadRTMatTable')
-        self.assertIn('n * 16 * sizeof(float)', upload)
+        self.assertIn('n * std::tuple_size<RTMatRow>::value * sizeof(float)', upload)  # #712
 
         occ = cpp_function(self.mm, 'RendererMetal::rtOccurrenceMaterial')
         self.assertIn('MaterialLightResponseFor(_repMatParams)', occ)
@@ -1690,7 +1696,10 @@ class TestRayTracedReflections(LightMSLCase):
                       'MaterialLightSharpness(r.exponent,_lightRigOn?_lightRigBlock.head[1]:0.0f),r.tint,'
                       'float(_repMatParams.family),float(_repMatParams.mode),'
                       '_repMatParams.p[0],_repMatParams.p[1],'
-                      '_repMatParams.p[2],_repMatParams.p[3],_repMatParams.p[4],_repMatParams.p[5]};',
+                      '_repMatParams.p[2],_repMatParams.p[3],_repMatParams.p[4],_repMatParams.p[5],'
+                      'r.highlight2,'
+                      'MaterialLightSharpness(r.exponent2,_lightRigOn?_lightRigBlock.head[1]:0.0f),'
+                      'r.tint2,r.tintGain};',  # #712
                       occ_sq)
 
     def testHitTakesTheProceduralAlbedo(self):

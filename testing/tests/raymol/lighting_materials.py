@@ -32,8 +32,10 @@ REP_INDEX = {'cartoon': repres['cartoon'], 'surface': repres['surface'],
 REPS = ('surface', 'cartoon', 'stick', 'sphere')
 
 NEUTRAL = {'diffuse': 1.0, 'highlight': 1.0, 'exponent': 0.0, 'tint': 0.0,
-           'wrap': 0.0}
-KEYS = ('diffuse', 'highlight', 'exponent', 'tint', 'wrap')
+           'wrap': 0.0, 'highlight2': 0.0, 'exponent2': 0.0, 'tint2': 0.0,
+           'tint_gain': 1.0}
+KEYS = ('diffuse', 'highlight', 'exponent', 'tint', 'wrap',
+        'highlight2', 'exponent2', 'tint2', 'tint_gain')
 
 # The shader laws the response reproduces (kMaterialSrc, RendererMetal.mm),
 # written out here rather than read from the code under test.
@@ -47,8 +49,12 @@ JELLY_WET_EXP = 70.0         # mat_jelly_shade: p[2] * pow(n.h, 70)
 JELLY_WET_TINT = 0.25        # mix(1, base * 1.3, 0.25)
 JELLY_GLOW_WRAP = 0.6        # (n.l + 0.6) / 1.6
 JELLY_GLOW_GAIN = 1.15       # base * 1.15
+JELLY_SHEEN = 0.12           # mat_jelly_shade: broad sheen, 0.12 * pow(n.h, 8)
+JELLY_SHEEN_EXP = 8.0        # the sheen's exponent
+JELLY_TINT_GAIN = 1.3        # jelly's tint gain
 RUBBER_EXP = 8.0             # p[2] * pow(n.h, 8)
 RUBBER_TINT = 0.7            # mix(1, base * 1.4, 0.7)
+RUBBER_TINT_GAIN = 1.4       # rubber's tint gain
 MIN_ROUGH = 0.1              # the reflective lobe's roughness floor
 # Tint rule B (#615 Q1): the table metallic's studio tint is the CPU ray
 # mapping's highlight tint (MaterialRayParamsFor: 0.8) over its table tint.
@@ -58,16 +64,16 @@ TINT_GAIN = CPU_METALLIC_SPEC_TINT / METALLIC_TABLE_TINT
 
 # The plan's published values (section 3.1) at the table params.
 PUBLISHED = {
-    'default': (1.0, 1.0, 0.0, 0.0, 0.0),
-    'matte': (1.0, 0.0, 0.0, 0.0, 0.0),
-    'clay': (1.0, 0.0, 0.0, 0.0, 0.0),
-    'rubber': (1.0, 0.34, 8.0, 0.7, 0.0),
-    'marble': (1.0, 1.0, 0.0, 0.0, 0.35),
-    'plastic': (1.0, 3.5368, 86.889, 0.0, 0.0),
-    'metallic': (0.79, 3.0558, 30.0, 0.8, 0.0),
-    'glass': (1.0, 2.4, 60.0, 0.0, 0.0),
-    'frosted_glass': (1.0, 1.248, 27.6, 0.0, 0.0),
-    'jelly': (0.4025, 2.2, 70.0, 0.25, 0.6),
+    'default': (1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
+    'matte': (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
+    'clay': (1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
+    'rubber': (1.0, 0.34, 8.0, 0.7, 0.0, 0.0, 0.0, 0.0, 1.4),
+    'marble': (1.0, 1.0, 0.0, 0.0, 0.35, 0.0, 0.0, 0.0, 1.0),
+    'plastic': (1.0, 3.5368, 86.889, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0),
+    'metallic': (0.79, 3.0558, 30.0, 0.8, 0.0, 0.2, 0.0, 0.0, 1.0),
+    'glass': (1.0, 2.4, 60.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
+    'frosted_glass': (1.0, 1.248, 27.6, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
+    'jelly': (0.4025, 2.2, 70.0, 0.25, 0.6, 0.24, 8.0, 0.25, 1.3),
 }
 
 
@@ -101,16 +107,21 @@ def oracle(name, params):
         return dict(NEUTRAL, highlight=0.0)
     if name == 'rubber':
         return dict(NEUTRAL, highlight=max(p[2], 0.0) / HIGHLIGHT_REF,
-                    exponent=RUBBER_EXP, tint=RUBBER_TINT)
+                    exponent=RUBBER_EXP, tint=RUBBER_TINT,
+                    tint_gain=RUBBER_TINT_GAIN)
     if name == 'marble':
         return dict(NEUTRAL, wrap=MARBLE_WRAP)
     if name in ('plastic', 'metallic'):
         reflect, tint = clamp01(reflect), clamp01(tint)
         a = max(clamp01(rough), MIN_ROUGH)
         n = max(2.0 / (a * a) - 2.0, 1.0)
+        r_tint = min(1.0, tint * TINT_GAIN)
+        coat = 1.0 - r_tint
         return {'diffuse': 1.0 - reflect * tint,
                 'highlight': reflect * (n + 2.0) / (2.0 * math.pi),
-                'exponent': n, 'tint': min(1.0, tint * TINT_GAIN), 'wrap': 0.0}
+                'exponent': n, 'tint': r_tint, 'wrap': 0.0,
+                'highlight2': coat, 'exponent2': 0.0, 'tint2': 0.0,
+                'tint_gain': 1.0}
     if name in ('glass', 'frosted_glass'):
         r = clamp01(rough)
         expo = GLASS_GLINT_EXP + (GLASS_GLINT_EXP * GLASS_FROST_EXP_SCALE
@@ -121,7 +132,10 @@ def oracle(name, params):
         return {'diffuse': JELLY_GLOW_GAIN * clamp01(p[1]),
                 'highlight': max(p[2], 0.0) / HIGHLIGHT_REF,
                 'exponent': JELLY_WET_EXP, 'tint': JELLY_WET_TINT,
-                'wrap': JELLY_GLOW_WRAP}
+                'wrap': JELLY_GLOW_WRAP,
+                'highlight2': JELLY_SHEEN / HIGHLIGHT_REF,
+                'exponent2': JELLY_SHEEN_EXP, 'tint2': JELLY_WET_TINT,
+                'tint_gain': JELLY_TINT_GAIN}
     return dict(NEUTRAL)
 
 
@@ -148,15 +162,20 @@ class MaterialCase(testing.PyMOLTestCase):
         for key in KEYS:
             self.assertEqual(got[key], NEUTRAL[key], '%s: %s' % (msg, key))
         self.assertEqual(got['sharpness'], 1.0, msg)
+        self.assertEqual(got['sharpness2'], 1.0, msg)
 
     def assertSane(self, got, msg=None):
-        for key in KEYS + ('sharpness',):
+        for key in KEYS + ('sharpness', 'sharpness2'):
             self.assertTrue(math.isfinite(got[key]), '%s: %s %r' % (msg, key, got[key]))
         self.assertGreaterEqual(got['diffuse'], 0.0, msg)
         self.assertGreaterEqual(got['highlight'], 0.0, msg)
         self.assertGreaterEqual(got['wrap'], 0.0, msg)
         self.assertTrue(0.0 <= got['tint'] <= 1.0, msg)
         self.assertTrue(got['exponent'] == 0.0 or got['exponent'] >= 1.0, msg)
+        self.assertGreaterEqual(got['highlight2'], 0.0, msg)
+        self.assertTrue(0.0 <= got['tint2'] <= 1.0, msg)
+        self.assertGreater(got['tint_gain'], 0.0, msg)
+        self.assertTrue(got['exponent2'] == 0.0 or got['exponent2'] >= 1.0, msg)
 
 
 class TestResponseTable(MaterialCase):
@@ -186,6 +205,12 @@ class TestResponseTable(MaterialCase):
                                            delta=TOL * got['exponent'], msg=label)
                 else:
                     self.assertEqual(got['sharpness'], 1.0, label)
+                if got['exponent2'] > 0.0:
+                    self.assertAlmostEqual(got['sharpness2'] * SHININESS,
+                                           got['exponent2'],
+                                           delta=TOL * got['exponent2'], msg=label)
+                else:
+                    self.assertEqual(got['sharpness2'], 1.0, label)
 
     def testThePublishedTable(self):
         """The derived values the plan's table publishes, at table params."""
@@ -363,12 +388,14 @@ class TestCustomKnobs(MaterialCase):
     def testOutOfRangeTripleIsClamped(self):
         """As RendererMetal::setRepMaterial clamps reflect, tint and rough."""
         _p, got = self.knob('metallic', reflect=1.7, tint=-0.5, rough=1.7)
-        self.assertResponse(got, {'diffuse': 1.0,
-                                  'highlight': 3.0 / (2.0 * math.pi),
-                                  'exponent': 1.0, 'tint': 0.0, 'wrap': 0.0})
+        self.assertResponse(got, dict(NEUTRAL, diffuse=1.0,
+                                      highlight=3.0 / (2.0 * math.pi),
+                                      exponent=1.0, tint=0.0, wrap=0.0,
+                                      highlight2=1.0))
         _p, got = self.knob('metallic', reflect=-0.5, tint=1.7, rough=-0.5)
-        self.assertResponse(got, {'diffuse': 1.0, 'highlight': 0.0,
-                                  'exponent': 198.0, 'tint': 1.0, 'wrap': 0.0})
+        self.assertResponse(got, dict(NEUTRAL, diffuse=1.0, highlight=0.0,
+                                      exponent=198.0, tint=1.0, wrap=0.0,
+                                      highlight2=0.0))
         _p, got = self.knob('frosted_glass', rough=1.7)
         self.assertResponse(got, oracle('glass', (0, 0, 0, 0, 1.0, (0,) * 6)))
         _p, got = self.knob('frosted_glass', rough=-0.5)
@@ -393,9 +420,10 @@ class TestCustomKnobs(MaterialCase):
         metallic, jelly = names['metallic'], names['jelly']
         refl = 2   # cMaterialFamily_reflective
         got = response((refl, metallic, 1.7, -0.5, 1.7, (0.0,) * 6))
-        self.assertResponse(got, {'diffuse': 1.0,
-                                  'highlight': 3.0 / (2.0 * math.pi),
-                                  'exponent': 1.0, 'tint': 0.0, 'wrap': 0.0})
+        self.assertResponse(got, dict(NEUTRAL, diffuse=1.0,
+                                      highlight=3.0 / (2.0 * math.pi),
+                                      exponent=1.0, tint=0.0, wrap=0.0,
+                                      highlight2=1.0))
         got = response((3, jelly, 0.0, 0.0, 0.0, (2.2, 7.0, -1.0, 1.0, 0.0, 0.0)))
         self.assertAlmostEqual(got['diffuse'], JELLY_GLOW_GAIN, delta=TOL)
         self.assertEqual(got['highlight'], 0.0)
@@ -590,3 +618,89 @@ class TestClassicScale(MaterialCase):
             for key in ('direct', 'reflect', 'specular'):
                 self.assertEqual(frame[key], f32(f32(base[key]) * scale),
                                  '%s at classic %r' % (key, classic))
+
+
+class TestSecondLobe712(MaterialCase):
+    """RayMol #712 Part B: second specular lobe and highlight tint gain."""
+
+    def testJellySheenLobe(self):
+        """Jelly carries the sheen lobe (highlight2 0.24, exponent2 8, tint2 0.25, tint_gain 1.3)."""
+        self.use('jelly', 'surface')
+        got = response(draw_params('p', 'surface'))
+        self.assertAlmostEqual(got['highlight2'], 0.24, delta=TOL)
+        self.assertAlmostEqual(got['exponent2'], 8.0, delta=TOL)
+        self.assertAlmostEqual(got['tint2'], 0.25, delta=TOL)
+        self.assertAlmostEqual(got['tint_gain'], 1.3, delta=TOL)
+
+    def testRubberTintGain(self):
+        """Rubber's tint_gain is 1.4 and it has no second lobe."""
+        self.use('rubber', 'surface')
+        got = response(draw_params('p', 'surface'))
+        self.assertAlmostEqual(got['tint_gain'], 1.4, delta=TOL)
+        self.assertEqual(got['highlight2'], 0.0)
+        self.assertEqual(got['exponent2'], 0.0)
+        self.assertEqual(got['tint2'], 0.0)
+
+    def testPlasticAndMetallicCoat(self):
+        """Plastic's coat is 1 and metallic's is 1 - its tint (table: 0.2, and Custom tint 1 -> coat 0)."""
+        self.use('plastic', 'surface')
+        got_p = response(draw_params('p', 'surface'))
+        self.assertAlmostEqual(got_p['highlight2'], 1.0, delta=TOL)
+        self.assertEqual(got_p['exponent2'], 0.0)
+        self.assertEqual(got_p['tint2'], 0.0)
+        self.assertEqual(got_p['tint_gain'], 1.0)
+
+        self.use('metallic', 'surface')
+        got_m = response(draw_params('p', 'surface'))
+        # Table metallic tint is 0.35, scaled by TINT_GAIN -> 0.8, coat = 1 - 0.8 = 0.2
+        self.assertAlmostEqual(got_m['highlight2'], 0.2, delta=TOL)
+        self.assertEqual(got_m['exponent2'], 0.0)
+        self.assertEqual(got_m['tint2'], 0.0)
+        self.assertEqual(got_m['tint_gain'], 1.0)
+
+        # Custom tint 1.0 -> r.tint is 1.0 -> coat is 0.0
+        cmd.set('surface_material_tint', 1.0, 'p')
+        got_bare = response(draw_params('p', 'surface'))
+        self.assertEqual(got_bare['highlight2'], 0.0)
+        cmd.unset('surface_material_tint', 'p')
+
+    def testNeutralMaterials(self):
+        """Every other material, and default, is neutral in the four new terms."""
+        for name in ('default', 'matte', 'clay', 'marble', 'glass', 'frosted_glass'):
+            self.use(name, 'surface')
+            got = response(draw_params('p', 'surface'))
+            label = '%s new terms' % name
+            self.assertEqual(got['highlight2'], 0.0, label)
+            self.assertEqual(got['exponent2'], 0.0, label)
+            self.assertEqual(got['tint2'], 0.0, label)
+            self.assertEqual(got['tint_gain'], 1.0, label)
+            self.assertEqual(got['sharpness2'], 1.0, label)
+
+    def testSharpness2(self):
+        """Sharpness2 is exponent2 / shininess for jelly and 1 for the coat."""
+        self.use('jelly', 'surface')
+        got_j = response(draw_params('p', 'surface'), SHININESS)
+        self.assertAlmostEqual(got_j['sharpness2'], 8.0 / SHININESS, delta=TOL)
+
+        self.use('plastic', 'surface')
+        got_p = response(draw_params('p', 'surface'), SHININESS)
+        self.assertEqual(got_p['sharpness2'], 1.0)
+
+    def testTintGainInvariants(self):
+        """A NaN, inf or negative input never yields a NaN, a negative second
+        lobe or a non-positive tint_gain, for every material that sets one."""
+        names = material_names()
+        bads = (float('nan'), float('inf'), float('-inf'), -1.0)
+        for bad in bads:
+            for family, name in ((2, 'plastic'), (2, 'metallic'), (1, 'rubber'),
+                                 (3, 'jelly')):
+                got = response((family, names[name], bad, bad, bad, (bad,) * 6))
+                label = '%s at %r' % (name, bad)
+                # the four #712 terms (the #615 terms keep their own rules)
+                for key in ('highlight2', 'exponent2', 'tint2', 'tint_gain',
+                            'sharpness2'):
+                    self.assertTrue(math.isfinite(got[key]), '%s: %s' % (label, key))
+                self.assertGreaterEqual(got['highlight2'], 0.0, label)
+                self.assertTrue(0.0 <= got['tint2'] <= 1.0, label)
+                self.assertTrue(got['exponent2'] == 0.0 or got['exponent2'] >= 1.0, label)
+                self.assertGreater(got['tint_gain'], 0.0, label)

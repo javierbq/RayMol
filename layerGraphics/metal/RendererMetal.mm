@@ -123,12 +123,18 @@ struct MaterialU {
   float lightTint;
   float lightWrap;
   float lightClassic;
+  float lightHighlight2;
+  float lightSharpness2;
+  float lightTint2;
+  float lightTintGain;
   float _pad3;
   float _pad4;
 };
-static_assert(sizeof(MaterialU) == 160, "MaterialU must match the MSL struct");
+static_assert(sizeof(MaterialU) == 176, "MaterialU must match the MSL struct");
 static_assert(offsetof(MaterialU, lightDiffuse) == 128,
     "the studio response is appended after the 128 bytes before #615");
+static_assert(offsetof(MaterialU, lightHighlight2) == 152,
+    "the second lobe and tint gain are appended after lightClassic (#712)");
 static_assert(sizeof(MaterialU) % 16 == 0, "MaterialU must stay 16-byte aligned");
 
 // Fill and bind MaterialU for the draw about to be issued. Called from EVERY
@@ -163,6 +169,10 @@ void bindMaterialU(id<MTLRenderCommandEncoder> enc, const MaterialParams& mp,
   u.lightTint = r.tint;
   u.lightWrap = r.wrap;
   u.lightClassic = classicScale;
+  u.lightHighlight2 = r.highlight2;
+  u.lightSharpness2 = MaterialLightSharpness(r.exponent2, shininess);
+  u.lightTint2 = r.tint2;
+  u.lightTintGain = r.tintGain;
   [enc setFragmentBytes:&u length:sizeof(u) atIndex:kMaterialBufferIndex];
 }
 
@@ -955,21 +965,27 @@ void RendererMetal::setRepMaterial(const MaterialParams& params)
   _repMat[2] = _repMatParams.rough;
 }
 
-// Issue #709: snapshot the occurrence's traced-reflection material terms.
-// Carries the 3 reflection terms {reflect, tint, rough} plus the 5 studio-light
-// response terms {wrap, diffuse, highlight, sharpness, tint} matching what
-// bindMaterialU / bindRepMaterial give the raster draw, and rows 2-3 carrying
-// the procedural/glass parameters {family, mode, p[0..5]} (#709, #855). Evaluated
-// at record time so what a reflection ray hits is shaded with its own material.
-std::array<float, 16> RendererMetal::rtOccurrenceMaterial() const
+// Issue #709, #712: snapshot the occurrence's traced-reflection material terms.
+// Carries the 3 reflection terms {reflect, tint, rough} plus the studio-light
+// response terms {wrap, diffuse, highlight, sharpness, tint, highlight2,
+// sharpness2, tint2, tintGain} matching what bindMaterialU / bindRepMaterial
+// give the raster draw, and rows 2-3 carrying the procedural/glass parameters
+// {family, mode, p[0..5]} (#709, #855, #712). Evaluated at record time so
+// what a reflection ray hits is shaded with its own material.
+RendererMetal::RTMatRow RendererMetal::rtOccurrenceMaterial() const
 {
   const MaterialLightResponse r = MaterialLightResponseFor(_repMatParams);
-  return {_repMat[0], _repMat[1], _repMat[2], r.wrap, r.diffuse, r.highlight,
+  return {_repMat[0], _repMat[1], _repMat[2], r.wrap,
+          r.diffuse, r.highlight,
           MaterialLightSharpness(r.exponent, _lightRigOn ? _lightRigBlock.head[1] : 0.0f),
           r.tint,
           float(_repMatParams.family), float(_repMatParams.mode),
           _repMatParams.p[0], _repMatParams.p[1],
-          _repMatParams.p[2], _repMatParams.p[3], _repMatParams.p[4], _repMatParams.p[5]};
+          _repMatParams.p[2], _repMatParams.p[3], _repMatParams.p[4], _repMatParams.p[5],
+          r.highlight2,
+          MaterialLightSharpness(r.exponent2, _lightRigOn ? _lightRigBlock.head[1] : 0.0f),
+          r.tint2,
+          r.tintGain};
 }
 
 void RendererMetal::enableOitRefraction()
@@ -3570,7 +3586,7 @@ struct RTU {
   // Traced self-reflections (reflective materials): env 0 = bg colour / 1 = studio
   // gradient on miss; samples = rays/pixel for glossy materials (offscreen);
   // sphereCount = number of sphere instances (ids below it are spheres);
-  // matCount = rows in the material table (each row is four float4, #855); then the two-light model.
+  // matCount = rows in the material table (each row is five float4, #855, #712); then the two-light model.
   float reflEnv, reflSamples, sphereCount, matCount;
   float lAmbient, lDirect, lReflect, lSpec;
   float lShin, tMatCount, aoAces, pad6;   // tMatCount: rows in the transparent material table, #855; 0 without kRTTrans; aoAces > 0.5: ACES is the curve (#735)
@@ -3775,6 +3791,10 @@ struct LightResponse {
   float sharpness;
   float tint;
   float wrap;
+  float highlight2;
+  float sharpness2;
+  float tint2;
+  float tintGain;
 };
 struct LightTerms {
   float3 diffuse;
@@ -3788,6 +3808,10 @@ __attribute__((unused)) static LightResponse light_response_neutral() {
   r.sharpness = 1.0;
   r.tint = 0.0;
   r.wrap = 0.0;
+  r.highlight2 = 0.0;
+  r.sharpness2 = 1.0;
+  r.tint2 = 0.0;
+  r.tintGain = 1.0;
   return r;
 }
 
@@ -3802,11 +3826,13 @@ __attribute__((unused)) static LightTerms light_terms_view(
   LightTerms t;
   t.diffuse = float3(0.0);
   t.specular = float3(0.0);
+  float3 spec2 = float3(0.0);
   const int n = int(rig.head.x);
   const float nl = length(nEye);
   float3 N = nl > 1e-8 ? nEye / nl : V;
   if (dot(N, V) < 0.0) N = -N;
   const float shin = max(rig.head.y * r.sharpness, 1.0);
+  const float shin2 = max(rig.head.y * r.sharpness2, 1.0);
   for (int i = 0; i < 6; ++i) {
     if (i >= n) break;
     const float3 Lv = rig.L[i].pos.xyz - pEye;
@@ -3825,11 +3851,15 @@ __attribute__((unused)) static LightTerms light_terms_view(
     t.diffuse += rad * (wd * r.diffuse);
     const float3 H = Ld + V;
     if (ndl > 0.0 && dot(H, H) > 1e-8) {
-      t.specular += rad * (rig.L[i].misc.x * r.highlight *
-                           pow(saturate(dot(N, normalize(H))), shin));
+      const float ndh = saturate(dot(N, normalize(H)));
+      t.specular += rad * (rig.L[i].misc.x * r.highlight * pow(ndh, shin));
+      if (r.highlight2 > 0.0)
+        spec2 += rad * (rig.L[i].misc.x * r.highlight2 * pow(ndh, shin2));
     }
   }
-  t.specular *= mix(float3(1.0), base, r.tint);
+  const float3 tc = r.tintGain != 1.0 ? saturate(base * r.tintGain) : base;
+  t.specular = t.specular * mix(float3(1.0), tc, r.tint) +
+               spec2 * mix(float3(1.0), tc, r.tint2);
   return t;
 }
 
@@ -3884,11 +3914,13 @@ __attribute__((unused)) static LightTerms light_terms_view_shadowed(
   LightTerms t;
   t.diffuse = float3(0.0);
   t.specular = float3(0.0);
+  float3 spec2 = float3(0.0);
   const int n = int(rig.head.x);
   const float nl = length(nEye);
   float3 N = nl > 1e-8 ? nEye / nl : V;
   if (dot(N, V) < 0.0) N = -N;
   const float shin = max(rig.head.y * r.sharpness, 1.0);
+  const float shin2 = max(rig.head.y * r.sharpness2, 1.0);
   for (int i = 0; i < 6; ++i) {
     if (i >= n) break;
     const float3 Lv = rig.L[i].pos.xyz - pEye;
@@ -3907,11 +3939,15 @@ __attribute__((unused)) static LightTerms light_terms_view_shadowed(
     t.diffuse += rad * (wd * r.diffuse);
     const float3 H = Ld + V;
     if (ndl > 0.0 && dot(H, H) > 1e-8) {
-      t.specular += rad * (rig.L[i].misc.x * r.highlight *
-                           pow(saturate(dot(N, normalize(H))), shin));
+      const float ndh = saturate(dot(N, normalize(H)));
+      t.specular += rad * (rig.L[i].misc.x * r.highlight * pow(ndh, shin));
+      if (r.highlight2 > 0.0)
+        spec2 += rad * (rig.L[i].misc.x * r.highlight2 * pow(ndh, shin2));
     }
   }
-  t.specular *= mix(float3(1.0), base, r.tint);
+  const float3 tc = r.tintGain != 1.0 ? saturate(base * r.tintGain) : base;
+  t.specular = t.specular * mix(float3(1.0), tc, r.tint) +
+               spec2 * mix(float3(1.0), tc, r.tint2);
   return t;
 }
 
@@ -4024,20 +4060,27 @@ __attribute__((unused)) static float3 light_finish(float3 c, float4 tone) {
   return mat_soft_knee(c);
 }
 
-// The studio response of material table row mi (#709): row0 carries
+constant int kRTMatRow = 5;   // float4s per material table row (#712)
+
+// The studio response of material table row mi (#709, #712): row0 carries
 // {reflect, tint, rough, wrap}, row1 carries the studio response terms
-// {diffuse, highlight, sharpness, tint}. Returns light_response_neutral() when
-// mi is out of range.
+// {diffuse, highlight, sharpness, tint}, row4 carries {highlight2, sharpness2,
+// tint2, tintGain}. Returns light_response_neutral() when mi is out of range.
 static LightResponse rt_hit_response(device const float4* mats, int mi, float matCount) {
   if (mi < 0 || float(mi) >= matCount) return light_response_neutral();
-  const float4 a = mats[4 * mi];
-  const float4 b = mats[4 * mi + 1];
+  const float4 a = mats[kRTMatRow * mi];
+  const float4 b = mats[kRTMatRow * mi + 1];
+  const float4 e = mats[kRTMatRow * mi + 4];
   LightResponse r;
   r.diffuse = b.x;
   r.highlight = b.y;
   r.sharpness = b.z;
   r.tint = b.w;
   r.wrap = a.w;
+  r.highlight2 = e.x;
+  r.sharpness2 = e.y;
+  r.tint2 = e.z;
+  r.tintGain = e.w;
   return r;
 }
 
@@ -4109,8 +4152,8 @@ static RTHitMaterial rt_hit_material(device const float4* mats, int mi, float ma
   m.mode = 0;
   for (int i = 0; i < 6; ++i) m.p[i] = 0.0;
   if (mi < 0 || float(mi) >= matCount) return m;
-  const float4 c = mats[4 * mi + 2];
-  const float4 d = mats[4 * mi + 3];
+  const float4 c = mats[kRTMatRow * mi + 2];
+  const float4 d = mats[kRTMatRow * mi + 3];
   m.family = int(c.x + 0.5);
   m.mode = int(c.y + 0.5);
   m.p[0] = c.z; m.p[1] = c.w;
@@ -5016,7 +5059,7 @@ fragment float4 rt_composite(PostVOut in [[stage_in]],
         }
       }
     }
-    float4 mat = (mi >= 0 && float(mi) < u.matCount) ? mats[4 * mi] : float4(0.0);
+    float4 mat = (mi >= 0 && float(mi) < u.matCount) ? mats[kRTMatRow * mi] : float4(0.0);
     const float F0 = mat.x, tint = mat.y, rough = mat.z;
     if (F0 > 0.001) {
       float3 R0 = reflect(viewM, nSelf);
@@ -5426,15 +5469,15 @@ void RendererMetal::buildSphereProtoAS()
 // atom, transform = translate(center)·scale(radius), MODEL space). Rebuilt only
 // when the accumulated sphere set changes — model-space centers are invariant
 // under camera rotation, so this does NOT rebuild while orbiting.
-// Upload a per-occurrence traced-reflection material table (#709, #855: four float4,
-// 16 floats per RT geometry occurrence, indexed by the per-primitive occurrence
+// Upload a per-occurrence traced-reflection material table (#709, #855, #712: five float4,
+// 20 floats per RT geometry occurrence, indexed by the per-primitive occurrence
 // index the built AS carries). Tiny; rewritten whenever the record or a
 // material slider changes.
 void RendererMetal::uploadRTMatTable(id<MTLBuffer>& buffer,
-    const std::vector<std::array<float, 16>>& rows)
+    const std::vector<RTMatRow>& rows)
 {
   const size_t n = rows.size();
-  const size_t bytes = std::max<size_t>(n, 1) * 16 * sizeof(float);
+  const size_t bytes = std::max<size_t>(n, 1) * std::tuple_size<RTMatRow>::value * sizeof(float);
   if (!buffer || buffer.length < bytes) {
     [buffer release];
     buffer = [_device newBufferWithLength:bytes options:MTLResourceStorageModeShared];
@@ -5442,10 +5485,10 @@ void RendererMetal::uploadRTMatTable(id<MTLBuffer>& buffer,
   if (!buffer) return;
   float* dst = static_cast<float*>(buffer.contents);
   if (n == 0) {
-    for (int i = 0; i < 16; ++i) dst[i] = 0.0f;
+    for (size_t i = 0; i < std::tuple_size<RTMatRow>::value; ++i) dst[i] = 0.0f;
     return;
   }
-  std::memcpy(dst, rows.data(), n * 16 * sizeof(float));
+  std::memcpy(dst, rows.data(), n * std::tuple_size<RTMatRow>::value * sizeof(float));
 }
 
 void RendererMetal::uploadRTMaterials()
@@ -9266,6 +9309,10 @@ struct MaterialU {
   float lightTint;
   float lightWrap;
   float lightClassic;
+  float lightHighlight2;
+  float lightSharpness2;
+  float lightTint2;
+  float lightTintGain;
   float _pad3;
   float _pad4;
 };
@@ -9291,11 +9338,19 @@ constant float kMatJellyGlowWrap = 0.6;
 constant float kMatJellyGlowGain = 1.15;
 constant float kMatJellyWetExp = 70.0;
 constant float kMatJellyWetTint = 0.25;
+// Mirrored in layer1/Material.cpp for #712.
+constant float kMatJellySheen = 0.12;
+// Mirrored in layer1/Material.cpp for #712.
+constant float kMatJellySheenExp = 8.0;
+// Mirrored in layer1/Material.cpp for #712.
+constant float kMatJellyTintGain = 1.3;
 
 // Rubber's broad key highlight (mat_shade_procedural): its exponent and tint
 // toward the base, named and mirrored for #615 as jelly's are.
 constant float kMatRubberHighlightExp = 8.0;
 constant float kMatRubberHighlightTint = 0.7;
+// Mirrored in layer1/Material.cpp for #712.
+constant float kMatRubberTintGain = 1.4;
 
 // Jelly (#496): a gummy -- a dense scattering BODY under a sharp wet skin. It
 // shares the glass family's pipeline and its peel, and is otherwise the
@@ -9388,9 +9443,9 @@ static float3 mat_jelly_shade(float3 base, float3 N, float3 V,
                   ? max(dot(N, normalize(halfVec)), 0.0) : 0.0;
   // Both are the key light's, so both follow the rig's classic (#615,
   // mat_classic_light: 1 without the rig).
-  col += (m.p[2] * pow(ndoth, kMatJellyWetExp) + 0.12 * pow(ndoth, 8.0))
+  col += (m.p[2] * pow(ndoth, kMatJellyWetExp) + kMatJellySheen * pow(ndoth, kMatJellySheenExp))
          * mat_classic_light(m)
-         * mix(float3(1.0), saturate(base * 1.3), kMatJellyWetTint);
+         * mix(float3(1.0), saturate(base * kMatJellyTintGain), kMatJellyWetTint);
   return mat_inner_knee(col);
 }
 
@@ -9549,7 +9604,7 @@ static float3 mat_shade_procedural(float3 base, float3 N, float3 pModel,
                  (n1 > 0.0 ? 1.0 : 0.0) * mat_classic_light(m);
     float sheen = m.p[3] * pow(1.0 - saturate(N.z), 3.0);
     return col + (spec + sheen) *
-                 mix(float3(1.0), saturate(base * 1.4), kMatRubberHighlightTint);
+                 mix(float3(1.0), saturate(base * kMatRubberTintGain), kMatRubberHighlightTint);
   }
   if (m.mode == kMatMode_clay) {
     // Dead-matte ceramic: faint grain, no specular at all, and a dry grazing
@@ -9653,6 +9708,10 @@ struct LightResponse {
   float sharpness;
   float tint;
   float wrap;
+  float highlight2;
+  float sharpness2;
+  float tint2;
+  float tintGain;
 };
 
 // The rig's light at one point: radiance sums, diffuse and specular kept
@@ -9671,6 +9730,10 @@ __attribute__((unused)) static LightResponse light_response_neutral() {
   r.sharpness = 1.0;
   r.tint = 0.0;
   r.wrap = 0.0;
+  r.highlight2 = 0.0;
+  r.sharpness2 = 1.0;
+  r.tint2 = 0.0;
+  r.tintGain = 1.0;
   return r;
 }
 
@@ -9689,6 +9752,10 @@ __attribute__((unused)) static LightResponse light_response(
   r.sharpness = mat.lightSharpness;
   r.tint = mat.lightTint;
   r.wrap = mat.lightWrap;
+  r.highlight2 = mat.lightHighlight2;
+  r.sharpness2 = mat.lightSharpness2;
+  r.tint2 = mat.lightTint2;
+  r.tintGain = mat.lightTintGain;
   return r;
 }
 
@@ -9715,17 +9782,22 @@ __attribute__((unused)) static float light_visibility(constant LightRigU& rig,
 // falloff reference are both at least 1e-3, the cone never divides by a zero
 // band, pow() is skipped at falloff 0, and the zero vectors normalize() would
 // turn into 0/0 are guarded.
+//
+// A material carries up to two specular lobes and a tint gain (#712): both
+// lobes tint toward the same tint colour tc = saturate(base * tintGain).
 __attribute__((unused)) static LightTerms light_terms_view(
     constant LightRigU& rig, float3 base, float3 nEye, float3 pEye, float3 V,
     LightResponse r) {
   LightTerms t;
   t.diffuse = float3(0.0);
   t.specular = float3(0.0);
+  float3 spec2 = float3(0.0);
   const int n = int(rig.head.x);
   const float nl = length(nEye);
   float3 N = nl > 1e-8 ? nEye / nl : V;
   if (dot(N, V) < 0.0) N = -N;
   const float shin = max(rig.head.y * r.sharpness, 1.0);
+  const float shin2 = max(rig.head.y * r.sharpness2, 1.0);
   for (int i = 0; i < 6; ++i) {
     if (i >= n) break;
     const float3 Lv = rig.L[i].pos.xyz - pEye;
@@ -9748,11 +9820,15 @@ __attribute__((unused)) static LightTerms light_terms_view(
     t.diffuse += rad * (wd * r.diffuse);
     const float3 H = Ld + V;
     if (ndl > 0.0 && dot(H, H) > 1e-8) {
-      t.specular += rad * (rig.L[i].misc.x * r.highlight *
-                           pow(saturate(dot(N, normalize(H))), shin));
+      const float ndh = saturate(dot(N, normalize(H)));
+      t.specular += rad * (rig.L[i].misc.x * r.highlight * pow(ndh, shin));
+      if (r.highlight2 > 0.0)
+        spec2 += rad * (rig.L[i].misc.x * r.highlight2 * pow(ndh, shin2));
     }
   }
-  t.specular *= mix(float3(1.0), base, r.tint);
+  const float3 tc = r.tintGain != 1.0 ? saturate(base * r.tintGain) : base;
+  t.specular = t.specular * mix(float3(1.0), tc, r.tint) +
+               spec2 * mix(float3(1.0), tc, r.tint2);
   return t;
 }
 
@@ -10071,11 +10147,13 @@ __attribute__((unused)) static LightTerms light_terms_view_shadowed(
   LightTerms t;
   t.diffuse = float3(0.0);
   t.specular = float3(0.0);
+  float3 spec2 = float3(0.0);
   const int n = int(rig.head.x);
   const float nl = length(nEye);
   float3 N = nl > 1e-8 ? nEye / nl : V;
   if (dot(N, V) < 0.0) N = -N;
   const float shin = max(rig.head.y * r.sharpness, 1.0);
+  const float shin2 = max(rig.head.y * r.sharpness2, 1.0);
   for (int i = 0; i < 6; ++i) {
     if (i >= n) break;
     const float3 Lv = rig.L[i].pos.xyz - pEye;
@@ -10094,11 +10172,15 @@ __attribute__((unused)) static LightTerms light_terms_view_shadowed(
     t.diffuse += rad * (wd * r.diffuse);
     const float3 H = Ld + V;
     if (ndl > 0.0 && dot(H, H) > 1e-8) {
-      t.specular += rad * (rig.L[i].misc.x * r.highlight *
-                           pow(saturate(dot(N, normalize(H))), shin));
+      const float ndh = saturate(dot(N, normalize(H)));
+      t.specular += rad * (rig.L[i].misc.x * r.highlight * pow(ndh, shin));
+      if (r.highlight2 > 0.0)
+        spec2 += rad * (rig.L[i].misc.x * r.highlight2 * pow(ndh, shin2));
     }
   }
-  t.specular *= mix(float3(1.0), base, r.tint);
+  const float3 tc = r.tintGain != 1.0 ? saturate(base * r.tintGain) : base;
+  t.specular = t.specular * mix(float3(1.0), tc, r.tint) +
+               spec2 * mix(float3(1.0), tc, r.tint2);
   return t;
 }
 

@@ -353,6 +353,10 @@ constexpr float kMatJellyGlowWrap = 0.6f;       // the glow's wrap, (n.l + 0.6)/
 constexpr float kMatJellyGlowGain = 1.15f;      // the glow, base * 1.15
 constexpr float kMatRubberHighlightExp = 8.0f;  // rubber's key highlight
 constexpr float kMatRubberHighlightTint = 0.7f; // its tint toward the base
+constexpr float kMatJellySheen = 0.12f;      // mat_jelly_shade: its broad sheen, 0.12 * pow(n.h, 8)
+constexpr float kMatJellySheenExp = 8.0f;    // the sheen's exponent
+constexpr float kMatJellyTintGain = 1.3f;    // its highlights tint toward saturate(base * 1.3)
+constexpr float kMatRubberTintGain = 1.4f;   // rubber's toward saturate(base * 1.4)
 
 /* C++ only. The studio light `highlight` at which a material's response
    equals its own key-light highlight: a new light's default (LightRig.h,
@@ -409,6 +413,7 @@ MaterialLightResponse MaterialLightResponseFor(const MaterialParams& p)
     r.highlight = NonNegative(p.p[2]) / kMaterialLightHighlightRef;
     r.exponent = kMatRubberHighlightExp;
     r.tint = kMatRubberHighlightTint;
+    r.tintGain = kMatRubberTintGain;
     break;
   case cMaterial_marble:
     // default's model, with marble's own wrap.
@@ -429,6 +434,13 @@ MaterialLightResponse MaterialLightResponseFor(const MaterialParams& p)
     r.highlight = reflect * (n + 2.0f) / (2.0f * kPi);
     r.exponent = n;
     r.tint = std::min(1.0f, tint * ReflectiveTintGain());
+    /* The layered-gloss coat: default's key highlight, white, at the scene's
+       shininess, carried by whatever share of the highlight the tint does not
+       take: plastic (tint 0) gets a full coat, the table metallic (tint 0.8) a
+       thin one, a Custom tint of 1 none: a bare metal. */
+    r.highlight2 = 1.0f - r.tint;
+    r.exponent2 = 0.0f;
+    r.tint2 = 0.0f;
     break;
   }
   case cMaterial_glass:
@@ -451,6 +463,10 @@ MaterialLightResponse MaterialLightResponseFor(const MaterialParams& p)
     r.exponent = kMatJellyWetExp;
     r.tint = kMatJellyWetTint;
     r.wrap = kMatJellyGlowWrap;
+    r.highlight2 = kMatJellySheen / kMaterialLightHighlightRef;
+    r.exponent2 = kMatJellySheenExp;
+    r.tint2 = kMatJellyWetTint;
+    r.tintGain = kMatJellyTintGain;
     break;
   default:
     return MaterialLightResponse{};
@@ -465,6 +481,13 @@ MaterialLightResponse MaterialLightResponseFor(const MaterialParams& p)
     r.exponent = 0.0f;
   r.tint = Clamp01(r.tint);
   r.wrap = NonNegative(r.wrap);
+  r.highlight2 = NonNegative(r.highlight2);
+  if (r.exponent2 > 0.0f)
+    r.exponent2 = std::max(r.exponent2, 1.0f);
+  else
+    r.exponent2 = 0.0f;
+  r.tint2 = Clamp01(r.tint2);
+  r.tintGain = (std::isfinite(r.tintGain) && r.tintGain > 0.0f) ? r.tintGain : 1.0f;
   return r;
 }
 

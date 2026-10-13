@@ -177,13 +177,15 @@ MASTER_613 = {
     # #710: retaken, the rig lights the material's albedo (mat_rig_albedo)
     ('kCylinderImpostorSrc', 'cyl_shade_material_rig'):
         ('2eb0f1493ffb3b10', 'fbd218eb47d2587e'),
+    # #712 B: retaken, light_response_neutral sets the four new fields
     ('kMaterialSrc', 'light_response_neutral'):
-        ('f9d29c479d573b42', '54a48318b1bd91ef'),
+        ('f9d29c479d573b42', 'c677a078ed68932a'),
     # ('kMaterialSrc', 'light_response') is left out since #615: its body is
     # #615's own (the material's response from MaterialU), and
     # lighting_material_msl.py pins it. Every other #613 helper is master's.
     ('kMaterialSrc', 'light_visibility'): ('0fa4d419dcaabf46', 'c6f76bc0d21bd512'),
-    ('kMaterialSrc', 'light_terms_view'): ('c3ee53eb972837b6', 'bcd134015fcc1123'),
+    # #712 B: retaken, second specular lobe and tint gain in light_terms_view
+    ('kMaterialSrc', 'light_terms_view'): ('c3ee53eb972837b6', '3c44990f15f286fa'),
     ('kMaterialSrc', 'light_terms'): ('8eb781b0326cac3f', '5700796aaac4b937'),
     ('kMaterialSrc', 'light_finish'): ('481469f10a37eec2', 'ee8660f541d2d01f'),
     ('kMaterialSrc', 'light_outline'): ('a7b110ee96452011', 'b6293663981b312a'),

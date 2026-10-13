@@ -115,10 +115,10 @@ MASTER_054B525 = {
     'kCylinderImpostorSrc': '0c647d97127eb3d6',  # #641 cut caps; #710 the rig lights the albedo
     'kEyeReconSrc': '34e775c149c8b075',
     'kLabelShaderSrc': 'ca5097bd2ad97d60',  # #736: label_fragment_oit, the OIT pass's variant
-    'kMaterialImpostorSrc': '10727f58afb05138',  # #710: the rig lights the material's albedo; #712: mat_inner_knee
-    'kMaterialSrc': '98346bdc0203becb',  # #739: NaN guards as bit tests (light_finite); #710: the rig lights the material's albedo; #712: mat_inner_knee, kLightHdr moved
+    'kMaterialImpostorSrc': 'd4584d2a284268b1',  # #710: the rig lights the material's albedo; #712: mat_inner_knee
+    'kMaterialSrc': '2606fd925247ab1f',  # #739: NaN guards as bit tests (light_finite); #710: the rig lights the material's albedo; #712: mat_inner_knee, kLightHdr moved
     'kPostSrc': '1ed0138bf670bdba',  # #689: post_ssao_fog fades toward the bg_gradient; #732: AO in scene units under an HDR rig; #852: AO and the cast shadow in scene units under an HDR rig; #735: ACES as the rig's scene-unit curve
-    'kRTSrc': '8c5d35f298c657bd',  # #739: NaN guards as bit tests (light_finite); #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps; #729: rt_reflect_tint keeps the metallic tint's hue under HDR; #732: AO in scene units under an HDR rig; #709: traced reflection hits take their material's studio response; #852: AO and the cast shadow in scene units under an HDR rig; #855: traced hits take the transparent table, the procedural albedo and the glass glints; #668: rt_tri_normal_smooth averages only connected neighbours on the same smooth surface; #735: ACES as the rig's scene-unit curve; #741: traced soft shadows from light size
+    'kRTSrc': '4cd38cd96c090929',  # #739: NaN guards as bit tests (light_finite); #689: rt_composite's fog fades toward the bg_gradient; #664: traced reflection hits take the studio shadow maps; #729: rt_reflect_tint keeps the metallic tint's hue under HDR; #732: AO in scene units under an HDR rig; #709: traced reflection hits take their material's studio response; #852: AO and the cast shadow in scene units under an HDR rig; #855: traced hits take the transparent table, the procedural albedo and the glass glints; #668: rt_tri_normal_smooth averages only connected neighbours on the same smooth surface; #735: ACES as the rig's scene-unit curve; #741: traced soft shadows from light size; #712 B: five float4 material rows (kRTMatRow), second lobe and tint gain in LightResponse and light_terms_view*
     'kScreenOverlaySrc': '9f09ecbdd4a9ddfa',  # #689: ramp gadgets drawn after the post chain
     # #635: retaken after sphere glass coverage split; #710: the rig lights
     # the material's albedo
@@ -132,7 +132,7 @@ MASTER_LAWS = {
     'mat_glass_cover': ('0b2202961d7fabe3', 'f267a4ccd591fb9e'),
     'mat_glass_shade': ('3a63f86596630e16', '665872d4636070ea'),
     'mat_env_specular': ('90db4c60a2451436', 'e70e77b28f607b7b'),  # #712: mat_inner_knee
-    'mat_jelly_shade': ('9046ca7a8083ec47', '1030a5facdda38a3'),  # #712: mat_inner_knee
+    'mat_jelly_shade': ('9046ca7a8083ec47', '9aba6e15c670b61d'),  # #712: mat_inner_knee; #712 B: named constants kMatJellySheen and kMatJellyTintGain
 }
 # The allowlist: how many times each of #624's edits (lighting_air_msl.py
 # HDR_EDITS_624; the new functions and declarations) applies in each literal.
