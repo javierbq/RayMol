@@ -1,0 +1,130 @@
+name: Beta (self-hosted, puma)
+
+# Builds RayMol iOS + macOS betas on the self-hosted Mac mini "puma" and
+# uploads them to TestFlight. Replaces Xcode Cloud's "iOS Beta (master)" and
+# "macOS Beta (master)" after the Xcode Cloud compute quota ran out (2026-10-12).
+#   Design:  docs/superpowers/specs/2026-10-14-selfhosted-beta-pipeline-design.md
+#   Runbook: docs/ci/selfhosted-beta-runner.md
+#
+# Staging is swiftui/ci_scripts/ci_post_clone.sh, UNCHANGED: it only reads the
+# five CI_* variables set below, so both systems share one staging path.
+
+on:
+  schedule:
+    - cron: '0 8 * * *'   # 08:00 UTC = 01:00 Pacific; only when SELFHOSTED_BETA_ENABLED == 'true'
+  workflow_dispatch:
+    inputs:
+      validate_only:
+        description: 'Validate with altool instead of uploading to TestFlight'
+        type: boolean
+        default: true
+
+# One build at a time on one machine; a nightly that fires during a manual run
+# waits rather than cancelling it.
+concurrency:
+  group: beta-selfhosted
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read   # gh run list in the skip check
+
+jobs:
+  plan:
+    # Scheduled runs stay inert until the runner exists and the variable is set,
+    # so no jobs queue for a missing runner and expire into failure emails.
+    if: github.event_name != 'schedule' || vars.SELFHOSTED_BETA_ENABLED == 'true'
+    runs-on: [self-hosted, macOS, puma]
+    timeout-minutes: 15
+    outputs:
+      build: ${{ steps.num.outputs.build }}
+      skip: ${{ steps.skip.outputs.skip }}
+    steps:
+      - name: Refuse anything but master
+        # This runner signs and ships; it must never build unreviewed code.
+        if: github.ref != 'refs/heads/master'
+        run: |
+          echo "::error::beta-selfhosted only builds refs/heads/master (got $GITHUB_REF)"
+          exit 1
+
+      - name: Skip if the last successful nightly built this commit
+        id: skip
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          skip=false
+          if [ "$GITHUB_EVENT_NAME" = schedule ]; then
+            last="$(gh run list -R "$GITHUB_REPOSITORY" --workflow beta-selfhosted.yml \
+                      --event schedule --status success --limit 1 \
+                      --json headSha --jq '.[0].headSha // ""')"
+            if [ "$last" = "$GITHUB_SHA" ]; then
+              echo "master $GITHUB_SHA already has a nightly beta; nothing to do"
+              skip=true
+            fi
+          fi
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: steps.skip.outputs.skip != 'true'
+
+      - name: Python venv for the ASC client (idempotent)
+        if: steps.skip.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          python3 -m venv "$HOME/.raymol-beta-venv"
+          "$HOME/.raymol-beta-venv/bin/pip" install -q --disable-pip-version-check PyJWT cryptography
+
+      - name: Next build number (max in App Store Connect + 1)
+        id: num
+        if: steps.skip.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          n="$("$HOME/.raymol-beta-venv/bin/python" scripts/asc_next_build_number.py)"
+          case "$n" in ''|*[!0-9]*) echo "::error::not a build number: '$n'"; exit 1 ;; esac
+          echo "next build number: $n"
+          echo "build=$n" >> "$GITHUB_OUTPUT"
+
+  beta:
+    needs: plan
+    if: needs.plan.outputs.skip != 'true'
+    runs-on: [self-hosted, macOS, puma]
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false    # a broken iOS slice must not hold back the Mac beta
+      max-parallel: 1
+      matrix:
+        include:
+          - platform: iOS
+            scheme: PyMOLViewer_iOS
+          - platform: macOS
+            scheme: PyMOLViewer_macOS
+    name: beta (${{ matrix.platform }})
+    steps:
+      # Default clean checkout: wipes last run's in-place edits AND its deps.
+      # The hook re-fetches deps_ios every run anyway, and overlaying a new
+      # deps tree on an old one is the stale-artifact bug class it guards against.
+      - uses: actions/checkout@v4
+
+      - name: Stage (ci_post_clone.sh, as on Xcode Cloud)
+        env:
+          CI_PRIMARY_REPOSITORY_PATH: ${{ github.workspace }}
+          CI_BUILD_NUMBER: ${{ needs.plan.outputs.build }}
+          CI_PRODUCT_PLATFORM: ${{ matrix.platform }}
+          CI_XCODE_SCHEME: ${{ matrix.scheme }}
+          CI_XCODEBUILD_ACTION: archive
+        run: bash swiftui/ci_scripts/ci_post_clone.sh
+
+      - name: Archive, export, ${{ (github.event_name == 'workflow_dispatch' && inputs.validate_only) && 'validate' || 'upload' }}
+        run: >-
+          bash scripts/selfhosted_beta.sh ${{ matrix.platform }}
+          ${{ (github.event_name == 'workflow_dispatch' && inputs.validate_only) && '--validate-only' || '' }}
+
+      - name: Keep logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: beta-logs-${{ matrix.platform }}-${{ github.run_number }}
+          path: build_selfhosted/${{ matrix.platform }}/logs
+          if-no-files-found: ignore
+          retention-days: 14
