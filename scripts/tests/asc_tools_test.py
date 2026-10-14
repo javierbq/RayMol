@@ -77,5 +77,54 @@ class NextBuildNumberTest(unittest.TestCase):
         self.assertEqual(out.stdout.strip(), "False")
 
 
+import xcode_cloud_beta_workflows as xcw  # noqa: E402
+
+
+class FakeASC:
+    """Minimal ciWorkflows store. ignore_writes simulates ASC accepting a
+    PATCH without applying it."""
+
+    def __init__(self, enabled=True, ignore_writes=False):
+        self.state = {wf: enabled for wf in xcw.WORKFLOWS.values()}
+        self.ignore_writes = ignore_writes
+        self.calls = []
+
+    def __call__(self, method, path, body=None):
+        self.calls.append((method, path, body))
+        wf = path.rsplit("/", 1)[-1]
+        if method == "PATCH" and not self.ignore_writes:
+            self.state[wf] = body["data"]["attributes"]["isEnabled"]
+        return {"data": {"id": wf, "attributes": {"isEnabled": self.state[wf]}}}
+
+
+class XcodeCloudWorkflowsTest(unittest.TestCase):
+    def test_patch_body_shape(self):
+        self.assertEqual(xcw.patch_body("ID", False),
+                         {"data": {"type": "ciWorkflows", "id": "ID",
+                                   "attributes": {"isEnabled": False}}})
+
+    def test_disable_both_and_read_back(self):
+        fake, lines = FakeASC(enabled=True), []
+        self.assertEqual(xcw.run("disable", fake, lines.append), 0)
+        self.assertEqual(set(fake.state.values()), {False})
+        patched = [p for m, p, _ in fake.calls if m == "PATCH"]
+        self.assertEqual(sorted(patched), sorted(f"/v1/ciWorkflows/{w}" for w in xcw.WORKFLOWS.values()))
+        self.assertTrue(all("isEnabled=False" in l for l in lines))
+
+    def test_status_never_writes(self):
+        fake = FakeASC(enabled=True)
+        self.assertEqual(xcw.run("status", fake, lambda _: None), 0)
+        self.assertFalse([c for c in fake.calls if c[0] != "GET"])
+
+    def test_write_not_applied_is_an_error(self):
+        fake, lines = FakeASC(enabled=True, ignore_writes=True), []
+        self.assertEqual(xcw.run("disable", fake, lines.append), 1)
+        self.assertTrue(any(l.startswith("ERROR") for l in lines))
+
+    def test_unknown_command(self):
+        with self.assertRaises(SystemExit):
+            xcw.run("delete", FakeASC(), lambda _: None)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
