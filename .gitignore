@@ -54,3 +54,6 @@ RayMol-1.3.1-portable-test.zip
 
 # Subagent-driven-development scratch (briefs, reports, diffs, ledger)
 /.superpowers/
+
+# Self-hosted beta pipeline output (scripts/selfhosted_beta.sh)
+/build_selfhosted/
