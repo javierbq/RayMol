@@ -70,8 +70,13 @@ GitHub (schedule 08:00 UTC | workflow_dispatch)
   at a time on one machine. A nightly run that starts while a manual run is
   still going waits for it.
 - Runs only on `refs/heads/master`. A dispatch from any other ref fails in
-  `plan`, because a self-hosted runner that signs and ships must never build
-  untrusted code. PRs never trigger it.
+  `plan`. That check is defense in depth only: the repo is public, a fork PR
+  can add its own workflow aimed at the `puma` label, and a dispatched branch
+  brings its own copy of this file. The security boundary sits on the runner:
+  a job-started hook (`scripts/selfhosted_runner_job_guard.sh`, installed as a
+  copy outside the workspace) admits only this workflow on master via
+  schedule or dispatch. The repo's fork-PR approval policy is also raised to
+  `all_external_contributors` before the runner is registered.
 - `timeout-minutes: 90` per matrix leg.
 
 **`scripts/selfhosted_beta.sh <iOS|macOS> [--validate-only]` (new)**

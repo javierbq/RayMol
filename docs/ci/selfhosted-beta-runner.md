@@ -13,7 +13,18 @@ Design: `docs/superpowers/specs/2026-10-14-selfhosted-beta-pipeline-design.md`.
    xcodebuild -downloadPlatform iOS          # puma was set up for macOS only
    xcodebuild -downloadComponent MetalToolchain
    ```
-2. **Runner.** Mint a registration token. It is valid for 1 h and needs repo
+2. **Lock the repo down first, before any runner exists.** `javierbq/RayMol`
+   is public. Any fork PR can add its own workflow aimed at the `puma` label,
+   and puma holds an Admin App Store Connect key. Require approval for every
+   outside contributor's workflow run:
+   ```bash
+   gh api -X PUT repos/javierbq/RayMol/actions/permissions/fork-pr-contributor-approval \
+     -f approval_policy=all_external_contributors
+   gh api repos/javierbq/RayMol/actions/permissions/fork-pr-contributor-approval   # expect all_external_contributors
+   ```
+   That setting is the first layer. The second layer is the job guard
+   installed in step 3, which also stops anything approved by mistake.
+3. **Runner.** Mint a registration token. It is valid for 1 h and needs repo
    admin, so mint it from the MacBook:
    ```bash
    gh api -X POST repos/javierbq/RayMol/actions/runners/registration-token --jq .token
@@ -28,19 +39,31 @@ Design: `docs/superpowers/specs/2026-10-14-selfhosted-beta-pipeline-design.md`.
      --name puma --labels puma --unattended --replace
    ./env.sh                       # captures PATH; must include /opt/homebrew/bin
    grep -q /opt/homebrew/bin .path || echo "FIX: run ./env.sh from a shell where brew is on PATH"
+   # Job guard: the runner's security boundary. Install a COPY outside any job
+   # workspace (a job can never edit it) and run it before every job. It admits
+   # only beta-selfhosted.yml on master via schedule/dispatch and fails closed.
+   gh api repos/javierbq/RayMol/contents/scripts/selfhosted_runner_job_guard.sh \
+     -H 'Accept: application/vnd.github.raw' > ~/actions-runner/job-guard.sh
+   chmod 755 ~/actions-runner/job-guard.sh
+   echo "ACTIONS_RUNNER_HOOK_JOB_STARTED=$HOME/actions-runner/job-guard.sh" >> .env
    ./svc.sh install && ./svc.sh start && ./svc.sh status
    ```
+   Re-copy `job-guard.sh` and restart the service whenever
+   `scripts/selfhosted_runner_job_guard.sh` changes on master.
    `svc.sh` installs a per-user LaunchAgent. It runs in javier's login session,
    including while the console is locked, which is the normal state of puma.
-3. **Credentials.** Run from the MacBook. Use tar, not `scp -r`:
+4. **Credentials.** Run from the MacBook. Use tar, not `scp -r`:
    ```bash
    tar -C ~ -czf - .appstoreconnect | ssh puma 'tar -C ~ -xzf - && chmod 700 ~/.appstoreconnect ~/.appstoreconnect/private_keys && chmod 600 ~/.appstoreconnect/raymol_telemetry.env ~/.appstoreconnect/private_keys/*'
    ```
-4. **Verify** the runner is online:
+5. **Verify** the runner is online:
    ```bash
    gh api repos/javierbq/RayMol/actions/runners --jq '.runners[] | {name, status, labels: [.labels[].name]}'
    ```
    Expect `puma`, `online`, labels `self-hosted`, `macOS`, `ARM64`, `puma`.
+   After the first dispatch, the job's "Set up job" log must show the line
+   `selfhosted_runner_job_guard: allowed …`. If it doesn't appear, the hook is
+   not active, so stop and fix `.env` before going on.
 
 ## Running it
 
@@ -67,8 +90,13 @@ The `Keep logs` step uploads the full `archive.log`, `export.log` and
 - **Green means VALID.** After an upload, each leg waits (up to 40 min) for
   App Store Connect to finish processing the build. `INVALID` or a timeout
   turns the leg red. Apple emails the ITMS reason.
-- **Master only.** A dispatch from any other ref fails in `plan` before
-  anything is built.
+- **Only one workflow ever runs on puma.** The job guard
+  (`~/actions-runner/job-guard.sh`, from
+  `scripts/selfhosted_runner_job_guard.sh`) refuses every job except
+  `beta-selfhosted.yml` on master triggered by schedule or dispatch. That
+  covers fork PRs, pushes, other workflows and other branches. The workflow's
+  own master check is defense in depth only, because a dispatched branch
+  supplies its own copy of the workflow.
 - **Side effects on puma:** `ci_post_clone.sh` runs `brew install` on a fixed
   set of packages and turns off Xcode's plugin/macro fingerprint validation
   through `defaults`. That setting also affects interactive Xcode use on puma.
@@ -77,6 +105,7 @@ The `Keep logs` step uploads the full `archive.log`, `export.log` and
 
 | Symptom | Look at |
 |---|---|
+| Job fails instantly with `selfhosted_runner_job_guard: refused` | Working as intended for anything but the nightly/dispatch on master. For a legitimate run, compare the printed repo/event/ref/workflow with the guard's allow-list. |
 | Job stuck "Waiting for a runner" | `ssh puma '~/actions-runner/svc.sh status'`; logs in `~/actions-runner/_diag/`. Jobs that wait more than 24 h are dropped, and the next nightly picks up. |
 | `brew: command not found` / `xcodegen: command not found` in Stage | Runner `.path` lacks Homebrew: `cd ~/actions-runner && ./env.sh && ./svc.sh stop && ./svc.sh start` |
 | Export fails with `No profiles` / `Cloud signing permission error` | The ASC key needs the Admin role (cloud-managed distribution certificates). Check in App Store Connect → Users and Access → Integrations. |

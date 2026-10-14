@@ -41,7 +41,9 @@ jobs:
       skip: ${{ steps.skip.outputs.skip }}
     steps:
       - name: Refuse anything but master
-        # This runner signs and ships; it must never build unreviewed code.
+        # Defense in depth only: a dispatched branch brings its own copy of
+        # this file. The boundary is the runner's job-started hook
+        # (scripts/selfhosted_runner_job_guard.sh, see the runbook).
         if: github.ref != 'refs/heads/master'
         run: |
           echo "::error::beta-selfhosted only builds refs/heads/master (got $GITHUB_REF)"
