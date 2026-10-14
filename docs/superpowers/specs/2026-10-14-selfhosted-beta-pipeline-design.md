@@ -46,7 +46,7 @@ GitHub (schedule 08:00 UTC | workflow_dispatch)
        • skips if the last successful scheduled run built that SHA (nightly only)
        • BUILD = max(build number of every ASC build for app 6781513038) + 1
   └─ job "beta"   (needs: plan; matrix: [iOS, macOS]; max-parallel: 1)
-       1. checkout plan.sha (preserves deps_ios/ and deps_macos/ between runs)
+       1. checkout (default clean: wipes last run's edits and deps)
        2. bash swiftui/ci_scripts/ci_post_clone.sh  ← unchanged Xcode Cloud hook
             env: CI_PRIMARY_REPOSITORY_PATH=$GITHUB_WORKSPACE
                  CI_BUILD_NUMBER=$BUILD
@@ -64,8 +64,8 @@ GitHub (schedule 08:00 UTC | workflow_dispatch)
 
 **`.github/workflows/beta-selfhosted.yml` (new)**
 - `on: schedule: cron '0 8 * * *'` (08:00 UTC, 01:00 Pacific) and
-  `workflow_dispatch` with inputs `validate_only` (bool, default `true`) and
-  `force` (bool, default `false`, builds even if the SHA already has a beta).
+  `workflow_dispatch` with input `validate_only` (bool, default `true`).
+  A manual dispatch always builds.
 - `concurrency: group: beta-selfhosted, cancel-in-progress: false`. One build
   at a time on one machine. A nightly run that starts while a manual run is
   still going waits for it.
@@ -110,7 +110,7 @@ collide with these.
 --status success --limit 1 --json headSha`. If that SHA is master's current
 tip, `plan` exits successfully and builds nothing. If a manual upload already
 built the same SHA, the next nightly run builds it one more time. That costs
-one extra build and keeps state out of ASC. `force=true` skips the check.
+one extra build and keeps state out of ASC. Manual dispatches never skip.
 
 **Enable switch**
 Scheduled runs only proceed when the repo variable
@@ -121,15 +121,19 @@ ignore the variable.
 
 ### Runner on puma (one-time setup, documented in the plan)
 
+- Install the Xcode iOS platform (`xcodebuild -downloadPlatform iOS`); puma
+  was set up for macOS builds only.
 - Install `actions-runner` in `~/actions-runner`, registered to
   `javierbq/RayMol` with the labels `self-hosted,macOS,puma`.
 - Install it with `./svc.sh install` as a per-user LaunchAgent for `javier`.
   It runs in the logged-in session, so it starts when javier logs in and keeps
   running while the console is locked.
-- The workspace persists between runs. Step 1 uses `actions/checkout` with
-  `clean: false`, then runs `git reset --hard && git clean -ffdx -e deps_ios -e deps_macos`
-  so that tracked files from the hook's in-place `sed` patches are reset while
-  the downloaded and built dependency trees stay.
+- The workspace persists between runs, so step 1 uses the default
+  `actions/checkout` clean (`git clean -ffdx` + reset). That undoes the hook's
+  in-place `sed` patches and also removes the dependency trees. Keeping them
+  would save nothing, because `ci_post_clone.sh` re-downloads `deps_ios` every
+  run regardless. Laying a new dependency tree over an old one is also the
+  stale-artifact bug class the hook already guards against.
 - Copy `~/.appstoreconnect/` from this MacBook to puma with mode 600. The user
   does this step because it involves credentials.
 
