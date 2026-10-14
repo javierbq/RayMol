@@ -89,7 +89,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.skip != 'true'
     runs-on: [self-hosted, macOS, puma]
-    timeout-minutes: 90
+    timeout-minutes: 120   # ~20 min archive/export + up to 40 min Apple processing
     strategy:
       fail-fast: false    # a broken iOS slice must not hold back the Mac beta
       max-parallel: 1
@@ -119,6 +119,16 @@ jobs:
         run: >-
           bash scripts/selfhosted_beta.sh ${{ matrix.platform }}
           ${{ (github.event_name == 'workflow_dispatch' && inputs.validate_only) && '--validate-only' || '' }}
+
+      # An accepted upload can still go INVALID during Apple's processing (and
+      # say so only by email). Green means the build is VALID in TestFlight.
+      - name: Wait for TestFlight processing (VALID)
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.validate_only) }}
+        timeout-minutes: 45
+        env:
+          BUILD: ${{ needs.plan.outputs.build }}
+          PLATFORM: ${{ matrix.platform }}
+        run: '"$HOME/.raymol-beta-venv/bin/python" scripts/asc_wait_build_valid.py --build "$BUILD" --platform "$PLATFORM" --timeout-min 40'
 
       - name: Keep logs
         if: always()

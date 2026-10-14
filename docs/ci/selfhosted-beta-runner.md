@@ -52,6 +52,7 @@ Design: `docs/superpowers/specs/2026-10-14-selfhosted-beta-pipeline-design.md`.
 | Turn the nightly on / off | `gh variable set SELFHOSTED_BETA_ENABLED -R javierbq/RayMol --body true` / `--body false` |
 | Xcode Cloud Beta workflows | `~/.raymol-beta-venv/bin/python scripts/xcode_cloud_beta_workflows.py status\|disable\|enable` |
 | Next build number | `~/.raymol-beta-venv/bin/python scripts/asc_next_build_number.py` |
+| Is build N processed? | `~/.raymol-beta-venv/bin/python scripts/asc_wait_build_valid.py --build N --platform iOS\|macOS` |
 
 The `Keep logs` step uploads the full `archive.log`, `export.log` and
 `altool.log` of each leg as a run artifact, kept for 14 days.
@@ -63,6 +64,9 @@ The `Keep logs` step uploads the full `archive.log`, `export.log` and
 - **The nightly skips an already-built commit.** If the last successful
   scheduled run built master's current SHA, it does nothing. A manual dispatch
   always builds.
+- **Green means VALID.** After an upload, each leg waits (up to 40 min) for
+  App Store Connect to finish processing the build. `INVALID` or a timeout
+  turns the leg red. Apple emails the ITMS reason.
 - **Master only.** A dispatch from any other ref fails in `plan` before
   anything is built.
 - **Side effects on puma:** `ci_post_clone.sh` runs `brew install` on a fixed

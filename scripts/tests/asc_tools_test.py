@@ -126,5 +126,81 @@ class XcodeCloudWorkflowsTest(unittest.TestCase):
             xcw.run("delete", FakeASC(), lambda _: None)
 
 
+import asc_wait_build_valid as wbv  # noqa: E402
+
+
+class FakeClock:
+    def __init__(self):
+        self.t = 0.0
+        self.sleeps = []
+
+    def now(self):
+        return self.t
+
+    def sleep(self, s):
+        self.sleeps.append(s)
+        self.t += s
+
+
+def states_get(states):
+    """Each call returns the next processingState; None = build not listed yet."""
+    seq, calls = list(states), []
+
+    def get(path):
+        calls.append(path)
+        st = seq.pop(0) if len(seq) > 1 else seq[0]
+        data = [] if st is None else [{"attributes": {"version": "363", "processingState": st}}]
+        return {"data": data}
+
+    get.calls = calls
+    return get
+
+
+class WaitBuildValidTest(unittest.TestCase):
+    def wait(self, get, clock, platform="iOS", timeout=600):
+        lines = []
+        rc = wbv.wait_valid(get, "APP", 363, platform, timeout_s=timeout, interval_s=30,
+                            sleep=clock.sleep, now=clock.now, out=lines.append)
+        return rc, lines
+
+    def test_processing_then_valid(self):
+        clock, get = FakeClock(), states_get([None, "PROCESSING", "PROCESSING", "VALID"])
+        rc, _ = self.wait(get, clock)
+        self.assertEqual(rc, 0)
+        self.assertEqual(clock.sleeps, [30, 30, 30])
+
+    def test_query_filters_build_and_platform(self):
+        get = states_get(["VALID"])
+        self.wait(get, FakeClock(), platform="macOS")
+        self.assertIn("filter[app]=APP", get.calls[0])
+        self.assertIn("filter[version]=363", get.calls[0])
+        self.assertIn("filter[preReleaseVersion.platform]=MAC_OS", get.calls[0])
+        get = states_get(["VALID"])
+        self.wait(get, FakeClock(), platform="iOS")
+        self.assertIn("filter[preReleaseVersion.platform]=IOS", get.calls[0])
+
+    def test_invalid_fails_without_waiting_out_the_timeout(self):
+        clock = FakeClock()
+        rc, lines = self.wait(states_get(["PROCESSING", "INVALID"]), clock)
+        self.assertEqual(rc, 1)
+        self.assertEqual(clock.sleeps, [30])
+        self.assertTrue(any("INVALID" in l for l in lines))
+
+    def test_failed_state_fails(self):
+        rc, _ = self.wait(states_get(["FAILED"]), FakeClock())
+        self.assertEqual(rc, 1)
+
+    def test_timeout_fails(self):
+        clock = FakeClock()
+        rc, lines = self.wait(states_get(["PROCESSING"]), clock, timeout=120)
+        self.assertEqual(rc, 1)
+        self.assertLessEqual(clock.t, 150)
+        self.assertTrue(any("timed out" in l for l in lines))
+
+    def test_unknown_platform_rejected(self):
+        with self.assertRaises(ValueError):
+            self.wait(states_get(["VALID"]), FakeClock(), platform="tvOS")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
