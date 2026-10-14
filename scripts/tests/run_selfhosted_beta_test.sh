@@ -18,6 +18,7 @@ echo "fake key" > "$KEYS/AuthKey_KID123.p8"
 cat > "$BIN/xcodebuild" <<'EOF'
 #!/bin/bash
 echo "xcodebuild $*" >> "$CALLS"
+echo "Command line invocation: xcodebuild $*"
 if [ "${STUB_ARCHIVE_FAIL:-0}" = 1 ] && [ "${*: -1}" = archive ]; then exit 65; fi
 prev=""
 for a in "$@"; do
@@ -37,7 +38,10 @@ EOF
 cat > "$BIN/xcrun" <<'EOF'
 #!/bin/bash
 echo "xcrun $*" >> "$CALLS"
-if [ -n "${STUB_ALTOOL_OUT_FILE:-}" ]; then cat "$STUB_ALTOOL_OUT_FILE"; else echo "No errors uploading"; fi
+echo "Running altool with $*"
+if [ -n "${STUB_ALTOOL_OUT_FILE:-}" ]; then cat "$STUB_ALTOOL_OUT_FILE"
+elif [[ " $* " == *" --validate-app "* ]]; then echo "VERIFY SUCCEEDED with no errors"
+else echo "UPLOAD SUCCEEDED with no errors"; fi
 exit "${STUB_ALTOOL_RC:-0}"
 EOF
 chmod +x "$BIN/xcodebuild" "$BIN/xcrun"
@@ -67,6 +71,11 @@ check "export uses the ASC API key from the env file" 'called "-authenticationKe
 check "export options are app-store-connect for team VT99UQUQ89" 'grep -q "<string>app-store-connect</string>" "$TMP/out/ExportOptions.plist" && grep -q "<string>VT99UQUQ89</string>" "$TMP/out/ExportOptions.plist"'
 check "iOS uploads the .ipa with altool -t ios" 'called "xcrun altool --upload-app -f $TMP/out/export/RayMol.ipa -t ios --apiKey KID123 --apiIssuer iss-uuid"'
 
+check "archive hides the shell-script environment from the log" 'called "-hideShellScriptEnvironment"'
+check "archive builds in a fresh DerivedData inside the wiped output dir" 'called "-derivedDataPath $TMP/out/DerivedData"'
+check "export keeps the stamped build number (no Xcode renumbering)" 'grep -q "<key>manageAppVersionAndBuildNumber</key><false/>" "$TMP/out/ExportOptions.plist"'
+check "logs never contain the ASC key id or issuer" '! grep -rqE "KID123|iss-uuid" "$TMP/out/logs" && grep -q "Command line invocation" "$TMP/out/logs/export.log"'
+
 go "STUB_EXT=pkg" macOS --validate-only
 check "macOS validate-only succeeds" '[ "$RC" -eq 0 ]'
 check "macOS archives PyMOLViewer_macOS for generic macOS" 'called "-scheme PyMOLViewer_macOS" && called "-destination generic/platform=macOS"'
@@ -75,6 +84,18 @@ check "validate-only validates the .pkg with -t macos and never uploads" 'called
 printf 'ERROR ITMS-90062: This bundle is invalid.\n' > "$TMP/itms.txt"
 go "STUB_EXT=ipa STUB_ALTOOL_OUT_FILE=$TMP/itms.txt" iOS
 check "ITMS error with rc 0 fails the run" '[ "$RC" -ne 0 ] && called "--upload-app"'
+
+printf 'Some unrecognised altool chatter\n' > "$TMP/odd.txt"
+go "STUB_EXT=ipa STUB_ALTOOL_OUT_FILE=$TMP/odd.txt" iOS
+check "altool output without a success line fails the run" '[ "$RC" -ne 0 ] && called "--upload-app"'
+
+printf 'No errors uploading '"'"'RayMol.ipa'"'"'\n' > "$TMP/legacy.txt"
+go "STUB_EXT=ipa STUB_ALTOOL_OUT_FILE=$TMP/legacy.txt" iOS
+check "legacy altool success wording is accepted" '[ "$RC" -eq 0 ]'
+
+printf 'UPLOAD SUCCEEDED with no errors\n' > "$TMP/wrongmode.txt"
+go "STUB_EXT=pkg STUB_ALTOOL_OUT_FILE=$TMP/wrongmode.txt" macOS --validate-only
+check "validate-only needs the VERIFY success line, not UPLOAD" '[ "$RC" -ne 0 ]'
 
 go "STUB_EXT=ipa STUB_ALTOOL_RC=1" iOS
 check "altool non-zero exit fails the run" '[ "$RC" -ne 0 ] && called "--upload-app"'
