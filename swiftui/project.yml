@@ -305,6 +305,13 @@ targets:
           # swiftui/ or modules/), so the Mac file simply omits it. The DMG is
           # unaffected: make_dmg.sh signs with RayMol_DeveloperID.entitlements.
           "CODE_SIGN_ENTITLEMENTS[sdk=macosx*]": PyMOLViewer/RayMolMac.entitlements
+          # iOS likewise: the self-hosted beta pipeline (beta-selfhosted.yml) archives
+          # ad hoc and cloud-signs at export, and RayMol.entitlements'
+          # keychain-access-groups fails that archive the same way. The other keys
+          # in RayMol.entitlements are macOS-only (App Sandbox), so the iOS file is
+          # empty. If you enable the Increased Memory Limit opt-in below, REPLACE
+          # this line with it (one iphoneos key), don't add a second one.
+          "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]": PyMOLViewer/RayMolIOSApp.entitlements
           # OPT-IN, not enabled: PyMOLViewer/RayMolIOS.entitlements requests the
           # Increased Memory Limit entitlement, which roughly doubles what an on-device
           # fold can be — see PredictSizeGuard, where an unentitled iPhone 15 Pro budget
