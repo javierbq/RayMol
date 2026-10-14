@@ -6,8 +6,8 @@
 #
 # Usage: scripts/selfhosted_beta.sh <iOS|macOS> [--validate-only]
 #
-# Signing: the archive is AD HOC and Apple cloud signing mints the Distribution
-# identity at export, authenticated by the ASC API key — so no private key
+# Signing: the archive is ad hoc (macOS) or unsigned (iOS, see below), and Apple
+# cloud signing mints the Distribution identity at export, authenticated by the ASC API key — so no private key
 # lives in puma's keychain, which matters because puma's console is usually
 # locked. Same split Xcode Cloud used.
 #
@@ -29,8 +29,19 @@ case "${2:-}" in
   *) usage ;;
 esac
 case "$PLATFORM" in
-  iOS)   SCHEME=PyMOLViewer_iOS;   DEST='generic/platform=iOS';   ALTOOL_TYPE=ios;   EXT=ipa ;;
-  macOS) SCHEME=PyMOLViewer_macOS; DEST='generic/platform=macOS'; ALTOOL_TYPE=macos; EXT=pkg ;;
+  # iOS archives UNSIGNED. An ad hoc iOS archive dies at planning with
+  # '"PyMOLViewer_iOS" has entitlements that require signing with a development
+  # certificate': Xcode injects base entitlements (application-identifier, team,
+  # keychain group) that only a provisioning profile can back, whatever the
+  # entitlements file says, and puma has no Apple account. Xcode Cloud gets past
+  # it only inside its managed account. Export then signs the unsigned app with
+  # the Distribution identity and takes its entitlements from the App Store
+  # profile (verified on puma 2026-10-14 with a probe app). macOS ad hoc works and
+  # keeps its archived entitlements (RayMolMac.entitlements), so it stays as is.
+  iOS)   SCHEME=PyMOLViewer_iOS;   DEST='generic/platform=iOS';   ALTOOL_TYPE=ios;   EXT=ipa
+         SIGN_ARGS=(CODE_SIGNING_ALLOWED=NO) ;;
+  macOS) SCHEME=PyMOLViewer_macOS; DEST='generic/platform=macOS'; ALTOOL_TYPE=macos; EXT=pkg
+         SIGN_ARGS=(CODE_SIGN_IDENTITY=- AD_HOC_CODE_SIGNING_ALLOWED=YES) ;;
   *) usage ;;
 esac
 
@@ -68,7 +79,7 @@ fail_with_log () {
   exit 1
 }
 
-echo "== 1/3  archive $SCHEME (ad hoc) =="
+echo "== 1/3  archive $SCHEME (${SIGN_ARGS[*]}) =="
 # Fresh DerivedData inside $OUT (wiped above) — like Xcode Cloud, never an
 # incremental build on top of last night's (cf. stale-core DMGs). The shell
 # script environment of the runner's login session stays out of the log.
@@ -76,7 +87,7 @@ xcodebuild -project "$ROOT/swiftui/PyMOLViewer.xcodeproj" -scheme "$SCHEME" \
   -configuration Release -destination "$DEST" -archivePath "$ARCHIVE" \
   -derivedDataPath "$OUT/DerivedData" -hideShellScriptEnvironment \
   -skipPackagePluginValidation -skipMacroValidation \
-  CODE_SIGN_IDENTITY=- AD_HOC_CODE_SIGNING_ALLOWED=YES \
+  "${SIGN_ARGS[@]}" \
   archive 2>&1 | redact > "$OUT/logs/archive.log" || fail_with_log archive "$OUT/logs/archive.log"
 
 echo "== 2/3  export for App Store Connect (cloud signing via ASC API key) =="

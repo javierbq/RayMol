@@ -66,7 +66,7 @@ echo "== selfhosted_beta =="
 go "STUB_EXT=ipa" iOS
 check "iOS upload succeeds" '[ "$RC" -eq 0 ]'
 check "iOS archives PyMOLViewer_iOS for generic iOS" 'called "-scheme PyMOLViewer_iOS" && called "-destination generic/platform=iOS"'
-check "archive is ad hoc with plugin/macro validation skipped" 'called "CODE_SIGN_IDENTITY=-" && called "AD_HOC_CODE_SIGNING_ALLOWED=YES" && called "-skipPackagePluginValidation" && called "-skipMacroValidation"'
+check "iOS archives UNSIGNED (ad hoc fails on iOS) with plugin/macro validation skipped" 'called "CODE_SIGNING_ALLOWED=NO" && ! called "CODE_SIGN_IDENTITY=-" && called "-skipPackagePluginValidation" && called "-skipMacroValidation"'
 check "export uses the ASC API key from the env file" 'called "-authenticationKeyID KID123" && called "-authenticationKeyIssuerID iss-uuid" && called "-authenticationKeyPath $KEYS/AuthKey_KID123.p8" && called "-allowProvisioningUpdates"'
 check "export options are app-store-connect for team VT99UQUQ89" 'grep -q "<string>app-store-connect</string>" "$TMP/out/ExportOptions.plist" && grep -q "<string>VT99UQUQ89</string>" "$TMP/out/ExportOptions.plist"'
 check "iOS uploads the .ipa with altool -t ios" 'called "xcrun altool --upload-app -f $TMP/out/export/RayMol.ipa -t ios --apiKey KID123 --apiIssuer iss-uuid"'
@@ -79,6 +79,7 @@ check "logs never contain the ASC key id or issuer" '! grep -rqE "KID123|iss-uui
 go "STUB_EXT=pkg" macOS --validate-only
 check "macOS validate-only succeeds" '[ "$RC" -eq 0 ]'
 check "macOS archives PyMOLViewer_macOS for generic macOS" 'called "-scheme PyMOLViewer_macOS" && called "-destination generic/platform=macOS"'
+check "macOS archive stays ad hoc (signed, not unsigned)" 'called "CODE_SIGN_IDENTITY=-" && called "AD_HOC_CODE_SIGNING_ALLOWED=YES" && ! called "CODE_SIGNING_ALLOWED=NO"'
 check "validate-only validates the .pkg with -t macos and never uploads" 'called "xcrun altool --validate-app -f $TMP/out/export/RayMol.pkg -t macos" && ! called "--upload-app"'
 
 printf 'ERROR ITMS-90062: This bundle is invalid.\n' > "$TMP/itms.txt"
