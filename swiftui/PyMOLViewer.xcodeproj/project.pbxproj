@@ -489,7 +489,6 @@
 		A63406B360384F3C62E511E1 /* RayMolPython.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RayMolPython.entitlements; sourceTree = "<group>"; };
 		A73267D4D7B506E647B7A995 /* ObjectPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObjectPanel.swift; sourceTree = "<group>"; };
 		A75B6DCB76EF7B2E69DA0BFE /* RFD3TrajectoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RFD3TrajectoryTests.swift; sourceTree = "<group>"; };
-		A94ED67B3841576B0EF51BC2 /* RayMolIOSApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RayMolIOSApp.entitlements; sourceTree = "<group>"; };
 		AA4C108E3D04FD75288859DA /* GizmoOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GizmoOverlay.swift; sourceTree = "<group>"; };
 		AD3E224EA1BE94147B322332 /* InferenceRouterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InferenceRouterTests.swift; sourceTree = "<group>"; };
 		AE0C0F45AA673C4AB9B2BDE4 /* LightsAtmosphere.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsAtmosphere.swift; sourceTree = "<group>"; };
@@ -699,7 +698,6 @@
 				10CCAA289EA2934B267C337A /* PrivacyInfo.xcprivacy */,
 				F2078076B68D28457409F7A5 /* RayMol.entitlements */,
 				02F1DF5E9689EFF422BE279A /* RayMolIOS.entitlements */,
-				A94ED67B3841576B0EF51BC2 /* RayMolIOSApp.entitlements */,
 				65C2D9BB6DF8C2F9E29AE8E8 /* RayMolMac.entitlements */,
 				A63406B360384F3C62E511E1 /* RayMolPython.entitlements */,
 				F5456D006DB0002CB809CACF /* Bridge */,
@@ -1040,10 +1038,10 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				BFFDF4CBA2B92A93CDBB24E7 /* PyMOLViewerTests */,
-				A8AA9F6242B9A29B6AAA26F7 /* PyMOLViewerUITests */,
 				5C02477A5F60954358D0D615 /* PyMOLViewer_iOS */,
 				403C29EE7864FF79CFA77A80 /* PyMOLViewer_macOS */,
+				BFFDF4CBA2B92A93CDBB24E7 /* PyMOLViewerTests */,
+				A8AA9F6242B9A29B6AAA26F7 /* PyMOLViewerUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -2003,7 +2001,6 @@
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = RayMol;
 				CODE_SIGN_ENTITLEMENTS = PyMOLViewer/RayMol.entitlements;
-				"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = PyMOLViewer/RayMolIOSApp.entitlements;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = PyMOLViewer/RayMolMac.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -2062,7 +2059,6 @@
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = RayMol;
 				CODE_SIGN_ENTITLEMENTS = PyMOLViewer/RayMol.entitlements;
-				"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = PyMOLViewer/RayMolIOSApp.entitlements;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = PyMOLViewer/RayMolMac.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
