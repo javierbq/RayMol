@@ -440,6 +440,9 @@ final class LightsController: ObservableObject {
     var hasLights: Bool { !(rig?.lights.isEmpty ?? true) }
     /// The rig is on.
     var isOn: Bool { rig?.enabled ?? false }
+    /// The rig drives the render (#878): enabled with at least one light, the
+    /// app's mirror of LightRigIsOn (layer1/LightShading.h).
+    var rigIsOn: Bool { isOn && hasLights }
     /// Something else holds the rig (a movie export): no action, edit or read.
     var isBusy: Bool { seams.isBusy() }
 
@@ -801,6 +804,28 @@ final class LightsController: ObservableObject {
         let mirrorBefore = mirrorJSON
         refresh()
         noteEdit(nil, ifChangedFrom: mirrorBefore)
+    }
+
+    /// The inspector's Studio lights switch (#878). Works outside Lights mode
+    /// (unlike setEnabled, which the bar gates on the mode). On: `lights on` when
+    /// the rig has lights, else `lights add` (the default rig the Lights tool's
+    /// Add creates: an empty rig is off by LightRigIsOn). Off: `lights off`.
+    /// Does nothing while busy or before the engine is ready, or when the rig is
+    /// already in the asked state.
+    func setStudioLights(_ on: Bool) {
+        guard !seams.isBusy(), seams.isReady() else { return }
+        refresh()
+        guard rigIsOn != on else { return }
+        if on {
+            seams.perform(hasLights ? .setEnabled(true) : .add)
+        } else {
+            seams.perform(.setEnabled(false))
+        }
+        let mirrorBefore = mirrorJSON
+        refresh()
+        if isActive {
+            noteEdit(nil, ifChangedFrom: mirrorBefore)
+        }
     }
 
     /// Put back the rig the mode was entered with. The mode stays open and the

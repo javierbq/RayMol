@@ -336,6 +336,10 @@ struct SceneParam: Identifiable {
     // When set, this control is a dependent sub-setting: shown indented under
     // its parent toggle and hidden while the parent (a setting key) is off.
     var dependsOn: String? = nil
+    /// #878: the studio light rig replaces this setting while it is on, so the
+    /// row is disabled with `SceneCatalog.rigOverrideReason`; unlike
+    /// `dependsOn` it never hides the row.
+    var rigOverridden: Bool = false
     // Color rows (Background, Outline color) bind to sceneState.bg /
     // .outlineColor via a ColorPicker instead of the kind switch.
     var isColor: Bool = false
@@ -514,6 +518,20 @@ enum SceneCatalog {
     /// prevents. (#498 adds the rows themselves.)
     static let materialSettings: Set<String> = ["material_default"]
 
+    /// #878: the inline reason under the rows the studio rig overrides.
+    static let rigOverrideReason = "Not available while studio lights are on. The light rig's Ambient and Classic replace these; edit them in the Lights tool."
+    /// The reason `p`'s row is disabled for the rig (nil: enabled).
+    static func rigDisabledReason(_ p: SceneParam, rigOn: Bool) -> String? {
+        p.rigOverridden && rigOn ? rigOverrideReason : nil
+    }
+    static let studioLightsLabel = "Studio lights"
+    static let studioLightsHelp = "Turn the studio light rig on or off. Off uses PyMOL's classic lights. With no rig, turning it on adds a key light, as the Lights tool's Add does."
+    static let openLightsToolLabel = "Open Lights tool"
+    /// The Lighting group's Open Lights tool (#878): the ⌃L menu item's action.
+    @MainActor static func openLightsTool(_ engine: PyMOLEngine) {
+        engine.setInteractionMode(.lights)
+    }
+
     // Ordered sub-groups shown inside the SCENE section (see panel reorg).
     static let groups = ["Canvas", "Camera", "Lighting", "Shadows & AO", "Metal optimization", "Effects", "Quality"]
     // Viewport camera dock (see CameraDock): the always-visible strip icons, in
@@ -575,25 +593,19 @@ enum SceneCatalog {
                    help: "Bokeh quality: higher traces more gather samples (1→16, 2→32, 3→64, 4→96) for denser, cleaner out-of-focus blur; levels 2+ add a de-noise pass. 1 = fastest single-pass, 4 = smoothest (GPU-heavy)."),
 
         // --- Lighting: real-time lighting model + shading ---
-        // The two scene-wide MATERIAL rows lead the group (#498). They belong
-        // here rather than in "Metal optimization": what a representation is
-        // made of, and what it reflects, are part of the look -- the group
-        // below is about what the renderer spends time on.
+        // The scene-wide material row leads the group (#498). It belongs here
+        // rather than in "Metal optimization": what a representation is made of
+        // is part of the look -- the group below is about what the renderer
+        // spends time on.
         SceneParam(setting: "material_default", label: "Material default", kind: .menu, group: "Lighting",
                    help: "Material for every representation that has no material of its own. An object's own material still wins."),
-        // NOT served from the material table: material_env is an enum over
-        // environments, not a material id. SceneCatalog.materialSettings is
-        // what keeps the two apart, and it lists material_default only.
-        SceneParam(setting: "material_env", label: "Environment", kind: .menu,
-                   options: [("background", 0), ("studio", 1), ("none", 2)], group: "Lighting",
-                   help: "What the reflective materials reflect. 'background' follows the background colour; 'studio' is a fixed three-light room; 'none' disables the environment reflection."),
-        SceneParam(setting: "ambient",   label: "Ambient",  kind: .slider, min: 0, max: 1, step: 0.01, decimals: 2, group: "Lighting",
+        SceneParam(setting: "ambient",   label: "Ambient",  kind: .slider, min: 0, max: 1, step: 0.01, decimals: 2, group: "Lighting", rigOverridden: true,
                    help: "Baseline fill light hitting all surfaces evenly, even in shadow."),
-        SceneParam(setting: "direct",    label: "Direct",   kind: .slider, min: 0, max: 1, step: 0.01, decimals: 2, group: "Lighting",
+        SceneParam(setting: "direct",    label: "Direct",   kind: .slider, min: 0, max: 1, step: 0.01, decimals: 2, group: "Lighting", rigOverridden: true,
                    help: "Strength of the main directional light."),
-        SceneParam(setting: "reflect",   label: "Reflect",  kind: .slider, min: 0, max: 1, step: 0.01, decimals: 2, group: "Lighting",
+        SceneParam(setting: "reflect",   label: "Reflect",  kind: .slider, min: 0, max: 1, step: 0.01, decimals: 2, group: "Lighting", rigOverridden: true,
                    help: "Overall diffuse reflectivity of surfaces."),
-        SceneParam(setting: "specular",  label: "Specular", kind: .slider, min: 0, max: 1, step: 0.01, decimals: 2, group: "Lighting",
+        SceneParam(setting: "specular",  label: "Specular", kind: .slider, min: 0, max: 1, step: 0.01, decimals: 2, group: "Lighting", rigOverridden: true,
                    help: "Intensity of shiny specular highlights."),
         SceneParam(setting: "shininess", label: "Shininess", kind: .slider, min: 0, max: 100, step: 1, decimals: 0, group: "Lighting",
                    help: "Tightness of specular highlights. Higher = smaller, sharper glints."),
@@ -4610,10 +4622,14 @@ struct SceneCard: View {
             }
             .buttonStyle(.plain)
             if isOpen {
-                ForEach(SceneCatalog.params.filter { $0.group == group }) { p in
-                    SceneParamRow(param: p, engine: engine)
+                if group == "Lighting" {
+                    LightingGroupRows(engine: engine, lights: engine.lightsController)
+                } else {
+                    ForEach(SceneCatalog.params.filter { $0.group == group }) { p in
+                        SceneParamRow(param: p, engine: engine)
+                    }
+                    if group == "Effects" { resetEffectsButton }
                 }
-                if group == "Effects" { resetEffectsButton }
             }
         }
     }
@@ -4644,6 +4660,75 @@ struct SceneCard: View {
 
 }
 
+private struct LightingGroupRows: View {
+    @ObservedObject var engine: PyMOLEngine
+    @ObservedObject var lights: LightsController
+
+    private var isOpenLightsDisabled: Bool {
+        if engine.interactionMode == .lights { return true }
+        #if RAYMOL_MPNN
+        if engine.isDesignCalculating { return true }
+        #endif
+        return false
+    }
+
+    var body: some View {
+        let params = SceneCatalog.params.filter { $0.group == "Lighting" }
+        let firstDisabled = params.first {
+            SceneCatalog.rigDisabledReason($0, rigOn: lights.rigIsOn) != nil
+        }?.setting
+        VStack(spacing: 3) {
+            HStack(spacing: 6) {
+                Text(SceneCatalog.studioLightsLabel)
+                    .font(.system(size: 10))
+                    .foregroundColor(PanelTheme.textColor)
+                    .frame(width: 110, alignment: .leading)
+                ToggleSetting(value: lights.rigIsOn ? 1 : 0) { on in
+                    lights.setStudioLights(on)
+                }
+                // The switch's own label is hidden (ToggleSetting), so name it
+                // for VoiceOver; the Text beside it is a separate element.
+                .accessibilityLabel(SceneCatalog.studioLightsLabel)
+                Spacer(minLength: 0)
+                HelpButton(text: SceneCatalog.studioLightsHelp)
+            }
+            .disabled(lights.isBusy)
+
+            Button { SceneCatalog.openLightsTool(engine) } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "lightbulb.2")
+                    Text(SceneCatalog.openLightsToolLabel)
+                    Spacer()
+                }
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(PanelTheme.selectionTextColor)
+                .padding(.leading, 10).padding(.vertical, 3)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(isOpenLightsDisabled)
+
+            ForEach(params) { p in
+                if p.setting == firstDisabled {
+                    Text(SceneCatalog.rigOverrideReason)
+                        .font(.system(size: 9.5))
+                        .foregroundColor(PanelTheme.disabledColor)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                SceneParamRow(param: p, engine: engine,
+                              disabledReason: SceneCatalog.rigDisabledReason(p, rigOn: lights.rigIsOn))
+            }
+        }
+        .onAppear {
+            if engine.interactionMode != .lights { lights.refresh() }
+        }
+        .onReceive(engine.panelPolled) {
+            if engine.interactionMode != .lights { lights.refresh() }
+        }
+    }
+}
+
 // MARK: - Shared scene-setting row + Camera dock
 
 // One scene-setting row (label + control + help), shared by the inspector's
@@ -4660,18 +4745,21 @@ struct SceneParamRow: View {
     // Spacer, so the slider fills the row instead of splitting the space with a
     // Spacer (the dock card bounds the overall width). Inspector uses the default.
     var compact: Bool = false
+    var disabledReason: String? = nil
 
     var body: some View {
         if let dep = param.dependsOn, (engine.sceneState.values[dep] ?? 0) <= 0.5 {
             EmptyView()
         } else {
             let rtUnavailable = param.setting == "metal_raytrace" && !engine.rayTracingSupported
+            let isDisabled = rtUnavailable || disabledReason != nil
             sceneRow(rtUnavailable ? "\(param.label) (unavailable)" : param.label, help: param.help) {
                 sceneControl(param)
             }
             .padding(.leading, param.dependsOn != nil ? 12 : 0)
-            .disabled(rtUnavailable)
-            .opacity(rtUnavailable ? 0.45 : 1)
+            .disabled(isDisabled)
+            .opacity(isDisabled ? 0.45 : 1)
+            .help(disabledReason ?? "")
         }
     }
 
@@ -4769,16 +4857,14 @@ struct SceneParamRow: View {
             case .color:
                 EmptyView()  // scene colors use p.isColor above, not the .color kind
             case .menu:
-                // Scene-level named choices. Only the material-valued ones are
+                // Scene-level named choices. Only the material-valued ones
+                // (`SceneCatalog.materialSettings`, e.g. `material_default`) are
                 // served from the material table -- SceneParam has no
                 // optionSource field, so mapping engine.materialNames
                 // unconditionally would hand the material list to the first
                 // non-material scene menu anyone adds, silently, while it wrote
                 // to an unrelated setting. Anything else falls back to the
-                // param's own options. #498 added both of them, and they are
-                // the case in point: `material_default` IS a material id and
-                // `material_env` is an enum over environments that happens to
-                // sit next to it, so exactly one of the two is in the set.
+                // param's own options.
                 MenuSetting(options: SceneCatalog.materialSettings.contains(p.setting)
                                 ? engine.materialNames.map { (label: $0.name, value: Double($0.id)) }
                                 : p.options.map { (label: $0.label, value: $0.value) },

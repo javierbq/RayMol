@@ -206,7 +206,9 @@ class TestWhatTheControlsSend(testing.PyMOLTestCase):
 class TestSceneMaterialRows(testing.PyMOLTestCase):
     def testTheSceneParamsArePolled(self):
         """A row the panel offers but the poll does not read renders at 0 and
-        silently disagrees with the session."""
+        silently disagrees with the session. material_env has had no
+        Lighting-group row since #878 (it is not a studio-lights switch); it
+        stays polled because scenes, sessions and scripts still set it."""
         self.assertIn('material_default', ai.SCENE_SETTINGS)
         self.assertIn('material_env', ai.SCENE_SETTINGS)
         scene = ai._build([])['scene']
