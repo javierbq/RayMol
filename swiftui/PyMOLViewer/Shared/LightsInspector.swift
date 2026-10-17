@@ -206,6 +206,12 @@ struct LightsInspectorState: Equatable {
         collapsed ? "Expand inspector" : "Collapse inspector"
     }
 
+    /// The id of an Orbit or Pitch row (LightPlacementRows), the target the
+    /// inspector scrolls into view while that row's field is focused (#870).
+    static func placementRowID(_ parameter: LightParameter, light: String?) -> String {
+        "\(parameter.field).\(light ?? "")"
+    }
+
     /// The slider's range for `parameter`: the core's, except warmth, whose
     /// slider runs over a log-kelvin track (WarmthScale, 0...1).
     static func sliderRange(_ parameter: LightParameter) -> ClosedRange<Double> {
@@ -754,6 +760,8 @@ struct LightAngleFieldRow: View {
         // The iPhone sheet, the side panel and the iPad float keep the scene's
         // size while a field has the keyboard (#623, #725): they read this.
         .preference(key: LightsFieldFocusKey.self, value: focused)
+        .preference(key: LightsInspectorScrollTargetKey.self,
+                    value: focused ? LightsInspectorState.placementRowID(parameter, light: lightName) : nil)
     }
 
     private var textBinding: Binding<String> {
@@ -855,12 +863,12 @@ struct LightPlacementRows: View {
                                row: LightsInspectorState.row(.orbit, of: controller),
                                lightName: name, style: style,
                                gestureGeneration: controller.gestureGeneration)
-                .id("orbit.\(name ?? "")")
+                .id(LightsInspectorState.placementRowID(.orbit, light: name))
             LightAngleFieldRow(controller: controller, parameter: .pitch,
                                row: LightsInspectorState.row(.pitch, of: controller),
                                lightName: name, style: style,
                                gestureGeneration: controller.gestureGeneration)
-                .id("pitch.\(name ?? "")")
+                .id(LightsInspectorState.placementRowID(.pitch, light: name))
             if let radius = LightsInspectorState.row(.radius, of: controller) {
                 LightSliderRow(row: radius, style: style) { value in
                     controller.setIfChanged(.radius, value)
@@ -927,6 +935,17 @@ struct LightsFieldFocusKey: PreferenceKey {
     static var defaultValue = false
     static func reduce(value: inout Bool, nextValue: () -> Bool) {
         value = value || nextValue()
+    }
+}
+
+/// The focused Orbit/Pitch row's id (LightsInspectorState.placementRowID),
+/// nil while no inspector field has the keyboard (#870). The inspector
+/// card scrolls that row into view, and the iPad float gives the
+/// inspector the column's room first while it is set. First non-nil wins.
+struct LightsInspectorScrollTargetKey: PreferenceKey {
+    static var defaultValue: String? = nil
+    static func reduce(value: inout String?, nextValue: () -> String?) {
+        if value == nil { value = nextValue() }
     }
 }
 
@@ -1071,15 +1090,18 @@ struct LightsInspector: View {
             }
             if !collapsed {
                 Rectangle().fill(style.text.opacity(0.12)).frame(height: 0.5)
-                ScrollView(.vertical) {
-                    content(state)
-                        .padding(.horizontal, 12).padding(.vertical, 10)
-                        .background(GeometryReader { g in
-                            Color.clear.preference(key: LightsInspectorHeightKey.self,
-                                                   value: g.size.height)
-                        })
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical) {
+                        content(state)
+                            .padding(.horizontal, 12).padding(.vertical, 10)
+                            .background(GeometryReader { g in
+                                Color.clear.preference(key: LightsInspectorHeightKey.self,
+                                                       value: g.size.height)
+                            })
+                    }
+                    .scrollBounceBehavior(.basedOnSize)
+                    .modifier(LightsCardFocusScroll<LightsInspectorScrollTargetKey>(proxy: proxy))
                 }
-                .scrollBounceBehavior(.basedOnSize)
                 .frame(maxHeight: contentHeight)
                 .onPreferenceChange(LightsInspectorHeightKey.self) { height in
                     if height > 0, abs(height - contentHeight) > 0.5 { contentHeight = height }

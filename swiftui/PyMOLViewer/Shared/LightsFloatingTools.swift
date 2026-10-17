@@ -27,6 +27,9 @@
 // - While a field of the float has the keyboard, the float reports it
 //   (`onFieldFocus`) so ContentView keeps the viewport's size, and lifts the
 //   trailing column above the keyboard (#725).
+// - #870: while an inspector field has the keyboard, the inspector gets the
+//   trailing column's room before the Atmosphere card (`inspectorPriority`),
+//   and scrolls its focused row into view.
 // - VoiceOver: the grip is an element with the corner as its value and one
 //   `Move to <corner>` action per other corner.
 // Empty space passes touches through to the viewport (the camera's).
@@ -211,6 +214,16 @@ enum LightsFloatLayout {
     /// clearance) it is `cardHeight + gap`.
     static func trailingCardRoom(cardHeight: CGFloat, cardClearance: CGFloat, trailingPadding: CGFloat) -> CGFloat {
         max(0, cardClearance + cardHeight + LightsFloatMetrics.gap - trailingPadding)
+    }
+
+    /// The inspector's layout priority in the trailing column (#870): above
+    /// the Atmosphere card's (1) while one of its own fields has the
+    /// keyboard, so a column shortened by the keyboard shrinks the
+    /// Atmosphere card (its rows scroll) instead of the inspector; 0
+    /// otherwise (the Atmosphere card keeps its height, the inspector
+    /// scrolls first).
+    static func inspectorPriority(inspectorFieldFocused: Bool) -> Double {
+        inspectorFieldFocused ? 2 : 0
     }
 
     /// #718: whether an open CameraDock collapses the orbit card to its
@@ -408,6 +421,8 @@ struct LightsFloatingTools: View {
     /// A field of the float has the keyboard (#725); the keyboard's top
     /// and the float's bottom in the window, for the trailing column's lift.
     @State private var fieldFocused = false
+    /// An Orbit or Pitch field of the inspector has the keyboard (#870).
+    @State private var inspectorFieldFocused = false
     @State private var keyboardTop: CGFloat?
     @State private var bottom: CGFloat = 0
     /// The orbit card and the inspector draw (a light, a selected light):
@@ -438,7 +453,9 @@ struct LightsFloatingTools: View {
                                 sceneShadowsOn: sceneShadowsOn,
                                 onEnableSceneShadows: onEnableSceneShadows)
                     .background(framesReader("inspector"))
-                // It keeps its height: the inspector scrolls first.
+                    .layoutPriority(LightsFloatLayout.inspectorPriority(inspectorFieldFocused: inspectorFieldFocused))
+                // It keeps its height: the inspector scrolls first unless one
+                // of the inspector's own fields has the keyboard (#870).
                 LightsAtmosphereCard(controller: controller, style: style, presentation: .card,
                                      start: atmosphereStart)
                     .background(framesReader("atmosphere"))
@@ -494,9 +511,17 @@ struct LightsFloatingTools: View {
             fieldFocused = focused
             onFieldFocus(focused)
         }
+        .onPreferenceChange(LightsInspectorScrollTargetKey.self) { target in
+            let focused = target != nil
+            guard focused != inspectorFieldFocused else { return }
+            inspectorFieldFocused = focused
+        }
         .modifier(LightsKeyboardTopReader(top: $keyboardTop))
         // Safety net: never leave the keyboard rule on.
         .onDisappear {
+            if inspectorFieldFocused {
+                inspectorFieldFocused = false
+            }
             if fieldFocused {
                 fieldFocused = false
                 onFieldFocus(false)
