@@ -266,26 +266,19 @@ final class MaterialInspectorTests: XCTestCase {
         XCTAssertTrue(names.contains("metal_rt_reflect_samples"))
     }
 
-    func testTheSceneCatalogOffersBothMaterialRows() {
+    func testTheSceneCatalogOffersMaterialDefaultButNoEnvironmentRow() {
         let byName = Dictionary(uniqueKeysWithValues:
             SceneCatalog.params.map { ($0.setting, $0) })
         XCTAssertNotNil(byName["material_default"])
-        XCTAssertNotNil(byName["material_env"])
         XCTAssertEqual(byName["material_default"]?.kind, .menu)
-        XCTAssertEqual(byName["material_env"]?.kind, .menu)
+        XCTAssertNil(byName["material_env"])
     }
 
-    /// The trap the `materialSettings` set exists for: `material_default` holds
-    /// a material ID and takes the runtime table; `material_env` is an enum
-    /// over environments that merely sits next to it. Serving the material list
-    /// to it would offer "marble" as an environment and write a material id to
-    /// a setting that reads 0/1/2.
+    /// `SceneCatalog.materialSettings` lists `material_default`, which holds a
+    /// material ID and takes the runtime table, and excludes non-material settings.
     func testOnlyTheMaterialValuedSceneRowTakesTheMaterialTable() {
         XCTAssertTrue(SceneCatalog.materialSettings.contains("material_default"))
         XCTAssertFalse(SceneCatalog.materialSettings.contains("material_env"))
-        let env = SceneCatalog.params.first { $0.setting == "material_env" }
-        XCTAssertEqual(env?.options.map { $0.label }, ["background", "studio", "none"])
-        XCTAssertEqual(env?.options.map { Int($0.value) }, [0, 1, 2])
     }
 
     // The "is it in SCENE_SETTINGS" check that used to live here has been

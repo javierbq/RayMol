@@ -1495,3 +1495,133 @@ final class LightsControllerTests: XCTestCase {
         XCTAssertEqual(controller.identitySlots, ["key": 0, "fill": 1, "rim": 2])
     }
 }
+
+// MARK: - Studio lights switch & Lighting group rows (#878)
+
+@MainActor
+final class StudioLightsSwitchTests: XCTestCase {
+    private var store: FakeRigStore!
+    private var controller: LightsController!
+
+    override func setUp() {
+        super.setUp()
+        store = FakeRigStore()
+        controller = LightsController(seams: store.seams)
+    }
+
+    override func tearDown() {
+        controller = nil
+        store = nil
+        super.tearDown()
+    }
+
+    private var names: [String] { controller.rig?.lights.map(\.name) ?? [] }
+
+    func testNoRigTurnOnAddsDefaultKeyLight() {
+        XCTAssertFalse(controller.rigIsOn)
+        controller.setStudioLights(true)
+        XCTAssertEqual(store.performed, [.add])
+        XCTAssertTrue(controller.rigIsOn)
+        XCTAssertTrue(store.exists)
+        XCTAssertEqual(names, ["key"])
+        XCTAssertFalse(controller.isActive)
+        XCTAssertEqual(controller.editCount, 0)
+    }
+
+    func testExistingOffRigTurnOnEnablesIt() {
+        store.setRig(["key", "fill"], enabled: false)
+        controller.setStudioLights(true)
+        XCTAssertEqual(store.performed, [.setEnabled(true)])
+        XCTAssertTrue(controller.rigIsOn)
+        XCTAssertEqual(names, ["key", "fill"])
+        XCTAssertFalse(controller.isActive)
+        XCTAssertEqual(controller.editCount, 0)
+    }
+
+    func testTurnOffDisablesRigAndKeepsLights() {
+        store.setRig(["key", "fill"], enabled: true)
+        let keptLights = store.lights
+        controller.setStudioLights(false)
+        XCTAssertEqual(store.performed, [.setEnabled(false)])
+        XCTAssertFalse(controller.rigIsOn)
+        XCTAssertEqual(store.lights, keptLights)
+        XCTAssertEqual(names, ["key", "fill"])
+        XCTAssertFalse(controller.isActive)
+        XCTAssertEqual(controller.editCount, 0)
+    }
+
+    func testAlreadyInAskedStatePerformsNothing() {
+        // No rig, asking for off: already off.
+        controller.setStudioLights(false)
+        XCTAssertTrue(store.performed.isEmpty)
+        XCTAssertFalse(controller.rigIsOn)
+
+        // Rig with lights, off, asking for off: already off.
+        store.setRig(["key", "fill"], enabled: false)
+        controller.setStudioLights(false)
+        XCTAssertTrue(store.performed.isEmpty)
+        XCTAssertFalse(controller.rigIsOn)
+
+        // Rig with lights, on, asking for on: already on.
+        store.enabled = true
+        controller.setStudioLights(true)
+        XCTAssertTrue(store.performed.isEmpty)
+        XCTAssertTrue(controller.rigIsOn)
+        XCTAssertFalse(controller.isActive)
+        XCTAssertEqual(controller.editCount, 0)
+    }
+
+    func testEmptyEnabledRigCountsAsOffAndTurnOnAddsLight() {
+        store.setRig([], enabled: true)
+        controller.refresh()
+        XCTAssertTrue(controller.isOn)
+        XCTAssertFalse(controller.hasLights)
+        XCTAssertFalse(controller.rigIsOn)
+
+        controller.setStudioLights(false)
+        XCTAssertTrue(store.performed.isEmpty)
+
+        controller.setStudioLights(true)
+        XCTAssertEqual(store.performed, [.add])
+        XCTAssertTrue(controller.rigIsOn)
+        XCTAssertEqual(names, ["key"])
+        XCTAssertFalse(controller.isActive)
+        XCTAssertEqual(controller.editCount, 0)
+    }
+
+    func testBusyOrNotReadyPerformsNothing() {
+        store.busy = true
+        controller.setStudioLights(true)
+        XCTAssertTrue(store.performed.isEmpty)
+        XCTAssertFalse(controller.rigIsOn)
+
+        store.busy = false
+        store.ready = false
+        controller.setStudioLights(true)
+        XCTAssertTrue(store.performed.isEmpty)
+        XCTAssertFalse(controller.rigIsOn)
+        XCTAssertFalse(controller.isActive)
+        XCTAssertEqual(controller.editCount, 0)
+    }
+
+    func testLightingGroupRowsAndRigDisabledReason() {
+        let lighting = SceneCatalog.params.filter { $0.group == "Lighting" }
+        XCTAssertEqual(lighting.map(\.setting),
+                       ["material_default", "ambient", "direct", "reflect",
+                        "specular", "shininess", "metal_sss_wrap"])
+
+        let overridden: Set<String> = ["ambient", "direct", "reflect", "specular"]
+        for p in lighting {
+            XCTAssertNil(p.dependsOn, "\(p.setting) must be disabled, never hidden")
+            XCTAssertNil(SceneCatalog.rigDisabledReason(p, rigOn: false), p.setting)
+            if overridden.contains(p.setting) {
+                XCTAssertTrue(p.rigOverridden, p.setting)
+                XCTAssertEqual(SceneCatalog.rigDisabledReason(p, rigOn: true),
+                               SceneCatalog.rigOverrideReason, p.setting)
+            } else {
+                XCTAssertFalse(p.rigOverridden, p.setting)
+                XCTAssertNil(SceneCatalog.rigDisabledReason(p, rigOn: true), p.setting)
+            }
+        }
+    }
+}

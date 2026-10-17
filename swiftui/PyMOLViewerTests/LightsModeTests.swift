@@ -506,6 +506,57 @@ final class LightsModeEngineTests: XCTestCase {
         XCTAssertEqual(engine.interactionMode, .viewing)
         XCTAssertFalse(controller.isActive)
     }
+
+    func testOpenLightsToolEntersLightsMode() throws {
+        try LightsLive.requireEngine()
+        XCTAssertEqual(engine.interactionMode, .viewing)
+        XCTAssertFalse(controller.isActive)
+        SceneCatalog.openLightsTool(engine)
+        XCTAssertEqual(engine.interactionMode, .lights)
+        XCTAssertTrue(controller.isActive)
+    }
+
+    func testStudioLightsSwitchRoundTripKeepsTheClassicValues() async throws {
+        try LightsLive.requireEngine()
+        LightsLive.addPeptide()
+        engine.runPython(
+            "from pymol import cmd as _lmt_cmd\n"
+            + "_lmt_classic_saved = {_n: _lmt_cmd.get_setting_float(_n) "
+            + "for _n in ('ambient', 'direct', 'reflect', 'specular')}\n")
+        defer {
+            engine.runPython(
+                "from pymol import cmd as _lmt_cmd\n"
+                + "for _n, _v in globals().pop('_lmt_classic_saved', {}).items():\n"
+                + "    _lmt_cmd.set(_n, _v)\n")
+            engine.refreshExpandedDetail()
+            engine.parseObjectDetailFeedback("OBJDETAIL:ready")
+        }
+
+        engine.runCommand("set ambient, 0.3")
+        engine.runCommand("set direct, 0.4")
+        engine.runCommand("set reflect, 0.2")
+        engine.runCommand("set specular, 0.6")
+
+        let ambientParam = try XCTUnwrap(SceneCatalog.param(for: "ambient"))
+        controller.setStudioLights(true)
+        XCTAssertTrue(controller.rigIsOn)
+        XCTAssertNotNil(engine.lightRigJSON())
+        XCTAssertEqual(engine.interactionMode, .viewing)
+        XCTAssertEqual(SceneCatalog.rigDisabledReason(ambientParam, rigOn: controller.rigIsOn),
+                       SceneCatalog.rigOverrideReason)
+
+        controller.setStudioLights(false)
+        XCTAssertFalse(controller.rigIsOn)
+        XCTAssertNil(SceneCatalog.rigDisabledReason(ambientParam, rigOn: controller.rigIsOn))
+
+        engine.refreshExpandedDetail()
+        engine.parseObjectDetailFeedback("OBJDETAIL:ready")
+        await Task.yield()
+        XCTAssertEqual(engine.sceneState.values["ambient"] ?? -1, 0.3, accuracy: 1e-4)
+        XCTAssertEqual(engine.sceneState.values["direct"] ?? -1, 0.4, accuracy: 1e-4)
+        XCTAssertEqual(engine.sceneState.values["reflect"] ?? -1, 0.2, accuracy: 1e-4)
+        XCTAssertEqual(engine.sceneState.values["specular"] ?? -1, 0.6, accuracy: 1e-4)
+    }
 }
 
 // MARK: - Revert against the live engine
