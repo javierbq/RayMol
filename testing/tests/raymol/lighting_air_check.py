@@ -145,11 +145,13 @@ class TestChecks(testing.PyMOLTestCase):
     def testThresholdsPinned(self):
         # FROZEN after L2 rounds 1 and 2 (check_air.py's thresholds block
         # gives the measured values); change only with new L2 evidence.
+        # #858 re-froze KNEE, RT_GEO_SHARE and reach on the reference hardware.
         pinned = {
+            'TONE_KNEE': 0.55, 'REACH_LIT_MIN': 8, 'REACH_DROP': 0.5,
             'ADD_MIN': 1, 'VISIBLE_PX': 2000, 'VISIBLE_MEAN': 2.0, 'BG_MARGIN': 3,
-            'KNEE': 204, 'RT_BG_MAX': 1, 'RT_PRESENT_PX': 2000, 'RT_GEO_TOL': 4,
-            'RT_GEO_SHARE': 0.99, 'RT_GEO_MEAN': 1.0, 'SHAFT_DARKEN': 8, 'SHAFT_PX': 500,
-            'SHAFT_OTHER': 2, 'REACH_PX': 500, 'REACH_DARKEN': 24, 'REACH_SHARE': 0.90,
+            'KNEE': 140, 'RT_BG_MAX': 1, 'RT_PRESENT_PX': 2000, 'RT_GEO_TOL': 4,
+            'RT_GEO_SHARE': 0.97, 'RT_GEO_MEAN': 1.0, 'SHAFT_DARKEN': 8, 'SHAFT_PX': 500,
+            'SHAFT_OTHER': 2, 'REACH_PX': 500, 'REACH_SHARE': 0.90,
             'REACH_BOXES': {'a': (1200, 500, 1280, 720), 'b': (0, 0, 64, 128)},
             'IN_BEAMS_PX': 50, 'IN_BEAMS_SHARE': 0.98, 'IN_BEAMS_DILATE': 3,
             'FOOT_MIN': 2, 'MOTE_MIN': 10, 'HUE_MIN': 8, 'COLOUR_SHARE': 0.90,
@@ -160,6 +162,13 @@ class TestChecks(testing.PyMOLTestCase):
         }
         for name, value in pinned.items():
             self.assertEqual(getattr(self.c, name), value, name)
+        # #730: rt_match's knee is HDR's tone knee, round(255 k); the absolute
+        # REACH_DARKEN is gone (reach judges a share)
+        self.assertEqual(self.c.KNEE, int(round(255 * self.c.TONE_KNEE)))
+        self.assertFalse(hasattr(self.c, 'REACH_DARKEN'))
+        # ...and k is check_hdr's (the C++ kLightToneKnee's python twin)
+        hdr = load_module('lighting_check_hdr', 'check_hdr.py')
+        self.assertEqual(self.c.TONE_KNEE, hdr.TONE_KNEE)
         # the plan's definitions
         self.assertEqual(self.c.cs.DIFFERS_MIN, 200)
 
@@ -191,6 +200,10 @@ class TestChecks(testing.PyMOLTestCase):
         # differently (round 1)
         bright = plus(haze, GEO, (90, 90, 90))                # 120 + 90 > 204
         self.assertTrue(self.c.check_rt_match(none, none, haze, bright).ok)
+        # #730: the knee is HDR's round(255 k) = 140, not the 8-bit 204: a
+        # result between them is past the knee (it failed at 204)
+        mid = plus(haze, GEO, (30, 30, 30))                   # 140 < 150 < 204
+        self.assertTrue(self.c.check_rt_match(none, none, haze, mid).ok)
         # no air at all: nothing to match
         self.assertFalse(self.c.check_rt_match(none, none, none, none).ok)
 
@@ -243,6 +256,18 @@ class TestChecks(testing.PyMOLTestCase):
         self.assertFalse(c.check_reach(noair, none, part, box, 'r').ok)
         # a box with too few background pixels checks nothing
         self.assertFalse(c.check_reach(noair, none, deep, (80, 2, 100, 20), 'r').ok)
+        # #730: a share, not levels. A's red at 24 beside B's bright blue (the
+        # hue-preserving curve) dropping to 7 is a shaft (17 levels: it failed
+        # REACH_DARKEN 24); dropping to 16 (a third) is not
+        mixed = plus(noair, a_shaft, (24, 0, 190))
+        self.assertTrue(c.check_reach(noair, mixed, plus(mixed, a_shaft, (-17, 0, 0)),
+                                      box, 'r').ok)
+        self.assertFalse(c.check_reach(noair, mixed, plus(mixed, a_shaft, (-8, 0, 0)),
+                                       box, 'r').ok)
+        # ...and a channel too dim to judge (below REACH_LIT_MIN) is not lit
+        dim = plus(noair, a_shaft, (6, 0, 190))
+        self.assertFalse(c.check_reach(noair, dim, plus(dim, a_shaft, (-6, 0, 0)),
+                                       box, 'r').ok)
 
     def testInBeams(self):
         none, haze = scene_none(), scene_haze()

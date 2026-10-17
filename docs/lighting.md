@@ -918,3 +918,10 @@ differ fails, which catches a command the renderer ignored. Nothing judged by
 eye is automated. The exit code is 0 when every requested image rendered and
 every check passed, 1 when an image or a check failed, and 2 for a refusal
 or a usage error. The images are never committed.
+
+The air's pixel checks (`scripts/lighting/check_air.py l2 DIR`, on the
+harness's renders of `scripts/lighting/scenes/lighting_618.json`) are frozen
+on one reference machine (#858): a Mac mini (Mac16,10, Apple M4, 24 GB) on
+macOS 27.0.1 with Xcode 27.1, at master 51beba79a. Its `rt_match` and `reach`
+rows move with the GPU, so re-render on that machine before re-freezing a
+threshold; `check_air.py`'s header has the details.
