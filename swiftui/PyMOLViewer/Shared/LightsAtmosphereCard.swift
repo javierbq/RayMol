@@ -63,12 +63,12 @@ struct LightsSheetScrollTargetKey: PreferenceKey {
     }
 }
 
-/// The card's own rows keep the focused field in view (#725): on the iPad
-/// float the column shrinks above the keyboard after a field takes the
-/// focus, so the card's ScrollView scrolls the focused row
-/// (LightsSheetScrollTargetKey) back into view when the focus moves and when
-/// its height changes.
-private struct AtmosphereCardFocusScroll: ViewModifier {
+/// The inspector's and the Atmosphere card's own rows keep the focused field
+/// in view (#725, #870): on the iPad float the column shrinks above the
+/// keyboard after a field takes the focus, so each card's ScrollView scrolls
+/// its focused row (`Key`) back into view when the focus moves and when its
+/// height changes.
+struct LightsCardFocusScroll<Key: PreferenceKey>: ViewModifier where Key.Value == String? {
     var proxy: ScrollViewProxy
     @State private var focusedRow: String?
     @State private var height: CGFloat = 0
@@ -80,7 +80,7 @@ private struct AtmosphereCardFocusScroll: ViewModifier {
                     .onAppear { height = g.size.height }
                     .onChange(of: g.size.height) { _, new in height = new }
             })
-            .onPreferenceChange(LightsSheetScrollTargetKey.self) { focusedRow = $0 }
+            .onPreferenceChange(Key.self) { focusedRow = $0 }
             .onChange(of: focusedRow) { reveal() }
             .onChange(of: height) { reveal() }
     }
@@ -210,7 +210,7 @@ struct LightsAtmosphereCard: View {
                             })
                     }
                     .scrollBounceBehavior(.basedOnSize)
-                    .modifier(AtmosphereCardFocusScroll(proxy: proxy))
+                    .modifier(LightsCardFocusScroll<LightsSheetScrollTargetKey>(proxy: proxy))
                 }
                 .frame(maxHeight: contentHeight)
                 .onPreferenceChange(AtmosphereContentHeightKey.self) { height in
@@ -470,7 +470,7 @@ struct AtmosphereSliderRow: View {
         }
         // The iPhone sheet, the side panel and the iPad float keep the scene's
         // size while a field has the keyboard (#623, #725); the sheet and the
-        // card's own rows (AtmosphereCardFocusScroll) scroll the focused row
+        // card's own rows (LightsCardFocusScroll) scroll the focused row
         // into view above it.
         .preference(key: LightsFieldFocusKey.self, value: focused)
         .preference(key: LightsSheetScrollTargetKey.self, value: focused ? AtmosphereCardIDs.row(p) : nil)

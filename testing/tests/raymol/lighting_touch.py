@@ -1101,14 +1101,17 @@ class TestTouchSource(testing.PyMOLTestCase):
     def testTheUITestsCoverEveryGesture(self):
         """LightsGestureUITests runs the off-target camera gestures, the knob
         pinch and press-hold-drag, the iPhone grabber, the iPad grip and
-        the iPad float's field focus (the viewport keeps its frame, #725),
+        the iPad float's field focus (the viewport keeps its frame, #725, and
+        the inspector keeps its height in landscape, #870),
         reads the probe and the viewport by identifier, and skips (with the
         reason) when a knob is unreachable instead of passing silently."""
         text = self.read(UI_TESTS)
         for name in ('testOffTargetDragRotates', 'testOffTargetPinchZooms', 'testOffTargetTwistRolls',
                      'testKnobPinchChangesOnlyTheRadius', 'testPressHoldDragOnAKnobDrags',
                      'testGrabberDragExpandsTheSheet', 'testGripDragMovesTheFloat',
-                     'testFloatFieldFocusKeepsTheViewport'):
+                     'testFloatFieldFocusKeepsTheViewport',
+                     'testLandscapeFloatFieldKeepsTheInspectorAboveTheKeyboard',
+                     'testLandscapeFloatFieldTopTrailingCardClearsTheInspector'):
             with self.subTest(name):
                 self.assertIn('func %s() throws' % name, text)
         for needle in ('"lightsProbe"', '"raymol.viewport"', '"lights.gizmo.knob."',

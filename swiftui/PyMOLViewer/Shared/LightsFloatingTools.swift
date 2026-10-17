@@ -27,6 +27,11 @@
 // - While a field of the float has the keyboard, the float reports it
 //   (`onFieldFocus`) so ContentView keeps the viewport's size, and lifts the
 //   trailing column above the keyboard (#725).
+// - #870: while an inspector field has the keyboard, the inspector gets the
+//   trailing column's room before the Atmosphere card (`inspectorPriority`),
+//   scrolls its focused row into view, and a column too short above the
+//   keyboard (iPad landscape) grows upward over the chrome above the float
+//   to `focusedColumnMinimum` (`focusedColumnRise`).
 // - VoiceOver: the grip is an element with the corner as its value and one
 //   `Move to <corner>` action per other corner.
 // Empty space passes touches through to the viewport (the camera's).
@@ -40,6 +45,9 @@
 // LightsFloatTests.swift.
 
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 // MARK: - Corner
 
@@ -94,6 +102,10 @@ enum LightsFloatMetrics {
     static let inset: CGFloat = 8
     /// Between two cards stacked on one edge.
     static let gap: CGFloat = 8
+    /// The trailing column's least height while an inspector field has the
+    /// keyboard (#870): the inspector's header, Orbit, Pitch and a neighbour
+    /// row, the gap and the Atmosphere card's header.
+    static let focusedColumnMinimum: CGFloat = 290
     /// The room a trailing card leaves under it, beyond its inset, for the
     /// viewport's bottom-trailing Gesture help button (a 26 pt glyph with
     /// 12 pt padding, about 50 pt tall). Moved here from LightsSideColumn.
@@ -211,6 +223,39 @@ enum LightsFloatLayout {
     /// clearance) it is `cardHeight + gap`.
     static func trailingCardRoom(cardHeight: CGFloat, cardClearance: CGFloat, trailingPadding: CGFloat) -> CGFloat {
         max(0, cardClearance + cardHeight + LightsFloatMetrics.gap - trailingPadding)
+    }
+
+    /// The inspector's layout priority in the trailing column (#870): above
+    /// the Atmosphere card's (1) while one of its own fields has the
+    /// keyboard, so a column shortened by the keyboard shrinks the
+    /// Atmosphere card (its rows scroll) instead of the inspector; 0
+    /// otherwise (the Atmosphere card keeps its height, the inspector
+    /// scrolls first).
+    static func inspectorPriority(inspectorFieldFocused: Bool) -> Double {
+        inspectorFieldFocused ? 2 : 0
+    }
+
+    /// How far the trailing column rises past the float's top (#870), over
+    /// the chrome above the viewport, while an inspector field has the
+    /// keyboard: what the column lacks of `focusedColumnMinimum` once lifted
+    /// above the keyboard (iPad landscape leaves ~100 pt), at most
+    /// `maxRise` (up to the window's safe area). 0 unfocused or tall enough.
+    static func focusedColumnRise(available: CGFloat, focused: Bool, maxRise: CGFloat) -> CGFloat {
+        guard focused else { return 0 }
+        return min(max(0, maxRise), max(0, LightsFloatMetrics.focusedColumnMinimum - available))
+    }
+
+    /// #870: whether a top-trailing orbit card collapses to its header while
+    /// an inspector field has the keyboard: under the expanded card, even
+    /// risen, the column would stay short of `focusedColumnMinimum`.
+    /// `available` is the column's height without the card's room. Uses the
+    /// expanded card's fixed height, never the measured one, so collapsing
+    /// cannot flip the answer.
+    static func focusCollapsesCard(corner: LightsFloatCorner, focused: Bool, available: CGFloat,
+                                   maxRise: CGFloat) -> Bool {
+        guard corner == .topTrailing, focused else { return false }
+        let underCard = available - LightsFloatMetrics.orbitCardSize.height - LightsFloatMetrics.gap
+        return underCard + max(0, maxRise) < LightsFloatMetrics.focusedColumnMinimum
     }
 
     /// #718: whether an open CameraDock collapses the orbit card to its
@@ -408,8 +453,12 @@ struct LightsFloatingTools: View {
     /// A field of the float has the keyboard (#725); the keyboard's top
     /// and the float's bottom in the window, for the trailing column's lift.
     @State private var fieldFocused = false
+    /// An Orbit or Pitch field of the inspector has the keyboard (#870).
+    @State private var inspectorFieldFocused = false
     @State private var keyboardTop: CGFloat?
     @State private var bottom: CGFloat = 0
+    /// The float's top in the window, for the column's rise (#870).
+    @State private var top: CGFloat = 0
     /// The orbit card and the inspector draw (a light, a selected light):
     /// without them their room and gaps go (the Atmosphere card moves up).
     @State private var cardShown = true
@@ -428,17 +477,30 @@ struct LightsFloatingTools: View {
         let cardClearance = LightsFloatLayout.bottomClearance(corner: corner, chrome: chrome)
         let dockCollapsed = LightsFloatLayout.dockCollapsesCard(corner: corner, container: containerSize,
                                                                chrome: chrome)
+        let topCardRoom = corner == .topTrailing && cardShown ? cardHeight + gap : 0
+        let bottomCardRoom = corner == .bottomTrailing && cardShown
+            ? LightsFloatLayout.trailingCardRoom(cardHeight: cardHeight, cardClearance: cardClearance,
+                                                 trailingPadding: trailingPadding)
+            : 0
+        let columnHeight = containerSize.height - 2 * inset - trailingPadding - bottomCardRoom
+        let maxRise = top - Self.windowSafeTop - inset
+        let rise = LightsFloatLayout.focusedColumnRise(available: columnHeight - topCardRoom,
+                                                       focused: inspectorFieldFocused, maxRise: maxRise)
+        let focusCollapsed = LightsFloatLayout.focusCollapsesCard(corner: corner, focused: inspectorFieldFocused,
+                                                                  available: columnHeight, maxRise: maxRise)
         ZStack {
             // The inspector, top-trailing; stacked under or over a trailing
             // card (non-hit-testable spacers hold the card's room).
             VStack(alignment: .trailing, spacing: 0) {
-                if corner == .topTrailing && cardShown { Spacer().frame(height: cardHeight + gap) }
+                if corner == .topTrailing && cardShown { Spacer().frame(height: topCardRoom) }
                 LightsInspector(controller: controller, style: style,
                                 initiallyCollapsed: inspectorStartsCollapsed,
                                 sceneShadowsOn: sceneShadowsOn,
                                 onEnableSceneShadows: onEnableSceneShadows)
                     .background(framesReader("inspector"))
-                // It keeps its height: the inspector scrolls first.
+                    .layoutPriority(LightsFloatLayout.inspectorPriority(inspectorFieldFocused: inspectorFieldFocused))
+                // It keeps its height: the inspector scrolls first unless one
+                // of the inspector's own fields has the keyboard (#870).
                 LightsAtmosphereCard(controller: controller, style: style, presentation: .card,
                                      start: atmosphereStart)
                     .background(framesReader("atmosphere"))
@@ -446,23 +508,27 @@ struct LightsFloatingTools: View {
                     .layoutPriority(1)
                 Spacer(minLength: 0)
                 if corner == .bottomTrailing && cardShown {
-                    Spacer().frame(height: LightsFloatLayout.trailingCardRoom(cardHeight: cardHeight,
-                                                                              cardClearance: cardClearance,
-                                                                              trailingPadding: trailingPadding))
+                    Spacer().frame(height: bottomCardRoom)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
             .padding(inset)
             .padding(.bottom, trailingPadding)
+            // Too short above the keyboard for a focused inspector field: the
+            // column grows upward over the chrome above the float (#870).
+            .padding(.top, -rise)
 
             // The orbit card: one view in every corner (its collapse state
             // survives a move), offset while its grip is dragged.
             LightsOrbitView(controller: controller, style: style, initiallyCollapsed: false,
-                            dockCollapsed: dockCollapsed, grip: grip)
+                            dockCollapsed: dockCollapsed || focusCollapsed, grip: grip)
                 .lightsFloatCard(offset: dragOffset, space: Self.space)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: corner.alignment)
                 .padding(inset)
                 .padding(.bottom, corner.isBottom ? cardClearance : 0)
+                // A top-trailing card rises with the column it heads (#870),
+                // so the two never overlap.
+                .padding(.top, corner == .topTrailing ? -rise : 0)
                 .zIndex(1)
         }
         .background(GeometryReader { g in
@@ -472,6 +538,7 @@ struct LightsFloatingTools: View {
                 // The float's bottom in the window, for the keyboard's
                 // overlap (#725).
                 .onChange(of: g.frame(in: .global).maxY, initial: true) { _, maxY in bottom = maxY }
+                .onChange(of: g.frame(in: .global).minY, initial: true) { _, minY in top = minY }
         })
         .coordinateSpace(name: Self.space)
         .onPreferenceChange(LightsFloatFramesKey.self) { frames in
@@ -494,9 +561,17 @@ struct LightsFloatingTools: View {
             fieldFocused = focused
             onFieldFocus(focused)
         }
+        .onPreferenceChange(LightsInspectorScrollTargetKey.self) { target in
+            let focused = target != nil
+            guard focused != inspectorFieldFocused else { return }
+            inspectorFieldFocused = focused
+        }
         .modifier(LightsKeyboardTopReader(top: $keyboardTop))
         // Safety net: never leave the keyboard rule on.
         .onDisappear {
+            if inspectorFieldFocused {
+                inspectorFieldFocused = false
+            }
             if fieldFocused {
                 fieldFocused = false
                 onFieldFocus(false)
@@ -504,6 +579,20 @@ struct LightsFloatingTools: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(LightsFloatState.identifier)
+    }
+
+    /// The key window's top safe-area inset (the status bar), the highest
+    /// the column rises to (#870); 0 on macOS, which has no keyboard rise.
+    @MainActor
+    private static var windowSafeTop: CGFloat {
+        #if os(iOS)
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first { $0.isKeyWindow }?.safeAreaInsets.top ?? 0
+        #else
+        0
+        #endif
     }
 
     private func framesReader(_ key: String) -> some View {

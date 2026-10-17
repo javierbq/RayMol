@@ -10,7 +10,9 @@
 //     kept, camera still), and press-hold-drag on a knob drags it (the
 //     long-press never begins on a knob);
 //   - iPhone: the sheet's grabber drag expands it with the scene kept at
-//     180 pt at least; iPad: the float's grip drag moves it to a corner.
+//     180 pt at least; iPad: the float's grip drag moves it to a corner, and a
+//     focused field keeps the viewport and the inspector above the keyboard
+//     (#725, #870).
 //
 // State is read from the PYMOL_UITEST=1 probe (`lightsProbe`, ContentView's
 // LightsUITestProbe): `sel=<name> radius= orbit= pitch= beam= cam=<hash>
@@ -210,6 +212,8 @@ final class LightsGestureUITests: XCTestCase {
         XCTAssertLessThan(card.frame.midY, view.midY, "the card is not in the top half: \(card.frame)")
     }
 
+    private static let focusedInspectorMinimum: CGFloat = 200
+
     func testFloatFieldFocusKeepsTheViewport() throws {
         guard isPad else { throw XCTSkip("iPad only: the float") }
         app.launchEnvironment["PYMOL_AUTOLIGHTS_EDIT"] = "corner:bl;expand"
@@ -232,6 +236,57 @@ final class LightsGestureUITests: XCTestCase {
         XCTAssertLessThanOrEqual(field.frame.maxY, keyboard.frame.minY,
                                  "the orbit field is not above the keyboard")
         print("LIGHTS_UITEST_FOCUS before=\(before) after=\(after) field=\(field.frame) keyboard=\(keyboard.frame)")
+    }
+
+    func testLandscapeFloatFieldKeepsTheInspectorAboveTheKeyboard() throws {
+        try checkLandscapeFieldFocus(corner: "bl", air: true)
+    }
+
+    /// A top-trailing orbit card heads the risen column (#870): it rises
+    /// with it and never covers the inspector. The Atmosphere card stays
+    /// collapsed here: expanded, it leaves the inspector under a top-trailing
+    /// card only its header before any focus, so Orbit cannot be tapped.
+    func testLandscapeFloatFieldTopTrailingCardClearsTheInspector() throws {
+        try checkLandscapeFieldFocus(corner: "tr", air: false)
+    }
+
+    private func checkLandscapeFieldFocus(corner: String, air: Bool) throws {
+        guard isPad else { throw XCTSkip("iPad only: the float") }
+        XCUIDevice.shared.orientation = .landscapeLeft
+        defer { XCUIDevice.shared.orientation = .portrait }
+        app.launchEnvironment["PYMOL_AUTOLIGHTS_EDIT"] = "corner:\(corner);expand" + (air ? ";air" : "")
+        _ = try launchInLights()
+        XCTAssertTrue(element("lights.atmosphere").waitForExistence(timeout: 10), "the atmosphere card is missing")
+        let orbit = element("lights.inspector.orbit.field")
+        XCTAssertTrue(orbit.waitForExistence(timeout: 10), "the orbit field is missing")
+        orbit.tap()
+        let keyboard = app.keyboards.firstMatch
+        if !keyboard.waitForExistence(timeout: 5) {
+            throw XCTSkip("no software keyboard (a hardware keyboard is connected)")
+        }
+        settle(1.0)
+        attach("float-landscape-field-focus-\(corner)")
+        let inspector = element("lights.inspector")
+        let pitch = element("lights.inspector.pitch.field")
+        XCTAssertGreaterThanOrEqual(inspector.frame.height, Self.focusedInspectorMinimum,
+                                    "the inspector shrank under the keyboard: \(inspector.frame)")
+        for (name, field) in [("orbit", orbit), ("pitch", pitch)] {
+            XCTAssertFalse(field.frame.isEmpty, "the \(name) field frame is empty")
+            XCTAssertGreaterThanOrEqual(field.frame.minY, inspector.frame.minY - 0.5,
+                                        "the \(name) field is above the inspector")
+            XCTAssertLessThanOrEqual(field.frame.maxY, inspector.frame.maxY + 0.5,
+                                     "the \(name) field is below the inspector")
+            XCTAssertLessThanOrEqual(field.frame.maxY, keyboard.frame.minY,
+                                     "the \(name) field is not above the keyboard")
+            XCTAssertTrue(field.isHittable, "the \(name) field is not hittable")
+        }
+        let card = element("lights.orbit")
+        if corner == "tr", card.exists {
+            XCTAssertLessThanOrEqual(card.frame.maxY, inspector.frame.minY + 0.5,
+                                     "the orbit card covers the inspector: card=\(card.frame) inspector=\(inspector.frame)")
+        }
+        print("LIGHTS_UITEST_LANDSCAPE corner=\(corner) inspector=\(inspector.frame) orbit=\(orbit.frame) "
+              + "pitch=\(pitch.frame) card=\(card.frame) keyboard=\(keyboard.frame)")
     }
 
     // MARK: - The probe
