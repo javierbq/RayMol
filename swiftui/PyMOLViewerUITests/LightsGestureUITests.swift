@@ -239,10 +239,22 @@ final class LightsGestureUITests: XCTestCase {
     }
 
     func testLandscapeFloatFieldKeepsTheInspectorAboveTheKeyboard() throws {
+        try checkLandscapeFieldFocus(corner: "bl", air: true)
+    }
+
+    /// A top-trailing orbit card heads the risen column (#870): it rises
+    /// with it and never covers the inspector. The Atmosphere card stays
+    /// collapsed here: expanded, it leaves the inspector under a top-trailing
+    /// card only its header before any focus, so Orbit cannot be tapped.
+    func testLandscapeFloatFieldTopTrailingCardClearsTheInspector() throws {
+        try checkLandscapeFieldFocus(corner: "tr", air: false)
+    }
+
+    private func checkLandscapeFieldFocus(corner: String, air: Bool) throws {
         guard isPad else { throw XCTSkip("iPad only: the float") }
         XCUIDevice.shared.orientation = .landscapeLeft
         defer { XCUIDevice.shared.orientation = .portrait }
-        app.launchEnvironment["PYMOL_AUTOLIGHTS_EDIT"] = "corner:bl;expand;air"
+        app.launchEnvironment["PYMOL_AUTOLIGHTS_EDIT"] = "corner:\(corner);expand" + (air ? ";air" : "")
         _ = try launchInLights()
         XCTAssertTrue(element("lights.atmosphere").waitForExistence(timeout: 10), "the atmosphere card is missing")
         let orbit = element("lights.inspector.orbit.field")
@@ -253,7 +265,7 @@ final class LightsGestureUITests: XCTestCase {
             throw XCTSkip("no software keyboard (a hardware keyboard is connected)")
         }
         settle(1.0)
-        attach("float-landscape-field-focus")
+        attach("float-landscape-field-focus-\(corner)")
         let inspector = element("lights.inspector")
         let pitch = element("lights.inspector.pitch.field")
         XCTAssertGreaterThanOrEqual(inspector.frame.height, Self.focusedInspectorMinimum,
@@ -268,7 +280,13 @@ final class LightsGestureUITests: XCTestCase {
                                      "the \(name) field is not above the keyboard")
             XCTAssertTrue(field.isHittable, "the \(name) field is not hittable")
         }
-        print("LIGHTS_UITEST_LANDSCAPE inspector=\(inspector.frame) orbit=\(orbit.frame) pitch=\(pitch.frame) keyboard=\(keyboard.frame)")
+        let card = element("lights.orbit")
+        if corner == "tr", card.exists {
+            XCTAssertLessThanOrEqual(card.frame.maxY, inspector.frame.minY + 0.5,
+                                     "the orbit card covers the inspector: card=\(card.frame) inspector=\(inspector.frame)")
+        }
+        print("LIGHTS_UITEST_LANDSCAPE corner=\(corner) inspector=\(inspector.frame) orbit=\(orbit.frame) "
+              + "pitch=\(pitch.frame) card=\(card.frame) keyboard=\(keyboard.frame)")
     }
 
     // MARK: - The probe

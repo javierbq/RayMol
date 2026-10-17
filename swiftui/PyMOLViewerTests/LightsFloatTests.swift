@@ -1014,6 +1014,25 @@ final class LightsFloatFocusPriorityTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(minimum, 200 + LightsFloatMetrics.gap + 44)
     }
 
+    func testAShortFocusedColumnCollapsesOnlyATopTrailingCard() {
+        let minimum = LightsFloatMetrics.focusedColumnMinimum
+        let card = LightsFloatMetrics.orbitCardSize.height + LightsFloatMetrics.gap
+        // iPad landscape with the keyboard: ~100 pt column, ~250 pt rise.
+        XCTAssertTrue(LightsFloatLayout.focusCollapsesCard(corner: .topTrailing, focused: true,
+                                                           available: 100, maxRise: 250))
+        XCTAssertFalse(LightsFloatLayout.focusCollapsesCard(corner: .topTrailing, focused: false,
+                                                            available: 100, maxRise: 250))
+        for corner in [LightsFloatCorner.topLeading, .bottomLeading, .bottomTrailing] {
+            XCTAssertFalse(LightsFloatLayout.focusCollapsesCard(corner: corner, focused: true,
+                                                                available: 100, maxRise: 250))
+        }
+        // Room for the expanded card and the minimum: it stays expanded.
+        XCTAssertFalse(LightsFloatLayout.focusCollapsesCard(corner: .topTrailing, focused: true,
+                                                            available: card + minimum, maxRise: 0))
+        XCTAssertTrue(LightsFloatLayout.focusCollapsesCard(corner: .topTrailing, focused: true,
+                                                           available: card + minimum - 1, maxRise: 0))
+    }
+
     func testPlacementRowIDsMatchTheRowsIDs() {
         XCTAssertEqual(LightsInspectorState.placementRowID(.orbit, light: "key"), "orbit.key")
         XCTAssertEqual(LightsInspectorState.placementRowID(.pitch, light: "key"), "pitch.key")

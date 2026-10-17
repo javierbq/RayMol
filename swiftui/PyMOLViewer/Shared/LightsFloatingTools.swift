@@ -245,6 +245,19 @@ enum LightsFloatLayout {
         return min(max(0, maxRise), max(0, LightsFloatMetrics.focusedColumnMinimum - available))
     }
 
+    /// #870: whether a top-trailing orbit card collapses to its header while
+    /// an inspector field has the keyboard: under the expanded card, even
+    /// risen, the column would stay short of `focusedColumnMinimum`.
+    /// `available` is the column's height without the card's room. Uses the
+    /// expanded card's fixed height, never the measured one, so collapsing
+    /// cannot flip the answer.
+    static func focusCollapsesCard(corner: LightsFloatCorner, focused: Bool, available: CGFloat,
+                                   maxRise: CGFloat) -> Bool {
+        guard corner == .topTrailing, focused else { return false }
+        let underCard = available - LightsFloatMetrics.orbitCardSize.height - LightsFloatMetrics.gap
+        return underCard + max(0, maxRise) < LightsFloatMetrics.focusedColumnMinimum
+    }
+
     /// #718: whether an open CameraDock collapses the orbit card to its
     /// header: the card is in a bottom corner, the dock lifts it (the dock's
     /// clearance beats the clearance without it), and the expanded card's
@@ -469,10 +482,12 @@ struct LightsFloatingTools: View {
             ? LightsFloatLayout.trailingCardRoom(cardHeight: cardHeight, cardClearance: cardClearance,
                                                  trailingPadding: trailingPadding)
             : 0
-        let rise = LightsFloatLayout.focusedColumnRise(
-            available: containerSize.height - 2 * inset - trailingPadding - topCardRoom - bottomCardRoom,
-            focused: inspectorFieldFocused,
-            maxRise: top - Self.windowSafeTop - inset)
+        let columnHeight = containerSize.height - 2 * inset - trailingPadding - bottomCardRoom
+        let maxRise = top - Self.windowSafeTop - inset
+        let rise = LightsFloatLayout.focusedColumnRise(available: columnHeight - topCardRoom,
+                                                       focused: inspectorFieldFocused, maxRise: maxRise)
+        let focusCollapsed = LightsFloatLayout.focusCollapsesCard(corner: corner, focused: inspectorFieldFocused,
+                                                                  available: columnHeight, maxRise: maxRise)
         ZStack {
             // The inspector, top-trailing; stacked under or over a trailing
             // card (non-hit-testable spacers hold the card's room).
@@ -506,11 +521,14 @@ struct LightsFloatingTools: View {
             // The orbit card: one view in every corner (its collapse state
             // survives a move), offset while its grip is dragged.
             LightsOrbitView(controller: controller, style: style, initiallyCollapsed: false,
-                            dockCollapsed: dockCollapsed, grip: grip)
+                            dockCollapsed: dockCollapsed || focusCollapsed, grip: grip)
                 .lightsFloatCard(offset: dragOffset, space: Self.space)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: corner.alignment)
                 .padding(inset)
                 .padding(.bottom, corner.isBottom ? cardClearance : 0)
+                // A top-trailing card rises with the column it heads (#870),
+                // so the two never overlap.
+                .padding(.top, corner == .topTrailing ? -rise : 0)
                 .zIndex(1)
         }
         .background(GeometryReader { g in

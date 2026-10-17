@@ -1110,7 +1110,8 @@ class TestTouchSource(testing.PyMOLTestCase):
                      'testKnobPinchChangesOnlyTheRadius', 'testPressHoldDragOnAKnobDrags',
                      'testGrabberDragExpandsTheSheet', 'testGripDragMovesTheFloat',
                      'testFloatFieldFocusKeepsTheViewport',
-                     'testLandscapeFloatFieldKeepsTheInspectorAboveTheKeyboard'):
+                     'testLandscapeFloatFieldKeepsTheInspectorAboveTheKeyboard',
+                     'testLandscapeFloatFieldTopTrailingCardClearsTheInspector'):
             with self.subTest(name):
                 self.assertIn('func %s() throws' % name, text)
         for needle in ('"lightsProbe"', '"raymol.viewport"', '"lights.gizmo.knob."',
