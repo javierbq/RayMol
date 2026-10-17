@@ -1000,6 +1000,20 @@ final class LightsFloatFocusPriorityTests: XCTestCase {
         XCTAssertEqual(LightsFloatLayout.inspectorPriority(inspectorFieldFocused: false), 0)
     }
 
+    func testAShortFocusedColumnRisesToItsMinimum() {
+        let minimum = LightsFloatMetrics.focusedColumnMinimum
+        // Unfocused, or tall enough: no rise.
+        XCTAssertEqual(LightsFloatLayout.focusedColumnRise(available: 100, focused: false, maxRise: 260), 0)
+        XCTAssertEqual(LightsFloatLayout.focusedColumnRise(available: minimum + 50, focused: true, maxRise: 260), 0)
+        // iPad landscape with the keyboard (~100 pt left): up to the minimum.
+        XCTAssertEqual(LightsFloatLayout.focusedColumnRise(available: 100, focused: true, maxRise: 260),
+                       minimum - 100)
+        // Never past the window's safe area, never negative.
+        XCTAssertEqual(LightsFloatLayout.focusedColumnRise(available: 100, focused: true, maxRise: 40), 40)
+        XCTAssertEqual(LightsFloatLayout.focusedColumnRise(available: 100, focused: true, maxRise: -10), 0)
+        XCTAssertGreaterThanOrEqual(minimum, 200 + LightsFloatMetrics.gap + 44)
+    }
+
     func testPlacementRowIDsMatchTheRowsIDs() {
         XCTAssertEqual(LightsInspectorState.placementRowID(.orbit, light: "key"), "orbit.key")
         XCTAssertEqual(LightsInspectorState.placementRowID(.pitch, light: "key"), "pitch.key")
