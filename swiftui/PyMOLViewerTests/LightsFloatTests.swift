@@ -970,3 +970,95 @@ final class LightsFieldFocusReportTests: XCTestCase {
         XCTAssertEqual(LightsFloatLayout.trailingCardRoom(cardHeight: 252, cardClearance: 58, trailingPadding: 400), 0)
     }
 }
+
+// MARK: - Inspector focus priority (#870)
+
+@MainActor
+final class LightsFloatFocusPriorityTests: XCTestCase {
+    private class FocusableWindow: NSWindow {
+        override var canBecomeKey: Bool { true }
+        override var canBecomeMain: Bool { true }
+    }
+
+    private final class FrameRecorder {
+        var frames: LightsFloatLayout.Frames?
+    }
+
+    private func findEditableTextFields(in view: NSView) -> [NSTextField] {
+        var result: [NSTextField] = []
+        if let textField = view as? NSTextField, textField.isEditable {
+            result.append(textField)
+        }
+        for subview in view.subviews {
+            result.append(contentsOf: findEditableTextFields(in: subview))
+        }
+        return result
+    }
+
+    func testTheInspectorTakesTheColumnOnlyWhileItsFieldIsFocused() {
+        XCTAssertGreaterThan(LightsFloatLayout.inspectorPriority(inspectorFieldFocused: true), 1)
+        XCTAssertEqual(LightsFloatLayout.inspectorPriority(inspectorFieldFocused: false), 0)
+    }
+
+    func testPlacementRowIDsMatchTheRowsIDs() {
+        XCTAssertEqual(LightsInspectorState.placementRowID(.orbit, light: "key"), "orbit.key")
+        XCTAssertEqual(LightsInspectorState.placementRowID(.pitch, light: "key"), "pitch.key")
+        XCTAssertEqual(LightsInspectorState.placementRowID(.orbit, light: nil), "orbit.")
+    }
+
+    func testAFocusedInspectorFieldKeepsTheInspectorsHeightInAShortColumn() throws {
+        let store = FakeRigStore()
+        lightsFloatThreePoint(store)
+        store.air = atmosphereOnAir
+        let controller = LightsController(seams: store.seams)
+        controller.begin()
+        let style = LightsInspectorSnapshotTests.style(dark: false)
+        let recorder = FrameRecorder()
+        let size = CGSize(width: 1194, height: 420)
+        let rootView = LightsFloatingTools(controller: controller,
+                                           style: style,
+                                           corner: .constant(.bottomLeading),
+                                           chrome: lightsFloatCameraChrome,
+                                           inspectorStartsCollapsed: false,
+                                           atmosphereStart: .expanded,
+                                           onFrames: { recorder.frames = $0 })
+            .frame(width: size.width, height: size.height)
+            .environment(\.lightsTouchMinimum, 44)
+        let host = NSHostingView(rootView: rootView)
+        let window = FocusableWindow(contentRect: NSRect(x: -20000, y: -20000, width: size.width, height: size.height),
+                                     styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        defer { window.orderOut(nil) }
+        window.makeKey()
+        for _ in 0..<2 {
+            host.layoutSubtreeIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+            host.layoutSubtreeIfNeeded()
+        }
+
+        let before = try XCTUnwrap(recorder.frames, "no frames reported before focus")
+        XCTAssertGreaterThan(before.atmosphere.height, 150, "the Atmosphere card should be expanded before focus")
+        XCTAssertLessThan(before.inspector.height, 200, "the short column should shrink the unfocused inspector")
+
+        let fields = findEditableTextFields(in: host)
+        let orbitField = try XCTUnwrap(
+            fields.first { $0.placeholderString == LightParameter.orbit.label }
+                ?? fields.first,
+            "no editable Orbit field found"
+        )
+
+        XCTAssertTrue(window.makeFirstResponder(orbitField), "could not focus the Orbit field")
+        for _ in 0..<2 {
+            host.layoutSubtreeIfNeeded()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.3))
+            host.layoutSubtreeIfNeeded()
+        }
+
+        let after = try XCTUnwrap(recorder.frames, "no frames reported after focus")
+        XCTAssertGreaterThanOrEqual(after.inspector.height, 200,
+                                    "focused inspector should keep its height (before=\(before.inspector), after=\(after.inspector))")
+        XCTAssertGreaterThan(after.inspector.height, before.inspector.height)
+        XCTAssertFalse(after.atmosphere.isEmpty, "the Atmosphere card's header should still show")
+    }
+}
