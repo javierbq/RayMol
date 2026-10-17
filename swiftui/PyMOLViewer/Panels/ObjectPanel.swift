@@ -4686,6 +4686,9 @@ private struct LightingGroupRows: View {
                 ToggleSetting(value: lights.rigIsOn ? 1 : 0) { on in
                     lights.setStudioLights(on)
                 }
+                // The switch's own label is hidden (ToggleSetting), so name it
+                // for VoiceOver; the Text beside it is a separate element.
+                .accessibilityLabel(SceneCatalog.studioLightsLabel)
                 Spacer(minLength: 0)
                 HelpButton(text: SceneCatalog.studioLightsHelp)
             }
