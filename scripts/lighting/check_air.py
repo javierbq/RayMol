@@ -41,9 +41,11 @@ exercises each on synthetic images, a pass and a fail):
              pixels at least BG_MARGIN px from geometry differ by at most
              RT_BG_MAX between rt0 and rt1 (and the air is there: at least
              RT_PRESENT_PX of them gain light); on geometry under the knee
-             with and without the air (the composite is linear there),
-             |delta rt0 - delta rt1| <= RT_GEO_TOL on RT_GEO_SHARE of the
-             pixels, mean <= RT_GEO_MEAN.
+             (KNEE: HDR's tone knee, round(255 k), #730) with and without the
+             air (the composite is linear there), |delta rt0 - delta rt1| <=
+             RT_GEO_TOL on RT_GEO_SHARE of the pixels, mean <= RT_GEO_MEAN.
+             Since #683 the delta holds the extinction c(T - 1), so it differs
+             by (c0 - c1)(T - 1) where the traced and raster bases differ.
   shafts     every shadowed light darkens its own haze: on background pixels,
              cross_a drops red against cross_none by SHAFT_DARKEN levels on
              SHAFT_PX pixels and moves blue by at most SHAFT_OTHER (B: the
@@ -51,9 +53,11 @@ exercises each on synthetic images, a pass and a fail):
              behind the molecule; spot_haze_ms0 == spot_hazens_ms0 (no maps at
              metal_shadows 0).
   reach      A's (B's) shaft reaches into REACH_BOXES['a'] (['b']), where its
-             beam is past the light's far plane: REACH_SHARE of the box's
-             (at least REACH_PX) background pixels darken by REACH_DARKEN.
-             Without the far-plane pull-back the air there reads lit.
+             beam is past the light's far plane: on REACH_SHARE of the box's
+             (at least REACH_PX) background pixels, the light's own channel
+             is at least REACH_LIT_MIN in cross_none and the shaft removes at
+             least REACH_DROP of it (its share, 1 - x / none; #730). Without
+             the far-plane pull-back the air there reads lit.
   in_beams   the pixels the dust changes (hazedust against haze) number at
              least IN_BEAMS_PX, and IN_BEAMS_SHARE of them lie inside the haze
              footprint (pixels the haze changes against none, by ADD_MIN
@@ -86,6 +90,15 @@ check_same, check_differs (DIFFERS_MIN pixels), run_plan and report.
 Prints one markdown table row per check (paste it into the PR) and exits 0
 when every check passes, 1 when one fails, 2 on a usage error. Pillow and
 numpy (/Users/javier/repos/light-tools/venv).
+
+REFERENCE HARDWARE (#858). The thresholds are frozen on renders from this
+machine; GPU and driver differences move rt_match and reach, so a re-freeze
+needs L2 renders from it:
+    Mac mini (Mac16,10), Apple M4, 24 GB; macOS 27.0.1 (26A434);
+    Xcode 27.1 (27A9275); RayMol master 51beba79a (the app built Debug from
+    the PyMOLViewer_macOS scheme, staged with its own bundle id).
+On another Mac, a FAIL in rt_match or reach is not evidence on its own:
+re-render on the reference machine first.
 """
 import argparse
 import importlib.util
@@ -120,30 +133,61 @@ Usage = cs.Usage
 # round 2 (half resolution: the silhouette criterion), then frozen with every
 # check passing on round 2 (43 of 43). testing/tests/raymol/lighting_air_check.py
 # pins them; change them only with new L2 evidence.
+#
+# #858 re-froze KNEE, RT_GEO_SHARE and reach (REACH_DARKEN -> REACH_DROP and
+# REACH_LIT_MIN) on the reference hardware (the docstring), master 51beba79a,
+# after Beer-Lambert extinction (#683/#856); 43 of 43 pass, on two render runs.
 
 ADD_MIN = 1               # a pixel is in an air footprint when a channel rises by
                           #   at least this (levels)
 VISIBLE_PX = 2000         # visible: at least this many pixels gain light
 VISIBLE_MEAN = 2.0        # ... by this much luminance on average
 BG_MARGIN = 3             # background: pixels at least this far (px) from geometry
-KNEE = 204                # geometry under the 8-bit knee: largest channel below this
+TONE_KNEE = 0.55          # HDR's tone curve knee k: pymol::kLightToneKnee, and
+                          #   check_hdr.TONE_KNEE (which imports this file, so
+                          #   the value is repeated; a test ties them)
+KNEE = int(round(255 * TONE_KNEE))  # 140. Geometry under the knee: largest
+                          #   channel below this. #730/#858: the L2 scenes render
+                          #   at the platform default (HDR on), where the
+                          #   composite is linear only under k; was 204, the
+                          #   8-bit soft knee's round(255 x 0.8) (metal_light_hdr 2)
 RT_BG_MAX = 1             # rt_match: background |rt0 - rt1| at most this
 RT_PRESENT_PX = 2000      # ... and the air lights at least this many of them
 RT_GEO_TOL = 4            # rt_match: |delta rt0 - delta rt1| <= this, every channel
-RT_GEO_SHARE = 0.99       # ... on at least this share of the geometry under the knee
-RT_GEO_MEAN = 1.0         # ... with a mean of at most this
+RT_GEO_SHARE = 0.97       # ... on at least this share of the geometry under the knee.
+                          #   #858: was 0.99. Since #683 the delta holds c(T - 1),
+                          #   so it differs by (c0 - c1)(T - 1) where the traced
+                          #   and raster bases differ: measured min 97.871%
+                          #   (spot_haze, knee 140); 100.000% on every pixel whose
+                          #   bases agree within 6 levels. Margin 0.87 points.
+RT_GEO_MEAN = 1.0         # ... with a mean of at most this (measured max 0.83)
 SHAFT_DARKEN = 8          # shafts: a channel drops by at least this (levels)
 SHAFT_PX = 500            # ... on at least this many background pixels
 SHAFT_OTHER = 2           # ... while the other light's channel moves by at most this
 REACH_PX = 500            # reach: background pixels the light's box must hold
-REACH_DARKEN = 24         # ... a channel drops by at least this (levels)
-REACH_SHARE = 0.90        # ... on at least this share of them
+REACH_LIT_MIN = 8         # ... the light's channel in cross_none is at least this
+                          #   (levels; measured min 19 in A's box, 39 in B's)
+REACH_DROP = 0.5          # ... and the shaft removes at least this share of it,
+                          #   1 - x / none. #730/#858: was REACH_DARKEN 24 levels.
+                          #   The hue-preserving tone curve scales a light's
+                          #   channel by the brightest one (A's red beside B's
+                          #   blue in A's box, 24 levels unshadowed) and the
+                          #   extinction (#683) scales it by T; a share is
+                          #   unchanged by both, i.e. the drop in scene units.
+                          #   Measured min 0.600 (A), 0.675 (B); margin 0.10.
+                          #   Negative control (#858, same machine, a build
+                          #   with post_air_far_pull returning dl): A's box
+                          #   0.562% of pixels pass (removed share mean 0.30,
+                          #   max 0.53), B's 28.601% (mean 0.42): both FAIL,
+                          #   rt0 and rt1.
+REACH_SHARE = 0.90        # ... on at least this share of them (measured 100%)
 REACH_BOXES = {           # (x0, y0, x1, y1), end-exclusive, at 1280x720: where the
     'a': (1200, 500, 1280, 720),   # beam leaves its map's far plane, past the
     'b': (0, 0, 64, 128),          # casters' sphere (A right and low, B left and
 }                         #   high). Tuned on round 1 against a build without the
                           #   far-plane pull-back: A 100% of the box darkened by
-                          #   24+ with it, 0.1% without; B 100% / 42%.
+                          #   24+ with it, 0.1% without; B 100% / 42% (the old
+                          #   absolute REACH_DARKEN metric).
 IN_BEAMS_PX = 50          # in_beams: the dust changes at least this many pixels
 IN_BEAMS_SHARE = 0.98     # ... and this share of them is inside the haze footprint
 IN_BEAMS_DILATE = 3       # ... dilated by this many pixels
@@ -341,19 +385,26 @@ def check_shafts_spot(none, haze, hazens, subject=''):
 
 
 def check_reach(noair, none, x, box, channel='r', subject=''):
-    """The light's shaft reaches into `box`, past the casters' sphere."""
+    """The light's shaft reaches into `box`, past the casters' sphere: the
+    light's channel is lit there without the shadow and the shaft removes at
+    least REACH_DROP of it (#730: a share, which neither the hue-preserving
+    tone curve nor the extinction changes)."""
     bad = _same_size('reach', subject, noair, none, x)
     if bad:
         return bad
-    drop = (_f(none) - _f(x))[..., _CH[channel]]
-    inside = _box_mask(_np().asarray(x).shape, box) & background(noair)
+    np = _np()
+    lit = _f(none)[..., _CH[channel]]
+    kept = _f(x)[..., _CH[channel]]
+    removed = (lit - kept) / np.maximum(lit, 1.0)
+    inside = _box_mask(np.asarray(x).shape, box) & background(noair)
     n = int(inside.sum())
-    dark = int(((drop >= REACH_DARKEN) & inside).sum())
+    dark = int(((lit >= REACH_LIT_MIN) & (removed >= REACH_DROP) & inside).sum())
     share = dark / float(n) if n else 0.0
     return Result('reach', subject, n >= REACH_PX and share >= REACH_SHARE,
-                  '%s of %d background px in %d,%d,%d,%d (>= %d) darkened by >= %d '
-                  '(>= %s)' % ((_pct(share), n) + tuple(box) +
-                               (REACH_PX, REACH_DARKEN, _pct(REACH_SHARE))))
+                  '%s of %d background px in %d,%d,%d,%d (>= %d) lit by >= %d and '
+                  'losing >= %s of it (>= %s)' % ((_pct(share), n) + tuple(box) +
+                                                 (REACH_PX, REACH_LIT_MIN,
+                                                  _pct(REACH_DROP), _pct(REACH_SHARE))))
 
 
 def check_in_beams(none, haze, hazedust, subject=''):
