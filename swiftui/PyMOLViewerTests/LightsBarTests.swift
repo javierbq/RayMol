@@ -308,6 +308,14 @@ final class LightsBarTests: XCTestCase {
     /// The menu's Shadow toggle is disabled under the cap notice once
     /// `maxShadowed` other lights cast shadows (#886 review), since the
     /// inspector's notice is not on screen with the portrait editor closed.
+    func testLightMenuAccessibilityValue() {
+        XCTAssertEqual(LightsBarState.lightMenuAccessibilityValue(selected: "key", behind: false),
+                       "key, in front of the molecule")
+        XCTAssertEqual(LightsBarState.lightMenuAccessibilityValue(selected: "rim", behind: true),
+                       "rim, behind the molecule")
+        XCTAssertEqual(LightsBarState.lightMenuAccessibilityValue(selected: nil, behind: true), "No light")
+    }
+
     func testShadowCapReached() {
         let cap = LightsController.maxShadowed
         XCTAssertFalse(LightsBarState.shadowCapReached(isShadowed: false, shadowedCount: cap - 1))

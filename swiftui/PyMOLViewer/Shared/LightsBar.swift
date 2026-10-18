@@ -102,6 +102,13 @@ struct LightsBarState: Equatable {
         selected ?? noLightTitle
     }
 
+    /// VoiceOver's value for the light menu: the selected light and where it
+    /// is (the chips' front/behind value, #622), or `No light`.
+    static func lightMenuAccessibilityValue(selected: String?, behind: Bool) -> String {
+        guard let selected else { return noLightTitle }
+        return "\(selected), \(chipAccessibilityValue(behind: behind))"
+    }
+
     static func lightMenuItemIdentifier(_ name: String) -> String {
         "lights.menu.light.\(name)"
     }
@@ -444,7 +451,8 @@ struct LightsBar: View {
         .fixedSize(horizontal: false, vertical: true)
         .help(LightsBarState.lightMenuHint)
         .accessibilityLabel(LightsBarState.lightMenuLabel)
-        .accessibilityValue(title)
+        .modifier(LightMenuAccessibilityValue(selected: controller.selectedLight?.name,
+                                              facing: controller.facing))
         .accessibilityHint(LightsBarState.lightMenuHint)
         .accessibilityIdentifier(LightsBarState.lightMenuIdentifier)
     }
@@ -652,6 +660,20 @@ struct LightMenuMarker: View {
     var body: some View {
         LightMarkerDot(marker: chip.marker, size: 8, hollow: facing.isBehind(chip.name))
             .opacity(rigOn ? 1 : 0.45)
+    }
+}
+
+/// The light menu's VoiceOver value (LightsBarState.lightMenuAccessibilityValue).
+/// It observes `controller.facing`, so the spoken front/behind state follows a
+/// crossing under a turning camera, as the dot does.
+struct LightMenuAccessibilityValue: ViewModifier {
+    var selected: String?
+    @ObservedObject var facing: LightsFacingState
+
+    func body(content: Content) -> some View {
+        let behind = selected.map { facing.isBehind($0) } ?? false
+        return content.accessibilityValue(LightsBarState.lightMenuAccessibilityValue(selected: selected,
+                                                                                     behind: behind))
     }
 }
 
