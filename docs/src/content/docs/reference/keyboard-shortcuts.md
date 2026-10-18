@@ -7,7 +7,7 @@ RayMol integrates native macOS and iPadOS keyboard accelerators with PyMOL's com
 
 ## Application Keyboard Shortcuts
 
-Shortcuts are listed for macOS. On iPad with a hardware keyboard, ⌃M, ⌃E, ⌃D, ⌃P, ⌘1, ⌘2 and ⌘3 also work; the other shortcuts and the viewport keys are macOS only.
+Shortcuts are listed for macOS. On iPad with a hardware keyboard, ⌃M, ⌃E, ⌃L, ⌃D, ⌃P, ⌘1, ⌘2 and ⌘3 also work; the other shortcuts and the viewport keys are macOS only.
 
 ![Keyboard Shortcuts window listing Files & Session, Tools, Panes, Movie and Notes shortcuts with their key combinations](../../../assets/docs/shortcuts-sheet.png)
 *Help ▸ Keyboard Shortcuts (⌘/).*
@@ -30,6 +30,7 @@ Shortcuts are listed for macOS. On iPad with a hardware keyboard, ⌃M, ⌃E, �
 | **Move Objects** | `⌃M` | Activate 3D Move gizmo | All platforms |
 | **Measure Distances** | `⌃E` | Enter interactive measurement mode | All platforms |
 | **Box Select** | `⌃S` | Toggle 2D selection marquee | macOS |
+| **Lights Mode** | `⌃L` | Enter or leave Lights mode (studio lights and atmosphere) | All platforms |
 | **Design Mode** | `⌃D` | Enter on-device ProteinMPNN sequence design | macOS; iPad/iPhone on iOS 18+ |
 | **Predict Mode** | `⌃P` | Enter on-device structure prediction | macOS; iPad/iPhone on iOS 18+ |
 
@@ -75,7 +76,7 @@ When interacting directly with the 3D canvas (macOS only; viewport keys work whi
 | `Page Up` / `Page Down` | Cycle through stored scenes |
 | `Home` | Zoom to everything |
 | `End` | Play / pause the movie |
-| Arrow keys (in **Tools ▸ Enter Lights Mode**, beta, with a light selected) | Orbit (left/right) or pitch (up/down) the selected light by 1° (`⇧`-arrow nudges by 10°) |
+| Arrow keys (in **Tools ▸ Enter Lights Mode**, with a light selected) | Orbit (left/right) or pitch (up/down) the selected light by 1° (`⇧`-arrow nudges by 10°) |
 
 ## PyMOL Key Bindings & `set_key`
 

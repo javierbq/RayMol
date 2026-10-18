@@ -158,7 +158,7 @@ When preparing final figures, RayMol provides two distinct rendering paths:
 | Feature | App Metal Export (**Ray-traced**) | Classic CPU `ray` command |
 | :--- | :--- | :--- |
 | **Engine** | Apple Metal GPU pipeline | Classic CPU software tracer |
-| **Studio lights & atmosphere** (beta) | Full support (spotlights, haze, dust) | Unsupported (falls back to PyMOL classic lights with a notice) |
+| **Studio lights & atmosphere** | Full support (spotlights, haze, dust) | Unsupported (falls back to PyMOL classic lights with a notice) |
 | **Materials & Looks** | Full shader support (glass, metal, marble, etc.) | Approximated via procedural `ray_texture` |
 | **Refractions** | Screen-space refraction (stylized) | None |
 | **Depth of field** | Scatter-based bokeh matching live viewport | None |

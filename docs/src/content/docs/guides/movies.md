@@ -32,7 +32,7 @@ When you store a scene in RayMol, it captures:
   applied to individual objects via Move mode (`⌃M`).
 - **Autofocus target**: The active `dof_focus` selection used by depth of field
   autofocus.
-- **Studio lights & atmosphere** (beta): The complete studio lighting rig (up to six
+- **Studio lights & atmosphere**: The complete studio lighting rig (up to six
   spot lights, custom colors, warmths, beams, and shadows) and atmospheric
   haze and dust parameters.
 

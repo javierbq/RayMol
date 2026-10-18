@@ -657,8 +657,9 @@ The **Atmosphere** card edits the rig's air: **Haze**, **Dust**,
 - **Where it sits.** On macOS, a third card under the inspector in the side
   column; it starts expanded when the air is on as you enter Lights mode. On
   iPad, under the inspector, collapsed to its header. On iPhone, a section
-  after the inspector's rows in the sheet and in the landscape side panel; an
-  **Atmosphere** button in the sheet's header opens it. With no light, the
+  after the inspector's rows in the sheet and in the landscape side panel; the
+  **Atmosphere** entry on the Lights bar reveals it (in portrait, opening the
+  editor sheet first). With no light, the
   iPhone shows a compact air-only sheet (the card's header, its hint and its
   rows), so the switch is reachable before the first light.
 
@@ -666,10 +667,15 @@ The **Atmosphere** card edits the rig's air: **Haze**, **Dust**,
 
 The light tools are placed by size class, not by device:
 
-- **iPhone (portrait), and iPad Slide Over:** a two-height sheet docked
-  under the viewport. Compact, it shows the plan beside Pitch, Intensity and
-  a Colour button; pulled up (More), the plan and the pitch arc stay pinned
-  and every inspector row scrolls below them.
+- **iPhone (portrait), and iPad Slide Over:** the Lights bar carries a
+  compact light menu in place of the chips (#885): the selected light's dot
+  and name with a chevron. The menu picks a light, adds or removes one,
+  toggles Shadow and Pin, picks a colour swatch, turns the rig on or off, and
+  opens the full editor with **Edit light…**. The editor is a two-height
+  sheet under the viewport with a Close button: compact, it shows the plan
+  beside Pitch, Intensity and a Colour button; pulled up (More), the plan and
+  the pitch arc stay pinned and every inspector row scrolls below them. With
+  the editor closed the molecule stays fully visible.
 - **iPhone in landscape:** the same tools in the trailing side panel.
 - **iPad:** the orbit view floats over the viewport in a corner
   (bottom-leading by default; drag its header to move it to another corner,
