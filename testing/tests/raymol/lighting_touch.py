@@ -654,7 +654,13 @@ class TestTouchSource(testing.PyMOLTestCase):
         entry = body(content, 'private var lightsAtmosphereEntry: (() -> Void)?')
         self.assertIsNotNone(entry, 'lightsAtmosphereEntry not found')
         self.assertIn('LightsBarState.showsAtmosphereEntry(placement: lightsPlacement)', entry)
-        self.assertIn('lightsAtmosphereRevealRequest += 1', entry)
+        # #885: the entry goes through LightsPortraitTools.revealAtmosphere,
+        # which also opens the portrait editor; it still asks for one reveal.
+        self.assertIn('LightsPortraitTools.revealAtmosphere(', entry)
+        self.assertIn('revealRequest: &lightsAtmosphereRevealRequest', entry)
+        portrait = body(text, 'static func revealAtmosphere(placement: LightsToolsPlacement')
+        self.assertIsNotNone(portrait, 'LightsPortraitTools.revealAtmosphere not found')
+        self.assertIn('revealRequest += 1', portrait)
         reveal = body(text, 'private func revealAtmosphere()')
         self.assertIsNotNone(reveal, 'revealAtmosphere not found')
         self.assertIn('if placement == .bottom, detent == .compact { setDetent(.expanded) }', reveal)

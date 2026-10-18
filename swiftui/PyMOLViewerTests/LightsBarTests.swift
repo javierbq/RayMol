@@ -304,6 +304,17 @@ final class LightsBarTests: XCTestCase {
         XCTAssertEqual(LightsBarState.lightMenuIdentifier, "lights.menu")
         XCTAssertEqual(LightsBarState.lightMenuLabel, "Light")
     }
+
+    /// The menu's Shadow toggle is disabled under the cap notice once
+    /// `maxShadowed` other lights cast shadows (#886 review), since the
+    /// inspector's notice is not on screen with the portrait editor closed.
+    func testShadowCapReached() {
+        let cap = LightsController.maxShadowed
+        XCTAssertFalse(LightsBarState.shadowCapReached(isShadowed: false, shadowedCount: cap - 1))
+        XCTAssertTrue(LightsBarState.shadowCapReached(isShadowed: false, shadowedCount: cap))
+        // A shadowed light can always turn its own shadow off.
+        XCTAssertFalse(LightsBarState.shadowCapReached(isShadowed: true, shadowedCount: cap))
+    }
 }
 
 // MARK: - Pictures

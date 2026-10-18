@@ -4434,13 +4434,14 @@ struct ContentView: View {
     }
 
     // The phone portrait light menu's "Edit light…" entry on the Lights bar
-    // (#885): opens the bottom sheet at its expanded height. nil outside
+    // (#885): opens the bottom sheet at its expanded height, on the light's
+    // rows (an earlier Atmosphere reveal is dropped). nil outside
     // `.bottomSheet` (where the bar shows the chips instead).
     private var lightsEditLightEntry: (() -> Void)? {
         guard LightsPortraitTools.showsMenu(placement: lightsPlacement) else { return nil }
         return {
-            lightsSheetDetent = .expanded
-            lightsEditorOpen = true
+            LightsPortraitTools.editLight(detent: &lightsSheetDetent, editorOpen: &lightsEditorOpen,
+                                          revealRequest: &lightsAtmosphereRevealRequest)
         }
     }
 
@@ -4452,11 +4453,10 @@ struct ContentView: View {
     // on macOS and the iPad float, whose Atmosphere card is always in view.
     private var lightsAtmosphereEntry: (() -> Void)? {
         guard LightsBarState.showsAtmosphereEntry(placement: lightsPlacement) else { return nil }
+        let placement = lightsPlacement
         return {
-            if LightsPortraitTools.showsMenu(placement: lightsPlacement) {
-                lightsEditorOpen = true
-            }
-            lightsAtmosphereRevealRequest += 1
+            LightsPortraitTools.revealAtmosphere(placement: placement, editorOpen: &lightsEditorOpen,
+                                                 revealRequest: &lightsAtmosphereRevealRequest)
         }
     }
 

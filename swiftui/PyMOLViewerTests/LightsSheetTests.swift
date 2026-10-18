@@ -53,6 +53,33 @@ final class LightsToolsPlacementTests: XCTestCase {
                                                          airOnly: true, editorOpen: false), "menu")
         }
     }
+
+    /// Atmosphere, Close, Edit light…: the reopened editor shows the light's
+    /// rows, not the Atmosphere section an earlier entry asked for (#886
+    /// review): Edit light… drops the stale reveal request.
+    func testEditLightAfterAtmosphereDropsTheStaleReveal() {
+        var detent = LightsSheetDetent.compact
+        var open = false
+        var request = 0
+        LightsPortraitTools.revealAtmosphere(placement: .bottomSheet, editorOpen: &open, revealRequest: &request)
+        XCTAssertTrue(open)
+        XCTAssertEqual(request, 1, "the Atmosphere entry asks for one reveal")
+        open = false // Close
+        LightsPortraitTools.editLight(detent: &detent, editorOpen: &open, revealRequest: &request)
+        XCTAssertTrue(open)
+        XCTAssertEqual(detent, .expanded)
+        XCTAssertEqual(request, 0, "Edit light… must not replay the Atmosphere reveal")
+        // A later Atmosphere entry still reveals.
+        open = false
+        LightsPortraitTools.revealAtmosphere(placement: .bottomSheet, editorOpen: &open, revealRequest: &request)
+        XCTAssertTrue(open)
+        XCTAssertEqual(request, 1)
+        // Off portrait the entry only asks for the reveal (the side panel is always shown).
+        var sideOpen = false
+        LightsPortraitTools.revealAtmosphere(placement: .sidePanel, editorOpen: &sideOpen, revealRequest: &request)
+        XCTAssertFalse(sideOpen)
+        XCTAssertEqual(request, 2)
+    }
 }
 
 // MARK: - The height model

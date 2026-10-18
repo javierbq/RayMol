@@ -106,6 +106,15 @@ struct LightsBarState: Equatable {
         "lights.menu.light.\(name)"
     }
 
+    /// The menu's Shadow toggle cannot turn the selected light's shadow on:
+    /// it has none and `maxShadowed` other lights already cast one. The menu
+    /// then disables it under the inspector's cap notice, since the
+    /// inspector (which shows the notice after a refused press) is not on
+    /// screen while the portrait editor is closed.
+    static func shadowCapReached(isShadowed: Bool, shadowedCount: Int) -> Bool {
+        !isShadowed && shadowedCount >= LightsController.maxShadowed
+    }
+
     /// VoiceOver's name for a chip.
     static func chipAccessibilityLabel(_ name: String) -> String {
         "\(name) light"
@@ -360,31 +369,47 @@ struct LightsBar: View {
             }
             .disabled(!state.canRemove)
             if let inspector = LightsInspectorState(controller) {
-                Divider()
-                Toggle(isOn: Binding(get: { inspector.isShadowed },
-                                     set: { controller.setShadow($0) })) {
-                    Label(LightsInspectorState.shadowLabel, systemImage: "shadow")
-                }
-                .disabled(!inspector.canEdit)
-                Toggle(isOn: Binding(get: { inspector.isPinned },
-                                     set: { controller.setPinned($0) })) {
-                    Label(LightsInspectorState.pinLabel, systemImage: "pin")
-                }
-                .disabled(!inspector.canEdit)
-                Menu {
-                    ForEach(inspector.swatches) { swatch in
-                        Button { controller.setColour(swatch.rgb) } label: {
-                            if swatch.isSelected {
-                                Label(swatch.name, systemImage: "checkmark")
-                            } else {
-                                Text(swatch.name)
+                let shadowed = controller.rig?.lights.filter(\.shadow).count ?? 0
+                let capReached = LightsBarState.shadowCapReached(isShadowed: inspector.isShadowed,
+                                                                 shadowedCount: shadowed)
+                Section {
+                    Toggle(isOn: Binding(get: { inspector.isShadowed },
+                                         set: { on in
+                                             // The core keeps the cap: a refusal the
+                                             // count missed is still spoken, and the
+                                             // editor opens on its notice.
+                                             if controller.setShadow(on) == .refused {
+                                                 LightsInspectorState.announce(LightsInspectorState.shadowCapAnnouncement)
+                                                 onEdit()
+                                             }
+                                         })) {
+                        Label(LightsInspectorState.shadowLabel, systemImage: "shadow")
+                    }
+                    .disabled(!inspector.canEdit || capReached)
+                    Toggle(isOn: Binding(get: { inspector.isPinned },
+                                         set: { controller.setPinned($0) })) {
+                        Label(LightsInspectorState.pinLabel, systemImage: "pin")
+                    }
+                    .disabled(!inspector.canEdit)
+                    Menu {
+                        ForEach(inspector.swatches) { swatch in
+                            Button { controller.setColour(swatch.rgb) } label: {
+                                if swatch.isSelected {
+                                    Label(swatch.name, systemImage: "checkmark")
+                                } else {
+                                    Text(swatch.name)
+                                }
                             }
                         }
+                    } label: {
+                        Label("Colour", systemImage: "paintpalette")
                     }
-                } label: {
-                    Label("Colour", systemImage: "paintpalette")
+                    .disabled(!inspector.canEdit)
+                } header: {
+                    if capReached {
+                        Text(LightsInspectorState.shadowCapNotice)
+                    }
                 }
-                .disabled(!inspector.canEdit)
             }
             Divider()
             Toggle(isOn: Binding(get: { state.isOn },
