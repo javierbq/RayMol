@@ -906,8 +906,9 @@ class TestGizmoSource(testing.PyMOLTestCase):
         self.assertIn('tools=', fields)
         self.assertIn('touch=', fields)
         # #726 adds airOnly: (sheet:air / side:air with no light).
+        # #885 adds editorOpen: (menu while the portrait editor is closed).
         self.assertIn('LightsSheetState.toolsSummary(placement: lightsLivePlacement, detent: detent, '
-                      'corner: lightsOrbitCorner, airOnly: airOnly)', fields)
+                      'corner: lightsOrbitCorner, airOnly: airOnly, editorOpen: lightsEditorOpen)', fields)
         self.assertEqual(len(re.findall(r'LightGizmoState\(lights, sceneShadowsOn: '
                                         r'engine\.sceneShadowsOn\)\?\.summary', hook)), 2)
         self.assertIn('GizmoAutoContext(viewSize: engine.lightGizmoUI.viewSize', hook)

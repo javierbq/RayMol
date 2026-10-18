@@ -4,10 +4,13 @@
 // light's dot (the colour the light casts, #798, which the orbit view #621 and
 // the gizmo #622 use for it too; hollow while the light is behind the molecule, the gizmo's
 // front/behind rule), and the rig-wide actions: add, remove, a preset, Re-centre,
-// on/off, Revert and Done. On a phone the bar also carries the scene's
-// Atmosphere entry (#795): a button on the wide bar, an item in the overflow
-// menu on the compact one. It floats at the top of the viewport on macOS and
-// docks at the bottom of the top stack on iOS (ContentView places it).
+// on/off, Revert and Done. In phone portrait (#885, `onEditLight`) a compact
+// light menu replaces the chips, with the lights, add/remove, Shadow, Pin,
+// Colour, Lights On and "Edit light…" (which opens the full bottom-sheet
+// editor). On a phone the bar also carries the scene's Atmosphere entry (#795):
+// a button on the wide bar, an item in the overflow menu on the compact one.
+// It floats at the top of the viewport on macOS and docks at the bottom of the
+// top stack on iOS (ContentView places it).
 //
 // Everything it shows comes from LightsController, and every press goes to
 // one of the controller's actions, which reach the rig through the engine's
@@ -87,6 +90,37 @@ struct LightsBarState: Equatable {
     /// The same status where the chip area is too narrow for `noLightsText`
     /// (iPhone portrait), where Presets sits in the overflow menu.
     static let noLightsShortText = "No lights"
+    /// The portrait light menu (#885), shown in place of the chips.
+    static let lightMenuIdentifier = "lights.menu"
+    static let lightMenuLabel = "Light"
+    static let lightMenuHint = "Pick a light, change its main settings, or open the full editor"
+    static let noLightTitle = "No light"
+    static let editLightTitle = "Edit light…"
+    static let editLightIdentifier = "lights.menu.edit"
+
+    static func lightMenuTitle(selected: String?) -> String {
+        selected ?? noLightTitle
+    }
+
+    /// VoiceOver's value for the light menu: the selected light and where it
+    /// is (the chips' front/behind value, #622), or `No light`.
+    static func lightMenuAccessibilityValue(selected: String?, behind: Bool) -> String {
+        guard let selected else { return noLightTitle }
+        return "\(selected), \(chipAccessibilityValue(behind: behind))"
+    }
+
+    static func lightMenuItemIdentifier(_ name: String) -> String {
+        "lights.menu.light.\(name)"
+    }
+
+    /// The menu's Shadow toggle cannot turn the selected light's shadow on:
+    /// it has none and `maxShadowed` other lights already cast one. The menu
+    /// then disables it under the inspector's cap notice, since the
+    /// inspector (which shows the notice after a refused press) is not on
+    /// screen while the portrait editor is closed.
+    static func shadowCapReached(isShadowed: Bool, shadowedCount: Int) -> Bool {
+        !isShadowed && shadowedCount >= LightsController.maxShadowed
+    }
 
     /// VoiceOver's name for a chip.
     static func chipAccessibilityLabel(_ name: String) -> String {
@@ -193,6 +227,9 @@ struct LightsBar: View {
     /// scene's haze and dust belong to the rig, so the entry is here with the
     /// other rig-wide controls and not in the selected light's header.
     var onAtmosphere: (() -> Void)?
+    /// Opens the portrait full light editor (#885); when non-nil the bar
+    /// shows the compact light menu in place of the chips.
+    var onEditLight: (() -> Void)?
     /// 44 on iOS (every control a 44 pt target, #623), 0 on macOS.
     @Environment(\.lightsTouchMinimum) private var touchMinimum
 
@@ -207,10 +244,11 @@ struct LightsBar: View {
     static let doneHelp = "Keep these lights and leave Lights mode (Esc)"
 
     init(controller: LightsController, style: LightsBarStyle, onAtmosphere: (() -> Void)? = nil,
-         onDone: @escaping () -> Void) {
+         onEditLight: (() -> Void)? = nil, onDone: @escaping () -> Void) {
         self.controller = controller
         self.style = style
         self.onAtmosphere = onAtmosphere
+        self.onEditLight = onEditLight
         self.onDone = onDone
     }
 
@@ -257,10 +295,10 @@ struct LightsBar: View {
         }
     }
 
-    // iPhone portrait: no title; Presets, Re-centre, Atmosphere (phones only)
-    // and On/Off in one overflow menu. +, −, Revert and Done stay on the bar. With 44 pt targets (iOS)
-    // the frames carry the gaps, so the spacing drops to 2 and a 375 pt phone
-    // still shows about two chips.
+    // iPhone portrait: no title; the light menu replaces the chips (#885), and
+    // Presets, Re-centre, Atmosphere (phones only) and On/Off sit in one
+    // overflow menu. +, −, Revert and Done stay on the bar. With 44 pt targets
+    // (iOS) the frames carry the gaps, so the spacing drops to 2.
     private func compact(_ state: LightsBarState) -> some View {
         HStack(spacing: touchMinimum > 0 ? 2 : 10) {
             Image(systemName: "lightbulb.fill")
@@ -280,7 +318,9 @@ struct LightsBar: View {
 
     @ViewBuilder
     private func chipArea(_ state: LightsBarState) -> some View {
-        if let status = state.status {
+        if let onEditLight {
+            lightMenu(state, onEdit: onEditLight)
+        } else if let status = state.status {
             ViewThatFits(in: .horizontal) {
                 statusText(status)
                 statusText(LightsBarState.noLightsShortText)
@@ -311,6 +351,110 @@ struct LightsBar: View {
                 }
             }
         }
+    }
+
+    private func lightMenu(_ state: LightsBarState, onEdit: @escaping () -> Void) -> some View {
+        let title = LightsBarState.lightMenuTitle(selected: controller.selectedLight?.name)
+        return Menu {
+            ForEach(state.chips) { chip in
+                Button { controller.select(index: chip.index) } label: {
+                    if chip.isSelected {
+                        Label(chip.name, systemImage: "checkmark")
+                    } else {
+                        Text(chip.name)
+                    }
+                }
+                .accessibilityIdentifier(LightsBarState.lightMenuItemIdentifier(chip.name))
+            }
+            Divider()
+            Button { controller.add() } label: {
+                Label("Add Light", systemImage: "plus")
+            }
+            .disabled(!state.canAdd)
+            Button(role: .destructive) { controller.removeSelected() } label: {
+                Label(state.removeHelp, systemImage: "minus")
+            }
+            .disabled(!state.canRemove)
+            if let inspector = LightsInspectorState(controller) {
+                let shadowed = controller.rig?.lights.filter(\.shadow).count ?? 0
+                let capReached = LightsBarState.shadowCapReached(isShadowed: inspector.isShadowed,
+                                                                 shadowedCount: shadowed)
+                Section {
+                    Toggle(isOn: Binding(get: { inspector.isShadowed },
+                                         set: { on in
+                                             // The core keeps the cap: a refusal the
+                                             // count missed opens the editor on its
+                                             // notice (ContentView speaks it, once).
+                                             if controller.setShadow(on) == .refused {
+                                                 onEdit()
+                                             }
+                                         })) {
+                        Label(LightsInspectorState.shadowLabel, systemImage: "shadow")
+                    }
+                    .disabled(!inspector.canEdit || capReached)
+                    Toggle(isOn: Binding(get: { inspector.isPinned },
+                                         set: { controller.setPinned($0) })) {
+                        Label(LightsInspectorState.pinLabel, systemImage: "pin")
+                    }
+                    .disabled(!inspector.canEdit)
+                    Menu {
+                        ForEach(inspector.swatches) { swatch in
+                            Button { controller.setColour(swatch.rgb) } label: {
+                                if swatch.isSelected {
+                                    Label(swatch.name, systemImage: "checkmark")
+                                } else {
+                                    Text(swatch.name)
+                                }
+                            }
+                        }
+                    } label: {
+                        Label("Colour", systemImage: "paintpalette")
+                    }
+                    .disabled(!inspector.canEdit)
+                } header: {
+                    if capReached {
+                        Text(LightsInspectorState.shadowCapNotice)
+                    }
+                }
+            }
+            Divider()
+            Toggle(isOn: Binding(get: { state.isOn },
+                                 set: { controller.setEnabled($0) })) {
+                Label("Lights On", systemImage: "power")
+            }
+            .disabled(!state.canToggle)
+            Divider()
+            Button { onEdit() } label: {
+                Label(LightsBarState.editLightTitle, systemImage: "slider.horizontal.3")
+            }
+            .disabled(controller.selectedLight == nil)
+            .accessibilityIdentifier(LightsBarState.editLightIdentifier)
+        } label: {
+            HStack(spacing: 4) {
+                if let chip = state.chips.first(where: \.isSelected) {
+                    LightMenuMarker(chip: chip, facing: controller.facing, rigOn: state.isOn)
+                }
+                Text(verbatim: title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down").font(.system(size: 9))
+            }
+            .foregroundColor(style.text)
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .overlay(Capsule().stroke(style.accent, lineWidth: 1.5))
+            .contentShape(Capsule())
+            .lightsTouchTarget(width: false)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize(horizontal: false, vertical: true)
+        .help(LightsBarState.lightMenuHint)
+        .accessibilityLabel(LightsBarState.lightMenuLabel)
+        .modifier(LightMenuAccessibilityValue(selected: controller.selectedLight?.name,
+                                              facing: controller.facing))
+        .accessibilityHint(LightsBarState.lightMenuHint)
+        .accessibilityIdentifier(LightsBarState.lightMenuIdentifier)
     }
 
     private func statusText(_ text: String) -> some View {
@@ -500,6 +644,36 @@ struct LightsBar: View {
                 .help(Self.doneHelp)
                 .accessibilityIdentifier("lights.done")
         }
+    }
+}
+
+// MARK: - The light menu's dot
+
+/// The portrait light menu's dot (#885): the selected light's colour,
+/// hollow while it is behind the molecule. It observes `controller.facing`,
+/// as the chips do, so it follows a crossing under a turning camera.
+struct LightMenuMarker: View {
+    var chip: LightsBarState.Chip
+    @ObservedObject var facing: LightsFacingState
+    var rigOn: Bool
+
+    var body: some View {
+        LightMarkerDot(marker: chip.marker, size: 8, hollow: facing.isBehind(chip.name))
+            .opacity(rigOn ? 1 : 0.45)
+    }
+}
+
+/// The light menu's VoiceOver value (LightsBarState.lightMenuAccessibilityValue).
+/// It observes `controller.facing`, so the spoken front/behind state follows a
+/// crossing under a turning camera, as the dot does.
+struct LightMenuAccessibilityValue: ViewModifier {
+    var selected: String?
+    @ObservedObject var facing: LightsFacingState
+
+    func body(content: Content) -> some View {
+        let behind = selected.map { facing.isBehind($0) } ?? false
+        return content.accessibilityValue(LightsBarState.lightMenuAccessibilityValue(selected: selected,
+                                                                                     behind: behind))
     }
 }
 

@@ -489,7 +489,11 @@ class TestOrbitSource(testing.PyMOLTestCase):
         self.assertIn('return .column', mac)
         phone = body(content, 'private func iPhoneLayout(geo: GeometryProxy)')
         self.assertIsNotNone(phone, 'iPhoneLayout not found')
-        self.assertRegex(phone, r'if\s+phoneLightsDocked\s*\{\s*lightsSheet\(room:\s*lower\.size\)')
+        # #885: in portrait the sheet docks only while the full editor is
+        # open; the light menu on the Lights bar stands in otherwise.
+        self.assertRegex(phone, r'if\s+phoneLightsDocked\s*\{\s*if\s+LightsPortraitTools\.showsSheet\('
+                                r'placement:\s*lightsPlacement,\s*editorOpen:\s*lightsEditorOpen\)\s*\{'
+                                r'\s*lightsSheet\(room:\s*lower\.size\)')
         for layout in ('private func iPhoneLandscapeLayout(geo: GeometryProxy)',
                        'private func iPadMacStyleLayout(geo: GeometryProxy)'):
             with self.subTest(layout):

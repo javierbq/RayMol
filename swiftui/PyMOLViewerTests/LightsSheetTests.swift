@@ -28,6 +28,87 @@ final class LightsToolsPlacementTests: XCTestCase {
         XCTAssertEqual(LightsSheetDetent.compact.toggled, .expanded)
         XCTAssertEqual(LightsSheetDetent.expanded.toggled, .compact)
     }
+
+    func testPortraitToolsMenuAndSheetDeciders() {
+        for placement in LightsToolsPlacement.allCases {
+            XCTAssertEqual(LightsPortraitTools.showsMenu(placement: placement), placement == .bottomSheet)
+            XCTAssertEqual(LightsPortraitTools.showsSheet(placement: placement, editorOpen: false), false)
+            XCTAssertEqual(LightsPortraitTools.showsSheet(placement: placement, editorOpen: true),
+                           placement == .bottomSheet)
+        }
+        XCTAssertTrue(LightsPortraitTools.showsMenu(
+            placement: LightsToolsPlacement.resolve(compactWidth: true, compactHeight: false)))
+        XCTAssertFalse(LightsPortraitTools.showsMenu(
+            placement: LightsToolsPlacement.resolve(compactWidth: true, compactHeight: true)))
+        XCTAssertFalse(LightsPortraitTools.showsMenu(
+            placement: LightsToolsPlacement.resolve(compactWidth: false, compactHeight: true)))
+        XCTAssertFalse(LightsPortraitTools.showsMenu(
+            placement: LightsToolsPlacement.resolve(compactWidth: false, compactHeight: false)))
+        XCTAssertEqual(LightsSheetState.moreChevron(expanded: false), "chevron.down")
+        XCTAssertEqual(LightsSheetState.moreChevron(expanded: true), "chevron.up")
+        for detent in LightsSheetDetent.allCases {
+            XCTAssertEqual(LightsSheetState.toolsSummary(placement: .bottomSheet, detent: detent,
+                                                         editorOpen: false), "menu")
+            XCTAssertEqual(LightsSheetState.toolsSummary(placement: .bottomSheet, detent: detent,
+                                                         airOnly: true, editorOpen: false), "menu")
+        }
+    }
+
+    /// Atmosphere, Close, Edit light…: the reopened editor shows the light's
+    /// rows, not the Atmosphere section an earlier entry asked for (#886
+    /// review): Edit light… drops the stale reveal request.
+    func testEditLightAfterAtmosphereDropsTheStaleReveal() {
+        var detent = LightsSheetDetent.compact
+        var open = false
+        var request = 0
+        var generation = 0
+        LightsPortraitTools.revealAtmosphere(placement: .bottomSheet, editorOpen: &open, revealRequest: &request)
+        XCTAssertTrue(open)
+        XCTAssertEqual(request, 1, "the Atmosphere entry asks for one reveal")
+        open = false // Close
+        LightsPortraitTools.editLight(detent: &detent, editorOpen: &open, revealRequest: &request,
+                                      generation: &generation)
+        XCTAssertTrue(open)
+        XCTAssertEqual(detent, .expanded)
+        XCTAssertEqual(request, 0, "Edit light… must not replay the Atmosphere reveal")
+        XCTAssertEqual(generation, 1, "Edit light… opens a fresh sheet")
+        // A later Atmosphere entry still reveals.
+        open = false
+        LightsPortraitTools.revealAtmosphere(placement: .bottomSheet, editorOpen: &open, revealRequest: &request)
+        XCTAssertTrue(open)
+        XCTAssertEqual(request, 1)
+        // Off portrait the entry only asks for the reveal (the side panel is always shown).
+        var sideOpen = false
+        LightsPortraitTools.revealAtmosphere(placement: .sidePanel, editorOpen: &sideOpen, revealRequest: &request)
+        XCTAssertFalse(sideOpen)
+        XCTAssertEqual(request, 2)
+    }
+
+    /// Atmosphere, then Edit light… with the editor still open (no Close),
+    /// then Atmosphere again (#886 review round 2): Edit light… opens a fresh
+    /// sheet (a new generation) with no request, so it starts on the light's
+    /// rows, and the next Atmosphere request (1) differs from what that
+    /// fresh sheet has seen (0), so it reveals again.
+    func testEditLightInAnOpenEditorThenAtmosphereAgain() {
+        var detent = LightsSheetDetent.compact
+        var open = false
+        var request = 0
+        var generation = 0
+        LightsPortraitTools.revealAtmosphere(placement: .bottomSheet, editorOpen: &open, revealRequest: &request)
+        detent = .compact // Less, while open
+        LightsPortraitTools.editLight(detent: &detent, editorOpen: &open, revealRequest: &request,
+                                      generation: &generation)
+        XCTAssertTrue(open)
+        XCTAssertEqual(detent, .expanded)
+        XCTAssertEqual(request, 0)
+        XCTAssertEqual(generation, 1, "the open sheet is replaced, so it leaves the Atmosphere section")
+        LightsPortraitTools.revealAtmosphere(placement: .bottomSheet, editorOpen: &open, revealRequest: &request)
+        XCTAssertEqual(request, 1, "a request the fresh sheet has not seen (it starts at 0)")
+        LightsPortraitTools.editLight(detent: &detent, editorOpen: &open, revealRequest: &request,
+                                      generation: &generation)
+        XCTAssertEqual(generation, 2)
+        XCTAssertEqual(request, 0)
+    }
 }
 
 // MARK: - The height model
@@ -313,6 +394,10 @@ final class LightsSheetStateTests: XCTestCase {
         XCTAssertEqual(LightsSheetState.moreTitle(expanded: true), "Less")
         XCTAssertEqual(LightsSheetState.moreLabel(expanded: false), "Show all light settings")
         XCTAssertEqual(LightsSheetState.moreLabel(expanded: true), "Show fewer light settings")
+        XCTAssertEqual(LightsSheetState.moreChevron(expanded: false), "chevron.down")
+        XCTAssertEqual(LightsSheetState.moreChevron(expanded: true), "chevron.up")
+        XCTAssertEqual(LightsSheetState.closeIdentifier, "lights.sheet.close")
+        XCTAssertEqual(LightsSheetState.closeLabel, "Close light editor")
         XCTAssertEqual(LightsSheetState.identifier, "lights.sheet")
         XCTAssertEqual(LightsSheetState.grabberIdentifier, "lights.sheet.grabber")
         XCTAssertEqual(LightsSheetState.moreIdentifier, "lights.sheet.more")
@@ -450,6 +535,20 @@ final class LightsPhoneWiringTests: XCTestCase {
                            "float:bl")
             XCTAssertEqual(LightsSheetState.toolsSummary(placement: .column, detent: detent, airOnly: true),
                            "column")
+            // #885: portrait with the full editor closed reports `menu`;
+            // other placements ignore `editorOpen`.
+            XCTAssertEqual(LightsSheetState.toolsSummary(placement: .bottomSheet, detent: detent,
+                                                         editorOpen: false), "menu")
+            XCTAssertEqual(LightsSheetState.toolsSummary(placement: .bottomSheet, detent: detent,
+                                                         airOnly: true, editorOpen: false), "menu")
+            XCTAssertEqual(LightsSheetState.toolsSummary(placement: .sidePanel, detent: detent,
+                                                         editorOpen: false), "side")
+            XCTAssertEqual(LightsSheetState.toolsSummary(placement: .sidePanel, detent: detent,
+                                                         airOnly: true, editorOpen: false), "side:air")
+            XCTAssertEqual(LightsSheetState.toolsSummary(placement: .floating, detent: detent,
+                                                         editorOpen: false), "float:bl")
+            XCTAssertEqual(LightsSheetState.toolsSummary(placement: .column, detent: detent,
+                                                         editorOpen: false), "column")
         }
     }
 

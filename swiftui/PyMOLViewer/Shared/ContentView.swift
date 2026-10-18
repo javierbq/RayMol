@@ -193,17 +193,25 @@ struct ContentView: View {
     // Atmosphere entry bumps the same request). Always false in normal runs.
     @State private var lightsAtmosphereExpandOverride = false
     @State private var lightsAtmosphereRevealRequest = 0
-    // The phone light tools (#623). The sheet's height is seeded compact each
-    // time Lights mode opens (expanded under the DEBUG `expand`), never
-    // persisted. `lightsSheetMoving` is true only for the one snap after a
-    // release (the drawable is frozen meanwhile and the gizmo fades);
-    // `lightsFieldFocused` while an Orbit, Pitch or Atmosphere field of the
-    // sheet, the side panel or the iPad float has the keyboard (the viewport
-    // then keeps its size, #623, #725). The pane overrides bring the console
-    // or the sequence strip back beside the portrait sheet for the rest of
-    // the mode (LightsPaneRule). The header, rows, room and side sizes are
-    // what the tools measured.
+    // The phone light tools (#623, #885). In portrait the Lights bar shows the
+    // light menu and the bottom sheet stays closed (`lightsEditorOpen`, false
+    // until "Edit light…", the Atmosphere entry or a DEBUG `expand`/`air`
+    // token opens it). The sheet's height is seeded compact each
+    // time Lights mode opens (expanded under the DEBUG `expand` or `air`, or
+    // when "Edit light…" opens it), never persisted. `lightsSheetMoving` is
+    // true only for the one snap after a release (the drawable is frozen
+    // meanwhile and the gizmo fades); `lightsFieldFocused` while an Orbit,
+    // Pitch or Atmosphere field of the sheet, the side panel or the iPad float
+    // has the keyboard (the viewport then keeps its size, #623, #725). The
+    // pane overrides bring the console or the sequence strip back beside the
+    // portrait tools for the rest of the mode (LightsPaneRule). The header,
+    // rows, room and side sizes are what the tools measured.
     @State private var lightsSheetDetent: LightsSheetDetent = .compact
+    /// The portrait full editor (#885): true while the bottom sheet is open.
+    @State private var lightsEditorOpen = false
+    /// The portrait sheet's identity: "Edit light…" moves it on, so the
+    /// editor opens fresh on the light's rows (LightsPortraitTools.editLight).
+    @State private var lightsEditorGeneration = 0
     @State private var lightsSheetMoving = false
     @State private var lightsFieldFocused = false
     @State private var lightsShowsConsole = false
@@ -1595,9 +1603,10 @@ struct ContentView: View {
         #endif
     }
 
-    // Where the Lights tools go (#623, LightsToolsPlacement): by size class
-    // on iOS (the bottom sheet in phone portrait, the side panel on compact
-    // height, the float on iPad), the side column on macOS.
+    // Where the Lights tools go (#623, #885, LightsToolsPlacement): by size
+    // class on iOS (the light menu and on-demand bottom sheet in phone
+    // portrait, the side panel on compact height, the float on iPad), the side
+    // column on macOS.
     private var lightsPlacement: LightsToolsPlacement {
         #if os(iOS)
         return LightsToolsPlacement.resolve(compactWidth: hSize == .compact, compactHeight: vSize == .compact)
@@ -1605,8 +1614,10 @@ struct ContentView: View {
         return .column
         #endif
     }
-    // Phone portrait (the iPhoneLayout) in Lights mode: the tools dock in the
-    // bottom sheet and the console and sequence strip give way.
+    // Phone portrait (the iPhoneLayout) in Lights mode: the console, the
+    // sequence strip and the bottom panel give way to the portrait light tools
+    // (the light menu on the bar, and the bottom sheet while the full editor
+    // is open, #885).
     private var phoneLightsDocked: Bool {
         #if os(iOS)
         return hSize == .compact && vSize == .regular && engine.interactionMode == .lights && !iosFullScreen
@@ -2353,10 +2364,27 @@ struct ContentView: View {
                             }
                         }
                     if !iosFullScreen {
-                        // Lights mode: the docked light sheet first; Theme Studio
-                        // and the inspector come back on exit.
+                        // Lights mode: the portrait light tools first (the
+                        // full-editor sheet when open, else a zero-height room
+                        // reader so the molecule stays unobstructed, #885);
+                        // Theme Studio and the inspector come back on exit.
                         if phoneLightsDocked {
-                            lightsSheet(room: lower.size)
+                            if LightsPortraitTools.showsSheet(placement: lightsPlacement,
+                                                              editorOpen: lightsEditorOpen) {
+                                lightsSheet(room: lower.size)
+                            } else {
+                                // While the editor is closed the inspector, which
+                                // speaks a refused 4th shadow (#672), is not on
+                                // screen; the gizmo's Shadow chip and the light
+                                // menu still refuse, so the refusal is spoken here
+                                // (once: the inspector is unmounted meanwhile).
+                                Color.clear.frame(height: 0)
+                                    .onAppear { lightsRoom = lower.size }
+                                    .onChange(of: lower.size) { _, s in lightsRoom = s }
+                                    .onReceive(engine.lightsController.shadowRefusalEvents) {
+                                        LightsInspectorState.announce(LightsInspectorState.shadowCapAnnouncement)
+                                    }
+                            }
                         } else if showThemeStudio {
                             ThemeStudioPanel(onClose: { withAnimation(.easeInOut(duration: 0.2)) { showThemeStudio = false } })
                                 .environmentObject(engine)
@@ -4403,26 +4431,45 @@ struct ContentView: View {
         .tint(themeManager.active.accent.color)
     }
 
-    // Lights-mode bar (#619): the chips and rig actions of LightsBar, styled like
-    // the bars above. Every placement (the macOS top overlay, the four iOS top
-    // stacks) names only this property, so ContentView's type-checker load stays
-    // flat. Done = leave the mode keeping the edits (Esc does the same).
+    // Lights-mode bar (#619): the chips (or, in phone portrait, the light
+    // menu, #885) and rig actions of LightsBar, styled like the bars above.
+    // Every placement (the macOS top overlay, the four iOS top stacks) names
+    // only this property, so ContentView's type-checker load stays flat.
+    // Done = leave the mode keeping the edits (Esc does the same).
     private var lightsBar: some View {
         LightsBar(controller: engine.lightsController,
                   style: lightsStyle,
                   onAtmosphere: lightsAtmosphereEntry,
+                  onEditLight: lightsEditLightEntry,
                   onDone: { engine.setInteractionMode(.viewing) })
+    }
+
+    // The phone portrait light menu's "Edit light…" entry on the Lights bar
+    // (#885): opens the bottom sheet at its expanded height, on the light's
+    // rows (an earlier Atmosphere reveal is dropped). nil outside
+    // `.bottomSheet` (where the bar shows the chips instead).
+    private var lightsEditLightEntry: (() -> Void)? {
+        guard LightsPortraitTools.showsMenu(placement: lightsPlacement) else { return nil }
+        return {
+            LightsPortraitTools.editLight(detent: &lightsSheetDetent, editorOpen: &lightsEditorOpen,
+                                          revealRequest: &lightsAtmosphereRevealRequest,
+                                          generation: &lightsEditorGeneration)
+        }
     }
 
     // The phone's Atmosphere entry on the Lights bar (#795): haze and dust
     // are scene-wide, so the entry sits with the other rig-wide controls,
     // not in the selected light's header. It asks the phone sheet or side
     // panel to reveal its Atmosphere section (LightsSheet's
-    // atmosphereRevealRequest). nil on macOS and the iPad float, whose
-    // Atmosphere card is always in view.
+    // atmosphereRevealRequest), opening the portrait sheet first (#885). nil
+    // on macOS and the iPad float, whose Atmosphere card is always in view.
     private var lightsAtmosphereEntry: (() -> Void)? {
         guard LightsBarState.showsAtmosphereEntry(placement: lightsPlacement) else { return nil }
-        return { lightsAtmosphereRevealRequest += 1 }
+        let placement = lightsPlacement
+        return {
+            LightsPortraitTools.revealAtmosphere(placement: placement, editorOpen: &lightsEditorOpen,
+                                                 revealRequest: &lightsAtmosphereRevealRequest)
+        }
     }
 
     // The Lights tools' colours (the bar, the side column), from the theme.
@@ -4507,10 +4554,11 @@ struct ContentView: View {
                                        bottomInset: windowBottomInset, expandedContent: content)
     }
 
-    // The two-height bottom sheet docked under the phone portrait viewport.
-    // Its edits go through the controller's typed API (no Python per tick);
-    // a grabber drag moves it over the viewport without resizing it, and the
-    // release snaps once with the drawable frozen (setLightsSheetMoving).
+    // The two-height bottom sheet docked under the phone portrait viewport
+    // while the full editor is open (#623, #885). Its edits go through the
+    // controller's typed API (no Python per tick); a grabber drag moves it
+    // over the viewport without resizing it, and the release snaps once with
+    // the drawable frozen (setLightsSheetMoving).
     private func lightsSheet(room: CGSize) -> some View {
         LightsSheet(controller: engine.lightsController, style: lightsStyle, placement: .bottom,
                     detent: $lightsSheetDetent, heights: lightsSheetHeights(room: room),
@@ -4518,7 +4566,9 @@ struct ContentView: View {
                     onEnableSceneShadows: { engine.enableSceneShadows() },
                     onMoving: { setLightsSheetMoving($0) },
                     onFieldFocus: { lightsFieldFocused = $0 },
-                    atmosphereRevealRequest: lightsAtmosphereRevealRequest)
+                    atmosphereRevealRequest: lightsAtmosphereRevealRequest,
+                    onClose: { lightsEditorOpen = false })
+            .id(lightsEditorGeneration)
             .onPreferenceChange(LightsSheetHeaderHeightKey.self) { noteLightsSheetHeader($0) }
             .onPreferenceChange(LightsSheetRowsHeightKey.self) { measured in
                 if measured > 0, abs(measured - lightsSheetRows) > 0.5 { lightsSheetRows = measured }
@@ -4608,13 +4658,15 @@ struct ContentView: View {
     }
 
     // Each mode change (entry and exit) reseeds the phone tools' view state:
-    // the panes give way again, the sheet starts compact (expanded under the
-    // DEBUG `expand`), and no motion or keyboard rule outlives the mode.
+    // the panes give way again, the portrait sheet starts closed (opened
+    // expanded under the DEBUG `expand` or `air`, #885), and no motion or
+    // keyboard rule outlives the mode.
     private func lightsModeChanged(_ mode: InteractionMode) {
         lightsShowsConsole = false
         lightsShowsSequence = false
         endLightsSheetMotion()
         lightsSheetDetent = mode == .lights ? lightsSheetSeed : .compact
+        lightsEditorOpen = mode == .lights && (lightsInspectorExpandOverride || lightsAtmosphereExpandOverride)
         // One reveal per entry under the DEBUG `air` token (0 otherwise).
         lightsAtmosphereRevealRequest = mode == .lights && lightsAtmosphereExpandOverride ? 1 : 0
     }
@@ -4647,10 +4699,11 @@ struct ContentView: View {
     }
 
     // The tools= and touch= fields of the PYMOL_AUTOLIGHTS log lines
-    // (`sheet:air` / `side:air` while the phone shows the air alone).
+    // (`menu` while the portrait sheet is closed, #885; `sheet:air` /
+    // `side:air` while the phone shows the air alone).
     private func lightsToolsFields(detent: LightsSheetDetent) -> String {
         let airOnly = LightsSheet.showsAirOnly(engine.lightsController)
-        return "tools=\(LightsSheetState.toolsSummary(placement: lightsLivePlacement, detent: detent, corner: lightsOrbitCorner, airOnly: airOnly)) "
+        return "tools=\(LightsSheetState.toolsSummary(placement: lightsLivePlacement, detent: detent, corner: lightsOrbitCorner, airOnly: airOnly, editorOpen: lightsEditorOpen)) "
             + "touch=\(Int(LightsTouch.minimumTarget))"
     }
 
@@ -4693,16 +4746,20 @@ struct ContentView: View {
     private var lightsLayoutLogKey: LightsLayoutLogKey? {
         guard engine.interactionMode == .lights, !iosFullScreen else { return nil }
         // With no light the phone shows the air alone (#726), at the compact
-        // height whatever the detent.
+        // height whatever the detent; in portrait the sheet shows only while
+        // the full editor is open (#885).
         let airOnly = LightsSheet.showsAirOnly(engine.lightsController)
         let tools = LightsSheetState.toolsSummary(placement: lightsPlacement, detent: lightsSheetDetent,
-                                                  corner: lightsOrbitCorner, airOnly: airOnly)
+                                                  corner: lightsOrbitCorner, airOnly: airOnly,
+                                                  editorOpen: lightsEditorOpen)
         if phoneLightsDocked {
-            // Not before the sheet has reported its room.
+            // Not before the sheet (or its zero-height placeholder) has reported its room.
             guard lightsRoom.height > 0 else { return nil }
             let heights = lightsSheetHeights(room: lightsRoom)
-            let sheet = airOnly ? LightsSheetModel.airOnlyFrame(heights: heights).slot
-                : heights.height(lightsSheetDetent)
+            let sheet: CGFloat = lightsEditorOpen
+                ? (airOnly ? LightsSheetModel.airOnlyFrame(heights: heights).slot
+                   : heights.height(lightsSheetDetent))
+                : 0
             let panes = LightsPaneRule.summary(console: consoleBinding.wrappedValue,
                                                sequence: sequenceBinding.wrappedValue)
             return LightsLayoutLogKey(tools: tools, sheet: Int(sheet.rounded()), panes: panes, room: lightsRoom)
@@ -4790,8 +4847,10 @@ struct ContentView: View {
             if edits.revealsAir { lightsAtmosphereExpandOverride = true }
             if let corner = edits.corner { lightsOrbitCornerOverride = corner }
             let seed: LightsSheetDetent = edits.expands || edits.revealsAir ? .expanded : .compact
+            lightsEditorOpen = edits.expands || edits.revealsAir
             #else
             let seed = LightsSheetDetent.compact
+            lightsEditorOpen = false
             #endif
             engine.setInteractionMode(.lights)
             MainActor.assumeIsolated {
