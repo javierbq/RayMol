@@ -175,6 +175,11 @@ REACH_DROP = 0.5          # ... and the shaft removes at least this share of it,
                           #   extinction (#683) scales it by T; a share is
                           #   unchanged by both, i.e. the drop in scene units.
                           #   Measured min 0.600 (A), 0.675 (B); margin 0.10.
+                          #   Negative control (#858, same machine, a build
+                          #   with post_air_far_pull returning dl): A's box
+                          #   0.562% of pixels pass (removed share mean 0.30,
+                          #   max 0.53), B's 28.601% (mean 0.42): both FAIL,
+                          #   rt0 and rt1.
 REACH_SHARE = 0.90        # ... on at least this share of them (measured 100%)
 REACH_BOXES = {           # (x0, y0, x1, y1), end-exclusive, at 1280x720: where the
     'a': (1200, 500, 1280, 720),   # beam leaves its map's far plane, past the

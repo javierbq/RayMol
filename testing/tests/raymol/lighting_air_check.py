@@ -264,6 +264,10 @@ class TestChecks(testing.PyMOLTestCase):
                                       box, 'r').ok)
         self.assertFalse(c.check_reach(noair, mixed, plus(mixed, a_shaft, (-8, 0, 0)),
                                        box, 'r').ok)
+        # without the far-plane pull-back (#858's negative control on the
+        # reference Mac): A's red kept about 70% of itself, 24 -> 17
+        self.assertFalse(c.check_reach(noair, mixed, plus(mixed, a_shaft, (-7, 0, 0)),
+                                       box, 'r').ok)
         # ...and a channel too dim to judge (below REACH_LIT_MIN) is not lit
         dim = plus(noair, a_shaft, (6, 0, 190))
         self.assertFalse(c.check_reach(noair, dim, plus(dim, a_shaft, (-6, 0, 0)),
