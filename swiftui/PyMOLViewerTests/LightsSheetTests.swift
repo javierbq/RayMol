@@ -28,6 +28,31 @@ final class LightsToolsPlacementTests: XCTestCase {
         XCTAssertEqual(LightsSheetDetent.compact.toggled, .expanded)
         XCTAssertEqual(LightsSheetDetent.expanded.toggled, .compact)
     }
+
+    func testPortraitToolsMenuAndSheetDeciders() {
+        for placement in LightsToolsPlacement.allCases {
+            XCTAssertEqual(LightsPortraitTools.showsMenu(placement: placement), placement == .bottomSheet)
+            XCTAssertEqual(LightsPortraitTools.showsSheet(placement: placement, editorOpen: false), false)
+            XCTAssertEqual(LightsPortraitTools.showsSheet(placement: placement, editorOpen: true),
+                           placement == .bottomSheet)
+        }
+        XCTAssertTrue(LightsPortraitTools.showsMenu(
+            placement: LightsToolsPlacement.resolve(compactWidth: true, compactHeight: false)))
+        XCTAssertFalse(LightsPortraitTools.showsMenu(
+            placement: LightsToolsPlacement.resolve(compactWidth: true, compactHeight: true)))
+        XCTAssertFalse(LightsPortraitTools.showsMenu(
+            placement: LightsToolsPlacement.resolve(compactWidth: false, compactHeight: true)))
+        XCTAssertFalse(LightsPortraitTools.showsMenu(
+            placement: LightsToolsPlacement.resolve(compactWidth: false, compactHeight: false)))
+        XCTAssertEqual(LightsSheetState.moreChevron(expanded: false), "chevron.down")
+        XCTAssertEqual(LightsSheetState.moreChevron(expanded: true), "chevron.up")
+        for detent in LightsSheetDetent.allCases {
+            XCTAssertEqual(LightsSheetState.toolsSummary(placement: .bottomSheet, detent: detent,
+                                                         editorOpen: false), "menu")
+            XCTAssertEqual(LightsSheetState.toolsSummary(placement: .bottomSheet, detent: detent,
+                                                         airOnly: true, editorOpen: false), "menu")
+        }
+    }
 }
 
 // MARK: - The height model
@@ -313,6 +338,10 @@ final class LightsSheetStateTests: XCTestCase {
         XCTAssertEqual(LightsSheetState.moreTitle(expanded: true), "Less")
         XCTAssertEqual(LightsSheetState.moreLabel(expanded: false), "Show all light settings")
         XCTAssertEqual(LightsSheetState.moreLabel(expanded: true), "Show fewer light settings")
+        XCTAssertEqual(LightsSheetState.moreChevron(expanded: false), "chevron.down")
+        XCTAssertEqual(LightsSheetState.moreChevron(expanded: true), "chevron.up")
+        XCTAssertEqual(LightsSheetState.closeIdentifier, "lights.sheet.close")
+        XCTAssertEqual(LightsSheetState.closeLabel, "Close light editor")
         XCTAssertEqual(LightsSheetState.identifier, "lights.sheet")
         XCTAssertEqual(LightsSheetState.grabberIdentifier, "lights.sheet.grabber")
         XCTAssertEqual(LightsSheetState.moreIdentifier, "lights.sheet.more")
@@ -450,6 +479,20 @@ final class LightsPhoneWiringTests: XCTestCase {
                            "float:bl")
             XCTAssertEqual(LightsSheetState.toolsSummary(placement: .column, detent: detent, airOnly: true),
                            "column")
+            // #885: portrait with the full editor closed reports `menu`;
+            // other placements ignore `editorOpen`.
+            XCTAssertEqual(LightsSheetState.toolsSummary(placement: .bottomSheet, detent: detent,
+                                                         editorOpen: false), "menu")
+            XCTAssertEqual(LightsSheetState.toolsSummary(placement: .bottomSheet, detent: detent,
+                                                         airOnly: true, editorOpen: false), "menu")
+            XCTAssertEqual(LightsSheetState.toolsSummary(placement: .sidePanel, detent: detent,
+                                                         editorOpen: false), "side")
+            XCTAssertEqual(LightsSheetState.toolsSummary(placement: .sidePanel, detent: detent,
+                                                         airOnly: true, editorOpen: false), "side:air")
+            XCTAssertEqual(LightsSheetState.toolsSummary(placement: .floating, detent: detent,
+                                                         editorOpen: false), "float:bl")
+            XCTAssertEqual(LightsSheetState.toolsSummary(placement: .column, detent: detent,
+                                                         editorOpen: false), "column")
         }
     }
 

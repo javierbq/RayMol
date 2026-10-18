@@ -9,10 +9,11 @@
 //   - a pinch on a knob changes only that light's radius (0.5x grid, beam
 //     kept, camera still), and press-hold-drag on a knob drags it (the
 //     long-press never begins on a knob);
-//   - iPhone: the sheet's grabber drag expands it with the scene kept at
-//     180 pt at least; iPad: the float's grip drag moves it to a corner, and a
-//     focused field keeps the viewport and the inspector above the keyboard
-//     (#725, #870).
+//   - iPhone: the portrait light menu picks a light and opens the full
+//     bottom-sheet editor (#885), and the sheet's grabber drag expands it with
+//     the scene kept at 180 pt at least; iPad: the float's grip drag moves it
+//     to a corner, and a focused field keeps the viewport and the inspector
+//     above the keyboard (#725, #870).
 //
 // State is read from the PYMOL_UITEST=1 probe (`lightsProbe`, ContentView's
 // LightsUITestProbe): `sel=<name> radius= orbit= pitch= beam= cam=<hash>
@@ -165,12 +166,69 @@ final class LightsGestureUITests: XCTestCase {
 
     // MARK: - The docked sheet (iPhone) and the float (iPad)
 
+    func testPortraitLightMenuPicksALightAndOpensTheEditor() throws {
+        guard !isPad else { throw XCTSkip("iPhone only: the portrait light menu (#885)") }
+        XCUIDevice.shared.orientation = .portrait
+        _ = try launchInLights()
+        XCTAssertFalse(element("lights.sheet").exists, "the portrait sheet should start closed")
+        XCTAssertFalse(element("lights.chip.key").exists, "the light menu replaces the chips in portrait")
+        attach("menu-closed")
+        let menu = element("lights.menu")
+        XCTAssertTrue(menu.waitForExistence(timeout: 10), "the portrait light menu is missing")
+        menu.tap()
+        attach("menu-open")
+        let fillByID = app.buttons["lights.menu.light.fill"]
+        if fillByID.waitForExistence(timeout: 3) {
+            fillByID.tap()
+        } else {
+            let fallback = app.buttons.matching(NSPredicate(
+                format: "label == %@ AND identifier != %@", "fill", "lights.chip.fill"
+            )).allElementsBoundByIndex.first { $0.isHittable }
+            try XCTUnwrap(fallback, "no hittable 'fill' item in the light menu").tap()
+        }
+        _ = try waitForProbe("the fill light to be selected") { $0.sel == "fill" }
+        try openEditorFromMenu()
+        let sheet = element("lights.sheet")
+        XCTAssertTrue(sheet.waitForExistence(timeout: 5), "the full editor sheet did not appear")
+        let grabber = element("lights.sheet.grabber")
+        XCTAssertEqual(grabber.value as? String, "Expanded")
+        XCTAssertTrue(element("lights.inspector.menu").exists, "the inspector header is missing in the full editor")
+        attach("editor-open")
+        let close = element("lights.sheet.close")
+        XCTAssertTrue(close.waitForExistence(timeout: 5), "the sheet's close button is missing")
+        close.tap()
+        XCTAssertTrue(waitFor(timeout: 5) { !sheet.exists }, "the sheet did not close")
+    }
+
+    private func openEditorFromMenu() throws {
+        let menu = element("lights.menu")
+        XCTAssertTrue(menu.waitForExistence(timeout: 10), "the portrait light menu is missing")
+        menu.tap()
+        let editByID = app.buttons["lights.menu.edit"]
+        if editByID.waitForExistence(timeout: 3) {
+            editByID.tap()
+        } else {
+            let fallback = app.buttons["Edit light…"]
+            XCTAssertTrue(fallback.waitForExistence(timeout: 3), "'Edit light…' item is missing")
+            fallback.tap()
+        }
+    }
+
+    /// Opens the portrait full editor from the light menu (#885), collapses it
+    /// to Compact with Less, then drags the grabber up to Expanded.
     func testGrabberDragExpandsTheSheet() throws {
         guard !isPad else { throw XCTSkip("iPhone only: the iPad floats the orbit view (testGripDragMovesTheFloat)") }
+        XCUIDevice.shared.orientation = .portrait
         _ = try launchInLights()
+        try openEditorFromMenu()
         let grabber = element("lights.sheet.grabber")
         XCTAssertTrue(grabber.waitForExistence(timeout: 10), "the sheet's grabber is missing")
-        XCTAssertEqual(grabber.value as? String, "Compact")
+        let more = element("lights.sheet.more")
+        XCTAssertTrue(more.waitForExistence(timeout: 5), "the sheet's More/Less button is missing")
+        more.tap()
+        XCTAssertTrue(waitFor(timeout: 5) { (grabber.value as? String) == "Compact" },
+                      "Less did not collapse the sheet to Compact (value \(String(describing: grabber.value)))")
+        settle(1.0)
         attach("sheet-compact")
         let start = screenPoint(CGPoint(x: grabber.frame.midX, y: grabber.frame.midY))
         mark("grabber-drag")

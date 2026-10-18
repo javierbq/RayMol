@@ -293,6 +293,19 @@ final class LightsBarModelTests: XCTestCase {
     }
 }
 
+final class LightsBarTests: XCTestCase {
+    func testPortraitLightMenuStrings() {
+        XCTAssertEqual(LightsBarState.lightMenuTitle(selected: "key"), "key")
+        XCTAssertEqual(LightsBarState.lightMenuTitle(selected: nil), "No light")
+        XCTAssertEqual(LightsBarState.noLightTitle, "No light")
+        XCTAssertEqual(LightsBarState.lightMenuItemIdentifier("fill"), "lights.menu.light.fill")
+        XCTAssertEqual(LightsBarState.editLightTitle, "Edit light…")
+        XCTAssertEqual(LightsBarState.editLightIdentifier, "lights.menu.edit")
+        XCTAssertEqual(LightsBarState.lightMenuIdentifier, "lights.menu")
+        XCTAssertEqual(LightsBarState.lightMenuLabel, "Light")
+    }
+}
+
 // MARK: - Pictures
 
 /// The bar drawn offscreen, as MovieExportSnapshot draws the Export Movie
