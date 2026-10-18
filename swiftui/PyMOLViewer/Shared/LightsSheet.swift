@@ -97,13 +97,18 @@ enum LightsPortraitTools {
         placement == .bottomSheet && editorOpen
     }
 
-    /// "Edit light…": the editor opens expanded on the light's rows. A reveal
-    /// an earlier Atmosphere entry asked for is dropped (0): the new sheet
-    /// acts on a non-zero request when it appears, so after Atmosphere,
-    /// Close, Edit light… it would scroll past the light to the air.
-    static func editLight(detent: inout LightsSheetDetent, editorOpen: inout Bool, revealRequest: inout Int) {
+    /// "Edit light…": the editor opens expanded on the light's rows, as a
+    /// fresh sheet (`generation`, the sheet's identity, moves on). A reveal an
+    /// earlier Atmosphere entry asked for is dropped (0): a sheet acts on a
+    /// non-zero request when it appears, so after Atmosphere, Close, Edit
+    /// light… it would scroll past the light to the air. The fresh sheet also
+    /// covers an editor already open on Atmosphere: it starts on the light's
+    /// rows with nothing seen, so the next Atmosphere request (1) still acts.
+    static func editLight(detent: inout LightsSheetDetent, editorOpen: inout Bool, revealRequest: inout Int,
+                          generation: inout Int) {
         detent = .expanded
         revealRequest = 0
+        generation += 1
         editorOpen = true
     }
 

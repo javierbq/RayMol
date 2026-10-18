@@ -376,10 +376,9 @@ struct LightsBar: View {
                     Toggle(isOn: Binding(get: { inspector.isShadowed },
                                          set: { on in
                                              // The core keeps the cap: a refusal the
-                                             // count missed is still spoken, and the
-                                             // editor opens on its notice.
+                                             // count missed opens the editor on its
+                                             // notice (ContentView speaks it, once).
                                              if controller.setShadow(on) == .refused {
-                                                 LightsInspectorState.announce(LightsInspectorState.shadowCapAnnouncement)
                                                  onEdit()
                                              }
                                          })) {
@@ -426,8 +425,7 @@ struct LightsBar: View {
         } label: {
             HStack(spacing: 4) {
                 if let chip = state.chips.first(where: \.isSelected) {
-                    LightMarkerDot(marker: chip.marker, size: 8)
-                        .opacity(state.isOn ? 1 : 0.45)
+                    LightMenuMarker(chip: chip, facing: controller.facing, rigOn: state.isOn)
                 }
                 Text(verbatim: title)
                     .font(.system(size: 13, weight: .semibold))
@@ -638,6 +636,22 @@ struct LightsBar: View {
                 .help(Self.doneHelp)
                 .accessibilityIdentifier("lights.done")
         }
+    }
+}
+
+// MARK: - The light menu's dot
+
+/// The portrait light menu's dot (#885): the selected light's colour,
+/// hollow while it is behind the molecule. It observes `controller.facing`,
+/// as the chips do, so it follows a crossing under a turning camera.
+struct LightMenuMarker: View {
+    var chip: LightsBarState.Chip
+    @ObservedObject var facing: LightsFacingState
+    var rigOn: Bool
+
+    var body: some View {
+        LightMarkerDot(marker: chip.marker, size: 8, hollow: facing.isBehind(chip.name))
+            .opacity(rigOn ? 1 : 0.45)
     }
 }
 

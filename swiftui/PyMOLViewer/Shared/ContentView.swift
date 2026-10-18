@@ -209,6 +209,9 @@ struct ContentView: View {
     @State private var lightsSheetDetent: LightsSheetDetent = .compact
     /// The portrait full editor (#885): true while the bottom sheet is open.
     @State private var lightsEditorOpen = false
+    /// The portrait sheet's identity: "Edit light…" moves it on, so the
+    /// editor opens fresh on the light's rows (LightsPortraitTools.editLight).
+    @State private var lightsEditorGeneration = 0
     @State private var lightsSheetMoving = false
     @State private var lightsFieldFocused = false
     @State private var lightsShowsConsole = false
@@ -2370,9 +2373,17 @@ struct ContentView: View {
                                                               editorOpen: lightsEditorOpen) {
                                 lightsSheet(room: lower.size)
                             } else {
+                                // While the editor is closed the inspector, which
+                                // speaks a refused 4th shadow (#672), is not on
+                                // screen; the gizmo's Shadow chip and the light
+                                // menu still refuse, so the refusal is spoken here
+                                // (once: the inspector is unmounted meanwhile).
                                 Color.clear.frame(height: 0)
                                     .onAppear { lightsRoom = lower.size }
                                     .onChange(of: lower.size) { _, s in lightsRoom = s }
+                                    .onReceive(engine.lightsController.shadowRefusalEvents) {
+                                        LightsInspectorState.announce(LightsInspectorState.shadowCapAnnouncement)
+                                    }
                             }
                         } else if showThemeStudio {
                             ThemeStudioPanel(onClose: { withAnimation(.easeInOut(duration: 0.2)) { showThemeStudio = false } })
@@ -4441,7 +4452,8 @@ struct ContentView: View {
         guard LightsPortraitTools.showsMenu(placement: lightsPlacement) else { return nil }
         return {
             LightsPortraitTools.editLight(detent: &lightsSheetDetent, editorOpen: &lightsEditorOpen,
-                                          revealRequest: &lightsAtmosphereRevealRequest)
+                                          revealRequest: &lightsAtmosphereRevealRequest,
+                                          generation: &lightsEditorGeneration)
         }
     }
 
@@ -4556,6 +4568,7 @@ struct ContentView: View {
                     onFieldFocus: { lightsFieldFocused = $0 },
                     atmosphereRevealRequest: lightsAtmosphereRevealRequest,
                     onClose: { lightsEditorOpen = false })
+            .id(lightsEditorGeneration)
             .onPreferenceChange(LightsSheetHeaderHeightKey.self) { noteLightsSheetHeader($0) }
             .onPreferenceChange(LightsSheetRowsHeightKey.self) { measured in
                 if measured > 0, abs(measured - lightsSheetRows) > 0.5 { lightsSheetRows = measured }

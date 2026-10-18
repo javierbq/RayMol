@@ -61,14 +61,17 @@ final class LightsToolsPlacementTests: XCTestCase {
         var detent = LightsSheetDetent.compact
         var open = false
         var request = 0
+        var generation = 0
         LightsPortraitTools.revealAtmosphere(placement: .bottomSheet, editorOpen: &open, revealRequest: &request)
         XCTAssertTrue(open)
         XCTAssertEqual(request, 1, "the Atmosphere entry asks for one reveal")
         open = false // Close
-        LightsPortraitTools.editLight(detent: &detent, editorOpen: &open, revealRequest: &request)
+        LightsPortraitTools.editLight(detent: &detent, editorOpen: &open, revealRequest: &request,
+                                      generation: &generation)
         XCTAssertTrue(open)
         XCTAssertEqual(detent, .expanded)
         XCTAssertEqual(request, 0, "Edit light… must not replay the Atmosphere reveal")
+        XCTAssertEqual(generation, 1, "Edit light… opens a fresh sheet")
         // A later Atmosphere entry still reveals.
         open = false
         LightsPortraitTools.revealAtmosphere(placement: .bottomSheet, editorOpen: &open, revealRequest: &request)
@@ -79,6 +82,32 @@ final class LightsToolsPlacementTests: XCTestCase {
         LightsPortraitTools.revealAtmosphere(placement: .sidePanel, editorOpen: &sideOpen, revealRequest: &request)
         XCTAssertFalse(sideOpen)
         XCTAssertEqual(request, 2)
+    }
+
+    /// Atmosphere, then Edit light… with the editor still open (no Close),
+    /// then Atmosphere again (#886 review round 2): Edit light… opens a fresh
+    /// sheet (a new generation) with no request, so it starts on the light's
+    /// rows, and the next Atmosphere request (1) differs from what that
+    /// fresh sheet has seen (0), so it reveals again.
+    func testEditLightInAnOpenEditorThenAtmosphereAgain() {
+        var detent = LightsSheetDetent.compact
+        var open = false
+        var request = 0
+        var generation = 0
+        LightsPortraitTools.revealAtmosphere(placement: .bottomSheet, editorOpen: &open, revealRequest: &request)
+        detent = .compact // Less, while open
+        LightsPortraitTools.editLight(detent: &detent, editorOpen: &open, revealRequest: &request,
+                                      generation: &generation)
+        XCTAssertTrue(open)
+        XCTAssertEqual(detent, .expanded)
+        XCTAssertEqual(request, 0)
+        XCTAssertEqual(generation, 1, "the open sheet is replaced, so it leaves the Atmosphere section")
+        LightsPortraitTools.revealAtmosphere(placement: .bottomSheet, editorOpen: &open, revealRequest: &request)
+        XCTAssertEqual(request, 1, "a request the fresh sheet has not seen (it starts at 0)")
+        LightsPortraitTools.editLight(detent: &detent, editorOpen: &open, revealRequest: &request,
+                                      generation: &generation)
+        XCTAssertEqual(generation, 2)
+        XCTAssertEqual(request, 0)
     }
 }
 
