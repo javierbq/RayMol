@@ -315,9 +315,9 @@ class TestTouchSource(testing.PyMOLTestCase):
         LightsTouch.swatchColumns columns and the custom picker has a 44 pt
         frame; macOS keeps its one-row 15 pt swatches. The chips are drawn
         by LightsChip (shared with the Atmosphere card's switch, #726); the
-        inspector's chip() forwards to it. The Atmosphere card's chevron
-        and Scatter disclosure are 44 pt targets and its rows at least
-        44 pt tall."""
+        inspector's chip() forwards to it. The Atmosphere card's Scatter
+        disclosure is a 44 pt target and its rows at least 44 pt tall (its
+        header has no chevron since #889: no presentation collapses)."""
         text = self.read(INSPECTOR)
         for signature in ('private func lightMenu(', 'struct LightsChip', 'private func header('):
             with self.subTest(signature):
@@ -331,7 +331,7 @@ class TestTouchSource(testing.PyMOLTestCase):
         header = body(card, 'private func header(')
         self.assertIsNotNone(header, 'the Atmosphere header not found')
         self.assertIn('LightsChip(', header)
-        self.assertIn('.lightsTouchTarget()', header, 'the chevron')
+        self.assertNotIn('collapsed', header)
         disclosure = body(card, 'private func scatterDisclosure(')
         self.assertIsNotNone(disclosure, 'the Scatter disclosure not found')
         self.assertIn('.lightsTouchTarget(width: false)', disclosure)

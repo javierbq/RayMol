@@ -656,8 +656,7 @@ The **Atmosphere** card edits the rig's air: **Haze**, **Dust**,
   the lights off, "The air shows only while the lights are on."; and with
   haze above about 0.3 and a light behind the molecule, "Haze above about 0.3
   with a light behind the molecule can wash the picture out. Lower the haze or
-  move the light." (see [Backlit haze](#backlit-haze)). A collapsed card shows
-  the hint as a glyph in its header.
+  move the light." (see [Backlit haze](#backlit-haze)).
 - **Where it sits.** On macOS and iPad, a popover off the **Atmosphere**
   button on the Lights bar (#889): the fog glyph, filled while the air is on,
   with a dot while a hint applies. On iPhone, a section

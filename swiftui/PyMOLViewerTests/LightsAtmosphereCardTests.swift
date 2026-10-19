@@ -133,9 +133,9 @@ final class AtmosphereCardViewTests: XCTestCase {
     }
 
     func testIdentifiersAndStrings() {
-        XCTAssertEqual(AtmosphereCardIDs.card, "lights.atmosphere")
         XCTAssertEqual(AtmosphereCardIDs.toggle, "lights.atmosphere.switch")
-        XCTAssertEqual(AtmosphereCardIDs.collapse, "lights.atmosphere.collapse")
+        XCTAssertEqual(AtmosphereCardIDs.popover, "lights.atmosphere.popover")
+        XCTAssertEqual(AtmosphereCardIDs.barButton, "lights.bar.atmosphere")
         XCTAssertEqual(AtmosphereCardIDs.hint, "lights.atmosphere.hint")
         XCTAssertEqual(AtmosphereCardIDs.scatterDisclosure, "lights.atmosphere.scatter.disclosure")
         XCTAssertEqual(AtmosphereCardIDs.sheetButton, "lights.sheet.atmosphere")
@@ -148,8 +148,6 @@ final class AtmosphereCardViewTests: XCTestCase {
         XCTAssertEqual(AtmosphereCardIDs.fieldLabel(.dustSize), "Dust size value")
         XCTAssertEqual(AtmosphereCardIDs.scatterValue("-0.25", shown: false), "-0.25, hidden")
         XCTAssertEqual(AtmosphereCardIDs.scatterValue("0.55", shown: true), "0.55, shown")
-        XCTAssertEqual(AtmosphereCardIDs.collapseLabel(collapsed: true), "Show the atmosphere settings")
-        XCTAssertEqual(AtmosphereCardIDs.collapseLabel(collapsed: false), "Hide the atmosphere settings")
         XCTAssertEqual(AtmosphereCardIDs.sheetButtonHint, "Shows the scene's haze and dust settings")
         XCTAssertEqual(LightsSheetState.atmosphereAnchor, "lights.sheet.atmosphere.section")
         XCTAssertNotEqual(LightsSheetState.atmosphereAnchor, LightsSheetState.rowsAnchor)
@@ -178,32 +176,25 @@ final class AtmosphereCardViewTests: XCTestCase {
                 .frame(width: 351)
                 .environment(\.lightsTouchMinimum, 44)))
         XCTAssertEqual(header.height, 44, accuracy: 0.5, "the air-only sheet's header row")
-        // macOS keeps its pointer sizes: the collapsed card is shorter.
+        // macOS keeps its pointer sizes: the header is shorter.
         let mac = offscreen.settledFittingSize(AnyView(
-            LightsAtmosphereCard(controller: controller, style: style, start: .collapsed)
+            LightsAtmosphereCard(controller: controller, style: style, presentation: .header)
+                .frame(width: 260)
                 .environment(\.lightsTouchMinimum, 0)))
-        XCTAssertEqual(mac.width, LightsInspector.width, accuracy: 0.5)
         XCTAssertLessThan(mac.height, 44)
     }
 
-    /// The start states: `.expandedIfOn` is a header with the air off and the
-    /// whole card with it on; drawing a card writes nothing.
-    func testStartStatesAndDrawingWritesNothing() throws {
+    /// Drawing the popover writes nothing, the air off or on.
+    func testDrawingWritesNothing() throws {
         let style = LightsInspectorSnapshotTests.style(dark: false)
-        for (air, expanded) in [(FakeRigStore.defaultAir, false), (atmosphereOnAir, true)] {
+        for air in [FakeRigStore.defaultAir, atmosphereOnAir] {
             let (controller, store) = controller { store in
                 lightsFloatThreePoint(store)
                 store.air = air
             }
-            let collapsed = offscreen.settledFittingSize(AnyView(
-                LightsAtmosphereCard(controller: controller, style: style, start: .collapsed)))
-            let start = offscreen.settledFittingSize(AnyView(
-                LightsAtmosphereCard(controller: controller, style: style, start: .expandedIfOn)))
-            if expanded {
-                XCTAssertGreaterThan(start.height, collapsed.height + 100, "the air is on: expanded")
-            } else {
-                XCTAssertEqual(start.height, collapsed.height, accuracy: 0.5, "the air is off: collapsed")
-            }
+            let size = offscreen.settledFittingSize(AnyView(
+                LightsAtmospherePopover(controller: controller, style: style)))
+            XCTAssertGreaterThan(size.height, 100)
             XCTAssertTrue(store.numberWrites.isEmpty, "drawing wrote \(store.numberWrites)")
             XCTAssertTrue(store.performed.isEmpty, "drawing pressed \(store.performed)")
         }
@@ -407,8 +398,8 @@ final class AtmosphereCardSnapshotTests: XCTestCase {
         var width: CGFloat = LightsInspectorMetrics.width + 24
         var height: CGFloat = 340
         var touch: CGFloat = 0
-        var presentation: LightsAtmospherePresentation = .card
-        var start: LightsAtmosphereStart = .expanded
+        /// nil: the macOS and iPad popover (#889).
+        var presentation: LightsAtmospherePresentation? = nil
         var showsScatter = false
         /// The hint the state must show.
         var hint: AtmosphereHint?
@@ -454,8 +445,6 @@ final class AtmosphereCardSnapshotTests: XCTestCase {
                 Self.airOn(store)
                 store.air.scatter = -0.25
             }),
-            Shot(name: "collapsed_off_light", height: 80, start: .collapsed, setUp: Self.threePoint),
-            Shot(name: "collapsed_on_dark", dark: true, height: 80, start: .collapsed, setUp: Self.airOn),
             Shot(name: "hint_no_rig_light", hint: .noLights, setUp: { _ in }),
             Shot(name: "hint_lights_off_light", hint: .lightsOff, setUp: Self.lightsOff),
             Shot(name: "hint_backlit_light", hint: .backlitHaze, setUp: Self.backlit),
@@ -468,14 +457,6 @@ final class AtmosphereCardSnapshotTests: XCTestCase {
             Shot(name: "ios44_on_light", height: 420, touch: 44, setUp: Self.airOn),
             Shot(name: "ios44_on_scatter_shown_dark", dark: true, height: 480, touch: 44, showsScatter: true,
                  setUp: Self.airOn),
-            Shot(name: "ios44_collapsed_none_light", height: 70, touch: 44, start: .collapsed,
-                 setUp: Self.threePoint),
-            Shot(name: "ios44_collapsed_no_lights_light", height: 70, touch: 44, start: .collapsed,
-                 hint: .noLights, setUp: { _ in }),
-            Shot(name: "ios44_collapsed_lights_off_light", height: 70, touch: 44, start: .collapsed,
-                 hint: .lightsOff, setUp: Self.lightsOff),
-            Shot(name: "ios44_collapsed_backlit_dark", dark: true, height: 70, touch: 44, start: .collapsed,
-                 hint: .backlitHaze, setUp: Self.backlit),
             Shot(name: "ios44_section_375_light", width: 375, height: 420, touch: 44, presentation: .section,
                  setUp: Self.airOn),
             Shot(name: "ios44_section_375_dark", dark: true, width: 375, height: 420, touch: 44,
@@ -501,22 +482,22 @@ final class AtmosphereCardSnapshotTests: XCTestCase {
         let writesBefore = (store.numberWrites.count, store.performed.count)
         let style = LightsInspectorSnapshotTests.style(dark: shot.dark)
         let viewport = shot.dark ? Color(white: 0.08) : Color(white: 0.55)
-        let card = LightsAtmosphereCard(controller: controller, style: style, presentation: shot.presentation,
-                                        start: shot.start, showsScatter: shot.showsScatter)
         let root: AnyView
-        if shot.presentation == .card {
-            root = AnyView(card
-                .padding(12)
-                .frame(width: shot.width, height: shot.height, alignment: .top)
-                .background(viewport)
-                .environment(\.lightsTouchMinimum, shot.touch))
-        } else {
+        if let presentation = shot.presentation {
             // A presentation alone, on the tools' background, padded as the
             // sheet pads it.
-            root = AnyView(card
+            root = AnyView(LightsAtmosphereCard(controller: controller, style: style, presentation: presentation,
+                                                showsScatter: shot.showsScatter)
                 .padding(.horizontal, 12)
                 .frame(width: shot.width, height: shot.height, alignment: .top)
                 .background(style.background)
+                .environment(\.lightsTouchMinimum, shot.touch))
+        } else {
+            root = AnyView(LightsAtmospherePopover(controller: controller, style: style,
+                                                   showsScatter: shot.showsScatter)
+                .padding(12)
+                .frame(width: shot.width, height: shot.height, alignment: .top)
+                .background(viewport)
                 .environment(\.lightsTouchMinimum, shot.touch))
         }
         let size = CGSize(width: shot.width, height: shot.height)

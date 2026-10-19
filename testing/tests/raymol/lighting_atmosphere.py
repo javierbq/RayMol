@@ -760,14 +760,18 @@ class TestAtmosphereSource(testing.PyMOLTestCase):
         log = self.body(CONTENT_VIEW, 'private func logLightsLayout(')
         self.assertNotIn(' atmosphere=', log)
 
-    def testTheCollapsedCardIsOneHeaderRow(self):
-        """A collapsed card shows its hint as a header glyph (never the hint
-        text), so it stays one header row tall."""
-        card = self.body(CARD, 'private func card(')
-        self.assertIn('if !collapsed {', card)
-        self.assertNotIn('hintRow(', card)
-        header = self.body(CARD, 'private func header(')
-        self.assertIn('if showsChevron, collapsed, let glyph = state.collapsedGlyph', header)
+    def testNoPresentationCollapses(self):
+        """#889: the card's collapsible `.card` presentation went with the
+        macOS column card and the iPad float card; what is left (section,
+        header, rows, the popover) never collapses, so it has no start
+        state and no collapsed hint glyph."""
+        card = self.read(CARD)
+        self.assertIsNone(type_body(card, 'private func card('))
+        self.assertRegex(card, r'case section, header, rows\b')
+        for name in ('collapsed', 'LightsAtmosphereStart', 'collapsedGlyph'):
+            with self.subTest(name):
+                self.assertNotIn(name, card)
+                self.assertNotIn(name, self.read(MODEL))
 
     def testTheCardWritesThroughTheTypedAirAPI(self):
         """Every write of the card goes through the typed air API (bridge
