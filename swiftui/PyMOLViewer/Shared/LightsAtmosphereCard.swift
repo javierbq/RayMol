@@ -19,10 +19,8 @@
 // light edits have none either, and the bar's Revert is the way back.
 //
 // Where it sits (LightsAtmospherePresentation):
-// - macOS: the header and rows in a popover off the Lights bar's Atmosphere
-//   button (LightsAtmospherePopover, below; #889);
-// - iPad: under the inspector in the float (LightsFloatingTools.swift),
-//   collapsed to its header by default;
+// - macOS and iPad: the header and rows in a popover off the Lights bar's
+//   Atmosphere button (LightsAtmospherePopover, below; #889);
 // - iPhone: a section after the inspector rows in the sheet and the side
 //   panel, and the header and rows of the air-only sheet with no light
 //   (LightsSheet.swift).
@@ -568,13 +566,18 @@ struct AtmosphereSeedRow: View {
 
 // MARK: - The macOS Atmosphere popover
 
-/// The Atmosphere popover off the macOS Lights bar's button (#889): the
-/// card's header (title and On/Off switch) over its hint and rows, at the
-/// inspector's width. The rows scroll in a short window. A popover, not a
-/// menu: a menu cannot hold the sliders and typed fields.
+/// The Atmosphere popover off the Lights bar's button on macOS and the iPad
+/// float (#889): the card's header (title and On/Off switch) over its hint
+/// and rows, at the inspector's width. The rows scroll in a short window. A
+/// popover, not a menu: a menu cannot hold the sliders and typed fields.
+/// `onFieldFocus` reports a field's keyboard to the owner, which keeps the
+/// iPad's viewport size meanwhile (#725): the popover is outside the float,
+/// so the float's focus report never sees its fields.
 struct LightsAtmospherePopover: View {
     let controller: LightsController
     var style: LightsBarStyle
+    var onFieldFocus: (Bool) -> Void = { _ in }
+    @State private var fieldFocused = false
     /// The rows' measured height (the popover is as tall as its content, up
     /// to `maxRowsHeight`, and follows the Scatter disclosure).
     @State private var rowsHeight = AtmosphereCardMetrics.estimatedRowsHeight
@@ -601,6 +604,18 @@ struct LightsAtmospherePopover: View {
         }
         .frame(width: LightsInspector.width)
         .background(style.background)
+        .onPreferenceChange(LightsFieldFocusKey.self) { focused in
+            guard focused != fieldFocused else { return }
+            fieldFocused = focused
+            onFieldFocus(focused)
+        }
+        // Closed with a field still focused: never leave the keyboard rule on.
+        .onDisappear {
+            if fieldFocused {
+                fieldFocused = false
+                onFieldFocus(false)
+            }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AtmosphereCardIDs.popover)
     }
@@ -613,7 +628,7 @@ struct LightsAtmospherePopover: View {
 /// glyph, filled in the accent while the air is on, with a small badge while
 /// a hint applies. On a phone `action` expands the sheet and scrolls to the
 /// Atmosphere section (LightsSheet, via ContentView's reveal request); on
-/// macOS it opens the Atmosphere popover (#889). Draws nothing unless Lights
+/// macOS and the iPad float it opens the Atmosphere popover (#889). Draws nothing unless Lights
 /// mode is active.
 struct LightsSheetAtmosphereButton: View {
     @ObservedObject var controller: LightsController

@@ -658,9 +658,9 @@ The **Atmosphere** card edits the rig's air: **Haze**, **Dust**,
   with a light behind the molecule can wash the picture out. Lower the haze or
   move the light." (see [Backlit haze](#backlit-haze)). A collapsed card shows
   the hint as a glyph in its header.
-- **Where it sits.** On macOS, a popover off the **Atmosphere** button on the
-  Lights bar (#889): the fog glyph, filled while the air is on, with a dot
-  while a hint applies. On iPad, under the inspector, collapsed to its header. On iPhone, a section
+- **Where it sits.** On macOS and iPad, a popover off the **Atmosphere**
+  button on the Lights bar (#889): the fog glyph, filled while the air is on,
+  with a dot while a hint applies. On iPhone, a section
   after the inspector's rows in the sheet and in the landscape side panel; the
   **Atmosphere** entry on the Lights bar reveals it (in portrait, opening the
   editor sheet first). With no light, the
@@ -681,7 +681,9 @@ The light tools are placed by size class, not by device:
   the pitch arc stay pinned and every inspector row scrolls below them. With
   the editor closed the molecule stays fully visible.
 - **iPhone in landscape:** the same tools in the trailing side panel.
-- **iPad:** the orbit view floats over the viewport in a corner
+- **iPad:** the Lights bar carries the same light menu, without **Edit
+  light…** (the inspector is always on screen), and the **Atmosphere** button,
+  as on the Mac (#889). The orbit view floats over the viewport in a corner
   (bottom-leading by default; drag its header to move it to another corner,
   which is remembered), and the inspector sits at the top trailing corner,
   starting collapsed to its header.

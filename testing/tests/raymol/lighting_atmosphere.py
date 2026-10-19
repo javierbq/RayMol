@@ -725,63 +725,49 @@ class TestAtmosphereSource(testing.PyMOLTestCase):
                 self.assertIsNone(re.search(r'\brunPython\w*\(', loader))
                 self.assertIn('loadLightTables()', loader)
 
-    def testTheCardSitsUnderTheInspectorOnIPad(self):
-        """iPad: the float builds the card under the inspector in the
-        trailing stack, with layoutPriority(1) (it keeps its height; the
-        inspector scrolls first), and reports its frames with no orbit card
-        too. ContentView seeds its start state (collapsed) and the DEBUG
-        LightsLayout line names the card's frame. macOS has no card in the
-        side column since #889 (testMacOpensThePopoverFromTheBar)."""
-        view = self.body(FLOAT, 'var body: some View')
-        inspector = view.find('LightsInspector(')
-        card = view.find('LightsAtmosphereCard(')
-        self.assertGreaterEqual(inspector, 0)
-        self.assertGreater(card, inspector, 'the card goes under the inspector')
-        chain = view[card:card + 400]
-        self.assertIn('presentation: .card', chain)
-        self.assertIn('start: atmosphereStart', chain)
-        self.assertIn('framesReader("atmosphere")', chain)
-        self.assertIn('.layoutPriority(1)', chain)
-        report = self.body(FLOAT, '.onPreferenceChange(LightsFloatFramesKey.self)')
-        self.assertIn('guard card != nil || inspector != nil || atmosphere != nil', report)
-        self.assertNotIn('guard let card = frames["card"]', report)
-        content = self.read(CONTENT_VIEW)
-        self.assertEqual(content.count('atmosphereStart: lightsAtmosphereStart'), 1)
-        start = self.body(CONTENT_VIEW, 'private var lightsAtmosphereStart: LightsAtmosphereStart')
-        self.assertIn('.collapsed', start)
-        log = self.body(CONTENT_VIEW, 'private func logLightsLayout(')
-        self.assertIn(' atmosphere=', log)
-
-    def testMacOpensThePopoverFromTheBar(self):
-        """macOS (#889): the side column holds no Atmosphere card; the
+    def testMacAndIPadOpenThePopoverFromTheBar(self):
+        """macOS and the iPad float (#889): neither the side column nor the
+        float holds an Atmosphere card, and neither reports its frame; the
         Lights bar's Atmosphere button opens LightsAtmospherePopover, the
-        card's header over its rows. ContentView turns it on for the
-        column placement only, and the bar's light menu with it."""
-        self.assertNotIn('LightsAtmosphereCard(', self.read(SIDE_COLUMN))
+        card's header over its rows, which forwards its fields' keyboard to
+        the owner (#725). ContentView turns the popover and the light menu on
+        by placement, and the DEBUG LightsLayout line names no Atmosphere
+        frame."""
+        for rel in (SIDE_COLUMN, FLOAT):
+            with self.subTest(rel):
+                text = self.read(rel)
+                self.assertNotIn('LightsAtmosphereCard(', text)
+                self.assertNotIn('framesReader("atmosphere")', text)
         self.assertIn('LightsColumnFramesKey', self.read(SIDE_COLUMN))
+        report = self.body(FLOAT, '.onPreferenceChange(LightsFloatFramesKey.self)')
+        self.assertIn('guard card != nil || inspector != nil else { return }', report)
         bar = self.body(BAR, 'private var atmosphereButton: some View')
         self.assertIn('.popover(isPresented: $showsAtmospherePopover', bar)
-        self.assertIn('LightsAtmospherePopover(', bar)
+        self.assertIn('LightsAtmospherePopover(controller: controller, style: style, onFieldFocus: onFieldFocus)',
+                      bar)
         popover = self.body(CARD, 'struct LightsAtmospherePopover: View')
         header = popover.find('presentation: .header')
         self.assertGreaterEqual(header, 0)
         self.assertGreater(popover.find('presentation: .rows'), header)
+        self.assertIn('.onPreferenceChange(LightsFieldFocusKey.self)', popover)
+        self.assertIn('onFieldFocus(false)', popover)
         placement = self.body(BAR, 'static func atmosphereOpensPopover(')
-        self.assertIn('placement == .column', placement)
+        self.assertIn('case .column, .floating: return true', placement)
         lights_bar = self.body(CONTENT_VIEW, 'private var lightsBar: some View')
         self.assertIn('atmosphereOpensPopover(placement: lightsPlacement)', lights_bar)
         self.assertIn('showsLightMenu(placement: lightsPlacement)', lights_bar)
+        self.assertNotIn('atmosphereStart:', self.read(CONTENT_VIEW))
+        log = self.body(CONTENT_VIEW, 'private func logLightsLayout(')
+        self.assertNotIn(' atmosphere=', log)
 
     def testTheCollapsedCardIsOneHeaderRow(self):
         """A collapsed card shows its hint as a header glyph (never the hint
-        text), so it is the 44 pt header the float's frames assume."""
+        text), so it stays one header row tall."""
         card = self.body(CARD, 'private func card(')
         self.assertIn('if !collapsed {', card)
         self.assertNotIn('hintRow(', card)
         header = self.body(CARD, 'private func header(')
         self.assertIn('if showsChevron, collapsed, let glyph = state.collapsedGlyph', header)
-        metrics = self.body(FLOAT, 'enum LightsFloatMetrics')
-        self.assertRegex(metrics, r'static let atmosphereHeaderHeight: CGFloat = 44\b')
 
     def testTheCardWritesThroughTheTypedAirAPI(self):
         """Every write of the card goes through the typed air API (bridge
@@ -872,8 +858,9 @@ class TestAtmosphereSource(testing.PyMOLTestCase):
     def testTheDebugHookUsesTheCardsCalls(self):
         """The simulator hook's air tokens (DEBUG LightsAutoEdit) run the
         card's own calls (the bridge setter for a field, one command for the
-        switch), `air` drives the sheet's reveal path and the card's start
-        state, and both PYMOL_AUTOLIGHTS lines log the card's summary."""
+        switch), `air` drives the sheet's reveal path and opens the bar's
+        popover (#889), and both PYMOL_AUTOLIGHTS lines log the card's
+        summary."""
         inspector = os.path.join(SHARED, 'LightsInspector.swift')
         apply = self.body(inspector, 'static func apply(')
         self.assertIn('controller.setAir(parameter, value)', apply)
@@ -883,8 +870,8 @@ class TestAtmosphereSource(testing.PyMOLTestCase):
         self.assertEqual(content.count('air=\\(air)'), 2)
         self.assertEqual(content.count('let air = AtmosphereCardState(lights)?.summary ?? "none"'), 2)
         self.assertEqual(content.count('atmosphereRevealRequest: lightsAtmosphereRevealRequest'), 2)
-        start = self.body(CONTENT_VIEW, 'private var lightsAtmosphereStart: LightsAtmosphereStart')
-        self.assertIn('if lightsAtmosphereExpandOverride { return .expanded }', start)
+        lights_bar = self.body(CONTENT_VIEW, 'private var lightsBar: some View')
+        self.assertIn('atmospherePopoverStartsOpen: lightsAtmosphereExpandOverride', lights_bar)
 
     def testNoUndo(self):
         """Light edits register no undo (the bar's Revert is the way back);

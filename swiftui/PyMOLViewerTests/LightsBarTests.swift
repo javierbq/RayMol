@@ -239,29 +239,23 @@ final class LightsBarModelTests: XCTestCase {
 
     // MARK: the Atmosphere entry (#795)
 
-    func testAtmosphereEntryIsOnTheBarExceptOnTheIPadFloat() {
-        // Atmosphere is scene-wide: a phone's bar carries it (the bottom
-        // sheet's portrait overflow menu, the side panel's landscape bar) and
-        // so does the macOS bar, as a popover (#889); the iPad float has a
-        // card of its own.
-        XCTAssertTrue(LightsBarState.showsAtmosphereEntry(placement: .bottomSheet))
-        XCTAssertTrue(LightsBarState.showsAtmosphereEntry(placement: .sidePanel))
-        XCTAssertTrue(LightsBarState.showsAtmosphereEntry(placement: .column))
-        XCTAssertFalse(LightsBarState.showsAtmosphereEntry(placement: .floating))
+    func testAtmosphereEntryOpensThePopoverWhereThereIsNoCard() {
+        // Atmosphere is scene-wide, so every bar carries its entry: on a
+        // phone it reveals the sheet's or side panel's section (#795); on
+        // macOS and the iPad float, which have no Atmosphere card, it opens
+        // the popover (#889).
         for placement in LightsToolsPlacement.allCases {
-            XCTAssertEqual(LightsBarState.showsAtmosphereEntry(placement: placement), placement != .floating,
-                           "\(placement)")
-            XCTAssertEqual(LightsBarState.atmosphereOpensPopover(placement: placement), placement == .column,
-                           "\(placement)")
+            let popover = placement == .column || placement == .floating
+            XCTAssertEqual(LightsBarState.atmosphereOpensPopover(placement: placement), popover, "\(placement)")
         }
     }
 
-    func testLightMenuReplacesTheChipsInPhonePortraitAndOnMacOS() {
-        // #885 (phone portrait) and #889 (macOS): a dropdown; iPhone
-        // landscape and the iPad float keep the chips.
+    func testLightMenuReplacesTheChipsExceptInIPhoneLandscape() {
+        // #885 (phone portrait) and #889 (macOS, the iPad float): a
+        // dropdown; iPhone landscape's side panel keeps the chips.
         for placement in LightsToolsPlacement.allCases {
-            let menu = placement == .bottomSheet || placement == .column
-            XCTAssertEqual(LightsBarState.showsLightMenu(placement: placement), menu, "\(placement)")
+            XCTAssertEqual(LightsBarState.showsLightMenu(placement: placement), placement != .sidePanel,
+                           "\(placement)")
         }
     }
 
@@ -361,7 +355,8 @@ final class LightsBarSnapshotTests: XCTestCase {
         /// A phone's Atmosphere entry (#795): the bar's `onAtmosphere`.
         var atmosphere = false
         var air: LightRigSnapshot.Air?
-        /// The macOS bar (#889): the light menu and the Atmosphere popover button.
+        /// The macOS and iPad float bar (#889): the light menu and the
+        /// Atmosphere popover button.
         var macOS = false
     }
 
@@ -429,8 +424,14 @@ final class LightsBarSnapshotTests: XCTestCase {
             Shot(name: "macos_wide_0_light", lights: nil, width: 900, dark: false, macOS: true),
             Shot(name: "macos_compact_3_light", lights: Self.three, select: "rim", width: 420,
                  dark: false, macOS: true),
+            // The iPad float's bar (#889): the same controls with 44 pt
+            // targets, at an 11-inch iPad's landscape and portrait widths.
+            Shot(name: "ipad44_wide_3_1194_light", lights: Self.three, select: "fill", width: 1194,
+                 dark: false, touch: 44, macOS: true),
+            Shot(name: "ipad44_3_834_air_on_dark", lights: Self.three, select: "key", width: 834,
+                 dark: true, touch: 44, air: atmosphereOnAir, macOS: true),
         ]
-        XCTAssertEqual(shots.count, 22)
+        XCTAssertEqual(shots.count, 24)
 
         let dir = Self.outputDirectory
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

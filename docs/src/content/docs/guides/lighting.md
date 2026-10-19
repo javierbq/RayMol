@@ -211,7 +211,7 @@ The **Atmosphere** card edits the haze and dust: **Haze**, **Dust**, **Dust size
 
 The card and the `atmosphere` command mirror each other, and **Revert** in the bar restores the air you entered with. When the air can't show, the card says why: there is no light yet, the lights are off, or strong haze with a light behind the molecule may wash the picture out (see [Backlit haze](#backlit-haze-and-exposure)).
 
-On the Mac the card opens as a popover from the **Atmosphere** button on the Lights bar. On iPad it sits under the inspector. On iPhone it is a section of the light editor, opened from the **Atmosphere** entry on the Lights bar.
+On the Mac and iPad the card opens as a popover from the **Atmosphere** button on the Lights bar. On iPhone it is a section of the light editor, opened from the **Atmosphere** entry on the Lights bar.
 
 ![Lights mode on the Mac with the Atmosphere card switched on and expanded under the inspector: Haze 0.20, Dust 0.50, Dust size 0.35, Dust speed 1.00 and Scatter (g) 0.55, with haze and dust glowing in the key light's beam over the molecule](../../../assets/docs/lights-mac-atmosphere.jpg)
 *The Atmosphere card on the Mac, switched on: haze and dust glow in the key light's beam.*
@@ -224,7 +224,7 @@ On the Mac the card opens as a popover from the **Atmosphere** button on the Lig
 Lights mode works with touch on every device. Every light target is at least 44 pt, and the tools are arranged by the space available:
 
 - **Mac**: the orbit view, inspector and Atmosphere card are cards in the side column.
-- **iPad**: the orbit view **floats** over the viewport in a corner. Drag its header to move it to another corner, and RayMol remembers your choice. The inspector sits in the top-right corner and starts collapsed to its header. When you type into a field, the float and the inspector stay above the keyboard.
+- **iPad**: the Lights bar has the same **light menu** and **Atmosphere** button as on the Mac. The orbit view **floats** over the viewport in a corner. Drag its header to move it to another corner, and RayMol remembers your choice. The inspector sits in the top-right corner and starts collapsed to its header. When you type into a field, the float and the inspector stay above the keyboard.
 - **iPhone in portrait**: the Lights bar shows a **light menu** in place of the chips: the selected light's dot and name. The menu selects a light, adds or removes one, toggles **Shadow** and **Pin**, picks a **Colour**, turns the rig on or off, and opens the full editor with **Edit light…**. The editor is a sheet with two heights (**More** and **Less**) and a **Close** button. While it is closed, the whole molecule stays visible.
 - **iPhone in landscape**: the same tools sit in the side panel.
 

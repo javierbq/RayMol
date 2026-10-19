@@ -297,24 +297,42 @@ final class LightsGestureUITests: XCTestCase {
     }
 
     func testLandscapeFloatFieldKeepsTheInspectorAboveTheKeyboard() throws {
-        try checkLandscapeFieldFocus(corner: "bl", air: true)
+        try checkLandscapeFieldFocus(corner: "bl")
     }
 
     /// A top-trailing orbit card heads the risen column (#870): it rises
-    /// with it and never covers the inspector. The Atmosphere card stays
-    /// collapsed here: expanded, it leaves the inspector under a top-trailing
-    /// card only its header before any focus, so Orbit cannot be tapped.
+    /// with it and never covers the inspector.
     func testLandscapeFloatFieldTopTrailingCardClearsTheInspector() throws {
-        try checkLandscapeFieldFocus(corner: "tr", air: false)
+        try checkLandscapeFieldFocus(corner: "tr")
     }
 
-    private func checkLandscapeFieldFocus(corner: String, air: Bool) throws {
+    /// #889: the iPad float's bar carries the light menu (no chips) and the
+    /// Atmosphere button, which opens the popover with the air's switch and
+    /// rows; the float itself has no Atmosphere card.
+    func testIPadBarHasTheLightMenuAndTheAtmospherePopover() throws {
+        guard isPad else { throw XCTSkip("iPad only: the float's bar") }
+        _ = try launchInLights()
+        XCTAssertTrue(element("lights.menu").waitForExistence(timeout: 10), "the light menu is missing")
+        XCTAssertFalse(element("lights.chip.key").exists, "the light menu replaces the chips")
+        XCTAssertFalse(element("lights.atmosphere").exists, "the float has no Atmosphere card")
+        let button = element("lights.bar.atmosphere")
+        XCTAssertTrue(button.waitForExistence(timeout: 5), "the bar's Atmosphere button is missing")
+        button.tap()
+        XCTAssertTrue(element("lights.atmosphere.popover").waitForExistence(timeout: 5),
+                      "the Atmosphere popover did not open")
+        XCTAssertTrue(element("lights.atmosphere.switch").exists, "the popover's switch is missing")
+        XCTAssertTrue(element("lights.atmosphere.haze").exists, "the popover's Haze slider is missing")
+        attach("ipad-atmosphere-popover")
+    }
+
+    private func checkLandscapeFieldFocus(corner: String) throws {
         guard isPad else { throw XCTSkip("iPad only: the float") }
         XCUIDevice.shared.orientation = .landscapeLeft
         defer { XCUIDevice.shared.orientation = .portrait }
-        app.launchEnvironment["PYMOL_AUTOLIGHTS_EDIT"] = "corner:\(corner);expand" + (air ? ";air" : "")
+        app.launchEnvironment["PYMOL_AUTOLIGHTS_EDIT"] = "corner:\(corner);expand"
         _ = try launchInLights()
-        XCTAssertTrue(element("lights.atmosphere").waitForExistence(timeout: 10), "the atmosphere card is missing")
+        XCTAssertTrue(element("lights.bar.atmosphere").waitForExistence(timeout: 10),
+                      "the bar's Atmosphere button is missing")
         let orbit = element("lights.inspector.orbit.field")
         XCTAssertTrue(orbit.waitForExistence(timeout: 10), "the orbit field is missing")
         orbit.tap()

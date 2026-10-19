@@ -653,7 +653,7 @@ class TestTouchSource(testing.PyMOLTestCase):
         content = self.read(CONTENT_VIEW)
         entry = body(content, 'private var lightsAtmosphereEntry: (() -> Void)?')
         self.assertIsNotNone(entry, 'lightsAtmosphereEntry not found')
-        self.assertIn('LightsBarState.showsAtmosphereEntry(placement: lightsPlacement)', entry)
+        self.assertIn('LightsBarState.atmosphereOpensPopover(placement: lightsPlacement)', entry)
         # #885: the entry goes through LightsPortraitTools.revealAtmosphere,
         # which also opens the portrait editor; it still asks for one reveal.
         self.assertIn('LightsPortraitTools.revealAtmosphere(', entry)
@@ -841,7 +841,8 @@ class TestTouchSource(testing.PyMOLTestCase):
 
     def testAFocusedLightFieldKeepsTheViewport(self):
         """While an Orbit, Pitch or Atmosphere field of the sheet, the side
-        panel or the iPad float has the keyboard, the viewport-plus-tools
+        panel, the iPad float or the bar's Atmosphere popover (#889) has the
+        keyboard, the viewport-plus-tools
         container of each layout ignores it (an unconditional modifier with
         a dynamic argument; both iPad orientations, #725), and on the float
         the GeometryReader the layouts are sized from ignores it too. Only
@@ -858,9 +859,10 @@ class TestTouchSource(testing.PyMOLTestCase):
         self.assertEqual(body(content, 'private func iPadMacStyleLayout(geo: GeometryProxy)').count(rule), 2)
         self.assertIn('.ignoresSafeArea(lightsFieldFocused && lightsPlacement == .floating ? .keyboard : [], '
                       'edges: .bottom)', body(content, 'private var iPadOSLayout: some View'))
-        self.assertEqual(content.count('onFieldFocus: { lightsFieldFocused = $0 }'), 3)
-        self.assertIn('onFieldFocus: { lightsFieldFocused = $0 }',
-                      body(content, 'private var lightsFloatingTools: some View'))
+        self.assertEqual(content.count('onFieldFocus: { lightsFieldFocused = $0 }'), 4)
+        for signature in ('private var lightsFloatingTools: some View', 'private var lightsBar: some View'):
+            with self.subTest(signature):
+                self.assertIn('onFieldFocus: { lightsFieldFocused = $0 }', body(content, signature))
         self.assertNotIn('onPreferenceChange(LightsFieldFocusKey', content)
         self.assertIn('if lightsFieldFocused { lightsFieldFocused = false }',
                       body(content, 'private func endLightsSheetMotion()'))

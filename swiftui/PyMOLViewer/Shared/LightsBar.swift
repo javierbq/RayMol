@@ -4,14 +4,14 @@
 // light's dot (the colour the light casts, #798, which the orbit view #621 and
 // the gizmo #622 use for it too; hollow while the light is behind the molecule, the gizmo's
 // front/behind rule), and the rig-wide actions: add, remove, a preset, Re-centre,
-// on/off, Revert and Done. In phone portrait (#885) and on macOS (#889) a
-// compact light menu replaces the chips, with the lights, add/remove, Shadow,
-// Pin, Colour, Lights On and, in phone portrait (`onEditLight`), "Edit light…"
-// (which opens the full bottom-sheet editor). The bar also carries the
-// scene's Atmosphere entry: on a phone (#795) a button on the wide bar and an
-// item in the overflow menu on the compact one, each revealing the sheet's
-// Atmosphere section; on macOS (#889) a button on both layouts that opens the
-// Atmosphere popover.
+// on/off, Revert and Done. In phone portrait (#885), on macOS and on the iPad
+// float (#889) a compact light menu replaces the chips, with the lights,
+// add/remove, Shadow, Pin, Colour, Lights On and, in phone portrait
+// (`onEditLight`), "Edit light…" (which opens the full bottom-sheet editor).
+// The bar also carries the scene's Atmosphere entry: on a phone (#795) a
+// button on the wide bar and an item in the overflow menu on the compact one,
+// each revealing the sheet's Atmosphere section; on macOS and the iPad float
+// (#889) a button on both layouts that opens the Atmosphere popover.
 // It floats at the top of the viewport on macOS and docks at the bottom of the
 // top stack on iOS (ContentView places it).
 //
@@ -157,33 +157,24 @@ struct LightsBarState: Equatable {
     /// glyph, and its checkmark in the overflow menu.
     var atmosphereIsOn: Bool
 
-    /// Whether the bar carries the Atmosphere entry point (#795, #889).
-    /// Atmosphere is scene-wide, so it sits here with the other rig-wide
-    /// controls and not in the selected light's header: on a phone it reveals
-    /// the sheet's Atmosphere section, on macOS it opens the popover
-    /// (`atmosphereOpensPopover`). The iPad float shows it as a card of its
-    /// own, so the bar carries nothing there.
-    static func showsAtmosphereEntry(placement: LightsToolsPlacement) -> Bool {
-        switch placement {
-        case .bottomSheet, .sidePanel, .column: return true
-        case .floating: return false
-        }
-    }
-
-    /// The Atmosphere entry opens a popover on the bar (macOS, #889) rather
-    /// than revealing a section of the phone sheet or side panel.
+    /// Whether the bar's Atmosphere entry (#795, #889) opens the Atmosphere
+    /// popover (macOS and the iPad float, which have no Atmosphere card)
+    /// rather than revealing the Atmosphere section of the phone sheet or
+    /// side panel. Atmosphere is scene-wide, so on every placement its entry
+    /// sits on the bar with the other rig-wide controls and not in the
+    /// selected light's header.
     static func atmosphereOpensPopover(placement: LightsToolsPlacement) -> Bool {
-        placement == .column
+        switch placement {
+        case .column, .floating: return true
+        case .bottomSheet, .sidePanel: return false
+        }
     }
 
     /// Whether the bar shows the light menu in place of the chips: phone
-    /// portrait (#885) and macOS (#889). The iPad float and iPhone landscape
-    /// keep the chips.
+    /// portrait (#885), macOS and the iPad float (#889). iPhone landscape
+    /// keeps the chips.
     static func showsLightMenu(placement: LightsToolsPlacement) -> Bool {
-        switch placement {
-        case .bottomSheet, .column: return true
-        case .sidePanel, .floating: return false
-        }
+        placement != .sidePanel
     }
 
     /// The overflow menu's item: the title carries the state a checkmark
@@ -244,18 +235,21 @@ struct LightsBar: View {
     var style: LightsBarStyle
     var onDone: () -> Void
     /// Reveals the Atmosphere section of the phone sheet or side panel
-    /// (#795); nil where the bar carries no such entry (macOS, iPad). The
-    /// scene's haze and dust belong to the rig, so the entry is here with the
-    /// other rig-wide controls and not in the selected light's header.
+    /// (#795); nil where the bar opens the popover instead (macOS, iPad).
     var onAtmosphere: (() -> Void)?
     /// The bar carries the Atmosphere button that opens the Atmosphere
-    /// popover (macOS, #889) on both layouts, in place of `onAtmosphere`.
+    /// popover (macOS and the iPad float, #889) on both layouts, in place of
+    /// `onAtmosphere`.
     var atmospherePopover: Bool
+    /// True while a field of the Atmosphere popover has the keyboard: the
+    /// iPad's viewport then keeps its size (#725), as for the float's fields.
+    var onFieldFocus: (Bool) -> Void
     /// The bar shows the compact light menu in place of the chips (phone
-    /// portrait #885, macOS #889).
+    /// portrait #885, macOS and the iPad float #889).
     var lightMenu: Bool
     /// Opens the portrait full light editor (#885): the light menu's "Edit
-    /// light…" item. nil on macOS, whose inspector is always in the column.
+    /// light…" item. nil on macOS and the iPad float, whose inspector is
+    /// always on screen.
     var onEditLight: (() -> Void)?
     /// 44 on iOS (every control a 44 pt target, #623), 0 on macOS.
     @Environment(\.lightsTouchMinimum) private var touchMinimum
@@ -276,12 +270,14 @@ struct LightsBar: View {
     /// `atmospherePopoverStartsOpen` is the DEBUG `air` token's (#726): the
     /// popover opens with the bar.
     init(controller: LightsController, style: LightsBarStyle, onAtmosphere: (() -> Void)? = nil,
-         atmospherePopover: Bool = false, atmospherePopoverStartsOpen: Bool = false, lightMenu: Bool? = nil,
+         atmospherePopover: Bool = false, atmospherePopoverStartsOpen: Bool = false,
+         onFieldFocus: @escaping (Bool) -> Void = { _ in }, lightMenu: Bool? = nil,
          onEditLight: (() -> Void)? = nil, onDone: @escaping () -> Void) {
         self.controller = controller
         self.style = style
         self.onAtmosphere = onAtmosphere
         self.atmospherePopover = atmospherePopover
+        self.onFieldFocus = onFieldFocus
         _showsAtmospherePopover = State(initialValue: atmospherePopover && atmospherePopoverStartsOpen)
         self.lightMenu = lightMenu ?? (onEditLight != nil)
         self.onEditLight = onEditLight
@@ -331,11 +327,11 @@ struct LightsBar: View {
         }
     }
 
-    // iPhone portrait (and a narrow macOS window): no title; the light menu
-    // replaces the chips (#885), and Presets, Re-centre, Atmosphere (phones
-    // only) and On/Off sit in one overflow menu. +, −, Revert and Done stay on
-    // the bar, and so does the macOS Atmosphere button (#889): a menu item
-    // cannot anchor the popover. With 44 pt targets (iOS) the frames carry the
+    // iPhone portrait (and a narrow macOS or iPad window): no title; the light
+    // menu replaces the chips (#885), and Presets, Re-centre, Atmosphere
+    // (phones only) and On/Off sit in one overflow menu. +, −, Revert and Done
+    // stay on the bar, and so does the popover's Atmosphere button (#889): a
+    // menu item cannot anchor the popover. With 44 pt targets (iOS) the frames carry the
     // gaps, so the spacing drops to 2.
     private func compact(_ state: LightsBarState) -> some View {
         HStack(spacing: touchMinimum > 0 ? 2 : 10) {
@@ -581,7 +577,9 @@ struct LightsBar: View {
     }
 
     /// The Atmosphere entry: the fog glyph, filled while the air is on. On
-    /// macOS (#889) it opens the Atmosphere popover; on the phone's wide bar
+    /// macOS and the iPad float (#889) it opens the Atmosphere popover (an
+    /// iPad popover, never a sheet, so the scene stays in view); on the
+    /// phone's wide bar
     /// (iPhone landscape) it reveals the sheet's section. Draws nothing
     /// without either, or outside Lights mode.
     @ViewBuilder
@@ -592,7 +590,8 @@ struct LightsBar: View {
                 showsAtmospherePopover.toggle()
             }
             .popover(isPresented: $showsAtmospherePopover, arrowEdge: .bottom) {
-                LightsAtmospherePopover(controller: controller, style: style)
+                LightsAtmospherePopover(controller: controller, style: style, onFieldFocus: onFieldFocus)
+                    .presentationCompactAdaptation(.popover)
             }
         } else if let onAtmosphere {
             LightsSheetAtmosphereButton(controller: controller, style: style, action: onAtmosphere)

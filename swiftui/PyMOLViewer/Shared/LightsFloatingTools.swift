@@ -16,22 +16,18 @@
 //   measured, ViewportChromeHeightsKey) and an open CameraDock (both).
 // - A card sharing the trailing edge with the inspector stacks with it; the
 //   inspector's content scrolls in what is left.
-// - #726's Atmosphere card sits under the inspector, collapsed to its 44 pt
-//   header by default (a hint is a header glyph then, so it stays 44 pt and
-//   the default knobs stay free). It keeps its height (layoutPriority 1): the
-//   inspector scrolls first. It draws in Lights mode with no light too, alone
-//   at the top inset (no orbit card, no inspector).
+// - #726's Atmosphere card is not here: since #889 it opens as a popover off
+//   the Lights bar's Atmosphere button, as on macOS.
 // - #718: on a short viewport an open CameraDock collapses the orbit card
 //   to its header (LightsFloatLayout.dockCollapsesCard), so it stays off
 //   the key knob; it expands back when the dock closes.
 // - While a field of the float has the keyboard, the float reports it
 //   (`onFieldFocus`) so ContentView keeps the viewport's size, and lifts the
 //   trailing column above the keyboard (#725).
-// - #870: while an inspector field has the keyboard, the inspector gets the
-//   trailing column's room before the Atmosphere card (`inspectorPriority`),
-//   scrolls its focused row into view, and a column too short above the
-//   keyboard (iPad landscape) grows upward over the chrome above the float
-//   to `focusedColumnMinimum` (`focusedColumnRise`).
+// - #870: while an inspector field has the keyboard, the inspector scrolls
+//   its focused row into view, and a column too short above the keyboard
+//   (iPad landscape) grows upward over the chrome above the float to
+//   `focusedColumnMinimum` (`focusedColumnRise`).
 // - VoiceOver: the grip is an element with the corner as its value and one
 //   `Move to <corner>` action per other corner.
 // Empty space passes touches through to the viewport (the camera's).
@@ -104,7 +100,10 @@ enum LightsFloatMetrics {
     static let gap: CGFloat = 8
     /// The trailing column's least height while an inspector field has the
     /// keyboard (#870): the inspector's header, Orbit, Pitch and a neighbour
-    /// row, the gap and the Atmosphere card's header.
+    /// row. It was sized with the Atmosphere card's header under the
+    /// inspector; that card left the column in #889, but at the 238 pt that
+    /// would leave, the iPad landscape focus UI tests find Pitch not
+    /// hittable, so the column keeps 290.
     static let focusedColumnMinimum: CGFloat = 290
     /// The room a trailing card leaves under it, beyond its inset, for the
     /// viewport's bottom-trailing Gesture help button (a 26 pt glyph with
@@ -132,9 +131,6 @@ enum LightsFloatMetrics {
     /// an 11 pt line plus its 8 pt bottom padding). It shows while collapsed
     /// too, so the collapsed inspector is the header plus this.
     static let inspectorHintHeight: CGFloat = 22
-    /// The Atmosphere card collapsed to its header on iOS, whatever its hint
-    /// (a header glyph): a test pins it to the rendered card.
-    static let atmosphereHeaderHeight: CGFloat = 44
     /// The grip's capsule, drawn in the orbit card's top padding.
     static let gripSize = CGSize(width: 36, height: 4)
     /// A drag moves the card only past this distance (a tap stays a tap).
@@ -182,14 +178,13 @@ extension View {
 // MARK: - Layout (pure)
 
 enum LightsFloatLayout {
-    /// The orbit card's, the inspector's and the Atmosphere card's frames
-    /// in the viewport (`.zero` for a card that is not drawn).
+    /// The orbit card's and the inspector's frames in the viewport (`.zero`
+    /// for a card that is not drawn).
     struct Frames: Equatable {
         var card: CGRect
         var inspector: CGRect
-        var atmosphere: CGRect = .zero
 
-        var all: [CGRect] { [card, inspector, atmosphere] }
+        var all: [CGRect] { [card, inspector] }
     }
 
     /// The room a column on that side leaves under it, beyond its inset:
@@ -210,7 +205,7 @@ enum LightsFloatLayout {
     /// The trailing column's bottom padding (#725): the chrome's clearance,
     /// or, while a field of the float has the keyboard, at least the
     /// keyboard's overlap plus the inset gap, so the inspector (which scrolls
-    /// in what is left) and the Atmosphere card stay above it.
+    /// in what is left) stays above it.
     static func trailingBottomPadding(clearance: CGFloat, focused: Bool, keyboardOverlap: CGFloat) -> CGFloat {
         guard focused, keyboardOverlap > 0 else { return clearance }
         return max(clearance, keyboardOverlap + LightsFloatMetrics.gap)
@@ -223,16 +218,6 @@ enum LightsFloatLayout {
     /// clearance) it is `cardHeight + gap`.
     static func trailingCardRoom(cardHeight: CGFloat, cardClearance: CGFloat, trailingPadding: CGFloat) -> CGFloat {
         max(0, cardClearance + cardHeight + LightsFloatMetrics.gap - trailingPadding)
-    }
-
-    /// The inspector's layout priority in the trailing column (#870): above
-    /// the Atmosphere card's (1) while one of its own fields has the
-    /// keyboard, so a column shortened by the keyboard shrinks the
-    /// Atmosphere card (its rows scroll) instead of the inspector; 0
-    /// otherwise (the Atmosphere card keeps its height, the inspector
-    /// scrolls first).
-    static func inspectorPriority(inspectorFieldFocused: Bool) -> Double {
-        inspectorFieldFocused ? 2 : 0
     }
 
     /// How far the trailing column rises past the float's top (#870), over
@@ -296,14 +281,11 @@ enum LightsFloatLayout {
     /// Where the cards sit for `corner` in a viewport of `container`: the
     /// card in its corner, clear of the bottom chrome; the inspector at the
     /// top-trailing corner, under the card when it is top-trailing and
-    /// above it when it is bottom-trailing; the Atmosphere card under the
-    /// inspector, `atmosphereHeight` tall (its header when collapsed). The
-    /// Atmosphere card keeps its height: a collapsed inspector is its
+    /// above it when it is bottom-trailing. A collapsed inspector is its
     /// header, an expanded one takes `inspectorHeight` (its content) up to
-    /// the room left above the Atmosphere card (nil: all of it). A card that
-    /// is not drawn (`showsCard`: no light; `showsInspector`: no selected
-    /// light) is `.zero` and leaves no room behind: the Atmosphere card then
-    /// moves up to the top inset. `inspectorHintLines` counts the hint lines
+    /// the column's room (nil: all of it). A card that is not drawn
+    /// (`showsCard`: no light; `showsInspector`: no selected light) is
+    /// `.zero` and leaves no room behind. `inspectorHintLines` counts the hint lines
     /// under the header (0 or 1: `LightsInspectorState.showsNoCastersHint`),
     /// which add to the collapsed inspector's height. On a short viewport an
     /// open CameraDock auto-collapses the bottom orbit card to its header
@@ -312,7 +294,6 @@ enum LightsFloatLayout {
                        chrome: ViewportChromeHeights = ViewportChromeHeights(),
                        cardSize: CGSize = LightsFloatMetrics.orbitCardSize,
                        inspectorHeight: CGFloat? = nil,
-                       atmosphereHeight: CGFloat = LightsFloatMetrics.atmosphereHeaderHeight,
                        showsCard: Bool = true, showsInspector: Bool = true,
                        inspectorHintLines: Int = 0) -> Frames {
         let inset = LightsFloatMetrics.inset, gap = LightsFloatMetrics.gap
@@ -331,19 +312,15 @@ enum LightsFloatLayout {
         let limit = showsCard && corner == .bottomTrailing ? card.minY - gap : trailingBottom
         let x = container.width - inset - width
         var inspector = CGRect.zero
-        var atmosphereTop = top
         if showsInspector {
-            let room = max(0, limit - top - atmosphereHeight - gap)
+            let room = max(0, limit - top)
             let height = inspectorCollapsed
                 ? min(LightsFloatMetrics.inspectorHeaderHeight
                         + CGFloat(inspectorHintLines) * LightsFloatMetrics.inspectorHintHeight, room)
                 : min(inspectorHeight ?? room, room)
             inspector = CGRect(x: x, y: top, width: width, height: height)
-            atmosphereTop = inspector.maxY + gap
         }
-        let atmosphere = CGRect(x: x, y: atmosphereTop, width: width,
-                                height: min(atmosphereHeight, max(0, limit - atmosphereTop)))
-        return Frames(card: card, inspector: inspector, atmosphere: atmosphere)
+        return Frames(card: card, inspector: inspector)
     }
 
     /// The lights whose knob, with its whole touch target, lies under any
@@ -390,8 +367,8 @@ enum LightsFloatState {
 }
 
 /// The cards' frames as the float laid them out (before any drag offset),
-/// in the viewport's coordinates: `card`, `inspector` and `atmosphere` (a
-/// card that draws nothing reports nothing).
+/// in the viewport's coordinates: `card` and `inspector` (a card that draws
+/// nothing reports nothing).
 struct LightsFloatFramesKey: PreferenceKey {
     static var defaultValue: [String: CGRect] = [:]
     static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
@@ -416,11 +393,10 @@ extension View {
 
 // MARK: - The view
 
-/// The floating orbit card, the top-trailing inspector and the Atmosphere
-/// card under it, over the viewport (ContentView places it after the gizmo,
-/// so the cards sit above it). In Lights mode the Atmosphere card draws
-/// with no light too (alone at the top inset); the orbit card and the
-/// inspector draw only with a light.
+/// The floating orbit card and the top-trailing inspector over the viewport
+/// (ContentView places it after the gizmo, so the cards sit above it). Both
+/// draw only with a light; the Atmosphere controls are the Lights bar's
+/// popover (#889).
 struct LightsFloatingTools: View {
     let controller: LightsController
     var style: LightsBarStyle
@@ -429,15 +405,13 @@ struct LightsFloatingTools: View {
     var chrome: ViewportChromeHeights
     /// The inspector starts collapsed to its header (the iPad default).
     var inspectorStartsCollapsed: Bool
-    /// How the Atmosphere card starts (the iPad default: collapsed).
-    var atmosphereStart: LightsAtmosphereStart = .collapsed
     var sceneShadowsOn: Bool? = nil
     var onEnableSceneShadows: () -> Void = {}
-    /// The cards' frames (card, inspector, atmosphere) in the viewport's
+    /// The cards' frames (card, inspector) in the viewport's
     /// coordinates when they change, never per drag tick (the drag only
     /// offsets); reported with no orbit card too (`card` is `.zero` then).
     var onFrames: (LightsFloatLayout.Frames) -> Void = { _ in }
-    /// True while an Orbit/Pitch or Atmosphere field of the float has the
+    /// True while an Orbit/Pitch field of the float has the
     /// keyboard; the owner then keeps the viewport's size (#725).
     var onFieldFocus: (Bool) -> Void = { _ in }
 
@@ -459,10 +433,8 @@ struct LightsFloatingTools: View {
     @State private var bottom: CGFloat = 0
     /// The float's top in the window, for the column's rise (#870).
     @State private var top: CGFloat = 0
-    /// The orbit card and the inspector draw (a light, a selected light):
-    /// without them their room and gaps go (the Atmosphere card moves up).
+    /// The orbit card draws (a light): without it its room and gap go.
     @State private var cardShown = true
-    @State private var inspectorShown = true
 
     static let space = "lights.float"
     static let snap = Animation.spring(response: 0.3, dampingFraction: 0.86)
@@ -498,14 +470,6 @@ struct LightsFloatingTools: View {
                                 sceneShadowsOn: sceneShadowsOn,
                                 onEnableSceneShadows: onEnableSceneShadows)
                     .background(framesReader("inspector"))
-                    .layoutPriority(LightsFloatLayout.inspectorPriority(inspectorFieldFocused: inspectorFieldFocused))
-                // It keeps its height: the inspector scrolls first unless one
-                // of the inspector's own fields has the keyboard (#870).
-                LightsAtmosphereCard(controller: controller, style: style, presentation: .card,
-                                     start: atmosphereStart)
-                    .background(framesReader("atmosphere"))
-                    .padding(.top, inspectorShown ? gap : 0)
-                    .layoutPriority(1)
                 Spacer(minLength: 0)
                 if corner == .bottomTrailing && cardShown {
                     Spacer().frame(height: bottomCardRoom)
@@ -545,16 +509,13 @@ struct LightsFloatingTools: View {
             // A card that draws nothing reports nothing (or an empty frame).
             let card = frames["card"].flatMap { $0.isEmpty ? nil : $0 }
             let inspector = frames["inspector"].flatMap { $0.isEmpty ? nil : $0 }
-            let atmosphere = frames["atmosphere"].flatMap { $0.isEmpty ? nil : $0 }
             if (card != nil) != cardShown { cardShown = card != nil }
-            if (inspector != nil) != inspectorShown { inspectorShown = inspector != nil }
-            guard card != nil || inspector != nil || atmosphere != nil else { return }
+            guard card != nil || inspector != nil else { return }
             if let card {
                 if abs(card.height - cardHeight) > 0.5 { cardHeight = card.height }
                 cardFrame = card
             }
-            onFrames(LightsFloatLayout.Frames(card: card ?? .zero, inspector: inspector ?? .zero,
-                                              atmosphere: atmosphere ?? .zero))
+            onFrames(LightsFloatLayout.Frames(card: card ?? .zero, inspector: inspector ?? .zero))
         }
         .onPreferenceChange(LightsFieldFocusKey.self) { focused in
             guard focused != fieldFocused else { return }
