@@ -320,8 +320,17 @@ final class LightsGestureUITests: XCTestCase {
         button.tap()
         XCTAssertTrue(element("lights.atmosphere.popover").waitForExistence(timeout: 5),
                       "the Atmosphere popover did not open")
-        XCTAssertTrue(element("lights.atmosphere.switch").exists, "the popover's switch is missing")
-        XCTAssertTrue(element("lights.atmosphere.haze").exists, "the popover's Haze slider is missing")
+        settle(0.5)
+        // It opens below the bar, where there is room: the whole popover
+        // shows, the switch included (above the bar its header was clipped).
+        let toggle = element("lights.atmosphere.switch")
+        XCTAssertTrue(toggle.exists, "the popover's switch is missing")
+        XCTAssertTrue(toggle.isHittable, "the popover's switch is clipped")
+        XCTAssertGreaterThanOrEqual(toggle.frame.minY, button.frame.maxY,
+                                    "the popover opened above the bar: switch=\(toggle.frame) button=\(button.frame)")
+        XCTAssertTrue(element("lights.atmosphere.haze").isHittable, "the popover's Haze slider is clipped")
+        XCTAssertTrue(element("lights.atmosphere.scatter.disclosure").isHittable,
+                      "the popover's Scatter disclosure is clipped")
         attach("ipad-atmosphere-popover")
     }
 

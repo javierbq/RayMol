@@ -589,7 +589,7 @@ struct LightsBar: View {
                                         identifier: AtmosphereCardIDs.barButton) {
                 showsAtmospherePopover.toggle()
             }
-            .popover(isPresented: $showsAtmospherePopover, arrowEdge: .bottom) {
+            .popover(isPresented: $showsAtmospherePopover, arrowEdge: LightsTouch.popoverBelowArrowEdge) {
                 LightsAtmospherePopover(controller: controller, style: style, onFieldFocus: onFieldFocus)
                     .presentationCompactAdaptation(.popover)
             }
