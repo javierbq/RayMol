@@ -239,17 +239,29 @@ final class LightsBarModelTests: XCTestCase {
 
     // MARK: the Atmosphere entry (#795)
 
-    func testAtmosphereEntryIsOnTheBarOnPhonesOnly() {
+    func testAtmosphereEntryIsOnTheBarExceptOnTheIPadFloat() {
         // Atmosphere is scene-wide: a phone's bar carries it (the bottom
-        // sheet's portrait overflow menu, the side panel's landscape bar),
-        // while the macOS column and the iPad float have a card of their own.
+        // sheet's portrait overflow menu, the side panel's landscape bar) and
+        // so does the macOS bar, as a popover (#889); the iPad float has a
+        // card of its own.
         XCTAssertTrue(LightsBarState.showsAtmosphereEntry(placement: .bottomSheet))
         XCTAssertTrue(LightsBarState.showsAtmosphereEntry(placement: .sidePanel))
-        XCTAssertFalse(LightsBarState.showsAtmosphereEntry(placement: .column))
+        XCTAssertTrue(LightsBarState.showsAtmosphereEntry(placement: .column))
         XCTAssertFalse(LightsBarState.showsAtmosphereEntry(placement: .floating))
         for placement in LightsToolsPlacement.allCases {
-            let phone = placement == .bottomSheet || placement == .sidePanel
-            XCTAssertEqual(LightsBarState.showsAtmosphereEntry(placement: placement), phone, "\(placement)")
+            XCTAssertEqual(LightsBarState.showsAtmosphereEntry(placement: placement), placement != .floating,
+                           "\(placement)")
+            XCTAssertEqual(LightsBarState.atmosphereOpensPopover(placement: placement), placement == .column,
+                           "\(placement)")
+        }
+    }
+
+    func testLightMenuReplacesTheChipsInPhonePortraitAndOnMacOS() {
+        // #885 (phone portrait) and #889 (macOS): a dropdown; iPhone
+        // landscape and the iPad float keep the chips.
+        for placement in LightsToolsPlacement.allCases {
+            let menu = placement == .bottomSheet || placement == .column
+            XCTAssertEqual(LightsBarState.showsLightMenu(placement: placement), menu, "\(placement)")
         }
     }
 
@@ -349,6 +361,8 @@ final class LightsBarSnapshotTests: XCTestCase {
         /// A phone's Atmosphere entry (#795): the bar's `onAtmosphere`.
         var atmosphere = false
         var air: LightRigSnapshot.Air?
+        /// The macOS bar (#889): the light menu and the Atmosphere popover button.
+        var macOS = false
     }
 
     private static let three = ["key", "fill", "rim"]
@@ -406,8 +420,17 @@ final class LightsBarSnapshotTests: XCTestCase {
                  dark: false, touch: 44, atmosphere: true),
             Shot(name: "atmosphere_wide_ios44_568_light", lights: Self.three, select: "fill", width: 568,
                  dark: false, touch: 44, atmosphere: true),
+            // #889: the macOS bar, with the light menu and the Atmosphere
+            // button, wide and in a narrow window, the air off and on.
+            Shot(name: "macos_wide_3_fill_light", lights: Self.three, select: "fill", width: 900,
+                 dark: false, macOS: true),
+            Shot(name: "macos_wide_3_air_on_dark", lights: Self.three, select: "key", width: 900,
+                 dark: true, air: atmosphereOnAir, macOS: true),
+            Shot(name: "macos_wide_0_light", lights: nil, width: 900, dark: false, macOS: true),
+            Shot(name: "macos_compact_3_light", lights: Self.three, select: "rim", width: 420,
+                 dark: false, macOS: true),
         ]
-        XCTAssertEqual(shots.count, 18)
+        XCTAssertEqual(shots.count, 22)
 
         let dir = Self.outputDirectory
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -436,7 +459,8 @@ final class LightsBarSnapshotTests: XCTestCase {
         if let name = shot.select { controller.select(name: name) }
 
         let root = LightsBar(controller: controller, style: style(dark: shot.dark),
-                             onAtmosphere: shot.atmosphere ? {} : nil, onDone: {})
+                             onAtmosphere: shot.atmosphere ? {} : nil,
+                             atmospherePopover: shot.macOS, lightMenu: shot.macOS, onDone: {})
             .frame(width: shot.width)
             .fixedSize(horizontal: false, vertical: true)
             .environment(\.lightsTouchMinimum, shot.touch)

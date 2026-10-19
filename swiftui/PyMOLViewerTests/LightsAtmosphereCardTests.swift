@@ -227,10 +227,10 @@ final class AtmosphereCardViewTests: XCTestCase {
 
 // MARK: - The macOS column's layout contract
 
-/// The side column with the Atmosphere card under the inspector (#726): the
-/// card keeps its height in a short column and the inspector scrolls first;
-/// with no light the card stands alone at the top. Frames are read through
-/// LightsColumnFramesKey.
+/// The side column (#620, #621): the orbit card over the inspector, with no
+/// Atmosphere card since #889 (it opens as a popover off the Lights bar).
+/// In a short column the inspector scrolls; with no light the column draws
+/// nothing. Frames are read through LightsColumnFramesKey.
 @MainActor
 final class LightsSideColumnLayoutTests: XCTestCase {
     private let offscreen = LightsOffscreen()
@@ -247,13 +247,12 @@ final class LightsSideColumnLayoutTests: XCTestCase {
     private struct Column: View {
         let controller: LightsController
         let style: LightsBarStyle
-        let start: LightsAtmosphereStart
         let height: CGFloat
         let reported: Reported
 
         var body: some View {
             LightsSideColumn(controller: controller, style: style, inspectorStartsCollapsed: false,
-                             sceneShadowsOn: true, atmosphereStart: start)
+                             sceneShadowsOn: true)
                 .padding(.trailing, 10)
                 .frame(width: LightsSideColumn.width + 20, height: height, alignment: .top)
                 .background(Color(white: 0.55))
@@ -261,7 +260,7 @@ final class LightsSideColumnLayoutTests: XCTestCase {
         }
     }
 
-    private func column(_ setUp: (FakeRigStore) -> Void, start: LightsAtmosphereStart, height: CGFloat,
+    private func column(_ setUp: (FakeRigStore) -> Void, height: CGFloat,
                         name: String?) throws -> (frames: [String: CGRect], controller: LightsController,
                                                   store: FakeRigStore) {
         let store = FakeRigStore()
@@ -271,7 +270,7 @@ final class LightsSideColumnLayoutTests: XCTestCase {
         let reported = Reported()
         let style = LightsInspectorSnapshotTests.style(dark: false)
         let size = CGSize(width: LightsSideColumn.width + 20, height: height)
-        let host = offscreen.host(AnyView(Column(controller: controller, style: style, start: start,
+        let host = offscreen.host(AnyView(Column(controller: controller, style: style,
                                                  height: height, reported: reported)), size: size)
         if let name {
             let rep = try XCTUnwrap(offscreen.bitmap(host, size: size), name)
@@ -288,66 +287,109 @@ final class LightsSideColumnLayoutTests: XCTestCase {
         store.air = atmosphereOnAir
     }
 
-    func testAtmosphereKeepsItsHeightInAShortColumn() throws {
-        let (frames, controller, _) = try column(Self.threeLightsAirOn, start: .expanded, height: 560,
-                                                 name: "column_short_560")
+    /// The air on or off, the column holds the orbit card and the inspector
+    /// only (#889).
+    func testTheColumnHasNoAtmosphereCard() throws {
+        for airOn in [true, false] {
+            let (frames, _, _) = try column({ airOn ? Self.threeLightsAirOn($0) : lightsFloatThreePoint($0) },
+                                            height: 1300, name: nil)
+            XCTAssertNil(frames["atmosphere"], "the Atmosphere card is the bar's popover now")
+            XCTAssertEqual(Set(frames.keys), ["orbit", "inspector"])
+        }
+    }
+
+    /// In a short column the orbit card keeps its height and the inspector
+    /// scrolls, stacked 8 pt apart inside the column.
+    func testTheInspectorScrollsInAShortColumn() throws {
+        let (frames, controller, _) = try column(Self.threeLightsAirOn, height: 420, name: "column_short_420")
         let orbit = try XCTUnwrap(frames["orbit"], "no orbit frame")
         let inspector = try XCTUnwrap(frames["inspector"], "no inspector frame")
-        let atmosphere = try XCTUnwrap(frames["atmosphere"], "no atmosphere frame")
         let style = LightsInspectorSnapshotTests.style(dark: false)
-        let cardFit = offscreen.settledFittingSize(AnyView(
-            LightsAtmosphereCard(controller: controller, style: style, start: .expanded)))
         let headerFit = offscreen.settledFittingSize(AnyView(
             LightsInspector(controller: controller, style: style, initiallyCollapsed: true, sceneShadowsOn: true)))
         let inspectorFit = offscreen.settledFittingSize(AnyView(
             LightsInspector(controller: controller, style: style, sceneShadowsOn: true)))
-        // The card keeps its whole height; the inspector gave way.
-        XCTAssertEqual(atmosphere.height, cardFit.height, accuracy: 0.5, "the card kept its height")
-        XCTAssertGreaterThan(cardFit.height, 150, "expanded: the rows show")
         XCTAssertGreaterThanOrEqual(inspector.height, headerFit.height - 0.5, "at least the inspector's header")
         XCTAssertLessThan(inspector.height, inspectorFit.height - 50, "the inspector scrolls (the column is short)")
-        // Stacked in order, 8 pt apart, inside the column.
         XCTAssertEqual(inspector.minY, orbit.maxY + 8, accuracy: 0.5)
-        XCTAssertEqual(atmosphere.minY, inspector.maxY + 8, accuracy: 0.5)
         for (name, frame) in frames {
-            XCTAssertLessThanOrEqual(frame.maxY, 560 + 0.5, "\(name) ends below the column")
+            XCTAssertLessThanOrEqual(frame.maxY, 420 + 0.5, "\(name) ends below the column")
             XCTAssertEqual(frame.width, LightsInspector.width, accuracy: 0.5, name)
         }
     }
 
-    /// In a tall column every card has its whole height.
-    func testATallColumnFitsEveryCard() throws {
-        let (frames, controller, _) = try column(Self.threeLightsAirOn, start: .expanded, height: 1300,
-                                                 name: nil)
+    /// In a tall column the inspector has its whole height.
+    func testATallColumnFitsTheInspector() throws {
+        let (frames, controller, _) = try column(Self.threeLightsAirOn, height: 1300, name: nil)
         let style = LightsInspectorSnapshotTests.style(dark: false)
         let inspectorFit = offscreen.settledFittingSize(AnyView(
             LightsInspector(controller: controller, style: style, sceneShadowsOn: true)))
         let inspector = try XCTUnwrap(frames["inspector"])
         XCTAssertEqual(inspector.height, inspectorFit.height, accuracy: 0.5)
-        XCTAssertNotNil(frames["atmosphere"])
     }
 
-    /// `.expandedIfOn` (ContentView's macOS start): the card is its header
-    /// while the air is off, so the inspector keeps its room.
-    func testExpandedIfOnLeavesTheRoomWithTheAirOff() throws {
-        let (frames, controller, _) = try column(lightsFloatThreePoint, start: .expandedIfOn, height: 560,
-                                                 name: "column_air_off_560")
-        let style = LightsInspectorSnapshotTests.style(dark: false)
-        let collapsed = offscreen.settledFittingSize(AnyView(
-            LightsAtmosphereCard(controller: controller, style: style, start: .collapsed)))
-        let atmosphere = try XCTUnwrap(frames["atmosphere"])
-        XCTAssertEqual(atmosphere.height, collapsed.height, accuracy: 0.5)
-    }
-
-    /// No light: the orbit card and the inspector draw nothing, and the card
-    /// stands alone at the top of the column, with its no-lights hint.
-    func testTheCardStandsAloneWithNoLights() throws {
-        let (frames, controller, _) = try column({ _ in }, start: .expanded, height: 560,
-                                                 name: "column_no_lights")
+    /// No light: the orbit card and the inspector draw nothing.
+    func testTheColumnIsEmptyWithNoLights() throws {
+        let (frames, _, _) = try column({ _ in }, height: 560, name: nil)
         XCTAssertNil(frames["orbit"].flatMap { $0.isEmpty ? nil : $0 })
         XCTAssertNil(frames["inspector"].flatMap { $0.isEmpty ? nil : $0 })
-        let atmosphere = try XCTUnwrap(frames["atmosphere"])
-        XCTAssertEqual(atmosphere.minY, 0, accuracy: 0.5)
+        XCTAssertNil(frames["atmosphere"])
+    }
+}
+
+// MARK: - The macOS Atmosphere popover
+
+/// The popover off the macOS Lights bar's Atmosphere button (#889): the
+/// header over the rows at the inspector's width, as tall as its content up
+/// to its cap, with or without lights. Drawing writes nothing.
+@MainActor
+final class LightsAtmospherePopoverTests: XCTestCase {
+    private let offscreen = LightsOffscreen()
+
+    override func tearDown() {
+        offscreen.close()
+        super.tearDown()
+    }
+
+    private func popover(_ setUp: (FakeRigStore) -> Void, name: String?) throws -> (size: CGSize,
+                                                                                    controller: LightsController) {
+        let store = FakeRigStore()
+        setUp(store)
+        let controller = LightsController(seams: store.seams)
+        controller.begin()
+        let style = LightsInspectorSnapshotTests.style(dark: false)
+        let view = AnyView(LightsAtmospherePopover(controller: controller, style: style))
+        let size = offscreen.settledFittingSize(view)
+        if let name {
+            let host = offscreen.host(view, size: size)
+            let rep = try XCTUnwrap(offscreen.bitmap(host, size: size), name)
+            XCTAssertFalse(LightsOffscreen.isFlat(rep), "\(name): flat")
+            try LightsOffscreen.write(rep, name: name)
+        }
+        XCTAssertTrue(store.numberWrites.isEmpty, "drawing wrote \(store.numberWrites)")
+        XCTAssertTrue(store.performed.isEmpty, "drawing pressed \(store.performed)")
+        return (size, controller)
+    }
+
+    func testThePopoverShowsTheHeaderAndTheRows() throws {
+        let (size, controller) = try popover({ store in
+            lightsFloatThreePoint(store)
+            store.air = atmosphereOnAir
+        }, name: "popover_air_on")
+        XCTAssertEqual(size.width, LightsInspector.width, accuracy: 0.5)
+        let style = LightsInspectorSnapshotTests.style(dark: false)
+        let rows = offscreen.settledFittingSize(AnyView(
+            LightsAtmosphereCard(controller: controller, style: style, presentation: .rows)
+                .frame(width: LightsInspector.width - 24)))
+        XCTAssertGreaterThan(rows.height, 100, "the rows show")
+        XCTAssertGreaterThan(size.height, rows.height, "the header sits over the rows")
+        XCTAssertLessThanOrEqual(size.height, LightsAtmospherePopover.maxRowsHeight + 80, "capped")
+    }
+
+    /// With no light the popover still draws, with its no-lights hint.
+    func testThePopoverDrawsWithNoLights() throws {
+        let (size, controller) = try popover({ _ in }, name: "popover_no_lights")
+        XCTAssertGreaterThan(size.height, 40)
         XCTAssertEqual(AtmosphereCardState(controller)?.hint, .noLights)
     }
 }

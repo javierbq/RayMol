@@ -146,10 +146,11 @@ All four tools (the Lights bar, the gizmo, the orbit view and the inspector) wor
 
 The bar floats across the top of the viewport:
 
-- **Light chips**: one per light. The dot is the colour the light actually casts (its colour tinted by its warmth), with a thin outline so a white light still shows. A **hollow** dot means the light is currently behind the molecule. Click a chip to select that light.
+- **Light menu**: shows the selected light's dot and name. The dot is the colour the light actually casts (its colour tinted by its warmth), with a thin outline so a white light still shows. A **hollow** dot means the light is currently behind the molecule. Open the menu to select another light, add or remove one, toggle **Shadow** and **Pin**, pick a **Colour**, or turn the rig on or off.
 - **+ / −**: add a light (up to six) or remove the selected one. A new light casts a shadow while fewer than three lights do.
 - **Presets**: apply any [preset](#presets); each entry says what the rig looks like.
 - **Re-centre**: re-capture the rig's centre and size from what is shown now (`lights recenter`).
+- **Atmosphere**: the fog button opens the haze and dust controls in a popover (see [The Atmosphere card](#the-atmosphere-card)). The fog is filled while the air is on, and a dot on it means a hint applies.
 - **Lights switch**: turn the whole rig on or off (`lights on` / `lights off`).
 - **Revert** puts back the rig you had when you entered Lights mode, atmosphere included. **Done** (or `Esc`) keeps your edits and leaves the mode. Light edits do not go on the undo stack, so **Revert** is the way back.
 
@@ -210,7 +211,7 @@ The **Atmosphere** card edits the haze and dust: **Haze**, **Dust**, **Dust size
 
 The card and the `atmosphere` command mirror each other, and **Revert** in the bar restores the air you entered with. When the air can't show, the card says why: there is no light yet, the lights are off, or strong haze with a light behind the molecule may wash the picture out (see [Backlit haze](#backlit-haze-and-exposure)).
 
-The card sits under the inspector on the Mac (expanded if the air was on when you entered Lights mode) and on iPad. On iPhone it is a section of the light editor, opened from the **Atmosphere** entry on the Lights bar.
+On the Mac the card opens as a popover from the **Atmosphere** button on the Lights bar. On iPad it sits under the inspector. On iPhone it is a section of the light editor, opened from the **Atmosphere** entry on the Lights bar.
 
 ![Lights mode on the Mac with the Atmosphere card switched on and expanded under the inspector: Haze 0.20, Dust 0.50, Dust size 0.35, Dust speed 1.00 and Scatter (g) 0.55, with haze and dust glowing in the key light's beam over the molecule](../../../assets/docs/lights-mac-atmosphere.jpg)
 *The Atmosphere card on the Mac, switched on: haze and dust glow in the key light's beam.*

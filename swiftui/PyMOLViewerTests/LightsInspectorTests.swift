@@ -928,7 +928,9 @@ final class LightsInspectorSnapshotTests: XCTestCase {
         if shot.withBar {
             root = AnyView(
                 VStack(alignment: .trailing, spacing: 8) {
-                    LightsBar(controller: controller, style: style, onDone: {})
+                    // The macOS bar (#889): the light menu and the Atmosphere button.
+                    LightsBar(controller: controller, style: style, atmospherePopover: true, lightMenu: true,
+                              onDone: {})
                     LightsSideColumn(controller: controller, style: style,
                                      inspectorStartsCollapsed: shot.collapsed,
                                      sceneShadowsOn: shot.sceneShadowsOn)

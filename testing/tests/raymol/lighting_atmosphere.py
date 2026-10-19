@@ -569,6 +569,7 @@ MODEL = os.path.join(SHARED, 'LightsAtmosphere.swift')
 ENGINE = os.path.join(SHARED, 'PyMOLEngine.swift')
 CARD = os.path.join(SHARED, 'LightsAtmosphereCard.swift')
 SIDE_COLUMN = os.path.join(SHARED, 'LightsSideColumn.swift')
+BAR = os.path.join(SHARED, 'LightsBar.swift')
 FLOAT = os.path.join(SHARED, 'LightsFloatingTools.swift')
 SHEET = os.path.join(SHARED, 'LightsSheet.swift')
 CONTENT_VIEW = os.path.join(SHARED, 'ContentView.swift')
@@ -724,38 +725,52 @@ class TestAtmosphereSource(testing.PyMOLTestCase):
                 self.assertIsNone(re.search(r'\brunPython\w*\(', loader))
                 self.assertIn('loadLightTables()', loader)
 
-    def testTheCardSitsUnderTheInspectorOnMacAndIPad(self):
-        """macOS: the side column builds the card under the inspector, with
-        layoutPriority(1) (it keeps its height; the inspector scrolls
-        first) and its frame reported. iPad: the float builds it under the
-        inspector in the trailing stack, the same way, and reports its
-        frames with no orbit card too. ContentView seeds the start states
-        (macOS expanded only when the air is on, iPad collapsed) and the
-        DEBUG LightsLayout line names the card's frame."""
-        for rel in (SIDE_COLUMN, FLOAT):
-            with self.subTest(rel):
-                view = self.body(rel, 'var body: some View')
-                inspector = view.find('LightsInspector(')
-                card = view.find('LightsAtmosphereCard(')
-                self.assertGreaterEqual(inspector, 0)
-                self.assertGreater(card, inspector, 'the card goes under the inspector')
-                chain = view[card:card + 400]
-                self.assertIn('presentation: .card', chain)
-                self.assertIn('start: atmosphereStart', chain)
-                self.assertIn('framesReader("atmosphere")', chain)
-                self.assertIn('.layoutPriority(1)', chain)
-        self.assertIn('LightsColumnFramesKey', self.read(SIDE_COLUMN))
+    def testTheCardSitsUnderTheInspectorOnIPad(self):
+        """iPad: the float builds the card under the inspector in the
+        trailing stack, with layoutPriority(1) (it keeps its height; the
+        inspector scrolls first), and reports its frames with no orbit card
+        too. ContentView seeds its start state (collapsed) and the DEBUG
+        LightsLayout line names the card's frame. macOS has no card in the
+        side column since #889 (testMacOpensThePopoverFromTheBar)."""
+        view = self.body(FLOAT, 'var body: some View')
+        inspector = view.find('LightsInspector(')
+        card = view.find('LightsAtmosphereCard(')
+        self.assertGreaterEqual(inspector, 0)
+        self.assertGreater(card, inspector, 'the card goes under the inspector')
+        chain = view[card:card + 400]
+        self.assertIn('presentation: .card', chain)
+        self.assertIn('start: atmosphereStart', chain)
+        self.assertIn('framesReader("atmosphere")', chain)
+        self.assertIn('.layoutPriority(1)', chain)
         report = self.body(FLOAT, '.onPreferenceChange(LightsFloatFramesKey.self)')
         self.assertIn('guard card != nil || inspector != nil || atmosphere != nil', report)
         self.assertNotIn('guard let card = frames["card"]', report)
         content = self.read(CONTENT_VIEW)
-        self.assertEqual(content.count('atmosphereStart: lightsAtmosphereStart'), 2)
+        self.assertEqual(content.count('atmosphereStart: lightsAtmosphereStart'), 1)
         start = self.body(CONTENT_VIEW, 'private var lightsAtmosphereStart: LightsAtmosphereStart')
-        ios, _, mac = start.partition('#else')
-        self.assertIn('return .collapsed', ios)
-        self.assertIn('return .expandedIfOn', mac)
+        self.assertIn('.collapsed', start)
         log = self.body(CONTENT_VIEW, 'private func logLightsLayout(')
         self.assertIn(' atmosphere=', log)
+
+    def testMacOpensThePopoverFromTheBar(self):
+        """macOS (#889): the side column holds no Atmosphere card; the
+        Lights bar's Atmosphere button opens LightsAtmospherePopover, the
+        card's header over its rows. ContentView turns it on for the
+        column placement only, and the bar's light menu with it."""
+        self.assertNotIn('LightsAtmosphereCard(', self.read(SIDE_COLUMN))
+        self.assertIn('LightsColumnFramesKey', self.read(SIDE_COLUMN))
+        bar = self.body(BAR, 'private var atmosphereButton: some View')
+        self.assertIn('.popover(isPresented: $showsAtmospherePopover', bar)
+        self.assertIn('LightsAtmospherePopover(', bar)
+        popover = self.body(CARD, 'struct LightsAtmospherePopover: View')
+        header = popover.find('presentation: .header')
+        self.assertGreaterEqual(header, 0)
+        self.assertGreater(popover.find('presentation: .rows'), header)
+        placement = self.body(BAR, 'static func atmosphereOpensPopover(')
+        self.assertIn('placement == .column', placement)
+        lights_bar = self.body(CONTENT_VIEW, 'private var lightsBar: some View')
+        self.assertIn('atmosphereOpensPopover(placement: lightsPlacement)', lights_bar)
+        self.assertIn('showsLightMenu(placement: lightsPlacement)', lights_bar)
 
     def testTheCollapsedCardIsOneHeaderRow(self):
         """A collapsed card shows its hint as a header glyph (never the hint

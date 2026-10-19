@@ -186,7 +186,8 @@ struct ContentView: View {
     // normal runs.
     @State private var lightsInspectorExpandOverride = false
     // Debug hook only (PYMOL_AUTOLIGHTS_EDIT `air`, #726): the Atmosphere
-    // card starts expanded (macOS, iPad), and the phone sheet starts
+    // card starts expanded (iPad), the bar's Atmosphere popover starts open
+    // (macOS, #889), and the phone sheet starts
     // expanded and reveals its Atmosphere section through the Lights bar
     // entry's path: the request is 1 for each mode entry under the token,
     // else 0 (LightsSheet's atmosphereRevealRequest; the Lights bar's
@@ -4431,8 +4432,9 @@ struct ContentView: View {
         .tint(themeManager.active.accent.color)
     }
 
-    // Lights-mode bar (#619): the chips (or, in phone portrait, the light
-    // menu, #885) and rig actions of LightsBar, styled like the bars above.
+    // Lights-mode bar (#619): the chips (or, in phone portrait and on macOS,
+    // the light menu, #885, #889) and rig actions of LightsBar, styled like
+    // the bars above. On macOS its Atmosphere button opens the popover (#889).
     // Every placement (the macOS top overlay, the four iOS top stacks) names
     // only this property, so ContentView's type-checker load stays flat.
     // Done = leave the mode keeping the edits (Esc does the same).
@@ -4440,6 +4442,9 @@ struct ContentView: View {
         LightsBar(controller: engine.lightsController,
                   style: lightsStyle,
                   onAtmosphere: lightsAtmosphereEntry,
+                  atmospherePopover: LightsBarState.atmosphereOpensPopover(placement: lightsPlacement),
+                  atmospherePopoverStartsOpen: lightsAtmosphereExpandOverride,
+                  lightMenu: LightsBarState.showsLightMenu(placement: lightsPlacement),
                   onEditLight: lightsEditLightEntry,
                   onDone: { engine.setInteractionMode(.viewing) })
     }
@@ -4462,9 +4467,11 @@ struct ContentView: View {
     // not in the selected light's header. It asks the phone sheet or side
     // panel to reveal its Atmosphere section (LightsSheet's
     // atmosphereRevealRequest), opening the portrait sheet first (#885). nil
-    // on macOS and the iPad float, whose Atmosphere card is always in view.
+    // on the iPad float, whose Atmosphere card is always in view, and on
+    // macOS, whose bar opens the Atmosphere popover itself (#889).
     private var lightsAtmosphereEntry: (() -> Void)? {
-        guard LightsBarState.showsAtmosphereEntry(placement: lightsPlacement) else { return nil }
+        guard LightsBarState.showsAtmosphereEntry(placement: lightsPlacement),
+              !LightsBarState.atmosphereOpensPopover(placement: lightsPlacement) else { return nil }
         let placement = lightsPlacement
         return {
             LightsPortraitTools.revealAtmosphere(placement: placement, editorOpen: &lightsEditorOpen,
@@ -4490,8 +4497,7 @@ struct ContentView: View {
                          style: lightsStyle,
                          inspectorStartsCollapsed: lightsInspectorStartsCollapsed,
                          sceneShadowsOn: engine.sceneShadowsOn,
-                         onEnableSceneShadows: { engine.enableSceneShadows() },
-                         atmosphereStart: lightsAtmosphereStart)
+                         onEnableSceneShadows: { engine.enableSceneShadows() })
     }
     #endif
 
@@ -4527,19 +4533,16 @@ struct ContentView: View {
         #endif
     }
 
-    // How the Atmosphere card (#726) starts, seeded each time the mode opens:
-    // on macOS expanded only when the air is on at entry (a short window
-    // keeps its inspector room otherwise); in the iPad float collapsed to
-    // its 44 pt header, so the default knobs stay free. Phones show it as a
-    // section of the sheet instead (no card).
+    #if os(iOS)
+    // How the iPad float's Atmosphere card (#726) starts, seeded each time
+    // the mode opens: collapsed to its 44 pt header, so the default knobs
+    // stay free. Phones show it as a section of the sheet instead (no card),
+    // and macOS as the bar's popover (#889).
     private var lightsAtmosphereStart: LightsAtmosphereStart {
         if lightsAtmosphereExpandOverride { return .expanded }
-        #if os(iOS)
         return .collapsed
-        #else
-        return .expandedIfOn
-        #endif
     }
+    #endif
 
     // MARK: Phone light tools (#623)
 
