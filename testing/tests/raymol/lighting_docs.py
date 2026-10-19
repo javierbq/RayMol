@@ -110,6 +110,7 @@ LABELS = {
     'Done': os.path.join(SHARED, 'LightsBar.swift'),
     'Lights on': os.path.join(SHARED, 'LightsBar.swift'),
     'Lights off': os.path.join(SHARED, 'LightsBar.swift'),
+    'Edit light…': os.path.join(SHARED, 'LightsBar.swift'),
     'Orbit': os.path.join(SHARED, 'LightsEditing.swift'),
     'Pitch': os.path.join(SHARED, 'LightsEditing.swift'),
     'Radius': os.path.join(SHARED, 'LightsEditing.swift'),

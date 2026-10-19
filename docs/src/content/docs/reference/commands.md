@@ -29,17 +29,19 @@ RayMol adds specialized commands for studio lighting, physically-based materials
 
 Commands for configuring studio lighting rigs, atmospheric haze and dust, and offline video exports.
 
-#### `lights` (beta)
+#### `lights`
 Configure a studio lighting rig of up to six directional spotlights placed around the scene.
 - **Syntax**: `lights [preset | name | keyword] [, field=value, ...]`
 - **Keywords**: `add`, `remove`, `presets`, `recenter`, `on`, `off`, `clear`
-- **Fields**: `orbit`, `pitch`, `radius`, `beam`, `softness`, `color`, `rgb`, `warmth`, `intensity`, `highlight`, `falloff`, `shadow`, `outline`, `aim`, `pin`, `target=sele`, `highlight=sele`, `click=x/y`, `rim=deg`
+- **Fields**: `orbit`, `pitch`, `radius`, `beam`, `softness`, `color`, `rgb`, `warmth`, `intensity`, `highlight`, `falloff`, `shadow`, `outline`, `size`, `aim`, `anchor`, `pin`, `position`, `name`; rig fields `ambient`, `classic`; placement helpers `target=sele`, `highlight=sele`, `click=x/y`, `rim=deg`
+- **Python**: `cmd.lights(...)`, `cmd.get_lights()`, `cmd.set_lights(rig)`
+- **Guide**: [Studio Lights & Atmosphere](/RayMol/guides/lighting/)
 - **Example**: `lights three_point` or `lights key, orbit=-45, pitch=35, color=warm, intensity=1.2`
 
-#### `atmosphere` (beta)
-Control the air and atmospheric medium (haze and floating dust) illuminated by studio lights. Haze and dust are drawn only by the live Metal renderer — `ray` output and `grid_mode` views never show them.
+#### `atmosphere`
+Control the air the studio lights shine through: haze and floating dust. The air shows only inside the beams, and only while the lights are on. It is drawn by the Metal renderer (live view, image and movie exports, with or without Metal ray tracing, and per cell in `grid_mode`); the CPU `ray` command never shows it.
 - **Syntax**: `atmosphere [off | field=value, ...]`
-- **Fields**: `haze` (0–1), `dust` (0–1), `dust_size` (0.05–2), `dust_speed` (0–10), `scatter` (-0.9–0.9), `seed` (0–1000000)
+- **Fields**: `haze` (0–1), `dust` (0–1), `dust_size` (0.05–2), `dust_speed` (0–10), `scatter` (-0.9–0.9), `seed` (0–1000000), `dust_glow` (0–4), `dust_opacity` (0–1)
 - **Example**: `atmosphere haze=0.3, dust=0.5, dust_speed=1.0`
 
 #### `movie_export`

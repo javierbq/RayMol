@@ -139,8 +139,8 @@ These settings control directional lighting, ambient occlusion, outlines, exposu
 | `metal_outline` | boolean | `off` | Global | Full-scene silhouette and toon outline post-process filter. |
 | `metal_outline_color` | color | `0x000000` | Global | Color of the silhouette contour line. |
 | `metal_outline_width` | float | `1.4` | Global | Silhouette line thickness in screen pixels. |
-| `metal_tonemap` | boolean | `off` | Global | Filmic ACES tone mapping and contrast curve. |
-| `metal_exposure` | float | `1.0` | Global | Exposure multiplier for tone mapping and studio lighting rigs (`1.0` = neutral). |
+| `metal_tonemap` | boolean | `off` | Global | Filmic ACES tone mapping and contrast curve. Under a studio rig with HDR, ACES becomes the rig's own hue-preserving curve, so bright coloured lights keep their hue. |
+| `metal_exposure` | float | `1.0` | Global | Exposure multiplier (`1.0` = neutral). Under a studio rig with HDR it scales only what the rig lights and the air, not the background or labels; otherwise the whole frame. |
 | `metal_sss_wrap` | float | `0.0` | Global | Diffuse lighting wrap-around parameter for soft, waxy subsurface appearance (`0.0` = pure Lambert). |
 | `metal_msaa` | boolean | `on` | Global | 4x multisample anti-aliasing in the opaque scene pass (the transparency and post-process passes stay single-sample). |
 | `metal_upscale` | boolean | `off` | Global | Renders scene at lower resolution and upscales to native display resolution for battery or GPU savings. |
@@ -163,13 +163,9 @@ RayMol provides a camera depth-of-field post-processing filter that produces pho
 
 ---
 
-## Studio Light Rig & Atmosphere (beta)
+## Studio Light Rig & Atmosphere
 
-:::caution[Beta]
-Studio lights are not yet in a released version; these settings may change before they ship.
-:::
-
-These settings govern the multi-light studio rig and atmospheric volumetric rendering configured via the `lights` and `atmosphere` commands.
+These settings tune how the studio rig and its atmosphere render; the rig itself is configured with the `lights` and `atmosphere` commands (see [Studio Lights & Atmosphere](/RayMol/guides/lighting/)). They are not part of a scene's look, so scenes do not store them; a `.pse` saves them like any other setting.
 
 | Setting | Type | Default | Scope | Description |
 | :--- | :--- | :--- | :--- | :--- |
@@ -178,8 +174,9 @@ These settings govern the multi-light studio rig and atmospheric volumetric rend
 | `metal_light_air_resolution` | integer | `0` | Global | Haze and dust volumetric pass resolution: `0` (platform default / half), `1` (full), `2` (half). |
 | `metal_light_air_time` | float | `-1.0` | Global | Atmosphere dust clock: `< 0.0` follows live/movie clock; `>= 0.0` pins time in seconds for reproducible renders. |
 | `metal_light_air_phase` | float | `0.0` | Global | Time offset added to dust animation during movie playback to prevent jumps across scene transitions. |
-| `metal_light_air_shadow_filter` | integer | `0` | Global | Haze shadow evaluation quality: `0` (default 1-tap), `1` (hardware comparison), `2` (3×3 PCF filter). |
+| `metal_light_air_shadow_filter` | integer | `0` | Global | The haze's shadow lookup per march step: `0` (platform default: one tap), `1` (one tap), `2` (the 3×3 filter). Dust motes always use the 3×3 filter. |
 | `metal_light_air_alpha` | integer | `0` | Global | Retains haze/dust luminance in alpha channel during transparent exports (`0` = cutout background, `1` = retain air). |
+| `metal_gpu_timing` | integer | `0` | Global | Debug readout of GPU frame times in the app log: `0` off, `1` a summary about once a second, `2` every frame. |
 
 ---
 

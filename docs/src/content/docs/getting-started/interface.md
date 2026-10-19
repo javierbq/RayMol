@@ -90,7 +90,7 @@ The **Tools** menu (macOS menu bar) and the toolbar **Tools** button's menu hous
 - **Move Objects (`⌃M`)**: Displays a 3D coordinate gizmo to translate and rotate individual structures in space.
 - **Measure Distances (`⌃E`)**: Accumulates viewport atom picks to compute distances, angles, and dihedral torsions.
 - **Box Select**: Draws a 2D rectangle to select enclosed atoms. Box Select is in the macOS **Tools** menu (`⌃S`) and, on any platform, behind the lasso icon in the **Selections** header; it is not in the toolbar **Tools** button's menu.
-- **Lights Mode** (beta, not yet released): Activates direct manipulation of scene lighting angles, spot direction, and atmosphere via **Tools ▸ Enter Lights Mode** (macOS) or **Lights** in the toolbar Tools button's menu.
+- **Lights Mode (`⌃L`)**: Places and edits the studio lights and the atmosphere directly in the viewport, via **Tools ▸ Enter Lights Mode** (macOS) or **Lights** in the toolbar Tools button's menu. See [Studio Lights & Atmosphere](/RayMol/guides/lighting/).
 - **Enter Design Mode (`⌃D`)**: Launches on-device ProteinMPNN sequence design and mutation scoring (requires iOS 18+ on iPhone/iPad).
 - **Enter Predict Mode (`⌃P`)**: Runs on-device structure prediction (requires iOS 18+ on a physical iPhone/iPad device).
 

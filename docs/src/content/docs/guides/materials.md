@@ -252,7 +252,7 @@ When rendering static figures using PyMOL's CPU ray tracer (`ray` or `png ..., r
 
 Setting an explicit `ray_texture` value on an object overrides the material's default CPU mapping.
 
-## Interaction with studio lights (beta)
+## Interaction with studio lights
 
 When studio lights are enabled, materials react realistically according to their physical parameters:
 - Matte and clay surfaces absorb light without creating specular glare.
