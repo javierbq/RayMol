@@ -464,24 +464,6 @@ enum AtmosphereHint: String, Equatable {
     }
 }
 
-// MARK: - Start state
-
-/// How the card starts when Lights mode is entered (the orchestrator's Q4).
-enum LightsAtmosphereStart: Equatable {
-    case collapsed
-    case expanded
-    /// Expanded only when the air is on at entry (macOS).
-    case expandedIfOn
-
-    func startsExpanded(airIsOn: Bool) -> Bool {
-        switch self {
-        case .collapsed: return false
-        case .expanded: return true
-        case .expandedIfOn: return airIsOn
-        }
-    }
-}
-
 // MARK: - What the card shows
 
 /// Everything the card shows, worked out from the controller in one place so
@@ -507,12 +489,6 @@ struct AtmosphereCardState: Equatable {
         var value: Int
         var range: ClosedRange<Double>
         var text: String
-    }
-
-    /// The glyph a collapsed header shows for the hint.
-    struct Glyph: Equatable {
-        var systemImage: String
-        var label: String
     }
 
     // Names and fixed texts.
@@ -579,11 +555,6 @@ struct AtmosphereCardState: Equatable {
     var switchValue: String { isOn ? "On" : "Off" }
     /// The rows are missing because the table could not be read.
     var isUnavailable: Bool { rows.isEmpty }
-
-    /// What a collapsed header shows for the hint (nil: no hint).
-    var collapsedGlyph: Glyph? {
-        hint.map { Glyph(systemImage: $0.glyph, label: $0.text) }
-    }
 
     /// One line for logs and the simulator evidence; stable field order and
     /// number formats.

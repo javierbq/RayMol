@@ -44,6 +44,20 @@ enum LightsTouch {
     /// The side of a colour swatch's target on iOS.
     static let swatchTarget: CGFloat = 44
 
+    /// The Lights bar's Atmosphere popover opens below its button on both
+    /// platforms (#889), where the viewport leaves it room (on iPad the
+    /// console and sequence strip above the bar leave too little, and the
+    /// header was clipped). The two platforms read `arrowEdge` differently:
+    /// macOS as the button's edge the popover hangs from, iOS as the
+    /// popover's edge that carries the arrow.
+    static var popoverBelowArrowEdge: Edge {
+        #if os(iOS)
+        return .top
+        #else
+        return .bottom
+        #endif
+    }
+
     /// How many columns of 44 pt swatch targets a row of `width` points
     /// holds: all six when they fit side by side, else three (two rows).
     static func swatchColumns(width: CGFloat) -> Int {

@@ -7,8 +7,7 @@
 // speed (on a square-root track), each a slider with a typed field, and
 // Scatter (g) and the dust Seed (a whole-number field, #740) under a
 // disclosure. One hint at a time says why the air may not show
-// (AtmosphereHint); a collapsed card shows it as a header glyph, so a
-// collapsed card is always one header row tall (44 pt on iOS).
+// (AtmosphereHint).
 // - Slider ticks and typed values write through the typed air API
 //   (`setAirIfChanged` / `setAir` -> the bridge setter at index -1): no Python
 //   per drag tick (#610).
@@ -19,10 +18,8 @@
 // light edits have none either, and the bar's Revert is the way back.
 //
 // Where it sits (LightsAtmospherePresentation):
-// - macOS: a third card under the inspector in the side column
-//   (LightsSideColumn.swift), keeping its height in a short column;
-// - iPad: under the inspector in the float (LightsFloatingTools.swift),
-//   collapsed to its header by default;
+// - macOS and iPad: the header and rows in a popover off the Lights bar's
+//   Atmosphere button (LightsAtmospherePopover, below; #889);
 // - iPhone: a section after the inspector rows in the sheet and the side
 //   panel, and the header and rows of the air-only sheet with no light
 //   (LightsSheet.swift).
@@ -33,23 +30,22 @@ import SwiftUI
 // MARK: - Presentation and metrics
 
 /// What part of the card a view draws:
-/// - `card`: the whole card with its chrome and a collapse chevron (the macOS
-///   column, the iPad float);
-/// - `section`: a hairline, the header without the chevron, the hint and the
-///   rows; no chrome and no inner ScrollView (the iPhone sheet scrolls it);
+/// - `section`: a hairline, the header, the hint and the rows; no chrome and
+///   no inner ScrollView (the iPhone sheet scrolls it);
 /// - `header`: the glyph, the title and the switch (the air-only sheet's
-///   header row);
-/// - `rows`: the hint and the rows (the air-only sheet's body).
+///   header row, the popover's header);
+/// - `rows`: the hint and the rows (the air-only sheet's body, the
+///   popover's body).
 enum LightsAtmospherePresentation: Equatable {
-    case card, section, header, rows
+    case section, header, rows
 }
 
 enum AtmosphereCardMetrics {
     /// The row labels (`Dust speed`, `Scatter (g)`) are wider than the
     /// inspector's.
     static let labelWidth: CGFloat = 70
-    /// The rows' first layout before they are measured (the card is as tall
-    /// as its content).
+    /// The rows' first layout before they are measured (the popover is as
+    /// tall as its content).
     static let estimatedRowsHeight: CGFloat = 170
 }
 
@@ -93,9 +89,7 @@ struct LightsCardFocusScroll<Key: PreferenceKey>: ViewModifier where Key.Value =
 
 /// The card's identifiers and fixed strings. Pure.
 enum AtmosphereCardIDs {
-    static let card = "lights.atmosphere"
     static let toggle = "lights.atmosphere.switch"
-    static let collapse = "lights.atmosphere.collapse"
     static let hint = "lights.atmosphere.hint"
     static let scatterDisclosure = "lights.atmosphere.scatter.disclosure"
     static let seedField = "lights.atmosphere.seed.field"
@@ -104,6 +98,9 @@ enum AtmosphereCardIDs {
     static let header = "lights.atmosphere.header"
     static let rows = "lights.atmosphere.rows"
     static let sheetButton = "lights.sheet.atmosphere"
+    /// The macOS bar's Atmosphere button and its popover (#889).
+    static let barButton = "lights.bar.atmosphere"
+    static let popover = "lights.atmosphere.popover"
     /// The same entry as an item of the Lights bar's overflow menu (#795).
     static let menuItem = "lights.atmosphere.menu"
 
@@ -111,10 +108,6 @@ enum AtmosphereCardIDs {
     static func field(_ p: AirParameter) -> String { "lights.atmosphere.\(p.field).field" }
     /// The row's id in a ScrollView (the sheet's scroll target).
     static func row(_ p: AirParameter) -> String { "lights.atmosphere.row.\(p.field)" }
-
-    static func collapseLabel(collapsed: Bool) -> String {
-        collapsed ? "Show the atmosphere settings" : "Hide the atmosphere settings"
-    }
 
     static let switchHelp = "Turn the haze and dust on or off"
     static let scatterLabel = "Scatter"
@@ -139,8 +132,8 @@ private struct AtmosphereContentHeightKey: PreferenceKey {
 
 // MARK: - The card
 
-/// The Atmosphere card. Draws nothing unless Lights mode is active
-/// (AtmosphereCardState is nil otherwise).
+/// The Atmosphere card's parts (`presentation`). Draws nothing unless Lights
+/// mode is active (AtmosphereCardState is nil otherwise).
 struct LightsAtmosphereCard: View {
     @ObservedObject var controller: LightsController
     /// Which lights are behind the molecule: the backlit-haze hint follows a
@@ -149,38 +142,27 @@ struct LightsAtmosphereCard: View {
     var style: LightsBarStyle
     var presentation: LightsAtmospherePresentation
 
-    /// Collapsed to its header row (`card` only). Seeded per mode entry from
-    /// the start state, never persisted.
-    @State private var collapsed: Bool
     /// Scatter's row is shown (the disclosure).
     @State private var showsScatter: Bool
-    /// The rows' measured height: the card is as tall as its content and
-    /// scrolls only when the space is shorter (one content tree, so a resize
-    /// never resets a field).
-    @State private var contentHeight: CGFloat = AtmosphereCardMetrics.estimatedRowsHeight
     /// 44 on iOS (every control a 44 pt target), 0 on macOS.
     @Environment(\.lightsTouchMinimum) private var touchMinimum
 
     init(controller: LightsController, style: LightsBarStyle,
-         presentation: LightsAtmospherePresentation = .card,
-         start: LightsAtmosphereStart = .expanded, showsScatter: Bool = false) {
+         presentation: LightsAtmospherePresentation, showsScatter: Bool = false) {
         self.controller = controller
         _facing = ObservedObject(wrappedValue: controller.facing)
         self.style = style
         self.presentation = presentation
-        _collapsed = State(initialValue: !start.startsExpanded(airIsOn: controller.airIsOn))
         _showsScatter = State(initialValue: showsScatter)
     }
 
     var body: some View {
         if let state = AtmosphereCardState(controller, behind: facing.behind) {
             switch presentation {
-            case .card:
-                card(state)
             case .section:
                 section(state)
             case .header:
-                header(state, showsChevron: false)
+                header(state)
                     .tint(style.accent)
                     .accessibilityElement(children: .contain)
                     .accessibilityLabel(state.containerLabel)
@@ -194,44 +176,10 @@ struct LightsAtmosphereCard: View {
         }
     }
 
-    private func card(_ state: AtmosphereCardState) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header(state, showsChevron: true)
-                // The 44 pt targets carry the header's height on iOS.
-                .padding(.horizontal, 12).padding(.vertical, touchMinimum > 0 ? 0 : 8)
-            if !collapsed {
-                Rectangle().fill(style.text.opacity(0.12)).frame(height: 0.5)
-                ScrollViewReader { proxy in
-                    ScrollView(.vertical) {
-                        content(state)
-                            .padding(.horizontal, 12).padding(.vertical, 10)
-                            .background(GeometryReader { g in
-                                Color.clear.preference(key: AtmosphereContentHeightKey.self, value: g.size.height)
-                            })
-                    }
-                    .scrollBounceBehavior(.basedOnSize)
-                    .modifier(LightsCardFocusScroll<LightsSheetScrollTargetKey>(proxy: proxy))
-                }
-                .frame(maxHeight: contentHeight)
-                .onPreferenceChange(AtmosphereContentHeightKey.self) { height in
-                    if height > 0, abs(height - contentHeight) > 0.5 { contentHeight = height }
-                }
-            }
-        }
-        .frame(width: LightsInspector.width)
-        .background(style.background)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(style.text.opacity(0.18), lineWidth: 0.5))
-        .tint(style.accent)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(state.containerLabel)
-        .accessibilityIdentifier(AtmosphereCardIDs.card)
-    }
-
     private func section(_ state: AtmosphereCardState) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             Rectangle().fill(style.text.opacity(0.12)).frame(height: 0.5)
-            header(state, showsChevron: false)
+            header(state)
                 .padding(.vertical, touchMinimum > 0 ? 0 : 8)
             content(state)
                 .padding(.top, 4)
@@ -245,7 +193,7 @@ struct LightsAtmosphereCard: View {
 
     // MARK: header
 
-    private func header(_ state: AtmosphereCardState, showsChevron: Bool) -> some View {
+    private func header(_ state: AtmosphereCardState) -> some View {
         HStack(spacing: 6) {
             Image(systemName: AtmosphereCardState.systemImage)
                 .font(.system(size: 12))
@@ -256,17 +204,6 @@ struct LightsAtmosphereCard: View {
                 .foregroundColor(style.text)
                 .lineLimit(1)
                 .accessibilityHidden(true)
-            // A collapsed card shows its hint as a glyph, so it stays one
-            // header row tall whatever the hint.
-            if showsChevron, collapsed, let glyph = state.collapsedGlyph {
-                Image(systemName: glyph.systemImage)
-                    .font(.system(size: 11))
-                    .foregroundColor(hintColour(state.hint))
-                    .help(glyph.label)
-                    .accessibilityLabel(glyph.label)
-                    .accessibilityAddTraits(.isImage)
-                    .accessibilityIdentifier(AtmosphereCardIDs.hint)
-            }
             Spacer(minLength: 2)
             LightsChip(title: state.switchValue, systemImage: nil, on: state.isOn,
                        enabled: state.canToggle, style: style) {
@@ -276,20 +213,6 @@ struct LightsAtmosphereCard: View {
             .accessibilityLabel(AtmosphereCardState.title)
             .accessibilityValue(state.switchValue)
             .accessibilityIdentifier(AtmosphereCardIDs.toggle)
-            if showsChevron {
-                Button { withAnimation(.easeOut(duration: 0.15)) { collapsed.toggle() } } label: {
-                    Image(systemName: collapsed ? "chevron.down" : "chevron.up")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(style.text.opacity(0.7))
-                        .frame(width: 18, height: 18)
-                        .contentShape(Rectangle())
-                        .lightsTouchTarget()
-                }
-                .buttonStyle(.plain)
-                .help(AtmosphereCardIDs.collapseLabel(collapsed: collapsed))
-                .accessibilityLabel(AtmosphereCardIDs.collapseLabel(collapsed: collapsed))
-                .accessibilityIdentifier(AtmosphereCardIDs.collapse)
-            }
         }
     }
 
@@ -563,24 +486,98 @@ struct AtmosphereSeedRow: View {
     }
 }
 
-// MARK: - The phone's Atmosphere entry
+// MARK: - The macOS Atmosphere popover
 
-/// The phone's Atmosphere entry on the Lights bar (a 44 pt glyph target; the
-/// overflow menu carries the same entry in portrait, #795): the fog glyph,
-/// filled in the accent while the air is on, with a small badge while a hint
-/// applies. `action` expands the sheet and scrolls to the Atmosphere section
-/// (LightsSheet, via ContentView's reveal request). Draws nothing unless
-/// Lights mode is active.
+/// The Atmosphere popover off the Lights bar's button on macOS and the iPad
+/// float (#889): the card's header (title and On/Off switch) over its hint
+/// and rows, at the inspector's width. The rows scroll in a short window. A
+/// popover, not a menu: a menu cannot hold the sliders and typed fields.
+/// `onFieldFocus` reports a field's keyboard to the owner, which keeps the
+/// iPad's viewport size meanwhile (#725): the popover is outside the float,
+/// so the float's focus report never sees its fields.
+struct LightsAtmospherePopover: View {
+    let controller: LightsController
+    var style: LightsBarStyle
+    var onFieldFocus: (Bool) -> Void = { _ in }
+    /// Scatter's row starts shown (the snapshot tests).
+    var showsScatter = false
+    @State private var fieldFocused = false
+    /// The rows' measured height (the popover is as tall as its content, up
+    /// to `maxRowsHeight`, and follows the Scatter disclosure; less when it
+    /// has less room, the rows then scroll).
+    @State private var rowsHeight = AtmosphereCardMetrics.estimatedRowsHeight
+
+    static let maxRowsHeight: CGFloat = 420
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            LightsAtmosphereCard(controller: controller, style: style, presentation: .header)
+                .padding(.horizontal, 12).padding(.vertical, 8)
+            Rectangle().fill(style.text.opacity(0.12)).frame(height: 0.5)
+            // The focused row scrolls back into view when the keyboard
+            // shrinks the popover (iPad, #725).
+            ScrollViewReader { proxy in
+                ScrollView(.vertical) {
+                    LightsAtmosphereCard(controller: controller, style: style, presentation: .rows,
+                                         showsScatter: showsScatter)
+                        .padding(.horizontal, 12).padding(.vertical, 10)
+                        .background(GeometryReader { g in
+                            Color.clear.preference(key: AtmosphereContentHeightKey.self, value: g.size.height)
+                        })
+                }
+                .scrollBounceBehavior(.basedOnSize)
+                .modifier(LightsCardFocusScroll<LightsSheetScrollTargetKey>(proxy: proxy))
+            }
+            // Ideally the rows' own height (capped), but free to shrink and
+            // scroll when the popover has less room (the iPad keyboard, a
+            // short Mac window), so no row is clipped out of reach.
+            .frame(minHeight: 0, idealHeight: min(rowsHeight, Self.maxRowsHeight),
+                   maxHeight: min(rowsHeight, Self.maxRowsHeight))
+            .onPreferenceChange(AtmosphereContentHeightKey.self) { height in
+                if height > 0, abs(height - rowsHeight) > 0.5 { rowsHeight = height }
+            }
+        }
+        .frame(width: LightsInspector.width)
+        .background(style.background)
+        .onPreferenceChange(LightsFieldFocusKey.self) { focused in
+            guard focused != fieldFocused else { return }
+            fieldFocused = focused
+            onFieldFocus(focused)
+        }
+        // Closed with a field still focused: never leave the keyboard rule on.
+        .onDisappear {
+            if fieldFocused {
+                fieldFocused = false
+                onFieldFocus(false)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(AtmosphereCardIDs.popover)
+    }
+}
+
+// MARK: - The bar's Atmosphere entry
+
+/// The Atmosphere entry on the Lights bar (a 44 pt glyph target on a phone;
+/// the overflow menu carries the same entry in phone portrait, #795): the fog
+/// glyph, filled in the accent while the air is on, with a small badge while
+/// a hint applies. On a phone `action` expands the sheet and scrolls to the
+/// Atmosphere section (LightsSheet, via ContentView's reveal request); on
+/// macOS and the iPad float it opens the Atmosphere popover (#889). Draws nothing unless Lights
+/// mode is active.
 struct LightsSheetAtmosphereButton: View {
     @ObservedObject var controller: LightsController
     @ObservedObject var facing: LightsFacingState
     var style: LightsBarStyle
+    var identifier: String
     var action: () -> Void
 
-    init(controller: LightsController, style: LightsBarStyle, action: @escaping () -> Void) {
+    init(controller: LightsController, style: LightsBarStyle,
+         identifier: String = AtmosphereCardIDs.sheetButton, action: @escaping () -> Void) {
         self.controller = controller
         _facing = ObservedObject(wrappedValue: controller.facing)
         self.style = style
+        self.identifier = identifier
         self.action = action
     }
 
@@ -606,7 +603,7 @@ struct LightsSheetAtmosphereButton: View {
             .accessibilityLabel(AtmosphereCardIDs.sheetButtonLabel)
             .accessibilityValue(state.switchValue)
             .accessibilityHint(AtmosphereCardIDs.sheetButtonHint)
-            .accessibilityIdentifier(AtmosphereCardIDs.sheetButton)
+            .accessibilityIdentifier(identifier)
         }
     }
 }

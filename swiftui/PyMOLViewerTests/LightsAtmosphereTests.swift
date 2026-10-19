@@ -268,19 +268,6 @@ final class AirFieldEditorTests: XCTestCase {
     }
 }
 
-// MARK: - Start state
-
-final class AtmosphereStartTests: XCTestCase {
-    func testStartsExpanded() {
-        XCTAssertFalse(LightsAtmosphereStart.collapsed.startsExpanded(airIsOn: true))
-        XCTAssertFalse(LightsAtmosphereStart.collapsed.startsExpanded(airIsOn: false))
-        XCTAssertTrue(LightsAtmosphereStart.expanded.startsExpanded(airIsOn: false))
-        XCTAssertTrue(LightsAtmosphereStart.expanded.startsExpanded(airIsOn: true))
-        XCTAssertTrue(LightsAtmosphereStart.expandedIfOn.startsExpanded(airIsOn: true))
-        XCTAssertFalse(LightsAtmosphereStart.expandedIfOn.startsExpanded(airIsOn: false))
-    }
-}
-
 // MARK: - Shared fixture
 
 /// A controller over a FakeRigStore, for the controller-level tests below.
@@ -502,19 +489,6 @@ final class AtmosphereCardStateTests: AtmosphereControllerCase {
         XCTAssertEqual([AtmosphereHint.noLights, .lightsOff, .backlitHaze].map(\.identifier),
                        ["no_lights", "lights_off", "backlit"])
         XCTAssertEqual(AtmosphereHint.backlitHazeThreshold, 0.3)
-    }
-
-    func testCollapsedGlyph() {
-        begin(nil)
-        XCTAssertEqual(state?.collapsedGlyph,
-                       AtmosphereCardState.Glyph(systemImage: "info.circle", label: AtmosphereHint.noLights.text))
-        controller.end()
-        begin(["key"], enabled: false, air: Self.remembered)
-        XCTAssertEqual(state?.collapsedGlyph?.systemImage, "exclamationmark.triangle")
-        XCTAssertEqual(state?.collapsedGlyph?.label, AtmosphereHint.lightsOff.text)
-        store.enabled = true
-        controller.refresh()
-        XCTAssertNil(state?.collapsedGlyph)
     }
 
     func testSummary() {

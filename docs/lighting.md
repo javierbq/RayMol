@@ -574,11 +574,15 @@ and [Known limits](#known-limits).
 **Lights** in the toolbar's tools menu. Lights mode is an interaction mode,
 like Move and Measure: entering it leaves the others.
 
-**The Lights bar.** It floats at the top of the viewport and shows a chip per
-light (a dot in the colour the light casts, its Colour tinted by its Warmth,
-with a thin outline so a white light still reads; hollow while the light is
-behind the molecule), add and remove buttons, **Presets**, **Re-centre**, the
-**Lights on** / **Lights off** switch, **Revert** and **Done**.
+**The Lights bar.** It floats at the top of the viewport. On the left, a
+light menu shows the selected light's dot and name with a chevron (#889). The
+dot is the colour the light casts, its Colour tinted by its Warmth, with a
+thin outline so a white light still reads; it is hollow while the light is
+behind the molecule. The menu picks a light, adds or removes one, toggles
+Shadow and Pin, picks a colour swatch and turns the rig on or off. Then come
+add and remove buttons, **Presets**, **Re-centre**, the **Atmosphere**
+button (see [The Atmosphere card](#the-atmosphere-card)), the **Lights on** /
+**Lights off** switch, **Revert** and **Done**.
 
 - **Re-centre** captures the centre and 1x size from the molecules again,
   as `lights recenter` does.
@@ -652,11 +656,10 @@ The **Atmosphere** card edits the rig's air: **Haze**, **Dust**,
   the lights off, "The air shows only while the lights are on."; and with
   haze above about 0.3 and a light behind the molecule, "Haze above about 0.3
   with a light behind the molecule can wash the picture out. Lower the haze or
-  move the light." (see [Backlit haze](#backlit-haze)). A collapsed card shows
-  the hint as a glyph in its header.
-- **Where it sits.** On macOS, a third card under the inspector in the side
-  column; it starts expanded when the air is on as you enter Lights mode. On
-  iPad, under the inspector, collapsed to its header. On iPhone, a section
+  move the light." (see [Backlit haze](#backlit-haze)).
+- **Where it sits.** On macOS and iPad, a popover off the **Atmosphere**
+  button on the Lights bar (#889): the fog glyph, filled while the air is on,
+  with a dot while a hint applies. On iPhone, a section
   after the inspector's rows in the sheet and in the landscape side panel; the
   **Atmosphere** entry on the Lights bar reveals it (in portrait, opening the
   editor sheet first). With no light, the
@@ -677,7 +680,9 @@ The light tools are placed by size class, not by device:
   the pitch arc stay pinned and every inspector row scrolls below them. With
   the editor closed the molecule stays fully visible.
 - **iPhone in landscape:** the same tools in the trailing side panel.
-- **iPad:** the orbit view floats over the viewport in a corner
+- **iPad:** the Lights bar carries the same light menu, without **Edit
+  light…** (the inspector is always on screen), and the **Atmosphere** button,
+  as on the Mac (#889). The orbit view floats over the viewport in a corner
   (bottom-leading by default; drag its header to move it to another corner,
   which is remembered), and the inspector sits at the top trailing corner,
   starting collapsed to its header.
