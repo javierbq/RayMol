@@ -503,7 +503,8 @@ struct LightsAtmospherePopover: View {
     var showsScatter = false
     @State private var fieldFocused = false
     /// The rows' measured height (the popover is as tall as its content, up
-    /// to `maxRowsHeight`, and follows the Scatter disclosure).
+    /// to `maxRowsHeight`, and follows the Scatter disclosure; less when it
+    /// has less room, the rows then scroll).
     @State private var rowsHeight = AtmosphereCardMetrics.estimatedRowsHeight
 
     static let maxRowsHeight: CGFloat = 420
@@ -527,7 +528,11 @@ struct LightsAtmospherePopover: View {
                 .scrollBounceBehavior(.basedOnSize)
                 .modifier(LightsCardFocusScroll<LightsSheetScrollTargetKey>(proxy: proxy))
             }
-            .frame(height: min(rowsHeight, Self.maxRowsHeight))
+            // Ideally the rows' own height (capped), but free to shrink and
+            // scroll when the popover has less room (the iPad keyboard, a
+            // short Mac window), so no row is clipped out of reach.
+            .frame(minHeight: 0, idealHeight: min(rowsHeight, Self.maxRowsHeight),
+                   maxHeight: min(rowsHeight, Self.maxRowsHeight))
             .onPreferenceChange(AtmosphereContentHeightKey.self) { height in
                 if height > 0, abs(height - rowsHeight) > 0.5 { rowsHeight = height }
             }

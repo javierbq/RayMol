@@ -377,6 +377,40 @@ final class LightsAtmospherePopoverTests: XCTestCase {
         XCTAssertLessThanOrEqual(size.height, LightsAtmospherePopover.maxRowsHeight + 80, "capped")
     }
 
+    final class Measured {
+        var height: CGFloat = 0
+    }
+
+    /// Less room than its rows (the iPad keyboard, a short Mac window): the
+    /// popover shrinks to the room and its rows scroll, no row cut off below
+    /// the popover's edge (Copilot on #890).
+    func testThePopoverShrinksToAShortSpace() throws {
+        let store = FakeRigStore()
+        lightsFloatThreePoint(store)
+        store.air = atmosphereOnAir
+        let controller = LightsController(seams: store.seams)
+        controller.begin()
+        let style = LightsInspectorSnapshotTests.style(dark: false)
+        let full = offscreen.settledFittingSize(AnyView(LightsAtmospherePopover(controller: controller, style: style)))
+        let room: CGFloat = 120
+        XCTAssertGreaterThan(full.height, room + 40, "the rows need more than the room")
+        let measured = Measured()
+        let view = AnyView(VStack(spacing: 0) {
+            LightsAtmospherePopover(controller: controller, style: style)
+                .background(GeometryReader { g in
+                    Color.clear
+                        .onAppear { measured.height = g.size.height }
+                        .onChange(of: g.size.height) { _, h in measured.height = h }
+                })
+            Spacer(minLength: 0)
+        })
+        let size = CGSize(width: LightsInspector.width, height: room)
+        let host = offscreen.host(view, size: size)
+        _ = offscreen.bitmap(host, size: size)
+        XCTAssertGreaterThan(measured.height, 0)
+        XCTAssertLessThanOrEqual(measured.height, room + 0.5, "the popover overflowed its room")
+    }
+
     /// With no light the popover still draws, with its no-lights hint.
     func testThePopoverDrawsWithNoLights() throws {
         let (size, controller) = try popover({ _ in }, name: "popover_no_lights")
