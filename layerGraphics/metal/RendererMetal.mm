@@ -2279,7 +2279,11 @@ struct DofU {
 };
 
 // Signed circle-of-confusion in pixels: <0 near (foreground), >0 far (background).
+// POC (#891): range < 0 selects the lens model, where -range is the blur in px
+// at |1 - focus/z| = 1: near blur grows fast, far blur levels off.
 static float dof_coc(float eyeDist, float focus, float range, float maxR) {
+  if (range < 0.0)
+    return clamp((1.0 - focus / max(eyeDist, 1e-3)) * -range, -maxR, maxR);
   return clamp((eyeDist - focus) / max(range, 1e-3), -1.0, 1.0) * maxR;
 }
 
@@ -6799,7 +6803,8 @@ void RendererMetal::runPostChain()
   // (_dofEnabled) => skipped entirely, so the default render is unchanged.
   // A zero aperture is a closed aperture: no blur radius, so the pass would be an
   // expensive no-op — skip it and leave sceneSrc alone (#472).
-  if (_dofEnabled && _dofPipeline && _sceneDepth && _dofAperture != 0.0f) {
+  if (_dofEnabled && _dofPipeline && _sceneDepth &&
+      (_dofAperture != 0.0f || _dofLens > 0.0f)) {
     id<MTLTexture> dst = (sceneSrc == _sceneColor) ? _postColor : _sceneColor;
     struct {
       float projA, projB, invW, invH;
@@ -6819,6 +6824,13 @@ void RendererMetal::runPostChain()
     // so scale it for hi-res exports (pixelRadiusScale()==1 on the live view) —
     // otherwise the bokeh nearly vanishes in 2x/4K Copy/Save output (#48).
     u.maxRadiusPx = ((_dofAperture >= 0.0f) ? _dofAperture : 14.0f) * pixelRadiusScale();
+    if (_dofLens > 0.0f) {
+      // POC (#891): lens model, sized as a fraction of image height so the
+      // live view and exports match. Gather radius capped at 5 % of height.
+      float kPx = _dofLens * (float)_rtH;
+      u.focusRange = -kPx;
+      u.maxRadiusPx = std::min(0.05f * (float)_rtH, std::max(3.0f * kPx, 1.0f));
+    }
 
     // metal_dof_quality (1..4): higher = more gather samples for denser, cleaner
     // bokeh. Levels >=2 also run the de-noise smoothing pass (two-pass); level 1

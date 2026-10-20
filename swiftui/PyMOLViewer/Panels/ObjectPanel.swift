@@ -589,6 +589,11 @@ enum SceneCatalog {
                    help: "How far beyond focus before blur reaches maximum. Smaller = sharper falloff; 0 blurs everything off the focal plane fully."),
         SceneParam(setting: "metal_dof_aperture", label: "DOF aperture (blur)", kind: .slider, min: 0, max: 40, step: 1, decimals: 0, group: "Camera", dependsOn: "metal_dof",
                    help: "Maximum out-of-focus blur (bokeh radius). Larger = stronger blur; 0 closes the aperture for no blur at all."),
+        // POC (#891): camera f-stop. Off keeps the old aperture/range model.
+        SceneParam(setting: "metal_dof_fstop", label: "f-stop", kind: .menu,
+                   options: [("Off (old model)", 0), ("f/1.4", 1.4), ("f/2", 2), ("f/2.8", 2.8), ("f/4", 4), ("f/5.6", 5.6), ("f/8", 8), ("f/11", 11), ("f/16", 16), ("f/22", 22)],
+                   group: "Camera", dependsOn: "metal_dof",
+                   help: "Like a camera: a smaller f-number (f/1.4) gives stronger blur and a shallower sharp zone; a longer Lens or moving closer also makes the sharp zone shallower."),
         SceneParam(setting: "metal_dof_quality", label: "DOF quality", kind: .slider, min: 1, max: 4, step: 1, decimals: 0, group: "Camera", dependsOn: "metal_dof",
                    help: "Bokeh quality: higher traces more gather samples (1→16, 2→32, 3→64, 4→96) for denser, cleaner out-of-focus blur; levels 2+ add a de-noise pass. 1 = fastest single-pass, 4 = smoothest (GPU-heavy)."),
 
@@ -4869,7 +4874,12 @@ struct SceneParamRow: View {
                                 ? engine.materialNames.map { (label: $0.name, value: Double($0.id)) }
                                 : p.options.map { (label: $0.label, value: $0.value) },
                             value: v,
-                            onSelect: { engine.runCommand("set \(p.setting), \(Int($0))") })
+                            onSelect: { val in
+                                // f-stops are fractional (f/1.4, f/2.8, f/5.6)
+                                engine.runCommand(p.setting == "metal_dof_fstop"
+                                    ? "set \(p.setting), \(val)"
+                                    : "set \(p.setting), \(Int(val))")
+                            })
             }
         }
     }
@@ -4955,7 +4965,13 @@ struct DOFSubPanelContent: View {
             if let focus = SceneCatalog.param(for: "metal_dof_focus") {
                 SceneParamRow(param: focus, engine: engine, compact: true)
             }
-            if let aperture = SceneCatalog.param(for: "metal_dof_aperture") {
+            // POC (#891): the f-stop replaces Aperture; Aperture only shows
+            // while the f-stop is Off (the old model).
+            if let fstop = SceneCatalog.param(for: "metal_dof_fstop") {
+                SceneParamRow(param: fstop, engine: engine, compact: true)
+            }
+            if (engine.sceneState.values["metal_dof_fstop"] ?? 0) <= 0,
+               let aperture = SceneCatalog.param(for: "metal_dof_aperture") {
                 SceneParamRow(param: aperture, engine: engine, compact: true)
             }
         }

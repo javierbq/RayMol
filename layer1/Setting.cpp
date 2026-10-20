@@ -3055,6 +3055,13 @@ void SettingGenerateSideEffects(PyMOLGlobals * G, int index, const char *sele, i
     OpenVRLaserWidthChanged(G); 
     break;
 #endif
+  case cSetting_metal_dof_autofocus:
+    // POC (#891): (re)setting autofocus re-reads the 'dof_focus' target, so
+    // tap-to-focus can retarget without an off/on toggle.
+    SceneInvalidateExtentCache(G);
+    SceneDirty(G);
+    PyMOL_NeedRedisplay(G->PyMOL);
+    break;
   default:
     // A setting with no dedicated side effect above still changes what the next
     // frame looks like (e.g. the metal_* renderer knobs, surface_clip_front /

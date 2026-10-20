@@ -2768,46 +2768,67 @@ void SceneRenderMetal(PyMOLGlobals* G)
     float outlineWidth = SettingGetGlobal_f(G, cSetting_metal_outline_width);
     int dofEnabled = SettingGetGlobal_b(G, cSetting_metal_dof) ? 1 : 0;
     float dofFocus = SettingGetGlobal_f(G, cSetting_metal_dof_focus);
-    if (SettingGetGlobal_b(G, cSetting_metal_dof_autofocus)) {
-      // Autofocus: lock the focal plane onto the "dof_focus" selection (a
-      // snapshot of 'sele' taken when autofocus was enabled). Recompute its
-      // centroid's eye-space depth every frame so the element stays sharp as the
-      // camera zooms/rotates/pans. Overrides the manual focus slider; an empty
-      // selection leaves dofFocus at 0 and falls through to the origin below.
-      // The centroid itself is model-space, so it is cached alongside the
-      // shadow extent and only recomputed when the scene changes -- the
-      // ExecutiveGetExtent() walk cost as much as the shadow one (#393). Only
-      // the eye-space projection below runs per frame.
-      dofFocus = 0.0f;
-      if (!I->DofExtentValid) {
-        float mn[3], mx[3];
-        I->DofExtentFlag =
-            ExecutiveGetExtent(G, "dof_focus", mn, mx, true, -1, false);
-        if (I->DofExtentFlag) {
-          for (int a = 0; a < 3; a++)
-            I->DofExtentCenter[a] = (mn[a] + mx[a]) * 0.5f;
-        }
-        I->DofExtentValid = true;
-      }
+    // POC (#891): focus is a tracked WORLD POINT (the dof_focus selection when
+    // autofocus is on, else the origin), and changes of that point are eased
+    // with an exponential spring so a retarget reads as a focus pull. The point
+    // is smoothed in model space, so camera motion is followed with no lag; a
+    // manual metal_dof_focus distance is eased separately. Quick hack: the
+    // smoothing state is file-static (one scene per process).
+    static float s_dofPt[3];
+    static float s_dofDist = 0.0f;
+    static bool s_dofPtValid = false, s_dofDistValid = false;
+    static double s_dofLastT = 0.0;
+    double dofNow = UtilGetSeconds(G);
+    float dofDt = (float)(dofNow - s_dofLastT);
+    s_dofLastT = dofNow;
+    if (!(dofDt > 0.0f) || dofDt > 0.25f)
+      dofDt = 1.0f / 60.0f;
+    const float dofTau = 0.12f; // spring time constant (s): ~90 % in 0.28 s
+    float dofA = 1.0f - expf(-dofDt / dofTau);
+    bool dofSettling = false;
+    if (!I->DofExtentValid) {
+      float mn[3], mx[3];
+      I->DofExtentFlag =
+          ExecutiveGetExtent(G, "dof_focus", mn, mx, true, -1, false);
       if (I->DofExtentFlag) {
-        const float* c = I->DofExtentCenter;
-        float ez = mv[2] * c[0] + mv[6] * c[1] + mv[10] * c[2] + mv[14];
-        if (-ez > 0.0f)
-          dofFocus = -ez;
+        for (int a = 0; a < 3; a++)
+          I->DofExtentCenter[a] = (mn[a] + mx[a]) * 0.5f;
       }
+      I->DofSceneRadius = 0.0f;
+      if (ExecutiveGetExtent(G, "all", mn, mx, true, -1, false))
+        I->DofSceneRadius = 0.5f * diff3f(mn, mx);
+      I->DofExtentValid = true;
     }
-    if (dofFocus <= 0.0f) {
-      // Auto-focus on the center of interest (the rotation origin) rather than
-      // the screen-center pixel. The origin's eye-space distance is
-      // -(modelview * origin).z (mv is column-major: row 2 = mv[2,6,10,14]).
-      // If this can't be resolved to a positive distance, dofFocus stays 0 and
-      // the shader falls back to sampling the center-pixel depth.
-      float origin[3];
-      SceneOriginGet(G, origin);
-      float ez = mv[2] * origin[0] + mv[6] * origin[1] + mv[10] * origin[2] + mv[14];
-      if (-ez > 0.0f)
-        dofFocus = -ez;
+    bool dofManual =
+        !SettingGetGlobal_b(G, cSetting_metal_dof_autofocus) && dofFocus > 0.0f;
+    if (dofManual) {
+      if (!s_dofDistValid) { s_dofDist = dofFocus; s_dofDistValid = true; }
+      s_dofDist += (dofFocus - s_dofDist) * dofA;
+      if (fabsf(dofFocus - s_dofDist) > 0.01f) dofSettling = true;
+      else s_dofDist = dofFocus;
+      dofFocus = s_dofDist;
+    } else {
+      float tgt[3];
+      if (SettingGetGlobal_b(G, cSetting_metal_dof_autofocus) && I->DofExtentFlag)
+        copy3f(I->DofExtentCenter, tgt);
+      else
+        SceneOriginGet(G, tgt);
+      if (!s_dofPtValid) { copy3f(tgt, s_dofPt); s_dofPtValid = true; }
+      float d2 = 0.0f;
+      for (int a = 0; a < 3; a++) {
+        s_dofPt[a] += (tgt[a] - s_dofPt[a]) * dofA;
+        d2 += (tgt[a] - s_dofPt[a]) * (tgt[a] - s_dofPt[a]);
+      }
+      if (d2 > 0.0025f) dofSettling = true; // > 0.05 A from the target
+      else copy3f(tgt, s_dofPt);
+      const float* c = s_dofPt;
+      float ez = mv[2] * c[0] + mv[6] * c[1] + mv[10] * c[2] + mv[14];
+      dofFocus = (-ez > 0.0f) ? -ez : 0.0f;
+      // keep the manual eased distance in step, so switching modes doesn't jump
+      s_dofDist = dofFocus; s_dofDistValid = dofFocus > 0.0f;
     }
+    if (dofEnabled && dofSettling)
+      SceneInvalidate(G); // keep frames coming until the focus pull settles
     float dofRange = SettingGetGlobal_f(G, cSetting_metal_dof_range);
     int temporalAO = SettingGetGlobal_b(G, cSetting_metal_temporal_ao) ? 1 : 0;
     int upscaleEnabled = SettingGetGlobal_b(G, cSetting_metal_upscale) ? 1 : 0;
@@ -2844,6 +2865,23 @@ void SceneRenderMetal(PyMOLGlobals* G)
         SettingGetGlobal_b(G, cSetting_metal_rt_transparent));
     G->Renderer->setDofQuality(
         SettingGetGlobal_i(G, cSetting_metal_dof_quality));
+    {
+      // POC (#891): lens-based circle of confusion. As a fraction of image
+      // height: c = k * f^2 / (24 N s) * |1 - s/z|, with f the 35 mm-equivalent
+      // focal length from field_of_view, N the f-stop, s the focus distance and
+      // k a world scale (A per mm) proportional to the scene radius, so the same
+      // framing of a small and a large molecule looks alike. 0 = old model.
+      float fstop = SettingGetGlobal_f(G, cSetting_metal_dof_fstop);
+      float lensCoef = 0.0f;
+      if (fstop > 0.0f && dofFocus > 0.0f && !orthoEnabled) {
+        float fov = SettingGetGlobal_f(G, cSetting_field_of_view);
+        float fmm = 12.0f / tanf(0.5f * fov * (float)M_PI / 180.0f);
+        float R = I->DofSceneRadius > 1.0f ? I->DofSceneRadius : 25.0f;
+        float k = 0.0072f * R;
+        lensCoef = k * fmm * fmm / (24.0f * fstop * dofFocus);
+      }
+      G->Renderer->setDofLens(lensCoef);
+    }
     // Lighting model — the Metal lit shaders read these instead of hard-coded
     // constants, so the Scene-panel lighting sliders take effect. Specular and
     // shininess must go through PyMOL's light-count adjustment (the same path

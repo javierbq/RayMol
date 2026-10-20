@@ -434,6 +434,9 @@ public:
   // metal_dof_quality: DOF bokeh quality level (1..4) — higher = more gather
   // samples, with a de-noise smoothing pass at levels >=2. Default: no-op.
   virtual void setDofQuality(int level) {}
+  // POC (#891): lens-model blur coefficient (fraction of image height at
+  // |1 - s/z| = 1). 0 = the old aperture/range model.
+  virtual void setDofLens(float coef) {}
 
   // PyMOL lighting model (ambient/direct/reflect/specular/shininess). Default:
   // no-op (the GL renderer reads these settings itself). The Metal renderer

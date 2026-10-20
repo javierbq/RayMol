@@ -822,9 +822,13 @@ def pick_at(ndc_x, ndc_y, aspect):
         # — only fires while metal_dof is enabled; otherwise a click just selects.
         try:
             if int(cmd.get_setting_int('metal_dof')):
-                d = _eye_distance('(%s)' % atom)
-                if d and d > 0.0:
-                    cmd.set('metal_dof_focus', float(d))
+                # POC (#891): tap-to-focus TRACKS the clicked atom (autofocus on
+                # the 'dof_focus' selection) instead of writing a one-off
+                # distance that goes stale when the camera moves. Re-setting
+                # metal_dof_autofocus makes the renderer re-read the target and
+                # ease the focus over to it.
+                cmd.select('dof_focus', '(%s)' % atom, enable=0)
+                cmd.set('metal_dof_autofocus', 1)
         except Exception:
             pass
 

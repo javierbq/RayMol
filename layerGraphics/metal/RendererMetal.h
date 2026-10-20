@@ -225,6 +225,7 @@ public:
   void setRayTraceParams(int samples, float aoRadius, float aoIntensity,
       float shadowIntensity, float scale = 1.0f) override;
   void setDofQuality(int level) override;
+  void setDofLens(float coef) override { _dofLens = coef; }
 
   // Letterbox: render the scene into a centered sub-rect of the given aspect
   // (W/H) so a loaded .pse reproduces its saved-viewport framing. 0 = fill.
@@ -1006,6 +1007,7 @@ private:
   // blur); only a NEGATIVE value means "unset" and resolves to the 14.0 default.
   float _dofRange = 14.0f;  // eye-space distance over which CoC ramps to max blur
   float _dofAperture = 14.0f;  // cSetting_metal_dof_aperture: max blur radius (px)
+  float _dofLens = 0.0f;       // POC (#891): lens-model coefficient, 0 = off
   int _dofQuality = 4;         // cSetting_metal_dof_quality: 1..4 bokeh quality
   id<MTLRenderPipelineState> _dofPipeline = nil;
   id<MTLRenderPipelineState> _dofSmoothPipeline = nil;  // two-pass B: de-noise

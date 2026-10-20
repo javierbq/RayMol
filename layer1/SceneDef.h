@@ -155,6 +155,7 @@ class CScene : public Block {
   bool DofExtentValid{};
   bool DofExtentFlag{}; /* false = 'dof_focus' is empty/undefined */
   float DofExtentCenter[3]{};
+  float DofSceneRadius{}; /* POC (#891): half the scene diagonal, for the lens model */
 
   /* Studio shadow-map reuse (#666). ContentGeneration is bumped by
      everything that can change what the scene draws (SceneDirty, and with it
