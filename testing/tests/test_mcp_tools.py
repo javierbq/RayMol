@@ -206,8 +206,29 @@ class TestMcpToolsRegistry(unittest.TestCase):
             "get_session_state", "capture_viewport", "search_pdb",
         })
 
+    def test_list_tools_adds_raymol_tools(self):
+        names = [t["name"] for t in tools.list_tools()]
+        self.assertEqual(len(names), len(set(names)))
+        for name in ("set_lighting", "set_atmosphere", "set_material",
+                     "set_render_effects", "export_image", "export_movie",
+                     "predict_structure", "job_status", "raymol_help"):
+            self.assertIn(name, names)
+
+    def test_binder_design_tool_only_when_enabled(self):
+        key = "RAYMOL_EXPERIMENTAL_BINDER_DESIGN"
+        saved = os.environ.pop(key, None)
+        self.addCleanup(lambda: os.environ.__setitem__(key, saved)
+                        if saved is not None else os.environ.pop(key, None))
+        self.assertNotIn("design_binder",
+                         {t["name"] for t in tools.list_tools()})
+        res = tools.call("design_binder", {"target": "x"})
+        self.assertTrue(res["isError"])
+        os.environ[key] = "1"
+        self.assertIn("design_binder",
+                      {t["name"] for t in tools.list_tools()})
+
     def test_every_tool_has_description_and_schema(self):
-        for t in tools.TOOLS:
+        for t in tools.list_tools():
             self.assertTrue(t["description"].strip())
             self.assertEqual(t["inputSchema"]["type"], "object")
 

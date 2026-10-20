@@ -68,6 +68,7 @@ jobs:
               testing/tests/test_mcp_events.py \
               testing/tests/test_mcp_server.py \
               testing/tests/test_mcp_tools.py \
+              testing/tests/test_mcp_native.py \
               testing/tests/test_raymol_scene_anim.py \
               testing/tests/test_raymol_scene_ttt.py \
               testing/tests/test_raymol_keys.py \

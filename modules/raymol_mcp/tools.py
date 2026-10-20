@@ -8,7 +8,11 @@ only thread where the embedded core is safe to touch (it races
 ``SceneRenderMetal`` otherwise; see mainthread.py). Never call the C bridge
 (PyMOLBridge_*) from here; only the Python ``cmd`` API.
 
-In the app it renders through the Metal Save Image path (`exporting._metal_png`
+The general tools are defined here; RayMol's own (lighting, materials, Metal
+effects, export, on-device prediction, help) are in native.py, and
+``list_tools``/``call`` serve both.
+
+``capture_viewport``: in the app it renders through the Metal Save Image path (`exporting._metal_png`
 -> `_cmd.metal_png` -> the bridge's registered `PyMOLBridge_RenderHiResPNG`, on
 the main thread), so the image is what the user sees, studio lights included;
 with no Metal renderer (pip/GLUT build, headless) it falls back to the CPU ray
@@ -28,6 +32,7 @@ import traceback
 import urllib.parse
 import urllib.request
 
+from raymol_mcp import native
 from raymol_mcp.mainthread import run_on_main
 
 # Persistent namespace for run_python; seeded on first use.
@@ -77,7 +82,7 @@ def _run_pymol_command(args):
         return _text("ok")
 
     try:
-        return run_on_main(_body)
+        return native.with_habit_notes(run_on_main(_body), cmd_str)
     except Exception:
         return _error(traceback.format_exc())
 
@@ -128,7 +133,7 @@ def _run_python(args):
             return _error(buf.getvalue() + "\n" + traceback.format_exc())
 
     try:
-        return run_on_main(_body)
+        return native.with_habit_notes(run_on_main(_body), code)
     except Exception:
         return _error(traceback.format_exc())
 
@@ -155,8 +160,11 @@ def _get_session_state(args):
             "view": list(cmd.get_view()),
             "frame": cmd.get_frame(),
             "n_frames": cmd.count_frames(),
+            # Lights, effects, materials, scenes and jobs: showing them is
+            # how an agent learns RayMol has them.
+            "raymol": native.raymol_state(cmd),
         }
-        return _text(json.dumps(state, indent=2))
+        return _text(json.dumps(state, indent=2, default=str))
 
     try:
         return run_on_main(_body)
@@ -241,7 +249,9 @@ TOOLS = [
         "description": ("Run one PyMOL command-language statement (e.g. "
                         "'fetch 1ubq, async=0', 'show cartoon', "
                         "'color red, chain A'). For multi-step logic or data "
-                        "access, prefer run_python."),
+                        "access, prefer run_python. For RayMol's lighting, "
+                        "materials, render effects, export and prediction, "
+                        "the dedicated tools are simpler."),
         "inputSchema": {
             "type": "object",
             "properties": {"command": {"type": "string"}},
@@ -252,9 +262,10 @@ TOOLS = [
         "name": "run_python",
         "description": ("Execute arbitrary Python in a persistent namespace with "
                         "'cmd' (the PyMOL API), and 'np'/'Bio' if available. "
-                        "State persists across calls. stdout is returned. This is "
-                        "the most powerful tool -- prefer it for anything beyond a "
-                        "single command."),
+                        "State persists across calls. stdout is returned. Use it "
+                        "for multi-step logic and data access; RayMol features "
+                        "also have their own cmd functions (cmd.lights, "
+                        "cmd.atmosphere, cmd.predict, cmd.movie_export, ...)."),
         "inputSchema": {
             "type": "object",
             "properties": {"code": {"type": "string"}},
@@ -265,7 +276,10 @@ TOOLS = [
         "name": "get_session_state",
         "description": ("Return the current session as JSON: objects "
                         "(name/type/atom count), named selections, camera view "
-                        "(18 floats), current frame and frame count."),
+                        "(18 floats), current frame and frame count, and "
+                        "'raymol': the studio light rig and atmosphere, Metal "
+                        "render effects, materials, scenes and on-device "
+                        "prediction jobs."),
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
@@ -312,8 +326,13 @@ _DISPATCH = {
 }
 
 
+def list_tools():
+    """Every tool this server offers: the general ones, then RayMol's own."""
+    return TOOLS + native.tools()
+
+
 def call(name, arguments):
-    fn = _DISPATCH.get(name)
+    fn = _DISPATCH.get(name) or native.DISPATCH.get(name)
     if fn is None:
         return _error("unknown tool: %s" % name)
     try:

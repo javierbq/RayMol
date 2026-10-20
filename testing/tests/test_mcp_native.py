@@ -1,0 +1,204 @@
+"""RayMol's own MCP tools (raymol_mcp/native.py) against the real cmd API.
+
+Runs under the embedded pymol (testing.py), like the rest of the MCP tests:
+the tools wrap fork commands (lights, atmosphere, *_material, metal_*), so a
+stand-in cmd would only test the stand-in.
+"""
+
+import json
+import os
+import tempfile
+import unittest
+
+from pymol import cmd
+
+import raymol_mcp.mainthread as mainthread
+import raymol_mcp.native as native
+import raymol_mcp.tools as tools
+
+
+def claim_main_thread(testcase):
+    """Make this thread the app's main thread so run_on_main runs inline
+    (see test_mcp_tools.claim_main_thread)."""
+    testcase.addCleanup(setattr, mainthread, "_main_ident",
+                        mainthread._main_ident)
+    mainthread.drain_main_thread_queue()
+
+
+def _payload(res):
+    """The JSON value a native tool appends after any printed text."""
+    text = res["content"][0]["text"]
+    return json.loads(text[text.index("{"):])
+
+
+class _NativeCase(unittest.TestCase):
+    def setUp(self):
+        claim_main_thread(self)
+        cmd.reinitialize()
+        cmd.fragment("ala")
+        self.addCleanup(cmd.reinitialize)
+
+
+class TestSetLighting(_NativeCase):
+    def test_preset_turns_the_rig_on(self):
+        res = tools.call("set_lighting", {"preset": "three_point"})
+        self.assertFalse(res["isError"], res)
+        rig = _payload(res)["lights"]
+        self.assertTrue(rig["enabled"])
+        self.assertEqual({l["name"] for l in rig["lights"]},
+                         {l["name"] for l in cmd.get_lights()["lights"]})
+
+    def test_edit_and_add_lights_by_name(self):
+        tools.call("set_lighting", {"preset": "three_point"})
+        res = tools.call("set_lighting", {"lights": [
+            {"name": "key", "orbit": -60, "warmth": 3200},
+            {"name": "glow", "orbit": 170, "color": "cyan", "shadow": False},
+        ]})
+        self.assertFalse(res["isError"], res)
+        lights = {l["name"]: l for l in cmd.get_lights()["lights"]}
+        self.assertAlmostEqual(lights["key"]["orbit"], -60)
+        self.assertAlmostEqual(lights["key"]["warmth"], 3200)
+        self.assertIn("glow", lights)
+
+    def test_mode_off_keeps_the_rig(self):
+        tools.call("set_lighting", {"preset": "neon"})
+        res = tools.call("set_lighting", {"mode": "off"})
+        self.assertFalse(res["isError"], res)
+        self.assertFalse(cmd.get_lights()["enabled"])
+
+    def test_bad_field_is_the_commands_own_error(self):
+        tools.call("set_lighting", {"preset": "three_point"})
+        res = tools.call("set_lighting",
+                         {"lights": [{"name": "key", "pitch": 400}]})
+        self.assertTrue(res["isError"])
+        self.assertIn("pitch", res["content"][0]["text"])
+        self.assertNotIn("Traceback", res["content"][0]["text"])
+
+    def test_preset_with_off_is_refused(self):
+        res = tools.call("set_lighting", {"preset": "neon", "mode": "off"})
+        self.assertTrue(res["isError"])
+
+
+class TestAtmosphere(_NativeCase):
+    def test_sets_and_resets_air(self):
+        res = tools.call("set_atmosphere", {"haze": 0.3, "dust": 0.5})
+        self.assertFalse(res["isError"], res)
+        self.assertAlmostEqual(_payload(res)["air"]["haze"], 0.3)
+        tools.call("set_atmosphere", {"off": True})
+        self.assertAlmostEqual(cmd.get_lights()["air"]["haze"], 0.0)
+
+
+class TestMaterial(_NativeCase):
+    def test_per_object_and_representation(self):
+        res = tools.call("set_material", {"material": "glass", "object": "ala",
+                                          "representations": ["surface"]})
+        self.assertFalse(res["isError"], res)
+        self.assertEqual(cmd.get("surface_material", "ala"), "glass")
+        self.assertEqual(cmd.get("cartoon_material", "ala"), "default")
+
+    def test_no_object_sets_the_default(self):
+        tools.call("set_material", {"material": "matte"})
+        self.assertEqual(cmd.get("material_default"), "matte")
+
+    def test_unknown_material_is_an_error(self):
+        res = tools.call("set_material", {"material": "glas", "object": "ala"})
+        self.assertTrue(res["isError"])
+
+    def test_unknown_representation_is_an_error(self):
+        res = tools.call("set_material", {"material": "glass", "object": "ala",
+                                          "representations": ["ribbon"]})
+        self.assertTrue(res["isError"])
+
+
+class TestRenderEffects(_NativeCase):
+    def test_sets_only_given_fields_and_reports_all(self):
+        before = cmd.get("metal_ssao")
+        res = tools.call("set_render_effects",
+                         {"outline": True, "exposure": 1.5})
+        self.assertFalse(res["isError"], res)
+        state = _payload(res)
+        self.assertEqual(set(state), set(native.EFFECTS))
+        self.assertEqual(cmd.get("metal_outline"), "on")
+        self.assertAlmostEqual(float(cmd.get("metal_exposure")), 1.5)
+        self.assertEqual(cmd.get("metal_ssao"), before)
+
+
+class TestExportImage(_NativeCase):
+    def test_writes_a_png(self):
+        # No Metal view here (GLUT build): the CPU tracer fallback, labelled.
+        path = os.path.join(tempfile.mkdtemp(), "out.png")
+        res = tools.call("export_image",
+                         {"path": path, "width": 64, "height": 48})
+        self.assertFalse(res["isError"], res)
+        self.assertGreater(os.path.getsize(path), 0)
+        self.assertIn("renderer", _payload(res))
+
+    def test_movie_without_frames_says_how_to_make_one(self):
+        res = tools.call("export_movie", {"path": "/tmp/x.mp4"})
+        self.assertTrue(res["isError"])
+        self.assertIn("mset", res["content"][0]["text"])
+
+
+class TestJobsAndHelp(_NativeCase):
+    def test_job_status_lists_jobs(self):
+        res = tools.call("job_status", {})
+        self.assertFalse(res["isError"], res)
+        self.assertIn("prediction", _payload(res))
+
+    def test_unknown_job_is_an_error(self):
+        res = tools.call("job_status", {"job_id": "no-such-job"})
+        self.assertTrue(res["isError"])
+
+    def test_help_guide_and_topics(self):
+        guide = tools.call("raymol_help", {})["content"][0]["text"]
+        self.assertIn("RAYMOL FEATURE GUIDE", guide)
+        for topic, expect in (("lights", "studio lighting"),
+                              ("materials", "frosted_glass"),
+                              ("effects", "metal_raytrace"),
+                              ("presets", "rembrandt"),
+                              ("predictors", "boltz2")):
+            res = tools.call("raymol_help", {"topic": topic})
+            self.assertFalse(res["isError"], (topic, res))
+            self.assertIn(expect, res["content"][0]["text"])
+
+    def test_help_unknown_topic_lists_topics(self):
+        res = tools.call("raymol_help", {"topic": "nonsense"})
+        self.assertTrue(res["isError"])
+        self.assertIn("materials", res["content"][0]["text"])
+
+
+class TestSessionStateRayMol(_NativeCase):
+    def test_reports_rig_effects_and_materials(self):
+        cmd.lights("softbox")
+        cmd.set("cartoon_material", "marble", "ala")
+        res = tools.call("get_session_state", {})
+        self.assertFalse(res["isError"], res)
+        raymol = json.loads(res["content"][0]["text"])["raymol"]
+        self.assertTrue(raymol["lights"]["enabled"])
+        self.assertIn("raytrace", raymol["render_effects"])
+        self.assertEqual(raymol["materials"], {"ala": {"cartoon": "marble"}})
+        self.assertIsInstance(raymol["scenes"], list)
+
+
+class TestHabitNotes(_NativeCase):
+    def test_stock_pymol_idioms_get_a_note(self):
+        for code in ("ray 800, 600", "set ray_shadows, 1", "set light, [1,1,1]",
+                     "cmd.png('/tmp/a.png')", "mpng frame"):
+            self.assertTrue(native.habit_notes(code), code)
+
+    def test_ordinary_commands_get_none(self):
+        for code in ("show cartoon", "set cartoon_transparency, 0.5",
+                     "color red, chain A", "array = 1", "spray = 2",
+                     "set metal_raytrace, 1"):
+            self.assertEqual(native.habit_notes(code), [], code)
+
+    def test_note_rides_along_with_the_result(self):
+        res = tools.call("run_pymol_command",
+                         {"command": "set ray_shadows, 0"})
+        self.assertFalse(res["isError"], res)
+        self.assertEqual(res["content"][0]["text"], "ok")
+        self.assertIn("set_render_effects", res["content"][-1]["text"])
+
+
+if __name__ == "__main__":
+    unittest.main()

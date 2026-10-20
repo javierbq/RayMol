@@ -92,10 +92,14 @@ final class MCPServerManager: ObservableObject {
         UserDefaults.standard.set(true, forKey: "raymol.mcp.enabled")
         // start() returns the live port; the manager learns it from the MCP:started line.
         let b64 = Data(token.utf8).base64EncodedString()
+        // The app version goes in the MCP serverInfo, so a client can tell
+        // which RayMol (and which features) it is talking to.
+        let version = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "")
+            .filter { $0.isNumber || $0 == "." }
         engine.runPython(
             "import base64\n"
             + "import raymol_mcp.server as _m\n"
-            + "_m.start(\(preferredPort), base64.b64decode('\(b64)').decode('utf-8'))"
+            + "_m.start(\(preferredPort), base64.b64decode('\(b64)').decode('utf-8'), version='\(version)')"
         )
     }
 

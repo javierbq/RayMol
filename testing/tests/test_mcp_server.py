@@ -24,9 +24,23 @@ class TestJsonRpc(unittest.TestCase):
         self.assertIn("tools", resp["result"]["capabilities"])
         self.assertTrue(resp["result"]["instructions"].strip())
 
-    def test_tools_list_returns_five(self):
+    def test_tools_list_returns_general_and_raymol_tools(self):
         resp = server.handle_jsonrpc({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, "s1")
-        self.assertEqual(len(resp["result"]["tools"]), 5)
+        names = {t["name"] for t in resp["result"]["tools"]}
+        self.assertIn("run_pymol_command", names)
+        self.assertIn("set_lighting", names)
+        self.assertIn("predict_structure", names)
+
+    def test_instructions_say_it_is_not_stock_pymol(self):
+        # Clients that read "a PyMOL fork" write stock PyMOL; the instructions
+        # must name what replaces each habit.
+        req = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+               "params": {"protocolVersion": "2025-06-18"}}
+        text = server.handle_jsonrpc(req, "s1")["result"]["instructions"]
+        self.assertIn("NOT stock PyMOL", text)
+        for tool in ("set_lighting", "set_material", "set_render_effects",
+                     "export_image", "predict_structure", "raymol_help"):
+            self.assertIn(tool, text)
 
     def test_unknown_method_is_jsonrpc_error(self):
         resp = server.handle_jsonrpc({"jsonrpc": "2.0", "id": 3, "method": "bogus"}, "s1")
@@ -122,6 +136,68 @@ class TestHttpAuth(unittest.TestCase):
         self._post({"jsonrpc": "2.0", "method": "notifications/initialized"},
                    "secret-token", session="never-issued").close()
         self.assertNotIn("never-issued", server._sessions)
+
+
+class TestHttpKeepAlive(unittest.TestCase):
+    """An early reply must still consume the request body: on a kept-alive
+    connection the unread JSON was parsed as the next request line, so the
+    client's following request failed with "400 Bad request syntax"."""
+
+    def setUp(self):
+        self.port = server.start(0, "secret-token", version="9.8.7")
+
+    def tearDown(self):
+        server.stop()
+
+    def _conn(self):
+        import http.client
+        return http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+
+    def _request(self, conn, token, method="POST", path="/mcp", body=None):
+        data = json.dumps(body if body is not None else
+                          {"jsonrpc": "2.0", "id": 1, "method": "ping"})
+        conn.request(method, path, body=data, headers={
+            "Content-Type": "application/json",
+            "Authorization": "Bearer %s" % token})
+        resp = conn.getresponse()
+        payload = resp.read()
+        return resp.status, payload
+
+    def test_request_after_401_on_same_connection_succeeds(self):
+        conn = self._conn()
+        self.addCleanup(conn.close)
+        self.assertEqual(self._request(conn, "wrong")[0], 401)
+        status, payload = self._request(conn, "secret-token")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(payload)["result"], {})
+
+    def test_request_after_404_on_same_connection_succeeds(self):
+        conn = self._conn()
+        self.addCleanup(conn.close)
+        self.assertEqual(self._request(conn, "secret-token", path="/nope")[0],
+                         404)
+        self.assertEqual(self._request(conn, "secret-token")[0], 200)
+
+    def test_get_is_405_with_allow(self):
+        conn = self._conn()
+        self.addCleanup(conn.close)
+        conn.request("GET", "/mcp",
+                     headers={"Authorization": "Bearer secret-token"})
+        resp = conn.getresponse()
+        resp.read()
+        self.assertEqual(resp.status, 405)
+        self.assertIn("POST", resp.getheader("Allow"))
+
+    def test_server_info_carries_app_version(self):
+        conn = self._conn()
+        self.addCleanup(conn.close)
+        status, payload = self._request(conn, "secret-token", body={
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18"}})
+        self.assertEqual(status, 200)
+        info = json.loads(payload)["result"]["serverInfo"]
+        self.assertEqual(info["version"], "9.8.7")
+        self.assertEqual(info["title"], "RayMol")
 
 
 class TestSessionExpiry(unittest.TestCase):
