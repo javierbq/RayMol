@@ -19,6 +19,8 @@
 		07107979C9C3FB3967B754E5 /* LightGizmoOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 854A92930838D84391F46022 /* LightGizmoOverlay.swift */; };
 		079B071AB492B995CF57638D /* ConsoleLogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2525A88C5285B866035F9B8C /* ConsoleLogTests.swift */; };
 		08A70D51DF9F99AD0951EB6D /* RFD3SizeGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6D700AB27FB3AB04471A2C4 /* RFD3SizeGuard.swift */; };
+		093D4A9965F9F632B853C815 /* whatsnew-1130-atmosphere.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 0CE6A84893291DC401EDE60B /* whatsnew-1130-atmosphere.mp4 */; };
+		9C9F7FDF1AC88D9716B11950 /* whatsnew-1130-presets.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = CAF38ED7C652A3157E7C2F66 /* whatsnew-1130-presets.mp4 */; };
 		096FA7333E120551F0CC84A8 /* whatsnew-1100-predict.png in Resources */ = {isa = PBXBuildFile; fileRef = C84C7665566A983E2AAE8FB9 /* whatsnew-1100-predict.png */; };
 		09A0D4D2ABB5138809537A02 /* whatsnew-1110-boxselect.png in Resources */ = {isa = PBXBuildFile; fileRef = 6316D26C663083E0E595CE15 /* whatsnew-1110-boxselect.png */; };
 		0C0E67D9436CC6DF29DE983C /* DesignEditingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05E6ECE945556A6D1FAE98F9 /* DesignEditingTests.swift */; };
@@ -106,6 +108,7 @@
 		4BE37F7CA13DEB10F2AE62D6 /* RayMol.svg in Resources */ = {isa = PBXBuildFile; fileRef = F16058D96E2773BE9A24C323 /* RayMol.svg */; };
 		4C175FC1BC1E83D7C66EC414 /* whatsnew-1120-sidechains.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 1926971439F96C03DB81AA8E /* whatsnew-1120-sidechains.jpg */; };
 		4C754E670F4EB9FDE0000E74 /* LightsEditingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C14BA8BC49311C1D073B8E10 /* LightsEditingTests.swift */; };
+		4D8DF048FC4285E17546DE34 /* whatsnew-1130-shadows.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 6F78BC38D7B34542A2291C99 /* whatsnew-1130-shadows.jpg */; };
 		4E1CFC49EFB50160C3D388B2 /* DesignAvailability.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4300265954DF2B8309EDAA6C /* DesignAvailability.swift */; };
 		4FF61FB384E2C1B9388BA273 /* whatsnew-170-homebrew.png in Resources */ = {isa = PBXBuildFile; fileRef = 0C3FB5B53174F8E55104705A /* whatsnew-170-homebrew.png */; };
 		506C87D1E2B2026BFFC9C607 /* whatsnew-1110-boxselect.png in Resources */ = {isa = PBXBuildFile; fileRef = 6316D26C663083E0E595CE15 /* whatsnew-1110-boxselect.png */; };
@@ -155,6 +158,7 @@
 		6E945630A8B9A6195B98A958 /* MLX in Frameworks */ = {isa = PBXBuildFile; productRef = FBA4CCD670BAF318F243E692 /* MLX */; };
 		6EAC8947F66B8D7AD29BF3B8 /* DesignScoreCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0BCB2A867C3554FB56A7299 /* DesignScoreCacheTests.swift */; };
 		6F45C01C9E3DE3CC89268445 /* MLXRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86E93358875495F499780A00 /* MLXRuntime.swift */; };
+		6F52C05E18364C406E853BB0 /* whatsnew-1130-movie-export.jpg in Resources */ = {isa = PBXBuildFile; fileRef = A635FAA5A9060C06F698A5E9 /* whatsnew-1130-movie-export.jpg */; };
 		709CFA72F2FF7502C4043BB3 /* LightGizmoGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEE394EC8EC4DF566360104C /* LightGizmoGeometry.swift */; };
 		7125F9B9B28B6CF122F087E5 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 98AC6A7391B7E7A564A30A61 /* Sparkle */; };
 		72C53CF3B3DE0AC1001A6981 /* CameraOverlayUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 104B50C66BDEB03C41A1CE47 /* CameraOverlayUITests.swift */; };
@@ -162,6 +166,7 @@
 		74E99B05BC014BA3D289E566 /* LightsInspector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 051212FB14CE38F9CAFC3546 /* LightsInspector.swift */; };
 		76065C249F1901F993E708A6 /* BoltzJobManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A4B5DB2F82A55E25041FE28 /* BoltzJobManager.swift */; };
 		768E23FCAB4D2B27205900B6 /* KeyRouting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3697F74BD2283492B5A7790C /* KeyRouting.swift */; };
+		76B529726C7FCD5839431DB0 /* whatsnew-1130-movie-export.jpg in Resources */ = {isa = PBXBuildFile; fileRef = A635FAA5A9060C06F698A5E9 /* whatsnew-1130-movie-export.jpg */; };
 		7758593457A49366EBBAE30C /* whatsnew-1100-metrics.png in Resources */ = {isa = PBXBuildFile; fileRef = 3FDAAF431094900F3FC21293 /* whatsnew-1100-metrics.png */; };
 		77612C0A58360E932EDC3CA7 /* whatsnew-190-scenes.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 6A0950CBB18F3934DDA02CBE /* whatsnew-190-scenes.mp4 */; };
 		77947569BB49AFA9845B7283 /* MCPDrivingBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9EC978B16F58D988575E206 /* MCPDrivingBanner.swift */; };
@@ -171,6 +176,8 @@
 		7B6E4F8683D469C6984163AA /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 589928DEEE69075B965DB9F2 /* Assets.xcassets */; };
 		7B9C53449F7557047170D008 /* MovieExportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FE79EC8844C681A41A1E54A /* MovieExportSheet.swift */; };
 		7CE181E4C54482BD67384013 /* RFD3TrayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3441C46AD1B569C623A36B7 /* RFD3TrayTests.swift */; };
+		7DBBB20A7BB5117162D3EA93 /* whatsnew-1130-atmosphere.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 0CE6A84893291DC401EDE60B /* whatsnew-1130-atmosphere.mp4 */; };
+		255F58150D8424D25D1E00BD /* whatsnew-1130-presets.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = CAF38ED7C652A3157E7C2F66 /* whatsnew-1130-presets.mp4 */; };
 		7E655BB536F6CD067C2B0084 /* LightsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C675D41EFF244D46FCD0F46 /* LightsSheet.swift */; };
 		7F9C46E519B7180C507053BB /* MLXRuntimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AD9869000B548D9F7CDF9DE /* MLXRuntimeTests.swift */; };
 		809165FC9A0F411860956BD6 /* PredictAvailabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0825BFE369DAF40A6F3AA5D4 /* PredictAvailabilityTests.swift */; };
@@ -182,6 +189,8 @@
 		8471766417221874246F5252 /* WhatsNewLogic.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3753EB4AA7EC91E685E36B84 /* WhatsNewLogic.swift */; };
 		848682B247E00ECDD720FF73 /* DesignResidues.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFE9998F68625C92B8BCD710 /* DesignResidues.swift */; };
 		852DCDD1E141CB8BB8128F7C /* LightsTouchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22FE54E560183FF94E1451C6 /* LightsTouchTests.swift */; };
+		85F0DFA22E8C1AF2A35D575F /* whatsnew-1130-glycans.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 47341A7F093B44212F2562B9 /* whatsnew-1130-glycans.jpg */; };
+		16C1054993C58CC86780F666 /* whatsnew-1130-docs.jpg in Resources */ = {isa = PBXBuildFile; fileRef = AD1BFBE6F4D64BA857AC0B04 /* whatsnew-1130-docs.jpg */; };
 		86F8E58F4BAA9E8B03380DBB /* TransportBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C562306A5AD1EEDDBA931B98 /* TransportBar.swift */; };
 		876C79ECB2F8DA63EE7BAC84 /* BinderDesignBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A4B03344972863CC1362ECB /* BinderDesignBar.swift */; };
 		8852A9FA93BDAAB188D4103C /* PyMOLEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33D6A753E4525628B96C259C /* PyMOLEngine.swift */; };
@@ -190,6 +199,8 @@
 		8C4A92BCDC371C53E06902F0 /* LightsGestureUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BF254CC0F7ADEE10473F87A /* LightsGestureUITests.swift */; };
 		8CDF44341FE9E9CB053BFC76 /* TransportBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C562306A5AD1EEDDBA931B98 /* TransportBar.swift */; };
 		8DC572A1863238F8B919ED70 /* WhatsNewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F5377EE69A856479317FD61 /* WhatsNewModel.swift */; };
+		8DD3F322033248C1DAC4F31F /* whatsnew-1130-glycans.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 47341A7F093B44212F2562B9 /* whatsnew-1130-glycans.jpg */; };
+		A25BBBA06B70F2D42E836758 /* whatsnew-1130-docs.jpg in Resources */ = {isa = PBXBuildFile; fileRef = AD1BFBE6F4D64BA857AC0B04 /* whatsnew-1130-docs.jpg */; };
 		8E33AC50510ECB1DA4277904 /* RayMol.svg in Resources */ = {isa = PBXBuildFile; fileRef = F16058D96E2773BE9A24C323 /* RayMol.svg */; };
 		8E62E0244A99E106F6D57428 /* whatsnew-1110-sessions.png in Resources */ = {isa = PBXBuildFile; fileRef = BFE8C2D90AA047E31EBBC54C /* whatsnew-1110-sessions.png */; };
 		8F33D1DB927644308CEF0C5B /* WhatsNew.json in Resources */ = {isa = PBXBuildFile; fileRef = 689CDE512811C244D4BA931B /* WhatsNew.json */; };
@@ -238,6 +249,7 @@
 		B532BA92CE9FB3A65DD02D37 /* AppBuildInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 525F338CAB2EE18987CD1701 /* AppBuildInfo.swift */; };
 		B5C4C6AA1972C0CED1527FB1 /* LightsBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35444C782524F25C4DDD4F9F /* LightsBar.swift */; };
 		B5CC8EFFCE99E9813AEC1422 /* DesignRegionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A2CE99D9A3C57ACBBDBF3B5 /* DesignRegionTests.swift */; };
+		B6E84D5397FD9B6522888A78 /* whatsnew-1130-lights.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = B54FA1A42323E56130FFE095 /* whatsnew-1130-lights.mp4 */; };
 		B6FBF55DD1FA97A86C678618 /* BoltzMLX in Frameworks */ = {isa = PBXBuildFile; productRef = 8426817F16C801044FDCCB94 /* BoltzMLX */; };
 		B751FE54B6347A0677DEA713 /* whatsnew-1110-colormenu.png in Resources */ = {isa = PBXBuildFile; fileRef = CC71792A917723EA5E462007 /* whatsnew-1110-colormenu.png */; };
 		B806C9AB4B89EAE3676F25E2 /* PanelLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = B47211EDB3E34DF3B0CFE8BB /* PanelLayout.swift */; };
@@ -255,6 +267,7 @@
 		BF09C330B7686E39A51C8626 /* BoltzRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2367C4CEE5BD2E682055D3F /* BoltzRuntime.swift */; };
 		BF97400ECA54F56EB9D96FC2 /* RFD3Trajectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42F41684D508836307667157 /* RFD3Trajectory.swift */; };
 		C0BCE174EC5A1E6CBFBFA91F /* openssl-PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = CB0108E0FA1F204BE0E41F0D /* openssl-PrivacyInfo.xcprivacy */; };
+		C0E5F9D9FA0CE3995618FC55 /* whatsnew-1130-lights.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = B54FA1A42323E56130FFE095 /* whatsnew-1130-lights.mp4 */; };
 		C2FCBB63D8533AF61056C0C2 /* DesignCompactPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1D7FF883D3762DC6E40908F /* DesignCompactPanel.swift */; };
 		C2FE6360EC57133D61DC3FAD /* CopyRouting.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4CC639810B19E8F5E637E93 /* CopyRouting.swift */; };
 		C55DDA064774EC13D91649B2 /* LightsEditing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79E014A631DA05BA1F8C7E8A /* LightsEditing.swift */; };
@@ -285,6 +298,7 @@
 		D70F90009D4B06C4EC31C5F0 /* LightsOrbitView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 142BDBF375FA246776AB2CD1 /* LightsOrbitView.swift */; };
 		D755890977A4E8D8351D767E /* LightsAtmosphere.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE0C0F45AA673C4AB9B2BDE4 /* LightsAtmosphere.swift */; };
 		DA6EB8C81B26582A4F3AB478 /* TimelinePanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B820FE9080BF73526A54CD66 /* TimelinePanel.swift */; };
+		DAC47DC47A669C86E8232361 /* whatsnew-1130-shadows.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 6F78BC38D7B34542A2291C99 /* whatsnew-1130-shadows.jpg */; };
 		DB3B352985BA33D0583519E6 /* ObjectActionMenuUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 45BCB83A35EA5E97D5BBD172 /* ObjectActionMenuUITests.swift */; };
 		DC5CF59CDC22D0FCB6A58BE5 /* whatsnew-190-design.png in Resources */ = {isa = PBXBuildFile; fileRef = 2B749BA43350521D047F2CE4 /* whatsnew-190-design.png */; };
 		DC8A9C1AA5EB1946175041FA /* CommandPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = B50D264C420888CBF7FDE633 /* CommandPanel.swift */; };
@@ -365,6 +379,8 @@
 		0C3FB5B53174F8E55104705A /* whatsnew-170-homebrew.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-170-homebrew.png"; sourceTree = "<group>"; };
 		0C47FBC551127AB2D73BC6CE /* MetalViewportResponderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalViewportResponderTests.swift; sourceTree = "<group>"; };
 		0C4E3216DAFC42C515FD0C3E /* WeightsFetchStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeightsFetchStateTests.swift; sourceTree = "<group>"; };
+		0CE6A84893291DC401EDE60B /* whatsnew-1130-atmosphere.mp4 */ = {isa = PBXFileReference; path = "whatsnew-1130-atmosphere.mp4"; sourceTree = "<group>"; };
+		CAF38ED7C652A3157E7C2F66 /* whatsnew-1130-presets.mp4 */ = {isa = PBXFileReference; path = "whatsnew-1130-presets.mp4"; sourceTree = "<group>"; };
 		0DBFD1FF07FFAD4B8029FA48 /* Project.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Project.xcconfig; sourceTree = "<group>"; };
 		0ED5BFF3FEE9D6621BB40AE5 /* MovieBuilderSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MovieBuilderSheet.swift; sourceTree = "<group>"; };
 		0F340621635D0C4E9159141A /* BinderDesignController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BinderDesignController.swift; sourceTree = "<group>"; };
@@ -417,6 +433,8 @@
 		4300265954DF2B8309EDAA6C /* DesignAvailability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignAvailability.swift; sourceTree = "<group>"; };
 		43806DC3D1AEE6532E3F262D /* LightsControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsControllerTests.swift; sourceTree = "<group>"; };
 		45BCB83A35EA5E97D5BBD172 /* ObjectActionMenuUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObjectActionMenuUITests.swift; sourceTree = "<group>"; };
+		47341A7F093B44212F2562B9 /* whatsnew-1130-glycans.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = "whatsnew-1130-glycans.jpg"; sourceTree = "<group>"; };
+		AD1BFBE6F4D64BA857AC0B04 /* whatsnew-1130-docs.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = "whatsnew-1130-docs.jpg"; sourceTree = "<group>"; };
 		474D18A43D0D9A6BDD69EEFD /* SequencePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SequencePanel.swift; sourceTree = "<group>"; };
 		48793845CB95A609CD9F37BF /* PredictMSAMemorySweepTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictMSAMemorySweepTests.swift; sourceTree = "<group>"; };
 		48EDC39F7E7F250CFC4F7D0D /* DesignResiduesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignResiduesTests.swift; sourceTree = "<group>"; };
@@ -448,6 +466,7 @@
 		6C07F661E0541060409A09F7 /* PredictSizeGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictSizeGuard.swift; sourceTree = "<group>"; };
 		6E2FC2AD1A8FEE912986DF9D /* whatsnew-161-hover.mp4 */ = {isa = PBXFileReference; path = "whatsnew-161-hover.mp4"; sourceTree = "<group>"; };
 		6ECDA98647B184340BC7934F /* DesignIOSPortTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignIOSPortTests.swift; sourceTree = "<group>"; };
+		6F78BC38D7B34542A2291C99 /* whatsnew-1130-shadows.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = "whatsnew-1130-shadows.jpg"; sourceTree = "<group>"; };
 		71574A2074A14803B91ED695 /* InferenceRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InferenceRouter.swift; sourceTree = "<group>"; };
 		727EA43D6A4FCC275ABC49D0 /* whatsnew-1100-msa.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-1100-msa.png"; sourceTree = "<group>"; };
 		755441AFAB067D11B52B6066 /* LightsBarTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsBarTests.swift; sourceTree = "<group>"; };
@@ -487,6 +506,7 @@
 		A4CC639810B19E8F5E637E93 /* CopyRouting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CopyRouting.swift; sourceTree = "<group>"; };
 		A4D170B35BCCF683A6B3D655 /* WhatsNewModal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhatsNewModal.swift; sourceTree = "<group>"; };
 		A63406B360384F3C62E511E1 /* RayMolPython.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RayMolPython.entitlements; sourceTree = "<group>"; };
+		A635FAA5A9060C06F698A5E9 /* whatsnew-1130-movie-export.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = "whatsnew-1130-movie-export.jpg"; sourceTree = "<group>"; };
 		A73267D4D7B506E647B7A995 /* ObjectPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObjectPanel.swift; sourceTree = "<group>"; };
 		A75B6DCB76EF7B2E69DA0BFE /* RFD3TrajectoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RFD3TrajectoryTests.swift; sourceTree = "<group>"; };
 		AA4C108E3D04FD75288859DA /* GizmoOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GizmoOverlay.swift; sourceTree = "<group>"; };
@@ -498,6 +518,7 @@
 		B45634C95AE991CC91CFBA75 /* DesignInferenceSmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignInferenceSmokeTests.swift; sourceTree = "<group>"; };
 		B47211EDB3E34DF3B0CFE8BB /* PanelLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelLayout.swift; sourceTree = "<group>"; };
 		B50D264C420888CBF7FDE633 /* CommandPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPanel.swift; sourceTree = "<group>"; };
+		B54FA1A42323E56130FFE095 /* whatsnew-1130-lights.mp4 */ = {isa = PBXFileReference; path = "whatsnew-1130-lights.mp4"; sourceTree = "<group>"; };
 		B6A770F5FB9E51200305DDAF /* LightRigBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightRigBridgeTests.swift; sourceTree = "<group>"; };
 		B6D700AB27FB3AB04471A2C4 /* RFD3SizeGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RFD3SizeGuard.swift; sourceTree = "<group>"; };
 		B75287139FE86E2C9524CA8D /* PanelLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PanelLayoutTests.swift; sourceTree = "<group>"; };
@@ -653,6 +674,13 @@
 				00A00E2879DD065A94A31D21 /* whatsnew-1120-looks.jpg */,
 				8342C6A3FDF28A858D7E1AA4 /* whatsnew-1120-materials.mp4 */,
 				1926971439F96C03DB81AA8E /* whatsnew-1120-sidechains.jpg */,
+				0CE6A84893291DC401EDE60B /* whatsnew-1130-atmosphere.mp4 */,
+				CAF38ED7C652A3157E7C2F66 /* whatsnew-1130-presets.mp4 */,
+				47341A7F093B44212F2562B9 /* whatsnew-1130-glycans.jpg */,
+				AD1BFBE6F4D64BA857AC0B04 /* whatsnew-1130-docs.jpg */,
+				B54FA1A42323E56130FFE095 /* whatsnew-1130-lights.mp4 */,
+				A635FAA5A9060C06F698A5E9 /* whatsnew-1130-movie-export.jpg */,
+				6F78BC38D7B34542A2291C99 /* whatsnew-1130-shadows.jpg */,
 				689CDE512811C244D4BA931B /* WhatsNew.json */,
 			);
 			path = Resources;
@@ -1073,6 +1101,13 @@
 				A353F0375A1BC88B2AF38DEC /* whatsnew-1120-looks.jpg in Resources */,
 				4B84574727FB18090A30B32D /* whatsnew-1120-materials.mp4 in Resources */,
 				A874BBD4EC51E65F61ECD5D2 /* whatsnew-1120-sidechains.jpg in Resources */,
+				7DBBB20A7BB5117162D3EA93 /* whatsnew-1130-atmosphere.mp4 in Resources */,
+				255F58150D8424D25D1E00BD /* whatsnew-1130-presets.mp4 in Resources */,
+				85F0DFA22E8C1AF2A35D575F /* whatsnew-1130-glycans.jpg in Resources */,
+				16C1054993C58CC86780F666 /* whatsnew-1130-docs.jpg in Resources */,
+				C0E5F9D9FA0CE3995618FC55 /* whatsnew-1130-lights.mp4 in Resources */,
+				76B529726C7FCD5839431DB0 /* whatsnew-1130-movie-export.jpg in Resources */,
+				DAC47DC47A669C86E8232361 /* whatsnew-1130-shadows.jpg in Resources */,
 				EB6435B2880C450F33F0291F /* whatsnew-152-camera-dock.mp4 in Resources */,
 				D3C5FDA51512154777B49DA2 /* whatsnew-152-timeline.png in Resources */,
 				36D99340CCDDAD7C67680476 /* whatsnew-161-hover.mp4 in Resources */,
@@ -1111,6 +1146,13 @@
 				17D4129435A0B8E793A5B687 /* whatsnew-1120-looks.jpg in Resources */,
 				E260BED24CBA34D49088686D /* whatsnew-1120-materials.mp4 in Resources */,
 				4C175FC1BC1E83D7C66EC414 /* whatsnew-1120-sidechains.jpg in Resources */,
+				093D4A9965F9F632B853C815 /* whatsnew-1130-atmosphere.mp4 in Resources */,
+				9C9F7FDF1AC88D9716B11950 /* whatsnew-1130-presets.mp4 in Resources */,
+				8DD3F322033248C1DAC4F31F /* whatsnew-1130-glycans.jpg in Resources */,
+				A25BBBA06B70F2D42E836758 /* whatsnew-1130-docs.jpg in Resources */,
+				B6E84D5397FD9B6522888A78 /* whatsnew-1130-lights.mp4 in Resources */,
+				6F52C05E18364C406E853BB0 /* whatsnew-1130-movie-export.jpg in Resources */,
+				4D8DF048FC4285E17546DE34 /* whatsnew-1130-shadows.jpg in Resources */,
 				F4F8D45CBA50D16F783FBB4F /* whatsnew-152-camera-dock.mp4 in Resources */,
 				97F0B5805CD3B11723C7B43B /* whatsnew-152-timeline.png in Resources */,
 				B84291E694521C66BCB749CD /* whatsnew-161-hover.mp4 in Resources */,
@@ -1934,7 +1976,7 @@
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = RayMol;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				CURRENT_PROJECT_VERSION = 203;
+				CURRENT_PROJECT_VERSION = 370;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_GENERATION_MODE = GeneratedFile;
@@ -1948,7 +1990,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.12.1;
+				MARKETING_VERSION = 1.13.0;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
@@ -1968,7 +2010,7 @@
 				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = RayMol;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 203;
+				CURRENT_PROJECT_VERSION = 370;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_GENERATION_MODE = GeneratedFile;
@@ -1982,7 +2024,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.12.1;
+				MARKETING_VERSION = 1.13.0;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
@@ -2004,7 +2046,7 @@
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = PyMOLViewer/RayMolMac.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 203;
+				CURRENT_PROJECT_VERSION = 370;
 				DEVELOPMENT_TEAM = VT99UQUQ89;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -2020,7 +2062,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.12.1;
+				MARKETING_VERSION = 1.13.0;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;
@@ -2062,7 +2104,7 @@
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = PyMOLViewer/RayMolMac.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 203;
+				CURRENT_PROJECT_VERSION = 370;
 				DEVELOPMENT_TEAM = VT99UQUQ89;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -2078,7 +2120,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.12.1;
+				MARKETING_VERSION = 1.13.0;
 				ONLY_ACTIVE_ARCH = NO;
 				PRODUCT_BUNDLE_IDENTIFIER = io.raymol.RayMol;
 				PRODUCT_NAME = RayMol;

@@ -616,14 +616,23 @@ struct PyMOLApp: App {
             }
             #endif
             // Help menu (the standard macOS spot for support links and shortcuts):
+            // RayMol Documentation replaces the stock "RayMol Help" item (which
+            // only said help isn't available) and opens the documentation site;
+            // no key equivalent, since ⌘? is the system Help-search key. Then the
             // Keyboard Shortcuts cheat sheet (#368) and Contact Support (opens the
             // user's default mail client, pre-addressed to support@raymol.io).
             // NSWorkspace URL-open works in the sandboxed Mac App Store build too,
             // so this isn't gated behind RAYMOL_MAS_RESTRICTED.
-            CommandGroup(after: .help) {
-                Button(AppShortcuts.keyboardShortcuts.title) { KeyboardShortcutsPanel.show() }
-                    .keyboardShortcut(AppShortcuts.keyboardShortcuts)
-                Button("Contact Support…") { contactSupport() }
+            // One Group, so macCommands stays within CommandsBuilder's 10 children.
+            Group {
+                CommandGroup(replacing: .help) {
+                    Button("RayMol Documentation") { openDocumentation() }
+                }
+                CommandGroup(after: .help) {
+                    Button(AppShortcuts.keyboardShortcuts.title) { KeyboardShortcutsPanel.show() }
+                        .keyboardShortcut(AppShortcuts.keyboardShortcuts)
+                    Button("Contact Support…") { contactSupport() }
+                }
             }
             CommandGroup(after: .newItem) {
                 Button(AppShortcuts.openFile.title) {
@@ -835,11 +844,21 @@ struct PyMOLApp: App {
             attributes: base)
         credits.append(link("raymol.io", "https://raymol.io"))
         credits.append(NSAttributedString(string: "      ·      ", attributes: base))
+        credits.append(link("Documentation", Self.documentationURL))
+        credits.append(NSAttributedString(string: "      ·      ", attributes: base))
         credits.append(link("GitHub", "https://github.com/javierbq/RayMol"))
         NSApplication.shared.orderFrontStandardAboutPanel(options: [.credits: credits])
     }
 
     // Open the default mail client with a message pre-addressed to support.
+    /// The user documentation site (Help ▸ RayMol Documentation, About panel).
+    static let documentationURL = "https://javierbq.github.io/RayMol/"
+
+    private func openDocumentation() {
+        guard let url = URL(string: Self.documentationURL) else { return }
+        _ = NSWorkspace.shared.open(url)
+    }
+
     private func contactSupport() {
         guard let url = URL(string: "mailto:support@raymol.io") else { return }
         _ = NSWorkspace.shared.open(url)
