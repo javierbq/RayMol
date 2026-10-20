@@ -654,11 +654,8 @@ Studio lights are designed to run at 60 frames a second on a recent iPhone or iP
 
 ## Known limitations
 
-- Bezier tube cartoons neither cast nor receive studio shadows.
-- Studio lights light a material's plain base colour, not its procedural pattern (for example marble veins).
 - Soft shadows (`size`) are ray traced on the Mac only; iPhone, iPad and raster renders keep sharp shadows.
-- The loop back from a looping movie's last scene to its first does not blend the lights.
-- In Lights mode, the gizmo's rings can sit off-screen or under the bars when a light is very close, and a plain click still picks atoms.
-- The dust pattern (`seed`) can only be set with the `atmosphere` command.
+- Bloom, EDR (brighter-than-white) display output and 16-bit export are not supported.
+- On iPhone and iPad, a very small light ring's touch band can cover its whole interior.
 
 See also: [Materials & Looks](/RayMol/guides/materials/) (how each material responds to studio lights), [Rendering & Export](/RayMol/guides/rendering-export/), [Movies & Scenes](/RayMol/guides/movies/) and [RayMol Settings](/RayMol/reference/settings/).

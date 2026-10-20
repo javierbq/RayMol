@@ -479,8 +479,8 @@ is (see below).
   the map size divided by the larger of the grid's columns and rows (rounded
   down), so a large grid has coarser shadows.
 - Bezier tube cartoons neither cast nor receive studio shadows (#663).
-- With `metal_raytrace 1`, what a traced reflection shows is lit by the
-  studio lights but not studio-shadowed (#664).
+- With `metal_raytrace 1`, what a traced reflection shows is lit and
+  shadowed by the studio lights (#664, #846).
 - `metal_light_shadow_size` sets each map's texels per side: 0 is the
   platform default (2048 on the Mac, 1024 on iOS); other values are clamped
   to 256 to 4096 (256 to 2048 on iOS) and rounded down to a power of two.
@@ -570,9 +570,17 @@ and [Known limits](#known-limits).
 
 ### macOS
 
-**Entering.** Choose **Enter Lights Mode** in the **Tools** menu, or
+**Entering.** Choose **Enter Lights Mode** in the **Tools** menu (⌃L), or
 **Lights** in the toolbar's tools menu. Lights mode is an interaction mode,
-like Move and Measure: entering it leaves the others.
+like Move and Measure: entering it leaves the others. PyMOL's own ⌃L, "zoom
+next ligand", is ⌃G in RayMol (#873).
+
+**The Inspector's Lighting group.** Outside Lights mode, the Scene
+inspector's Lighting group has a **Studio lights** switch and an **Open
+Lights tool** button (#878). The switch runs `lights on`, or `lights add`
+when the rig has no lights, and `lights off` keeps the rig. While the rig is
+on, the Ambient, Direct, Reflect and Specular rows are greyed out with a note,
+because the rig's `ambient` and `classic` replace them.
 
 **The Lights bar.** It floats at the top of the viewport. On the left, a
 light menu shows the selected light's dot and name with a chevron (#889). The
@@ -832,16 +840,8 @@ The iOS defaults (1024 shadow maps, half-resolution air, one tap, HDR on,
 
 Open follow-ups of the lighting work (#610) that you may notice:
 
-- **Shadows.** Bezier tube cartoons neither cast nor receive studio shadows
-  (#663). Traced reflection hits are shadowed by the studio lights under
-  ray tracing (#846), with soft shadows following light size (#741). On iOS
-  and raster renders, shadows have one softness, set by the 3x3 filter; traced
-  soft shadows are Mac RT-only (#741).
-- **Overlays.** The Lights-mode overlays never cast, but the Move gizmo and
-  gadgets still enter PyMOL's classic Metal shadow pre-pass and the
-  ray-tracing structure (#662), and a rig created while the Move gizmo is
-  shown frames it too (#669). The frame also counts enabled objects whose
-  representations are all hidden (#690).
+- **Shadows.** On iOS and raster renders, shadows have one softness, set by
+  the 3x3 filter; traced soft shadows are Mac RT-only (#741).
 - **The air.** The haze has Beer-Lambert extinction (#683): it dims the
   molecule behind it by `exp(-sigma d)` and the light it scatters is dimmed by
   the haze in front of it, so the in-scattered light is bounded and the molecule
@@ -852,34 +852,20 @@ Open follow-ups of the lighting work (#610) that you may notice:
   haze](#backlit-haze)). The extinction reads the opaque depth only:
   a transparent surface over the empty background is not dimmed, and one
   over opaque geometry is dimmed with the geometry behind it (#683).
-  Transparent-background exports drop the air over the
-  empty background (#684). Animated dust redraws the whole scene on every tick
-  (#685). The dust seed has no control in the Atmosphere card (#740).
-- **Materials and HDR.** The studio diffuse lights a material's plain base
-  colour, not its procedural pattern (#710). Glass glints on sphere impostors
-  do not show (#713). The materials' own classic terms pass their 8-bit knee
-  before the rig's curve (#731); the traced rig composite keeps some classic
-  terms in display units (#729); ambient occlusion is composited after the
-  tone curve (#732). Bloom (#859), EDR output (#860) and 16-bit export
-  (#861) are not done.
+  Transparent-background exports drop the air over the empty background
+  unless `metal_light_air_alpha` is on (#684).
+- **HDR.** Bloom (#859), EDR output (#860) and 16-bit export (#861) are not
+  planned for this release.
 - **Measurement dashes are lit (#738).** Distance, angle and dihedral dashes
   are cylinder geometry, so under a rig they take its lighting like sticks
   do, not display-referred like labels and lines (owner decision). A
   pure-green dash reads as a lit green, not (0, 255, 0). With
   `dash_as_cylinders` or `render_as_cylinders` off they are lines and stay
   unlit.
-- **Scenes and movies.** The loop-wrap of a looping movie (#656) does not
-  blend the rig.
-- **Placement.** A highlight placed on a small patch can fit the beam to a
-  few degrees (#723); set `beam=` to widen it.
-- **The app.** The gizmo's ring handles can land off-screen or under the bars
-  (#693). A plain click in Lights mode still picks atoms (#696). On iPad, an
-  open camera dock can lift the orbit card onto the key knob (#718), and
-  typing in the inspector can resize the viewport (#725). On iOS, the
-  inspector's Orbit and Pitch steppers are under 44 pt (#720), and on small
-  rings the 44 pt ring band covers the whole interior (#721). The Scene
-  panel's Exposure help text does not say what exposure scales under a rig
-  (#733).
+- **Placement.** A highlight fitted to a small patch keeps a beam of at least
+  20 degrees (#723); set `beam=` to change it.
+- **The app.** On iOS, on small rings the 44 pt ring band covers the whole
+  interior (#721).
 
 ## Regenerating the gallery
 

@@ -1,5 +1,45 @@
 [
   {
+    "version": "1.13.0",
+    "pages": [
+      {
+        "title": "Studio lights",
+        "body": "Up to six coloured spot lights around your molecule, or a preset like three-point, Rembrandt or neon. Press ⌃L for Lights mode and drag a knob to move a light.",
+        "videoName": "whatsnew-1130-lights"
+      },
+      {
+        "title": "Seven presets",
+        "body": "Three-point, softbox, spotlight, Rembrandt, neon, sunset and underlight. Pick one from Presets on the Lights bar, and scene movies blend between them.",
+        "videoName": "whatsnew-1130-presets"
+      },
+      {
+        "title": "Shadows in every colour",
+        "body": "Each light can cast its own shadow, in its own colour — a red light's shadow is where red doesn't reach. On Macs with ray tracing, a light's Size softens it.",
+        "imageName": "whatsnew-1130-shadows"
+      },
+      {
+        "title": "Haze and dust",
+        "body": "Fill the beams with haze and drifting dust; shadowed lights cast shafts through it. Open Atmosphere on the Lights bar, or type atmosphere haze=0.3, dust=0.5.",
+        "videoName": "whatsnew-1130-atmosphere"
+      },
+      {
+        "title": "Movies in 4K",
+        "body": "Export movies at 1080p, 1440p or 4K with Draft-to-Maximum quality presets, in H.264, HEVC or ProRes, with a live time estimate and a Cancel button.",
+        "imageName": "whatsnew-1130-movie-export"
+      },
+      {
+        "title": "Glycans as SNFG symbols",
+        "body": "glycocartoon draws each sugar as its SNFG symbol — blue GlcNAc cubes, green mannose spheres, red fucose cones. It's also Glycan cartoon in an object's S menu.",
+        "imageName": "whatsnew-1130-glycans"
+      },
+      {
+        "title": "RayMol Documentation",
+        "body": "Guides, the command reference and the new Studio Lights guide, at javierbq.github.io/RayMol. Open it any time from Help ▸ RayMol Documentation.",
+        "imageName": "whatsnew-1130-docs"
+      }
+    ]
+  },
+  {
     "version": "1.12.0",
     "pages": [
       {
