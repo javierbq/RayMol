@@ -6,52 +6,90 @@
     <description>RayMol macOS updates</description>
     <language>en</language>
     <item>
-      <title>RayMol 1.12.0</title>
+      <title>RayMol 1.13.0</title>
       <description xml:lang="en" sparkle:format="markdown"><![CDATA[
-## RayMol 1.12.0
+## RayMol 1.13.0
 
-A feature release built around one idea: **materials**. Colour says what something is; a material says what it's made of. Plus glass that bends light, ray tracing through glass, smoother movies, and a set of rendering fixes.
+A feature release built around **studio lights**: spot lights you place around the molecule, each with its own colour, beam and shadow, shining through haze and floating dust. Plus a new documentation site, SNFG glycan cartoons, 4K movie export, private MSA servers in the Predict bar, a keyboard shortcut sheet, and a long list of rendering fixes.
 
-### Materials
+### Studio lights
 
-Every cartoon, surface, stick and sphere layer can now be **matte, plastic, metallic, glass, frosted glass, jelly, marble, clay or rubber**, per object. For example, a glass surface over a marble cartoon, with metallic sticks, all in one object. Your colours stay exactly as they are.
+- **Light the scene like a photo studio.** A rig holds up to six spot lights. Each has its own place around the molecule, colour, warmth, beam width and edge softness, brightness and highlight, and any three of them can cast their own shadows. The rig belongs to the scene: it never changes an object's colours, materials or settings, and `lights off` gives PyMOL's own lighting back exactly as it was.
+- **Seven presets to start from:** `three_point`, `softbox`, `spotlight`, `rembrandt`, `neon`, `sunset` and `underlight`. Type `lights three_point`, or pick one from **Presets** in Lights mode.
+- **Lights mode (⌃L).** Choose **Enter Lights Mode** in the **Tools** menu, or press ⌃L. A bar at the top of the viewport holds the light menu (pick, add or remove a light, and toggle its Shadow, Pin and colour), **Presets**, **Re-centre**, **Atmosphere**, the on/off switch, **Revert** and **Done**. Beside the scene, an orbit view shows the rig from above (drag a lamp round it, drag the square on its ring for the distance, and the pitch arc for the height), and the inspector below it holds each light's exact values, including **Exposure**. PyMOL's "zoom next ligand" moves from ⌃L to ⌃G.
+- **Knobs on the molecule.** In Lights mode every light is a knob on a sphere around the molecule: drag it to move the light, drag the selected light's rings to set its beam and softness, drag its aim dot to point it at the surface under the pointer (double-click it to aim back at the centre), scroll over it to move it closer or further, and nudge it with the arrow keys. Option-click the molecule to put a highlight exactly there.
+- **Or type it.** `lights key, warmth=3800, intensity=1.3` edits a light, `lights add, back, orbit=180` adds one, and `lights` prints the rig. `target=` aims a light at a selection and fits the beam to it; `highlight=` places a light so the selection shows a highlight, and `rim=` turns that into a rim light. Camera lights follow your view; `pin=1` fixes a light in the scene so it turns with the molecule. The same rig is `cmd.lights`, `cmd.get_lights` and `cmd.set_lights` from Python.
+- **Coloured shadows, one per light.** A red light's shadow is where the red light does not reach. New lights cast shadows by default, up to the cap of three. Studio shadows work with Metal ray tracing on or off, and in grid mode each cell is shadowed only by its own objects. They need the scene's **Shadows** switch on; the inspector offers **Turn On** when it is off.
+- **Soft shadows from light size.** With Metal ray tracing on, a light with a **Size** above 0 casts soft shadows on opaque surfaces, traced towards the light, with a wider penumbra as the size grows.
+- **Haze and dust.** `atmosphere haze=0.3, dust=0.5`, or the **Atmosphere** popover on the Lights bar (**Haze**, **Dust**, **Dust size**, **Dust speed**, **Dust glow**, **Dust opacity** and **Scatter (g)**), fills the beams with haze and floating dust. A shadowed light casts light shafts through the haze. The dust drifts in the live view at up to 30 redraws a second, only while RayMol is active and its window visible, and holds still in Low Power Mode or when the Mac runs hot; `metal_light_air_time` pins it for repeatable renders. The hints say why the air does not show (no light, or the lights off) and warn when haze with a light behind the molecule can wash the picture out.
+- **Bright lights keep their colour.** Under a rig, light is kept in high dynamic range and rolled off once at the end with a filmic curve, so a bright coloured light rolls off towards white keeping its hue instead of whitening early, up to `intensity` 4. With a rig on, **Exposure** (`metal_exposure`) scales what the lights light and the air, not the background or labels, which makes it the way to tame a bright rig or backlit haze. `set metal_light_hdr, 2` brings back the 8-bit look.
+- **Materials keep their character under studio lights.** Jelly keeps its broad soft sheen, rubber and jelly highlights take their own richer tint, and plastic and metallic carry a crisp white clear-coat glint over their coloured lobe (a Custom tint of 1 gives a bare metal with no coat), in the viewport and in traced reflections. Under HDR a shiny material's highlight is no longer squeezed twice, so it reaches the brightness it was designed for.
+- **The Inspector's Lighting group follows the rig.** A **Studio lights** switch turns the rig on or off outside Lights mode, and **Open Lights tool** enters it. While the rig is on, the Ambient, Direct, Reflect and Specular rows it overrides are greyed out with a note saying why.
+- **Saved with your work.** Sessions save the rig and its air. Each scene stores its own rig, recalling a scene brings it back, and scene movies blend the lights and the air from scene to scene with the camera. `render.py` scene files take `after_rig` lines.
+- **Exports keep the look.** Image exports from the app, **Ray-traced (AO + shadows)** included, render with Metal and keep the studio lights, as does the MCP `capture_viewport` tool. PyMOL's CPU `ray` command (and `png ..., ray=1`) keeps PyMOL's own lights and prints a one-line note saying so.
+- **Haze in transparent exports.** `set metal_light_air_alpha, 1` keeps haze and dust over empty background in a transparent-background PNG, instead of cutting them out with the background. It is off by default, so existing exports are unchanged.
+- **No rig, no change.** Without a rig every image is exactly the one the previous version drew, so existing sessions look the same.
 
-- **Pick one from the Inspector.** Each style-layer row has a *Material* menu. **Custom…** opens that material's own knobs (reflection, tint, roughness, and for jelly its absorption, inner glow and wet highlight) for that layer only; the menu then reads *Custom (metallic)*. Reset or picking another material undoes the tuning.
-- **Looks** are one-click starting points for a layer: **Gold, Copper, Bronze, Steel, Chrome, Marble (statuary)** and **Clay (terracotta)**. A Look sets the layer's material and knobs and lays a base coat of colour on the atoms, so a gold cartoon's side chains come out gold too. *By element* then recolours the heteroatoms. A Look touches nothing else: no other layer, no lighting.
-- **Side chains follow the cartoon.** While an object shows a cartoon, its sticks and spheres draw with the cartoon's material and tuning until you give them one of their own. The Inspector row reads *Cartoon's (metallic)*; pick *Inherit* to make it follow again.
-- **Or set it from the command line:** `set surface_material, glass, myprotein`, and `apply_look gold, myprotein, cartoon`. A misspelled name is an error rather than a silent fallback, and `get` shows the name back.
-- **Glass that reads as one skin.** Glass-family materials peel automatically, keeping only the nearest transparent layer of the object, so a glass surface or glass sticks read as one shell. The object-level **Translucent layers** control (*Auto / Nearest only / All*) in the Inspector, or `set transparency_peel, 1, obj`, applies the same to a translucent ball-and-stick.
-- **Glass bends light.** Glass, frosted glass and jelly refract what's behind them through the shape of the surface, most strongly toward the edges of each lobe, so a ligand seen through a glass surface looks like it's inside. Under *Custom…*, glass's **Reflection** and **Distortion** and jelly's **Distortion** are on/off toggles. Jelly also works on spheres and ball-and-stick.
-- **Reflections.** Plastic, metallic and the glass rim reflect the background, a neutral studio, or nothing (`material_env`). With Metal ray tracing on, they also reflect the structure itself. On a dark background pick the studio, or plastic and metallic look alike.
-- **Ray tracing through glass.** New *RT through transparency* toggle in the Scene panel (`metal_rt_transparent`, off by default): glass, frosted glass, jelly and any transparent rep then cast soft traced shadows and occlusion and appear in reflections.
-- **The classic `ray` command** maps materials to its own textures and highlights. Marble traces with a swirl, clay and rubber with a matte grain, and metallic with a tinted highlight.
-- **Saved with your work.** Materials are saved in scenes and sessions, and movies replay each scene's per-object materials at every cut.
-- **`default` is unchanged.** It renders exactly as before, so existing sessions look the same.
+See the [Studio Lights guide](https://javierbq.github.io/RayMol/guides/lighting/) for every command, field and setting, the Lights mode controls, performance switches and the known limits.
 
-The experimental `metal_rt_reflect*` settings from 1.11 are gone; `plastic` and `metallic` replace them. See [docs/materials.md](../materials.md) for every setting, what each material does on each representation, and the known limits.
+### Documentation
+
+- **A documentation site.** Guides, the command reference and the full Studio Lights guide are at [javierbq.github.io/RayMol](https://javierbq.github.io/RayMol/). **Help ▸ RayMol Documentation** opens it, and the About panel links to it.
+
+### Glycans
+
+- **SNFG glycan cartoons.** `glycocartoon` draws each recognised sugar as its 3D SNFG symbol (blue cubes for GlcNAc, green spheres for mannose, red cones for fucose, and so on) with linkers along the glycosidic bonds, and hides the sugar sticks underneath; `glycocartoon_hide` puts the sticks back. In the Objects panel it is **Glycan cartoon** in an object's **S** and **H** menus, and **SNFG glycan palette** in its **C** menu colours the atoms without the symbols. Click a symbol to pick its residue.
+- **Glycan topology.** A sheet from the Objects panel shows each glycan as a tree, with its linkages and ring puckering.
 
 ### Movies
 
-- **Roll spins at a constant speed.** A Roll added from the Movie tab slowed to a near-stop every third of a turn; it is now linear, as in desktop PyMOL. Rock keeps its ease.
-- **A camera item holds the model showing when it was added.** Adding a Roll to a multi-state object no longer sweeps through every model from model 1. Ensembles loaded afterwards still sweep; an explicit state pin still wins.
-- **Fixed: authoring a movie left the last scene applied to your session.** Building or scrubbing the timeline now restores your settings afterwards.
+- **Export at 1080p, 1440p or 4K**, or any custom size. Quality presets (Draft to Maximum, or Custom) raise tessellation, ray-traced samples, anti-aliasing and depth of field for the export only, with up to 4× supersampling. Encode as H.264, HEVC, ProRes 422 or a PNG sequence, with bitrate and frame-rate overrides. The sheet shows a live time estimate and a Cancel button, and remembers your last options. `cmd.movie_export` does the same from scripts.
+- **Roll and Rock take a 32 s duration.**
+- **Fixed:** scene movies blend settings and lights across the loop wrap, renaming a scene keeps its movie tracks, scene blends are authored from the marker frames, and a scripted `movie_export` waits for the renderer.
+
+### Structure prediction
+
+- **Use your own MSA server.** The Predict bar's server field is now a dropdown: **ColabFold (public)** plus the private servers you add with **＋**, and **Edit…** to choose the default or delete one. `msa_server URL` is remembered across launches (`msa_server reset` forgets it). Before sequences go to the public ColabFold server, RayMol asks first.
+- **Fixed: a failed MSA search no longer hangs** on "Building 1 alignment…".
+
+### Keyboard and command line
+
+- **Keyboard shortcut sheet.** **Help ▸ Keyboard Shortcuts** (⌘/) lists every app shortcut and the viewport keys.
+- **Bare F-keys recall scenes.** F1–F12 recall the scene (or view) of that name, as in desktop PyMOL; ⌃F1–⌃F12 still store them.
+- **Your ALT- and CTSH- key bindings can fire while typing.** Turn on **View ▸ Send Key Bindings to Viewport While Typing**; RayMol also says at startup when `~/.raymolrc` binds keys that only fire while the command line is unfocused.
+- **`fasta`** prints a copyable FASTA of the enabled objects to the console, one record per chain.
+- **Save only some objects.** **Save Structure** asks which objects (or the current selection) to write when there is more than one.
+- **`cmd.get_coords` works** in the app; it used to return `None`.
 
 ### Rendering fixes
 
-- **Fog fades to the background colour**, not to black, on any RGB or themed background. Ray-traced reflections that miss the molecule show the background too. This changes the default look slightly.
-- **Fixed: the DOF aperture slider wrapped around at 0**, which gave the strongest blur instead of none.
-- **Fixed: in grid mode, ray-traced shadows and occlusion leaked between cells**, so an object in one cell darkened another.
-- **Fixed: freed GPU buffers were never released on the Metal path.** Every rebuild (a material or colour change, each transparency slider tick, every surface recompute) leaked its old vertex buffer for the life of the process. On iPhone this was an out-of-memory kill.
-- **Fixed: clay and rubber grain shimmered when zoomed out.** It fades out below the pixel size instead.
-- **The Inspector refuses object names PyMOL commands cannot carry** (a line break, `;` or `,`), instead of running a truncated command.
+- **Fixed: glass and frosted glass did not draw on spheres and ball-and-stick.**
+- **Fixed: background gradients and colour-ramp gadgets were missing** in the Metal renderer.
+- **Fixed: labels in a scene with transparency came out magenta** or vanished.
+- **Fixed: a stick cut by the near clipping plane drew a flat disc** where the stick did not reach, and ray-traced strip smoothing left a seam on flat quads.
+- **Fixed: objects with per-state matrices** (`matrix_mode` 1 or 2) drew at the wrong place.
+- **Fixed: the move gizmo and overlays cast shadows** and showed up in ray-traced reflections.
+- **Fixed: exports could start with the wrong background colour.**
+- **Fixed: a grid-mode `ray` left its grid layout behind.**
+- **Automatic colours skip shades that vanish on a light background,** so a plain `load` or `fetch` on the Paper or Dawn theme never comes out near-white.
+
+### Other fixes
+
+- **Fixed: atoms in objects hidden by a disabled group could still be picked.**
+- **Fixed: entering another mode did not leave Box Select.**
+- **Sessions:** restoring a session no longer applies an uninitialised view, non-ASCII scene names from older sessions load, a partial restore leaves your MSA, metrics and notes alone, and `reinitialize` forgets scene extras and the scene movie.
+- **Notes preview renders headings, lists, quotes and code blocks,** not just bold and italics.
+- **A scripted launch keeps its own render toggles.**
+- **The app no longer ships any Homebrew libraries,** which fixes a launch crash some test builds hit.
+- **Faster:** the Inspector checks shown representations with one query, studio shadow maps are reused while nothing they depend on changes, and a dust-only redraw re-runs only the final pass.
 
 Built on the open-source PyMOL engine. Updates install automatically via the in-app updater (**Check for Updates…** in the app menu).
 ]]></description>
-      <pubDate>Tue, 06 Oct 2026 18:45:11 +0000</pubDate>
-      <sparkle:version>32</sparkle:version>
-      <sparkle:shortVersionString>1.12.0</sparkle:shortVersionString>
+      <pubDate>Tue, 20 Oct 2026 21:05:37 +0000</pubDate>
+      <sparkle:version>370</sparkle:version>
+      <sparkle:shortVersionString>1.13.0</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
-      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.12.0/RayMol-1.12.0.dmg" type="application/octet-stream" sparkle:edSignature="nPS3bhcMwP0MRaS0MrfjGwyBkaXB0xUpaAcbrRA7A60CWh3M8zCKY4LJEOfK9pwHtzMCDGTpclfPsBSN3QrKAA==" length="84301835" />
+      <enclosure url="https://github.com/javierbq/RayMol/releases/download/v1.13.0/RayMol-1.13.0.dmg" type="application/octet-stream" sparkle:edSignature="wg3oOA36BxaI+agUqe8weBrKCgEANYRP0dK13RTQfMI5gRgKy+yusqcfDF675UdsVCeNoBRw32bZVebUTweyCw==" length="95996051" />
     </item>
   </channel>
 </rss>
