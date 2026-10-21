@@ -3,7 +3,7 @@ title: Model Context Protocol (MCP) Integration
 description: Connect AI assistants like Claude Code and Claude for Mac to RayMol over the Model Context Protocol to automate visualization and analysis.
 ---
 
-RayMol features a built-in Model Context Protocol (MCP) server that lets AI assistants and agents interact with your active molecular session. Through MCP, an AI client can load structures from the PDB, inspect loaded molecules and atom selections, execute PyMOL commands, run custom Python scripts, and capture images of the viewport (640×480 by default, up to 2048×2048) to verify its visual output.
+RayMol features a built-in Model Context Protocol (MCP) server that lets AI assistants and agents interact with your active molecular session. Through MCP, an AI client can load structures from the PDB, inspect loaded molecules and atom selections, execute PyMOL commands, run custom Python scripts, set up studio lighting, materials and render effects, predict structures on your Mac, export images and movies, and capture images of the viewport (640×480 by default, up to 2048×2048) to verify its visual output.
 
 :::note[Platform availability]
 The MCP server is available only in the direct-download macOS build (Homebrew or DMG). It is not included in the Mac App Store build and is not available on iPhone or iPad.
@@ -27,15 +27,33 @@ RayMol's MCP integration is designed for security and transparency:
 
 ## Built-in MCP tools
 
-RayMol exposes five purpose-built MCP tools to connected AI models:
+RayMol tells connected AI models that it is not stock PyMOL. It gives them general tools for anything PyMOL can do, plus tools for RayMol's own features, so a model uses studio lights, materials and Metal rendering instead of falling back on PyMOL habits such as `ray` or `set light`.
+
+General tools:
 
 | Tool Name | Description |
 | :--- | :--- |
 | `run_pymol_command` | Executes a single PyMOL command statement (e.g., `fetch 1ubq, async=0`, `show cartoon`, `color marine, chain A`). |
 | `run_python` | Evaluates Python code in a persistent execution namespace with access to the PyMOL API (`cmd`), NumPy (`np` if available), and Biopython (`Bio` if available). Global variables persist across consecutive calls. |
-| `get_session_state` | Returns a structured JSON overview of the active session: loaded molecular objects, atom counts, named selections, current frame, and the 18-float camera orientation matrix. |
+| `get_session_state` | Returns a structured JSON overview of the active session: loaded molecular objects, atom counts, named selections, current frame, the 18-float camera orientation matrix, and RayMol state (the light rig and atmosphere, render effects, materials, scenes and prediction jobs). |
 | `capture_viewport` | Renders the live 3D viewport and returns a PNG image. Rendered images use RayMol's full Metal pipeline (including active studio light rigs and materials) so the AI model sees the exact scene. |
 | `search_pdb` | Queries the RCSB Protein Data Bank via full-text search and returns matching PDB identifiers for subsequent retrieval. |
+
+RayMol tools:
+
+| Tool Name | Description |
+| :--- | :--- |
+| `set_lighting` | Studio lighting: apply a preset (`three_point`, `softbox`, `rembrandt`, `neon`, ...), add, edit or remove lights, or turn the rig on or off. Wraps the `lights` command. |
+| `set_atmosphere` | Haze and dust in the light beams. Wraps the `atmosphere` command. |
+| `set_material` | Sets a material (glass, metallic, marble, ...) per object and representation. |
+| `set_render_effects` | Metal effects: ambient occlusion, shadows, real-time ray tracing, outlines, depth of field, tone mapping and exposure. |
+| `export_image` | Saves a PNG rendered with Metal, the same render as **Save Image**. |
+| `export_movie` | Renders the movie to MP4, MOV, GIF or PNG frames with the Metal exporter. Wraps `movie_export`. |
+| `predict_structure` | Folds a sequence on your Mac with Boltz-2 or Protenix. Wraps `predict`. |
+| `job_status` | Reports the state of prediction jobs. A finished structure loads into its placeholder object by itself. |
+| `raymol_help` | Returns the RayMol feature guide, or the manual of any command. |
+
+When a model uses a stock PyMOL idiom that RayMol replaces, such as `ray`, `png` or `set ray_shadows`, the command still runs, and the result includes a short note that names the RayMol tool to use instead.
 
 ## Connecting AI clients
 
