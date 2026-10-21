@@ -183,10 +183,14 @@ struct MousePanel: View {
     #endif
     @State private var selectionModeIndex: Int = 1  // Residues default
 
-    // Surface/text follow the theme; action(green)/modifier(red) stay semantic
-    // (they label mouse-button roles in the ring diagram, not chrome accents).
+    // Surface/text/controls follow the theme; action(green)/modifier(red) stay
+    // semantic and are used ONLY in the L/M/R action grid, where they label
+    // mouse-button roles. Chrome (mode picker, gesture icons, selection value,
+    // Hover switch) uses the theme accent so native controls don't fall back
+    // to the system accent and clash with the labels around them (#906).
     private var bgColor: Color { ThemeManager.shared.active.panelBackground.color }
     private var headerColor: Color { ThemeManager.shared.active.panelText.color }
+    private var accentColor: Color { ThemeManager.shared.active.accent.color }
     private let actionColor = Color(red: 0.2, green: 1.0, blue: 0.2)
     private let modifierColor = Color(red: 1.0, green: 0.3, blue: 0.3)
     private var labelColor: Color { ThemeManager.shared.active.panelText.color.opacity(0.6) }
@@ -310,6 +314,7 @@ struct MousePanel: View {
             .pickerStyle(.menu)
             .labelsHidden()
             .controlSize(.mini)
+            .tint(accentColor)
             .frame(maxWidth: .infinity, alignment: .leading)
             #else
             Menu {
@@ -319,7 +324,7 @@ struct MousePanel: View {
             } label: {
                 Text(displayName(displayRing[effectiveModeIndex]))
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
-                    .foregroundColor(actionColor)
+                    .foregroundColor(accentColor)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             #endif
@@ -335,7 +340,7 @@ struct MousePanel: View {
                 HStack(spacing: 5) {
                     Image(systemName: h.icon)
                         .font(.system(size: 9))
-                        .foregroundColor(actionColor)
+                        .foregroundColor(accentColor)
                         .frame(width: 14)
                     Text(h.title)
                         .font(.system(size: 9, weight: .medium, design: .monospaced))
@@ -446,12 +451,12 @@ struct MousePanel: View {
         HStack(spacing: 4) {
             Text("Selecting")
                 .font(.system(size: 9, design: .monospaced))
-                .foregroundColor(actionColor)
+                .foregroundColor(labelColor)
 
             Text(selectionModeNames.indices.contains(selectionModeIndex)
                  ? selectionModeNames[selectionModeIndex] : "Atoms")
                 .font(.system(size: 9, weight: .medium, design: .monospaced))
-                .foregroundColor(ThemeManager.shared.active.selectionName.color)
+                .foregroundColor(accentColor)
                 .onTapGesture {
                     selectionModeIndex = (selectionModeIndex + 1) % selectionModeNames.count
                 }
@@ -464,7 +469,7 @@ struct MousePanel: View {
             // preview. macOS-only — iPad hover is a follow-up (see MetalViewport).
             Text("Hover")
                 .font(.system(size: 9, design: .monospaced))
-                .foregroundColor(actionColor)
+                .foregroundColor(labelColor)
             // NB: `Binding` is shadowed by a private typealias in this file, so
             // fully qualify the SwiftUI Binding (matches modeHeader above).
             Toggle("", isOn: SwiftUI.Binding(
@@ -475,6 +480,7 @@ struct MousePanel: View {
                 }))
                 .toggleStyle(.switch)
                 .controlSize(.mini)
+                .tint(accentColor)
                 .labelsHidden()
                 .fixedSize()
             #endif
