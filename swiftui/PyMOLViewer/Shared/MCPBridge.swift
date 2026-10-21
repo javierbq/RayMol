@@ -19,6 +19,11 @@ enum MCPBridge {
         sessionIdLock.lock(); sessionId = s; sessionIdLock.unlock()
     }
 
+    // Set when tools/list was answered from the offline copy; the first request
+    // the live server answers then sends notifications/tools/list_changed, so a
+    // client that cached the offline list fetches the live one.
+    private static var servedOfflineTools = false
+
     static func run() {
         while let line = readLine(strippingNewline: true) {
             if line.trimmingCharacters(in: .whitespaces).isEmpty { continue }
@@ -27,7 +32,14 @@ enum MCPBridge {
             else { continue }
             let id = msg["id"]
             let method = msg["method"] as? String ?? ""
-            if let respData = response(for: msg, method: method, id: id, raw: data) {
+            let wasOffline = servedOfflineTools
+            let respData = response(for: msg, method: method, id: id, raw: data)
+            if wasOffline && !servedOfflineTools {
+                FileHandle.standardOutput.write(encode(["jsonrpc": "2.0",
+                    "method": "notifications/tools/list_changed"]))
+                FileHandle.standardOutput.write(Data([0x0A]))
+            }
+            if let respData {
                 FileHandle.standardOutput.write(respData)
                 FileHandle.standardOutput.write(Data([0x0A]))
             }
@@ -98,13 +110,16 @@ enum MCPBridge {
                                  id: Any?, raw: Data) -> Data? {
         // Try the live server first.
         if let body = proxy(raw: raw) {
+            servedOfflineTools = false
             return body.isEmpty ? nil : body   // empty = 202 notification ack
         }
         // Server unreachable: answer locally.
         switch method {
         case "notifications/initialized": return nil
         case "initialize": return localInitialize(id: id)
-        case "tools/list":  return localToolsList(id: id)
+        case "tools/list":
+            servedOfflineTools = true
+            return localToolsList(id: id)
         case "ping":        return ok(id: id, result: [:])
         case "tools/call":
             return ok(id: id, result: [
@@ -118,27 +133,72 @@ enum MCPBridge {
         }
     }
 
+    // What the live server last said on initialize/tools/list, written by
+    // raymol_mcp/server.py (write_discovery_cache) each time it starts.
+    private static func discoveryCache() -> [String: Any]? {
+        let url = URL(fileURLWithPath: NSHomeDirectory())
+            .appendingPathComponent("Library/Application Support/RayMol/mcp_tools.json")
+        guard let data = try? Data(contentsOf: url),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return obj
+    }
+
+    private static let offlineNote = "RayMol is not running yet: ask the user to open RayMol and enable its MCP server (Connect ▸ Enable AI control), then retry. "
+
     private static func localInitialize(id: Any?) -> Data {
-        ok(id: id, result: [
+        let cache = discoveryCache()
+        let instructions = (cache?["instructions"] as? String) ?? staticInstructions
+        return ok(id: id, result: [
             "protocolVersion": protocolVersion,
-            "capabilities": ["tools": ["listChanged": false]],
-            "serverInfo": ["name": "raymol", "version": "1.0.0"],
-            "instructions": "RayMol is a molecular viewer (a PyMOL fork). It is not running yet — ask the user to open RayMol and enable its MCP server (Connect ▸ Enable AI control). Then use run_pymol_command / run_python / get_session_state / capture_viewport / search_pdb.",
+            // true: the live list may differ, and run() says so once it is up.
+            "capabilities": ["tools": ["listChanged": true]],
+            "serverInfo": (cache?["serverInfo"] as? [String: Any])
+                ?? ["name": "raymol", "title": "RayMol", "version": "1.0.0"],
+            "instructions": offlineNote + instructions,
         ])
     }
 
     private static func localToolsList(id: Any?) -> Data {
-        // Static mirror of raymol_mcp/tools.py TOOLS (used only when the server is
-        // down; the live list is proxied when it's up). Keep names in sync.
-        let tools: [[String: Any]] = [
-            ["name": "run_pymol_command", "description": "Run one PyMOL command-language statement (e.g. 'fetch 1ubq, async=0').", "inputSchema": ["type": "object", "properties": ["command": ["type": "string"]], "required": ["command"]]],
-            ["name": "run_python", "description": "Execute arbitrary Python with 'cmd' (PyMOL API), 'np', 'Bio'. State persists.", "inputSchema": ["type": "object", "properties": ["code": ["type": "string"]], "required": ["code"]]],
-            ["name": "get_session_state", "description": "Return objects, selections, camera view, frame info as JSON.", "inputSchema": ["type": "object", "properties": [:]]],
-            ["name": "capture_viewport", "description": "PNG of the current view, rendered as the user sees it.", "inputSchema": ["type": "object", "properties": ["width": ["type": "integer"], "height": ["type": "integer"]]]],
-            ["name": "search_pdb", "description": "Full-text RCSB PDB search; returns PDB IDs.", "inputSchema": ["type": "object", "properties": ["query": ["type": "string"], "limit": ["type": "integer"]], "required": ["query"]]],
-        ]
-        return ok(id: id, result: ["tools": tools])
+        if let tools = discoveryCache()?["tools"] as? [[String: Any]], !tools.isEmpty {
+            return ok(id: id, result: ["tools": tools])
+        }
+        return ok(id: id, result: ["tools": staticTools])
     }
+
+    // Fallback for a machine where RayMol's server has never started. A static
+    // mirror of raymol_mcp tools.list_tools() (names checked by
+    // testing/tests/test_mcp_tools.py); descriptions are shortened.
+    private static let staticInstructions = "RayMol is a native macOS/iOS molecular viewer built on PyMOL, but it is NOT stock PyMOL: it renders with Metal and adds studio lighting (set_lighting, set_atmosphere), materials (set_material), Metal render effects (set_render_effects), Metal image and movie export (export_image, export_movie) and on-device structure prediction (predict_structure, job_status). Call raymol_help for the feature guide. Everything else is PyMOL: run_pymol_command, run_python, get_session_state, capture_viewport, search_pdb."
+
+    private static let staticTools: [[String: Any]] = {
+        func tool(_ name: String, _ description: String,
+                  _ properties: [String: Any] = [:], _ required: [String] = []) -> [String: Any] {
+            var schema: [String: Any] = ["type": "object", "properties": properties]
+            if !required.isEmpty { schema["required"] = required }
+            return ["name": name, "description": description, "inputSchema": schema]
+        }
+        let str: [String: Any] = ["type": "string"]
+        let int: [String: Any] = ["type": "integer"]
+        let num: [String: Any] = ["type": "number"]
+        let bool: [String: Any] = ["type": "boolean"]
+        return [
+            tool("run_pymol_command", "Run one PyMOL command-language statement (e.g. 'fetch 1ubq, async=0').", ["command": str], ["command"]),
+            tool("run_python", "Execute Python with 'cmd' (PyMOL API), 'np', 'Bio'. State persists.", ["code": str], ["code"]),
+            tool("get_session_state", "Objects, selections, camera, frames, and RayMol state (lights, effects, materials, scenes, jobs) as JSON."),
+            tool("capture_viewport", "PNG of the current view, rendered with Metal as the user sees it.", ["width": int, "height": int]),
+            tool("search_pdb", "Full-text RCSB PDB search; returns PDB IDs.", ["query": str, "limit": int], ["query"]),
+            tool("set_lighting", "Studio lighting: presets (three_point, softbox, rembrandt, neon, ...), add/edit/remove lights, on/off.", ["preset": str, "ambient": num, "classic": num, "lights": ["type": "array", "items": ["type": "object"]], "remove": ["type": "array", "items": str], "mode": str]),
+            tool("set_atmosphere", "Haze and dust in the studio light beams.", ["haze": num, "dust": num, "dust_size": num, "dust_speed": num, "scatter": num, "seed": int, "dust_glow": num, "dust_opacity": num, "off": bool]),
+            tool("set_material", "Material (glass, metallic, marble, ...) per object and representation.", ["material": str, "object": str, "representations": ["type": "array", "items": str]], ["material"]),
+            tool("set_render_effects", "Metal effects: AO, shadows, ray tracing, outline, depth of field, tone mapping.", ["ssao": bool, "shadows": bool, "raytrace": bool, "outline": bool, "dof": bool, "tonemap": bool, "exposure": num, "msaa": bool]),
+            tool("export_image", "Save a PNG rendered with Metal (the app's Save Image).", ["path": str, "width": int, "height": int, "raytrace": int], ["path"]),
+            tool("export_movie", "Render the movie to mp4/mov/gif/PNG frames with the Metal exporter.", ["path": str, "width": int, "height": int, "quality": str, "fps": int, "codec": str, "raytrace": bool, "first": int, "last": int], ["path"]),
+            tool("predict_structure", "Fold a sequence on device (Boltz-2, Protenix); returns job ids.", ["sequence": str, "predictor": str, "name": str, "n_models": int, "seed": int, "msa": str], ["sequence"]),
+            tool("job_status", "Status of on-device prediction and design jobs.", ["job_id": str]),
+            tool("raymol_help", "RayMol feature guide, or any command's manual.", ["topic": str]),
+        ]
+    }()
 
     private static func ok(id: Any?, result: [String: Any]) -> Data {
         encode(["jsonrpc": "2.0", "id": id ?? NSNull(), "result": result])

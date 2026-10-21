@@ -77,8 +77,21 @@ class TestJsonRpc(unittest.TestCase):
         self.assertNotIn("MCP:action:", out)
 
 
+def _private_discovery_cache(testcase):
+    """Point the server's discovery cache at a temp file: start() writes it,
+    and a test run must not overwrite the user's real one."""
+    import os
+    import tempfile
+    path = os.path.join(tempfile.mkdtemp(), "mcp_tools.json")
+    testcase.addCleanup(setattr, server, "DISCOVERY_CACHE",
+                        server.DISCOVERY_CACHE)
+    server.DISCOVERY_CACHE = path
+    return path
+
+
 class TestHttpAuth(unittest.TestCase):
     def setUp(self):
+        self.cache = _private_discovery_cache(self)
         self.port = server.start(0, "secret-token")
 
     def tearDown(self):
@@ -144,6 +157,7 @@ class TestHttpKeepAlive(unittest.TestCase):
     client's following request failed with "400 Bad request syntax"."""
 
     def setUp(self):
+        self.cache = _private_discovery_cache(self)
         self.port = server.start(0, "secret-token", version="9.8.7")
 
     def tearDown(self):
@@ -177,6 +191,50 @@ class TestHttpKeepAlive(unittest.TestCase):
         self.assertEqual(self._request(conn, "secret-token", path="/nope")[0],
                          404)
         self.assertEqual(self._request(conn, "secret-token")[0], 200)
+
+    def _raw(self, data):
+        """Send raw bytes; return everything the server sends back before it
+        closes (or times out)."""
+        import socket
+        sock = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+        self.addCleanup(sock.close)
+        sock.sendall(data)
+        out = b""
+        while True:
+            try:
+                chunk = sock.recv(65536)
+            except socket.timeout:
+                return out, False
+            if not chunk:
+                return out, True       # server closed the connection
+            out += chunk
+
+    def test_oversized_rejected_body_is_not_read_and_connection_closes(self):
+        size = server.DRAIN_LIMIT + 1
+        head = ("POST /mcp HTTP/1.1\r\nHost: x\r\n"
+                "Authorization: Bearer wrong\r\n"
+                "Content-Length: %d\r\n\r\n" % size).encode()
+        out, closed = self._raw(head)          # body never sent
+        self.assertIn(b" 401 ", out.split(b"\r\n")[0])
+        self.assertTrue(closed)
+
+    def test_stalled_rejected_body_times_out_and_closes(self):
+        self.addCleanup(setattr, server, "DRAIN_TIMEOUT", server.DRAIN_TIMEOUT)
+        server.DRAIN_TIMEOUT = 0.3
+        head = ("POST /mcp HTTP/1.1\r\nHost: x\r\n"
+                "Authorization: Bearer wrong\r\n"
+                "Content-Length: 100\r\n\r\n").encode()
+        out, closed = self._raw(head + b"{")   # 1 of 100 bytes, then nothing
+        self.assertIn(b" 401 ", out.split(b"\r\n")[0])
+        self.assertTrue(closed)
+
+    def test_start_writes_the_discovery_cache_for_the_bridge(self):
+        with open(self.cache) as f:
+            cache = json.load(f)
+        self.assertEqual(cache["instructions"], server.INSTRUCTIONS)
+        self.assertEqual(cache["serverInfo"]["version"], "9.8.7")
+        names = {t["name"] for t in cache["tools"]}
+        self.assertIn("set_lighting", names)
 
     def test_get_is_405_with_allow(self):
         conn = self._conn()

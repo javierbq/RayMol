@@ -50,7 +50,7 @@ RayMol tools:
 | `export_image` | Saves a PNG rendered with Metal, the same render as **Save Image**. |
 | `export_movie` | Renders the movie to MP4, MOV, GIF or PNG frames with the Metal exporter. Wraps `movie_export`. |
 | `predict_structure` | Folds a sequence on your Mac with Boltz-2 or Protenix. Wraps `predict`. |
-| `job_status` | Reports the state of prediction jobs and can load a finished result. |
+| `job_status` | Reports the state of prediction jobs. A finished structure loads into its placeholder object by itself. |
 | `raymol_help` | Returns the RayMol feature guide, or the manual of any command. |
 
 When a model uses a stock PyMOL idiom that RayMol replaces, such as `ray`, `png` or `set ray_shadows`, the command still runs, and the result includes a short note that names the RayMol tool to use instead.

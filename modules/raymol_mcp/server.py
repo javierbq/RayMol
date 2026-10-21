@@ -27,7 +27,17 @@ INSTRUCTIONS = guide.INSTRUCTIONS
 
 # A session is dropped after this many seconds with no request. Claude Code sends no keepalive when idle, so 300s avoids flapping the count during normal between-task idleness; the desktop bridge sends an explicit DELETE on quit for instant cleanup.
 SESSION_TTL = 300.0
+# A rejected request's body is drained (to keep the connection usable) only up
+# to this size and for this long; past either, the connection is closed.
+DRAIN_LIMIT = 64 * 1024
+DRAIN_TIMEOUT = 5.0
 SWEEP_INTERVAL = 20.0
+
+# What the server says on initialize and tools/list, cached beside the app's
+# mcp.json handoff so the --mcp-bridge (MCPBridge.swift) can answer with the
+# CURRENT tools and instructions while RayMol is not running.
+DISCOVERY_CACHE = os.path.expanduser(
+    "~/Library/Application Support/RayMol/mcp_tools.json")
 
 _lock = threading.Lock()            # guards server lifecycle (start/stop)
 _httpd = None
@@ -162,14 +172,38 @@ class _Handler(BaseHTTPRequestHandler):
         """Read and discard the request body. Every early reply must do this:
         on a kept-alive HTTP/1.1 connection an unread JSON body is parsed as
         the NEXT request line, and the client's following request fails with
-        "400 Bad request syntax ('{ json...')"."""
+        "400 Bad request syntax ('{ json...')".
+
+        The caller may be unauthenticated, so the drain is bounded: a body
+        over DRAIN_LIMIT, or one that stalls for DRAIN_TIMEOUT, is not read;
+        the connection is closed instead of kept alive."""
         try:
             length = int(self.headers.get("Content-Length", 0) or 0)
         except ValueError:
             self.close_connection = True
             return
-        if length > 0:
-            self.rfile.read(length)
+        if length <= 0:
+            return
+        if length > DRAIN_LIMIT:
+            self.close_connection = True
+            return
+        sock = self.connection
+        previous = sock.gettimeout()
+        sock.settimeout(DRAIN_TIMEOUT)
+        try:
+            while length > 0:
+                chunk = self.rfile.read(min(length, 8192))
+                if not chunk:
+                    self.close_connection = True
+                    return
+                length -= len(chunk)
+        except OSError:
+            self.close_connection = True
+        finally:
+            try:
+                sock.settimeout(previous)
+            except OSError:
+                pass
 
     def _reject(self, code, text, allow=None, drain=True):
         if drain:
@@ -261,6 +295,22 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
 
+def write_discovery_cache(path=None):
+    """Best effort: a failure here must never stop the server starting."""
+    path = path or DISCOVERY_CACHE
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"serverInfo": SERVER_INFO,
+                       "instructions": INSTRUCTIONS,
+                       "tools": tools.list_tools()}, f)
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        return False
+
+
 def start(port, token, version=None):
     global _httpd, _thread, _port, _token, _trusted, _sweeper, _stop_sweeper
     with _lock:
@@ -294,6 +344,7 @@ def start(port, token, version=None):
         _sweeper = threading.Thread(target=_sweep_loop,
                                     name="raymol-mcp-sweep", daemon=True)
         _sweeper.start()
+        write_discovery_cache()
         events.server_started(_port)
         return _port
 

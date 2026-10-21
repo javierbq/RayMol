@@ -21,6 +21,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import traceback
 
 from raymol_mcp.mainthread import run_on_main
@@ -280,14 +281,31 @@ def _export_image(args):
     height = max(16, min(int(args.get("height", 1080)), 8192))
     ray = int(args.get("raytrace", -1))
 
+    folder = os.path.dirname(path)
+    if not os.path.isdir(folder):
+        return _error("folder does not exist: %s" % folder)
+
     def body():
         from pymol import cmd, exporting
-        if exporting._metal_png(path, width, height, ray) and \
-                os.path.exists(path) and os.path.getsize(path) > 0:
-            return {"path": path, "renderer": "metal",
-                    "width": width, "height": height}
-        cmd.png(path, width=width, height=height, ray=1)
-        return {"path": path, "renderer": "cpu ray tracer (no Metal view)",
+        # Render into a fresh file beside the target and move it into place
+        # only once it holds an image: neither renderer reports a failed
+        # write, so checking `path` itself could accept an older PNG there.
+        fd, tmp = tempfile.mkstemp(suffix=".png", prefix=".raymol_export_",
+                                   dir=folder)
+        os.close(fd)
+        try:
+            renderer = "metal"
+            if not (exporting._metal_png(tmp, width, height, ray)
+                    and os.path.getsize(tmp) > 0):
+                renderer = "cpu ray tracer (no Metal view)"
+                cmd.png(tmp, width=width, height=height, ray=1)
+            if os.path.getsize(tmp) == 0:
+                raise RuntimeError("the render wrote no image to %s" % path)
+            os.replace(tmp, path)
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        return {"path": path, "renderer": renderer,
                 "width": width, "height": height}
 
     return _on_main(body)
@@ -364,7 +382,6 @@ def _design_binder(args):
 
 def _job_status(args):
     job_id = str(args.get("job_id") or "").strip()
-    load = bool(args.get("load_result"))
 
     def body():
         from pymol import predicting
@@ -378,12 +395,6 @@ def _job_status(args):
         if job_id and not any(out.values()):
             raise ValueError("no job %r; omit job_id to list every job"
                              % job_id)
-        if load and job_id:
-            if out["prediction"]:
-                out["loaded"] = predicting.predict_result(job_id)
-            elif out.get("design"):
-                from pymol import designing
-                out["loaded"] = designing.design_result(job_id)
         return out
 
     return _on_main(body)
@@ -658,15 +669,11 @@ TOOLS = [
         "name": "job_status",
         "description": (
             "Status of RayMol's on-device prediction (and design) jobs: "
-            "state, phase, progress. Omit job_id for every job. "
-            "load_result=true loads a finished job's structure if it is not "
-            "already in the session."),
+            "state, phase, progress. Omit job_id for every job. A finished "
+            "job's structure loads into its placeholder object by itself."),
         "inputSchema": {
             "type": "object",
-            "properties": {
-                "job_id": {"type": "string"},
-                "load_result": _BOOL,
-            },
+            "properties": {"job_id": {"type": "string"}},
         },
     },
     {

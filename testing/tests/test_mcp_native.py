@@ -133,6 +133,30 @@ class TestExportImage(_NativeCase):
         self.assertGreater(os.path.getsize(path), 0)
         self.assertIn("renderer", _payload(res))
 
+    def test_failed_render_keeps_the_old_file_and_is_an_error(self):
+        # Neither renderer reports a failed write, so an older PNG at the
+        # destination must not be mistaken for this export.
+        from pymol import exporting
+        path = os.path.join(tempfile.mkdtemp(), "out.png")
+        with open(path, "wb") as f:
+            f.write(b"old image")
+        self.addCleanup(setattr, exporting, "_metal_png", exporting._metal_png)
+        self.addCleanup(setattr, cmd, "png", cmd.png)
+        exporting._metal_png = lambda *a, **k: True     # "rendered", wrote nothing
+        cmd.png = lambda *a, **k: None                  # CPU fallback writes nothing
+        res = tools.call("export_image", {"path": path, "width": 64,
+                                          "height": 48})
+        self.assertTrue(res["isError"])
+        with open(path, "rb") as f:
+            self.assertEqual(f.read(), b"old image")
+        self.assertEqual(os.listdir(os.path.dirname(path)), ["out.png"])
+
+    def test_missing_folder_is_an_error(self):
+        res = tools.call("export_image",
+                         {"path": "/nonexistent-dir-raymol/out.png"})
+        self.assertTrue(res["isError"])
+        self.assertIn("folder does not exist", res["content"][0]["text"])
+
     def test_movie_without_frames_says_how_to_make_one(self):
         res = tools.call("export_movie", {"path": "/tmp/x.mp4"})
         self.assertTrue(res["isError"])

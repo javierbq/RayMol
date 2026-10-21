@@ -227,6 +227,27 @@ class TestMcpToolsRegistry(unittest.TestCase):
         self.assertIn("design_binder",
                       {t["name"] for t in tools.list_tools()})
 
+    def test_bridge_offline_mirror_matches_the_tool_list(self):
+        # MCPBridge.swift answers tools/list itself while RayMol is not
+        # running (from the server's cache, else this static mirror); a
+        # client that caches that answer must see the same tools.
+        import re
+        here = os.path.dirname(os.path.abspath(__file__))
+        swift = os.path.join(here, "..", "..", "swiftui", "PyMOLViewer",
+                             "Shared", "MCPBridge.swift")
+        with open(swift, encoding="utf-8") as f:
+            src = f.read()
+        block = src[src.index("staticTools"):]
+        mirrored = re.findall(r'tool\("(\w+)"', block)
+        key = "RAYMOL_EXPERIMENTAL_BINDER_DESIGN"
+        saved = os.environ.pop(key, None)
+        try:
+            live = [t["name"] for t in tools.list_tools()]
+        finally:
+            if saved is not None:
+                os.environ[key] = saved
+        self.assertEqual(mirrored, live)
+
     def test_every_tool_has_description_and_schema(self):
         for t in tools.list_tools():
             self.assertTrue(t["description"].strip())
