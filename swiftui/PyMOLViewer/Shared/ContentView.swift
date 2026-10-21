@@ -488,7 +488,12 @@ struct ContentView: View {
                     // Reserve space on the right so the picker chevron stops short
                     // of the corner where the minimize button sits.
                     .padding(.trailing, 22)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    // Fill the gutter with the same theme surface MousePanel
+                    // paints, so the strip under the "−" doesn't show as a
+                    // lighter material band beside the card (#906). The clip
+                    // rounds MousePanel's own square background too.
+                    .background(themeManager.active.panelBackground.color)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8)
                         .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5))
                 Button { withAnimation(.easeInOut(duration: 0.15)) { mouseLegendCollapsed = true } } label: {
