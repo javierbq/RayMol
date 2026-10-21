@@ -2463,11 +2463,10 @@ final class PyMOLEngine: ObservableObject {
         }
     }
 
-    // The lane and untracked-movie flag of a `TIMELINE:<b64 json>` feedback
-    // line, emitted by appkit_movie.session_restore; nil for any other line.
-    static func timelineRestoreEvent(_ line: String) -> (items: [TimelineItem], untrackedMovie: Bool)? {
-        guard line.hasPrefix("TIMELINE:"),
-              let data = Data(base64Encoded: String(line.dropFirst("TIMELINE:".count))) else { return nil }
+    // The lane and untracked-movie flag appkit_movie._emit_timeline writes to
+    // the `pymol_timeline` channel (announced by `TIMELINE:ready`: the payload
+    // would overflow PyMOL's ~1 KB feedback line). nil when it does not decode.
+    static func timelineRestorePayload(_ data: Data) -> (items: [TimelineItem], untrackedMovie: Bool)? {
         struct Payload: Decodable { var items: [TimelineRecord]; var untrackedMovie: Bool }
         guard let p = try? JSONDecoder().decode(Payload.self, from: data) else { return nil }
         return (timelineItems(from: p.items), p.untrackedMovie)
@@ -4951,10 +4950,15 @@ final class PyMOLEngine: ObservableObject {
                         let updated = Self.renamingScene(in: self.timelineItems, from: old, to: new)
                         if updated != self.timelineItems { self.timelineItems = updated }
                     }
-                } else if let restored = Self.timelineRestoreEvent(line) {
-                    // A .pse load replaced the Timeline (#901).
-                    DispatchQueue.main.async {
-                        self.applyRestoredTimeline(restored.items, untrackedMovie: restored.untrackedMovie)
+                } else if line == "TIMELINE:ready" {
+                    // A .pse load or reinitialize replaced the Timeline (#901).
+                    // Read now, while the file is the one this line announces.
+                    let path = TempChannel.path(TempChannel.Stem.timeline)
+                    if let data = FileManager.default.contents(atPath: path),
+                       let restored = Self.timelineRestorePayload(data) {
+                        DispatchQueue.main.async {
+                            self.applyRestoredTimeline(restored.items, untrackedMovie: restored.untrackedMovie)
+                        }
                     }
                 } else if line.hasPrefix("MOVIEEXPORT:") {
                     // cmd.movie_export (#581): a scripted export request.

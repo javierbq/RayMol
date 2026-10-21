@@ -886,7 +886,7 @@ final class SceneRenameTimelineTests: XCTestCase {
 // MARK: - Timeline in the session (#901)
 
 /// The lane's JSON records (staged in appkit_movie, written to the .pse) and
-/// the TIMELINE: line a session load emits. The Python half is
+/// the `pymol_timeline` channel payload a session load writes. The Python half is
 /// testing/tests/raymol/timeline_session.py, whose ITEMS use these keys.
 final class TimelineSessionTests: XCTestCase {
 
@@ -902,10 +902,9 @@ final class TimelineSessionTests: XCTestCase {
         ]
     }
 
-    private func line(_ records: [PyMOLEngine.TimelineRecord], untracked: Bool) throws -> String {
+    private func payload(_ records: [PyMOLEngine.TimelineRecord], untracked: Bool) throws -> Data {
         struct Payload: Encodable { var items: [PyMOLEngine.TimelineRecord]; var untrackedMovie: Bool }
-        let data = try JSONEncoder().encode(Payload(items: records, untrackedMovie: untracked))
-        return "TIMELINE:" + data.base64EncodedString()
+        return try JSONEncoder().encode(Payload(items: records, untrackedMovie: untracked))
     }
 
     func testRecordsRoundTripEveryKind() {
@@ -916,14 +915,14 @@ final class TimelineSessionTests: XCTestCase {
 
     func testRestoreEventCarriesTheLane() throws {
         let items = lane()
-        let parsed = PyMOLEngine.timelineRestoreEvent(
-            try line(PyMOLEngine.timelineRecords(items), untracked: false))
+        let parsed = PyMOLEngine.timelineRestorePayload(
+            try payload(PyMOLEngine.timelineRecords(items), untracked: false))
         XCTAssertEqual(parsed?.items, items)
         XCTAssertEqual(parsed?.untrackedMovie, false)
     }
 
     func testRestoreEventOfAnOldSessionReportsItsMovie() throws {
-        let parsed = PyMOLEngine.timelineRestoreEvent(try line([], untracked: true))
+        let parsed = PyMOLEngine.timelineRestorePayload(try payload([], untracked: true))
         XCTAssertEqual(parsed?.items, [])
         XCTAssertEqual(parsed?.untrackedMovie, true)
     }
@@ -933,15 +932,32 @@ final class TimelineSessionTests: XCTestCase {
         var records = PyMOLEngine.timelineRecords(items)
         records[0].id = "not-a-uuid"
         records[1].kind = "hologram"
-        let parsed = PyMOLEngine.timelineRestoreEvent(try line(records, untracked: false))
+        let parsed = PyMOLEngine.timelineRestorePayload(try payload(records, untracked: false))
         XCTAssertEqual(parsed?.items, Array(items.dropFirst(2)))
     }
 
-    func testOtherLinesAreNotRestoreEvents() {
-        XCTAssertNil(PyMOLEngine.timelineRestoreEvent("PLAYBACK:{}"))
-        XCTAssertNil(PyMOLEngine.timelineRestoreEvent("TIMELINE:not base64!"))
-        XCTAssertNil(PyMOLEngine.timelineRestoreEvent(
-            "TIMELINE:" + Data("{\"items\":7}".utf8).base64EncodedString()))
+    func testMalformedPayloadsAreRejected() {
+        XCTAssertNil(PyMOLEngine.timelineRestorePayload(Data()))
+        XCTAssertNil(PyMOLEngine.timelineRestorePayload(Data("not json".utf8)))
+        XCTAssertNil(PyMOLEngine.timelineRestorePayload(Data("{\"items\":7}".utf8)))
+    }
+
+    // The shape appkit_movie._emit_timeline writes (json.dump of the Python
+    // dict): a long lane, nil keys absent, `objects` null.
+    func testDecodesWhatPythonWrites() {
+        let cams = (0..<200).map { _ in
+            "{\"id\": \"\(UUID().uuidString)\", \"kind\": \"camera\", \"seconds\": 2.0, \"linear\": false}"
+        }
+        let states = "{\"id\": \"\(UUID().uuidString)\", \"kind\": \"states\", \"seconds\": 2.0, "
+            + "\"linear\": false, \"states\": {\"objects\": null, \"mode\": \"loop\", "
+            + "\"first\": 1, \"last\": 0, \"seconds\": 4.0}}"
+        let json = "{\"items\": [" + (cams + [states]).joined(separator: ", ")
+            + "], \"untrackedMovie\": false}"
+        let parsed = PyMOLEngine.timelineRestorePayload(Data(json.utf8))
+        XCTAssertEqual(parsed?.items.count, 201)
+        XCTAssertEqual(parsed?.items.last?.kind,
+                       .states(.init(objects: nil, mode: .loop, firstModel: 1, lastModel: 0,
+                                     durationSeconds: 4)))
     }
 }
 

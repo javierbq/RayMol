@@ -3,7 +3,8 @@
 
 The app stages its editable item list in appkit_movie; a session save writes it
 under `raymol_timeline` with the camera views its items use, and a full restore
-puts both back and hands the lane to the app on a `TIMELINE:` feedback line.
+puts both back and hands the lane to the app (a tempfile plus a short
+`TIMELINE:ready` feedback line).
 A session with no lane empties it, reports whether the session still carries a
 movie of its own, and leaves that movie as it is.
 
@@ -12,9 +13,13 @@ movie of its own, and leaves that movie as it is.
 
 import base64
 import copy
+import io
 import json
 import os
+import sys
 import tempfile
+import types
+from unittest import mock
 
 from pymol import cmd, testing, appkit_movie
 
@@ -32,6 +37,8 @@ ITEMS = [
 
 
 class TimelineSessionTest(testing.PyMOLTestCase):
+
+    real_emit = staticmethod(appkit_movie._emit_timeline)
 
     def setUp(self):
         super().setUp()
@@ -78,7 +85,7 @@ class TimelineSessionTest(testing.PyMOLTestCase):
         cmd.load(saved)
 
         self.assertEqual(appkit_movie._timeline, ITEMS)
-        self.assertEqual(self.emitted, [(ITEMS, False)])
+        self.assertEqual(self.emitted[-1:], [(ITEMS, False)])
         # Only the views the lane uses ride along.
         self.assertEqual(sorted(appkit_movie._views), ['cam-1', 'cam-2'])
         for k, v in views.items():
@@ -115,7 +122,7 @@ class TimelineSessionTest(testing.PyMOLTestCase):
 
         self.assertIsNone(appkit_movie._timeline)
         self.assertEqual(appkit_movie._views, {})
-        self.assertEqual(self.emitted, [([], True)])
+        self.assertEqual(self.emitted[-1:], [([], True)])
         self.assertEqual(cmd.get_movie_length(), 30)
 
     def test_session_without_movie_reports_none(self):
@@ -124,7 +131,7 @@ class TimelineSessionTest(testing.PyMOLTestCase):
         plain = self.pse()
         cmd.save(plain)
         cmd.load(plain)
-        self.assertEqual(self.emitted, [([], False)])
+        self.assertEqual(self.emitted[-1:], [([], False)])
 
     def test_partial_restore_leaves_the_lane_alone(self):
         cmd.reinitialize()
@@ -132,6 +139,7 @@ class TimelineSessionTest(testing.PyMOLTestCase):
         other = self.pse()
         cmd.save(other)
         self.build()
+        self.emitted.clear()
         cmd.load(other, partial=1)
         self.assertEqual(appkit_movie._timeline, ITEMS)
         self.assertIn('cam-1', appkit_movie._views)
@@ -157,3 +165,49 @@ class TimelineSessionTest(testing.PyMOLTestCase):
         expected[1]['scene'] = 'Intro'
         self.assertEqual(appkit_movie._timeline, expected)
         self.assertIn('Intro', cmd.get_scene_list())
+
+    def test_reinitialize_empties_the_lane_and_tells_the_app(self):
+        cmd.reinitialize()
+        self.build()
+        self.emitted.clear()
+        cmd.reinitialize()
+        self.assertIsNone(appkit_movie._timeline)
+        self.assertEqual(appkit_movie._views, {})
+        self.assertEqual(self.emitted, [([], False)])
+        session = {}
+        appkit_movie.session_save(session)
+        self.assertNotIn(appkit_movie.SESSION_KEY, session)
+
+    def test_reinitialize_of_settings_keeps_the_lane(self):
+        appkit_movie.stage_timeline(json.dumps(ITEMS))
+        cmd.reinitialize('settings')
+        self.assertEqual(appkit_movie._timeline, ITEMS)
+
+    def test_snapshots_do_not_share_records_with_the_live_lane(self):
+        cmd.reinitialize()
+        self.build()
+        snapshot = cmd.get_session()
+        cmd.scene('F1 \u00e9', 'rename', new_key='Intro')
+        saved = snapshot[appkit_movie.SESSION_KEY]['items']
+        self.assertEqual(saved[1]['scene'], 'F1 \u00e9')
+
+        cmd.set_session(snapshot)
+        cmd.scene('F1 \u00e9', 'rename', new_key='Outro')
+        self.assertEqual(appkit_movie._timeline[1]['scene'], 'Outro')
+        self.assertEqual(saved[1]['scene'], 'F1 \u00e9')
+
+    def test_a_long_lane_reaches_the_app_whole(self):
+        # Through the real emitter: the line must stay under PyMOL's ~1 KB
+        # feedback cap whatever the lane's size, and the file holds it all.
+        appkit_movie._emit_timeline = type(self).real_emit
+        from pymol import raymol_tmp
+        items = [dict(ITEMS[0], id='cam-%03d' % i) for i in range(200)]
+        out = io.StringIO()
+        sink = types.ModuleType('pcatch')
+        sink.write = out.write
+        with mock.patch.dict(sys.modules, {'pcatch': sink}):
+            appkit_movie._emit_timeline(items, False)
+        self.assertEqual(out.getvalue(), 'TIMELINE:ready\n')
+        with open(raymol_tmp.channel_path('pymol_timeline'), encoding='utf-8') as handle:
+            self.assertEqual(json.load(handle),
+                             {'items': items, 'untrackedMovie': False})

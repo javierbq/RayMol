@@ -15,6 +15,8 @@ Kept as a bundled module (not an inline Swift string) so it stays readable and
 testable. Mirrors the appkit_inspector.poll pattern.
 """
 
+import copy
+
 from pymol import cmd
 
 
@@ -536,6 +538,13 @@ def forget_all_views():
     _timeline = None
 
 
+def reset():
+    """Empty the lane after a full `reinitialize`, which drops the core movie
+    and scenes it describes, and tell the app so it empties its copy too."""
+    forget_all_views()
+    _emit_timeline([])
+
+
 def stage_timeline(items_json):
     """Keep Swift's editable item list (a JSON list of item dicts) for the next
     session save. An empty list empties the lane."""
@@ -557,16 +566,23 @@ def rename_scene(old, new):
 
 
 def _emit_timeline(items, untracked_movie=False):
-    """Hand a restored lane to the app: `TIMELINE:<b64 json>` with the item
-    list and whether the session carries a movie no lane describes (an older
-    .pse), which the first Timeline add must not replace unasked. Base64
-    because scene names may hold any character; pcatch when embedded, like
+    """Hand a restored lane to the app: the item list and whether the session
+    carries a movie no lane describes (an older .pse), which the first
+    Timeline add must not replace unasked. The payload goes to the
+    `pymol_timeline` tempfile channel and only `TIMELINE:ready` rides the
+    feedback line: a lane of a few items is already over PyMOL's ~1 KB line
+    cap, and a split line would not parse. pcatch when embedded, like
     raymol_scenes._emit_rename."""
-    import base64
     import json
+    from pymol import raymol_tmp
     payload = {'items': items or [], 'untrackedMovie': bool(untracked_movie)}
-    line = 'TIMELINE:' + base64.b64encode(
-        json.dumps(payload).encode('utf-8')).decode('ascii')
+    try:
+        with open(raymol_tmp.channel_path('pymol_timeline'), 'w', encoding='utf-8') as handle:
+            json.dump(payload, handle)
+    except Exception as e:
+        print('MOVIE_ERR:' + str(e))
+        return
+    line = 'TIMELINE:ready'
     try:
         import pcatch
         pcatch.write(line + '\n')
@@ -585,7 +601,9 @@ def session_save(session, **_kwargs):
         ids = _camera_ids(_timeline)
         session[SESSION_KEY] = {
             'version': 1,
-            'items': _timeline,
+            # copies: the session dict must not share records with the live
+            # lane, which a later scene rename edits in place
+            'items': copy.deepcopy(_timeline),
             'views': {i: list(_views[i]) for i in ids if i in _views},
             'states': {i: dict(_states[i]) for i in ids if i in _states},
         }
@@ -608,12 +626,13 @@ def session_restore(session, *, _self=None, **_kwargs):
     _views.clear()
     _states.clear()
     if isinstance(items, list) and items:
-        _timeline = items
+        # a copy, so editing the live lane never edits the restored snapshot
+        _timeline = copy.deepcopy(items)
         for k, v in (value.get('views') or {}).items():
             _views[str(k)] = list(v)
         for k, v in (value.get('states') or {}).items():
             _states[str(k)] = dict(v)
-        _emit_timeline(items)
+        _emit_timeline(_timeline)
     else:
         _timeline = None
         try:
