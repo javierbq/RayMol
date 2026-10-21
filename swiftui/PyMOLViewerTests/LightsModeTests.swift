@@ -883,6 +883,68 @@ final class SceneRenameTimelineTests: XCTestCase {
     }
 }
 
+// MARK: - Timeline in the session (#901)
+
+/// The lane's JSON records (staged in appkit_movie, written to the .pse) and
+/// the TIMELINE: line a session load emits. The Python half is
+/// testing/tests/raymol/timeline_session.py, whose ITEMS use these keys.
+final class TimelineSessionTests: XCTestCase {
+
+    private func lane() -> [PyMOLEngine.TimelineItem] {
+        [
+            .init(kind: .camera),
+            .init(kind: .scene(name: "Café: intro"),
+                  transition: .init(seconds: 3.5, linear: true), pinnedState: 2),
+            .init(kind: .camera, transition: .init(seconds: 1.5, linear: false), atFrame: 40),
+            .init(kind: .states(.init(objects: ["nmr"], mode: .loop, firstModel: 2,
+                                      lastModel: 9, durationSeconds: 6))),
+            .init(kind: .states(.init())),
+        ]
+    }
+
+    private func line(_ records: [PyMOLEngine.TimelineRecord], untracked: Bool) throws -> String {
+        struct Payload: Encodable { var items: [PyMOLEngine.TimelineRecord]; var untrackedMovie: Bool }
+        let data = try JSONEncoder().encode(Payload(items: records, untrackedMovie: untracked))
+        return "TIMELINE:" + data.base64EncodedString()
+    }
+
+    func testRecordsRoundTripEveryKind() {
+        let items = lane()
+        let back = PyMOLEngine.timelineItems(from: PyMOLEngine.timelineRecords(items))
+        XCTAssertEqual(back, items)
+    }
+
+    func testRestoreEventCarriesTheLane() throws {
+        let items = lane()
+        let parsed = PyMOLEngine.timelineRestoreEvent(
+            try line(PyMOLEngine.timelineRecords(items), untracked: false))
+        XCTAssertEqual(parsed?.items, items)
+        XCTAssertEqual(parsed?.untrackedMovie, false)
+    }
+
+    func testRestoreEventOfAnOldSessionReportsItsMovie() throws {
+        let parsed = PyMOLEngine.timelineRestoreEvent(try line([], untracked: true))
+        XCTAssertEqual(parsed?.items, [])
+        XCTAssertEqual(parsed?.untrackedMovie, true)
+    }
+
+    func testUnreadableRecordsAreDropped() throws {
+        let items = lane()
+        var records = PyMOLEngine.timelineRecords(items)
+        records[0].id = "not-a-uuid"
+        records[1].kind = "hologram"
+        let parsed = PyMOLEngine.timelineRestoreEvent(try line(records, untracked: false))
+        XCTAssertEqual(parsed?.items, Array(items.dropFirst(2)))
+    }
+
+    func testOtherLinesAreNotRestoreEvents() {
+        XCTAssertNil(PyMOLEngine.timelineRestoreEvent("PLAYBACK:{}"))
+        XCTAssertNil(PyMOLEngine.timelineRestoreEvent("TIMELINE:not base64!"))
+        XCTAssertNil(PyMOLEngine.timelineRestoreEvent(
+            "TIMELINE:" + Data("{\"items\":7}".utf8).base64EncodedString()))
+    }
+}
+
 // MARK: - Mouse legend in Lights mode (#677)
 
 final class MouseLegendPresentationTests: XCTestCase {

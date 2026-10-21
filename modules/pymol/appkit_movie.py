@@ -498,14 +498,18 @@ def append_template(kind, duration=8.0, axis='y', angle=30.0,
 # + scene markers) joined by transitions (duration + easing). Swift owns the
 # order/timing/easing (the things the UI edits); Python owns the heavy camera
 # view matrices, keyed by the item's UUID. On every edit Swift calls rebuild()
-# with the ordered spec and we lay a fresh movie. Session-scoped (the dict lives
-# for the process, like the Swift-side item list) — not restored from a .pse.
-# Alongside each view we keep the model every multi-state object showed when
-# the item was captured (#579), so a camera item holds that model instead of
-# sweeping the ensemble.
+# with the ordered spec and we lay a fresh movie. Alongside each view we keep
+# the model every multi-state object showed when the item was captured (#579),
+# so a camera item holds that model instead of sweeping the ensemble.
+#
+# Swift also stages its editable item list here (stage_timeline) so the lane
+# rides in the .pse under `raymol_timeline` with the views it needs (#901).
 
 _views = {}
 _states = {}   # cam UUID -> {objname: state} at capture time
+_timeline = None   # the item list Swift staged last; None = empty lane
+
+SESSION_KEY = 'raymol_timeline'
 
 
 def capture_view(cam_id):
@@ -524,9 +528,100 @@ def forget_view(cam_id):
 
 
 def forget_all_views():
-    """Drop every stored camera view (timeline cleared / new session)."""
+    """Drop every stored camera view and the staged lane (timeline cleared /
+    new session)."""
+    global _timeline
     _views.clear()
     _states.clear()
+    _timeline = None
+
+
+def stage_timeline(items_json):
+    """Keep Swift's editable item list (a JSON list of item dicts) for the next
+    session save. An empty list empties the lane."""
+    global _timeline
+    import json
+    try:
+        items = json.loads(items_json)
+        _timeline = items if isinstance(items, list) and items else None
+    except Exception as e:
+        print('MOVIE_ERR:' + str(e))
+
+
+def rename_scene(old, new):
+    """Re-key the staged lane's scene items (#655), so a session saved before
+    the app restages still names the scene the .pse holds."""
+    for it in _timeline or []:
+        if isinstance(it, dict) and it.get('kind') == 'scene' and it.get('scene') == old:
+            it['scene'] = new
+
+
+def _emit_timeline(items, untracked_movie=False):
+    """Hand a restored lane to the app: `TIMELINE:<b64 json>` with the item
+    list and whether the session carries a movie no lane describes (an older
+    .pse), which the first Timeline add must not replace unasked. Base64
+    because scene names may hold any character; pcatch when embedded, like
+    raymol_scenes._emit_rename."""
+    import base64
+    import json
+    payload = {'items': items or [], 'untrackedMovie': bool(untracked_movie)}
+    line = 'TIMELINE:' + base64.b64encode(
+        json.dumps(payload).encode('utf-8')).decode('ascii')
+    try:
+        import pcatch
+        pcatch.write(line + '\n')
+    except ImportError:
+        print(line)
+
+
+def _camera_ids(items):
+    return [str(it.get('id')) for it in items or []
+            if isinstance(it, dict) and it.get('kind') == 'camera']
+
+
+def session_save(session, **_kwargs):
+    """Write the staged lane and the camera views its items use (#901)."""
+    if _timeline:
+        ids = _camera_ids(_timeline)
+        session[SESSION_KEY] = {
+            'version': 1,
+            'items': _timeline,
+            'views': {i: list(_views[i]) for i in ids if i in _views},
+            'states': {i: dict(_states[i]) for i in ids if i in _states},
+        }
+    return 1
+
+
+def session_restore(session, *, _self=None, **_kwargs):
+    """Replace the lane and its views with the session's and tell the app.
+    A session with no lane empties it, and reports whether the session still
+    carries a movie of its own (left as it is). A partial restore
+    (`load x.pse, partial=1`) leaves the live lane alone, as the core leaves
+    the movie (#617)."""
+    global _timeline
+    from pymol import raymol_scenes
+    _self = cmd if _self is None else _self
+    if raymol_scenes.restoring_partial(_self):
+        return 1
+    value = session.get(SESSION_KEY)
+    items = value.get('items') if isinstance(value, dict) else None
+    _views.clear()
+    _states.clear()
+    if isinstance(items, list) and items:
+        _timeline = items
+        for k, v in (value.get('views') or {}).items():
+            _views[str(k)] = list(v)
+        for k, v in (value.get('states') or {}).items():
+            _states[str(k)] = dict(v)
+        _emit_timeline(items)
+    else:
+        _timeline = None
+        try:
+            untracked = int(_self.get_movie_length()) > 0
+        except Exception:
+            untracked = False
+        _emit_timeline([], untracked)
+    return 1
 
 
 def capture_template_views(ids_json, kind, axis='y', angle=30.0):
