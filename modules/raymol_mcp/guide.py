@@ -68,6 +68,7 @@ RENDER EFFECTS  (tool set_render_effects; raymol_help effects)
   (+ _aperture, _focus, _autofocus), metal_tonemap, metal_exposure,
   metal_msaa. Use these, not ray_shadows / ray_trace_mode /
   ambient_occlusion_mode.
+    dof_focus organic        (depth of field focused on a selection)
 
 IMAGES AND MOVIES  (tools capture_viewport, export_image, export_movie)
   export_image writes the app's Save Image render (Metal, optional ray
@@ -89,6 +90,12 @@ METRICS  (raymol_help metrics_list)
   metrics_list, metrics_get, metrics_color (colour by pLDDT and other
   per-residue metrics), metrics_export, metrics_load.
 
+GLYCANS
+  glycocartoon draws SNFG symbols for the glycans in a selection,
+  glycocolor applies SNFG colours, glycocartoon_hide removes them;
+  glyco_tree prints the glycan tree as JSON.
+    glycocartoon all
+
 OTHER ADDITIONS
   usalign (TM-align superposition), box_select, fasta, scenes that also
   recall lights, settings and object motion, and Move mode / the Timeline in
@@ -96,6 +103,14 @@ OTHER ADDITIONS
 
 Ask raymol_help with any command name for its full manual.
 """
+
+# Commands added after the MCP guard's snapshot (testing/tests/
+# test_mcp_command_coverage.py) that agents should NOT be pointed at, each
+# with the reason: UI plumbing, test hooks, internals. Every other new command
+# must be named in GUIDE (or INSTRUCTIONS) so MCP clients learn it exists.
+NOT_FOR_AGENTS = {
+    # "name": "why agents never need it",
+}
 
 _EFFECTS_HELP = """\
 RENDER EFFECTS (set_render_effects field -> setting)
