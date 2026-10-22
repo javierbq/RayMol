@@ -949,6 +949,15 @@ def poll_panel():
         _designing.pump()
     except Exception:
         pass
+    # Morph job pump, for exactly the same reason the design pump is here: a leg
+    # whose heavy computation finished on a worker thread lands on the session HERE,
+    # on the main thread. Its own try, and before the object list is gathered, so a
+    # morph leg that lands this tick appears in the object list on the same tick.
+    try:
+        from pymol import morph_jobs as _mj
+        _mj.pump()
+    except Exception:
+        pass
     try:
         objs = list(cmd.get_names('public_objects') or [])
         sels = list(cmd.get_names('public_selections') or [])
@@ -991,6 +1000,20 @@ def poll_panel():
         #
         # Same cost discipline: normally empty, O(pending) and never O(objects).
         design_details, design_records = _pending_maps('designing')
+        # Morph jobs, through the same one pass. A morph's record has the SAME shape
+        # as a prediction's and a design's (pending_info publishes the same keys,
+        # deliberately), but it is a SEPARATE key rather than merged into `pending`:
+        # a running morph is a real object whose enable-toggle must stay active -- the
+        # user may want to hide it while it builds -- so its name must NOT enter
+        # `pending`, which greys and disables the row.
+        #
+        # Same cost discipline: normally empty, O(pending) and never O(objects).
+        # Its own try: a failure must NOT cost the panel its update (the outer except
+        # only prints OBJPANEL_ERR and writes no file, which would freeze the panel).
+        try:
+            _morph_details, morph_records = _pending_maps('morph_jobs')
+        except Exception:
+            morph_records = {}
         payload = {
             'objects': objs,
             'selections': sels,
@@ -1011,6 +1034,11 @@ def poll_panel():
             # that map's only consumer greys an object's enable-toggle -- and a design
             # placeholder needs greying for the same reason a prediction's does.
             'design_jobs': design_records,
+            # Morph progress tray. OPTIONAL on the Swift side, like design_jobs.
+            # NOT merged into `pending` -- a morph object's enable-toggle must stay active
+            # while the job runs (the user may hide it), so the name must never enter the
+            # map that greys and disables the row.
+            'morph_jobs': morph_records,
             # Alignments (#296). Not objects -- they have no geometry and nothing in
             # the Executive knows about them -- so the panel draws them as their own
             # section rather than as rows in the object list.
@@ -1022,6 +1050,16 @@ def poll_panel():
             'msa_searches': _search_map(),
             'msa_failures': _failure_map(),
         }
+        # Completed morphs with their source and spec. OPTIONAL on the Swift side,
+        # like design_jobs and morph_jobs. Its own try: a failure must not cost the
+        # panel its update. Gathered after the payload dict so a morph that completes
+        # this tick (via the pump above) appears in both morph_jobs (empty, done) and
+        # morph (source + spec) on the same tick rather than one tick apart.
+        try:
+            from pymol import morph_jobs as _mj_src
+            payload['morph'] = _mj_src.morph_sources()
+        except Exception:
+            payload['morph'] = {}
         # Design-mode selection fingerprint. Computed inside raymol_design and
         # GATED there on Design mode being active, so this main-thread 500 ms poll
         # pays a single boolean check whenever Design mode is off (PR #270 made

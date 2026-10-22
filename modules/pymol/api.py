@@ -387,6 +387,12 @@ from .morphing import \
     morph
 
 #--------------------------------------------------------------------
+from .morph_jobs import \
+    morph_object,        \
+    morph_cancel,        \
+    morph_dismiss
+
+#--------------------------------------------------------------------
 from . import moving
 from .moving import \
       madd,              \
