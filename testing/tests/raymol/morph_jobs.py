@@ -12,7 +12,8 @@ Tests that:
   - MorphJob pipeline: start_job / step / pump land one leg at a time,
     morph_object(async_=0) runs it to completion, cancel deletes the partial
     object, the pending surface publishes designing-shaped records, and the
-    reuse and explicit-name rules hold
+    reuse and explicit-name rules hold, and pump() builds the representations
+    of the frames it lands while the morph is still hidden
   - morph_object(async_=1) computes legs on a worker thread and pump() lands
     them: completion, cancel between legs, cancel while a leg is in flight
     (ends 'cancelled', never 'error'), source deleted mid-job, a worker
@@ -442,6 +443,59 @@ class TestMorphJobPipeline(testing.PyMOLTestCase):
         mj.pump()
         mj.pump()                             # no-op after done, never raises
         self.assertEqual(cmd.count_states('src_morph'), 120)
+
+    def built_states(self, name):
+        '''States of *name* whose cartoon representation exists, read without
+        building any: with update=0 the surface-pick prepare call only looks
+        at the reps the drawn state already has (it counts one pick grid per
+        existing pickable rep).  *name* must be enabled.'''
+        from pymol.cmd import _cmd
+        from pymol.constants import repmasks
+        built = []
+        for state in range(1, cmd.count_states(name) + 1):
+            cmd.set('state', state, name)
+            with cmd.lockcm:
+                accels, _, _ = _cmd.surface_pick_prepare(
+                    cmd._COb, [name], repmasks['cartoon'], 0, 1)
+            if accels:
+                built.append(state)
+        return built
+
+    def testFramesAreBuiltWhileHidden(self):
+        # The core builds an object's representations only while it is in
+        # the scene, and an object with its own `state` setting (per-object
+        # playback) gets every state built in one update.  A morph that grew
+        # hidden made the first frame after completion build all of it: a
+        # 1.5-2 s frame for 1200 frames of 2kpo.  pump() builds each pump's
+        # frames while the morph is still hidden, so only the frames landed
+        # by the pump that completes the job are left for that first frame.
+        self.ensemble()
+        cmd.show_as('cartoon', 'src')
+        job = mj.start_job('src', frames_per_model=5)
+        while job.step():
+            mj.pump()
+        mj.pump()
+        self.assertEqual(job.state, 'done')
+        n = cmd.count_states('src_morph')
+        last_leg = set(range(2 + (job.legs - 1) * 5, n + 1))   # the completing pump's
+        self.assertEqual(len(last_leg), 4)
+        unbuilt = set(range(1, n + 1)) - set(self.built_states('src_morph'))
+        self.assertEqual(unbuilt - last_leg, set())
+
+    def testPrebuildLeavesUserVisibilityAlone(self):
+        # Building while hidden toggles the morph into the scene for one update
+        # phase; a morph the user switched on mid-build stays on, and a hidden
+        # one is hidden again before anything can draw it.
+        self.ensemble()
+        cmd.show_as('cartoon', 'src')
+        job = mj.start_job('src', frames_per_model=5)
+        job.step()
+        mj.pump()
+        self.assertNotIn('src_morph', cmd.get_names('objects', enabled_only=1))
+        cmd.enable('src_morph')
+        job.step()
+        mj.pump()
+        self.assertIn('src_morph', cmd.get_names('objects', enabled_only=1))
 
     def testAsyncDrivenByPump(self):
         self.ensemble()

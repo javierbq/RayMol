@@ -382,6 +382,8 @@ class MorphJob(object):
         self._finalised = False     # terminal and cleaned up on the main thread
         self._dismissed = False
         self._sculpting = False
+        self._unbuilt = 0           # landed frames whose reps are not built yet
+        self._build_cost = 0.0      # seconds per frame of the last _prebuild
 
     def step(self):
         '''Compute the next leg into the queue; False when none remain or the
@@ -577,10 +579,13 @@ def _advance(job, deadline, _self):
         raise pymol.CmdException(
             'morph: %s was deleted while it was being built' % job.name)
     try:
-        while _unit(job, deadline, _self) and time.monotonic() < deadline:
+        # leave room in the budget for building what landed (_prebuild)
+        while (_unit(job, deadline, _self) and
+               time.monotonic() + job._unbuilt * job._build_cost < deadline):
             pass
     finally:
         _sculpt_off(job, _self)
+    _prebuild(job, _self)
 
 
 def _wait_for_leg(job, deadline):
@@ -628,6 +633,7 @@ def _land_frame(job, _self):
     intermediate; title the leg once its key frame is in.'''
     leg, frames, k = job._landing
     _self.load_coordset(frames[k], job.name, 0)
+    job._unbuilt += 1
     if k + 1 < len(frames):
         job._landing[2] = k + 1
         if job.spec['refinement'] > 0:
@@ -665,6 +671,45 @@ def _sculpt_off(job, _self):
         _self.flag('fix', job.name, 'clear', quiet=1)
     except Exception:
         pass                                # the object is already gone
+
+
+def _prebuild(job, _self):
+    '''Build the representations of the frames landed since the last call
+    while the morph is still hidden.
+
+    The core builds an object's representations only while it is in the
+    scene, and for an object with its own ``state`` setting (per-object
+    playback) it builds every state in one update (PyMOL's
+    ObjectAdjustStateRebuildRange).  A morph that grew hidden therefore made
+    the first frame after completion build all of it: a 1.5-2 s frame for
+    1200 frames of 2kpo.  Here the morph joins the scene for one update
+    phase (no frame is drawn while pump runs), which builds only its frames
+    without representations, and leaves it again.
+
+    Skipped when it cannot help: a morph the user switched on is built by the
+    frames that draw it; with defer_builds_mode >= 1 the update builds only
+    the current state, and at >= 3 disabling would also purge what it built.'''
+    if not job._unbuilt or job.state not in _ACTIVE:
+        return
+    from pymol import _cmd
+    prepare = getattr(_cmd, 'surface_pick_prepare', None)
+    name = job.name
+    if (prepare is None or _self.get_setting_int('defer_builds_mode') != 0
+            or name in _self.get_names('objects', enabled_only=1)):
+        job._unbuilt = 0
+        return
+    t = time.monotonic()
+    _self.enable(name)
+    try:
+        with _self.lockcm:
+            # update phase only: reps mask 0, update 1, build 0 (layer4/Cmd.cpp)
+            prepare(_self._COb, [name], 0, 1, 0)
+    except Exception:
+        pass                                # e.g. a modal draw owns the core
+    finally:
+        _self.disable(name)
+    job._build_cost = (time.monotonic() - t) / job._unbuilt
+    job._unbuilt = 0
 
 
 def _complete(job, _self):
