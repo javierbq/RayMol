@@ -110,6 +110,30 @@ final class MorphEngineTests: XCTestCase {
         XCTAssertFalse(engine.playingObjects.contains("t8b_src_morph"))
     }
 
+    // MARK: - statesClipRange
+
+    /// Plain clip (no morphStride) passes firstModel/lastModel through unchanged.
+    func testStatesClipRangePlain() {
+        let s = PyMOLEngine.StatesSpec(objects: ["x"], firstModel: 3, lastModel: 8)
+        XCTAssertTrue(PyMOLEngine.statesClipRange(spec: s, models: 20, currentStride: nil) == (3, 8))
+    }
+
+    /// Morph clip maps model indices to absolute states using the current stride.
+    /// Re-morphing with a different stride (currentStride != morphStride) remaps correctly.
+    func testStatesClipRangeMorphRemaps() {
+        var s = PyMOLEngine.StatesSpec(objects: ["x_morph"], firstModel: 3, lastModel: 8)
+        s.morphStride = 15
+        XCTAssertTrue(PyMOLEngine.statesClipRange(spec: s, models: 20, currentStride: 15) == (31, 106))
+        XCTAssertTrue(PyMOLEngine.statesClipRange(spec: s, models: 20, currentStride: 10) == (21, 71))
+    }
+
+    /// Full model range produces the (1, 0) sentinel so PyMOL sweeps all states.
+    func testStatesClipRangeMorphFull() {
+        var s = PyMOLEngine.StatesSpec(objects: ["x_morph"], firstModel: 1, lastModel: 20)
+        s.morphStride = 15
+        XCTAssertTrue(PyMOLEngine.statesClipRange(spec: s, models: 20, currentStride: 15) == (1, 0))
+    }
+
     // MARK: - State slider
 
     /// A tick mark per state is O(states) AppKit work on every layout pass (on

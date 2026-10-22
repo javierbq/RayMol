@@ -527,6 +527,11 @@ final class PyMOLEngine: ObservableObject {
         var firstModel: Int = 1               // play models firstModel..lastModel
         var lastModel: Int = 0                // 0 = through the object's last model
         var durationSeconds: Double = 4.0
+        // When non-nil this clip was authored for a morph object. firstModel/lastModel
+        // are logical model indices (1-based); they are converted to absolute PyMOL
+        // states at rebuild time using the morph's CURRENT framesPerModel stride so
+        // a re-morph with a different stride keeps the clip covering the same models.
+        var morphStride: Int? = nil
     }
     struct TimelineItem: Identifiable, Equatable {
         enum Kind: Equatable { case camera; case scene(name: String); case states(StatesSpec) }
@@ -2678,9 +2683,30 @@ final class PyMOLEngine: ObservableObject {
                 let objs = spec.objects.map {
                     "[" + $0.map { "\"\($0)\"" }.joined(separator: ",") + "]"
                 } ?? "null"
+                // Morph clips (morphStride != nil, single named object): remap
+                // model indices to absolute states using the current stride so a
+                // re-morph with different framesPerModel keeps the same models.
+                var first = spec.firstModel, last = spec.lastModel
+                if let morphStride = spec.morphStride,
+                   let name = spec.objects?.first,
+                   spec.objects?.count == 1 {
+                    let currentStride = morphSpecs[name]?.framesPerModel
+                    let models: Int = {
+                        if let src = morphSources[name],
+                           let srcObj = objects.first(where: { $0.name == src }) {
+                            return srcObj.stateCount
+                        }
+                        let s = currentStride ?? morphStride
+                        let n = objects.first(where: { $0.name == name })?.stateCount ?? s
+                        return max(1, n / s)
+                    }()
+                    let r = Self.statesClipRange(spec: spec, models: models,
+                                                 currentStride: currentStride)
+                    first = r.first; last = r.last
+                }
                 parts.append("{\"frame\":\(start),\"end\":\(end),\"states\":1,"
                     + "\"objects\":\(objs),\"mode\":\"\(spec.mode.rawValue)\","
-                    + "\"first\":\(spec.firstModel),\"last\":\(spec.lastModel)}")
+                    + "\"first\":\(first),\"last\":\(last)}")
             }
         }
         let json = "[" + parts.joined(separator: ",") + "]"
@@ -2698,12 +2724,43 @@ final class PyMOLEngine: ObservableObject {
     }
     var maxStateCount: Int { objects.map { $0.stateCount }.max() ?? 1 }
 
+    // Convert a StatesSpec's model window to absolute PyMOL state numbers.
+    //
+    // When `spec.morphStride` is nil the clip is a plain states clip and the
+    // spec's firstModel/lastModel values are returned unchanged (byte-identical
+    // JSON). When morphStride is set the clip was authored for a morph object;
+    // model indices are mapped to absolute states using the CURRENT stride
+    // (currentStride) — or the recorded stride (morphStride) when the morph is
+    // no longer loaded — so a re-morph with different framesPerModel still plays
+    // the intended models.
+    static func statesClipRange(
+        spec: StatesSpec,
+        models: Int,
+        currentStride: Int?
+    ) -> (first: Int, last: Int) {
+        guard let morphStride = spec.morphStride else {
+            return (spec.firstModel, spec.lastModel)
+        }
+        let stride = currentStride ?? morphStride
+        return MorphClipMapping.absoluteRange(
+            firstModel: spec.firstModel,
+            lastModel: spec.lastModel,
+            models: models,
+            stride: stride
+        )
+    }
+
     // Append a "Play models" states clip (sweeps a model range over `seconds`).
+    // morphStride: when non-nil, firstModel/lastModel are logical model indices
+    // for the named morph object; they are remapped to absolute states at each
+    // rebuild using the morph's current framesPerModel.
     func appendStatesClip(objects: [String]? = nil, mode: StatesMode = .sweep,
-                          firstModel: Int = 1, lastModel: Int = 0, seconds: Double = 4.0) {
+                          firstModel: Int = 1, lastModel: Int = 0, seconds: Double = 4.0,
+                          morphStride: Int? = nil) {
         guard isReady else { return }
-        let spec = StatesSpec(objects: objects, mode: mode,
+        var spec = StatesSpec(objects: objects, mode: mode,
                               firstModel: firstModel, lastModel: lastModel, durationSeconds: seconds)
+        spec.morphStride = morphStride
         timelineItems.append(TimelineItem(kind: .states(spec)))
         rebuildMovie()
     }
