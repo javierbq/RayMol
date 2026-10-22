@@ -62,6 +62,50 @@ final class MorphSettingsTests: XCTestCase {
         XCTAssertNil(MorphSettings.conventionalSource(of: "plain", existing: ["plain"]))
     }
 
+    // MARK: - morphTarget
+
+    func testMorphTargetFromMorphCardIsTheCard() {
+        XCTAssertEqual(MorphSettings.morphTarget(card: "2kpo_morph2", source: "2kpo",
+                                                 objects: ["2kpo", "2kpo_morph2"], groups: [],
+                                                 morphSources: [:]),
+                       "2kpo_morph2")
+    }
+
+    func testMorphTargetNewMorph() {
+        XCTAssertEqual(MorphSettings.morphTarget(card: "2kpo", source: "2kpo", objects: ["2kpo"],
+                                                 groups: [], morphSources: [:]),
+                       "2kpo_morph")
+    }
+
+    /// After a session reload Python has no job record: unnamed it would build
+    /// `2kpo_morph2` while the sheet said `2kpo_morph`.
+    func testMorphTargetRestoredMorphIsRebuilt() {
+        XCTAssertEqual(MorphSettings.morphTarget(card: "2kpo", source: "2kpo",
+                                                 objects: ["2kpo", "2kpo_morph"], groups: [],
+                                                 morphSources: [:]),
+                       "2kpo_morph")
+        // the same when this session built it
+        XCTAssertEqual(MorphSettings.morphTarget(card: "2kpo", source: "2kpo",
+                                                 objects: ["2kpo", "2kpo_morph"], groups: [],
+                                                 morphSources: ["2kpo_morph": "2kpo"]),
+                       "2kpo_morph")
+    }
+
+    /// Not this source's morph: a group of that name, or a known morph of another
+    /// object. Python's fallback (`_morph2`, first free or own) is mirrored.
+    func testMorphTargetSkipsWhatIsNotThisSourcesMorph() {
+        XCTAssertEqual(MorphSettings.morphTarget(card: "2kpo", source: "2kpo",
+                                                 objects: ["2kpo", "2kpo_morph"],
+                                                 groups: ["2kpo_morph"], morphSources: [:]),
+                       "2kpo_morph2")
+        XCTAssertEqual(MorphSettings.morphTarget(
+                           card: "2kpo", source: "2kpo",
+                           objects: ["2kpo", "2kpo_morph", "2kpo_morph2", "2kpo_morph3"],
+                           groups: [],
+                           morphSources: ["2kpo_morph": "other", "2kpo_morph3": "2kpo"]),
+                       "2kpo_morph3")   // _morph2 is not known to be ours
+    }
+
     // MARK: - UserDefaults round-trip
 
     func testDefaultsRoundTrip() {
@@ -96,6 +140,12 @@ final class MorphSettingsTests: XCTestCase {
                                    source: "2kpo", target: "2kpo_morph",
                                    isMorphObject: true),
             "20 models → 300 frames · 10 s at 30 fps · ≈ 29 MB · rebuilds 2kpo_morph")
+        // From the source, when its morph is already loaded (e.g. after a reload)
+        XCTAssertEqual(
+            MorphSheet.summaryLine(sum, models: 20, fps: 30, showBytes: true,
+                                   source: "2kpo", target: "2kpo_morph",
+                                   isMorphObject: false, targetExists: true),
+            "20 models → 300 frames · 10 s at 30 fps · ≈ 29 MB · rebuilds 2kpo_morph, hides 2kpo")
     }
 
     func testSheetSummaryOmitsBytesWithoutAtomsAndGuardsZeroFPS() {

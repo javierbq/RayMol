@@ -126,6 +126,44 @@ struct MorphSettings: Codable, Equatable {
         let source = String(name[sourceRange])
         return existing.contains(source) ? source : nil
     }
+
+    /// The object a Morph started from `card` writes (spec §5.2: Morph always
+    /// rebuilds the source's morph object). The card passes it to `morph_object`
+    /// as `name`, so the sheet's "creates …"/"rebuilds …" line, the capsule's
+    /// running-job watch, auto-play and the job itself all name the same object.
+    ///
+    /// - A morph's own card (`card != source`): the card itself, rebuilt in place.
+    /// - A source's card: `<source>_morph`, also when an object of that name is
+    ///   already loaded. After a session reload Python has no job record for it
+    ///   and, given no name, would build `<source>_morph2`, which the sheet never
+    ///   mentioned; named, its explicit-name rule (the `<source>_morph` convention,
+    ///   molecular objects only) rebuilds it in place. A group of that name, or a
+    ///   morph known to belong to another source, is not this source's morph:
+    ///   then Python's own fallback, the first `<source>_morphN` (N ≥ 2) that is
+    ///   free or a known morph of this source.
+    ///
+    /// - Parameters:
+    ///   - objects: names of the loaded objects (the panel's object list).
+    ///   - groups: the names in `objects` that are groups.
+    ///   - morphSources: completed morphs of this session, morph → source.
+    static func morphTarget(card: String, source: String, objects: [String],
+                            groups: Set<String>, morphSources: [String: String]) -> String {
+        if card != source { return card }
+        let base = morphName(for: source)
+        let ours = !objects.contains(base)
+            || (!groups.contains(base)
+                && conventionalSource(of: base, existing: objects) == source
+                && (morphSources[base] ?? source) == source)
+        if ours { return base }
+        var n = 2
+        while true {
+            let candidate = "\(base)\(n)"
+            if !objects.contains(candidate) || morphSources[candidate] == source {
+                return candidate
+            }
+            n += 1
+        }
+    }
 }
 
 // MARK: - MorphClipMapping

@@ -26,6 +26,9 @@ struct MorphSheet: View {
     /// The settings that built the morph, when the sheet is opened on one.
     let existingSettings: MorphSettings?
     let isMorphObject: Bool
+    /// Whether `target` is already loaded, so the job replaces it: a source's
+    /// morph restored from a session is rebuilt rather than created.
+    var targetExists: Bool = false
     /// Whether the source is known to show a surface or mesh, which the morph
     /// does not carry over (spec §5.5).
     var sourceShowsSurfaceOrMesh: Bool = false
@@ -38,6 +41,7 @@ struct MorphSheet: View {
 
     init(source: String, target: String, models: Int, atoms: Int?, fps: Double,
          existingSettings: MorphSettings?, isMorphObject: Bool,
+         targetExists: Bool = false,
          sourceShowsSurfaceOrMesh: Bool = false,
          onMorph: @escaping (MorphSettings) -> Void,
          onDelete: (() -> Void)?,
@@ -46,6 +50,7 @@ struct MorphSheet: View {
         self.models = models; self.atoms = atoms; self.fps = fps
         self.existingSettings = existingSettings
         self.isMorphObject = isMorphObject
+        self.targetExists = targetExists
         self.sourceShowsSurfaceOrMesh = sourceShowsSurfaceOrMesh
         self.onMorph = onMorph; self.onDelete = onDelete; self.onCancel = onCancel
         // Start from the saved defaults and lay a re-morphed object's own spec over
@@ -136,7 +141,8 @@ struct MorphSheet: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(Self.summaryLine(summary, models: models, fps: fps,
                                       showBytes: atoms != nil, source: source,
-                                      target: target, isMorphObject: isMorphObject))
+                                      target: target, isMorphObject: isMorphObject,
+                                      targetExists: targetExists))
                     .foregroundStyle(tier == .ok ? Color.secondary : Color.orange)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("morphSheet.summary")
@@ -196,14 +202,19 @@ struct MorphSheet: View {
 
     /// "20 models → 300 frames · 10 s at 30 fps · ≈ 29 MB · creates 2kpo_morph,
     /// hides 2kpo". `showBytes` false drops the estimate (atom count unknown).
+    /// From a source whose morph is already loaded (`targetExists`) it reads
+    /// "rebuilds 2kpo_morph, hides 2kpo"; on the morph itself, "rebuilds 2kpo_morph".
     static func summaryLine(_ s: MorphSettings.Summary, models: Int, fps: Double,
                             showBytes: Bool, source: String, target: String,
-                            isMorphObject: Bool) -> String {
+                            isMorphObject: Bool, targetExists: Bool = false) -> String {
         var parts = ["\(models) models → \(s.frames) frames",
                      "\(number(s.seconds)) s at \(number(max(fps, 1))) fps"]
         if showBytes { parts.append(megabytes(s.bytes)) }
-        parts.append(isMorphObject ? "rebuilds \(target)"
-                                   : "creates \(target), hides \(source)")
+        if isMorphObject {
+            parts.append("rebuilds \(target)")
+        } else {
+            parts.append("\(targetExists ? "rebuilds" : "creates") \(target), hides \(source)")
+        }
         return parts.joined(separator: " · ")
     }
 
