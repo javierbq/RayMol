@@ -510,6 +510,7 @@ def append_template(kind, duration=8.0, axis='y', angle=30.0,
 _views = {}
 _states = {}   # cam UUID -> {objname: state} at capture time
 _timeline = None   # the item list Swift staged last; None = empty lane
+_staged_rev = 0    # the app's revision of that list, echoed back on emit
 
 SESSION_KEY = 'raymol_timeline'
 
@@ -545,12 +546,16 @@ def reset():
     _emit_timeline([])
 
 
-def stage_timeline(items_json):
+def stage_timeline(items_json, rev=None):
     """Keep Swift's editable item list (a JSON list of item dicts) for the next
-    session save. An empty list empties the lane."""
-    global _timeline
+    session save. An empty list empties the lane. `rev` is the app's revision
+    of the list; _emit_timeline echoes the last one so the app can drop a
+    notice that predates its own later edits."""
+    global _timeline, _staged_rev
     import json
     try:
+        if rev is not None:
+            _staged_rev = int(rev)
         items = json.loads(items_json)
         _timeline = items if isinstance(items, list) and items else None
     except Exception as e:
@@ -575,7 +580,8 @@ def _emit_timeline(items, untracked_movie=False):
     raymol_scenes._emit_rename."""
     import json
     from pymol import raymol_tmp
-    payload = {'items': items or [], 'untrackedMovie': bool(untracked_movie)}
+    payload = {'items': items or [], 'untrackedMovie': bool(untracked_movie),
+               'rev': _staged_rev}
     try:
         with open(raymol_tmp.channel_path('pymol_timeline'), 'w', encoding='utf-8') as handle:
             json.dump(payload, handle)
@@ -596,8 +602,11 @@ def _camera_ids(items):
 
 
 def session_save(session, **_kwargs):
-    """Write the staged lane and the camera views its items use (#901)."""
-    if _timeline:
+    """Write the staged lane and the camera views its items use (#901). Not
+    into a partial session (`save x.pse, partial=1`): it carries no movie, so
+    a lane restored from it would describe frames that are not there. The
+    core marks one with a `partial` key whose value is None."""
+    if _timeline and 'partial' not in session:
         ids = _camera_ids(_timeline)
         session[SESSION_KEY] = {
             'version': 1,

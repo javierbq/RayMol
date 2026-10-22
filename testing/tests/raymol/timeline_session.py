@@ -145,6 +145,17 @@ class TimelineSessionTest(testing.PyMOLTestCase):
         self.assertIn('cam-1', appkit_movie._views)
         self.assertEqual(self.emitted, [])
 
+    def test_partial_save_leaves_the_lane_out(self):
+        cmd.reinitialize()
+        self.build()
+        saved = self.pse()
+        cmd.save(saved, partial=1)
+        appkit_movie.forget_all_views()
+        self.emitted.clear()
+        cmd.load(saved)
+        self.assertIsNone(appkit_movie._timeline)
+        self.assertEqual(self.emitted[-1][0], [])
+
     def test_empty_stage_empties_the_lane(self):
         appkit_movie.stage_timeline(json.dumps(ITEMS))
         appkit_movie.stage_timeline('[]')
@@ -210,4 +221,21 @@ class TimelineSessionTest(testing.PyMOLTestCase):
         self.assertEqual(out.getvalue(), 'TIMELINE:ready\n')
         with open(raymol_tmp.channel_path('pymol_timeline'), encoding='utf-8') as handle:
             self.assertEqual(json.load(handle),
-                             {'items': items, 'untrackedMovie': False})
+                             {'items': items, 'untrackedMovie': False,
+                              'rev': appkit_movie._staged_rev})
+
+    def test_notice_echoes_the_last_staged_revision(self):
+        # Clear Session -> add -> delayed notice (#910 review): the reset's
+        # notice carries the revision staged before it, so the app can tell
+        # it predates the add staged after it.
+        appkit_movie._emit_timeline = type(self).real_emit
+        from pymol import raymol_tmp
+        appkit_movie.stage_timeline('[]', rev=7)
+        sink = types.ModuleType('pcatch')
+        sink.write = lambda _line: None
+        with mock.patch.dict(sys.modules, {'pcatch': sink}):
+            cmd.reinitialize()
+        appkit_movie.stage_timeline(json.dumps(ITEMS[:1]), rev=8)
+        with open(raymol_tmp.channel_path('pymol_timeline'), encoding='utf-8') as handle:
+            self.assertEqual(json.load(handle)['rev'], 7)
+        self.assertEqual(appkit_movie._timeline, ITEMS[:1])
