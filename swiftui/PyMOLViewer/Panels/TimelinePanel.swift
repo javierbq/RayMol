@@ -1162,15 +1162,10 @@ private struct PlayModelsSheet: View {
             morphSources: engine.morphSources, building: Self.building(engine))
         // Python keeps an existing morph with the same spec and source fingerprint
         // (reuse); otherwise it builds, and the clip naming the morph fills in as legs
-        // land and is rebuilt when it completes.
-        if let m = plan.morph {
-            engine.morph(source: m.source, settings: m.settings, autoPlay: false,
-                         reuse: true, name: m.name, target: m.target)
-        }
-        engine.appendStatesClip(objects: plan.objects, mode: mode,
-                                firstModel: first, lastModel: last,
-                                seconds: duration, morphStride: plan.morphStride)
-        plan.save?.save()
+        // land and is rebuilt when it completes. One engine call, so a replace prompt
+        // over an untracked movie holds the morph along with its clip.
+        engine.addPlayModelsClip(plan, mode: mode, firstModel: first, lastModel: last,
+                                 seconds: duration)
         onClose()
     }
 

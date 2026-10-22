@@ -2932,6 +2932,26 @@ final class PyMOLEngine: ObservableObject {
         rebuildMovie()
     }
 
+    // The Play-models sheet's Add (morph spec §5.7): submit the morph the plan
+    // names (Python reuses a matching one), append its clip, remember the sheet's
+    // settings. Over an untracked movie the three wait together for the replace
+    // prompt (#901), so Cancel there starts no morph and stores nothing.
+    func addPlayModelsClip(_ plan: MorphMovie.AddPlan, mode: StatesMode,
+                           firstModel: Int, lastModel: Int, seconds: Double) {
+        guard isReady else { return }
+        if holdForUntrackedMovie({ [weak self] in
+            self?.addPlayModelsClip(plan, mode: mode, firstModel: firstModel,
+                                    lastModel: lastModel, seconds: seconds)
+        }) { return }
+        if let m = plan.morph {
+            morph(source: m.source, settings: m.settings, autoPlay: false,
+                  reuse: true, name: m.name, target: m.target)
+        }
+        appendStatesClip(objects: plan.objects, mode: mode, firstModel: firstModel,
+                         lastModel: lastModel, seconds: seconds, morphStride: plan.morphStride)
+        plan.save?.save()
+    }
+
     // Re-position a frame-anchored camera item (dragged along the lane).
     func setItemAtFrame(_ id: UUID, _ frame: Int) {
         guard let i = timelineItems.firstIndex(where: { $0.id == id }),

@@ -184,6 +184,81 @@ final class MorphEngineTests: XCTestCase {
     }
 }
 
+// MARK: - Play-models Add over an untracked movie (#901)
+
+/// A session can carry a movie no Timeline lane describes; the first Timeline add
+/// then waits for the user to agree to replace it. The Play-models sheet's smooth
+/// Add is one action (start the morph, append its clip, remember the settings), so
+/// it is held as one: Cancel on the prompt starts no morph, Replace runs it all.
+/// Uses the live engine the unit-test host runs. The morph's source does not
+/// exist, so the confirmed call fails in Python and builds nothing.
+final class PlayModelsAddHoldTests: XCTestCase {
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var python: [String] = []
+    private var savedItems: [PyMOLEngine.TimelineItem] = []
+
+    override func setUpWithError() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            XCTFail("PyMOLEngine.shared was not ready")
+            throw NSError(domain: "PyMOLEngine", code: 1)
+        }
+        savedItems = engine.timelineItems
+        engine.timelineItems = []
+        engine.untrackedMovie = true
+        engine.pythonTap = { [unowned self] in self.python.append($0) }
+    }
+
+    override func tearDown() {
+        engine.pythonTap = nil
+        engine.pendingTimelineAdd = nil
+        engine.clearMovieItems()
+        engine.timelineItems = savedItems
+        super.tearDown()
+    }
+
+    private func smoothAdd() {
+        var settings = MorphSettings()
+        settings.framesPerModel = 5
+        settings.refinement = 0
+        settings.loop = true
+        let plan = MorphMovie.AddPlan(
+            morph: .init(source: "t12a_nosrc", name: nil, target: "t12a_nosrc_morph",
+                         settings: settings),
+            objects: ["t12a_nosrc_morph"], morphStride: 5, save: nil)
+        engine.addPlayModelsClip(plan, mode: .sweep, firstModel: 1, lastModel: 0, seconds: 4)
+    }
+
+    private var morphCalls: [String] {
+        python.filter { $0.contains("morph_object(") && $0.contains("t12a_nosrc") }
+    }
+
+    func testCancelledReplaceStartsNoMorph() {
+        smoothAdd()
+        XCTAssertNotNil(engine.pendingTimelineAdd)      // the replace prompt is up
+        engine.pendingTimelineAdd = nil                 // Cancel
+        XCTAssertEqual(morphCalls, [])
+        XCTAssertEqual(engine.timelineItems, [])
+    }
+
+    func testConfirmedReplaceStartsTheMorphAndAddsItsClip() {
+        smoothAdd()
+        XCTAssertEqual(morphCalls, [])
+        engine.confirmMovieReplace()
+        XCTAssertEqual(morphCalls.count, 1)
+        XCTAssertFalse(engine.untrackedMovie)
+        guard engine.timelineItems.count == 1,
+              case .states(let spec) = engine.timelineItems[0].kind else {
+            return XCTFail("expected one states clip, got \(engine.timelineItems)")
+        }
+        XCTAssertEqual(spec.objects, ["t12a_nosrc_morph"])
+        XCTAssertEqual(spec.morphStride, 5)
+    }
+}
+
 // MARK: - Test-only PredictionJobState fixture
 // Controller decision 5: test-target only; never add to the app target.
 
