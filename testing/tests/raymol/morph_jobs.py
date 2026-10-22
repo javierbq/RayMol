@@ -16,8 +16,9 @@ Tests that:
   - morph_object(async_=1) computes legs on a worker thread and pump() lands
     them: completion, cancel between legs, cancel while a leg is in flight
     (ends 'cancelled', never 'error'), source deleted mid-job, a worker
-    exception finalised on the main thread, and the worker holding at most
-    one computed leg that has not landed.  Tests synchronise with the worker
+    exception finalised on the main thread, the worker holding at most one
+    computed leg that has not landed, and pump() waiting for the worker's
+    next leg only within its budget.  Tests synchronise with the worker
     through mj._leg_hook (a _Gate) and pump(), never through sleeps.
 
 Runs on a RayMol --testing build:
@@ -524,6 +525,93 @@ class TestMorphJobPipeline(testing.PyMOLTestCase):
         self.assertEqual(job.state, 'done')
         self.assertEqual(cmd.count_states(name), 40)
 
+    def testSmallMorphLandsInFewPumps(self):
+        # pump() waits, within its budget, for the leg the worker is
+        # computing instead of ending at every leg boundary.  The whole job
+        # (6 legs x 5 frames of a 9-residue peptide, sculpted) costs a few
+        # tens of ms, so a 1000 ms budget lands it in one call; 3 leaves room
+        # for a heavily loaded machine.  Without the wait it takes 6 calls.
+        self.ensemble(models=6)
+        name, job = self.async_morph(frames_per_model=5)
+        calls = 0
+        while job.state != 'done' and calls < 10:
+            mj.pump(budget_ms=1000)
+            calls += 1
+        self.assertEqual(job.state, 'done')
+        self.assertEqual(cmd.count_states(name), 30)
+        self.assertLessEqual(calls, 3)
+
+    def testPumpWaitIsBoundedByBudget(self):
+        # The worker is held inside leg 1 (leg 0 has landed).  pump(0) never
+        # waits for it; pump(200) waits exactly its budget; neither lands.
+        self.ensemble()
+        gate = self.gate(leg=1)
+        name, job = self.async_morph(frames_per_model=5)
+        deadline = time.monotonic() + 10
+        while not gate.entered.is_set() and time.monotonic() < deadline:
+            mj.pump(budget_ms=0)
+        self.assertTrue(gate.entered.is_set())
+        self.assertEqual(cmd.count_states(name), 6)
+        t = time.monotonic()
+        mj.pump(budget_ms=0)
+        self.assertLess(time.monotonic() - t, 1.0)  # an unbounded wait: the gate's 10 s
+        t = time.monotonic()
+        mj.pump(budget_ms=200)
+        waited = time.monotonic() - t
+        self.assertGreaterEqual(waited, 0.2)        # waited for leg 1 for the budget...
+        self.assertLess(waited, 5.0)                # ... and no longer
+        self.assertEqual(cmd.count_states(name), 6)
+        gate.released.set()
+        deadline = time.monotonic() + 10
+        while job.state != 'done' and time.monotonic() < deadline:
+            mj.pump()
+        self.assertEqual(job.state, 'done')
+        self.assertEqual(cmd.count_states(name), 20)
+
+    def testPumpWaitSharesOneBudget(self):
+        # Two jobs whose workers are both held inside leg 1: one pump waits
+        # its budget once in all (>= 0.5 s), not once per job (>= 1.0 s).
+        self.ensemble('src')
+        self.ensemble('oth')
+        entered, release = set(), threading.Event()
+
+        def hook(job, leg):
+            if leg == 1:
+                entered.add(job.name)
+                release.wait(10.0)
+        mj._leg_hook = hook
+        self.addCleanup(setattr, mj, '_leg_hook', None)
+        _, job = self.async_morph(frames_per_model=5)
+        other = mj._JOBS[mj.morph_object('oth', frames_per_model=5, async_=1)]
+        self.addCleanup(self._stop, other)
+        self.addCleanup(release.set)                # runs first: frees both workers
+        deadline = time.monotonic() + 10
+        while len(entered) < 2 and time.monotonic() < deadline:
+            mj.pump(budget_ms=0)                    # land leg 0 of each
+        self.assertEqual(entered, {job.name, other.name})
+        t = time.monotonic()
+        mj.pump(budget_ms=500)
+        waited = time.monotonic() - t
+        self.assertGreaterEqual(waited, 0.5)
+        self.assertLess(waited, 1.0)
+
+    def testPumpWaitWakesOnWorkerError(self):
+        # A pump waiting for the next leg wakes as soon as the worker fails,
+        # not when its budget runs out.
+        self.ensemble()
+
+        def hook(job, leg):
+            if leg == 1:
+                raise RuntimeError('boom in leg 1')
+        mj._leg_hook = hook
+        self.addCleanup(setattr, mj, '_leg_hook', None)
+        name, job = self.async_morph(frames_per_model=5)
+        t = time.monotonic()
+        mj.pump(budget_ms=10000)                    # lands leg 0, waits for leg 1
+        self.assertLess(time.monotonic() - t, 5.0)
+        self.assertEqual(mj.pending_info(name)['error'], 'boom in leg 1')
+        self.assertNotIn(name, cmd.get_names('objects'))
+
     def testAsyncCancelMidway(self):
         self.ensemble(models=8)
         gate = self.gate(leg=2)
@@ -532,8 +620,7 @@ class TestMorphJobPipeline(testing.PyMOLTestCase):
         while not gate.entered.is_set() and time.monotonic() < deadline:
             mj.pump()
         self.assertTrue(gate.entered.is_set())
-        mj.pump(budget_ms=10 ** 6)                  # nothing left to land
-        self.assertEqual(cmd.count_states(name), 61)
+        self.assertEqual(cmd.count_states(name), 61)            # legs 0 and 1 landed
         mj.morph_cancel(name)
         gate.released.set()
         self.assertTrue(job.join(10.0))

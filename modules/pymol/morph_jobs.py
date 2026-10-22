@@ -15,7 +15,8 @@ only its MorphJob with the main thread: the job's state, error, done_legs and
 snapshot change under ``job._lock``, finished legs travel through a
 ``queue.Queue``, and ``job._cancel`` (a threading.Event) stops the worker.  The
 worker holds at most _LEGS_AHEAD computed legs that have not landed
-(``job._held``, ``job._room``).
+(``job._held``, ``job._room``), and pump() waits for the leg it is computing
+within its remaining budget.
 
 Convention: only alt ''+A atoms are counted (consistent with morphing.py).
 '''
@@ -69,7 +70,8 @@ _leg_hook = None
 # landed completely.  With 1, a single leg of frames exists as Python lists at
 # any time (about 160 B per atom-frame, three times what the memory estimate
 # budgets for cartoon), whatever the morph's size and however slowly pump()
-# runs.  Computing a leg is far faster than landing it, so pump() waits little.
+# runs.  pump() waits for the next leg within its budget, so small legs do not
+# cost one pump call each.
 _LEGS_AHEAD = 1
 
 # cmd.morph's method aliases and segmentation defaults
@@ -345,9 +347,11 @@ class MorphJob(object):
     Shared with a worker thread: ``state``, ``error``, ``done_legs``,
     ``_held`` and the snapshot (``_coords``, ``_info``, ``_pos``) change
     only under ``_lock``; ``_queue`` carries finished legs to the main
-    thread; ``_room`` (a Condition on ``_lock``) is notified when a leg has
-    landed or the job ends; ``_cancel`` stops the worker.  ``landed_legs``,
-    ``_landing`` and the remaining flags belong to the main thread.'''
+    thread; ``_room`` (a Condition on ``_lock``) is notified when a leg is
+    queued or has landed and when the job ends (the worker waits on it for
+    room, pump() for the next leg); ``_cancel`` stops the worker.
+    ``landed_legs``, ``_landing`` and the remaining flags belong to the main
+    thread.'''
 
     def __init__(self, name, source, spec, fingerprint, pos, coords, info, run):
         self.name = name
@@ -369,7 +373,7 @@ class MorphJob(object):
         self._coords = coords       # per model, rows in coordinate-set order
         self._info = info
         self._lock = threading.Lock()
-        self._room = threading.Condition(self._lock)    # a leg landed
+        self._room = threading.Condition(self._lock)    # a leg queued or landed
         self._held = 0              # legs computed and not yet landed
         self._cancel = threading.Event()    # set: the worker stops
         self._thread = None
@@ -404,6 +408,7 @@ class MorphJob(object):
             self._queue.put((leg, frames))
             self.done_legs += 1
             self._held += 1
+            self._room.notify_all()         # pump() may be waiting for this leg
         return True
 
     def cancel(self):
@@ -550,7 +555,9 @@ def pump(budget_ms=100, _self=cmd):
     '''Land computed frames on the main thread, then finish jobs whose last
     leg landed.  Stops once *budget_ms* is spent, checked after each landed
     frame; every job still gets one unit of work, so pump(budget_ms=0) makes
-    progress.  Never raises: a failing job goes to the error path.'''
+    progress.  A worker computing a job's next leg is waited for, but only
+    within what is left of the budget (shared by all jobs; none at 0).
+    Never raises: a failing job goes to the error path.'''
     deadline = time.monotonic() + max(float(budget_ms), 0.0) / 1000.0
     for job in [j for j in _JOBS.values() if not j._finalised]:
         try:
@@ -570,18 +577,38 @@ def _advance(job, deadline, _self):
         raise pymol.CmdException(
             'morph: %s was deleted while it was being built' % job.name)
     try:
-        while _unit(job, _self) and time.monotonic() < deadline:
+        while _unit(job, deadline, _self) and time.monotonic() < deadline:
             pass
     finally:
         _sculpt_off(job, _self)
 
 
-def _unit(job, _self):
+def _wait_for_leg(job, deadline):
+    '''A worker job with nothing queued is computing its next leg: wait for
+    it until *deadline* (no wait once it has passed).  The wait releases the
+    job lock and the GIL; a queued leg, a terminal state and _end wake it.
+    run=False jobs are never waited for: their legs come from the caller.'''
+    if not job.run:
+        return
+    with job._room:
+        while (job._queue.empty() and job.state in _ACTIVE
+               and not job._cancel.is_set() and job.done_legs < job.legs):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            job._room.wait(remaining)
+
+
+def _unit(job, deadline, _self):
     '''One unit of work; False when the job must wait or has ended.'''
     if job.state in _FAILED:                # step() failed during this pump
         _finalise_failed(job, _self)
         return False
     if job._landing is None:
+        _wait_for_leg(job, deadline)
+        if job.state in _FAILED:            # the worker failed meanwhile
+            _finalise_failed(job, _self)
+            return False
         try:
             leg, frames = job._queue.get_nowait()
         except queue.Empty:
@@ -611,7 +638,7 @@ def _land_frame(job, _self):
         job.landed_legs += 1
         with job._room:
             job._held -= 1
-            job._room.notify()              # the worker may compute the next leg
+            job._room.notify_all()          # the worker may compute the next leg
 
 
 def _sculpt(job, state, _self):
