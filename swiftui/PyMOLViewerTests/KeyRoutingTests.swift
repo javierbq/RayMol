@@ -376,7 +376,7 @@ final class AppShortcutsTests: XCTestCase {
             $0.modifiers.contains(.control) && !$0.modifiers.contains(.command)
         }
         XCTAssertEqual(Set(ctrl.map { String($0.key.character) }),
-                       ["m", "e", "d", "p", "b", "s"])
+                       ["m", "e", "d", "p", "b", "s", "l"])
     }
 
     /// The pane toggles are one plain-⌘ family (#361): immune to raymolrc
