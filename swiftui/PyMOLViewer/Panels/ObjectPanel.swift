@@ -3674,6 +3674,10 @@ private struct ObjectRowContent: View {
             .foregroundColor(PanelTheme.headerColor)
             .padding(.horizontal, 4).padding(.vertical, 1)
             .background(Capsule().fill(PanelTheme.buttonBackground))
+            // A morph's count runs to four digits ("⟳ 1,200"); squeezed by the name
+            // column, the badge wrapped onto two lines. The name truncates instead
+            // (its tooltip carries the full name, #350).
+            .fixedSize()
             .help(entry.morphSource.map { "Morph of \($0) · \(entry.stateCount) frames" }
                   ?? "\(entry.stateCount) models / states")
         }
@@ -3914,7 +3918,11 @@ private struct ObjectCard: View {
                 Text("\(cur)/\(total)")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundColor(PanelTheme.textColor)
-                    .frame(width: 42, alignment: .trailing)
+                    // Grows past 42 pt for four-digit counts (a morph's "656/1,200"
+                    // wrapped in the fixed width); the slider gives up the room.
+                    .lineLimit(1)
+                    .fixedSize()
+                    .frame(minWidth: 42, alignment: .trailing)
             }
             // Compound name for this state, when present (e.g. a multi-record
             // SDF's per-record title), so docking-pose / library sets can be
@@ -4052,6 +4060,9 @@ private struct ObjectCard: View {
             },
             onDelete: isMorph ? {
                 showMorphSheet = false
+                // A morph auto-plays; its per-object timer would keep sending
+                // `set state` to the deleted name 30 times a second.
+                engine.stopObjectStates(entry.name)
                 engine.runCommand("delete \(entry.name); enable \(source)",
                                   naming: entry.name, source)
             } : nil,
