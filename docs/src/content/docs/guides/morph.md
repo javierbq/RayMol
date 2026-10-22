@@ -21,7 +21,8 @@ loaded as states.
   without a jump.
 - The **key frames** are the original models, copied exactly. At 15 frames per
   model, model 1 is frame 1, model 2 is frame 16, model 3 is frame 31, and so
-  on; only the frames between them are computed.
+  on, except that with Loop off the last model is the last frame (model 20 of
+  20 is frame 285, not 286). Only the frames between key frames are computed.
 - The default method, **Rigid segments**, splits each chain into rigid segments
   at the hinges where the two models differ, moves every segment along a screw
   path, and blends the motion across each hinge. **Linear** moves every atom
@@ -69,7 +70,9 @@ The morph builds in the background, so you can keep rotating, restyling and
 working with other objects. A card in the progress tray reads **Morphing
 2kpo_morph**, `leg 6 of 20 · 30%`, with a **Cancel** button. The source stays
 on screen meanwhile; the `2kpo_morph` row appears at once, switched off, and
-its frame count rises as the legs land.
+its frame count rises as the legs land. **Morph…** is hidden on the source and
+on the morph until the build finishes or is cancelled, so cancel the build to
+change its settings.
 
 **Cancel** deletes the partial morph and shows the source again; the card then
 reads **Morph cancelled** until you select **Dismiss**. A build that fails (for
@@ -78,8 +81,8 @@ the reason.
 
 ### When it is done
 
-- The source is hidden and the `2kpo_morph` row is shown, expanded, with a ⟳
-  glyph before its frame count (`⟳ 300`, tooltip "Morph of 2kpo · 300
+- The source is hidden and the `2kpo_morph` row is shown, expanded, with a
+  loop (repeat) icon before its frame count (tooltip "Morph of 2kpo · 300
   frames").
 - It starts playing at the movie frame rate (its Play speed is set to match).
   While the Movie timeline is open, model playback is off, so the morph waits
@@ -87,7 +90,9 @@ the reason.
 - The **Name** line tells you where you are: `model 7` on a key frame, `7 → 8`
   between models, `20 → 1` on the leg that loops back.
 - From here it is an ordinary multi-state object: the State slider, Play,
-  Play-models clips, movie export and saved sessions treat it like any other.
+  Sweep and Loop clips, movie export and saved sessions treat it like any
+  other. Lockstep clips need one extra step (see
+  [Smooth playback in a movie](#smooth-playback-in-a-movie)).
 
 ### Rebuild or delete a morph
 
@@ -95,12 +100,15 @@ Select **Morph…** on the morph's own row to reopen the sheet, titled after the
 source and filled in with the settings that built the morph. Change them and
 select **Morph** to rebuild it under the same name (the summary reads
 `rebuilds 2kpo_morph`), so movie clips and scenes that name it keep working.
+Rebuilding replaces the morph straight away, even with unchanged settings: the
+old morph is deleted and the source is shown again while the new one builds,
+so if you cancel or the build fails, no morph is left and you morph again.
 **Delete morph** removes the morph and shows the source again. Selecting
 **Morph…** on the source also rebuilds its existing morph rather than making a
 second one.
 
 A morph saved in a session comes back as an ordinary multi-state object: its
-row shows the frame count without the ⟳ glyph, and the sheet opens with your
+row shows the frame count without the loop icon, and the sheet opens with your
 remembered settings rather than the ones that built it. While its source is
 loaded, **Morph…** still recognises it by its `<source>_morph` name and
 rebuilds it in place.
@@ -122,19 +130,27 @@ models:
 4. Select **Add**.
 
 **Add** starts building `2kpo_morph` in the background, or reuses it when it
-was already built with the same settings from the unchanged source, and
-appends a clip named `2kpo_morph`, marked with the ⟳ glyph. If the morph is
-still building, the movie is rebuilt once it is complete. A morph built this
-way does not start playing in the Object panel.
+was already built in this session with the same settings from the unchanged
+source (a morph restored from a saved session is always rebuilt), and appends
+a clip named `2kpo_morph`, marked with the loop icon. If the morph is still
+building, the movie is rebuilt once it is complete. A morph built this way
+does not start playing in the Object panel.
 
+- **Use Sweep or Loop** for a smooth clip. A finished morph is pinned to its
+  own state, which a **Lockstep** clip does not move, so Lockstep plays the
+  morph only after you select **Sync** on the morph's row in the Objects tab
+  (playing or scrubbing it there pins it again).
 - **Start and End count models**, not frames. Start 3, End 8 plays from model
   3 and stops exactly on model 8. The full range (1 to the last model) includes
   the leg back to model 1, so a Sweep clip ends where it started and the movie
   loops seamlessly.
-- **Duration** follows the morph's natural length, frames ÷ movie frame rate
-  (10 s for 300 frames at 30 fps), when you turn the toggle on or change
-  frames per model, until you step Duration yourself. While smoothing, the
-  Duration stepper goes past 30 s when the natural length needs it.
+- **Duration** follows the whole morph's natural length, frames ÷ movie frame
+  rate (10 s for 300 frames at 30 fps), when you turn the toggle on or change
+  frames per model, until you step Duration yourself. It ignores Start and End,
+  so step it down for a shorter range: at natural speed a range lasts
+  (End − Start) × frames per model ÷ frame rate, 2.5 s for Start 3, End 8 (the
+  stepper moves in whole seconds). While smoothing, the stepper goes past 30 s
+  when the natural length needs it.
 - If you later rebuild the morph with a different number of frames per model,
   the clip keeps playing the same models: its range is remapped to the new
   frames when the movie is rebuilt.
@@ -181,11 +197,12 @@ atom-frame (coordinates plus a cartoon) and reacts at two levels:
 | **macOS** | 200 MB, about 3.8 million atom-frames | 1 GB, about 19 million atom-frames |
 | **iPhone & iPad** | 100 MB, about 1.9 million atom-frames | 400 MB, about 7.6 million atom-frames |
 
-`morph_object`, which the sheet runs, enforces the same limit with its own
-estimate, counting every representation the source shows: with cartoon and
-sticks shown, the macOS limit falls to about 12.6 million atom-frames. Such a
-morph can be refused although the sheet allowed it; the console then shows
-"Reduce frames per model or morph fewer models".
+`morph_object`, which the sheet runs, enforces the same limit (1 GB in
+command-line PyMOL too, on any platform) with its own estimate, counting every
+representation the source shows: with cartoon and sticks shown, the macOS
+limit falls to about 12.6 million atom-frames. Such a morph can be refused
+although the sheet allowed it; the console then shows "Reduce frames per model
+or morph fewer models".
 
 To fit a large system, lower **Frames per model**, turn off **Loop back to
 model 1** (one leg fewer), build the source from fewer models, or remove atoms
@@ -210,8 +227,10 @@ lands the frames of a background morph. It keeps its underscore: unlike
 `fetch`, `morph_object` rejects `async=0`. `morph_cancel 2kpo_morph` stops a
 morph being built and `morph_dismiss 2kpo_morph` clears the card of a
 cancelled or failed one. Running `morph_object` again on the same source
-rebuilds `2kpo_morph` in place; a morph started from the command line does not
-start playing by itself. The
+rebuilds `2kpo_morph` in place when it was built in this session. For a morph
+restored from a saved session, name it (`morph_object 2kpo, name=2kpo_morph`),
+or a second morph, `2kpo_morph2`, is created beside it. A morph started from
+the command line does not start playing by itself. The
 [command reference](/RayMol/reference/commands/#morph_object) lists every
 option (`method=linear`, `refinement=0`, `rate=sinusoidal`, `reuse=1`, …).
 
