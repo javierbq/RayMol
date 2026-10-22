@@ -921,12 +921,13 @@ DESCRIPTION
 
 
 def morph_spec(name):
-    '''``{'spec', 'fingerprint', 'state', 'started'}`` of the job that last
-    built *name* this session (terminal included), or None.'''
+    '''``{'source', 'spec', 'fingerprint', 'state', 'started'}`` of the job
+    that last built *name* this session (terminal included), or None.'''
     job = _JOBS.get(name)
     if job is None:
         return None
-    return {'spec': dict(job.spec), 'fingerprint': dict(job.fingerprint),
+    return {'source': job.source, 'spec': dict(job.spec),
+            'fingerprint': dict(job.fingerprint),
             'state': job.state, 'started': job.started}
 
 
