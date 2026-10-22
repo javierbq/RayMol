@@ -2218,6 +2218,16 @@ final class PyMOLEngine: ObservableObject {
         if !playingObjects.isEmpty { playingObjects.removeAll() }
     }
 
+    /// Playing objects that are no longer loaded. Their timers must stop: an object
+    /// can go by many paths (the A menu, a `delete` typed or scripted, cancelling or
+    /// failing a re-morph in the tray, reinitialize), and a timer left behind sends
+    /// `set state` to the missing name ~30 times a second, each tick logging
+    /// "Invalid selection". The object-panel poll applies this to every published
+    /// object list, so one place covers every path.
+    static func timersToStop(playing: Set<String>, objects: Set<String>) -> Set<String> {
+        playing.subtracting(objects)
+    }
+
     func stepObjectState(_ name: String, by delta: Int) {
         guard let total = objects.first(where: { $0.name == name })?.stateCount, total > 1 else { return }
         let cur = min(max(objectMeta[name]?.state ?? 1, 1), total)
@@ -2240,6 +2250,10 @@ final class PyMOLEngine: ObservableObject {
         if let n = name, !isLegalObjectName(n) { return }
         let target = name ?? MorphSettings.morphName(for: source)
         if autoPlay { morphAutoPlay.insert(target) }
+        // The rebuild replaces the target's states; a timer still playing it would
+        // step through the partial object, then miss it if the job is cancelled.
+        // Completion restarts playback when auto-play is on.
+        stopObjectStates(target)
         runPython(settings.pythonCall(source: source, name: name, reuse: reuse))
     }
 

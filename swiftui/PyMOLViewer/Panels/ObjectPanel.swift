@@ -6222,6 +6222,10 @@ extension PyMOLEngine {
             // re-assigning an equal array still fires @Published and re-renders
             // the panel (resetting open menus). Only assign on real changes.
             if self.objects != entries { self.objects = entries }
+            for name in Self.timersToStop(playing: self.playingObjects,
+                                          objects: Set(payload.objects)) {
+                self.stopObjectStates(name)
+            }
             if self.predictionJobs != jobs { self.predictionJobs = jobs }
             if self.designJobs != designs { self.designJobs = designs }
 

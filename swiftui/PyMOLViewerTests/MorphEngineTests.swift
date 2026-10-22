@@ -3,8 +3,9 @@ import XCTest
 @testable import RayMol
 
 /// Unit coverage for morph engine plumbing: `ProgressItem.morph`, the `tray(morphs:)` lane,
-/// and `PyMOLEngine.completedMorphs`. All tests are pure (no engine calls) so they run in
-/// the macOS unit-test host without launching PyMOL.
+/// `PyMOLEngine.completedMorphs`, the per-object playback timer rules and the State row's
+/// slider. All but `testMorphStopsPlaybackOfItsTarget` are pure (no engine calls); that one
+/// uses the live engine the unit-test host runs, and cleans up after itself.
 final class MorphEngineTests: XCTestCase {
 
     // MARK: - ProgressItem.morph
@@ -70,6 +71,43 @@ final class MorphEngineTests: XCTestCase {
                 nowRunning: [],
                 known: [:]),
             [])
+    }
+
+    // MARK: - Per-object playback timers
+
+    /// Every playing object missing from the published list stops, whatever
+    /// deleted it; playing objects still loaded, and loaded objects not playing,
+    /// are left alone.
+    func testTimersToStop() {
+        XCTAssertEqual(
+            PyMOLEngine.timersToStop(playing: ["2kpo_morph", "1nmr"],
+                                     objects: ["1nmr", "2kpo", "other"]),
+            ["2kpo_morph"])
+        XCTAssertEqual(PyMOLEngine.timersToStop(playing: [], objects: ["a"]), [])
+        XCTAssertEqual(PyMOLEngine.timersToStop(playing: ["a"], objects: []), ["a"])
+    }
+
+    /// Re-morphing a playing morph stops its timer before the rebuild is sent.
+    /// The test host runs a live engine, so the job really starts; it is
+    /// cancelled and everything it made removed before the test ends.
+    func testMorphStopsPlaybackOfItsTarget() {
+        let engine = PyMOLEngine.shared
+        engine.runPython("from pymol import cmd as _c\n"
+                         + "_c.fab('AGA', 't8b_src')\n_c.create('t8b_src', 't8b_src', 1, 2)")
+        defer {
+            engine.runPython("from pymol import cmd as _c, morph_jobs as _mj\n"
+                             + "_mj.morph_cancel('t8b_src_morph')\n"
+                             + "_mj.morph_dismiss('t8b_src_morph')\n"
+                             + "_mj._JOBS.pop('t8b_src_morph', None)\n"
+                             + "_c.delete('t8b_src*')")
+            engine.stopObjectStates("t8b_src_morph")
+        }
+        engine.playingObjects.insert("t8b_src_morph")   // as if auto-played earlier
+        var s = MorphSettings()
+        s.framesPerModel = 2
+        s.refinement = 0
+        engine.morph(source: "t8b_src", settings: s, autoPlay: false, name: "t8b_src_morph")
+        XCTAssertFalse(engine.playingObjects.contains("t8b_src_morph"))
     }
 
     // MARK: - State slider
