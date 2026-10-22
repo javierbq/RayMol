@@ -1,0 +1,156 @@
+name: macOS unit tests (XCTest)
+
+# Builds the native macOS app and runs its XCTest bundle PyMOLViewerTests
+# (scheme UnitTests_macOS) on every pull request into master.
+#
+# Until this existed nothing ran that bundle: Xcode Cloud's only Test action
+# runs iOS UI tests, and beta-selfhosted.yml only archives. So a pinned
+# expectation could go stale on master unnoticed (#874 added ⌃L and its Python
+# audit row but not the Swift test's pinned set; fixed in #912).
+#
+# Hosted runner, not puma: puma's job guard
+# (scripts/selfhosted_runner_job_guard.sh) admits only beta-selfhosted.yml on
+# master, and PR code must never run on a machine that holds an App Store
+# Connect key. `xcode-27` is the macOS 27 + Xcode 27 image, the toolchain the
+# betas are built with on puma.
+#
+# Two-stage build, as everywhere else: the CMake core (swiftui/build_macos.sh)
+# first, then xcodebuild, which only LINKS build_macos_swiftui/libpymol_core.a.
+# The app's pre-build phase (scripts/check_core_fresh.sh) fails the build if
+# that core was built from different sources, so it is always built here, from
+# this checkout. It takes about two minutes, so it is not cached.
+
+on:
+  pull_request:
+    branches: [master]
+    paths-ignore:
+      - 'docs/**'
+  # Also on master itself: two PRs can each pass alone and break together.
+  push:
+    branches: [master]
+    paths-ignore:
+      - 'docs/**'
+  workflow_dispatch:
+
+concurrency:
+  group: macos-unit-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  xctest:
+    runs-on: xcode-27   # macOS 27 arm64, Xcode 27
+    timeout-minutes: 90
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: 1
+      HOMEBREW_NO_INSTALL_CLEANUP: 1
+      PYMOL_EXTERNAL_PREFIX: /opt/homebrew   # PyMOLBridge.xcconfig hardcodes it
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        # The macOS set from swiftui/ci_scripts/ci_post_clone.sh: glm headers,
+        # libomp (linked statically by path), xcodegen. cmake is preinstalled.
+        # Xcode 26+ ships the Metal compiler as a separate download, and
+        # mlx-swift's Cmlx target compiles .metal kernels ("cannot execute tool
+        # 'metal' due to missing Metal Toolchain" without it). puma installs it
+        # once at setup (docs/ci/selfhosted-beta-runner.md); a hosted runner
+        # starts clean every time.
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          sw_vers
+          [ "$(brew --prefix)" = "$PYMOL_EXTERNAL_PREFIX" ] || {
+            echo "::error::brew prefix is $(brew --prefix), PyMOLBridge.xcconfig expects $PYMOL_EXTERNAL_PREFIX"; exit 1; }
+          brew install glm libomp xcodegen
+          test -f "$PYMOL_EXTERNAL_PREFIX/opt/libomp/lib/libomp.a"
+          xcodebuild -downloadComponent MetalToolchain
+          xcrun -f metal
+
+      # deps_macos is pinned entirely by these scripts (python-build-standalone
+      # release, numpy/Biopython wheels, libpng/freetype sources), so their hash
+      # is the cache key. The libpng/freetype tarballs come from sourceforge and
+      # savannah, which are the flakiest downloads in the build.
+      - name: Cache deps_macos
+        id: deps-cache
+        uses: actions/cache@v4
+        with:
+          path: deps_macos
+          key: deps-macos-${{ runner.arch }}-${{ hashFiles('scripts/setup_macos_deps.sh', 'scripts/fetch_macos_python.sh', 'scripts/bundle_biopython.sh', 'scripts/build_macos_deps.sh') }}
+
+      - name: Stage deps_macos (standalone Python + numpy + Biopython)
+        if: steps.deps-cache.outputs.cache-hit != 'true'
+        run: bash scripts/setup_macos_deps.sh
+
+      - name: Build libpymol_core.a (Metal-only, arm64)
+        # Also builds static libpng/freetype into deps_macos/install (no-op
+        # when the cache restored them).
+        run: CLEAN=1 bash swiftui/build_macos.sh
+
+      - name: Regenerate the Xcode project
+        # project.yml is the source of truth; Xcode Cloud and puma regenerate too.
+        run: cd swiftui && xcodegen generate
+
+      # Restore and save separately, so the checkouts (mlx-swift is large) are
+      # kept even when a test fails.
+      - name: Restore Swift packages
+        id: spm-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: build_xcode_mac/SourcePackages
+          key: spm-${{ runner.arch }}-${{ hashFiles('swiftui/PyMOLViewer.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
+
+      - name: Not a first launch
+        # A fresh runner account is RayMol's first launch, and on first boot the
+        # app opens the Theme studio (ContentView.maybePresentFirstBootTheme),
+        # which swaps the scene for its example molecule __theme_preview and
+        # reframes the camera. Nothing in a test run closes it, so every live
+        # test would run against that scene; LightRigBridgeTests'
+        # shadow-slot test then sees a 27 Å caster that is not its own. Dev
+        # Macs and puma have long since passed first boot. An env var such as
+        # PYMOL_SKIP_FIRSTBOOT_THEME would not reach the app-hosted bundle
+        # (project.yml: the hosted bundle gets its environment from the scheme).
+        run: defaults write io.raymol.RayMol raymol.theme.didFirstBoot -bool YES
+
+      - name: Test (PyMOLViewerTests)
+        # -skipPackagePluginValidation -skipMacroValidation: mlx-swift's
+        # CudaBuild build-tool plugin otherwise fails validation (exit 65) with
+        # no one to click "Trust". Debug macOS carries no team or entitlements;
+        # CODE_SIGN_IDENTITY=- signs ad hoc, which is all the test host needs.
+        run: |
+          set -o pipefail
+          # tee opens its log before xcodebuild creates the DerivedData dir.
+          mkdir -p build_xcode_mac
+          cd swiftui
+          xcodebuild test \
+            -project PyMOLViewer.xcodeproj \
+            -scheme UnitTests_macOS \
+            -configuration Debug \
+            -destination 'platform=macOS,arch=arm64' \
+            -derivedDataPath ../build_xcode_mac \
+            -resultBundlePath ../build_xcode_mac/UnitTests_macOS.xcresult \
+            -skipPackagePluginValidation -skipMacroValidation \
+            CODE_SIGN_IDENTITY=- \
+            2>&1 | tee ../build_xcode_mac/xcodebuild-test.log \
+                 | xcbeautify --renderer github-actions
+
+      - name: Save Swift packages
+        if: always() && steps.spm-cache.outputs.cache-hit != 'true' && hashFiles('build_xcode_mac/SourcePackages/workspace-state.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: build_xcode_mac/SourcePackages
+          key: ${{ steps.spm-cache.outputs.cache-primary-key }}
+
+      - name: Keep results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-unit-tests-${{ github.run_number }}
+          path: |
+            build_xcode_mac/UnitTests_macOS.xcresult
+            build_xcode_mac/xcodebuild-test.log
+          if-no-files-found: ignore
+          retention-days: 14
