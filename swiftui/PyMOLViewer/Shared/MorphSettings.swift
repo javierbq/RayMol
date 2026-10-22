@@ -127,42 +127,42 @@ struct MorphSettings: Codable, Equatable {
         return existing.contains(source) ? source : nil
     }
 
-    /// The object a Morph started from `card` writes (spec §5.2: Morph always
-    /// rebuilds the source's morph object). The card passes it to `morph_object`
-    /// as `name`, so the sheet's "creates …"/"rebuilds …" line, the capsule's
-    /// running-job watch, auto-play and the job itself all name the same object.
+    /// The object a Morph started from `card` writes, and whether its name is
+    /// passed to `morph_object`. The sheet's "creates …"/"rebuilds …" line, the
+    /// capsule's running-job watch, auto-play and the job all use this answer.
     ///
-    /// - A morph's own card (`card != source`): the card itself, rebuilt in place.
-    /// - A source's card: `<source>_morph`, also when an object of that name is
-    ///   already loaded. After a session reload Python has no job record for it
-    ///   and, given no name, would build `<source>_morph2`, which the sheet never
-    ///   mentioned; named, its explicit-name rule (the `<source>_morph` convention,
-    ///   molecular objects only) rebuilds it in place. A group of that name, or a
-    ///   morph known to belong to another source, is not this source's morph:
-    ///   then Python's own fallback, the first `<source>_morphN` (N ≥ 2) that is
-    ///   free or a known morph of this source.
+    /// - A morph's own card (`card != source`): the card itself, named, so a
+    ///   re-morph rebuilds it in place.
+    /// - A source's card, named only for a morph restored from a session: an
+    ///   object `<source>_morph` that is not a known morph of this session
+    ///   (`morphSources`), not a group, and has more than one state. Python has no
+    ///   job record for it and, unnamed, would build `<source>_morph2`; named, its
+    ///   explicit-name rule rebuilds it in place (spec §5.2).
+    /// - Otherwise no name: Python's registry decides (spec §5.1, `_morph2` only
+    ///   when the name is taken by a non-morph), and this mirrors its choice:
+    ///   the first of `<source>_morph`, `<source>_morph2`, … that is free or a
+    ///   known morph of this source.
     ///
     /// - Parameters:
-    ///   - objects: names of the loaded objects (the panel's object list).
+    ///   - objects: the loaded objects (not selections), name → state count.
     ///   - groups: the names in `objects` that are groups.
     ///   - morphSources: completed morphs of this session, morph → source.
-    static func morphTarget(card: String, source: String, objects: [String],
-                            groups: Set<String>, morphSources: [String: String]) -> String {
-        if card != source { return card }
+    static func morphTarget(card: String, source: String, objects: [String: Int],
+                            groups: Set<String>,
+                            morphSources: [String: String]) -> (name: String, explicit: Bool) {
+        if card != source { return (card, true) }
         let base = morphName(for: source)
-        let ours = !objects.contains(base)
-            || (!groups.contains(base)
-                && conventionalSource(of: base, existing: objects) == source
-                && (morphSources[base] ?? source) == source)
-        if ours { return base }
+        if let states = objects[base], morphSources[base] == nil,
+           !groups.contains(base), states > 1 {
+            return (base, true)
+        }
+        var candidate = base
         var n = 2
-        while true {
-            let candidate = "\(base)\(n)"
-            if !objects.contains(candidate) || morphSources[candidate] == source {
-                return candidate
-            }
+        while objects[candidate] != nil && morphSources[candidate] != source {
+            candidate = "\(base)\(n)"
             n += 1
         }
+        return (candidate, false)
     }
 }
 

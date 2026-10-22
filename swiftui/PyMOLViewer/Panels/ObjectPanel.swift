@@ -4061,26 +4061,29 @@ private struct ObjectCard: View {
         return MorphSettings.conventionalSource(of: entry.name, existing: names) ?? entry.name
     }
 
-    /// The object this card's Morph… writes (MorphSettings.morphTarget).
-    private func morphTarget(source: String) -> String {
+    /// The object this card's Morph… writes, and whether it is named to Python
+    /// (MorphSettings.morphTarget).
+    private func morphTarget(source: String) -> (name: String, explicit: Bool) {
         let loaded = engine.objects.filter { !$0.isSelection }
         return MorphSettings.morphTarget(
             card: entry.name, source: source,
-            objects: loaded.map { $0.name },
+            objects: Dictionary(loaded.map { ($0.name, $0.stateCount) },
+                                uniquingKeysWith: { a, _ in a }),
             groups: Set(loaded.filter { $0.isGroup }.map { $0.name }),
             morphSources: engine.morphSources)
     }
 
     /// A morph job writing the object this card's Morph… would write is running.
     private var morphBuilding: Bool {
-        let target = morphTarget(source: morphSourceName)
+        let target = morphTarget(source: morphSourceName).name
         return engine.morphJobs.contains { $0.id == target && !$0.isError }
     }
 
     private func morphSheet() -> some View {
         let source = morphSourceName
         let isMorph = source != entry.name
-        let target = morphTarget(source: source)
+        let resolved = morphTarget(source: source)
+        let target = resolved.name
         let models = isMorph
             ? (engine.objects.first { $0.name == source }?.stateCount ?? entry.stateCount)
             : entry.stateCount
@@ -4098,11 +4101,11 @@ private struct ObjectCard: View {
             sourceShowsSurfaceOrMesh: surfaceOrMesh,
             onMorph: { settings in
                 showMorphSheet = false
-                // Always named: a re-morph rebuilds under the same name, so clips
-                // and scenes naming the morph keep working, and so does Morph on a
-                // source whose morph a session reload brought back.
+                // Named for a re-morph (same name, so clips and scenes naming the
+                // morph keep working) and for a morph a session reload brought
+                // back; otherwise Python's registry picks, as `target` mirrors.
                 engine.morph(source: source, settings: settings, autoPlay: true,
-                             name: target)
+                             name: resolved.explicit ? target : nil, target: target)
             },
             onDelete: isMorph ? {
                 showMorphSheet = false

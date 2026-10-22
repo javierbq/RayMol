@@ -64,46 +64,59 @@ final class MorphSettingsTests: XCTestCase {
 
     // MARK: - morphTarget
 
-    func testMorphTargetFromMorphCardIsTheCard() {
-        XCTAssertEqual(MorphSettings.morphTarget(card: "2kpo_morph2", source: "2kpo",
-                                                 objects: ["2kpo", "2kpo_morph2"], groups: [],
-                                                 morphSources: [:]),
-                       "2kpo_morph2")
+    func testMorphTargetFromMorphCardIsTheCardNamed() {
+        let t = MorphSettings.morphTarget(card: "2kpo_morph2", source: "2kpo",
+                                          objects: ["2kpo": 20, "2kpo_morph2": 300],
+                                          groups: [], morphSources: [:])
+        XCTAssertEqual(t.name, "2kpo_morph2")
+        XCTAssertTrue(t.explicit)
     }
 
-    func testMorphTargetNewMorph() {
-        XCTAssertEqual(MorphSettings.morphTarget(card: "2kpo", source: "2kpo", objects: ["2kpo"],
-                                                 groups: [], morphSources: [:]),
-                       "2kpo_morph")
+    func testMorphTargetNewMorphLeavesNameToPython() {
+        let t = MorphSettings.morphTarget(card: "2kpo", source: "2kpo", objects: ["2kpo": 20],
+                                          groups: [], morphSources: [:])
+        XCTAssertEqual(t.name, "2kpo_morph")
+        XCTAssertFalse(t.explicit)
     }
 
     /// After a session reload Python has no job record: unnamed it would build
     /// `2kpo_morph2` while the sheet said `2kpo_morph`.
-    func testMorphTargetRestoredMorphIsRebuilt() {
-        XCTAssertEqual(MorphSettings.morphTarget(card: "2kpo", source: "2kpo",
-                                                 objects: ["2kpo", "2kpo_morph"], groups: [],
-                                                 morphSources: [:]),
-                       "2kpo_morph")
-        // the same when this session built it
-        XCTAssertEqual(MorphSettings.morphTarget(card: "2kpo", source: "2kpo",
-                                                 objects: ["2kpo", "2kpo_morph"], groups: [],
-                                                 morphSources: ["2kpo_morph": "2kpo"]),
-                       "2kpo_morph")
+    func testMorphTargetReloadedMorphIsNamed() {
+        let t = MorphSettings.morphTarget(card: "2kpo", source: "2kpo",
+                                          objects: ["2kpo": 20, "2kpo_morph": 1200],
+                                          groups: [], morphSources: [:])
+        XCTAssertEqual(t.name, "2kpo_morph")
+        XCTAssertTrue(t.explicit)
     }
 
-    /// Not this source's morph: a group of that name, or a known morph of another
-    /// object. Python's fallback (`_morph2`, first free or own) is mirrored.
-    func testMorphTargetSkipsWhatIsNotThisSourcesMorph() {
-        XCTAssertEqual(MorphSettings.morphTarget(card: "2kpo", source: "2kpo",
-                                                 objects: ["2kpo", "2kpo_morph"],
-                                                 groups: ["2kpo_morph"], morphSources: [:]),
-                       "2kpo_morph2")
-        XCTAssertEqual(MorphSettings.morphTarget(
-                           card: "2kpo", source: "2kpo",
-                           objects: ["2kpo", "2kpo_morph", "2kpo_morph2", "2kpo_morph3"],
-                           groups: [],
-                           morphSources: ["2kpo_morph": "other", "2kpo_morph3": "2kpo"]),
-                       "2kpo_morph3")   // _morph2 is not known to be ours
+    /// This session built it: Python reuses it by its registry, so no name.
+    func testMorphTargetKnownMorphIsReusedUnnamed() {
+        let t = MorphSettings.morphTarget(card: "2kpo", source: "2kpo",
+                                          objects: ["2kpo": 20, "2kpo_morph": 1200],
+                                          groups: [], morphSources: ["2kpo_morph": "2kpo"])
+        XCTAssertEqual(t.name, "2kpo_morph")
+        XCTAssertFalse(t.explicit)
+    }
+
+    /// Spec §5.1: `_morph2` when the name is taken by a non-morph. A user's
+    /// one-state molecule, a group, or a known morph of another object.
+    func testMorphTargetTakenByNonMorphGoesToMorph2() {
+        let user = MorphSettings.morphTarget(card: "2kpo", source: "2kpo",
+                                             objects: ["2kpo": 20, "2kpo_morph": 1],
+                                             groups: [], morphSources: [:])
+        XCTAssertEqual(user.name, "2kpo_morph2")
+        XCTAssertFalse(user.explicit)
+        let group = MorphSettings.morphTarget(card: "2kpo", source: "2kpo",
+                                              objects: ["2kpo": 20, "2kpo_morph": 1],
+                                              groups: ["2kpo_morph"], morphSources: [:])
+        XCTAssertEqual(group.name, "2kpo_morph2")
+        XCTAssertFalse(group.explicit)
+        let foreign = MorphSettings.morphTarget(
+            card: "2kpo", source: "2kpo",
+            objects: ["2kpo": 20, "2kpo_morph": 300, "2kpo_morph2": 1, "2kpo_morph3": 300],
+            groups: [], morphSources: ["2kpo_morph": "other", "2kpo_morph3": "2kpo"])
+        XCTAssertEqual(foreign.name, "2kpo_morph3")     // _morph2 is a user object
+        XCTAssertFalse(foreign.explicit)
     }
 
     // MARK: - Sheet pre-fill

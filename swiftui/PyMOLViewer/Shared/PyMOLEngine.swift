@@ -2244,11 +2244,15 @@ final class PyMOLEngine: ObservableObject {
     /// before sending, and refuses silently like `runCommand(_:naming:)` does for
     /// illegal names — the Python side would surface its own error in that case, but a
     /// silent refusal here avoids building a broken Python call.
+    /// `target` is the object the job is expected to write when `name` is nil
+    /// (Python picks; see MorphSettings.morphTarget): auto-play and the playback
+    /// stop key on it. Defaults to `name`, else `<source>_morph`.
     func morph(source: String, settings: MorphSettings,
-               autoPlay: Bool, reuse: Bool = false, name: String? = nil) {
+               autoPlay: Bool, reuse: Bool = false, name: String? = nil,
+               target expected: String? = nil) {
         guard isLegalObjectName(source) else { return }
         if let n = name, !isLegalObjectName(n) { return }
-        let target = name ?? MorphSettings.morphName(for: source)
+        let target = expected ?? name ?? MorphSettings.morphName(for: source)
         if autoPlay { morphAutoPlay.insert(target) }
         // The rebuild replaces the target's states; a timer still playing it would
         // step through the partial object, then miss it if the job is cancelled.
