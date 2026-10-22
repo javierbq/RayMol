@@ -110,6 +110,8 @@ jobs:
         # CODE_SIGN_IDENTITY=- signs ad hoc, which is all the test host needs.
         run: |
           set -o pipefail
+          # tee opens its log before xcodebuild creates the DerivedData dir.
+          mkdir -p build_xcode_mac
           cd swiftui
           xcodebuild test \
             -project PyMOLViewer.xcodeproj \
