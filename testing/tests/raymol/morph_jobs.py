@@ -466,9 +466,9 @@ class TestMorphJobPipeline(testing.PyMOLTestCase):
         # the scene, and an object with its own `state` setting (per-object
         # playback) gets every state built in one update.  A morph that grew
         # hidden made the first frame after completion build all of it: a
-        # 1.5-2 s frame for 1200 frames of 2kpo.  pump() builds each pump's
-        # frames while the morph is still hidden, so only the frames landed
-        # by the pump that completes the job are left for that first frame.
+        # 1.5-2 s frame for 1200 frames of 2kpo.  pump() builds the frames
+        # while the morph is still hidden, each leg's before its key frame
+        # releases the worker, so nothing is left for that first frame.
         self.ensemble()
         cmd.show_as('cartoon', 'src')
         job = mj.start_job('src', frames_per_model=5)
@@ -477,10 +477,38 @@ class TestMorphJobPipeline(testing.PyMOLTestCase):
         mj.pump()
         self.assertEqual(job.state, 'done')
         n = cmd.count_states('src_morph')
-        last_leg = set(range(2 + (job.legs - 1) * 5, n + 1))   # the completing pump's
-        self.assertEqual(len(last_leg), 4)
-        unbuilt = set(range(1, n + 1)) - set(self.built_states('src_morph'))
-        self.assertEqual(unbuilt - last_leg, set())
+        self.assertEqual(n, 20)
+        self.assertEqual(set(range(1, n + 1)) - set(self.built_states('src_morph')), set())
+
+    def testPumpStaysInBudgetWithCartoon(self):
+        # Building the frames a pump landed is part of the pump.  With cartoon
+        # on this 1500-atom helix a frame takes ~2 ms to build, and a pump that
+        # waited for the next leg until its deadline, then landed and built the
+        # whole 40-frame leg, ran ~0.18 s on a 0.1 s budget.  (The bare
+        # peptides of the other budget tests build in ~0 ms, so they cannot
+        # see this.)  Margin 1.5x: a pump reserves every cost from measurements
+        # taken on the same machine in the same run, so a slow or loaded
+        # machine scales the estimate and the work alike; what remains is one
+        # frame landed and built plus the estimate's error, a few ms of the
+        # 50 ms margin, against ~80 ms for the overrun this guards.
+        cmd.fab('A' * 150, 'src', ss=1)
+        for k in (2, 3):
+            cmd.create('src', 'src', 1, k)
+            cmd.rotate('y', 20 * (k - 1), 'src and resi 75-150', k)
+        cmd.show_as('cartoon', 'src')
+        name, job = self.async_morph(frames_per_model=40, refinement=0)
+        pumps = []
+        deadline = time.monotonic() + 60
+        while job.state != 'done' and time.monotonic() < deadline:
+            t = time.monotonic()
+            mj.pump(budget_ms=100)
+            pumps.append(time.monotonic() - t)
+            time.sleep(0.05)
+        self.assertEqual(job.state, 'done')
+        self.assertLess(max(pumps), 0.150, ['%.3f' % p for p in pumps])
+        n = cmd.count_states(name)
+        self.assertEqual(n, 120)
+        self.assertEqual(set(range(1, n + 1)) - set(self.built_states(name)), set())
 
     def testPrebuildLeavesUserVisibilityAlone(self):
         # Building while hidden toggles the morph into the scene for one update

@@ -16,7 +16,7 @@ snapshot change under ``job._lock``, finished legs travel through a
 ``queue.Queue``, and ``job._cancel`` (a threading.Event) stops the worker.  The
 worker holds at most _LEGS_AHEAD computed legs that have not landed
 (``job._held``, ``job._room``), and pump() waits for the leg it is computing
-within its remaining budget.
+within what its budget has left once the frames it landed are built.
 
 Convention: only alt ''+A atoms are counted (consistent with morphing.py).
 '''
@@ -383,7 +383,8 @@ class MorphJob(object):
         self._dismissed = False
         self._sculpting = False
         self._unbuilt = 0           # landed frames whose reps are not built yet
-        self._build_cost = 0.0      # seconds per frame of the last _prebuild
+        self._build_cost = None     # seconds to build one frame; None: not measured
+        self._land_cost = 0.0       # seconds to land (and sculpt) one frame
 
     def step(self):
         '''Compute the next leg into the queue; False when none remain or the
@@ -554,12 +555,17 @@ def start_job(source, name=None, frames_per_model=15, loop=1, method='rigimol',
 
 
 def pump(budget_ms=100, _self=cmd):
-    '''Land computed frames on the main thread, then finish jobs whose last
-    leg landed.  Stops once *budget_ms* is spent, checked after each landed
-    frame; every job still gets one unit of work, so pump(budget_ms=0) makes
-    progress.  A worker computing a job's next leg is waited for, but only
-    within what is left of the budget (shared by all jobs; none at 0).
-    Never raises: a failing job goes to the error path.'''
+    '''Land computed frames on the main thread, build their representations
+    while the morph is hidden (_prebuild), then finish jobs whose last leg
+    landed.  A frame is landed only while landing it and building every frame
+    this pump landed still fit in what is left of *budget_ms*, at the costs
+    measured so far (a job's first frame is built at once to measure them).
+    A worker computing a job's next leg is waited for only within that same
+    allowance.  Every job still gets one unit of work, one frame landed and
+    built, so pump(budget_ms=0) makes progress.  A pump therefore overruns
+    *budget_ms* only by that one unit or by the error of the estimates; the
+    budget is shared by all jobs.  Never raises: a failing job goes to the
+    error path.'''
     deadline = time.monotonic() + max(float(budget_ms), 0.0) / 1000.0
     for job in [j for j in _JOBS.values() if not j._finalised]:
         try:
@@ -579,13 +585,22 @@ def _advance(job, deadline, _self):
         raise pymol.CmdException(
             'morph: %s was deleted while it was being built' % job.name)
     try:
-        # leave room in the budget for building what landed (_prebuild)
-        while (_unit(job, deadline, _self) and
-               time.monotonic() + job._unbuilt * job._build_cost < deadline):
-            pass
+        while _unit(job, deadline, _self):
+            if job._build_cost is None:     # first frame: measure the build
+                _sculpt_off(job, _self)
+                _prebuild(job, _self)
+            if time.monotonic() + _reserve(job, 1) >= deadline:
+                break                       # one more would not fit once built
     finally:
         _sculpt_off(job, _self)
     _prebuild(job, _self)
+
+
+def _reserve(job, extra):
+    '''Seconds to land *extra* more frames and to build them together with
+    the frames landed since the last _prebuild, at the measured costs.'''
+    return (extra * job._land_cost
+            + (job._unbuilt + extra) * (job._build_cost or 0.0))
 
 
 def _wait_for_leg(job, deadline):
@@ -610,7 +625,7 @@ def _unit(job, deadline, _self):
         _finalise_failed(job, _self)
         return False
     if job._landing is None:
-        _wait_for_leg(job, deadline)
+        _wait_for_leg(job, deadline - _reserve(job, 1))
         if job.state in _FAILED:            # the worker failed meanwhile
             _finalise_failed(job, _self)
             return False
@@ -630,7 +645,9 @@ def _unit(job, deadline, _self):
 
 def _land_frame(job, _self):
     '''Append the next frame of the leg being landed; sculpt it when it is an
-    intermediate; title the leg once its key frame is in.'''
+    intermediate; title the leg once its key frame is in, build the leg's
+    frames, and only then let the worker compute the next leg.'''
+    t = time.monotonic()
     leg, frames, k = job._landing
     _self.load_coordset(frames[k], job.name, 0)
     job._unbuilt += 1
@@ -638,13 +655,28 @@ def _land_frame(job, _self):
         job._landing[2] = k + 1
         if job.spec['refinement'] > 0:
             _sculpt(job, 2 + leg * job.frames_per_model + k, _self)
-    else:
-        job._landing = None
-        _title_leg(job.name, leg, job.models, job.frames_per_model, job.legs, _self)
-        job.landed_legs += 1
-        with job._room:
-            job._held -= 1
-            job._room.notify_all()          # the worker may compute the next leg
+        _note_land_cost(job, time.monotonic() - t)
+        return
+    job._landing = None
+    _title_leg(job.name, leg, job.models, job.frames_per_model, job.legs, _self)
+    job.landed_legs += 1
+    _note_land_cost(job, time.monotonic() - t)
+    # Build before releasing the worker.  The core takes the GIL once per state
+    # of the morph during the update (OrthoBusyFast at the end of every
+    # CoordSet::update), so a build that overlaps the worker's pure-Python leg
+    # waits for it hundreds of times: 5-10x slower at leg boundaries.  Frames
+    # of the next leg land only once the worker has queued it and waits for
+    # room again, so no build overlaps a computing worker.
+    _sculpt_off(job, _self)
+    _prebuild(job, _self)
+    with job._room:
+        job._held -= 1
+        job._room.notify_all()              # the worker may compute the next leg
+
+
+def _note_land_cost(job, seconds):
+    '''Running estimate of the time one frame takes to land.'''
+    job._land_cost = seconds if not job._land_cost else 0.5 * (job._land_cost + seconds)
 
 
 def _sculpt(job, state, _self):
@@ -697,6 +729,8 @@ def _prebuild(job, _self):
     if (prepare is None or _self.get_setting_int('defer_builds_mode') != 0
             or name in _self.get_names('objects', enabled_only=1)):
         job._unbuilt = 0
+        if job._build_cost is None:
+            job._build_cost = 0.0           # nothing will be built here
         return
     t = time.monotonic()
     _self.enable(name)
@@ -708,7 +742,11 @@ def _prebuild(job, _self):
         pass                                # e.g. a modal draw owns the core
     finally:
         _self.disable(name)
-    job._build_cost = (time.monotonic() - t) / job._unbuilt
+    # per frame, with the call's fixed cost spread over the frames: rises at
+    # once, falls by halves, so an estimate errs towards a smaller pump
+    per = (time.monotonic() - t) / job._unbuilt
+    old = job._build_cost
+    job._build_cost = per if old is None or per > old else 0.5 * (old + per)
     job._unbuilt = 0
 
 
