@@ -207,6 +207,52 @@ def _pairs_from_alignment(aln, obj1, obj2, _self):
     return pairs
 
 
+def key_frames(nstates, steps, nlegs):
+    '''1-based state numbers that hold exact copies of the input models.
+
+    With N legs of `steps` frames each, the morph has N*steps total states.
+    Key frames are at 1 + k*steps for k = 0..N-1, and the final state N*steps
+    is the last leg's target model.
+
+    Example: key_frames(15, 5, 3) == [1, 6, 11, 15]
+             key_frames(10, 5, 2) == [1, 6, 10]
+    '''
+    return [1 + k * steps for k in range(nlegs)] + [nstates]
+
+
+def residue_order(keys):
+    '''Sort (resv, resi) residue keys: numerically by resv first, then by the
+    insertion-coded string resi within the same resv.
+
+    resv is an int (for numeric ordering); resi is the full residue-id string
+    (e.g. "2", "2A", "-1").  The natural tuple sort on (int, str) is exactly
+    what we want.
+    '''
+    return sorted(keys)
+
+
+def sculpt_states(name, nstates, steps, nlegs, refinement, _self):
+    '''Sculpt every intermediate state except the key frames.
+
+    Key frames (exact copies of the input models) are identified by
+    key_frames(nstates, steps, nlegs).  Backbone atoms (N+CA+C+O+P) are
+    pinned with a "fix" flag, sculpting runs for 10*refinement cycles per
+    state, and the flag is cleared afterwards.
+    '''
+    if refinement <= 0 or nstates <= 2:
+        return
+    kf = set(key_frames(nstates, steps, nlegs))
+    _self.flag('fix', '%s and name N+CA+C+O+P' % name, 'set', quiet=1)
+    try:
+        _self.sculpt_activate(name, 1)
+        for st in range(2, nstates):
+            if st not in kf:
+                _self.sculpt_iterate(name, st, 10 * refinement)
+    finally:
+        _self.sculpt_deactivate(name)
+        _self.flag('fix', name, 'clear', quiet=1)
+
+
 def _index_ranges(indices):
     '''Compress a sorted list of ints into a PyMOL "index 1-5+9+12-20" string.'''
     out = []
@@ -295,7 +341,7 @@ def _segment_chains(S, E, info, core_fraction, min_hinge, blend):
     report = []
     for ckey in sorted(chains):
         residues = chains[ckey]
-        order = sorted(residues)
+        order = residue_order(residues)
         guides = []
         for rkey in order:
             atoms = residues[rkey]
@@ -606,16 +652,8 @@ EXAMPLE
     if err > 1e-3:
         raise pymol.CmdException('morph: coordinate write order mismatch (%.3g)' % err)
 
-    # ---- refinement: sculpt side chains, backbone fixed, endpoints untouched
-    if refinement > 0 and nstates > 2:
-        _self.flag('fix', '%s and name N+CA+C+O+P' % name, 'set', quiet=1)
-        try:
-            _self.sculpt_activate(name, 1)
-            for st in range(2, nstates):
-                _self.sculpt_iterate(name, st, 10 * refinement)
-        finally:
-            _self.sculpt_deactivate(name)
-            _self.flag('fix', name, 'clear', quiet=1)
+    # ---- refinement: sculpt side chains, backbone fixed, key frames untouched
+    sculpt_states(name, nstates, steps, nlegs, refinement, _self)
 
     if color_segments and seg_of_pos:
         _self.alter(name, 'b = seg[pos[index]]', space={'seg': seg_of_pos, 'pos': pos})
