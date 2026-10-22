@@ -733,9 +733,10 @@ struct ContentView: View {
         // layout. Its children are explicitly told to fill it, below.
         return GeometryReader { winGeo in
         VStack(spacing: 0) {
-            #if !RAYMOL_MAS_RESTRICTED
-            MCPDrivingBanner()
-            #endif
+            // (The MCP "Claude is controlling RayMol" banner is NOT laid out here:
+            // as a stack child it pushed the whole window down on every tool call,
+            // reshaping the Metal drawable (#908). It floats over the viewport —
+            // see macViewportStack.)
             // Left | right as a plain HStack, NOT an HSplitView: that split view's
             // system divider had a mouse-tracking band that SWALLOWED clicks on the
             // inspector tongue sitting on the seam (#325; bisected in the VM: x=679
@@ -998,6 +999,17 @@ struct ContentView: View {
             || engine.interactionMode == .lights
     }
 
+    // Top inset for the floating MCP banner (#908): clear the floating rail
+    // capsule (8pt pad + ~24pt pills) or a full-width mode bar (move / measure /
+    // lights / design, ~40pt) that sits on the viewport's top edge. With only the
+    // console/sequence docked above, the viewport's top edge is free.
+    private var mcpBannerTopInset: CGFloat {
+        let modeBar = engine.interactionMode == .move || engine.measureMode != nil
+            || engine.designMode || engine.interactionMode == .lights
+        if modeBar { return 50 }
+        return macAnyTopPane ? 8 : 40
+    }
+
     // The viewport column in the macOS HSplitView: PredictBar (when active) + the
     // 3D Metal view + the Timeline dock. Extracted so macOSLayoutBase's body stays
     // within the type-checker's size limit — same pattern as macViewport itself.
@@ -1021,6 +1033,14 @@ struct ContentView: View {
                         topPaneRail(floating: true).padding(.top, 8)
                     }
                 }
+                #if !RAYMOL_MAS_RESTRICTED
+                // Floating, so it takes no layout space (#908). Inset below
+                // whatever already owns the viewport's top edge so it never
+                // covers the rail's pills or a mode bar's controls.
+                .overlay(alignment: .top) {
+                    MCPDrivingBanner().padding(.top, mcpBannerTopInset)
+                }
+                #endif
             // The docked bottom transport was removed: movie playback lives
             // in the Movie tab, model stepping in the Object panel. Only the
             // full timeline editor still docks here (when expanded).
