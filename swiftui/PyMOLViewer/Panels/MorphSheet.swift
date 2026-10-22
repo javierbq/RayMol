@@ -53,15 +53,29 @@ struct MorphSheet: View {
         self.targetExists = targetExists
         self.sourceShowsSurfaceOrMesh = sourceShowsSurfaceOrMesh
         self.onMorph = onMorph; self.onDelete = onDelete; self.onCancel = onCancel
-        // Start from the saved defaults and lay a re-morphed object's own spec over
-        // the five sheet fields. The wire spec carries no `movieSmooth`, so taking
-        // the whole struct would reset the Movie tab's toggle on save.
-        var s = MorphSettings.load()
-        if let e = existingSettings {
+        _settings = State(initialValue: Self.prefill(saved: MorphSettings.load(),
+                                                     existing: existingSettings))
+    }
+
+    /// The Steppers' ranges.
+    static let framesRange = 2...120
+    static let refinementRange = 0...10
+
+    /// What the sheet opens with: the saved defaults with a re-morphed object's
+    /// own spec laid over the five sheet fields, clamped to the Steppers' ranges.
+    /// The wire spec carries no `movieSmooth`, so taking the whole struct would
+    /// reset the Movie tab's toggle on save. A morph made at the command line can
+    /// carry e.g. `frames_per_model=200`: unclamped, the Stepper would show a value
+    /// it cannot reach and pressing Morph would save it as the new default.
+    static func prefill(saved: MorphSettings, existing: MorphSettings?) -> MorphSettings {
+        var s = saved
+        if let e = existing {
             s.framesPerModel = e.framesPerModel; s.loop = e.loop; s.method = e.method
             s.refinement = e.refinement; s.rate = e.rate
         }
-        _settings = State(initialValue: s)
+        s.framesPerModel = min(max(s.framesPerModel, framesRange.lowerBound), framesRange.upperBound)
+        s.refinement = min(max(s.refinement, refinementRange.lowerBound), refinementRange.upperBound)
+        return s
     }
 
     static let rates: [(label: String, value: String)] = [
@@ -96,7 +110,7 @@ struct MorphSheet: View {
                 Text("Frames per model")
                 Spacer()
                 Text("\(settings.framesPerModel)").monospacedDigit()
-                Stepper("Frames per model", value: $settings.framesPerModel, in: 2...120)
+                Stepper("Frames per model", value: $settings.framesPerModel, in: Self.framesRange)
                     .labelsHidden()
                     .accessibilityIdentifier("morphSheet.frames")
             }
@@ -118,7 +132,7 @@ struct MorphSheet: View {
                     Text("Clean-up cycles")
                     Spacer()
                     Text("\(settings.refinement)").monospacedDigit()
-                    Stepper("Clean-up cycles", value: $settings.refinement, in: 0...10)
+                    Stepper("Clean-up cycles", value: $settings.refinement, in: Self.refinementRange)
                         .labelsHidden()
                         .accessibilityIdentifier("morphSheet.refinement")
                 }
@@ -160,8 +174,17 @@ struct MorphSheet: View {
 
             HStack(spacing: 10) {
                 if let onDelete {
-                    Button("Delete morph", role: .destructive) { onDelete() }
-                        .accessibilityIdentifier("morphSheet.delete")
+                    Button(role: .destructive) { onDelete() } label: {
+                        Text("Delete morph")
+                            #if os(macOS)
+                            // A bordered button in a macOS sheet draws the destructive
+                            // role grey, and ignores .tint and .foregroundStyle on the
+                            // button (checked on macOS 15); the label's own colour is
+                            // honoured: red text, as in AppKit alerts.
+                            .foregroundColor(.red)
+                            #endif
+                    }
+                    .accessibilityIdentifier("morphSheet.delete")
                 }
                 Spacer()
                 Button("Cancel") { onCancel() }

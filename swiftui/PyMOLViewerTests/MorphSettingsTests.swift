@@ -106,6 +106,32 @@ final class MorphSettingsTests: XCTestCase {
                        "2kpo_morph3")   // _morph2 is not known to be ours
     }
 
+    // MARK: - Sheet pre-fill
+
+    /// A command-line morph can carry values the Steppers cannot show; they are
+    /// clamped so pressing Morph cannot save them as the new default.
+    func testPrefillClampsToStepperRanges() {
+        var saved = MorphSettings()
+        saved.movieSmooth = true
+        var cli = MorphSettings()
+        cli.framesPerModel = 200; cli.refinement = 20; cli.loop = false
+        cli.method = "linear"; cli.rate = "ramp up"
+        let s = MorphSheet.prefill(saved: saved, existing: cli)
+        XCTAssertEqual(s.framesPerModel, 120)
+        XCTAssertEqual(s.refinement, 10)
+        XCTAssertFalse(s.loop)
+        XCTAssertEqual(s.method, "linear")
+        XCTAssertEqual(s.rate, "ramp up")
+        XCTAssertTrue(s.movieSmooth)                    // not carried by the wire spec
+        cli.framesPerModel = 1; cli.refinement = -3
+        let low = MorphSheet.prefill(saved: saved, existing: cli)
+        XCTAssertEqual(low.framesPerModel, 2)
+        XCTAssertEqual(low.refinement, 0)
+        XCTAssertEqual(MorphSheet.prefill(saved: saved, existing: nil), saved)
+        XCTAssertEqual(MorphSheet.framesRange, 2...120)
+        XCTAssertEqual(MorphSheet.refinementRange, 0...10)
+    }
+
     // MARK: - UserDefaults round-trip
 
     func testDefaultsRoundTrip() {
