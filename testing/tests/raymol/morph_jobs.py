@@ -22,7 +22,7 @@ import json
 
 import pymol
 import pymol.setting
-from pymol import cmd, testing
+from pymol import cgo, cmd, testing
 
 import pymol.morph_jobs as mj
 
@@ -331,6 +331,55 @@ class TestMorphJobPipeline(testing.PyMOLTestCase):
             'src_morph')
         self.assertEqual(cmd.count_states('src_morph'), 20)
         self.assertEqual(cmd.get_names('objects').count('src_morph'), 1)
+
+    def testDefaultNameSkipsGroup(self):
+        # A group (or map, CGO...) squatting on <source>_morph is not a morph:
+        # deleting it would take its members with it.
+        self.ensemble()
+        cmd.pseudoatom('keepme')
+        cmd.group('src_morph', 'keepme')
+        self.assertEqual(mj.morph_object('src', frames_per_model=3, async_=0),
+                         'src_morph2')
+        self.assertEqual(cmd.get_type('src_morph'), 'object:group')
+        self.assertIn('keepme', cmd.get_names('objects'))
+        self.assertEqual(cmd.count_states('src_morph2'), 12)
+        # the session-restore convention covers molecular objects only
+        with self.assertRaisesRegex(pymol.CmdException,
+                                    'src_morph exists and is not a morph of src'):
+            mj.morph_object('src', name='src_morph', frames_per_model=3, async_=0)
+        self.assertIn('keepme', cmd.get_names('objects'))
+
+    def testStaleRecordDoesNotClaimName(self):
+        # The registry outlives the object: a record whose object was deleted
+        # must not claim whatever is created under that name later.
+        self.ensemble()
+        mj.morph_object('src', frames_per_model=3, async_=0)
+        cmd.delete('src_morph')
+        cmd.load_cgo([cgo.SPHERE, 0.0, 0.0, 0.0, 1.0], 'src_morph')
+        self.assertEqual(mj.morph_object('src', frames_per_model=3, async_=0),
+                         'src_morph2')
+        self.assertEqual(cmd.get_type('src_morph'), 'object:cgo')
+        # an unrelated molecule under the old name is not the morph either
+        cmd.delete('src_morph')
+        cmd.fab('GG', 'src_morph')
+        natoms = cmd.count_atoms('src_morph')
+        self.assertEqual(mj.morph_object('src', frames_per_model=3, async_=0),
+                         'src_morph2')                   # rebuilt in place
+        self.assertEqual(cmd.count_atoms('src_morph'), natoms)
+        self.assertEqual(cmd.count_states('src_morph'), 1)
+
+    def testCopyLookOffStillDropsSurfaces(self):
+        # Surfaces are per state (one mesh per frame); never carried (spec 5.5).
+        self.ensemble()
+        cmd.show('sticks', 'src')
+        cmd.show('surface', 'src')
+        cmd.show('mesh', 'src')
+        self.assertGreater(cmd.count_atoms('src and rep surface'), 0)
+        mj.morph_object('src', frames_per_model=3, copy_look=0, async_=0)
+        self.assertEqual(cmd.count_atoms('src_morph and rep surface'), 0)
+        self.assertEqual(cmd.count_atoms('src_morph and rep mesh'), 0)
+        self.assertEqual(cmd.count_atoms('src_morph and rep sticks'),
+                         cmd.count_atoms('src_morph'))  # other reps are carried
 
     def testPumpBudgetAndIdempotence(self):
         self.ensemble(models=6)

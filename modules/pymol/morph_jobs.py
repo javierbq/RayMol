@@ -80,25 +80,36 @@ _ALT = "alt ''+A"
 def morph_name(source, _self=cmd):
     '''Return a suitable name for the morph output of *source*.
 
-    Returns ``<source>_morph`` when that name is free in the session or when
-    the slot is already held by a morph job for this source.  Falls back to
-    ``<source>_morph2``, ``<source>_morph3``, … with the same rule.
-    Names are legalised with ``cmd.get_legal_name``.
+    Returns ``<source>_morph`` when no object of any type (molecule, group,
+    map, CGO, …) has that name, or when the object there is a known morph of
+    this source (``_is_known_morph``).  Falls back to ``<source>_morph2``,
+    ``<source>_morph3``, … with the same rule.  Names are legalised with
+    ``cmd.get_legal_name``.
     '''
     suffix = 2
     base = source + '_morph'
     name = _self.get_legal_name(base)
-    while True:
-        existing = _self.get_object_list()
-        if name not in existing:
-            return name                          # slot is free
-        job_source = getattr(_JOBS.get(name), 'source', None)
-        if job_source == source:
-            return name                          # already a morph of this source
-        # Slot taken by something else — try next suffix
-        candidate = '%s%d' % (base, suffix)
-        name = _self.get_legal_name(candidate)
+    existing = _self.get_names('objects')
+    while name in existing and not _is_known_morph(name, source, _self):
+        name = _self.get_legal_name('%s%d' % (base, suffix))
         suffix += 1
+    return name
+
+
+def _is_known_morph(name, source, _self=cmd):
+    '''True when *name* is a morph of *source* built this session and the
+    object there is still that morph: a molecular object with the atom count
+    the job created.  The registry outlives deletes and ``reinitialize``, so a
+    record alone must not claim a group, map, CGO or unrelated molecule made
+    later under the same name (a re-morph deletes the object it claims).'''
+    job = _JOBS.get(name)
+    if getattr(job, 'source', None) != source:
+        return False
+    try:
+        return (_self.get_type(name) == 'object:molecule'
+                and _self.count_atoms(name) == job.natoms)
+    except pymol.CmdException:
+        return False                             # no such object any more
 
 
 # --------------------------------------------------------------------------
@@ -316,6 +327,7 @@ class MorphJob(object):
         self.spec = spec
         self.fingerprint = fingerprint
         self.frames_per_model = spec['frames_per_model']
+        self.natoms = len(pos)      # atoms in the morph object
         self.models = len(coords)
         self.legs = self.models if spec['loop'] else self.models - 1
         self.done_legs = 0          # computed by step()
@@ -383,15 +395,16 @@ def _target_name(source, name, _self):
 
     No name: ``morph_name(source)``.  An explicit name is legalised and may
     replace an existing object only when it is a known morph of *source* or
-    follows the ``<source>_morph<N>`` convention (a morph restored from a
-    session has no job registered).'''
+    a molecular object following the ``<source>_morph<N>`` convention (a
+    morph restored from a session has no job registered).'''
     if not name:
         return morph_name(source, _self)
     name = _self.get_legal_name(str(name))
     if name in _self.get_names('objects'):
         base = _self.get_legal_name(source + '_morph')
-        known = getattr(_JOBS.get(name), 'source', None) == source
-        if not known and not re.match(r'%s\d*$' % re.escape(base), name):
+        convention = (re.match(r'%s\d*$' % re.escape(base), name)
+                      and _self.get_type(name) == 'object:molecule')
+        if not convention and not _is_known_morph(name, source, _self):
             raise pymol.CmdException(
                 'morph: %s exists and is not a morph of %s' % (name, source))
     return name
@@ -433,6 +446,10 @@ def start_job(source, name=None, frames_per_model=15, loop=1, method='rigimol',
                   for k in range(1, models + 1)]
         if spec['copy_look']:
             _copy_look(source, target, _self)
+        # never carried, copy_look or not: reps live per state, so a surface
+        # would be built once per frame
+        _self.hide('surface', target)
+        _self.hide('mesh', target)
         _self.set_title(target, 1, 'model 1')
     except Exception:
         _self.delete(target)
