@@ -586,14 +586,24 @@ struct TimelinePanel: View {
         return 30
     }
 
+    /// Why a states clip plays nothing (an object it names is not loaded), or nil.
+    private func missingNote(_ spec: PyMOLEngine.StatesSpec) -> String? {
+        PyMOLEngine.statesClipMissingNote(spec, missing: engine.statesClipMissing(spec),
+                                          loaded: engine.objects.map(\.name))
+    }
+
     // A "Play models" ensemble clip: a block spanning its duration with a few
     // decimated guide ticks (never one per model — a 2000-frame MD stays a block).
+    // A clip whose object is not loaded (a morph saved while it was still being
+    // built, a deleted object) is dimmed, with a dashed outline, and says so.
     private func statesNode(_ laid: Laid, spec: PyMOLEngine.StatesSpec, pps: CGFloat) -> some View {
         let w = max(30, xFor(laid.endFrame, pps: pps) - xFor(laid.frame, pps: pps))
         // The object(s), with the model range only when it's a subset (e.g. "3–7").
         let (label, glyph) = PyMOLEngine.statesClipLabel(spec, models: engine.statesClipModels(spec))
+        let note = missingNote(spec)
+        let text = note.map { "\(label) — \($0)" } ?? label
         return RoundedRectangle(cornerRadius: 4)
-            .fill(TimelineTheme.accent.opacity(0.10))     // discreet — blends with the lane
+            .fill(TimelineTheme.accent.opacity(note == nil ? 0.10 : 0.04))   // discreet — blends with the lane
             .overlay(
                 HStack(spacing: 0) {   // ≤ 10 faint guide ticks
                     ForEach(0..<10, id: \.self) { i in
@@ -601,19 +611,23 @@ struct TimelinePanel: View {
                         Spacer(minLength: 0)
                     }
                 }
+                .opacity(note == nil ? 1 : 0)
             )
             .overlay(
                 HStack(spacing: 3) {
-                    Image(systemName: glyph).font(.system(size: 8))
-                    Text(label).font(.system(size: 10, weight: .medium)).lineLimit(1)
+                    Image(systemName: note == nil ? glyph : "exclamationmark.triangle")
+                        .font(.system(size: 8))
+                    Text(text).font(.system(size: 10, weight: .medium)).lineLimit(1)
                 }
-                .foregroundColor(TimelineTheme.text.opacity(0.85))
+                .foregroundColor(TimelineTheme.text.opacity(note == nil ? 0.85 : 0.5))
                 .padding(.horizontal, 6)
             )
             .overlay(RoundedRectangle(cornerRadius: 4)
-                .stroke(TimelineTheme.accent.opacity(0.45), lineWidth: 0.75))
+                .stroke(TimelineTheme.accent.opacity(note == nil ? 0.45 : 0.3),
+                        style: StrokeStyle(lineWidth: 0.75, dash: note == nil ? [] : [3, 2])))
             .frame(width: w, height: laneH - 16)
-            .accessibilityLabel("Play models clip \(label)")
+            .help(text)
+            .accessibilityLabel("Play models clip \(text)")
     }
 
     private func itemMenu(_ laid: Laid) -> some View {
@@ -633,6 +647,17 @@ struct TimelinePanel: View {
                 }
             case .states(let spec):
                 Text("Play models · \(spec.objects?.count.description ?? "all") · frame \(laid.frame)")
+                if let note = missingNote(spec) {
+                    Text(note.prefix(1).uppercased() + note.dropFirst())
+                    // A morph clip saved before its morph finished: morph its source
+                    // at the clip's own stride, into the clip's object.
+                    if let name = spec.objects?.first,
+                       let source = PyMOLEngine.morphClipSource(spec, loaded: engine.objects.map(\.name)) {
+                        Button { engine.fillMorphClip(spec) } label: {
+                            Label("Build \(name) from \(source)", systemImage: "wand.and.stars")
+                        }
+                    }
+                }
                 Menu("Motion") {
                     ForEach([PyMOLEngine.StatesMode.sweep, .loop, .lockstep], id: \.self) { m in
                         Button {

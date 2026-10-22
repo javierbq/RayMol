@@ -73,6 +73,37 @@ final class MorphEngineTests: XCTestCase {
             [])
     }
 
+    /// A finished morph whose build number no poll has reported is a completion,
+    /// whether or not a poll saw it building: a small morph lands inside one
+    /// poll's pump, and a rebuild with the same settings changes nothing else.
+    func testNewlyBuiltMorphs() {
+        XCTAssertEqual(PyMOLEngine.newlyBuiltMorphs(builds: ["a": 3, "b": 4, "c": 5],
+                                                    seen: [3, 9]), ["b", "c"])
+        XCTAssertEqual(PyMOLEngine.newlyBuiltMorphs(builds: ["a": 3], seen: [3]), [])
+        XCTAssertEqual(PyMOLEngine.newlyBuiltMorphs(builds: [:], seen: [3]), [])
+    }
+
+    /// The panel payload's morph record carries its build number; a record
+    /// without one (an older bundled Python) still decodes, with none.
+    func testMorphRecordDecodesItsBuildNumber() throws {
+        let json = """
+        {"objects":["s","s_morph","t_morph"],"selections":[],"enabled":[],"sel_counts":{},
+         "nstate":{"s":5,"s_morph":50,"t_morph":20},"has_transp":{},"groups":[],"parent":{},
+         "pending":{},
+         "morph":{"s_morph":{"source":"s","build":7,
+                             "spec":{"frames_per_model":10,"loop":1,"method":"rigimol",
+                                     "refinement":3,"rate":"linear","copy_look":1}},
+                  "t_morph":{"source":"t",
+                             "spec":{"frames_per_model":5,"loop":1,"method":"rigimol",
+                                     "refinement":0,"rate":"linear","copy_look":1}}}}
+        """
+        let payload = try JSONDecoder().decode(PanelPayload.self, from: Data(json.utf8))
+        XCTAssertEqual(payload.morph?["s_morph"]?.build, 7)
+        XCTAssertEqual(payload.morph?["s_morph"]?.spec.frames_per_model, 10)
+        XCTAssertNil(payload.morph?["t_morph"]?.build)
+        XCTAssertEqual(payload.morph?["t_morph"]?.source, "t")
+    }
+
     // MARK: - Per-object playback timers
 
     /// Every playing object missing from the published list stops, whatever
@@ -232,6 +263,73 @@ final class MorphEngineTests: XCTestCase {
         XCTAssertTrue(PyMOLEngine.statesClipLabel(two, models: 20) == ("2 objects 1–5", "film.stack"))
     }
 
+    // MARK: - Clips whose objects are not loaded
+
+    /// An object a states clip names counts as missing only when two polls in a
+    /// row found it absent. One poll's payload can be older than the lane it is
+    /// applied to: a smooth Add creates its morph and adds the clip between a
+    /// poll's gathering and its arrival, and that clip must not flash as missing.
+    func testMissingClipObjectsNeedTwoPolls() {
+        let items = [
+            morphClip("m", first: 1, last: 0, stride: 10),
+            PyMOLEngine.TimelineItem(kind: .states(
+                PyMOLEngine.StatesSpec(objects: ["x", "y"], firstModel: 1, lastModel: 0))),
+            PyMOLEngine.TimelineItem(kind: .states(
+                PyMOLEngine.StatesSpec(objects: nil, firstModel: 1, lastModel: 0))),
+            PyMOLEngine.TimelineItem(kind: .camera),
+            PyMOLEngine.TimelineItem(kind: .scene(name: "gone")),
+        ]
+        let first = PyMOLEngine.clipObjectsPoll(items: items, loaded: ["x"], previouslyAbsent: [])
+        XCTAssertEqual(first.absent, ["m", "y"])
+        XCTAssertEqual(first.missing, [])
+        let second = PyMOLEngine.clipObjectsPoll(items: items, loaded: ["x"],
+                                                 previouslyAbsent: first.absent)
+        XCTAssertEqual(second.missing, ["m", "y"])
+        let third = PyMOLEngine.clipObjectsPoll(items: items, loaded: ["x", "m"],
+                                                previouslyAbsent: second.absent)
+        XCTAssertEqual(third.absent, ["y"])
+        XCTAssertEqual(third.missing, ["y"])
+        // The stale poll after an Add, then the first fresh one: never missing.
+        let lane = [morphClip("n_morph", first: 1, last: 0, stride: 15)]
+        let stale = PyMOLEngine.clipObjectsPoll(items: lane, loaded: ["n"], previouslyAbsent: [])
+        XCTAssertEqual(stale.missing, [])
+        let fresh = PyMOLEngine.clipObjectsPoll(items: lane, loaded: ["n", "n_morph"],
+                                                previouslyAbsent: stale.absent)
+        XCTAssertEqual(fresh.absent, [])
+        XCTAssertEqual(fresh.missing, [])
+    }
+
+    /// A morph clip's source, by the `<source>_morph[N]` convention, when it is loaded.
+    func testMorphClipSource() {
+        var m = PyMOLEngine.StatesSpec(objects: ["2kpo_morph"], firstModel: 1, lastModel: 0)
+        m.morphStride = 60
+        XCTAssertEqual(PyMOLEngine.morphClipSource(m, loaded: ["2kpo"]), "2kpo")
+        XCTAssertNil(PyMOLEngine.morphClipSource(m, loaded: ["other"]))
+        m.objects = ["2kpo_morph2"]
+        XCTAssertEqual(PyMOLEngine.morphClipSource(m, loaded: ["2kpo"]), "2kpo")
+        let plain = PyMOLEngine.StatesSpec(objects: ["2kpo_morph"], firstModel: 1, lastModel: 0)
+        XCTAssertNil(PyMOLEngine.morphClipSource(plain, loaded: ["2kpo"]))
+    }
+
+    /// The caption of a clip that plays nothing: a morph clip says it was not built
+    /// and which object to morph; a plain clip says its object is not loaded.
+    func testStatesClipMissingNote() {
+        var m = PyMOLEngine.StatesSpec(objects: ["2kpo_morph"], firstModel: 1, lastModel: 0)
+        m.morphStride = 60
+        XCTAssertEqual(PyMOLEngine.statesClipMissingNote(m, missing: ["2kpo_morph"],
+                                                         loaded: ["2kpo"]),
+                       "not built · morph 2kpo to fill")
+        XCTAssertEqual(PyMOLEngine.statesClipMissingNote(m, missing: ["2kpo_morph"], loaded: []),
+                       "not built · morph its source to fill")
+        XCTAssertNil(PyMOLEngine.statesClipMissingNote(m, missing: [], loaded: ["2kpo"]))
+        let one = PyMOLEngine.StatesSpec(objects: ["2kpo"], firstModel: 1, lastModel: 0)
+        XCTAssertEqual(PyMOLEngine.statesClipMissingNote(one, missing: ["2kpo"], loaded: []),
+                       "not loaded")
+        let three = PyMOLEngine.StatesSpec(objects: ["a", "b", "c"], firstModel: 1, lastModel: 0)
+        XCTAssertEqual(PyMOLEngine.statesClipMissingNote(three, missing: ["a", "c"], loaded: ["b"]),
+                       "a, c not loaded")
+    }
+
     // MARK: - State slider
 
     /// A tick mark per state is O(states) AppKit work on every layout pass (on
@@ -338,6 +436,7 @@ final class MorphCompletionRebuildTests: XCTestCase {
     private var savedSpecs: [String: MorphSettings] = [:]
     private var savedJobs: [PredictionJobState] = []
     private var savedExpanded: String?
+    private var savedSeen: Set<Int> = []
     private let morph = "t12f_src_morph"
 
     override func setUpWithError() throws {
@@ -356,11 +455,13 @@ final class MorphCompletionRebuildTests: XCTestCase {
         savedSpecs = engine.morphSpecs
         savedJobs = engine.morphJobs
         savedExpanded = engine.expandedDetail
+        savedSeen = engine.seenMorphBuilds
         engine.pythonTap = { [unowned self] in self.python.append($0) }
     }
 
     override func tearDown() {
         engine.pythonTap = nil
+        engine.seenMorphBuilds = savedSeen
         engine.runningMorphs = savedRunning
         engine.morphSources = savedSources
         engine.morphSpecs = savedSpecs
@@ -403,7 +504,7 @@ final class MorphCompletionRebuildTests: XCTestCase {
         var settings = MorphSettings()
         settings.framesPerModel = 10
         engine.applyMorphPoll(jobs: [], running: [], sources: [morph: "t12f_src"],
-                              specs: [morph: settings])
+                              specs: [morph: settings], builds: [morph: 9_001])
         let ranges = try lastRebuildRanges()
         XCTAssertEqual(ranges.count, 1)
         XCTAssertEqual(ranges.first?.0, 21)
@@ -414,6 +515,312 @@ final class MorphCompletionRebuildTests: XCTestCase {
         XCTAssertEqual(after.morphStride, 10)
         XCTAssertEqual(after.firstModel, 3)
         XCTAssertEqual(after.lastModel, 8)
+    }
+
+    // MARK: Morphs no poll saw building
+
+    /// A source of 5 models, its morph built at 10 frames per model, and a smooth
+    /// Play-models clip of models 2-4 made for that stride: what the Add leaves
+    /// when the morph is small enough to start and finish inside one poll's pump.
+    private func smallMorphLane() {
+        engine.objects = [
+            ObjectEntry(id: "obj_t12f_src", name: "t12f_src", isEnabled: false,
+                        isSelection: false, atomCount: nil, stateCount: 5),
+            ObjectEntry(id: "obj_\(morph)", name: morph, isEnabled: true,
+                        isSelection: false, atomCount: nil, stateCount: 50),
+        ]
+        var spec = PyMOLEngine.StatesSpec(objects: [morph], firstModel: 2, lastModel: 4)
+        spec.morphStride = 10
+        engine.timelineItems = [PyMOLEngine.TimelineItem(kind: .states(spec))]
+        engine.runningMorphs = []
+        engine.expandedDetail = nil
+    }
+
+    private func frames(_ n: Int) -> MorphSettings {
+        var s = MorphSettings()
+        s.framesPerModel = n
+        return s
+    }
+
+    /// A regenerate at a new stride that no poll saw building: the registry's
+    /// stride changes (15 to 10), the clip already carries 10 so nothing is
+    /// adopted, and the new build number is what reports the completion. The
+    /// movie is rebuilt with models 2-4 at 10 frames per model: states 11-31.
+    func testFastRegenerateNoPollSawBuildingRebuilds() throws {
+        smallMorphLane()
+        engine.morphSources = [morph: "t12f_src"]
+        engine.morphSpecs = [morph: frames(15)]
+        engine.seenMorphBuilds = [9_101]
+        python.removeAll()
+        engine.applyMorphPoll(jobs: [], running: [], sources: [morph: "t12f_src"],
+                              specs: [morph: frames(10)], builds: [morph: 9_102])
+        let ranges = try lastRebuildRanges()
+        XCTAssertEqual(ranges.count, 1)
+        XCTAssertEqual(ranges.first?.0, 11)
+        XCTAssertEqual(ranges.first?.1, 31)
+        XCTAssertEqual(engine.expandedDetail, morph)        // morphDidComplete ran
+        XCTAssertTrue(engine.seenMorphBuilds.contains(9_102))
+    }
+
+    /// The same for a first build: the morph appears in the registry already
+    /// finished, never having been listed as running.
+    func testFastFirstBuildNoPollSawBuildingRebuilds() throws {
+        smallMorphLane()
+        engine.morphSources = [:]
+        engine.morphSpecs = [:]
+        engine.seenMorphBuilds = []
+        python.removeAll()
+        engine.applyMorphPoll(jobs: [], running: [], sources: [morph: "t12f_src"],
+                              specs: [morph: frames(10)], builds: [morph: 9_103])
+        let ranges = try lastRebuildRanges()
+        XCTAssertEqual(ranges.count, 1)
+        XCTAssertEqual(ranges.first?.0, 11)
+        XCTAssertEqual(ranges.first?.1, 31)
+        XCTAssertEqual(engine.expandedDetail, morph)
+    }
+
+    /// A build already reported is not a completion again: the next polls, and a
+    /// Theme studio restore that keeps the record, rebuild nothing.
+    func testAReportedBuildIsNotACompletionAgain() {
+        smallMorphLane()
+        engine.morphSources = [morph: "t12f_src"]
+        engine.morphSpecs = [morph: frames(10)]
+        engine.seenMorphBuilds = [9_104]
+        python.removeAll()
+        engine.applyMorphPoll(jobs: [], running: [], sources: [morph: "t12f_src"],
+                              specs: [morph: frames(10)], builds: [morph: 9_104])
+        XCTAssertFalse(python.contains { $0.contains("_am.rebuild(") })
+        XCTAssertNil(engine.expandedDetail)
+    }
+}
+
+/// Morph clips on the real engine and the host app's own panel polls; the movie
+/// is read back from Python. Cleans up what it creates.
+///
+/// - The review's repro: a smooth Play-models Add of a morph small enough to
+///   start and finish inside one poll's pump. No poll lists such a morph as
+///   running; before build numbers nothing reported its completion, and the
+///   movie kept the rebuild the Add made while the morph had one state, with no
+///   track for it.
+/// - A clip naming a morph that is not loaded (a session saved while it was
+///   being built, reopened): the polls mark it, and its Build action fills it.
+final class MorphClipLiveTests: XCTestCase {
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var savedItems: [PyMOLEngine.TimelineItem] = []
+    private var savedUntracked = false
+    private var savedExpanded: String?
+    private let source = "t12r2_src"
+    private var morph: String { source + "_morph" }
+
+    override func setUpWithError() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            XCTFail("PyMOLEngine.shared was not ready")
+            throw NSError(domain: "PyMOLEngine", code: 1)
+        }
+        savedItems = engine.timelineItems
+        savedUntracked = engine.untrackedMovie
+        savedExpanded = engine.expandedDetail
+    }
+
+    override func tearDown() {
+        engine.runPython("from pymol import cmd as _c, morph_jobs as _mj\n"
+                         + "_mj.morph_cancel('\(morph)')\n"
+                         + "_mj.morph_dismiss('\(morph)')\n"
+                         + "_mj._JOBS.pop('\(morph)', None)\n"
+                         + "_c.delete('\(source)*')")
+        engine.stopObjectStates(morph)
+        engine.objectFPS[morph] = nil
+        engine.clearMovieItems()
+        engine.timelineItems = savedItems
+        engine.untrackedMovie = savedUntracked
+        engine.expandedDetail = savedExpanded
+        super.tearDown()
+    }
+
+    /// Movie frame → state of the morph's own state track, and the movie length.
+    private func morphTrack() throws -> (track: [Int: Int], length: Int) {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("raymol-t12r2-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        engine.runPython("""
+        import json as _t12_json
+        from pymol import cmd as _t12_c
+        _t12_track = {}
+        for _t12_e in _t12_c.get_session('\(morph)', partial=1)['names']:
+            if _t12_e and _t12_e[0] == '\(morph)':
+                for _t12_i, _t12_v in enumerate(_t12_e[5][0][13] or []):
+                    if _t12_v and _t12_v[19]:
+                        _t12_track[_t12_i + 1] = _t12_v[20] + 1
+        with open(r'''\(url.path)''', 'w', encoding='utf-8') as _t12_f:
+            _t12_json.dump({'track': _t12_track, 'length': _t12_c.get_movie_length()}, _t12_f)
+        """)
+        let json = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        let raw = json["track"] as? [String: Int] ?? [:]
+        let track = Dictionary(uniqueKeysWithValues: raw.compactMap { k, v in Int(k).map { ($0, v) } })
+        return (track, json["length"] as? Int ?? 0)
+    }
+
+    /// A 5-model peptide: its morph at 10 frames per model builds within one pump.
+    private func makeSource() {
+        engine.runPython("""
+        from pymol import cmd as _c
+        _c.fab('ACDEFGHIK', '\(source)')
+        for _k in range(2, 6):
+            _c.create('\(source)', '\(source)', 1, _k)
+            _c.rotate('y', 25 * (_k - 1), '\(source) and resi 5-9', _k)
+        """)
+    }
+
+    /// Spins the run loop (the host's polls) until `done`, or 15 s.
+    private func spin(until done: () -> Bool) {
+        let deadline = Date().addingTimeInterval(15)
+        while !done() && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+    }
+
+    func testSmallSmoothAddFillsTheMovie() throws {
+        makeSource()
+        engine.clearMovieItems()
+        var settings = MorphSettings()
+        settings.framesPerModel = 10
+        settings.refinement = 0
+        settings.loop = true
+        let plan = MorphMovie.AddPlan(
+            morph: .init(source: source, name: nil, target: morph, settings: settings),
+            objects: [morph], morphStride: 10, save: nil)
+        let seen = engine.seenMorphBuilds
+        engine.addPlayModelsClip(plan, mode: .sweep, firstModel: 2, lastModel: 4, seconds: 4)
+        XCTAssertEqual(try morphTrack().track, [:])     // the Add rebuilt it with one state
+        // The host app's own polls land the morph and report it: a poll has seen
+        // its build (the engine's morph state may still hold an earlier test's).
+        var sawRunning = false
+        spin {
+            sawRunning = sawRunning || engine.runningMorphs.contains(morph)
+            return engine.seenMorphBuilds != seen && engine.morphSources[morph] != nil
+        }
+        XCTAssertEqual(engine.morphSources[morph], source, "the morph never finished")
+        // Models 2-4 at 10 frames per model: states 11 to 31 over the clip.
+        let (track, length) = try morphTrack()
+        XCTAssertGreaterThan(length, 1)
+        XCTAssertEqual(track[1], 11, "track \(track), a poll saw it running: \(sawRunning)")
+        XCTAssertEqual(track[length], 31, "track \(track), a poll saw it running: \(sawRunning)")
+        print("MorphClipLiveTests: a poll saw the morph running: \(sawRunning)")
+    }
+
+    func testMissingMorphClipIsMarkedThenFilled() throws {
+        makeSource()
+        engine.clearMovieItems()
+        var spec = PyMOLEngine.StatesSpec(objects: [morph], firstModel: 2, lastModel: 4)
+        spec.morphStride = 10
+        engine.timelineItems = [PyMOLEngine.TimelineItem(kind: .states(spec))]
+        spin { !engine.statesClipMissing(spec).isEmpty
+               && engine.objects.contains { $0.name == source }
+               && engine.morphSources[morph] == nil }
+        XCTAssertEqual(engine.statesClipMissing(spec), [morph])
+        XCTAssertEqual(PyMOLEngine.statesClipMissingNote(spec, missing: [morph],
+                                                         loaded: engine.objects.map(\.name)),
+                       "not built · morph \(source) to fill")
+        let seen = engine.seenMorphBuilds
+        engine.fillMorphClip(spec)
+        spin { engine.seenMorphBuilds != seen && engine.morphSources[morph] != nil }
+        XCTAssertEqual(engine.morphSources[morph], source, "the morph never finished")
+        let (track, length) = try morphTrack()
+        XCTAssertEqual(track[1], 11, "track \(track)")
+        XCTAssertEqual(track[length], 31, "track \(track)")
+        XCTAssertEqual(engine.statesClipMissing(spec), [])
+        guard case .states(let after) = engine.timelineItems.first?.kind else {
+            return XCTFail("the clip is gone: \(engine.timelineItems)")
+        }
+        XCTAssertEqual(after.morphStride, 10)       // built at the clip's own stride
+    }
+}
+
+/// The lane's view of clips whose objects are not loaded, through the engine:
+/// two polls publish the missing object, a loaded object is never missing, and
+/// a morph clip's "fill" action morphs its source at the clip's own stride into
+/// the clip's object. Uses the live engine the unit-test host runs (the morph
+/// call is read through `pythonTap`; its source does not exist in Python, so
+/// the call fails there and builds nothing); restores what it changes.
+final class MissingClipObjectTests: XCTestCase {
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var python: [String] = []
+    private var savedItems: [PyMOLEngine.TimelineItem] = []
+    private var savedObjects: [ObjectEntry] = []
+    private var savedAbsent: Set<String> = []
+    private var savedMissing: Set<String> = []
+    private let morph = "t12b_src_morph"
+
+    override func setUpWithError() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            XCTFail("PyMOLEngine.shared was not ready")
+            throw NSError(domain: "PyMOLEngine", code: 1)
+        }
+        savedItems = engine.timelineItems
+        savedObjects = engine.objects
+        savedAbsent = engine.absentClipObjects
+        savedMissing = engine.missingClipObjects
+        engine.pythonTap = { [unowned self] in self.python.append($0) }
+    }
+
+    override func tearDown() {
+        engine.pythonTap = nil
+        engine.absentClipObjects = savedAbsent
+        engine.missingClipObjects = savedMissing
+        engine.objects = savedObjects
+        engine.clearMovieItems()
+        engine.timelineItems = savedItems
+        super.tearDown()
+    }
+
+    private var clip: PyMOLEngine.StatesSpec {
+        var spec = PyMOLEngine.StatesSpec(objects: [morph], firstModel: 1, lastModel: 0)
+        spec.morphStride = 60
+        return spec
+    }
+
+    func testTwoPollsMarkTheClipsObjectMissing() {
+        engine.objects = [ObjectEntry(id: "obj_t12b_src", name: "t12b_src", isEnabled: true,
+                                      isSelection: false, atomCount: nil, stateCount: 20)]
+        engine.timelineItems = [PyMOLEngine.TimelineItem(kind: .states(clip))]
+        engine.absentClipObjects = []
+        engine.missingClipObjects = []
+        engine.applyClipObjectPoll(loaded: ["t12b_src"])
+        XCTAssertEqual(engine.statesClipMissing(clip), [])      // one poll is not enough
+        engine.applyClipObjectPoll(loaded: ["t12b_src"])
+        XCTAssertEqual(engine.missingClipObjects, [morph])
+        XCTAssertEqual(engine.statesClipMissing(clip), [morph])
+        // Loaded since (the panel's list already has it): not missing.
+        engine.objects.append(ObjectEntry(id: "obj_\(morph)", name: morph, isEnabled: true,
+                                          isSelection: false, atomCount: nil, stateCount: 1))
+        XCTAssertEqual(engine.statesClipMissing(clip), [])
+    }
+
+    func testFillMorphsTheSourceAtTheClipsStride() {
+        engine.objects = [ObjectEntry(id: "obj_t12b_src", name: "t12b_src", isEnabled: true,
+                                      isSelection: false, atomCount: nil, stateCount: 20)]
+        python.removeAll()
+        engine.fillMorphClip(clip)
+        let calls = python.filter { $0.contains("morph_object(") }
+        XCTAssertEqual(calls.count, 1)
+        let call = calls.first ?? ""
+        XCTAssertTrue(call.contains("morph_object('t12b_src', name='\(morph)', "), call)
+        XCTAssertTrue(call.contains("frames_per_model=60, loop=1,"), call)
+        XCTAssertTrue(call.contains("reuse=0)"), call)
+        // No loaded source: nothing to morph.
+        engine.objects = []
+        python.removeAll()
+        engine.fillMorphClip(clip)
+        XCTAssertFalse(python.contains { $0.contains("morph_object(") })
     }
 }
 

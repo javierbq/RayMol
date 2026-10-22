@@ -1062,11 +1062,14 @@ def poll_panel():
             'msa_searches': _search_map(),
             'msa_failures': _failure_map(),
         }
-        # Completed morphs with their source and spec. OPTIONAL on the Swift side,
-        # like design_jobs and morph_jobs. Its own try: a failure must not cost the
-        # panel its update. Gathered after the payload dict so a morph that completes
-        # this tick (via the pump above) appears in both morph_jobs (empty, done) and
-        # morph (source + spec) on the same tick rather than one tick apart.
+        # Completed morphs with their source, spec and build number. OPTIONAL on the
+        # Swift side, like design_jobs and morph_jobs. Its own try: a failure must not
+        # cost the panel its update. Gathered after the payload dict so a morph that
+        # completes this tick (via the pump above) appears in both morph_jobs (empty,
+        # done) and morph (source + spec) on the same tick rather than one tick apart.
+        # A small morph can start and finish inside that one pump, so no poll lists
+        # it in morph_jobs: the app reports a completion when a build number it has
+        # not seen appears here.
         try:
             from pymol import morph_jobs as _mj_src
             payload['morph'] = _mj_src.morph_sources()

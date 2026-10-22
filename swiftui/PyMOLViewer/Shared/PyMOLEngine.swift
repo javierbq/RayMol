@@ -236,6 +236,21 @@ final class PyMOLEngine: ObservableObject {
     /// the parse path to detect completions across consecutive polls.
     /// Updated only on the main thread inside `parseObjectPanelFeedback`.
     var runningMorphs: Set<String> = []
+    /// Build numbers (`morph_jobs` `MorphJob.build`) of the finished morphs a panel
+    /// poll has already reported. A number not in here is a morph built since the
+    /// last poll, whether or not a poll saw it building: a small morph starts and
+    /// finishes inside one poll's pump, so it never enters `runningMorphs`, and a
+    /// rebuild with the same settings publishes the same source and spec.
+    /// Main thread only, like `runningMorphs`.
+    var seenMorphBuilds: Set<Int> = []
+    /// Objects that a states clip in the lane names but that are not loaded, as of
+    /// the last two panel polls (`clipObjectsPoll`). The lane dims such a clip and
+    /// says why it plays nothing: a morph a session saved while it was still being
+    /// built comes back without its object, and so does any clip whose object was
+    /// deleted.
+    @Published var missingClipObjects: Set<String> = []
+    /// What the last poll found missing, before the two-poll rule.
+    var absentClipObjects: Set<String> = []
     #if os(macOS)
     /// Binder Design mode (#342). macOS only, and GATED rather than merely unused: the
     /// controller it drives lives behind `#if os(macOS)` because RFD3Kit is macOS-only,
@@ -2326,15 +2341,25 @@ final class PyMOLEngine: ObservableObject {
     /// the new specs carry (while it built, the registry listed no finished
     /// morph by that name). Those clips also adopt the new stride, so the lane
     /// a session save writes matches the movie.
+    ///
+    /// `builds` is each finished morph's build number. A number no poll has
+    /// reported is a completion even when no poll saw the morph building: a
+    /// small morph starts and finishes inside the one pump the poll runs before
+    /// it gathers, and the movie the Add rebuilt while the morph had one state
+    /// has no track for it until the completion rebuilds it.
     func applyMorphPoll(jobs: [PredictionJobState], running: Set<String>,
-                        sources: [String: String], specs: [String: MorphSettings]) {
+                        sources: [String: String], specs: [String: MorphSettings],
+                        builds: [String: Int]) {
         // Morph completion: names that were running, disappeared from running,
-        // AND now appear in the completed-morph dict. Names that disappeared but
-        // are NOT in the morph dict ended with an error or cancellation — they
-        // do not trigger auto-play or the expand animation.
-        let completed = Self.completedMorphs(previouslyRunning: runningMorphs,
-                                             nowRunning: running, known: sources)
+        // AND now appear in the completed-morph dict, plus finished morphs whose
+        // build number is new. Names that disappeared but are NOT in the morph
+        // dict ended with an error or cancellation — they do not trigger
+        // auto-play or the expand animation.
+        let completed = Set(Self.completedMorphs(previouslyRunning: runningMorphs,
+                                                 nowRunning: running, known: sources))
+            .union(Self.newlyBuiltMorphs(builds: builds, seen: seenMorphBuilds))
         runningMorphs = running
+        seenMorphBuilds.formUnion(builds.values)
         let previousSpecs = morphSpecs
 
         if morphJobs != jobs { morphJobs = jobs }
@@ -2344,14 +2369,15 @@ final class PyMOLEngine: ObservableObject {
         if let items = Self.adoptingMorphStrides(timelineItems, previous: previousSpecs,
                                                  current: specs) {
             timelineItems = items           // didSet restages the lane for the next save
-            // A completion below rebuilds for its own clips; a stride that changed
-            // without one (a morph the poll never saw building) needs a rebuild here.
+            // A completion below rebuilds for its own clips. A stride that changed
+            // without one (the registry listing again, with no new build, a morph
+            // it had stopped vouching for) needs a rebuild here.
             let changed = Set(specs.keys.filter {
                 specs[$0]?.framesPerModel != previousSpecs[$0]?.framesPerModel
             })
             if !changed.isSubset(of: completed) { rebuildMovie() }
         }
-        for name in completed { morphDidComplete(name) }
+        for name in completed.sorted() { morphDidComplete(name) }
     }
 
     /// The lane after the registry's morph specs went from `previous` to
@@ -2383,6 +2409,14 @@ final class PyMOLEngine: ObservableObject {
             return copy
         }
         return changed ? adopted : nil
+    }
+
+    /// Finished morphs (name → build number, from the registry) whose build no
+    /// poll has reported yet (`seen`), sorted. Each morph job has its own number,
+    /// so this catches a morph no poll saw building, and a rebuild with the same
+    /// settings, which publishes the same source and spec.
+    static func newlyBuiltMorphs(builds: [String: Int], seen: Set<Int>) -> [String] {
+        builds.filter { !seen.contains($0.value) }.keys.sorted()
     }
 
     /// Names in `previouslyRunning` that have disappeared from `nowRunning`
@@ -2953,6 +2987,82 @@ final class PyMOLEngine: ObservableObject {
             ? " \(spec.firstModel)–\(spec.lastModel > 0 ? spec.lastModel : models)" : ""
         let glyph = spec.mode == .loop || spec.morphStride != nil ? "repeat" : "film.stack"
         return (who + suffix, glyph)
+    }
+
+    /// The objects the lane's states clips name that a poll found not loaded
+    /// (`absent`), and those that count as missing: absent in this poll AND the
+    /// previous one (`previouslyAbsent`). One poll's payload can be older than the
+    /// lane it is applied to, since a clip added (or a session restored) between
+    /// the poll's gathering and its arrival is checked against the old object
+    /// list; a smooth Add's morph, created with its clip, must not flash as missing.
+    static func clipObjectsPoll(items: [TimelineItem], loaded: Set<String>,
+                                previouslyAbsent: Set<String>)
+        -> (absent: Set<String>, missing: Set<String>) {
+        var named = Set<String>()
+        for item in items {
+            if case .states(let spec) = item.kind, let objs = spec.objects {
+                named.formUnion(objs)
+            }
+        }
+        let absent = named.subtracting(loaded)
+        return (absent, absent.intersection(previouslyAbsent))
+    }
+
+    /// The panel poll's half of `missingClipObjects` (main queue): `loaded` is the
+    /// poll's object list.
+    func applyClipObjectPoll(loaded: Set<String>) {
+        let poll = Self.clipObjectsPoll(items: timelineItems, loaded: loaded,
+                                        previouslyAbsent: absentClipObjects)
+        absentClipObjects = poll.absent
+        if missingClipObjects != poll.missing { missingClipObjects = poll.missing }
+    }
+
+    /// The objects `spec` names that are missing, in its order: not loaded by the
+    /// last two polls, and not in the object list now.
+    func statesClipMissing(_ spec: StatesSpec) -> [String] {
+        guard let objs = spec.objects, !missingClipObjects.isEmpty else { return [] }
+        let loaded = Set(objects.map(\.name))
+        return objs.filter { missingClipObjects.contains($0) && !loaded.contains($0) }
+    }
+
+    /// A morph clip's source object, when its name follows `<source>_morph[N]`
+    /// and that source is loaded (`MorphSettings.conventionalSource`): the clip's
+    /// own record carries no source, and a morph a session saved unfinished comes
+    /// back without its registry entry.
+    static func morphClipSource(_ spec: StatesSpec, loaded: [String]) -> String? {
+        guard spec.morphStride != nil, let objs = spec.objects, objs.count == 1 else { return nil }
+        return MorphSettings.conventionalSource(of: objs[0], existing: loaded)
+    }
+
+    /// The lane caption of a states clip that plays nothing because objects it
+    /// names (`missing`, in its order) are not loaded, or nil when none is. A
+    /// morph clip was not built (saved while its morph was being built, or the
+    /// morph was cancelled or deleted): morphing its source fills it.
+    static func statesClipMissingNote(_ spec: StatesSpec, missing: [String],
+                                      loaded: [String]) -> String? {
+        guard !missing.isEmpty else { return nil }
+        if spec.morphStride != nil, let objs = spec.objects, objs.count == 1 {
+            let source = morphClipSource(spec, loaded: loaded) ?? "its source"
+            return "not built · morph \(source) to fill"
+        }
+        if let objs = spec.objects, objs.count == 1 { return "not loaded" }
+        return missing.joined(separator: ", ") + " not loaded"
+    }
+
+    /// Fill a morph clip whose object is not loaded: morph its source into the
+    /// clip's object at the clip's own stride, so its model indices play the
+    /// states they were saved for. The other settings are the Morph sheet's last
+    /// ones, with loop on (a Play-models morph is always a loop). The completion
+    /// rebuilds the movie, as for any morph a clip names. No-op without a loaded
+    /// source.
+    func fillMorphClip(_ spec: StatesSpec) {
+        guard let stride = spec.morphStride, let name = spec.objects?.first,
+              let source = Self.morphClipSource(spec, loaded: objects.map(\.name))
+        else { return }
+        var settings = MorphSettings.load()
+        settings.framesPerModel = stride
+        settings.loop = true
+        morph(source: source, settings: settings, autoPlay: false, name: name)
     }
 
     // Convert a StatesSpec's model window to absolute PyMOL state numbers.

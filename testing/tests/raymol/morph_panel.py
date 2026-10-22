@@ -63,6 +63,25 @@ class TestMorphPanelPayload(testing.PyMOLTestCase):
         # No active progress records remain
         self.assertEqual(p['morph_jobs'], {})
 
+    def testCompletedMorphCarriesItsBuildNumber(self):
+        '''`morph` numbers each finished build. A morph that lands inside one
+        poll's pump is never in `morph_jobs`, and a rebuild with the same
+        settings publishes the same source and spec: the number is how the
+        app tells it finished.'''
+        ensemble('src')
+        mj.morph_object('src', frames_per_model=3, refinement=0, async_=0)
+        appkit_inspector.poll_panel()
+        first = json.load(open(raymol_tmp.channel_path('pymol_objpanel')))['morph']
+        self.assertEqual(first['src_morph']['build'], mj._JOBS['src_morph'].build)
+        mj.morph_object('src', frames_per_model=3, refinement=0, async_=0)
+        appkit_inspector.poll_panel()
+        p = json.load(open(raymol_tmp.channel_path('pymol_objpanel')))
+        again = p['morph']
+        self.assertEqual(p['morph_jobs'], {})
+        self.assertEqual(again['src_morph']['spec'], first['src_morph']['spec'])
+        self.assertEqual(again['src_morph']['source'], 'src')
+        self.assertNotEqual(again['src_morph']['build'], first['src_morph']['build'])
+
     def testMorphJobsPendingMapFailureWritesPanelWithEmptyMorphJobs(self):
         '''If _pending_maps('morph_jobs') raises, the payload file is still
         written (object list intact) and morph_jobs defaults to {}.'''

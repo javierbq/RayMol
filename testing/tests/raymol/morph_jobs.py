@@ -315,6 +315,22 @@ class TestMorphJobPipeline(testing.PyMOLTestCase):
         mj.morph_object('src', frames_per_model=5, async_=0, reuse=1)
         self.assertEqual(cmd.count_states('src_morph'), 25)                  # rebuilt for 5 models
 
+    def testEachBuildHasItsOwnNumber(self):
+        # The app learns a morph finished from this number: a small morph can
+        # land inside one panel poll's pump, so no poll ever lists it as being
+        # built, and a rebuild with the same spec changes nothing else.
+        self.ensemble()
+        mj.morph_object('src', frames_per_model=5, refinement=0, async_=0)
+        first = mj.morph_sources()['src_morph']['build']
+        self.assertIsInstance(first, int)
+        mj.morph_object('src', frames_per_model=5, refinement=0, async_=0, reuse=1)
+        self.assertEqual(mj.morph_sources()['src_morph']['build'], first)   # reused
+        mj.morph_object('src', frames_per_model=5, refinement=0, async_=0)  # rebuilt
+        again = mj.morph_sources()['src_morph']
+        self.assertNotEqual(again['build'], first)
+        self.assertEqual(again['spec']['frames_per_model'], 5)
+        self.assertNotIn('build', again['spec'])        # the spec is the settings only
+
     def testStepAndPumpOneLeg(self):
         self.ensemble()
         job = mj.start_job('src', frames_per_model=5)
@@ -999,9 +1015,11 @@ class TestMorphSessionReplacement(testing.PyMOLTestCase):
         self.ensemble()
         mj.morph_object('src', frames_per_model=3, refinement=0, async_=0)
         started = mj.morph_spec('src_morph')['started']
+        build = mj.morph_sources()['src_morph']['build']
         cmd.set_session(cmd.get_session())
         self.assertEqual(mj.morph_sources()['src_morph']['spec']['frames_per_model'], 3)
         self.assertEqual(mj.morph_spec('src_morph')['started'], started)
+        self.assertEqual(mj.morph_sources()['src_morph']['build'], build)  # not a new build
 
     def testRegistryChecksTheObjectIsStillTheMorph(self):
         self.ensemble()

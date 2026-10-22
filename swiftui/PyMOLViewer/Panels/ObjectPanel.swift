@@ -6016,6 +6016,9 @@ struct MorphSpecWire: Decodable, Equatable {
 struct MorphInfoWire: Decodable, Equatable {
     let source: String
     let spec: MorphSpecWire
+    /// The build's number (`morph_jobs` `MorphJob.build`): a new one is a morph
+    /// built since the last poll. Optional, like every field added to the payload.
+    let build: Int?
 }
 
 // MARK: - Object panel JSON payload
@@ -6200,6 +6203,7 @@ extension PyMOLEngine {
         // Completed morphs: morph name → source name (for morphSources).
         let morphPayload = payload.morph ?? [:]
         let newMorphSources = Dictionary(uniqueKeysWithValues: morphPayload.map { ($0.key, $0.value.source) })
+        let newMorphBuilds = morphPayload.compactMapValues { $0.build }
         // Convert wire specs to MorphSettings, leaving movieSmooth at its default.
         var newMorphSpecs: [String: MorphSettings] = [:]
         for (name, info) in morphPayload {
@@ -6244,7 +6248,9 @@ extension PyMOLEngine {
             if self.designJobs != designs { self.designJobs = designs }
 
             self.applyMorphPoll(jobs: morphJobList, running: nowRunningMorphs,
-                                sources: newMorphSources, specs: newMorphSpecs)
+                                sources: newMorphSources, specs: newMorphSpecs,
+                                builds: newMorphBuilds)
+            self.applyClipObjectPoll(loaded: Set(payload.objects))
 
             if self.alignments != alignments { self.alignments = alignments }
             // Same guard, and it carries the weight here: with no search running this

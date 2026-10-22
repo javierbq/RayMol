@@ -22,6 +22,7 @@ Convention: only alt ''+A atoms are counted (consistent with morphing.py).
 '''
 
 import binascii
+import itertools
 import queue
 import re
 import struct
@@ -60,6 +61,13 @@ REFUSE_BYTES = _platform_refuse()
 # --------------------------------------------------------------------------
 
 _JOBS = {}
+
+# Numbers each job, so each finished build has its own number in
+# morph_sources().  The app's panel poll reports a morph as finished when a
+# number it has not seen appears: a small morph lands inside one poll's pump,
+# so no poll lists it as being built, and a rebuild with the same settings
+# publishes the same source and spec.  Never reset: unique for the process.
+_BUILDS = itertools.count(1)
 
 _ACTIVE = ('queued', 'running')
 _FAILED = ('error', 'cancelled')
@@ -363,6 +371,7 @@ class MorphJob(object):
         self.source = source
         self.spec = spec
         self.fingerprint = fingerprint
+        self.build = next(_BUILDS)  # this build's number (morph_sources)
         self.frames_per_model = spec['frames_per_model']
         self.natoms = len(pos)      # atoms in the morph object
         self.models = len(coords)
@@ -1003,11 +1012,12 @@ def morph_spec(name, _self=cmd):
 
 
 def morph_sources(_self=cmd):
-    '''``{morph_name: {'source', 'spec'}}`` for completed morphs that still
-    exist as the job built them (_is_output): the stride the Timeline maps a
-    morph clip with comes from here.'''
+    '''``{morph_name: {'source', 'spec', 'build'}}`` for completed morphs that
+    still exist as the job built them (_is_output): the stride the Timeline
+    maps a morph clip with comes from here.  ``build`` is the job's number
+    (_BUILDS): a new one means the morph was built again.'''
     names = set(_self.get_names('objects'))
-    return {n: {'source': j.source, 'spec': dict(j.spec)}
+    return {n: {'source': j.source, 'spec': dict(j.spec), 'build': j.build}
             for n, j in list(_JOBS.items()) if n in names and _is_output(j, _self)}
 
 

@@ -80,9 +80,13 @@ example, because the source was deleted) leaves a **Morph failed** card with
 the reason.
 
 A session saved while a morph builds does not include the unfinished morph; a
-movie clip that names it stays, so after reopening the session, morph the
-source again to fill it. Opening another session, or starting a new one, stops
-the build and leaves the card reading **Morph cancelled**.
+movie clip that names it stays. After reopening the session the clip is dimmed
+with a dashed outline and reads `2kpo_morph — not built · morph 2kpo to fill`:
+right-click it and select **Build 2kpo_morph from 2kpo** to morph the source
+at the clip's own frames per model, or morph the source again yourself. Any
+Play-models clip whose object is not loaded is marked the same way ("not
+loaded"). Opening another session, or starting a new one, stops the build and
+leaves the card reading **Morph cancelled**.
 
 ### When it is done
 
