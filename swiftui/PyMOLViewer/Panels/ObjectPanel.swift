@@ -3709,6 +3709,45 @@ private struct ObjectRowContent: View {
 
 // MARK: - Expandable object card
 
+/// The State row's slider: one position per state, applied on integer changes.
+///
+/// A stepped SwiftUI Slider becomes an NSSlider with one tick mark per step on
+/// macOS, and AppKit rebuilds the tick-mark cache (O(states)) several times in
+/// every layout pass. For a 1200-frame morph that was ~1.8 s of main thread when
+/// its card expanded on completion, and ~0.5 s again on each later relayout.
+/// Past `maxTickMarks` states, where ticks would be under ~2 pt apart anyway,
+/// the slider is continuous and the binding rounds, so it still lands on whole
+/// states. iOS draws no tick marks either way.
+struct StateSlider: View {
+    let current: Int
+    let total: Int
+    let onChange: (Int) -> Void
+    let onEditingChanged: (Bool) -> Void
+
+    static let maxTickMarks = 100
+
+    /// The Slider's step: 1 (a tick mark per state) up to `maxTickMarks` states,
+    /// none beyond.
+    static func step(forStates total: Int) -> Double? {
+        total <= maxTickMarks ? 1 : nil
+    }
+
+    var body: some View {
+        let value = Binding<Double>(
+            get: { Double(current) },
+            set: { v in
+                let n = min(max(Int(v.rounded()), 1), max(total, 1))
+                if n != current { onChange(n) }   // apply only on integer change
+            })
+        let range = 1...Double(max(total, 2))
+        if let step = Self.step(forStates: total) {
+            Slider(value: value, in: range, step: step, onEditingChanged: onEditingChanged)
+        } else {
+            Slider(value: value, in: range, onEditingChanged: onEditingChanged)
+        }
+    }
+}
+
 private struct ObjectCard: View {
     let entry: ObjectEntry
     let isAlt: Bool
@@ -3903,13 +3942,9 @@ private struct ObjectCard: View {
                     Image(systemName: "minus.circle").font(.system(size: 14))
                 }
                 .buttonStyle(.plain).foregroundColor(TimelineTheme.accent)
-                Slider(value: Binding(get: { Double(cur) },
-                                      set: { v in
-                                          let n = min(max(Int(v.rounded()), 1), total)
-                                          if n != cur { scrubState = n; setState(n) }  // apply only on integer change
-                                      }),
-                       in: 1...Double(max(total, 2)), step: 1,
-                       onEditingChanged: { editing in if !editing { scrubState = nil } })
+                StateSlider(current: cur, total: total,
+                            onChange: { n in scrubState = n; setState(n) },
+                            onEditingChanged: { editing in if !editing { scrubState = nil } })
                     .tint(TimelineTheme.accent)
                 Button { scrubState = nil; setState(min(cur + 1, total)) } label: {
                     Image(systemName: "plus.circle").font(.system(size: 14))

@@ -71,6 +71,20 @@ final class MorphEngineTests: XCTestCase {
                 known: [:]),
             [])
     }
+
+    // MARK: - State slider
+
+    /// A tick mark per state is O(states) AppKit work on every layout pass (on
+    /// macOS 15 SwiftUI's stepped Slider is an NSSlider; ~1.8 s when a 1200-frame
+    /// morph's card expanded). Ensembles keep their ticks; long objects get none.
+    /// Only the running app shows the cost (newer macOS draws the slider in
+    /// SwiftUI, with no NSSlider a test could inspect).
+    func testStateSliderStepsOnlySmallObjects() {
+        XCTAssertEqual(StateSlider.step(forStates: 20), 1)
+        XCTAssertEqual(StateSlider.step(forStates: StateSlider.maxTickMarks), 1)
+        XCTAssertNil(StateSlider.step(forStates: StateSlider.maxTickMarks + 1))
+        XCTAssertNil(StateSlider.step(forStates: 1200))
+    }
 }
 
 // MARK: - Test-only PredictionJobState fixture
