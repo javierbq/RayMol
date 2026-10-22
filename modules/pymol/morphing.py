@@ -207,6 +207,45 @@ def _pairs_from_alignment(aln, obj1, obj2, _self):
     return pairs
 
 
+def _snapshot(name, sele, obj, _self):
+    '''Atom table of the output object `name`, just created from `sele`.
+
+    Returns (new_idx, pos, src_of, info): the output's atom indices in
+    coordinate-set order, index -> position in that order, output index ->
+    index in `sele`'s object, and info[pos] = (segi, chain, resv, resi, name).
+    `obj` names the object `sele` lies in, for the error text.'''
+    natoms = _self.count_atoms(name)
+    key2new = _index_by_key(name, _KEY_IN, _self)
+    key2src = _index_by_key(sele, _KEY_IN, _self)
+    if len(key2new) != natoms:
+        raise pymol.CmdException('morph: atom identifiers in "%s" are not unique' % obj)
+    new_idx = sorted(key2new.values())
+    pos = {idx: p for p, idx in enumerate(new_idx)}
+    src_of = {}
+    for k, inew in key2new.items():
+        isrc = key2src.get(k)
+        if isrc is None:
+            raise pymol.CmdException('morph: lost track of atom %s' % (k,))
+        src_of[inew] = isrc
+    info = [None] * natoms
+    _self.iterate(name, 'info[pos[index]] = (segi, chain, resv, resi, name)',
+                  space={'info': info, 'pos': pos})
+    return new_idx, pos, src_of, info
+
+
+def _coords_by_pos(obj, state, index_map, pos, _self):
+    '''Coordinates of `obj` in `state` as a list ordered by output position;
+    index_map maps an output atom index to the matching index in `obj`.'''
+    c = {}
+    _self.iterate_state(state, obj, 'c[index] = (x, y, z)', space={'c': c})
+    out = [None] * len(pos)
+    for inew, iobj in index_map.items():
+        out[pos[inew]] = list(c[iobj])
+    if any(v is None for v in out):
+        raise pymol.CmdException('morph: missing coordinates in state %d' % state)
+    return out
+
+
 def key_frames(nstates, steps, nlegs):
     '''1-based state numbers that hold exact copies of the input models.
 
@@ -231,6 +270,12 @@ def residue_order(keys):
     return sorted(keys)
 
 
+#: Atoms pinned while sculpting cleans up an intermediate, and sculpt cycles
+#: per unit of `refinement`. Shared with the morph job layer (morph_jobs.py).
+_SCULPT_FIX = 'name N+CA+C+O+P'
+_SCULPT_CYCLES = 10
+
+
 def sculpt_states(name, nstates, steps, nlegs, refinement, _self):
     '''Sculpt every intermediate state except the key frames.
 
@@ -242,12 +287,12 @@ def sculpt_states(name, nstates, steps, nlegs, refinement, _self):
     if refinement <= 0 or nstates <= 2:
         return
     kf = set(key_frames(nstates, steps, nlegs))
-    _self.flag('fix', '%s and name N+CA+C+O+P' % name, 'set', quiet=1)
+    _self.flag('fix', '%s and %s' % (name, _SCULPT_FIX), 'set', quiet=1)
     try:
         _self.sculpt_activate(name, 1)
         for st in range(2, nstates):
             if st not in kf:
-                _self.sculpt_iterate(name, st, 10 * refinement)
+                _self.sculpt_iterate(name, st, _SCULPT_CYCLES * refinement)
     finally:
         _self.sculpt_deactivate(name)
         _self.flag('fix', name, 'clear', quiet=1)
@@ -571,18 +616,7 @@ EXAMPLE
         raise pymol.CmdException('morph: no atoms in output')
 
     # new object atom -> source atom (by identifiers) -> partner atom
-    key2new = _index_by_key(name, _KEY_IN, _self)
-    key2src = _index_by_key(sele1, _KEY_IN, _self)
-    if len(key2new) != natoms:
-        raise pymol.CmdException('morph: atom identifiers in "%s" are not unique' % obj1)
-    new_idx = sorted(key2new.values())
-    pos = {idx: p for p, idx in enumerate(new_idx)}
-    src_of = {}
-    for k, inew in key2new.items():
-        isrc = key2src.get(k)
-        if isrc is None:
-            raise pymol.CmdException('morph: lost track of atom %s' % (k,))
-        src_of[inew] = isrc
+    new_idx, pos, src_of, info = _snapshot(name, sele1, obj1, _self)
     if pairs is None:
         partner_of = dict(src_of)
     else:
@@ -591,19 +625,8 @@ EXAMPLE
             raise pymol.CmdException('morph: internal pairing mismatch (%d of %d)'
                                      % (len(partner_of), natoms))
 
-    info = [None] * natoms
-    _self.iterate(name, 'info[pos[index]] = (segi, chain, resv, resi, name)',
-                  space={'info': info, 'pos': pos})
-
     def coords_of(obj, state, index_map):
-        c = {}
-        _self.iterate_state(state, obj, 'c[index] = (x, y, z)', space={'c': c})
-        out = [None] * natoms
-        for inew, iobj in index_map.items():
-            out[pos[inew]] = list(c[iobj])
-        if any(v is None for v in out):
-            raise pymol.CmdException('morph: missing coordinates in state %d' % state)
-        return out
+        return _coords_by_pos(obj, state, index_map, pos, _self)
 
     # ---- generate frames leg by leg
     nlegs = len(legs)
