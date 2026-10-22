@@ -6243,20 +6243,8 @@ extension PyMOLEngine {
             if self.predictionJobs != jobs { self.predictionJobs = jobs }
             if self.designJobs != designs { self.designJobs = designs }
 
-            // Morph completion: names that were running, disappeared from running,
-            // AND now appear in the completed-morph dict. Names that disappeared but
-            // are NOT in the morph dict ended with an error or cancellation — they
-            // do not trigger auto-play or the expand animation.
-            let completed = Self.completedMorphs(
-                previouslyRunning: self.runningMorphs,
-                nowRunning: nowRunningMorphs,
-                known: newMorphSources)
-            for name in completed { self.morphDidComplete(name) }
-            self.runningMorphs = nowRunningMorphs
-
-            if self.morphJobs != morphJobList { self.morphJobs = morphJobList }
-            if self.morphSources != newMorphSources { self.morphSources = newMorphSources }
-            if self.morphSpecs != newMorphSpecs { self.morphSpecs = newMorphSpecs }
+            self.applyMorphPoll(jobs: morphJobList, running: nowRunningMorphs,
+                                sources: newMorphSources, specs: newMorphSpecs)
 
             if self.alignments != alignments { self.alignments = alignments }
             // Same guard, and it carries the weight here: with no search running this

@@ -21,18 +21,26 @@ Tests that:
     computed leg that has not landed, and pump() waiting for the worker's
     next leg only within its budget.  Tests synchronise with the worker
     through mj._leg_hook (a _Gate) and pump(), never through sleeps.
+  - Session replacement: a .pse load (full or partial) or reinitialize stops
+    a job without touching the objects that replaced its own, the registry
+    forgets a morph the load replaced (and keeps one it restored unchanged),
+    a job whose object was replaced stops, and a save while a morph builds
+    leaves the partial morph out of the .pse.
 
 Runs on a RayMol --testing build:
     pymol -ckqy testing/testing.py --run testing/tests/raymol/morph_jobs.py
 '''
 
 import json
+import os
+import tempfile
 import threading
 import time
+from unittest import mock
 
 import pymol
 import pymol.setting
-from pymol import cgo, cmd, testing
+from pymol import appkit_movie, cgo, cmd, testing
 
 import pymol.morph_jobs as mj
 
@@ -819,3 +827,218 @@ class TestMorphJobPipeline(testing.PyMOLTestCase):
             self.assertNotIn('src_morph', cmd.get_names('objects'))
         finally:
             mj.REFUSE_BYTES = mj._platform_refuse()
+
+
+#: A morph clip in the Timeline lane, as the app stages it (#901).
+_LANE_CLIP = {'id': '7B1A3C55-1111-4222-8333-944455556666', 'kind': 'states',
+              'states': {'objects': ['src_morph'], 'mode': 'sweep', 'first': 1,
+                         'last': 0, 'seconds': 4.0, 'morphStride': 4},
+              'seconds': 2.0, 'linear': False}
+
+
+class TestMorphSessionReplacement(testing.PyMOLTestCase):
+    '''A morph job and the registry across a session replacement.  The objects
+    a .pse load or reinitialize puts in place belong to that session: a job
+    stops without touching them, and the registry speaks only for objects that
+    are still a job's own output.'''
+
+    def setUp(self):
+        super(TestMorphSessionReplacement, self).setUp()
+        mj._JOBS.clear()
+        self.addCleanup(mj._JOBS.clear)
+        appkit_movie.forget_all_views()
+        self.addCleanup(appkit_movie.forget_all_views)
+        # the lane restore's hand-off to the app (a tempfile + a feedback line)
+        patcher = mock.patch.object(appkit_movie, '_emit_timeline',
+                                    lambda items, untracked_movie=False: None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def ensemble(self, name='src', models=4):
+        '''ACDEFGHIK with the C-terminal half swung further in every model.'''
+        cmd.fab('ACDEFGHIK', name)
+        for k in range(2, models + 1):
+            cmd.create(name, name, 1, k)
+            cmd.rotate('y', 25 * (k - 1), '%s and resi 5-9' % name, k)
+
+    def pse(self):
+        handle, path = tempfile.mkstemp(suffix='.pse')
+        os.close(handle)
+        self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
+        return path
+
+    def building(self, frames_per_model=4):
+        '''A caller-driven re-morph of src with its first leg landed.'''
+        job = mj.start_job('src', frames_per_model=frames_per_model, refinement=0)
+        job.step()
+        mj.pump()
+        self.assertEqual(cmd.count_states('src_morph'), 1 + frames_per_model)
+        return job
+
+    def finish(self, job):
+        while job.step():
+            mj.pump()
+        mj.pump()
+        self.assertEqual(job.state, 'done')
+
+    # ---- a job across a load or reinitialize -----------------------------------
+
+    def testLoadStopsTheJobAndLeavesTheSessionAlone(self):
+        self.ensemble()
+        mj.morph_object('src', frames_per_model=3, refinement=0, async_=0)
+        path = self.pse()
+        cmd.save(path)                                  # src_morph, 12 states
+        job = self.building()
+        cmd.load(path)
+        self.assertEqual((job.state, job._finalised), ('cancelled', True))
+        self.assertIn('session', job.error)
+        self.assertFalse(job.step())
+        for _ in range(3):
+            mj.pump()
+        # the session's morph: not grown, not retitled, not deleted
+        self.assertEqual(cmd.count_states('src_morph'), 12)
+        self.assertEqual(cmd.get_title('src_morph', 5), '2 → 3')
+        self.assertEqual(mj.pending_objects(), {})
+        self.assertEqual(mj.recent_objects(), ['src_morph'])    # its card says so
+        self.assertEqual(mj.pending_info('src_morph')['state'], 'cancelled')
+        self.assertEqual(mj.morph_sources(), {})
+
+    def testLoadStopsTheWorker(self):
+        self.ensemble()
+        path = self.pse()
+        cmd.save(path)                                  # no morph in it
+        gate = _Gate(1)
+        mj._leg_hook = gate
+        self.addCleanup(setattr, mj, '_leg_hook', None)
+        name = mj.morph_object('src', frames_per_model=4, refinement=0, async_=1)
+        job = mj._JOBS[name]
+        self.addCleanup(lambda: (gate.released.set(), job.cancel(), job.join(10.0)))
+        deadline = time.monotonic() + 10
+        while not gate.entered.is_set() and time.monotonic() < deadline:
+            mj.pump()
+        self.assertTrue(gate.entered.is_set())          # leg 0 landed, leg 1 in flight
+        cmd.load(path)
+        gate.released.set()
+        self.assertTrue(job.join(5.0))
+        self.assertEqual(job.state, 'cancelled')
+        self.assertEqual(job.done_legs, 1)              # the in-flight leg was dropped
+        mj.pump()
+        self.assertNotIn(name, cmd.get_names('objects'))
+        self.assertIn('src', cmd.get_names('objects', enabled_only=1))
+
+    def testReinitializeStopsJobsAndForgetsFinishedMorphs(self):
+        self.ensemble()
+        mj.morph_object('src', frames_per_model=3, refinement=0, async_=0)
+        self.ensemble('twin')
+        job = mj.start_job('twin', frames_per_model=3, refinement=0)
+        cmd.reinitialize()
+        self.assertNotIn('src_morph', mj._JOBS)
+        self.assertEqual((job.state, job._finalised), ('cancelled', True))
+        self.assertFalse(job.step())
+        self.assertEqual(mj.pending_objects(), {})
+        self.assertEqual(mj.recent_objects(), ['twin_morph'])
+
+    def testPartialLoadStopsOnlyTheJobsItReplaces(self):
+        self.ensemble()
+        cmd.create('src_morph', 'src')                  # 4 states under the morph's name
+        path = self.pse()
+        cmd.save(path)
+        cmd.reinitialize()
+        self.ensemble('twin')
+        mj.morph_object('twin', frames_per_model=3, refinement=0, async_=0)
+        self.ensemble()
+        job = self.building()
+        cmd.load(path, partial=1)
+        self.assertEqual((job.state, job._finalised), ('cancelled', True))
+        mj.pump()
+        self.assertEqual(cmd.count_states('src_morph'), 4)      # the loaded object
+        self.assertEqual(list(mj.morph_sources()), ['twin_morph'])  # untouched by the load
+
+    def testReplacedObjectStopsTheJob(self):
+        self.ensemble()
+        job = self.building()
+        cmd.delete('src_morph')
+        cmd.create('src_morph', 'src')                  # same atoms, 4 states
+        job.step()
+        mj.pump()
+        self.assertEqual(job.state, 'error')
+        self.assertIn('replaced', job.error)
+        self.assertEqual(cmd.count_states('src_morph'), 4)      # left alone
+        self.assertEqual(mj.recent_objects(), ['src_morph'])
+
+    # ---- the registry names only a job's own output ----------------------------
+
+    def testLoadForgetsAMorphItReplaced(self):
+        self.ensemble()
+        mj.morph_object('src', frames_per_model=3, refinement=0, async_=0)
+        path = self.pse()
+        cmd.save(path)
+        mj.morph_object('src', frames_per_model=5, refinement=0, async_=0)
+        cmd.load(path)
+        self.assertEqual(cmd.count_states('src_morph'), 12)
+        self.assertEqual(mj.morph_sources(), {})
+        self.assertIsNone(mj.morph_spec('src_morph'))
+        # a smooth Play-models Add for 5 frames per model rebuilds it (the app
+        # names a restored morph: MorphSettings.morphTarget)
+        mj.morph_object('src', name='src_morph', frames_per_model=5, refinement=0,
+                        async_=0, reuse=1)
+        self.assertEqual(cmd.count_states('src_morph'), 20)
+
+    def testLoadForgetsAnotherBuildWithTheSameStates(self):
+        self.ensemble()
+        mj.morph_object('src', frames_per_model=3, refinement=0, method='linear',
+                        async_=0)
+        path = self.pse()
+        cmd.save(path)
+        mj.morph_object('src', frames_per_model=3, refinement=0, async_=0)
+        cmd.load(path)                                  # 12 states either way
+        self.assertEqual(mj.morph_sources(), {})
+
+    def testRestoringTheSameMorphKeepsItsRecord(self):
+        # The Theme studio snapshots the session and restores it unchanged.
+        self.ensemble()
+        mj.morph_object('src', frames_per_model=3, refinement=0, async_=0)
+        started = mj.morph_spec('src_morph')['started']
+        cmd.set_session(cmd.get_session())
+        self.assertEqual(mj.morph_sources()['src_morph']['spec']['frames_per_model'], 3)
+        self.assertEqual(mj.morph_spec('src_morph')['started'], started)
+
+    def testRegistryChecksTheObjectIsStillTheMorph(self):
+        self.ensemble()
+        mj.morph_object('src', frames_per_model=3, refinement=0, async_=0)
+        cmd.delete('src_morph')
+        cmd.create('src_morph', 'src')                  # same atoms, 4 states
+        self.assertEqual(mj.morph_sources(), {})
+        self.assertIsNone(mj.morph_spec('src_morph'))
+        mj.morph_object('src', frames_per_model=3, refinement=0, async_=0, reuse=1)
+        self.assertEqual(cmd.count_states('src_morph'), 12)     # rebuilt, not reused
+
+    # ---- a save while a morph builds ------------------------------------------
+
+    def testSaveWhileBuildingLeavesThePartialMorphOut(self):
+        self.ensemble()
+        job = self.building()
+        appkit_movie.stage_timeline(json.dumps([_LANE_CLIP]))
+        path = self.pse()
+        cmd.save(path)
+        self.assertEqual(cmd.count_states('src_morph'), 5)      # the live morph is untouched
+        self.assertEqual(job.state, 'running')                  # and still building
+        self.finish(job)
+        cmd.load(path)
+        self.assertNotIn('src_morph', cmd.get_names('objects'))
+        self.assertIn('src', cmd.get_names('objects', enabled_only=1))
+        # the clip stays in the lane: morphing src again fills it
+        self.assertEqual(appkit_movie._timeline, [_LANE_CLIP])
+        self.assertEqual(mj.morph_sources(), {})
+        self.assertEqual(
+            mj.morph_object('src', frames_per_model=4, refinement=0, async_=0, reuse=1),
+            'src_morph')
+        self.assertEqual(cmd.count_states('src_morph'), 16)
+
+    def testSaveKeepsAFinishedMorph(self):
+        self.ensemble()
+        mj.morph_object('src', frames_per_model=3, refinement=0, async_=0)
+        path = self.pse()
+        cmd.save(path)
+        cmd.load(path)
+        self.assertEqual(cmd.count_states('src_morph'), 12)

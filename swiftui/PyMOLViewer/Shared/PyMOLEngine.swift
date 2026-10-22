@@ -532,6 +532,8 @@ final class PyMOLEngine: ObservableObject {
         // are logical model indices (1-based); they are converted to absolute PyMOL
         // states at rebuild time using the morph's CURRENT framesPerModel stride so
         // a re-morph with a different stride keeps the clip covering the same models.
+        // A regenerate also writes its stride here (adoptingMorphStrides), so the
+        // value a session save carries is the one the movie was built with.
         var morphStride: Int? = nil
     }
     struct TimelineItem: Identifiable, Equatable {
@@ -2314,6 +2316,73 @@ final class PyMOLEngine: ObservableObject {
         }) {
             rebuildMovie()
         }
+    }
+
+    /// The morph part of a panel poll, on the main queue.
+    ///
+    /// The registry's sources and specs are recorded BEFORE completions are
+    /// reported: a completion rebuilds the movie, and a regenerated morph's
+    /// clips must be mapped with the stride it was just built with, which only
+    /// the new specs carry (while it built, the registry listed no finished
+    /// morph by that name). Those clips also adopt the new stride, so the lane
+    /// a session save writes matches the movie.
+    func applyMorphPoll(jobs: [PredictionJobState], running: Set<String>,
+                        sources: [String: String], specs: [String: MorphSettings]) {
+        // Morph completion: names that were running, disappeared from running,
+        // AND now appear in the completed-morph dict. Names that disappeared but
+        // are NOT in the morph dict ended with an error or cancellation — they
+        // do not trigger auto-play or the expand animation.
+        let completed = Self.completedMorphs(previouslyRunning: runningMorphs,
+                                             nowRunning: running, known: sources)
+        runningMorphs = running
+        let previousSpecs = morphSpecs
+
+        if morphJobs != jobs { morphJobs = jobs }
+        if morphSources != sources { morphSources = sources }
+        if morphSpecs != specs { morphSpecs = specs }
+
+        if let items = Self.adoptingMorphStrides(timelineItems, previous: previousSpecs,
+                                                 current: specs) {
+            timelineItems = items           // didSet restages the lane for the next save
+            // A completion below rebuilds for its own clips; a stride that changed
+            // without one (a morph the poll never saw building) needs a rebuild here.
+            let changed = Set(specs.keys.filter {
+                specs[$0]?.framesPerModel != previousSpecs[$0]?.framesPerModel
+            })
+            if !changed.isSubset(of: completed) { rebuildMovie() }
+        }
+        for name in completed { morphDidComplete(name) }
+    }
+
+    /// The lane after the registry's morph specs went from `previous` to
+    /// `current`, or nil when nothing changes. A single-object morph clip whose
+    /// object's frames per model CHANGED (a regenerate completing, or the first
+    /// spec of a morph the clip already named) takes that stride and keeps its
+    /// model indices: the remap of spec §5.7, made on the clip itself so a
+    /// session save writes the stride the movie is built with, and a reload
+    /// (which has no registry spec) plays the same states.
+    ///
+    /// A spec that disappears changes nothing (the morph was deleted, or a
+    /// session load restored another one: the clip's saved stride stands), nor
+    /// does an unchanged one: a poll gathered before a session load may still
+    /// carry the old session's specs, and must not rewrite the restored lane.
+    static func adoptingMorphStrides(_ items: [TimelineItem],
+                                     previous: [String: MorphSettings],
+                                     current: [String: MorphSettings]) -> [TimelineItem]? {
+        var changed = false
+        let adopted = items.map { item -> TimelineItem in
+            guard case .states(var spec) = item.kind, let stride = spec.morphStride,
+                  let objs = spec.objects, objs.count == 1,
+                  let now = current[objs[0]]?.framesPerModel, now > 0, now != stride,
+                  now != previous[objs[0]]?.framesPerModel
+            else { return item }
+            spec.morphStride = now
+            var copy = item
+            copy.kind = .states(spec)
+            changed = true
+            return copy
+        }
+        return changed ? adopted : nil
     }
 
     /// Names in `previouslyRunning` that have disappeared from `nowRunning`

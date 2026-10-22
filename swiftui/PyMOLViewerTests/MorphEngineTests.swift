@@ -134,6 +134,69 @@ final class MorphEngineTests: XCTestCase {
         XCTAssertTrue(PyMOLEngine.statesClipRange(spec: s, models: 20, currentStride: 15) == (1, 0))
     }
 
+    // MARK: - adoptingMorphStrides
+
+    private func morphClip(_ name: String, first: Int, last: Int,
+                           stride: Int?) -> PyMOLEngine.TimelineItem {
+        var s = PyMOLEngine.StatesSpec(objects: [name], firstModel: first, lastModel: last)
+        s.morphStride = stride
+        return PyMOLEngine.TimelineItem(kind: .states(s))
+    }
+
+    private func frames(_ n: Int) -> MorphSettings {
+        var s = MorphSettings()
+        s.framesPerModel = n
+        return s
+    }
+
+    /// A regenerated morph's clips take its new stride with their model indices
+    /// kept, so the stride a session save writes is the one the movie is built
+    /// with, and a reload (no registry spec) maps the clip to the same states:
+    /// 21–71 for models 3–8 at 10 frames per model, not 31–106.
+    func testRegeneratedMorphClipsAdoptTheNewStride() throws {
+        let clip = morphClip("m", first: 3, last: 8, stride: 15)
+        let plain = PyMOLEngine.TimelineItem(kind: .states(
+            PyMOLEngine.StatesSpec(objects: ["m"], firstModel: 3, lastModel: 8)))
+        let other = morphClip("n", first: 2, last: 4, stride: 15)
+        let items = [clip, plain, other]
+        let adopted = try XCTUnwrap(PyMOLEngine.adoptingMorphStrides(
+            items, previous: [:], current: ["m": frames(10)]))
+        XCTAssertEqual(adopted.map(\.id), items.map(\.id))
+        guard case .states(let s) = adopted[0].kind else { return XCTFail("not a states clip") }
+        XCTAssertEqual(s.morphStride, 10)
+        XCTAssertEqual(s.firstModel, 3)
+        XCTAssertEqual(s.lastModel, 8)
+        XCTAssertEqual(adopted[1], plain)       // a plain clip has no stride
+        XCTAssertEqual(adopted[2], other)       // another morph's clip is left alone
+        // The session save writes 10; a reload with no registry maps it to 21–71.
+        let data = try JSONEncoder().encode(PyMOLEngine.timelineRecords(adopted))
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+        XCTAssertEqual((json[0]["states"] as? [String: Any])?["morphStride"] as? Int, 10)
+        let reloaded = PyMOLEngine.timelineItems(
+            from: try JSONDecoder().decode([PyMOLEngine.TimelineRecord].self, from: data))
+        guard case .states(let r) = reloaded[0].kind else { return XCTFail("not a states clip") }
+        XCTAssertTrue(PyMOLEngine.statesClipRange(spec: r, models: 20, currentStride: nil) == (21, 71))
+    }
+
+    /// Only a change of the morph's own stride is adopted. An unchanged spec, a
+    /// record the registry dropped (a session load restored the morph: the
+    /// clip's saved stride stands), a clip already at the stride and a
+    /// multi-object clip leave the lane alone.
+    func testOnlyAStrideChangeIsAdopted() {
+        let items = [morphClip("m", first: 3, last: 8, stride: 15)]
+        XCTAssertNil(PyMOLEngine.adoptingMorphStrides(
+            items, previous: ["m": frames(10)], current: ["m": frames(10)]))
+        XCTAssertNil(PyMOLEngine.adoptingMorphStrides(
+            items, previous: ["m": frames(10)], current: [:]))
+        XCTAssertNil(PyMOLEngine.adoptingMorphStrides(
+            items, previous: [:], current: ["m": frames(15)]))
+        var multi = PyMOLEngine.StatesSpec(objects: ["m", "x"], firstModel: 1, lastModel: 0)
+        multi.morphStride = 15
+        XCTAssertNil(PyMOLEngine.adoptingMorphStrides(
+            [PyMOLEngine.TimelineItem(kind: .states(multi))],
+            previous: [:], current: ["m": frames(10)]))
+    }
+
     // MARK: - States clip models and label
 
     /// A morph clip's models: the source's states when this session built it, else
@@ -256,6 +319,101 @@ final class PlayModelsAddHoldTests: XCTestCase {
         }
         XCTAssertEqual(spec.objects, ["t12a_nosrc_morph"])
         XCTAssertEqual(spec.morphStride, 5)
+    }
+}
+
+/// A regenerate's completion rebuilds the movie with the finished morph's
+/// stride: the poll records the new spec before it reports the completion, so a
+/// 3–8 clip recorded at 15 frames per model and re-morphed at 10 plays states
+/// 21–71 (not 31–106), and the clip keeps that stride for the next save.
+/// Uses the live engine the unit-test host runs (the rebuild is read through
+/// `pythonTap`); the objects it names do not exist, and it restores what it changes.
+final class MorphCompletionRebuildTests: XCTestCase {
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var python: [String] = []
+    private var savedItems: [PyMOLEngine.TimelineItem] = []
+    private var savedObjects: [ObjectEntry] = []
+    private var savedRunning: Set<String> = []
+    private var savedSources: [String: String] = [:]
+    private var savedSpecs: [String: MorphSettings] = [:]
+    private var savedJobs: [PredictionJobState] = []
+    private var savedExpanded: String?
+    private let morph = "t12f_src_morph"
+
+    override func setUpWithError() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            XCTFail("PyMOLEngine.shared was not ready")
+            throw NSError(domain: "PyMOLEngine", code: 1)
+        }
+        savedItems = engine.timelineItems
+        savedObjects = engine.objects
+        savedRunning = engine.runningMorphs
+        savedSources = engine.morphSources
+        savedSpecs = engine.morphSpecs
+        savedJobs = engine.morphJobs
+        savedExpanded = engine.expandedDetail
+        engine.pythonTap = { [unowned self] in self.python.append($0) }
+    }
+
+    override func tearDown() {
+        engine.pythonTap = nil
+        engine.runningMorphs = savedRunning
+        engine.morphSources = savedSources
+        engine.morphSpecs = savedSpecs
+        engine.morphJobs = savedJobs
+        engine.objects = savedObjects
+        engine.objectFPS[morph] = nil
+        engine.expandedDetail = savedExpanded
+        engine.clearMovieItems()
+        engine.timelineItems = savedItems
+        super.tearDown()
+    }
+
+    /// (first, last) of every states clip in the last `appkit_movie.rebuild` sent.
+    private func lastRebuildRanges() throws -> [(Int, Int)] {
+        let call = try XCTUnwrap(python.last { $0.contains("_am.rebuild(") }, "no rebuild sent")
+        let b64 = try XCTUnwrap(call.components(separatedBy: "b64decode('").last?
+            .components(separatedBy: "')").first)
+        let data = try XCTUnwrap(Data(base64Encoded: b64))
+        let spec = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+        return spec.filter { ($0["states"] as? Int) == 1 }.map {
+            (($0["first"] as? Int) ?? -1, ($0["last"] as? Int) ?? -1)
+        }
+    }
+
+    func testRegenerateCompletionRebuildsWithTheNewStride() throws {
+        engine.objects = [
+            ObjectEntry(id: "obj_t12f_src", name: "t12f_src", isEnabled: false,
+                        isSelection: false, atomCount: nil, stateCount: 20),
+            ObjectEntry(id: "obj_\(morph)", name: morph, isEnabled: true,
+                        isSelection: false, atomCount: nil, stateCount: 200),
+        ]
+        var spec = PyMOLEngine.StatesSpec(objects: [morph], firstModel: 3, lastModel: 8)
+        spec.morphStride = 15
+        engine.timelineItems = [PyMOLEngine.TimelineItem(kind: .states(spec))]
+        // While the re-morph built, the registry listed no finished morph by this name.
+        engine.morphSources = [:]
+        engine.morphSpecs = [:]
+        engine.runningMorphs = [morph]
+        python.removeAll()
+        var settings = MorphSettings()
+        settings.framesPerModel = 10
+        engine.applyMorphPoll(jobs: [], running: [], sources: [morph: "t12f_src"],
+                              specs: [morph: settings])
+        let ranges = try lastRebuildRanges()
+        XCTAssertEqual(ranges.count, 1)
+        XCTAssertEqual(ranges.first?.0, 21)
+        XCTAssertEqual(ranges.first?.1, 71)
+        guard case .states(let after) = engine.timelineItems.first?.kind else {
+            return XCTFail("the clip is gone: \(engine.timelineItems)")
+        }
+        XCTAssertEqual(after.morphStride, 10)
+        XCTAssertEqual(after.firstModel, 3)
+        XCTAssertEqual(after.lastModel, 8)
     }
 }
 

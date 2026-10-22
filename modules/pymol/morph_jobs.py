@@ -24,6 +24,7 @@ Convention: only alt ''+A atoms are counted (consistent with morphing.py).
 import binascii
 import queue
 import re
+import struct
 import sys
 import threading
 import time
@@ -51,7 +52,11 @@ REFUSE_BYTES = _platform_refuse()
 # --------------------------------------------------------------------------
 # Job registry: morph-object name -> the MorphJob that last built it, terminal
 # jobs included (morph_spec and morph_sources read them).  Session state only;
-# morph_name reads it to recognise a morph of a given source.
+# morph_name reads it to recognise a morph of a given source.  Keyed by name,
+# so a record speaks for the object under that name only while it is still the
+# job's own output (_is_output).  A session load or reinitialize replaces the
+# objects under it: reset() stops the jobs building into them and forgets the
+# finished morphs they replaced (session_restore, commanding.reinitialize).
 # --------------------------------------------------------------------------
 
 _JOBS = {}
@@ -122,9 +127,9 @@ def morph_name(source, _self=cmd):
 def _is_known_morph(name, source, _self=cmd):
     '''True when *name* is a morph of *source* built this session and the
     object there is still that morph: a molecular object with the atom count
-    the job created.  The registry outlives deletes and ``reinitialize``, so a
-    record alone must not claim a group, map, CGO or unrelated molecule made
-    later under the same name (a re-morph deletes the object it claims).'''
+    the job created.  The registry outlives deletes, so a record alone must
+    not claim a group, map, CGO or unrelated molecule made later under the
+    same name (a re-morph deletes the object it claims).'''
     job = _JOBS.get(name)
     if getattr(job, 'source', None) != source:
         return False
@@ -364,6 +369,8 @@ class MorphJob(object):
         self.legs = self.models if spec['loop'] else self.models - 1
         self.done_legs = 0          # computed by step()
         self.landed_legs = 0        # written into the object by pump()
+        self._landed = 0            # frames written: the object has 1 + this states
+        self._output_crc = None     # _frame_crc of the finished morph (_complete)
         self.state = 'queued'
         self.error = None
         self.started = time.monotonic()
@@ -584,6 +591,12 @@ def _advance(job, deadline, _self):
     if job.name not in names:
         raise pymol.CmdException(
             'morph: %s was deleted while it was being built' % job.name)
+    if not _holds(job, 1 + job._landed, _self):
+        # Another object took the name (created over it, or brought in by a
+        # load): it is not this job's to grow, retitle or delete.
+        _release(job, 'error',
+                 'morph: %s was replaced while it was being built' % job.name)
+        return
     try:
         while _unit(job, deadline, _self):
             if job._build_cost is None:     # first frame: measure the build
@@ -650,6 +663,7 @@ def _land_frame(job, _self):
     t = time.monotonic()
     leg, frames, k = job._landing
     _self.load_coordset(frames[k], job.name, 0)
+    job._landed += 1
     job._unbuilt += 1
     if k + 1 < len(frames):
         job._landing[2] = k + 1
@@ -764,6 +778,10 @@ def _complete(job, _self):
     err = max(abs(chk[i][a] - target[p][a]) for i, p in job._pos.items() for a in range(3))
     if err > 1e-3:
         raise pymol.CmdException('morph: coordinate write order mismatch (%.3g)' % err)
+    try:
+        job._output_crc = _frame_crc(name, _self)
+    except Exception:
+        job._output_crc = None      # a session restore then forgets the record
     _sculpt_off(job, _self)
     _self.set('state', 1, name)
     _self.enable(name)
@@ -792,17 +810,69 @@ def _end(job):
 
 def _finalise_failed(job, _self):
     '''Cancel/error cleanup: drop the partial morph and show the source
-    again.  The record stays in recent_objects() until morph_dismiss.'''
+    again.  The record stays in recent_objects() until morph_dismiss.  An
+    object that took the name meanwhile is not the partial morph: it stays.'''
     _end(job)
     _sculpt_off(job, _self)
     try:
         names = _self.get_names('objects')
-        if job.name in names:
+        if job.name in names and _holds(job, 1 + job._landed, _self):
             _self.delete(job.name)
         if job.source in names:
             _self.enable(job.source)
     except Exception:
         pass
+
+
+def _release(job, state, error):
+    '''End *job* without touching the session: stop its worker and drop what
+    it holds, but delete, enable or disable nothing, because the objects it
+    used were replaced and the names now belong to whatever replaced them.  A
+    job that had already ended keeps its state.'''
+    job._terminate(state, error)
+    job._sculpting = False          # never left on between pumps (_sculpt)
+    _end(job)
+
+
+def _holds(job, states, _self):
+    '''True when the object under *job*'s name is a molecule with the job's
+    atoms and *states* states: still the morph the job is building (states
+    ``1 + job._landed``) or built (``legs * frames_per_model``).'''
+    try:
+        return (_self.get_type(job.name) == 'object:molecule'
+                and _self.count_atoms(job.name) == job.natoms
+                and _self.count_states(job.name) == states)
+    except pymol.CmdException:
+        return False                # no such object any more
+
+
+def _frame_crc(name, _self):
+    '''CRC32 of the coordinates of state 2, the first interpolated frame: it
+    depends on the models and on every setting that shapes the morph (method,
+    rate, refinement, frames per model), so another build with the same atoms
+    and states does not match.  The frame survives a .pse round trip exactly.'''
+    xyz = []
+    _self.iterate_state(2, name, 'xyz.extend((x, y, z))', space={'xyz': xyz})
+    return binascii.crc32(struct.pack('<%dd' % len(xyz), *xyz)) & 0xFFFFFFFF
+
+
+def _is_output(job, _self, exact=False):
+    '''True when *job* finished and the object under its name is still its
+    output: a molecule with the job's atoms and states, cheap enough for every
+    panel poll.  *exact* also compares the first interpolated frame with the
+    one the job built (_frame_crc), for a session restore: an object a .pse
+    brought back under the name may be another build of the same size.'''
+    if job.state != 'done':
+        return False
+    if not _holds(job, job.legs * job.frames_per_model, _self):
+        return False
+    if not exact:
+        return True
+    try:
+        return (job._output_crc is not None
+                and _frame_crc(job.name, _self) == job._output_crc)
+    except Exception:
+        return False
 
 
 def _message(exc):
@@ -871,8 +941,8 @@ SEE ALSO
     if int(reuse):
         target = _target_name(source, name, _self)
         job = _JOBS.get(target)
-        if (job is not None and job.state == 'done' and job.source == source
-                and target in _self.get_names('objects') and job.spec == spec
+        if (job is not None and job.source == source and job.spec == spec
+                and _is_output(job, _self)
                 and job.fingerprint == fingerprint(source, _self)):
             return target
     job = start_job(source, name, run=bool(int(async_)), _self=_self, **spec)
@@ -920,11 +990,12 @@ DESCRIPTION
         print(' morph_dismiss: no cancelled or failed morph named %s' % name)
 
 
-def morph_spec(name):
+def morph_spec(name, _self=cmd):
     '''``{'source', 'spec', 'fingerprint', 'state', 'started'}`` of the job
-    that last built *name* this session (terminal included), or None.'''
+    that last built *name* this session (terminal included), or None.  A
+    finished job's record only while *name* is still its output.'''
     job = _JOBS.get(name)
-    if job is None:
+    if job is None or (job.state == 'done' and not _is_output(job, _self)):
         return None
     return {'source': job.source, 'spec': dict(job.spec),
             'fingerprint': dict(job.fingerprint),
@@ -933,10 +1004,72 @@ def morph_spec(name):
 
 def morph_sources(_self=cmd):
     '''``{morph_name: {'source', 'spec'}}`` for completed morphs that still
-    exist.'''
+    exist as the job built them (_is_output): the stride the Timeline maps a
+    morph clip with comes from here.'''
     names = set(_self.get_names('objects'))
     return {n: {'source': j.source, 'spec': dict(j.spec)}
-            for n, j in _JOBS.items() if j.state == 'done' and n in names}
+            for n, j in list(_JOBS.items()) if n in names and _is_output(j, _self)}
+
+
+# --------------------------------------------------------------------------
+# Session replacement and session files
+# --------------------------------------------------------------------------
+
+def reset(names=None, _self=cmd):
+    '''Objects were replaced under the registry: by a session load or
+    ``reinitialize`` (*names* None: every object), or by a partial load
+    (*names*: the objects it brought in).
+
+    A job building one of them stops without touching it, since the name now
+    belongs to the session that replaced it; its tray card reads cancelled.
+    A finished morph's record goes unless the object there is still exactly
+    that morph, as after the Theme studio restores its snapshot: the Timeline
+    then maps a restored morph clip with the stride the clip saved.'''
+    for name, job in list(_JOBS.items()):
+        if names is not None and name not in names:
+            continue
+        if not job._finalised:
+            _release(job, 'cancelled',
+                     'morph: stopped because the session was replaced')
+        elif job.state == 'done' and not _is_output(job, _self, exact=True):
+            del _JOBS[name]
+
+
+def session_restore(session, *, _self=cmd, **_kwargs):
+    '''Session-restore task: a .pse load replaced the objects under the
+    registry (reset).  A partial load (``load x.pse, partial=1``) replaced
+    only the objects it carries.  Never fails the load.'''
+    try:
+        from pymol import raymol_scenes
+        names = None
+        if raymol_scenes.restoring_partial(_self):
+            names = {e[0] for e in session.get('names') or ()
+                     if e and isinstance(e[0], str)}
+        reset(names, _self)
+    except Exception as e:
+        print(' morph_jobs: session restore: %s' % e)
+    return 1
+
+
+def session_save(session, *, _self=cmd, **_kwargs):
+    '''Session-save task: leave morphs still being built out of the .pse.
+
+    A partial morph would come back as an ordinary object, hidden and holding
+    the frames landed so far, and nothing would finish it: the job does not
+    travel with the session.  The source stays (it is shown while its morph
+    builds), and so does a Timeline clip naming the morph: morphing the source
+    again builds it under that name and the clip plays it.  Edits the copy
+    being written, after get_session filled ``session['names']``, so the live
+    session and the job are untouched (as predicting.session_save does for
+    its placeholders).'''
+    names = session.get('names')
+    if not names:
+        return 1
+    building = {n for n, j in list(_JOBS.items())
+                if not j._finalised and _holds(j, 1 + j._landed, _self)}
+    if building:
+        session['names'] = [e for e in names if not (e and e[0] in building)]
+    return 1
 
 
 # --------------------------------------------------------------------------

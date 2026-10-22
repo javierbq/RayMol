@@ -79,6 +79,11 @@ reads **Morph cancelled** until you select **Dismiss**. A build that fails (for
 example, because the source was deleted) leaves a **Morph failed** card with
 the reason.
 
+A session saved while a morph builds does not include the unfinished morph; a
+movie clip that names it stays, so after reopening the session, morph the
+source again to fill it. Opening another session, or starting a new one, stops
+the build and leaves the card reading **Morph cancelled**.
+
 ### When it is done
 
 - The source is hidden and the `2kpo_morph` row is shown, expanded, with a
