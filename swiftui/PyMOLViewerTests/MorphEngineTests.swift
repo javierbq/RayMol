@@ -134,6 +134,41 @@ final class MorphEngineTests: XCTestCase {
         XCTAssertTrue(PyMOLEngine.statesClipRange(spec: s, models: 20, currentStride: 15) == (1, 0))
     }
 
+    // MARK: - States clip models and label
+
+    /// A morph clip's models: the source's states when this session built it, else
+    /// the morph's own states ÷ stride (restored from a session, or still building).
+    func testMorphClipModels() {
+        XCTAssertEqual(PyMOLEngine.morphClipModels(name: "m", stride: 15,
+                                                   morphSources: ["m": "src"],
+                                                   stateCounts: ["src": 20, "m": 300]), 20)
+        XCTAssertEqual(PyMOLEngine.morphClipModels(name: "m", stride: 10, morphSources: [:],
+                                                   stateCounts: ["m": 200]), 20)
+        XCTAssertEqual(PyMOLEngine.morphClipModels(name: "m", stride: 15, morphSources: [:],
+                                                   stateCounts: ["m": 16]), 1)
+        XCTAssertEqual(PyMOLEngine.morphClipModels(name: "m", stride: 15, morphSources: [:],
+                                                   stateCounts: [:]), 1)
+    }
+
+    /// The range suffix counts the clip's own models, so a full-range morph clip is
+    /// not labelled "1–20" because its 300-state morph raised the global maximum;
+    /// a morph clip carries the morph glyph.
+    func testStatesClipLabel() {
+        var m = PyMOLEngine.StatesSpec(objects: ["2kpo_morph"], firstModel: 1, lastModel: 20)
+        m.morphStride = 15
+        XCTAssertTrue(PyMOLEngine.statesClipLabel(m, models: 20) == ("2kpo_morph", "repeat"))
+        m.firstModel = 3; m.lastModel = 8
+        XCTAssertTrue(PyMOLEngine.statesClipLabel(m, models: 20) == ("2kpo_morph 3–8", "repeat"))
+        let sweep = PyMOLEngine.StatesSpec(objects: ["2kpo"], mode: .sweep, firstModel: 1, lastModel: 20)
+        XCTAssertTrue(PyMOLEngine.statesClipLabel(sweep, models: 20) == ("2kpo", "film.stack"))
+        let loop = PyMOLEngine.StatesSpec(objects: ["2kpo"], mode: .loop, firstModel: 1, lastModel: 0)
+        XCTAssertTrue(PyMOLEngine.statesClipLabel(loop, models: 20) == ("2kpo", "repeat"))
+        let all = PyMOLEngine.StatesSpec(objects: nil, firstModel: 2, lastModel: 0)
+        XCTAssertTrue(PyMOLEngine.statesClipLabel(all, models: 20) == ("20 models 2–20", "film.stack"))
+        let two = PyMOLEngine.StatesSpec(objects: ["a", "b"], firstModel: 1, lastModel: 5)
+        XCTAssertTrue(PyMOLEngine.statesClipLabel(two, models: 20) == ("2 objects 1–5", "film.stack"))
+    }
+
     // MARK: - State slider
 
     /// A tick mark per state is O(states) AppKit work on every layout pass (on

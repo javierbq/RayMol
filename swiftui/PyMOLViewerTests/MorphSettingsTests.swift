@@ -211,5 +211,172 @@ final class MorphSettingsTests: XCTestCase {
         XCTAssertEqual(PyMOLEngine.parseObjMeta(["natoms": 1860]).atomCount, 1860)
         XCTAssertNil(PyMOLEngine.parseObjMeta(["state": 1]).atomCount)
     }
+
+    // MARK: - MorphMovie (Play-models sheet, spec §5.7)
+
+    func testMovieToggleAvailability() {
+        let objs = ["2kpo": 20, "2kpo_morph": 300, "movie": 40]
+        XCTAssertEqual(MorphMovie.availability(target: nil, objects: objs,
+                                               morphSources: [:], building: []),
+                       .unavailable(reason: "Pick one object to smooth"))
+        XCTAssertEqual(MorphMovie.availability(target: "2kpo", objects: objs,
+                                               morphSources: ["2kpo_morph": "2kpo"], building: []),
+                       .available)
+        // This session's morph.
+        XCTAssertEqual(MorphMovie.availability(target: "2kpo_morph", objects: objs,
+                                               morphSources: ["2kpo_morph": "2kpo"], building: []),
+                       .unavailable(reason: "Already a smooth morph"))
+        // A morph a session reload brought back: the `<source>_morph` convention (§5.9).
+        XCTAssertEqual(MorphMovie.availability(target: "2kpo_morph", objects: objs,
+                                               morphSources: [:], building: []),
+                       .unavailable(reason: "Already a smooth morph"))
+        // A morph still being built (not yet in morphSources), whatever its name.
+        XCTAssertEqual(MorphMovie.availability(target: "movie", objects: objs,
+                                               morphSources: [:], building: ["movie"]),
+                       .unavailable(reason: "Already a smooth morph"))
+        XCTAssertEqual(MorphMovie.availability(target: "movie", objects: objs,
+                                               morphSources: [:], building: []),
+                       .available)
+    }
+
+    func testMovieNaturalSecondsRoundsToATenth() {
+        XCTAssertEqual(MorphMovie.naturalSeconds(models: 20, framesPerModel: 15, fps: 30), 10)
+        XCTAssertEqual(MorphMovie.naturalSeconds(models: 20, framesPerModel: 13, fps: 30), 8.7)
+        XCTAssertEqual(MorphMovie.naturalSeconds(models: 20, framesPerModel: 60, fps: 30), 40)
+        XCTAssertEqual(MorphMovie.naturalSeconds(models: 20, framesPerModel: 15, fps: 24), 12.5)
+    }
+
+    /// 1…30 s, widened to 1…max(30, ⌈natural⌉) while smoothing.
+    func testMovieDurationRange() {
+        XCTAssertEqual(MorphMovie.durationRange(smooth: false, natural: 40), 1...30)
+        XCTAssertEqual(MorphMovie.durationRange(smooth: true, natural: 10), 1...30)
+        XCTAssertEqual(MorphMovie.durationRange(smooth: true, natural: 40), 1...40)
+        XCTAssertEqual(MorphMovie.durationRange(smooth: true, natural: 40.2), 1...41)
+    }
+
+    /// Natural length while smoothing and Duration is unedited; the user's value
+    /// otherwise; always inside the stepper's current range.
+    func testMovieDurationUpdateRule() {
+        XCTAssertEqual(MorphMovie.duration(current: 8, smooth: true, edited: false, natural: 10), 10)
+        XCTAssertEqual(MorphMovie.duration(current: 8, smooth: true, edited: false, natural: 40), 40)
+        XCTAssertEqual(MorphMovie.duration(current: 8, smooth: true, edited: true, natural: 40), 8)
+        XCTAssertEqual(MorphMovie.duration(current: 12, smooth: false, edited: false, natural: 10), 12)
+        // Off again: back inside 1…30.
+        XCTAssertEqual(MorphMovie.duration(current: 40, smooth: false, edited: false, natural: 40), 30)
+        // Edited to 40 at 60 frames per model, then frames per model lowered.
+        XCTAssertEqual(MorphMovie.duration(current: 40, smooth: true, edited: true, natural: 10), 30)
+        // A natural length under a second is the stepper's 1 s floor.
+        XCTAssertEqual(MorphMovie.duration(current: 8, smooth: true, edited: false, natural: 0.1), 1)
+    }
+
+    func testMovieCaption() {
+        XCTAssertEqual(
+            MorphMovie.caption(.available, smooth: true, target: "2kpo_morph",
+                               models: 20, framesPerModel: 15, fps: 30),
+            "Builds 2kpo_morph (20 models × 15 frames) and plays that instead · 10 s at 30 fps")
+        XCTAssertEqual(
+            MorphMovie.caption(.available, smooth: true, target: "2kpo_morph2",
+                               models: 20, framesPerModel: 10, fps: 30),
+            "Builds 2kpo_morph2 (20 models × 10 frames) and plays that instead · 6.7 s at 30 fps")
+        XCTAssertNil(MorphMovie.caption(.available, smooth: false, target: "2kpo_morph",
+                                        models: 20, framesPerModel: 15, fps: 30))
+        XCTAssertEqual(
+            MorphMovie.caption(.unavailable(reason: "Pick one object to smooth"), smooth: true,
+                               target: "x_morph", models: 20, framesPerModel: 15, fps: 30),
+            "Pick one object to smooth")
+    }
+
+    /// The resolver is the Object panel's (MorphSettings.morphTarget), except that a
+    /// morph still being built counts as this source's morph: its object has one
+    /// state and no completed record yet, so the resolver alone would say `_morph2`.
+    func testMovieTargetCountsARunningMorphAsTheSources() {
+        let new = MorphMovie.target(source: "2kpo", objects: ["2kpo": 20],
+                                    groups: [], morphSources: [:], building: [])
+        XCTAssertEqual(new.name, "2kpo_morph")
+        XCTAssertFalse(new.explicit)
+        let running = MorphMovie.target(source: "2kpo", objects: ["2kpo": 20, "2kpo_morph": 1],
+                                        groups: [], morphSources: [:], building: ["2kpo_morph"])
+        XCTAssertEqual(running.name, "2kpo_morph")
+        XCTAssertFalse(running.explicit)
+        let reloaded = MorphMovie.target(source: "2kpo", objects: ["2kpo": 20, "2kpo_morph": 300],
+                                         groups: [], morphSources: [:], building: [])
+        XCTAssertEqual(reloaded.name, "2kpo_morph")
+        XCTAssertTrue(reloaded.explicit)
+    }
+
+    func testMovieAddPlanSmooth() {
+        var s = MorphSettings()
+        s.loop = false                      // the Object panel's last choice
+        s.framesPerModel = 20
+        let plan = MorphMovie.addPlan(target: "2kpo", smooth: true, settings: s,
+                                      objects: ["2kpo": 20], groups: [],
+                                      morphSources: [:], building: [])
+        var sent = s
+        sent.loop = true                    // implied on for the Movie path
+        XCTAssertEqual(plan.morph, MorphMovie.AddPlan.MorphCall(
+            source: "2kpo", name: nil, target: "2kpo_morph", settings: sent))
+        XCTAssertEqual(plan.objects, ["2kpo_morph"])
+        XCTAssertEqual(plan.morphStride, 20)
+        var saved = s
+        saved.movieSmooth = true            // the sheet's own loop is saved, not the forced one
+        XCTAssertEqual(plan.save, saved)
+    }
+
+    func testMovieAddPlanNamesAReloadedMorph() {
+        let plan = MorphMovie.addPlan(target: "2kpo", smooth: true, settings: MorphSettings(),
+                                      objects: ["2kpo": 20, "2kpo_morph": 300], groups: [],
+                                      morphSources: [:], building: [])
+        XCTAssertEqual(plan.morph?.name, "2kpo_morph")
+        XCTAssertEqual(plan.morph?.target, "2kpo_morph")
+        XCTAssertEqual(plan.objects, ["2kpo_morph"])
+    }
+
+    func testMovieAddPlanToggleOffIsAPlainClipAndRemembersOff() {
+        var s = MorphSettings()
+        s.movieSmooth = true
+        let plan = MorphMovie.addPlan(target: "2kpo", smooth: false, settings: s,
+                                      objects: ["2kpo": 20], groups: [],
+                                      morphSources: [:], building: [])
+        XCTAssertNil(plan.morph)
+        XCTAssertEqual(plan.objects, ["2kpo"])
+        XCTAssertNil(plan.morphStride)
+        XCTAssertEqual(plan.save?.movieSmooth, false)
+    }
+
+    /// Unavailable toggle: a plain clip, and the saved toggle is left alone.
+    func testMovieAddPlanUnavailableLeavesSettingsAlone() {
+        let all = MorphMovie.addPlan(target: nil, smooth: true, settings: MorphSettings(),
+                                     objects: ["2kpo": 20], groups: [],
+                                     morphSources: [:], building: [])
+        XCTAssertNil(all.morph)
+        XCTAssertNil(all.objects)
+        XCTAssertNil(all.morphStride)
+        XCTAssertNil(all.save)
+        let morph = MorphMovie.addPlan(target: "2kpo_morph", smooth: true, settings: MorphSettings(),
+                                       objects: ["2kpo": 20, "2kpo_morph": 300], groups: [],
+                                       morphSources: ["2kpo_morph": "2kpo"], building: [])
+        XCTAssertNil(morph.morph)
+        XCTAssertEqual(morph.objects, ["2kpo_morph"])
+        XCTAssertNil(morph.morphStride)
+        XCTAssertNil(morph.save)
+    }
+
+    /// Python refuses a second job on a target being built; the clip names it and
+    /// is rebuilt when it completes.
+    func testMovieAddPlanWhileItsMorphIsBuilding() {
+        let plan = MorphMovie.addPlan(target: "2kpo", smooth: true, settings: MorphSettings(),
+                                      objects: ["2kpo": 20, "2kpo_morph": 1], groups: [],
+                                      morphSources: [:], building: ["2kpo_morph"])
+        XCTAssertNil(plan.morph)
+        XCTAssertEqual(plan.objects, ["2kpo_morph"])
+        XCTAssertEqual(plan.morphStride, 15)
+        XCTAssertEqual(plan.save?.movieSmooth, true)
+    }
+
+    func testNumberFormatting() {
+        XCTAssertEqual(MorphSettings.number(10), "10")
+        XCTAssertEqual(MorphSettings.number(6.6667), "6.7")
+        XCTAssertEqual(MorphSettings.number(29.97), "30")
+    }
 }
 #endif

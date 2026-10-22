@@ -2687,21 +2687,11 @@ final class PyMOLEngine: ObservableObject {
                 // model indices to absolute states using the current stride so a
                 // re-morph with different framesPerModel keeps the same models.
                 var first = spec.firstModel, last = spec.lastModel
-                if let morphStride = spec.morphStride,
+                if spec.morphStride != nil,
                    let name = spec.objects?.first,
                    spec.objects?.count == 1 {
-                    let currentStride = morphSpecs[name]?.framesPerModel
-                    let models: Int = {
-                        if let src = morphSources[name],
-                           let srcObj = objects.first(where: { $0.name == src }) {
-                            return srcObj.stateCount
-                        }
-                        let s = currentStride ?? morphStride
-                        let n = objects.first(where: { $0.name == name })?.stateCount ?? s
-                        return max(1, n / s)
-                    }()
-                    let r = Self.statesClipRange(spec: spec, models: models,
-                                                 currentStride: currentStride)
+                    let r = Self.statesClipRange(spec: spec, models: statesClipModels(spec),
+                                                 currentStride: morphSpecs[name]?.framesPerModel)
                     first = r.first; last = r.last
                 }
                 parts.append("{\"frame\":\(start),\"end\":\(end),\"states\":1,"
@@ -2723,6 +2713,45 @@ final class PyMOLEngine: ObservableObject {
         objects.filter { $0.stateCount > 1 }.map { ($0.name, $0.stateCount) }
     }
     var maxStateCount: Int { objects.map { $0.stateCount }.max() ?? 1 }
+
+    /// Models a states clip counts over (its lane label's range suffix and, for a
+    /// morph clip, the model → state mapping): a morph clip's source models, a
+    /// single object's states, otherwise the most states of any object.
+    func statesClipModels(_ spec: StatesSpec) -> Int {
+        guard let objs = spec.objects, objs.count == 1 else { return maxStateCount }
+        let name = objs[0]
+        let counts = Dictionary(objects.map { ($0.name, $0.stateCount) },
+                                uniquingKeysWith: { a, _ in a })
+        if let stride = spec.morphStride {
+            return Self.morphClipModels(name: name,
+                                        stride: morphSpecs[name]?.framesPerModel ?? stride,
+                                        morphSources: morphSources, stateCounts: counts)
+        }
+        return counts[name] ?? maxStateCount
+    }
+
+    /// Models in a morph clip's object: its source's states when this session built
+    /// it (`morphSources`), else its own states ÷ `stride` (a morph restored from a
+    /// session, or one still building), at least 1.
+    static func morphClipModels(name: String, stride: Int, morphSources: [String: String],
+                                stateCounts: [String: Int]) -> Int {
+        if let src = morphSources[name], let n = stateCounts[src] { return n }
+        let s = max(stride, 1)
+        return max(1, (stateCounts[name] ?? s) / s)
+    }
+
+    /// A states clip's lane label and glyph: its object ("N objects", or "N models"
+    /// for all), a "3–7" suffix only when it plays a subset of its `models`, and the
+    /// `repeat` glyph for a Loop or a morph clip (spec §5.7), `film.stack` otherwise.
+    static func statesClipLabel(_ spec: StatesSpec, models: Int) -> (text: String, glyph: String) {
+        let who = spec.objects.map { $0.count == 1 ? $0[0] : "\($0.count) objects" }
+            ?? "\(models) models"
+        let subset = spec.firstModel > 1 || (spec.lastModel > 0 && spec.lastModel < models)
+        let suffix = subset
+            ? " \(spec.firstModel)–\(spec.lastModel > 0 ? spec.lastModel : models)" : ""
+        let glyph = spec.mode == .loop || spec.morphStride != nil ? "repeat" : "film.stack"
+        return (who + suffix, glyph)
+    }
 
     // Convert a StatesSpec's model window to absolute PyMOL state numbers.
     //

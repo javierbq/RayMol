@@ -164,6 +164,168 @@ struct MorphSettings: Codable, Equatable {
         }
         return (candidate, false)
     }
+
+    // MARK: - Formatting
+
+    /// Whole numbers without a decimal ("10"), anything else to one place ("6.7"):
+    /// seconds and fps in the sheets' summary lines.
+    static func number(_ x: Double) -> String {
+        abs(x - x.rounded()) < 0.05 ? String(Int(x.rounded())) : String(format: "%.1f", x)
+    }
+}
+
+// MARK: - MorphMovie
+
+/// The Movie tab's "Smooth transitions (morph)" toggle in the Play-models sheet
+/// (spec §5.7): when it can be used, what the line under it says, the Duration it
+/// implies, and what Add does. Pure, so the sheet only wires it.
+enum MorphMovie {
+
+    /// Whether the toggle can be used for the sheet's target, and why not.
+    enum Availability: Equatable {
+        case available
+        case unavailable(reason: String)
+    }
+
+    /// Off for "all models" (`target == nil`): a morph is built from one object.
+    /// Off for a target that is already a morph: a completed morph of this session
+    /// (`morphSources`), one still being built (`building`, not yet in
+    /// `morphSources`), or one a session reload brought back, recognised by the
+    /// `<source>_morph` convention as the Object panel does (spec §5.9). Smoothing a
+    /// morph would morph every one of its frames.
+    ///
+    /// - Parameters:
+    ///   - objects: the loaded objects (not selections), name → state count.
+    ///   - building: names of morph jobs queued or running.
+    static func availability(target: String?, objects: [String: Int],
+                             morphSources: [String: String],
+                             building: Set<String>) -> Availability {
+        guard let t = target else { return .unavailable(reason: "Pick one object to smooth") }
+        if morphSources[t] != nil || building.contains(t)
+            || MorphSettings.conventionalSource(of: t, existing: Array(objects.keys)) != nil {
+            return .unavailable(reason: "Already a smooth morph")
+        }
+        return .available
+    }
+
+    /// The object a smooth clip of `source` plays, and whether its name is passed
+    /// to `morph_object`: the Object panel's resolver (MorphSettings.morphTarget),
+    /// except that a morph of this source still being built counts as its morph.
+    /// Such an object has one state and no completed record yet, so the resolver
+    /// alone would take it for a user's molecule and answer `<source>_morph2`,
+    /// while Python's registry targets the running job.
+    static func target(source: String, objects: [String: Int], groups: Set<String>,
+                       morphSources: [String: String],
+                       building: Set<String>) -> (name: String, explicit: Bool) {
+        var sources = morphSources
+        for name in building where sources[name] == nil
+            && MorphSettings.conventionalSource(of: name, existing: [source]) == source {
+            sources[name] = source
+        }
+        return MorphSettings.morphTarget(card: source, source: source, objects: objects,
+                                         groups: groups, morphSources: sources)
+    }
+
+    /// Length of the smooth clip at its natural speed: the morph's frames (a
+    /// loop, so models × frames per model) at the movie rate, to 0.1 s.
+    static func naturalSeconds(models: Int, framesPerModel: Int, fps: Double) -> Double {
+        let s = MorphClipMapping.naturalSeconds(models: models, stride: framesPerModel,
+                                                loop: true, fps: fps)
+        return (s * 10).rounded() / 10
+    }
+
+    /// The Duration stepper's range without smoothing.
+    static let plainDurationRange: ClosedRange<Double> = 1...30
+
+    /// The Duration stepper's range: 1…30 s, widened while smoothing to
+    /// 1…max(30, ⌈natural⌉) so a long morph's natural length (40 s at 60 frames
+    /// per model) can be shown and kept.
+    static func durationRange(smooth: Bool, natural: Double) -> ClosedRange<Double> {
+        smooth ? 1...max(plainDurationRange.upperBound, natural.rounded(.up))
+               : plainDurationRange
+    }
+
+    /// Duration after the toggle or frames per model changed: the natural length
+    /// while smoothing, unless the user has edited Duration since the sheet opened;
+    /// otherwise the current value. Kept inside the stepper's range, which shrinks
+    /// when smoothing turns off or frames per model drops.
+    static func duration(current: Double, smooth: Bool, edited: Bool,
+                         natural: Double) -> Double {
+        let range = durationRange(smooth: smooth, natural: natural)
+        let d = smooth && !edited ? natural : current
+        return min(max(d, range.lowerBound), range.upperBound)
+    }
+
+    /// The line under the toggle: "Builds 2kpo_morph (20 models × 15 frames) and
+    /// plays that instead · 10 s at 30 fps" while on, the reason while unavailable,
+    /// nothing while off. `target` is the resolved morph name.
+    static func caption(_ availability: Availability, smooth: Bool, target: String,
+                        models: Int, framesPerModel: Int, fps: Double) -> String? {
+        switch availability {
+        case .unavailable(let reason):
+            return reason
+        case .available:
+            guard smooth else { return nil }
+            let s = naturalSeconds(models: models, framesPerModel: framesPerModel, fps: fps)
+            return "Builds \(target) (\(models) models × \(framesPerModel) frames) "
+                + "and plays that instead · \(MorphSettings.number(s)) s at "
+                + "\(MorphSettings.number(max(fps, 1))) fps"
+        }
+    }
+
+    /// What Add does.
+    struct AddPlan: Equatable {
+        /// The morph job to submit before the clip (`engine.morph(…, autoPlay: false,
+        /// reuse: true)`: Python keeps an existing morph whose spec and source
+        /// fingerprint match, spec §5.2).
+        struct MorphCall: Equatable {
+            let source: String
+            /// Passed to `morph_object` only when the resolver says so.
+            let name: String?
+            /// The object the job writes.
+            let target: String
+            /// Loop forced on: the Movie path implies it (spec §5.7).
+            let settings: MorphSettings
+        }
+        /// nil for a plain clip, and when this morph is already being built: Python
+        /// would refuse a second job, and the clip naming it is rebuilt when it
+        /// completes.
+        let morph: MorphCall?
+        /// The clip's objects (nil = all multi-state objects).
+        let objects: [String]?
+        /// Set for a smooth clip: Start/End are model indices, remapped to the
+        /// morph's states at each rebuild.
+        let morphStride: Int?
+        /// The settings to persist (the toggle remembers on and off), or nil to leave
+        /// them alone when the toggle could not be used.
+        let save: MorphSettings?
+    }
+
+    static func addPlan(target: String?, smooth: Bool, settings: MorphSettings,
+                        objects: [String: Int], groups: Set<String>,
+                        morphSources: [String: String],
+                        building: Set<String>) -> AddPlan {
+        guard let source = target,
+              availability(target: source, objects: objects, morphSources: morphSources,
+                           building: building) == .available
+        else {
+            return AddPlan(morph: nil, objects: target.map { [$0] }, morphStride: nil, save: nil)
+        }
+        var saved = settings
+        saved.movieSmooth = smooth
+        guard smooth else {
+            return AddPlan(morph: nil, objects: [source], morphStride: nil, save: saved)
+        }
+        let resolved = Self.target(source: source, objects: objects, groups: groups,
+                                   morphSources: morphSources, building: building)
+        var sent = settings
+        sent.loop = true
+        let call = building.contains(resolved.name) ? nil
+            : AddPlan.MorphCall(source: source, name: resolved.explicit ? resolved.name : nil,
+                                target: resolved.name, settings: sent)
+        return AddPlan(morph: call, objects: [resolved.name],
+                       morphStride: settings.framesPerModel, save: saved)
+    }
 }
 
 // MARK: - MorphClipMapping

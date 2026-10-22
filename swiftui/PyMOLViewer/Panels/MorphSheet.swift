@@ -106,51 +106,7 @@ struct MorphSheet: View {
                 Text("\(models) models").font(.system(size: 11)).foregroundStyle(.secondary)
             }
 
-            HStack {
-                Text("Frames per model")
-                Spacer()
-                Text("\(settings.framesPerModel)").monospacedDigit()
-                Stepper("Frames per model", value: $settings.framesPerModel, in: Self.framesRange)
-                    .labelsHidden()
-                    .accessibilityIdentifier("morphSheet.frames")
-            }
-
-            Toggle("Loop back to model 1", isOn: $settings.loop)
-                .tint(TimelineTheme.accent)
-                .accessibilityIdentifier("morphSheet.loop")
-
-            Picker("Method", selection: $settings.method) {
-                Text("Rigid segments").tag("rigimol")
-                Text("Linear").tag("linear")
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .accessibilityIdentifier("morphSheet.method")
-
-            VStack(alignment: .leading, spacing: 2) {
-                HStack {
-                    Text("Clean-up cycles")
-                    Spacer()
-                    Text("\(settings.refinement)").monospacedDigit()
-                    Stepper("Clean-up cycles", value: $settings.refinement, in: Self.refinementRange)
-                        .labelsHidden()
-                        .accessibilityIdentifier("morphSheet.refinement")
-                }
-                Text("sculpting, backbone fixed")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-
-            HStack {
-                Text("Rate")
-                Spacer()
-                Picker("Rate", selection: $settings.rate) {
-                    ForEach(Self.rates, id: \.value) { Text($0.label).tag($0.value) }
-                }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .fixedSize()
-                .accessibilityIdentifier("morphSheet.rate")
-            }
+            MorphSettingsControls(settings: $settings, showsLoop: true, idPrefix: "morphSheet")
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(Self.summaryLine(summary, models: models, fps: fps,
@@ -231,7 +187,8 @@ struct MorphSheet: View {
                             showBytes: Bool, source: String, target: String,
                             isMorphObject: Bool, targetExists: Bool = false) -> String {
         var parts = ["\(models) models → \(s.frames) frames",
-                     "\(number(s.seconds)) s at \(number(max(fps, 1))) fps"]
+                     "\(MorphSettings.number(s.seconds)) s at "
+                        + "\(MorphSettings.number(max(fps, 1))) fps"]
         if showBytes { parts.append(megabytes(s.bytes)) }
         if isMorphObject {
             parts.append("rebuilds \(target)")
@@ -241,16 +198,76 @@ struct MorphSheet: View {
         return parts.joined(separator: " · ")
     }
 
-    /// Whole numbers without a decimal ("10"), anything else to one place ("6.7").
-    private static func number(_ x: Double) -> String {
-        abs(x - x.rounded()) < 0.05 ? String(Int(x.rounded())) : String(format: "%.1f", x)
-    }
-
     private static func megabytes(_ bytes: Int) -> String {
         let mb = Double(bytes) / 1e6
         if mb < 1 { return "< 1 MB" }
         if mb < 1000 { return "≈ \(Int(mb.rounded())) MB" }
         return String(format: "≈ %.1f GB", mb / 1000)
+    }
+}
+
+/// The morph controls the Object panel's Morph… sheet and the Movie tab's
+/// Play-models sheet share (spec §5.3, §5.7): frames per model, loop, method,
+/// clean-up and rate. The Movie path implies loop, so it hides that toggle
+/// (`showsLoop` false). Accessibility ids are `<idPrefix>.frames`, `.loop`,
+/// `.method`, `.refinement` and `.rate`.
+struct MorphSettingsControls: View {
+    @Binding var settings: MorphSettings
+    var showsLoop: Bool = true
+    let idPrefix: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("Frames per model")
+                Spacer()
+                Text("\(settings.framesPerModel)").monospacedDigit()
+                Stepper("Frames per model", value: $settings.framesPerModel,
+                        in: MorphSheet.framesRange)
+                    .labelsHidden()
+                    .accessibilityIdentifier("\(idPrefix).frames")
+            }
+
+            if showsLoop {
+                Toggle("Loop back to model 1", isOn: $settings.loop)
+                    .tint(TimelineTheme.accent)
+                    .accessibilityIdentifier("\(idPrefix).loop")
+            }
+
+            Picker("Method", selection: $settings.method) {
+                Text("Rigid segments").tag("rigimol")
+                Text("Linear").tag("linear")
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .accessibilityIdentifier("\(idPrefix).method")
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Text("Clean-up cycles")
+                    Spacer()
+                    Text("\(settings.refinement)").monospacedDigit()
+                    Stepper("Clean-up cycles", value: $settings.refinement,
+                            in: MorphSheet.refinementRange)
+                        .labelsHidden()
+                        .accessibilityIdentifier("\(idPrefix).refinement")
+                }
+                Text("sculpting, backbone fixed")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+
+            HStack {
+                Text("Rate")
+                Spacer()
+                Picker("Rate", selection: $settings.rate) {
+                    ForEach(MorphSheet.rates, id: \.value) { Text($0.label).tag($0.value) }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .fixedSize()
+                .accessibilityIdentifier("\(idPrefix).rate")
+            }
+        }
     }
 }
 #endif
