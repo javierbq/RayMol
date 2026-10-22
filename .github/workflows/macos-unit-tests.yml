@@ -103,6 +103,18 @@ jobs:
           path: build_xcode_mac/SourcePackages
           key: spm-${{ runner.arch }}-${{ hashFiles('swiftui/PyMOLViewer.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
 
+      - name: Not a first launch
+        # A fresh runner account is RayMol's first launch, and on first boot the
+        # app opens the Theme studio (ContentView.maybePresentFirstBootTheme),
+        # which swaps the scene for its example molecule __theme_preview and
+        # reframes the camera. Nothing in a test run closes it, so every live
+        # test would run against that scene; LightRigBridgeTests'
+        # shadow-slot test then sees a 27 Å caster that is not its own. Dev
+        # Macs and puma have long since passed first boot. An env var such as
+        # PYMOL_SKIP_FIRSTBOOT_THEME would not reach the app-hosted bundle
+        # (project.yml: the hosted bundle gets its environment from the scheme).
+        run: defaults write io.raymol.RayMol raymol.theme.didFirstBoot -bool YES
+
       - name: Test (PyMOLViewerTests)
         # -skipPackagePluginValidation -skipMacroValidation: mlx-swift's
         # CudaBuild build-tool plugin otherwise fails validation (exit 65) with
