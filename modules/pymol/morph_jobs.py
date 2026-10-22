@@ -14,7 +14,8 @@ start_job, pump, morph_cancel, morph_dismiss or morph_object.  A worker shares
 only its MorphJob with the main thread: the job's state, error, done_legs and
 snapshot change under ``job._lock``, finished legs travel through a
 ``queue.Queue``, and ``job._cancel`` (a threading.Event) stops the worker.  The
-worker stays at most _LEGS_AHEAD legs ahead of pump() (``job._room``).
+worker holds at most _LEGS_AHEAD computed legs that have not landed
+(``job._held``, ``job._room``).
 
 Convention: only alt ''+A atoms are counted (consistent with morphing.py).
 '''
@@ -63,11 +64,12 @@ _FAILED = ('error', 'cancelled')
 # sleeps.  Always None in production.
 _leg_hook = None
 
-# Legs a worker may have computed and queued ahead of pump(): it waits while
-# this many sit in the queue, so at most the leg being landed plus this many
-# are held as Python lists (about 160 B per atom-frame, three times what the
-# memory estimate budgets).  Computing a leg is far faster than landing it, so
-# one leg ahead keeps pump() fed.
+# Computed legs a worker may hold before they have landed: it waits while this
+# many are queued or being landed, and computes the next leg only once one has
+# landed completely.  With 1, a single leg of frames exists as Python lists at
+# any time (about 160 B per atom-frame, three times what the memory estimate
+# budgets for cartoon), whatever the morph's size and however slowly pump()
+# runs.  Computing a leg is far faster than landing it, so pump() waits little.
 _LEGS_AHEAD = 1
 
 # cmd.morph's method aliases and segmentation defaults
@@ -340,11 +342,11 @@ class MorphJob(object):
     ``pump()`` lands queued frames.  ``state`` is 'queued', 'running', 'done',
     'error' or 'cancelled'; a terminal state is never overwritten.
 
-    Shared with a worker thread: ``state``, ``error``, ``done_legs``, the
-    snapshot (``_coords``, ``_info``, ``_pos``) and the queue change only
-    under ``_lock``; ``_queue`` carries finished legs to the main thread;
-    ``_room`` (a Condition on ``_lock``) is notified when a queued leg is
-    taken or the job ends; ``_cancel`` stops the worker.  ``landed_legs``,
+    Shared with a worker thread: ``state``, ``error``, ``done_legs``,
+    ``_held`` and the snapshot (``_coords``, ``_info``, ``_pos``) change
+    only under ``_lock``; ``_queue`` carries finished legs to the main
+    thread; ``_room`` (a Condition on ``_lock``) is notified when a leg has
+    landed or the job ends; ``_cancel`` stops the worker.  ``landed_legs``,
     ``_landing`` and the remaining flags belong to the main thread.'''
 
     def __init__(self, name, source, spec, fingerprint, pos, coords, info, run):
@@ -367,7 +369,8 @@ class MorphJob(object):
         self._coords = coords       # per model, rows in coordinate-set order
         self._info = info
         self._lock = threading.Lock()
-        self._room = threading.Condition(self._lock)    # a queued leg was taken
+        self._room = threading.Condition(self._lock)    # a leg landed
+        self._held = 0              # legs computed and not yet landed
         self._cancel = threading.Event()    # set: the worker stops
         self._thread = None
         self._queue = queue.Queue()         # (leg, frames) not yet landed
@@ -400,6 +403,7 @@ class MorphJob(object):
                 return False                # ended meanwhile: drop the leg
             self._queue.put((leg, frames))
             self.done_legs += 1
+            self._held += 1
         return True
 
     def cancel(self):
@@ -418,17 +422,18 @@ class MorphJob(object):
 
     def _run(self):
         '''The worker thread: compute legs until none remain or the job
-        ends, never more than _LEGS_AHEAD legs ahead of pump().'''
+        ends, holding at most _LEGS_AHEAD legs that have not landed.'''
         while self._wait_for_room() and self.step():
             pass
 
     def _wait_for_room(self):
-        '''Block while _LEGS_AHEAD legs wait to land; False once the job has
-        ended.  The wait releases _lock, so pump() and cancel() never block
-        on a waiting worker, and both notify _room.'''
+        '''Block while _LEGS_AHEAD computed legs have not finished landing;
+        False once the job has ended.  The wait releases _lock, so pump()
+        and cancel() never block on a waiting worker, and both notify
+        _room.'''
         with self._room:
             while (self.state in _ACTIVE and not self._cancel.is_set()
-                   and self._queue.qsize() >= _LEGS_AHEAD):
+                   and self._held >= _LEGS_AHEAD):
                 self._room.wait()
             return self.state in _ACTIVE and not self._cancel.is_set()
 
@@ -577,11 +582,12 @@ def _unit(job, _self):
         _finalise_failed(job, _self)
         return False
     if job._landing is None:
-        with job._room:
-            if not job._queue.empty():
-                leg, frames = job._queue.get_nowait()
-                job._landing = [leg, frames, 0]
-                job._room.notify()          # room for the worker's next leg
+        try:
+            leg, frames = job._queue.get_nowait()
+        except queue.Empty:
+            pass
+        else:
+            job._landing = [leg, frames, 0]
     if job._landing is not None:
         _land_frame(job, _self)
         return True
@@ -603,6 +609,9 @@ def _land_frame(job, _self):
         job._landing = None
         _title_leg(job.name, leg, job.models, job.frames_per_model, job.legs, _self)
         job.landed_legs += 1
+        with job._room:
+            job._held -= 1
+            job._room.notify()              # the worker may compute the next leg
 
 
 def _sculpt(job, state, _self):
@@ -667,6 +676,7 @@ def _end(job):
         while not job._queue.empty():
             job._queue.get_nowait()
         job._coords = job._info = job._pos = None
+        job._held = 0
         job._room.notify_all()
 
 

@@ -16,9 +16,9 @@ Tests that:
   - morph_object(async_=1) computes legs on a worker thread and pump() lands
     them: completion, cancel between legs, cancel while a leg is in flight
     (ends 'cancelled', never 'error'), source deleted mid-job, a worker
-    exception finalised on the main thread, and the worker never more than
-    one leg ahead of pump().  Tests synchronise with the worker through
-    mj._leg_hook (a _Gate) and pump(), never through sleeps.
+    exception finalised on the main thread, and the worker holding at most
+    one computed leg that has not landed.  Tests synchronise with the worker
+    through mj._leg_hook (a _Gate) and pump(), never through sleeps.
 
 Runs on a RayMol --testing build:
     pymol -ckqy testing/testing.py --run testing/tests/raymol/morph_jobs.py
@@ -467,19 +467,19 @@ class TestMorphJobPipeline(testing.PyMOLTestCase):
         self.assertEqual(cmd.count_states(name), 25)
         self.assertLess(max_dev(coords(name, 25), coords('src', 1)), 1e-4)
 
-    def testWorkerStaysOneLegAhead(self):
-        # Backpressure: the worker computes at most one leg beyond the one
-        # being landed, so a slow or absent pump never buffers the whole
-        # morph's frames; a cancel wakes a worker waiting for room.
+    def testWorkerHoldsOneUnlandedLeg(self):
+        # Backpressure: the worker computes a leg only once the leg before it
+        # has fully landed, so a slow or absent pump never buffers more than
+        # one leg of frames; a cancel wakes a worker waiting for room.
         self.ensemble()
         gate = self.gate(leg=0)
-        started = []
+        started = []                                # (leg, landed_legs) as each leg begins
 
         def hook(job, leg):
-            started.append(leg)
+            started.append((leg, job.landed_legs))
             gate(job, leg)
         mj._leg_hook = hook
-        name, job = self.async_morph(frames_per_model=5)
+        name, job = self.async_morph(frames_per_model=20)
         self.assertTrue(gate.entered.wait(10.0))    # held as leg 0 begins
         blocked = threading.Event()                 # set: the worker waits for room
         wait = job._room.wait
@@ -489,28 +489,50 @@ class TestMorphJobPipeline(testing.PyMOLTestCase):
             return wait(*args)
         job._room.wait = recording_wait
         gate.released.set()
-        self.assertTrue(blocked.wait(10.0))
-        self.assertEqual((started, job._queue.qsize()), ([0], 1))  # leg 1 waits
+        self.assertTrue(blocked.wait(10.0))         # leg 0 computed, nothing pumped
+        self.assertEqual((started, job.done_legs), ([(0, 0)], 1))
         blocked.clear()
-        mj.pump(budget_ms=0)                        # takes leg 0: room for one leg
-        self.assertTrue(blocked.wait(10.0))
-        self.assertEqual((started, job._queue.qsize()), ([0, 1], 1))
+        for _ in range(100):                        # land leg 0, one frame per pump
+            mj.pump(budget_ms=0)
+            if job.landed_legs:
+                break
+            self.assertEqual((started, job.done_legs), ([(0, 0)], 1))  # leg 1 waits
+        self.assertEqual(job.landed_legs, 1)
+        self.assertTrue(blocked.wait(10.0))         # leg 1 computed, waits in turn
+        self.assertEqual((started, job.done_legs), ([(0, 0), (1, 1)], 2))
         job.cancel()                                # wakes the waiting worker
         self.assertTrue(job.join(10.0))
-        self.assertEqual(started, [0, 1])
+        self.assertEqual(len(started), 2)
         mj.pump()
         self.assertEqual(mj.pending_info(name)['state'], 'cancelled')
         self.assertNotIn(name, cmd.get_names('objects'))
+
+    def testTwoModelMorphHoldsOneLeg(self):
+        # Default loop=1: two models make two legs, and the worker must not
+        # hold both while the first one lands.
+        self.ensemble(models=2)
+        name, job = self.async_morph(frames_per_model=20)
+        for _ in range(200):                        # one frame per pump
+            mj.pump(budget_ms=0)
+            if job.landed_legs:
+                break
+            self.assertLessEqual(job.done_legs, 1)
+        self.assertEqual(job.landed_legs, 1)
+        deadline = time.monotonic() + 10
+        while job.state != 'done' and time.monotonic() < deadline:
+            mj.pump()
+        self.assertEqual(job.state, 'done')
+        self.assertEqual(cmd.count_states(name), 40)
 
     def testAsyncCancelMidway(self):
         self.ensemble(models=8)
         gate = self.gate(leg=2)
         name, job = self.async_morph(frames_per_model=30)
-        deadline = time.monotonic() + 10    # leg 2 starts once pump took leg 1
+        deadline = time.monotonic() + 10    # leg 2 starts once leg 1 has landed
         while not gate.entered.is_set() and time.monotonic() < deadline:
             mj.pump()
         self.assertTrue(gate.entered.is_set())
-        mj.pump(budget_ms=10 ** 6)                  # finish landing leg 1
+        mj.pump(budget_ms=10 ** 6)                  # nothing left to land
         self.assertEqual(cmd.count_states(name), 61)
         mj.morph_cancel(name)
         gate.released.set()
