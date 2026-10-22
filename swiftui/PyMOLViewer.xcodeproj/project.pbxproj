@@ -45,6 +45,7 @@
 		15DA981AD21097BFFD1CE170 /* LightsFloatTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F2E04AAE95A3210E0090C69 /* LightsFloatTests.swift */; };
 		1624BC38CDD73398C68FC135 /* MPNNGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56BE219EF1CF1EB2B05E44AD /* MPNNGate.swift */; };
 		1691ECBD7CEDBFFB64B1D690 /* LightGizmoModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DE5E23E8AA19BB9D3F2C227 /* LightGizmoModel.swift */; };
+		169623811F1570B6FD3F5681 /* MorphEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CDFBFDED6909CEEE701A002 /* MorphEngineTests.swift */; };
 		174EA423F2E0ED999474C506 /* DesignInferenceSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B45634C95AE991CC91CFBA75 /* DesignInferenceSmokeTests.swift */; };
 		17D4129435A0B8E793A5B687 /* whatsnew-1120-looks.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 00A00E2879DD065A94A31D21 /* whatsnew-1120-looks.jpg */; };
 		1A580F6792CD440D91FA9F45 /* DesignSizeGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E69AA2C12DC2D1583FBF8C8 /* DesignSizeGuard.swift */; };
@@ -382,6 +383,7 @@
 		0C3FB5B53174F8E55104705A /* whatsnew-170-homebrew.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-170-homebrew.png"; sourceTree = "<group>"; };
 		0C47FBC551127AB2D73BC6CE /* MetalViewportResponderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalViewportResponderTests.swift; sourceTree = "<group>"; };
 		0C4E3216DAFC42C515FD0C3E /* WeightsFetchStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeightsFetchStateTests.swift; sourceTree = "<group>"; };
+		0CDFBFDED6909CEEE701A002 /* MorphEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MorphEngineTests.swift; sourceTree = "<group>"; };
 		0CE6A84893291DC401EDE60B /* whatsnew-1130-atmosphere.mp4 */ = {isa = PBXFileReference; path = "whatsnew-1130-atmosphere.mp4"; sourceTree = "<group>"; };
 		0DBFD1FF07FFAD4B8029FA48 /* Project.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Project.xcconfig; sourceTree = "<group>"; };
 		0ED5BFF3FEE9D6621BB40AE5 /* MovieBuilderSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MovieBuilderSheet.swift; sourceTree = "<group>"; };
@@ -873,6 +875,7 @@
 				6BCABF57679F5F6462F91B73 /* MaterialInspectorTests.swift */,
 				0C47FBC551127AB2D73BC6CE /* MetalViewportResponderTests.swift */,
 				7AD9869000B548D9F7CDF9DE /* MLXRuntimeTests.swift */,
+				0CDFBFDED6909CEEE701A002 /* MorphEngineTests.swift */,
 				2E368EA22919158B4EAA000F /* MorphSettingsTests.swift */,
 				7E9067EC240F21BA7F691088 /* ObjectPanelCopyExtractTests.swift */,
 				4A2C1E1633D1E93E9914BEC3 /* OpenFilesTests.swift */,
@@ -1751,6 +1754,7 @@
 				A49F8811F64CD501FF007ECD /* MaterialDropdownTests.swift in Sources */,
 				925BACD42F7BFAB94F42F03C /* MaterialInspectorTests.swift in Sources */,
 				4AD1C0E0E53EC4B34CBE7400 /* MetalViewportResponderTests.swift in Sources */,
+				169623811F1570B6FD3F5681 /* MorphEngineTests.swift in Sources */,
 				E4312B988564A872D81EBBA0 /* MorphSettingsTests.swift in Sources */,
 				39D56E38A606EA05834D9D55 /* ObjectPanelCopyExtractTests.swift in Sources */,
 				C89E138879C40C8FB6C0478A /* OpenFilesTests.swift in Sources */,

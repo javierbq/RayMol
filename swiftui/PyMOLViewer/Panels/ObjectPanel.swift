@@ -710,6 +710,11 @@ struct ObjectEntry: Identifiable, Equatable {
     // the existing memberwise initializers compiling.
     var isPending: Bool = false
     var pendingDetail: String? = nil
+    // Source object for a morph (#morph). Non-nil when this object was produced
+    // by morph_object and the source is still loaded. The inspector sheet uses it
+    // to reconnect the re-morph sheet to the correct source without a separate
+    // lookup. Defaults nil so the existing memberwise initializers keep compiling.
+    var morphSource: String? = nil
 
     var displayName: String {
         if isSelection, let count = atomCount {
@@ -5855,6 +5860,27 @@ struct PredictionJobState: Codable, Equatable, Identifiable {
     }
 }
 
+// MARK: - Morph payload wire types
+
+/// The `spec` sub-object inside a `morph` payload record.
+///
+/// Field names are snake_case to match the JSON keys published by
+/// `appkit_inspector.poll_panel` directly, so the default `JSONDecoder`
+/// (no `keyDecodingStrategy`) picks them up without a `CodingKeys` enum.
+struct MorphSpecWire: Decodable, Equatable {
+    let frames_per_model: Int
+    let loop: Int               // 0 or 1 — Python booleans arrive as ints
+    let method: String
+    let refinement: Int
+    let rate: String
+}
+
+/// One entry in the `morph` payload dict: a completed morph that still exists.
+struct MorphInfoWire: Decodable, Equatable {
+    let source: String
+    let spec: MorphSpecWire
+}
+
 // MARK: - Object panel JSON payload
 
 /// Decoded shape of the tempfile written by `appkit_inspector.poll_panel`.
@@ -5910,6 +5936,23 @@ struct PanelPayload: Decodable {
     ///
     /// Optional, like every field above, and for the same single-`guard let` reason.
     let design_jobs: [String: PredictionJobState]?
+    /// Running and recently-settled MORPH jobs, keyed by morph-object name.
+    ///
+    /// Same record type as `pending_jobs`/`design_jobs` — morph_jobs.pending_info
+    /// publishes the same keys, so one decoder serves all three — but a separate
+    /// key, because the cancel/dismiss commands differ.
+    ///
+    /// A successful job leaves NO record; cancelled/error records stay until dismissed.
+    /// Optional for the same single-`guard let` reason as every field above.
+    let morph_jobs: [String: PredictionJobState]?
+    /// Completed morphs that still exist as PyMOL objects, keyed by morph name.
+    ///
+    /// Only morphs that SUCCEEDED appear here (the Python side writes the record
+    /// on delivery and removes it when the object is deleted). In-flight and
+    /// error/cancelled jobs appear ONLY in `morph_jobs`, not here.
+    ///
+    /// Optional for the same reason as every field above.
+    let morph: [String: MorphInfoWire]?
 
     struct AlignmentSummary: Decodable {
         let depth: Int
@@ -5985,7 +6028,8 @@ extension PyMOLEngine {
                 isGroup: groupSet.contains(name),
                 parent: parentMap[name],
                 isPending: payload.pending?[name] != nil,
-                pendingDetail: payload.pending?[name]
+                pendingDetail: payload.pending?[name],
+                morphSource: payload.morph?[name]?.source
             ))
         }
 
@@ -6007,6 +6051,30 @@ extension PyMOLEngine {
         let designs = (payload.design_jobs ?? [:])
             .map { $0.value.withID($0.key) }
             .sorted { $0.id < $1.id }
+        // Morph jobs (#morph), same record type again, same reasoning: separate job
+        // table, separate cancel/dismiss commands.
+        let morphJobList = (payload.morph_jobs ?? [:])
+            .map { $0.value.withID($0.key) }
+            .sorted { $0.id < $1.id }
+        // "Running" = not terminal. Used by the completion detector below.
+        let nowRunningMorphs = Set(
+            morphJobList.filter { !$0.isError }.map { $0.id }
+        )
+        // Completed morphs: morph name → source name (for morphSources).
+        let morphPayload = payload.morph ?? [:]
+        let newMorphSources = Dictionary(uniqueKeysWithValues: morphPayload.map { ($0.key, $0.value.source) })
+        // Convert wire specs to MorphSettings, leaving movieSmooth at its default.
+        var newMorphSpecs: [String: MorphSettings] = [:]
+        for (name, info) in morphPayload {
+            var s = MorphSettings()
+            s.framesPerModel = info.spec.frames_per_model
+            s.loop = info.spec.loop != 0
+            s.method = info.spec.method
+            s.refinement = info.spec.refinement
+            s.rate = info.spec.rate
+            newMorphSpecs[name] = s
+        }
+
         // Sorted by name so the order is stable: the payload is a JSON object, and
         // Foundation's dictionary decode does not preserve the store's load order.
         let alignments = (payload.alignments ?? [:]).sorted { $0.key < $1.key }.map {
@@ -6033,6 +6101,22 @@ extension PyMOLEngine {
             if self.objects != entries { self.objects = entries }
             if self.predictionJobs != jobs { self.predictionJobs = jobs }
             if self.designJobs != designs { self.designJobs = designs }
+
+            // Morph completion: names that were running, disappeared from running,
+            // AND now appear in the completed-morph dict. Names that disappeared but
+            // are NOT in the morph dict ended with an error or cancellation — they
+            // do not trigger auto-play or the expand animation.
+            let completed = Self.completedMorphs(
+                previouslyRunning: self.runningMorphs,
+                nowRunning: nowRunningMorphs,
+                known: newMorphSources)
+            for name in completed { self.morphDidComplete(name) }
+            self.runningMorphs = nowRunningMorphs
+
+            if self.morphJobs != morphJobList { self.morphJobs = morphJobList }
+            if self.morphSources != newMorphSources { self.morphSources = newMorphSources }
+            if self.morphSpecs != newMorphSpecs { self.morphSpecs = newMorphSpecs }
+
             if self.alignments != alignments { self.alignments = alignments }
             // Same guard, and it carries the weight here: with no search running this
             // is empty every tick and must not repaint the panel twice a second.

@@ -449,7 +449,8 @@ struct ContentView: View {
         // and a `ray` genuinely co-occur and the tray's Cancel must stay hittable.
         ProgressTray(items: ProgressItem.tray(weights: engine.weightsFetch,
                                               predictions: engine.predictionJobs,
-                                              designs: engine.designJobs)) { item in
+                                              designs: engine.designJobs,
+                                              morphs: engine.morphJobs)) { item in
             switch item.action {
             case .command(let cmd):   engine.runCommand(cmd)
             case .python(let src):    engine.runPython(src)

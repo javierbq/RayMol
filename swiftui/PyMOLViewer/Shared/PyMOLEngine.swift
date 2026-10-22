@@ -215,6 +215,27 @@ final class PyMOLEngine: ObservableObject {
     /// because `designing.pending_info` publishes the same keys as
     /// `predicting.pending_info` deliberately. Guarded on assignment for the same reason.
     @Published var designJobs: [PredictionJobState] = []
+    /// Running and recently-settled MORPH jobs (#morph), refreshed by the same poll.
+    /// Separate from `predictionJobs`/`designJobs` — different cancel/dismiss commands,
+    /// different tray card words. Guarded on assignment for the same reason.
+    @Published var morphJobs: [PredictionJobState] = []
+    /// Completed morph name → source-object name, refreshed by the panel poll.
+    /// Populated once the Python side confirms delivery; cleared when the morph
+    /// object is deleted. Used by the inspector sheet to connect a re-morph to
+    /// the correct source without a separate lookup.
+    @Published var morphSources: [String: String] = [:]
+    /// Completed morph name → the settings that produced it, derived from the
+    /// wire spec in the payload. Populated in lock-step with `morphSources`.
+    /// `movieSmooth` is left at its default (the wire does not carry it).
+    @Published var morphSpecs: [String: MorphSettings] = [:]
+    /// Morph names for which the tray's "auto-play on completion" flag is set.
+    /// Keyed by the TARGET name (settings.morphName(for: source)); consumed and
+    /// removed by `morphDidComplete(_:)`. Not @Published — purely internal bookkeeping.
+    private var morphAutoPlay: Set<String> = []
+    /// Currently-running morph names (isError == false in morph_jobs), tracked by
+    /// the parse path to detect completions across consecutive polls.
+    /// Updated only on the main thread inside `parseObjectPanelFeedback`.
+    var runningMorphs: Set<String> = []
     #if os(macOS)
     /// Binder Design mode (#342). macOS only, and GATED rather than merely unused: the
     /// controller it drives lives behind `#if os(macOS)` because RFD3Kit is macOS-only,
@@ -2203,6 +2224,71 @@ final class PyMOLEngine: ObservableObject {
         var n = cur + delta
         if n < 1 { n = total } else if n > total { n = 1 }
         runCommand("set state, \(n), \(name)", naming: name)
+    }
+
+    // MARK: - Morph (#morph)
+
+    /// Submit a morph job and remember whether to auto-play on completion.
+    ///
+    /// Validates `source` (and `name` when given) with the panel's legal-name check
+    /// before sending, and refuses silently like `runCommand(_:naming:)` does for
+    /// illegal names — the Python side would surface its own error in that case, but a
+    /// silent refusal here avoids building a broken Python call.
+    func morph(source: String, settings: MorphSettings,
+               autoPlay: Bool, reuse: Bool = false, name: String? = nil) {
+        guard isLegalObjectName(source) else { return }
+        if let n = name, !isLegalObjectName(n) { return }
+        let target = name ?? MorphSettings.morphName(for: source)
+        if autoPlay { morphAutoPlay.insert(target) }
+        runPython(settings.pythonCall(source: source, name: name, reuse: reuse))
+    }
+
+    /// Cancel a running morph job via the Python morph_cancel command.
+    func cancelMorph(_ name: String) {
+        runPython("from pymol import cmd as _c\n_c.morph_cancel(\(InferenceJob.pythonLiteral(name)))")
+    }
+
+    /// Called by the parse path when a morph name transitions from running to
+    /// present in the completed-morph dict. Expands the inspector detail,
+    /// configures playback FPS, and starts playback when auto-play was requested
+    /// and Timeline mode is not active. Also triggers a timeline rebuild when the
+    /// morph object is referenced by a states clip.
+    func morphDidComplete(_ name: String) {
+        // Expand the inspector to show this object's detail panel.
+        expandedDetail = name
+        // Align the per-object FPS with the timeline's movie FPS so the object
+        // plays at the same rate when it is later added to the timeline.
+        setObjectFPS(name, playback.movieFPS)
+        // Auto-play: start per-object state playback, but only when not in Timeline
+        // mode (the Timeline drives its own playback and the two would fight).
+        if MorphCompletion.shouldAutoPlay(requested: morphAutoPlay.remove(name) != nil,
+                                          timelineMode: timelineMode) {
+            startObjectStates(name)
+        }
+        // If a states clip already references this morph (e.g. the user dropped it
+        // into the timeline before the job finished), rebuild so the clip's frame
+        // count reflects the object's now-final state count.
+        if timelineItems.contains(where: {
+            if case .states(let spec) = $0.kind {
+                return spec.objects?.contains(name) ?? false
+            }
+            return false
+        }) {
+            rebuildMovie()
+        }
+    }
+
+    /// Names in `previouslyRunning` that have disappeared from `nowRunning`
+    /// AND appear in `known` (the completed-morph dict). Names that dropped out
+    /// of running but are NOT in `known` ended with an error or cancellation.
+    ///
+    /// Pure static so it is unit-testable without an engine instance.
+    static func completedMorphs(previouslyRunning: Set<String>,
+                                nowRunning: Set<String>,
+                                known: [String: String]) -> [String] {
+        previouslyRunning
+            .filter { !nowRunning.contains($0) && known[$0] != nil }
+            .sorted()
     }
 
     // Live scrub: clamp, set immediately for snappy UI, throttle the core call.
