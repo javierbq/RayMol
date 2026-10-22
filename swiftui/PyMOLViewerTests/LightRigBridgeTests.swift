@@ -472,7 +472,6 @@ final class LightRigBridgeTests: XCTestCase {
              {'name': 'away', 'shadow': True, 'anchor': 'pinned', 'position': [0.0, 0.0, 8.0],
               'aim': 'point', 'aim_point': [0.0, 0.0, 500.0], 'beam': 10.0}]}
             """)
-        print("DIAG913 " + (python("_lrb_json.dumps({'names': _lrb_cmd.get_names('all'), 'enabled': _lrb_cmd.get_names('all', enabled_only=1), 'casters': _lrb_lighting._light_shadow_casters(), 'extent': _lrb_cmd.get_extent('all'), 'view': list(_lrb_cmd.get_view()), 'frame_lights': [(l['name'], l['shadow_slot'], l['position']) for l in _lrb_lighting._light_frame()['rig']['lights']]})") ?? "nil"))
         let jsonStr = try XCTUnwrap(python("_lrb_json.dumps([l['shadow_slot'] for l in _lrb_lighting._light_frame()['rig']['lights']])"))
         let oracleSlots = try JSONDecoder().decode([Int].self, from: Data(jsonStr.utf8))
         let eyeSpace = try XCTUnwrap(engine.lightsEyeSpace())
