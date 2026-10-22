@@ -70,19 +70,8 @@ struct TimelinePanel: View {
     @State private var composerAngle: Double = 30
     @State private var composerSecPerScene: Double = 3
     @State private var composerStatesObject: String? = nil   // nil = all multi-state objects
-    // "Play models" config modal (opened by Append).
+    // "Play models" config modal (opened by Append); PlayModelsSheet owns its state.
     @State private var showStatesSheet = false
-    @State private var sheetMode: PyMOLEngine.StatesMode = .sweep
-    @State private var sheetFirst = 1
-    @State private var sheetLast = 0            // 0 = through the last model
-    @State private var sheetDuration: Double = 8
-    @State private var sheetDurationEdited = false   // the user stepped Duration since it opened
-    // "Smooth transitions (morph)" (spec §5.7): the toggle, the morph settings
-    // behind its disclosure (saved on Add, shared with the Object panel's Morph…),
-    // and whether that disclosure is open.
-    @State private var sheetSmooth = false
-    @State private var sheetMorph = MorphSettings()
-    @State private var sheetMorphExpanded = false
 
     // Scenes-palette overflow tracking → drives the horizontal-scroll edge fade
     // (issue #131). Set from GeometryReader preferences below.
@@ -165,7 +154,14 @@ struct TimelinePanel: View {
             composer
         }
         .background(TimelineTheme.bar)
-        .sheet(isPresented: $showStatesSheet) { statesConfigSheet }
+        .sheet(isPresented: $showStatesSheet) {
+            PlayModelsSheet(
+                target: composerStatesObject,
+                models: PlayModelsSheet.models(engine, composerStatesObject),
+                fps: playback.movieFPS,
+                smoothAvailable: PlayModelsSheet.availability(engine, composerStatesObject) == .available,
+                onClose: { showStatesSheet = false })
+        }
         .sheet(isPresented: $showExport) { MovieExportSheet() }
         .onAppear {
             // Test affordance: auto-open the "Play models" modal so it can be
@@ -892,205 +888,11 @@ struct TimelinePanel: View {
         case "scenes":
             engine.appendScenesTemplate(secondsPerScene: composerSecPerScene)
         case "states":
-            // Open the config modal (mode / model range / duration).
-            let n = statesSheetModels
-            sheetMode = .sweep; sheetFirst = 1; sheetLast = max(2, n); sheetDuration = 8
-            sheetDurationEdited = false
-            // The toggle remembers its last state; clamped like the Morph… sheet.
-            sheetMorph = MorphSheet.prefill(saved: MorphSettings.load(), existing: nil)
-            sheetSmooth = sheetMorph.movieSmooth
-            sheetMorphExpanded = false
-            applySmoothDuration()          // a remembered toggle opens at the natural length
+            // Open the config modal (mode / model range / duration / smooth); it
+            // starts from fresh state each time it is presented.
             showStatesSheet = true
         default: break
         }
-    }
-
-    // MARK: Play-models sheet
-
-    /// Models in the sheet's target (its states), or the most of any object for "all".
-    private var statesSheetModels: Int {
-        composerStatesObject
-            .flatMap { name in engine.multiStateObjects().first { $0.name == name }?.count }
-            ?? engine.maxStateCount
-    }
-
-    /// Loaded objects (not selections), name → states, and the groups among them:
-    /// what the morph-name resolver reads, as in the Object panel.
-    private var loadedObjectStates: [String: Int] {
-        Dictionary(engine.objects.filter { !$0.isSelection }.map { ($0.name, $0.stateCount) },
-                   uniquingKeysWith: { a, _ in a })
-    }
-    private var loadedGroups: Set<String> {
-        Set(engine.objects.filter { !$0.isSelection && $0.isGroup }.map { $0.name })
-    }
-    /// Morph jobs queued or running.
-    private var buildingMorphs: Set<String> {
-        Set(engine.morphJobs.filter { $0.state == "queued" || $0.state == "running" }.map { $0.id })
-    }
-
-    private var smoothAvailability: MorphMovie.Availability {
-        MorphMovie.availability(target: composerStatesObject, objects: loadedObjectStates,
-                                morphSources: engine.morphSources, building: buildingMorphs)
-    }
-    /// The toggle as shown: off whenever it cannot be used.
-    private var smoothOn: Bool { sheetSmooth && smoothAvailability == .available }
-    /// The morph the smooth clip plays (`2kpo_morph`), as the Object panel names it.
-    private var smoothTarget: String {
-        composerStatesObject.map {
-            MorphMovie.target(source: $0, objects: loadedObjectStates, groups: loadedGroups,
-                              morphSources: engine.morphSources, building: buildingMorphs).name
-        } ?? ""
-    }
-    private var smoothNatural: Double {
-        MorphMovie.naturalSeconds(models: statesSheetModels,
-                                  framesPerModel: sheetMorph.framesPerModel,
-                                  fps: playback.movieFPS)
-    }
-    /// Duration follows the natural length while smoothing until the user steps it.
-    private func applySmoothDuration() {
-        sheetDuration = MorphMovie.duration(current: sheetDuration, smooth: smoothOn,
-                                            edited: sheetDurationEdited, natural: smoothNatural)
-    }
-
-    // "Play models" configuration modal. Objects come from the composer dropdown;
-    // here the user picks the motion, the model range, and the duration.
-    private var statesConfigSheet: some View {
-        #if os(macOS)
-        statesConfigContent
-            .padding(20)
-            .frame(width: 400)
-        #else
-        // Scrolls rather than clips when the morph settings are open, so Cancel /
-        // Add stay reachable; the larger detent shows them without scrolling.
-        ScrollView { statesConfigContent.padding(20) }
-            .presentationDetents(smoothOn ? [.height(480), .large] : [.height(380)])
-        #endif
-    }
-
-    private var statesConfigContent: some View {
-        let n = statesSheetModels
-        let target = composerStatesObject ?? "all models"
-        // Resolve to a valid range regardless of prior state (0/out-of-range → 1…N),
-        // and drive both the steppers and Add from the resolved values.
-        let last = (sheetLast < 1 || sheetLast > n) ? n : sheetLast
-        let first = min(max(sheetFirst, 1), last)
-        let availability = smoothAvailability
-        let caption = MorphMovie.caption(availability, smooth: smoothOn, target: smoothTarget,
-                                         models: n, framesPerModel: sheetMorph.framesPerModel,
-                                         fps: playback.movieFPS)
-        return VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Text("Play models").font(.system(size: 15, weight: .semibold))
-                Spacer()
-                Text("\(target) · \(n) models").font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-
-            // Motion — a segmented control (no wide dropdown).
-            Picker("", selection: $sheetMode) {
-                Text("Sweep").tag(PyMOLEngine.StatesMode.sweep)
-                Text("Loop").tag(PyMOLEngine.StatesMode.loop)
-                Text("Lockstep").tag(PyMOLEngine.StatesMode.lockstep)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-
-            // Range + duration: one row where it fits (macOS/iPad), wrapping to two
-            // rows on a narrow phone (iOS steppers are wider than macOS controls).
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 18) {
-                    rangeStart(first, last, n); rangeEnd(first, last, n); rangeDuration()
-                }
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack(spacing: 18) { rangeStart(first, last, n); rangeEnd(first, last, n) }
-                    rangeDuration()
-                }
-            }
-
-            // Smooth transitions: build a morph of the object and play that instead
-            // (spec §5.7). Start/End keep counting models.
-            VStack(alignment: .leading, spacing: 4) {
-                Toggle("Smooth transitions (morph)", isOn: Binding(
-                    get: { smoothOn },
-                    set: { sheetSmooth = $0; applySmoothDuration() }))
-                    .tint(TimelineTheme.accent)
-                    .disabled(availability != .available)
-                    .accessibilityIdentifier("playModels.smooth")
-                if let caption {
-                    Text(caption)
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .accessibilityIdentifier("playModels.smoothCaption")
-                }
-            }
-
-            if smoothOn {
-                // Loop is implied on for the Movie path, so only four controls.
-                DisclosureGroup("Morph settings…", isExpanded: $sheetMorphExpanded) {
-                    MorphSettingsControls(
-                        settings: Binding(
-                            get: { sheetMorph },
-                            set: { new in
-                                let framesChanged = new.framesPerModel != sheetMorph.framesPerModel
-                                sheetMorph = new
-                                if framesChanged { applySmoothDuration() }
-                            }),
-                        showsLoop: false, idPrefix: "playModels")
-                        .padding(.top, 8)
-                }
-                .accessibilityIdentifier("playModels.morphSettings")
-            }
-
-            HStack(spacing: 10) {
-                Spacer()
-                Button("Cancel") { showStatesSheet = false }
-                    .keyboardShortcut(.cancelAction)
-                Button("Add") {
-                    let plan = MorphMovie.addPlan(
-                        target: composerStatesObject, smooth: sheetSmooth, settings: sheetMorph,
-                        objects: loadedObjectStates, groups: loadedGroups,
-                        morphSources: engine.morphSources, building: buildingMorphs)
-                    // Python keeps an existing morph with the same spec and source
-                    // fingerprint (reuse); otherwise it builds, and the clip naming the
-                    // morph fills in as legs land and is rebuilt when it completes.
-                    if let m = plan.morph {
-                        engine.morph(source: m.source, settings: m.settings, autoPlay: false,
-                                     reuse: true, name: m.name, target: m.target)
-                    }
-                    engine.appendStatesClip(
-                        objects: plan.objects,
-                        mode: sheetMode, firstModel: first, lastModel: last,
-                        seconds: sheetDuration, morphStride: plan.morphStride)
-                    plan.save?.save()
-                    showStatesSheet = false
-                }
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
-            }
-        }
-    }
-
-    // Steppers for the "Play models" modal — reused in the one-row and wrapped
-    // (narrow-phone) layouts so both stay in sync.
-    @ViewBuilder private func rangeStart(_ first: Int, _ last: Int, _ n: Int) -> some View {
-        Stepper("Start \(first)",
-                value: Binding(get: { first }, set: { sheetFirst = min($0, last) }),
-                in: 1...max(1, n)).fixedSize()
-    }
-    @ViewBuilder private func rangeEnd(_ first: Int, _ last: Int, _ n: Int) -> some View {
-        Stepper("End \(last)",
-                value: Binding(get: { last }, set: { sheetLast = max($0, first) }),
-                in: 1...max(1, n)).fixedSize()
-    }
-    @ViewBuilder private func rangeDuration() -> some View {
-        // Shows a natural length like "8.7 s" to its tenth; stepping marks Duration
-        // as the user's, so the toggle and frames per model stop resetting it.
-        Stepper("\(MorphSettings.number(sheetDuration)) s",
-                value: Binding(get: { sheetDuration },
-                               set: { sheetDuration = $0; sheetDurationEdited = true }),
-                in: MorphMovie.durationRange(smooth: smoothOn, natural: smoothNatural),
-                step: 1).fixedSize()
-            .accessibilityIdentifier("playModels.duration")
     }
 
     // MARK: - Playhead / geometry helpers
@@ -1151,6 +953,251 @@ struct TimelinePanel: View {
 
 // Scenes-palette width measurement for the horizontal-scroll edge fade (#131):
 // content width vs. viewport width decide whether the trailing fade shows.
+// MARK: - Play-models sheet
+
+/// The Movie tab's "Play models" sheet, opened by Append with the Models preset: the
+/// motion, the model range, the duration and "Smooth transitions (morph)" (spec §5.7).
+///
+/// It owns its state, initialised when it is presented, as MorphSheet does. Kept as
+/// the panel's own @State read from the `.sheet` closure, the sheet saw only their
+/// initial values for state the panel's body never reads: a remembered toggle opened
+/// off at 8 s (checked in the VM with logging; the panel's action had written them).
+private struct PlayModelsSheet: View {
+    @EnvironmentObject var engine: PyMOLEngine
+    @EnvironmentObject var playback: PlaybackState
+
+    /// The object to play, or nil for all multi-state objects.
+    let target: String?
+    let onClose: () -> Void
+
+    @State private var mode: PyMOLEngine.StatesMode = .sweep
+    @State private var firstModel = 1
+    @State private var lastModel: Int              // resolved against `models` below
+    @State private var duration: Double
+    @State private var durationEdited = false      // the user stepped Duration
+    @State private var smooth: Bool
+    @State private var morph: MorphSettings        // saved on Add, shared with Morph…
+    @State private var morphExpanded = false
+
+    /// `models`, `fps` and `smoothAvailable` set the opening Duration: a remembered
+    /// toggle opens at the natural length.
+    init(target: String?, models: Int, fps: Double, smoothAvailable: Bool,
+         onClose: @escaping () -> Void) {
+        self.target = target
+        self.onClose = onClose
+        // The toggle remembers its last state; clamped like the Morph… sheet.
+        let saved = MorphSheet.prefill(saved: MorphSettings.load(), existing: nil)
+        _lastModel = State(initialValue: max(2, models))
+        _smooth = State(initialValue: saved.movieSmooth)
+        _morph = State(initialValue: saved)
+        _duration = State(initialValue: MorphMovie.duration(
+            current: 8, smooth: saved.movieSmooth && smoothAvailable, edited: false,
+            natural: MorphMovie.naturalSeconds(models: models,
+                                               framesPerModel: saved.framesPerModel, fps: fps)))
+    }
+
+    // MARK: Engine reads (static so the panel computes the opening values the same way)
+
+    /// Models in `target` (its states), or the most of any object for "all".
+    static func models(_ engine: PyMOLEngine, _ target: String?) -> Int {
+        target.flatMap { name in engine.multiStateObjects().first { $0.name == name }?.count }
+            ?? engine.maxStateCount
+    }
+
+    /// Loaded objects (not selections), name → states: what the morph-name resolver
+    /// reads, as in the Object panel.
+    static func loadedObjects(_ engine: PyMOLEngine) -> [String: Int] {
+        Dictionary(engine.objects.filter { !$0.isSelection }.map { ($0.name, $0.stateCount) },
+                   uniquingKeysWith: { a, _ in a })
+    }
+
+    /// Morph jobs queued or running.
+    static func building(_ engine: PyMOLEngine) -> Set<String> {
+        Set(engine.morphJobs.filter { $0.state == "queued" || $0.state == "running" }.map { $0.id })
+    }
+
+    static func availability(_ engine: PyMOLEngine, _ target: String?) -> MorphMovie.Availability {
+        MorphMovie.availability(target: target, objects: loadedObjects(engine),
+                                morphSources: engine.morphSources, building: building(engine))
+    }
+
+    private var models: Int { Self.models(engine, target) }
+    private var groups: Set<String> {
+        Set(engine.objects.filter { !$0.isSelection && $0.isGroup }.map { $0.name })
+    }
+    private var availability: MorphMovie.Availability { Self.availability(engine, target) }
+    /// The toggle as shown: off whenever it cannot be used.
+    private var smoothOn: Bool { smooth && availability == .available }
+    /// The morph the smooth clip plays (`2kpo_morph`), as the Object panel names it.
+    private var smoothTarget: String {
+        target.map {
+            MorphMovie.target(source: $0, objects: Self.loadedObjects(engine), groups: groups,
+                              morphSources: engine.morphSources,
+                              building: Self.building(engine)).name
+        } ?? ""
+    }
+    private func natural(framesPerModel: Int) -> Double {
+        MorphMovie.naturalSeconds(models: models, framesPerModel: framesPerModel,
+                                  fps: playback.movieFPS)
+    }
+    /// Duration follows the natural length while smoothing until the user steps it.
+    /// Callers pass the values they are writing rather than re-reading them.
+    private func smoothDuration(smooth: Bool, framesPerModel: Int) -> Double {
+        MorphMovie.duration(current: duration, smooth: smooth && availability == .available,
+                            edited: durationEdited, natural: natural(framesPerModel: framesPerModel))
+    }
+
+    // MARK: Layout
+
+    var body: some View {
+        #if os(macOS)
+        content
+            .padding(20)
+            .frame(width: 400)
+        #else
+        // Scrolls rather than clips when the morph settings are open, so Cancel /
+        // Add stay reachable; the larger detent shows them without scrolling.
+        ScrollView { content.padding(20) }
+            .presentationDetents(smoothOn ? [.height(480), .large] : [.height(380)])
+        #endif
+    }
+
+    private var content: some View {
+        let n = models
+        // Resolve to a valid range regardless of prior state (0/out-of-range → 1…N),
+        // and drive both the steppers and Add from the resolved values.
+        let last = (lastModel < 1 || lastModel > n) ? n : lastModel
+        let first = min(max(firstModel, 1), last)
+        let availability = self.availability
+        let caption = MorphMovie.caption(availability, smooth: smoothOn, target: smoothTarget,
+                                         models: n, framesPerModel: morph.framesPerModel,
+                                         fps: playback.movieFPS)
+        return VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("Play models").font(.system(size: 15, weight: .semibold))
+                Spacer()
+                Text("\(target ?? "all models") · \(n) models")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+
+            // Motion — a segmented control (no wide dropdown).
+            Picker("", selection: $mode) {
+                Text("Sweep").tag(PyMOLEngine.StatesMode.sweep)
+                Text("Loop").tag(PyMOLEngine.StatesMode.loop)
+                Text("Lockstep").tag(PyMOLEngine.StatesMode.lockstep)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            // Range + duration: one row where it fits (macOS/iPad), wrapping to two
+            // rows on a narrow phone (iOS steppers are wider than macOS controls).
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 18) {
+                    rangeStart(first, last, n); rangeEnd(first, last, n); rangeDuration()
+                }
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 18) { rangeStart(first, last, n); rangeEnd(first, last, n) }
+                    rangeDuration()
+                }
+            }
+
+            // Smooth transitions: build a morph of the object and play that instead.
+            // Start/End keep counting models.
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("Smooth transitions (morph)", isOn: Binding(
+                    get: { smoothOn },
+                    set: { on in
+                        duration = smoothDuration(smooth: on, framesPerModel: morph.framesPerModel)
+                        smooth = on
+                    }))
+                    .tint(TimelineTheme.accent)
+                    .disabled(availability != .available)
+                    .accessibilityIdentifier("playModels.smooth")
+                if let caption {
+                    Text(caption)
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("playModels.smoothCaption")
+                }
+            }
+
+            if smoothOn {
+                // Loop is implied on for the Movie path, so only four controls.
+                DisclosureGroup(isExpanded: $morphExpanded) {
+                    MorphSettingsControls(
+                        settings: Binding(
+                            get: { morph },
+                            set: { new in
+                                if new.framesPerModel != morph.framesPerModel {
+                                    duration = smoothDuration(smooth: smooth,
+                                                              framesPerModel: new.framesPerModel)
+                                }
+                                morph = new
+                            }),
+                        showsLoop: false, idPrefix: "playModels")
+                        .padding(.top, 8)
+                } label: {
+                    // On the label, not the group: a group's identifier is handed down
+                    // to every control inside it, replacing their playModels.* ids.
+                    Text("Morph settings…")
+                        .accessibilityIdentifier("playModels.morphSettings")
+                }
+            }
+
+            HStack(spacing: 10) {
+                Spacer()
+                Button("Cancel") { onClose() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Add") { add(first: first, last: last) }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+    }
+
+    private func add(first: Int, last: Int) {
+        let plan = MorphMovie.addPlan(
+            target: target, smooth: smooth, settings: morph,
+            objects: Self.loadedObjects(engine), groups: groups,
+            morphSources: engine.morphSources, building: Self.building(engine))
+        // Python keeps an existing morph with the same spec and source fingerprint
+        // (reuse); otherwise it builds, and the clip naming the morph fills in as legs
+        // land and is rebuilt when it completes.
+        if let m = plan.morph {
+            engine.morph(source: m.source, settings: m.settings, autoPlay: false,
+                         reuse: true, name: m.name, target: m.target)
+        }
+        engine.appendStatesClip(objects: plan.objects, mode: mode,
+                                firstModel: first, lastModel: last,
+                                seconds: duration, morphStride: plan.morphStride)
+        plan.save?.save()
+        onClose()
+    }
+
+    // Steppers — reused in the one-row and wrapped (narrow-phone) layouts so both
+    // stay in sync.
+    @ViewBuilder private func rangeStart(_ first: Int, _ last: Int, _ n: Int) -> some View {
+        Stepper("Start \(first)",
+                value: Binding(get: { first }, set: { firstModel = min($0, last) }),
+                in: 1...max(1, n)).fixedSize()
+    }
+    @ViewBuilder private func rangeEnd(_ first: Int, _ last: Int, _ n: Int) -> some View {
+        Stepper("End \(last)",
+                value: Binding(get: { last }, set: { lastModel = max($0, first) }),
+                in: 1...max(1, n)).fixedSize()
+    }
+    @ViewBuilder private func rangeDuration() -> some View {
+        // Shows a natural length like "8.7 s" to its tenth; stepping marks Duration
+        // as the user's, so the toggle and frames per model stop resetting it.
+        Stepper("\(MorphSettings.number(duration)) s",
+                value: Binding(get: { duration }, set: { duration = $0; durationEdited = true }),
+                in: MorphMovie.durationRange(smooth: smoothOn,
+                                             natural: natural(framesPerModel: morph.framesPerModel)),
+                step: 1).fixedSize()
+            .accessibilityIdentifier("playModels.duration")
+    }
+}
+
 private struct PaletteContentWKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
