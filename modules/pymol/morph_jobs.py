@@ -4,20 +4,25 @@ morph_jobs — the morph job layer behind the Object panel's Morph action.
 Building blocks (naming, estimation, validation, look copy, titles,
 fingerprint) plus the job pipeline: start_job() snapshots a multi-state source
 on the main thread, MorphJob.step() computes one leg of frames without touching
-cmd, and pump() lands computed frames on the main thread within a time budget.
-The pending surface (pending_objects / recent_objects / pending_info) feeds the
-progress tray with the same record shape designing.pending_info publishes.
+cmd (on a daemon worker thread for async morphs), and pump() lands computed
+frames on the main thread within a time budget.  The pending surface
+(pending_objects / recent_objects / pending_info) feeds the progress tray with
+the same record shape designing.pending_info publishes.
 
 The embedded core is main-thread only: everything that touches cmd happens in
-start_job, pump, morph_cancel, morph_dismiss or morph_object.
+start_job, pump, morph_cancel, morph_dismiss or morph_object.  A worker shares
+only its MorphJob with the main thread: the job's state, error, done_legs and
+snapshot change under ``job._lock``, finished legs travel through a
+``queue.Queue``, and ``job._cancel`` (a threading.Event) stops the worker.
 
 Convention: only alt ''+A atoms are counted (consistent with morphing.py).
 '''
 
 import binascii
-import collections
+import queue
 import re
 import sys
+import threading
 import time
 
 import pymol
@@ -50,6 +55,12 @@ _JOBS = {}
 
 _ACTIVE = ('queued', 'running')
 _FAILED = ('error', 'cancelled')
+
+# Test seam: when set, step() calls _leg_hook(job, leg) as each leg begins
+# (snapshot references taken, no frame computed yet), on whichever thread runs
+# step().  Tests block or fail a leg here instead of racing the worker with
+# sleeps.  Always None in production.
+_leg_hook = None
 
 # cmd.morph's method aliases and segmentation defaults
 _RIGID_METHODS = ('rigimol', 'rigid', 'segments', 'corkscrew')
@@ -319,7 +330,13 @@ class MorphJob(object):
     ``step()`` computes the next leg from the snapshot start_job took and
     queues its frames; it never touches cmd, so it can run off the main thread.
     ``pump()`` lands queued frames.  ``state`` is 'queued', 'running', 'done',
-    'error' or 'cancelled'.'''
+    'error' or 'cancelled'; a terminal state is never overwritten.
+
+    Shared with a worker thread: ``state``, ``error``, ``done_legs`` and the
+    snapshot (``_coords``, ``_info``, ``_pos``) change only under ``_lock``;
+    ``_queue`` carries finished legs to the main thread; ``_cancel`` stops the
+    worker.  ``landed_legs``, ``_landing`` and the remaining flags belong to
+    the main thread.'''
 
     def __init__(self, name, source, spec, fingerprint, pos, coords, info, run):
         self.name = name
@@ -336,48 +353,85 @@ class MorphJob(object):
         self.error = None
         self.started = time.monotonic()
         self.ended = None
-        self.run = run              # True: pump() calls step() itself
+        self.run = run              # True: a worker thread calls step()
         self._pos = pos             # output atom index -> coordinate-set row
         self._coords = coords       # per model, rows in coordinate-set order
         self._info = info
-        self._queue = collections.deque()   # (leg, frames) not yet landed
+        self._lock = threading.Lock()
+        self._cancel = threading.Event()    # set: the worker stops
+        self._thread = None
+        self._queue = queue.Queue()         # (leg, frames) not yet landed
         self._landing = None        # [leg, frames, next frame] being landed
-        self._cancelled = False
         self._finalised = False     # terminal and cleaned up on the main thread
         self._dismissed = False
         self._sculpting = False
 
     def step(self):
-        '''Compute the next leg into the queue; False when none remain (or
-        the job was cancelled or failed).  Never touches cmd.'''
-        if self._cancelled or self.state not in _ACTIVE or self.done_legs >= self.legs:
-            return False
-        try:
+        '''Compute the next leg into the queue; False when none remain or the
+        job has ended.  Never touches cmd: the worker thread (run=True) or the
+        caller (run=False) runs it while the main thread may cancel or pump.'''
+        with self._lock:
+            if (self._cancel.is_set() or self.state not in _ACTIVE
+                    or self.done_legs >= self.legs):
+                return False
             self.state = 'running'
-            self._queue.append((self.done_legs, self._compute_leg(self.done_legs)))
-            self.done_legs += 1
-            return True
+            # own references: _end frees the job's snapshot when the job ends,
+            # possibly while this leg is still being computed
+            leg, coords, info = self.done_legs, self._coords, self._info
+        try:
+            if _leg_hook is not None:
+                _leg_hook(self, leg)
+            frames = self._compute_leg(leg, coords, info)
         except Exception as e:
-            self.error = str(e) or e.__class__.__name__
-            self.state = 'error'
+            self._terminate('error', _message(e))
             return False
+        with self._lock:
+            if self._cancel.is_set() or self.state not in _ACTIVE:
+                return False                # ended meanwhile: drop the leg
+            self._queue.put((leg, frames))
+            self.done_legs += 1
+        return True
 
     def cancel(self):
-        '''Stop computing; the next pump (or morph_cancel) cleans up.'''
-        self._cancelled = True
-        if self.state in _ACTIVE:
-            self.state = 'cancelled'
+        '''Stop computing (a worker drops the leg it is on and exits); the
+        next pump (or morph_cancel) cleans up.'''
+        self._terminate('cancelled')
+        self._cancel.set()
 
-    def _compute_leg(self, leg):
+    def join(self, timeout=None):
+        '''Wait for the worker thread; True once it has exited (at once for a
+        job without one).'''
+        if self._thread is None:
+            return True
+        self._thread.join(timeout)
+        return not self._thread.is_alive()
+
+    def _run(self):
+        '''The worker thread: compute legs until none remain or the job
+        ends.'''
+        while not self._cancel.is_set() and self.step():
+            pass
+
+    def _terminate(self, state, error=None):
+        '''End the job in *state* unless it has already ended: a terminal
+        state is never overwritten.  True when this call ended it.'''
+        with self._lock:
+            if self.state not in _ACTIVE:
+                return False
+            self.error, self.state = error, state
+            return True
+
+    def _compute_leg(self, leg, coords, info):
         '''The frames *leg* lands: its intermediates, then its end model.
 
         A non-last leg lands fractions j/f (j = 1..f) and the last leg
         j/(f-1) (j = 1..f-1), so the morph has legs·f states with model 1 as
         state 1 and key frames at 1 + k·f: the cmd.morph schedule, regrouped so
         every leg ends on its key frame.  The end model is the snapshot itself,
-        never a computed frame, so key frames are bit-exact.'''
-        S = self._coords[leg]
-        E = self._coords[(leg + 1) % self.models]
+        never a computed frame, so key frames are bit-exact.  Reads only the
+        snapshot passed in (*coords*, *info*) and immutable job fields.'''
+        S = coords[leg]
+        E = coords[(leg + 1) % self.models]
         n = self.frames_per_model if leg < self.legs - 1 else self.frames_per_model - 1
         rate = morphing._RATES[self.spec['rate']]
         fracs = [rate(j / float(n)) for j in range(1, n)]
@@ -385,7 +439,7 @@ class MorphJob(object):
             frames = morphing._frames_linear(S, E, fracs)
         else:
             segments, blend_of_pos, _ = morphing._segment_chains(
-                S, E, self._info, _CORE_FRACTION, _MIN_HINGE, _HINGE_BLEND)
+                S, E, info, _CORE_FRACTION, _MIN_HINGE, _HINGE_BLEND)
             frames = morphing._frames_rigid(S, E, segments, blend_of_pos, fracs)
         return list(frames) + [E]
 
@@ -415,8 +469,9 @@ def start_job(source, name=None, frames_per_model=15, loop=1, method='rigimol',
     '''Validate *source*, create the morph object holding model 1 (disabled
     until the morph is complete), snapshot every model, register the job.
 
-    run=False: the caller drives ``job.step()`` and pump() only lands what is
-    queued.  run=True: pump() also calls ``step()``, one leg at a time.'''
+    run=False: the caller drives ``job.step()``.  run=True: a daemon worker
+    thread drives ``step()`` until the legs run out or the job ends.  Either
+    way pump() only lands what is queued; it never calls ``step()``.'''
     spec = _make_spec(frames_per_model, loop, method, refinement, rate, copy_look)
     _, models = validate_source(source, _self)
     if models < 2:
@@ -458,6 +513,10 @@ def start_job(source, name=None, frames_per_model=15, loop=1, method='rigimol',
     _self.enable(source)
     job = MorphJob(target, source, spec, fp, pos, coords, info, bool(run))
     _JOBS[target] = job
+    if job.run:
+        job._thread = threading.Thread(target=job._run, daemon=True,
+                                       name='morph ' + target)
+        job._thread.start()
     return job
 
 
@@ -478,7 +537,10 @@ def _advance(job, deadline, _self):
     if job.state in _FAILED:                # step() failed or cancel() was called
         _finalise_failed(job, _self)
         return
-    if job.name not in _self.get_names('objects'):
+    names = _self.get_names('objects')
+    if job.source not in names:
+        raise pymol.CmdException('morph: source %s was deleted' % job.source)
+    if job.name not in names:
         raise pymol.CmdException(
             'morph: %s was deleted while it was being built' % job.name)
     try:
@@ -490,19 +552,21 @@ def _advance(job, deadline, _self):
 
 def _unit(job, _self):
     '''One unit of work; False when the job must wait or has ended.'''
-    if job._landing is None and job._queue:
-        leg, frames = job._queue.popleft()
-        job._landing = [leg, frames, 0]
+    if job.state in _FAILED:                # step() failed during this pump
+        _finalise_failed(job, _self)
+        return False
+    if job._landing is None:
+        try:
+            leg, frames = job._queue.get_nowait()
+        except queue.Empty:
+            pass
+        else:
+            job._landing = [leg, frames, 0]
     if job._landing is not None:
         _land_frame(job, _self)
         return True
     if job.landed_legs >= job.legs:
         _complete(job, _self)
-        return False
-    if job.run and job.step():
-        return True
-    if job.state in _FAILED:
-        _finalise_failed(job, _self)
     return False
 
 
@@ -566,15 +630,23 @@ def _complete(job, _self):
     _self.enable(name)
     if job.source in _self.get_names('objects'):
         _self.disable(job.source)
-    job.state = 'done'
+    job._terminate('done')
     _end(job)
 
 
 def _end(job):
+    '''Retire a job that has reached a terminal state: stop its worker, drop
+    unlanded legs, free the snapshot.  A worker still inside a leg computes
+    on its own references and drops the leg (step()); nothing is queued once
+    the state is terminal.'''
+    job._cancel.set()
     job._finalised = True
     job.ended = time.monotonic()
-    job._queue.clear()
-    job._landing = job._coords = job._info = job._pos = None
+    job._landing = None
+    with job._lock:
+        while not job._queue.empty():
+            job._queue.get_nowait()
+        job._coords = job._info = job._pos = None
 
 
 def _finalise_failed(job, _self):
@@ -592,9 +664,16 @@ def _finalise_failed(job, _self):
         pass
 
 
+def _message(exc):
+    '''The error text a tray card shows: a CmdException's own message,
+    without the " Error: " label its str() adds.'''
+    if isinstance(exc, pymol.CmdException) and exc.message:
+        return str(exc.message)
+    return str(exc) or exc.__class__.__name__
+
+
 def _fail(job, exc, _self):
-    job.error = str(exc) or exc.__class__.__name__
-    job.state = 'error'
+    job._terminate('error', _message(exc))
     _finalise_failed(job, _self)
 
 
@@ -739,22 +818,26 @@ def pending_info(name, _self=cmd):
     writes no panel file at all if this throws.'''
     try:
         job = _JOBS.get(name)
-        if job is None or job.state == 'done' or job._dismissed:
+        if job is None:
             return None
-        if job.state not in _ACTIVE:
+        with job._lock:                     # a worker may be ending the job
+            state, error = job.state, job.error
+        if state == 'done' or job._dismissed:
+            return None
+        if state not in _ACTIVE:
             phase = 'done'
-        elif job._landing is not None or job._queue:
+        elif job._landing is not None or not job._queue.empty():
             phase = 'landing'
         else:
             phase = 'computing'
         fraction = job.landed_legs / float(max(job.legs, 1))
         end = job.ended if job.ended is not None else time.monotonic()
         return {
-            'state': job.state, 'phase': phase, 'fraction': fraction,
-            'moving': job.state == 'running',
+            'state': state, 'phase': phase, 'fraction': fraction,
+            'moving': state == 'running',
             'models_done': job.landed_legs, 'models_total': job.legs,
             'elapsed': max(end - job.started, 0.0),
-            'error': None if job.error is None else str(job.error),
+            'error': None if error is None else str(error),
             'detail': 'leg %d of %d · %d%%' % (job.landed_legs, job.legs,
                                                int(fraction * 100)),
             'bundle': None, 'step': None, 'total_steps': None,

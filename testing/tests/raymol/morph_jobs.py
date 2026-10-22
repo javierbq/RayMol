@@ -13,12 +13,19 @@ Tests that:
     morph_object(async_=0) runs it to completion, cancel deletes the partial
     object, the pending surface publishes designing-shaped records, and the
     reuse and explicit-name rules hold
+  - morph_object(async_=1) computes legs on a worker thread and pump() lands
+    them: completion, cancel between legs, cancel while a leg is in flight
+    (ends 'cancelled', never 'error'), source deleted mid-job, and a worker
+    exception finalised on the main thread.  Tests synchronise with the
+    worker through mj._leg_hook (a _Gate), never through sleeps.
 
 Runs on a RayMol --testing build:
     pymol -ckqy testing/testing.py --run testing/tests/raymol/morph_jobs.py
 '''
 
 import json
+import threading
+import time
 
 import pymol
 import pymol.setting
@@ -50,6 +57,21 @@ _RECORD_KEYS = {'state', 'phase', 'fraction', 'moving', 'models_done',
                 'models_total', 'elapsed', 'error', 'detail', 'bundle',
                 'step', 'total_steps', 'remaining', 'batch', 'batch_index',
                 'batch_total', 'run_remaining'}
+
+
+class _Gate(object):
+    '''An mj._leg_hook that holds the worker as it begins leg *leg* (its
+    snapshot taken, no frame computed) until ``released`` is set.'''
+
+    def __init__(self, leg):
+        self.leg = leg
+        self.entered = threading.Event()
+        self.released = threading.Event()
+
+    def __call__(self, job, leg):
+        if leg == self.leg:
+            self.entered.set()
+            self.released.wait(10.0)
 
 
 def _settings_by_name(obj):
@@ -198,6 +220,7 @@ class TestMorphJobPipeline(testing.PyMOLTestCase):
     def setUp(self):
         super(TestMorphJobPipeline, self).setUp()
         mj._JOBS.clear()    # session registry: reinitialize does not clear it
+        self._gate = None
 
     def tearDown(self):
         mj._JOBS.clear()
@@ -209,6 +232,27 @@ class TestMorphJobPipeline(testing.PyMOLTestCase):
         for k in range(2, models + 1):
             cmd.create(name, name, 1, k)
             cmd.rotate('y', 25 * (k - 1), '%s and resi 5-9' % name, k)
+
+    def gate(self, leg):
+        '''Install a _Gate on leg *leg*; removed when the test ends.'''
+        self._gate = gate = _Gate(leg)
+        mj._leg_hook = gate
+        self.addCleanup(setattr, mj, '_leg_hook', None)
+        return gate
+
+    def async_morph(self, **kw):
+        '''morph_object('src', async_=1) -> (name, job).  However the test
+        ends, the worker is released from any gate, cancelled and joined.'''
+        name = mj.morph_object('src', async_=1, **kw)
+        job = mj._JOBS[name]
+        self.addCleanup(self._stop, job)
+        return name, job
+
+    def _stop(self, job):
+        if self._gate is not None:
+            self._gate.released.set()
+        job.cancel()
+        job.join(10.0)
 
     def testSyncMorphObject(self):
         self.ensemble()
@@ -401,13 +445,127 @@ class TestMorphJobPipeline(testing.PyMOLTestCase):
         self.ensemble()
         name = mj.morph_object('src', frames_per_model=5, async_=1)
         job = mj._JOBS[name]
+        self.addCleanup(self._stop, job)
         self.assertEqual(cmd.count_states(name), 1)          # returned before any leg landed
+        self.assertTrue(job.join(10.0))                      # worker done computing
         for _ in range(200):
             if job.state == 'done':
                 break
             mj.pump()
         self.assertEqual(job.state, 'done')
         self.assertEqual(cmd.count_states(name), 20)
+
+    def testAsyncCompletesThroughPump(self):
+        self.ensemble(models=5)
+        name, job = self.async_morph(frames_per_model=5)
+        self.assertIn(job.state, ('queued', 'running'))      # returned immediately
+        self.assertTrue(job.join(10.0))                      # worker done computing
+        self.assertEqual(cmd.count_states(name), 1)          # ... but only pump lands
+        deadline = time.monotonic() + 10
+        while job.state != 'done' and time.monotonic() < deadline:
+            mj.pump()
+        self.assertEqual(job.state, 'done')
+        self.assertEqual(cmd.count_states(name), 25)
+        self.assertLess(max_dev(coords(name, 25), coords('src', 1)), 1e-4)
+
+    def testAsyncCancelMidway(self):
+        self.ensemble(models=8)
+        gate = self.gate(leg=2)
+        name, job = self.async_morph(frames_per_model=30)
+        self.assertTrue(gate.entered.wait(10.0))    # legs 0 and 1 are queued
+        mj.pump(budget_ms=10 ** 6)
+        self.assertEqual(cmd.count_states(name), 61)            # ... and landed
+        mj.morph_cancel(name)
+        gate.released.set()
+        self.assertTrue(job.join(10.0))
+        mj.pump()
+        self.assertNotIn(name, cmd.get_names('objects'))
+        self.assertEqual(mj.pending_info(name)['state'], 'cancelled')
+        self.assertEqual(mj.recent_objects(), [name])
+        self.assertIn('src', cmd.get_names('objects', enabled_only=1))
+        self.assertEqual(job.done_legs, 2)          # the worker stopped at the cancel
+
+    def testCancelMidLegEndsCancelled(self):
+        # Race: morph_cancel frees the job's snapshot while the worker is
+        # inside a leg.  The worker must finish that leg on its own references
+        # and drop it; the job ends 'cancelled', never 'error'.
+        self.ensemble()
+        gate = self.gate(leg=0)
+        name, job = self.async_morph(frames_per_model=5)
+        self.assertTrue(gate.entered.wait(10.0))    # the worker is inside leg 0
+        # record what the in-flight leg's computation raises (a terminal job
+        # swallows it, so state alone would not show an inconsistent snapshot)
+        compute, raised = job._compute_leg, []
+
+        def recording(*args):
+            try:
+                return compute(*args)
+            except Exception as e:
+                raised.append(e)
+                raise
+        job._compute_leg = recording
+        mj.morph_cancel(name)
+        self.assertIsNone(job._coords)              # snapshot freed under the worker
+        gate.released.set()
+        self.assertTrue(job.join(10.0))
+        self.assertEqual(raised, [])                # ... yet the leg computed cleanly
+        mj.pump()
+        info = mj.pending_info(name)
+        self.assertEqual((info['state'], info['error']), ('cancelled', None))
+        self.assertEqual(job.done_legs, 0)          # the in-flight leg was dropped
+        self.assertNotIn(name, cmd.get_names('objects'))
+        self.assertIn('src', cmd.get_names('objects', enabled_only=1))
+
+    def testExceptionAfterCancelStaysCancelled(self):
+        # A leg that fails after the user cancelled must not turn the
+        # cancelled job into an error.
+        self.ensemble()
+        gate = self.gate(leg=0)
+
+        def hook(job, leg):
+            gate(job, leg)
+            raise RuntimeError('late failure')
+        mj._leg_hook = hook
+        name, job = self.async_morph(frames_per_model=5)
+        self.assertTrue(gate.entered.wait(10.0))
+        mj.morph_cancel(name)
+        gate.released.set()
+        self.assertTrue(job.join(10.0))
+        mj.pump()
+        self.assertEqual((job.state, job.error), ('cancelled', None))
+        self.assertEqual(mj.pending_info(name)['state'], 'cancelled')
+
+    def testSourceDeletedMidJob(self):
+        self.ensemble(models=6)
+        name, job = self.async_morph(frames_per_model=10)
+        cmd.delete('src')
+        self.assertTrue(job.join(10.0))
+        for _ in range(20):
+            mj.pump()
+        info = mj.pending_info(name)
+        self.assertEqual(info['state'], 'error')
+        self.assertEqual(info['error'], 'morph: source src was deleted')
+        self.assertNotIn(name, cmd.get_names('objects'))
+        self.assertEqual(mj.recent_objects(), [name])           # record retained
+        self.assertTrue(job._cancel.is_set())
+
+    def testWorkerExceptionFinalisedByPump(self):
+        self.ensemble()
+
+        def hook(job, leg):
+            if leg == 1:
+                raise RuntimeError('boom in leg 1')
+        mj._leg_hook = hook
+        self.addCleanup(setattr, mj, '_leg_hook', None)
+        name, job = self.async_morph(frames_per_model=5)
+        self.assertTrue(job.join(10.0))
+        self.assertEqual((job.state, job.error), ('error', 'boom in leg 1'))
+        self.assertIn(name, cmd.get_names('objects'))      # the worker never touches cmd
+        mj.pump()
+        self.assertNotIn(name, cmd.get_names('objects'))
+        self.assertIn('src', cmd.get_names('objects', enabled_only=1))
+        self.assertEqual(mj.pending_info(name)['error'], 'boom in leg 1')
+        self.assertEqual(mj.recent_objects(), [name])
 
     def testPumpErrorPathNeverRaises(self):
         self.ensemble()
