@@ -419,6 +419,14 @@ USAGE
                 _raymol_scene_anim.reset()
             except Exception:
                 pass
+            # The Timeline lane (#901) and its camera views describe that movie;
+            # left behind, the next save writes the discarded lane into the new
+            # .pse.
+            try:
+                from pymol import appkit_movie as _appkit_movie
+                _appkit_movie.reset()
+            except Exception:
+                pass
         if _self._raising(r,_self): raise pymol.CmdException
         return r
 

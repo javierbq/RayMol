@@ -513,8 +513,9 @@ final class PyMOLEngine: ObservableObject {
     // the UI edits); the heavy camera view matrices live in Python
     // (appkit_movie._views) keyed by each camera item's UUID. Every edit
     // recomputes frames from the transition durations and rebuilds the whole
-    // core movie via appkit_movie.rebuild. Session-scoped, like the legacy
-    // tracks above (not reconstructed from a reloaded .pse).
+    // core movie via appkit_movie.rebuild. Every change is also staged in
+    // appkit_movie, so the lane and its views ride in the .pse; loading one
+    // hands the lane back on a TIMELINE: feedback line (#901).
     struct Transition: Equatable {
         var seconds: Double = 2.0    // gap from the previous item to this one
         var linear: Bool = false     // false = smooth (eased) default
@@ -549,7 +550,15 @@ final class PyMOLEngine: ObservableObject {
             self.pinnedState = pinnedState; self.atFrame = atFrame
         }
     }
-    @Published var timelineItems: [TimelineItem] = []
+    @Published var timelineItems: [TimelineItem] = [] {
+        didSet { if timelineItems != oldValue { stageTimeline() } }
+    }
+    // The open session carries a movie no lane describes (an older .pse, or one
+    // authored outside the Timeline). The lane shows empty, and the first add
+    // would rebuild the movie from that one item, so it waits on
+    // `pendingTimelineAdd` until the user agrees to replace the movie (#901).
+    @Published var untrackedMovie = false
+    @Published var pendingTimelineAdd: (() -> Void)? = nil
 
     // While the user drags the scrubber, the poll must NOT overwrite
     // currentFrame (classic two-way-binding fight). Set on drag start, cleared
@@ -2076,6 +2085,12 @@ final class PyMOLEngine: ObservableObject {
         // longer exist.
         cameraKeyframes.removeAll()
         sceneMarkers.removeAll()
+        // ...and the lane with its stored views (#901), or the next save would
+        // write the cleared session's Timeline into the new one.
+        timelineItems.removeAll()
+        untrackedMovie = false
+        pendingTimelineAdd = nil
+        runPython("from pymol import appkit_movie as _am\n_am.forget_all_views()")
         runCommand("reinitialize")
         // reinitialize also resets engine settings to defaults — restore the
         // fetch_path that initialize() set (the writable temp dir) so a post-clear
@@ -2491,6 +2506,112 @@ final class PyMOLEngine: ObservableObject {
         return (old, new)
     }
 
+    // MARK: Timeline in the session (#901)
+    //
+    // The lane as plain JSON items, the shape appkit_movie stages and writes
+    // under `raymol_timeline`. Views stay in Python, keyed by the camera ids.
+    struct TimelineRecord: Codable, Equatable {
+        struct States: Codable, Equatable {
+            var objects: [String]?
+            var mode: String
+            var first: Int
+            var last: Int
+            var seconds: Double
+        }
+        var id: String
+        var kind: String              // camera | scene | states
+        var scene: String?
+        var states: States?
+        var seconds: Double
+        var linear: Bool
+        var pinnedState: Int?
+        var atFrame: Int?
+    }
+
+    static func timelineRecords(_ items: [TimelineItem]) -> [TimelineRecord] {
+        items.map { it in
+            var r = TimelineRecord(id: it.id.uuidString, kind: "camera",
+                                   seconds: it.transition.seconds, linear: it.transition.linear,
+                                   pinnedState: it.pinnedState, atFrame: it.atFrame)
+            switch it.kind {
+            case .camera: break
+            case .scene(let name):
+                r.kind = "scene"; r.scene = name
+            case .states(let spec):
+                r.kind = "states"
+                r.states = .init(objects: spec.objects, mode: spec.mode.rawValue,
+                                 first: spec.firstModel, last: spec.lastModel,
+                                 seconds: spec.durationSeconds)
+            }
+            return r
+        }
+    }
+
+    // The lane a session's records describe. A record this build cannot read
+    // (bad id, unknown kind) is dropped rather than failing the whole lane.
+    static func timelineItems(from records: [TimelineRecord]) -> [TimelineItem] {
+        records.compactMap { r in
+            guard let id = UUID(uuidString: r.id) else { return nil }
+            let kind: TimelineItem.Kind
+            switch r.kind {
+            case "camera": kind = .camera
+            case "scene":
+                guard let name = r.scene, !name.isEmpty else { return nil }
+                kind = .scene(name: name)
+            case "states":
+                guard let st = r.states else { return nil }
+                kind = .states(StatesSpec(objects: st.objects,
+                                          mode: StatesMode(rawValue: st.mode) ?? .sweep,
+                                          firstModel: st.first, lastModel: st.last,
+                                          durationSeconds: st.seconds))
+            default: return nil
+            }
+            return TimelineItem(id: id, kind: kind,
+                                transition: Transition(seconds: r.seconds, linear: r.linear),
+                                pinnedState: r.pinnedState, atFrame: r.atFrame)
+        }
+    }
+
+    // The lane and untracked-movie flag appkit_movie._emit_timeline writes to
+    // the `pymol_timeline` channel (announced by `TIMELINE:ready`: the payload
+    // would overflow PyMOL's ~1 KB feedback line). nil when it does not decode.
+    static func timelineRestorePayload(_ data: Data) -> (items: [TimelineItem], untrackedMovie: Bool)? {
+        struct Payload: Decodable { var items: [TimelineRecord]; var untrackedMovie: Bool }
+        guard let p = try? JSONDecoder().decode(Payload.self, from: data) else { return nil }
+        return (timelineItems(from: p.items), p.untrackedMovie)
+    }
+
+    // Hand the lane to appkit_movie for the next session save.
+    private func stageTimeline() {
+        guard isReady, let data = try? JSONEncoder().encode(Self.timelineRecords(timelineItems)) else { return }
+        runPython("import base64 as _b64\nfrom pymol import appkit_movie as _am\n"
+            + "_am.stage_timeline(_b64.b64decode('\(data.base64EncodedString())').decode('utf-8'))")
+    }
+
+    // A session load replaced the lane. The core movie it describes came with
+    // the .pse, so nothing is rebuilt here.
+    private func applyRestoredTimeline(_ items: [TimelineItem], untrackedMovie: Bool) {
+        pendingTimelineAdd = nil
+        self.untrackedMovie = untrackedMovie && items.isEmpty
+        timelineItems = items
+    }
+
+    // True when `add` must wait for the user to agree to replace an untracked
+    // movie; the Timeline add actions return early then and run again from
+    // confirmMovieReplace.
+    private func holdForUntrackedMovie(_ add: @escaping () -> Void) -> Bool {
+        guard untrackedMovie, timelineItems.isEmpty else { return false }
+        pendingTimelineAdd = add
+        return true
+    }
+
+    func confirmMovieReplace() {
+        let add = pendingTimelineAdd
+        pendingTimelineAdd = nil
+        untrackedMovie = false
+        add?()
+    }
+
     // The Timeline after renaming scene `old` to `new` (#655): every scene item
     // naming `old` now names `new`; everything else (ids, transitions, other
     // kinds) is unchanged. renameScene applies it so the next rebuildMovie does
@@ -2787,6 +2908,11 @@ final class PyMOLEngine: ObservableObject {
                           firstModel: Int = 1, lastModel: Int = 0, seconds: Double = 4.0,
                           morphStride: Int? = nil) {
         guard isReady else { return }
+        if holdForUntrackedMovie({ [weak self] in
+            self?.appendStatesClip(objects: objects, mode: mode, firstModel: firstModel,
+                                   lastModel: lastModel, seconds: seconds,
+                                   morphStride: morphStride)
+        }) { return }
         var spec = StatesSpec(objects: objects, mode: mode,
                               firstModel: firstModel, lastModel: lastModel, durationSeconds: seconds)
         spec.morphStride = morphStride
@@ -2826,6 +2952,7 @@ final class PyMOLEngine: ObservableObject {
     func resetToPlainEnsemble() {
         guard isReady else { return }
         timelineItems.removeAll()
+        untrackedMovie = false
         runPython("from pymol import appkit_movie as _am\n_am.reset_ensemble()")
         playback.frameCount = max(maxStateCount, 1)
         playback.currentFrame = 1
@@ -2834,6 +2961,7 @@ final class PyMOLEngine: ObservableObject {
     // Append a camera keyframe of the CURRENT view to the end of the lane.
     func captureCameraItem() {
         guard isReady else { return }
+        if holdForUntrackedMovie({ [weak self] in self?.captureCameraItem() }) { return }
         // With a "Play models" clip present, anchor the keyframe at the current
         // playhead so it can be dropped WITHIN the clip's span (camera moves while
         // the models cycle). Otherwise append sequentially as before.
@@ -2849,6 +2977,7 @@ final class PyMOLEngine: ObservableObject {
     // camera flies into the scene and its reps cut in at playback.
     func appendSceneItem(_ name: String) {
         guard isReady, !name.isEmpty else { return }
+        if holdForUntrackedMovie({ [weak self] in self?.appendSceneItem(name) }) { return }
         let item = TimelineItem(kind: .scene(name: name))
         timelineItems.append(item)
         rebuildMovie()
@@ -2897,6 +3026,9 @@ final class PyMOLEngine: ObservableObject {
     // (spin/rock around the current view) under Swift-generated UUIDs.
     func appendCameraTemplate(kind: String, duration: Double, axis: String, angle: Double) {
         guard isReady else { return }
+        if holdForUntrackedMovie({ [weak self] in
+            self?.appendCameraTemplate(kind: kind, duration: duration, axis: axis, angle: angle)
+        }) { return }
         let count = 4
         let ids = (0..<count).map { _ in UUID() }
         let idsJSON = "[" + ids.map { "\"\($0.uuidString)\"" }.joined(separator: ",") + "]"
@@ -2921,6 +3053,9 @@ final class PyMOLEngine: ObservableObject {
         guard isReady else { return }
         let names = scenes ?? sceneNames
         guard !names.isEmpty else { return }
+        if holdForUntrackedMovie({ [weak self] in
+            self?.appendScenesTemplate(secondsPerScene: secondsPerScene, scenes: scenes)
+        }) { return }
         for nm in names {
             timelineItems.append(TimelineItem(kind: .scene(name: nm),
                                               transition: Transition(seconds: secondsPerScene, linear: false)))
@@ -2932,6 +3067,7 @@ final class PyMOLEngine: ObservableObject {
     func clearMovieItems() {
         guard isReady else { return }
         timelineItems.removeAll()
+        untrackedMovie = false
         runPython("from pymol import appkit_movie as _am\n_am.forget_all_views()\n_am.reset_movie()")
         playback.frameCount = 1
         playback.currentFrame = 1
@@ -5004,6 +5140,16 @@ final class PyMOLEngine: ObservableObject {
                     DispatchQueue.main.async {
                         let updated = Self.renamingScene(in: self.timelineItems, from: old, to: new)
                         if updated != self.timelineItems { self.timelineItems = updated }
+                    }
+                } else if line == "TIMELINE:ready" {
+                    // A .pse load or reinitialize replaced the Timeline (#901).
+                    // Read now, while the file is the one this line announces.
+                    let path = TempChannel.path(TempChannel.Stem.timeline)
+                    if let data = FileManager.default.contents(atPath: path),
+                       let restored = Self.timelineRestorePayload(data) {
+                        DispatchQueue.main.async {
+                            self.applyRestoredTimeline(restored.items, untrackedMovie: restored.untrackedMovie)
+                        }
                     }
                 } else if line.hasPrefix("MOVIEEXPORT:") {
                     // cmd.movie_export (#581): a scripted export request.

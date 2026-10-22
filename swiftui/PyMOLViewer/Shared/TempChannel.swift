@@ -28,6 +28,7 @@ enum TempChannel {
         static let objectDetail = "pymol_objdetail"
         static let predictForm = "pymol_predict"
         static let designForm = "pymol_design"
+        static let timeline = "pymol_timeline"
 
         /// Every channel, for `removeAll()`. `.png` channels are listed with
         /// their extension; the rest are JSON.
@@ -35,7 +36,7 @@ enum TempChannel {
             (sequence, "json"), (sequenceSelection, "json"), (gizmo, "json"),
             (hoverInfo, "json"), (settings, "json"), (rayOverlay, "png"),
             (objectPanel, "json"), (objectDetail, "json"),
-            (predictForm, "json"), (designForm, "json"),
+            (predictForm, "json"), (designForm, "json"), (timeline, "json"),
         ]
     }
 
