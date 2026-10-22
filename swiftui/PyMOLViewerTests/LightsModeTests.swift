@@ -959,6 +959,88 @@ final class TimelineSessionTests: XCTestCase {
                        .states(.init(objects: nil, mode: .loop, firstModel: 1, lastModel: 0,
                                      durationSeconds: 4)))
     }
+
+    // MARK: Morph clips (morph spec §5.7)
+    //
+    // A morph clip's Start/End are MODEL indices that each rebuild maps to the
+    // morph's states with its stride. Without the stride a reloaded clip would
+    // read them as absolute states and play the wrong frames.
+
+    private func morphClip(stride: Int?) -> PyMOLEngine.TimelineItem {
+        var spec = PyMOLEngine.StatesSpec(objects: ["2kpo_morph"], mode: .sweep,
+                                          firstModel: 3, lastModel: 8, durationSeconds: 10)
+        spec.morphStride = stride
+        return .init(kind: .states(spec), transition: .init(seconds: 1, linear: true))
+    }
+
+    /// The `states` object of each encoded record, as Python's json.loads sees it.
+    private func encodedStates(_ items: [PyMOLEngine.TimelineItem]) throws -> [[String: Any]] {
+        let data = try JSONEncoder().encode(PyMOLEngine.timelineRecords(items))
+        let records = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+        return records.compactMap { $0["states"] as? [String: Any] }
+    }
+
+    private func restoredStates(_ statesJSON: String) -> PyMOLEngine.StatesSpec? {
+        let json = "{\"items\": [{\"id\": \"\(UUID().uuidString)\", \"kind\": \"states\", "
+            + "\"seconds\": 2.0, \"linear\": false, \"states\": \(statesJSON)}], "
+            + "\"untrackedMovie\": false}"
+        guard case .states(let spec)? = PyMOLEngine.timelineRestorePayload(Data(json.utf8))?
+            .items.first?.kind else { return nil }
+        return spec
+    }
+
+    func testMorphClipRoundTripsWithItsStride() throws {
+        let items = lane() + [morphClip(stride: 15)]
+        XCTAssertEqual(PyMOLEngine.timelineItems(from: PyMOLEngine.timelineRecords(items)), items)
+        let parsed = PyMOLEngine.timelineRestorePayload(
+            try payload(PyMOLEngine.timelineRecords(items), untracked: false))
+        XCTAssertEqual(parsed?.items, items)
+    }
+
+    func testMorphStrideIsWrittenUnderItsOwnKey() throws {
+        let states = try encodedStates([morphClip(stride: 15)])
+        XCTAssertEqual(states.first?["morphStride"] as? Int, 15)
+    }
+
+    // A record from a session saved before morph clips existed, or by this
+    // build for a plain clip, has no key and reads as a plain clip.
+    func testRecordWithoutStrideReadsAsAPlainClip() throws {
+        let spec = try XCTUnwrap(restoredStates(
+            "{\"objects\": [\"2kpo_morph\"], \"mode\": \"sweep\", \"first\": 3, \"last\": 8, "
+            + "\"seconds\": 10.0}"))
+        XCTAssertNil(spec.morphStride)
+        XCTAssertEqual(spec.firstModel, 3)
+        XCTAssertEqual(spec.lastModel, 8)
+    }
+
+    func testRecordWithStrideReadsAsAMorphClip() throws {
+        let spec = try XCTUnwrap(restoredStates(
+            "{\"objects\": [\"2kpo_morph\"], \"mode\": \"sweep\", \"first\": 3, \"last\": 8, "
+            + "\"seconds\": 10.0, \"morphStride\": 15}"))
+        XCTAssertEqual(spec.morphStride, 15)
+    }
+
+    // Plain clips encode exactly what they did before: nil is omitted, not null.
+    func testPlainClipsEncodeNoStrideKey() throws {
+        for states in try encodedStates(lane()) {
+            XCTAssertNil(states["morphStride"])
+        }
+        let data = try JSONEncoder().encode(PyMOLEngine.timelineRecords(lane()))
+        XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("morphStride"))
+    }
+
+    // A stride below 1 cannot map models to states: read and written as none.
+    func testNonPositiveStrideIsNone() throws {
+        for bad in ["0", "-4", "null"] {
+            let spec = try XCTUnwrap(restoredStates(
+                "{\"objects\": [\"2kpo_morph\"], \"mode\": \"sweep\", \"first\": 3, "
+                + "\"last\": 8, \"seconds\": 10.0, \"morphStride\": \(bad)}"), bad)
+            XCTAssertNil(spec.morphStride, bad)
+        }
+        for bad in [0, -4] {
+            XCTAssertNil(try encodedStates([morphClip(stride: bad)]).first?["morphStride"], "\(bad)")
+        }
+    }
 }
 
 // MARK: - Mouse legend in Lights mode (#677)

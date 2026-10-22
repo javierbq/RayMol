@@ -132,6 +132,7 @@ jobs:
               testing/tests/raymol/movie_object_settings.py \
               testing/tests/raymol/movie_hold_model.py \
               testing/tests/raymol/notes_session.py \
+              testing/tests/raymol/timeline_session.py \
               testing/tests/jira/multistate_timeline.py \
               testing/tests/raymol/metal_frees_gpu_buffers.py \
               testing/tests/raymol/metal_pick.py \

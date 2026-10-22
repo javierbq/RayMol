@@ -2517,6 +2517,10 @@ final class PyMOLEngine: ObservableObject {
             var first: Int
             var last: Int
             var seconds: Double
+            // A morph clip's stride (StatesSpec.morphStride): first/last are then
+            // model indices. Absent for a plain clip (nil is not encoded) and in
+            // sessions saved before morph clips; a value below 1 reads as absent.
+            var morphStride: Int?
         }
         var id: String
         var kind: String              // camera | scene | states
@@ -2541,10 +2545,17 @@ final class PyMOLEngine: ObservableObject {
                 r.kind = "states"
                 r.states = .init(objects: spec.objects, mode: spec.mode.rawValue,
                                  first: spec.firstModel, last: spec.lastModel,
-                                 seconds: spec.durationSeconds)
+                                 seconds: spec.durationSeconds,
+                                 morphStride: Self.positiveStride(spec.morphStride))
             }
             return r
         }
+    }
+
+    // A morph stride that can map models to states, else nil (a plain clip).
+    private static func positiveStride(_ stride: Int?) -> Int? {
+        guard let s = stride, s > 0 else { return nil }
+        return s
     }
 
     // The lane a session's records describe. A record this build cannot read
@@ -2563,7 +2574,8 @@ final class PyMOLEngine: ObservableObject {
                 kind = .states(StatesSpec(objects: st.objects,
                                           mode: StatesMode(rawValue: st.mode) ?? .sweep,
                                           firstModel: st.first, lastModel: st.last,
-                                          durationSeconds: st.seconds))
+                                          durationSeconds: st.seconds,
+                                          morphStride: Self.positiveStride(st.morphStride)))
             default: return nil
             }
             return TimelineItem(id: id, kind: kind,

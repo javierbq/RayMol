@@ -196,6 +196,39 @@ class TimelineSessionTest(testing.PyMOLTestCase):
         self.assertEqual(appkit_movie._timeline[1]['scene'], 'Outro')
         self.assertEqual(saved[1]['scene'], 'F1 \u00e9')
 
+    def test_morph_clip_keeps_its_stride_through_a_session(self):
+        # A morph clip's first/last are model indices; the app maps them to
+        # the morph's states with morphStride, so the key must come back
+        # untouched in the TIMELINE:ready payload after save -> restore.
+        appkit_movie._emit_timeline = type(self).real_emit
+        from pymol import raymol_tmp
+        morph = {'id': 'st-morph', 'kind': 'states', 'seconds': 1.0,
+                 'linear': True,
+                 'states': {'objects': ['pep_morph'], 'mode': 'sweep',
+                            'first': 3, 'last': 8, 'seconds': 10.0,
+                            'morphStride': 15}}
+        items = ITEMS + [morph]
+        cmd.reinitialize()
+        cmd.fab('AGA', 'pep')
+        appkit_movie.stage_timeline(json.dumps(items))
+        saved = self.pse()
+        cmd.save(saved)
+
+        appkit_movie.forget_all_views()
+        cmd.reinitialize()
+        out = io.StringIO()
+        sink = types.ModuleType('pcatch')
+        sink.write = out.write
+        with mock.patch.dict(sys.modules, {'pcatch': sink}):
+            cmd.load(saved)
+
+        self.assertEqual(appkit_movie._timeline, items)
+        self.assertTrue(out.getvalue().endswith('TIMELINE:ready\n'))
+        with open(raymol_tmp.channel_path('pymol_timeline'), encoding='utf-8') as handle:
+            payload = json.load(handle)
+        self.assertEqual(payload, {'items': items, 'untrackedMovie': False})
+        self.assertEqual(payload['items'][-1]['states']['morphStride'], 15)
+
     def test_a_long_lane_reaches_the_app_whole(self):
         # Through the real emitter: the line must stay under PyMOL's ~1 KB
         # feedback cap whatever the lane's size, and the file holds it all.
