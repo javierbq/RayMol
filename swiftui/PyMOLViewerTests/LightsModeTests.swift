@@ -936,6 +936,23 @@ final class TimelineSessionTests: XCTestCase {
         XCTAssertEqual(parsed?.items, Array(items.dropFirst(2)))
     }
 
+    func testPayloadCarriesTheEchoedRevision() throws {
+        let data = Data("{\"items\": [], \"untrackedMovie\": false, \"rev\": 7}".utf8)
+        XCTAssertEqual(PyMOLEngine.timelineRestorePayload(data)?.rev, 7)
+        XCTAssertNil(PyMOLEngine.timelineRestorePayload(try payload([], untracked: false))?.rev)
+    }
+
+    // Clear Session stages rev 7 and reinitialize writes its empty-lane notice
+    // with rev 7; Capture Camera then stages rev 8 before the poll reads the
+    // notice. The notice is stale and must not wipe the new camera item.
+    func testResetThenAddThenDelayedNoticeKeepsTheAdd() {
+        XCTAssertFalse(PyMOLEngine.timelineNoticeApplies(rev: 7, stagedRevision: 8))
+        // No edit in between: the notice applies (a load, a console reinitialize).
+        XCTAssertTrue(PyMOLEngine.timelineNoticeApplies(rev: 8, stagedRevision: 8))
+        // A notice without a revision (nothing staged yet) applies.
+        XCTAssertTrue(PyMOLEngine.timelineNoticeApplies(rev: nil, stagedRevision: 3))
+    }
+
     func testMalformedPayloadsAreRejected() {
         XCTAssertNil(PyMOLEngine.timelineRestorePayload(Data()))
         XCTAssertNil(PyMOLEngine.timelineRestorePayload(Data("not json".utf8)))

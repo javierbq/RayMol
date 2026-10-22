@@ -2466,22 +2466,41 @@ final class PyMOLEngine: ObservableObject {
     // The lane and untracked-movie flag appkit_movie._emit_timeline writes to
     // the `pymol_timeline` channel (announced by `TIMELINE:ready`: the payload
     // would overflow PyMOL's ~1 KB feedback line). nil when it does not decode.
-    static func timelineRestorePayload(_ data: Data) -> (items: [TimelineItem], untrackedMovie: Bool)? {
-        struct Payload: Decodable { var items: [TimelineRecord]; var untrackedMovie: Bool }
+    // `rev` is the last revision this app had staged when Python wrote it.
+    static func timelineRestorePayload(_ data: Data)
+        -> (items: [TimelineItem], untrackedMovie: Bool, rev: Int?)? {
+        struct Payload: Decodable {
+            var items: [TimelineRecord]; var untrackedMovie: Bool; var rev: Int?
+        }
         guard let p = try? JSONDecoder().decode(Payload.self, from: data) else { return nil }
-        return (timelineItems(from: p.items), p.untrackedMovie)
+        return (timelineItems(from: p.items), p.untrackedMovie, p.rev)
     }
+
+    // A restore/reset notice is read on the next feedback poll, so the user
+    // may already have edited the lane since it was written (Clear Session,
+    // then Capture Camera inside the same 100 ms). It applies only when no
+    // edit was staged after it; a stale one would wipe the new items.
+    static func timelineNoticeApplies(rev: Int?, stagedRevision: Int) -> Bool {
+        guard let rev else { return true }
+        return rev >= stagedRevision
+    }
+
+    // Bumped on every stage; Python echoes the last one in its notices.
+    private var timelineRevision = 0
 
     // Hand the lane to appkit_movie for the next session save.
     private func stageTimeline() {
         guard isReady, let data = try? JSONEncoder().encode(Self.timelineRecords(timelineItems)) else { return }
+        timelineRevision += 1
         runPython("import base64 as _b64\nfrom pymol import appkit_movie as _am\n"
-            + "_am.stage_timeline(_b64.b64decode('\(data.base64EncodedString())').decode('utf-8'))")
+            + "_am.stage_timeline(_b64.b64decode('\(data.base64EncodedString())').decode('utf-8'), "
+            + "rev=\(timelineRevision))")
     }
 
     // A session load replaced the lane. The core movie it describes came with
     // the .pse, so nothing is rebuilt here.
-    private func applyRestoredTimeline(_ items: [TimelineItem], untrackedMovie: Bool) {
+    private func applyRestoredTimeline(_ items: [TimelineItem], untrackedMovie: Bool, rev: Int?) {
+        guard Self.timelineNoticeApplies(rev: rev, stagedRevision: timelineRevision) else { return }
         pendingTimelineAdd = nil
         self.untrackedMovie = untrackedMovie && items.isEmpty
         timelineItems = items
@@ -4957,7 +4976,8 @@ final class PyMOLEngine: ObservableObject {
                     if let data = FileManager.default.contents(atPath: path),
                        let restored = Self.timelineRestorePayload(data) {
                         DispatchQueue.main.async {
-                            self.applyRestoredTimeline(restored.items, untrackedMovie: restored.untrackedMovie)
+                            self.applyRestoredTimeline(restored.items, untrackedMovie: restored.untrackedMovie,
+                                                       rev: restored.rev)
                         }
                     }
                 } else if line.hasPrefix("MOVIEEXPORT:") {
