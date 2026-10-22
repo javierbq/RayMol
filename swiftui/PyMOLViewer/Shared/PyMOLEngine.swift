@@ -245,6 +245,17 @@ final class PyMOLEngine: ObservableObject {
             if sequenceVisible && !oldValue { fetchSequences() }
         }
     }
+    #if os(macOS)
+    // #914: the side panel in a window too narrow to dock it (see
+    // PanelLayout.macInspectorPresentation). ContentView keeps `macInspectorNarrow`
+    // in step with the window; `macInspectorNarrowOpen` is the user opening the
+    // panel anyway, which shows it full-width. Session-only, and reset on every
+    // crossing, so a window that turns narrow always auto-hides the panel. Lives
+    // here rather than in ContentView so the View-menu command (PyMOLApp) and the
+    // tongue read and write the same state.
+    @Published var macInspectorNarrow = false
+    @Published var macInspectorNarrowOpen = false
+    #endif
     // Names the sequence strip was last built from (issue #380): the panel only
     // rows ENABLED objects, so any path that changes what is enabled — the object
     // panel checkbox, "all", a group cascade, `disable` at the prompt, a scene or

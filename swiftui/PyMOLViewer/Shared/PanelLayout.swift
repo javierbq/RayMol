@@ -90,43 +90,98 @@ enum PanelLayout {
 
     /// #350: the macOS inspector column's width on a launch with nothing stored.
     /// ABSOLUTE points for the same reason as the console default — an untouched
-    /// inspector looks the same on a laptop and on a 6K display. 340 is the width
-    /// the narrow-inspector redesign settled on (fits the Movie transport, matches
-    /// the Theme Studio column).
-    static let macDefaultInspectorWidth: CGFloat = 340
-    /// Below this an Objects row is nothing but its fixed chrome — gutter (26) +
-    /// five 38pt A/S/H/L/C buttons + chevron/indent — with no room left for even
-    /// a short name, so shrinking further only breaks the panel.
-    static let macMinInspectorWidth: CGFloat = 280
-    /// The macOS viewport's own minimum WIDTH; the inspector may grow until the
-    /// viewport is down to this. The horizontal sibling of `macViewportMinHeight`.
-    static let macViewportMinWidth: CGFloat = 480
+    /// inspector looks the same on a laptop and on a 6K display. #914: 380, up
+    /// from the 340 the narrow-inspector redesign settled on — the five-label tab
+    /// bar's segmented control is 355pt wide intrinsically (measured) plus 10pt
+    /// side padding, 375pt in all, so at 340 it overdrew the column by ~17pt each
+    /// side (hidden under the seam until a full-width panel exposed it). The
+    /// extra 5pt is margin for label/font differences.
+    ///
+    /// It is also the unit every narrow-window rule is built from — the
+    /// window's minimum width, the inspector's minimum, the viewport's share, and
+    /// (doubled) the width below which the inspector stops docking.
+    static let macDefaultInspectorWidth: CGFloat = 380
+    /// The narrowest the inspector may be while docked. #914: the default width,
+    /// not the old 280 — anything narrower than the tab bar clipped it and let
+    /// the column's content spill over the viewport.
+    static let macMinInspectorWidth: CGFloat = macDefaultInspectorWidth
+    /// The macOS window's minimum width (#914): one inspector's worth, so the
+    /// inspector always fits when the user opens it full-width.
+    static let macMinWindowWidth: CGFloat = macDefaultInspectorWidth
+    /// The inspector docks beside the viewport only in a window at least this wide
+    /// (#914) — room for a minimum inspector AND a viewport of the same width.
+    /// Narrower, it auto-hides, and opening it covers the whole window.
+    static let macInspectorDockWindowWidth: CGFloat = 2 * macDefaultInspectorWidth
+    /// Layout width of the seam between viewport and inspector (macInspectorDivider:
+    /// a 1pt hairline plus its 8pt grab band).
+    static let macInspectorSeamWidth: CGFloat = 9
+    /// The macOS viewport's own minimum WIDTH. The seam is taken out of the
+    /// viewport's half, so a window exactly `macInspectorDockWindowWidth` wide
+    /// still docks a minimum inspector without overflowing.
+    static let macViewportMinWidth: CGFloat = macDefaultInspectorWidth - macInspectorSeamWidth
+
+    // MARK: - macOS inspector presentation (#914)
+
+    /// How the macOS inspector column is shown.
+    enum MacInspectorPresentation: Equatable {
+        /// Not shown; its tongue rides the viewport's trailing edge.
+        case hidden
+        /// Beside the viewport, `inspectorWidth` wide.
+        case docked
+        /// Covering the whole window — opened by the user in a window too narrow
+        /// to dock it.
+        case fullWidth
+    }
+
+    /// Whether a window of `windowWidth` is too narrow to dock the inspector.
+    static func macInspectorIsNarrow(windowWidth: CGFloat) -> Bool {
+        windowWidth < macInspectorDockWindowWidth
+    }
+
+    /// The inspector's presentation in a window of `windowWidth`.
+    ///
+    /// `userShown` is the persisted side-panel flag — the user's own choice, which
+    /// a window shrink never writes. `narrowOpen` is the session-only "opened while
+    /// narrow" flag, cleared whenever the window crosses the dock width. So:
+    /// wide → `userShown` decides; narrow → hidden (auto-hidden) unless the user
+    /// opened it there, and then it takes the whole window. Growing back past the
+    /// dock width re-docks whatever `userShown` says, which is what reopens an
+    /// auto-hidden panel and keeps a panel the user closed closed.
+    static func macInspectorPresentation(windowWidth: CGFloat, userShown: Bool,
+                                         narrowOpen: Bool) -> MacInspectorPresentation {
+        if macInspectorIsNarrow(windowWidth: windowWidth) {
+            return narrowOpen ? .fullWidth : .hidden
+        }
+        return userShown ? .docked : .hidden
+    }
 
     // MARK: - macOS inspector sizing (#350)
 
-    /// How wide the inspector is allowed to get in a window of `windowWidth`,
-    /// given a viewport beside it that needs `viewportMin`. Same bracket shape as
-    /// `maxConsoleHeight`: never more than half the window (the viewport must
-    /// remain the main event), never less than `minCeilingFrac`.
+    /// How wide the docked inspector is allowed to get in a window of
+    /// `windowWidth`: everything but the viewport's minimum and the seam, and
+    /// never more than half the window (the viewport must remain the main event).
+    /// #914: never below the inspector's own minimum either — a window too narrow
+    /// for both doesn't dock at all (see `macInspectorPresentation`), so the
+    /// viewport no longer wins by squeezing the inspector.
     static func maxInspectorWidth(windowWidth: CGFloat,
                                   viewportMin: CGFloat = macViewportMinWidth) -> CGFloat {
-        guard windowWidth.isFinite, windowWidth > 0 else { return 0 }
-        return min(max(windowWidth - viewportMin, windowWidth * minCeilingFrac),
-                   windowWidth * 0.5)
+        guard windowWidth.isFinite, windowWidth > 0 else { return macMinInspectorWidth }
+        return max(min(windowWidth - viewportMin - macInspectorSeamWidth, windowWidth * 0.5),
+                   macMinInspectorWidth)
     }
 
-    /// The inspector's width in a window of `windowWidth`.
+    /// The docked inspector's width in a window of `windowWidth`.
     ///
     /// `frac` is the persisted share and applies only once the user has dragged
     /// the seam themselves; a missing, zero, negative or non-finite value (an
     /// unset UserDefaults Double reads as 0) means "untouched" and yields the
-    /// absolute default. The CEILING WINS when it crosses the usable minimum —
-    /// in a very narrow window, better a cramped inspector than no viewport.
+    /// absolute default. The result is clamped into [macMinInspectorWidth,
+    /// maxWidth].
     static func inspectorWidth(frac: CGFloat, windowWidth: CGFloat,
                                maxWidth: CGFloat) -> CGFloat {
         guard windowWidth.isFinite, windowWidth > 0 else { return macMinInspectorWidth }
         let w = (frac.isFinite && frac > 0) ? frac * windowWidth : macDefaultInspectorWidth
-        return min(max(w, macMinInspectorWidth), maxWidth)
+        return min(max(w, macMinInspectorWidth), max(maxWidth, macMinInspectorWidth))
     }
 
     /// The fraction to persist for an inspector measured at `width`, clamped into
