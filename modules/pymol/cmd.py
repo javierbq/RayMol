@@ -102,6 +102,18 @@ def _deferred_init_pymol_internals(_pymol):
     except Exception as _rn_e:
         print("raymol_notes registration failed: %s" % _rn_e)
 
+    # RayMol Timeline (#901): the editable lane and its camera views, under
+    # `raymol_timeline`. The restore also empties the lane for a session that
+    # has none, so opening one does not leave the previous session's behind.
+    try:
+        from pymol import appkit_movie as _am
+        if _am.session_restore not in _pymol._session_restore_tasks:
+            _pymol._session_restore_tasks.append(_am.session_restore)
+        if _am.session_save not in _pymol._session_save_tasks:
+            _pymol._session_save_tasks.append(_am.session_save)
+    except Exception as _am_e:
+        print("appkit_movie registration failed: %s" % _am_e)
+
     # RayMol alignments (#296): named MSAs, carried in the .pse under `raymol_msa` as
     # gzipped base64. The RESTORE also clears the store when a session carries no
     # alignments, so opening one does not leave the previous session's behind --

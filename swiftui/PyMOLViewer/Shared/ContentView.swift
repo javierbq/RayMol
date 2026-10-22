@@ -337,6 +337,20 @@ struct ContentView: View {
             // Effects slider edits.
             .environment(\.lightsExposure,
                          .scene(values: engine.sceneState.values, run: { engine.runCommand($0) }))
+            // The first Timeline add over a movie no lane describes (#901). One
+            // alert here, not per TimelinePanel: the dock and the inspector can
+            // both show one. Dismissal clears the held add a beat later, so a
+            // Replace tap runs it first.
+            .alert("Replace this session's movie?", isPresented: Binding(
+                get: { engine.pendingTimelineAdd != nil },
+                set: { if !$0 { DispatchQueue.main.async { engine.pendingTimelineAdd = nil } } })) {
+                Button("Cancel", role: .cancel) {}
+                Button("Replace", role: .destructive) { engine.confirmMovieReplace() }
+            } message: {
+                Text("This session has a movie that wasn't made in the Timeline. "
+                    + "Adding to the Timeline rebuilds the movie from its clips, "
+                    + "which replaces the existing one.")
+            }
             // What's New splash (both platforms, single hook): once-per-launch
             // auto-show, the manual-open notification, and the sheet itself.
             .onAppear {

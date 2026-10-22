@@ -883,6 +883,84 @@ final class SceneRenameTimelineTests: XCTestCase {
     }
 }
 
+// MARK: - Timeline in the session (#901)
+
+/// The lane's JSON records (staged in appkit_movie, written to the .pse) and
+/// the `pymol_timeline` channel payload a session load writes. The Python half is
+/// testing/tests/raymol/timeline_session.py, whose ITEMS use these keys.
+final class TimelineSessionTests: XCTestCase {
+
+    private func lane() -> [PyMOLEngine.TimelineItem] {
+        [
+            .init(kind: .camera),
+            .init(kind: .scene(name: "Café: intro"),
+                  transition: .init(seconds: 3.5, linear: true), pinnedState: 2),
+            .init(kind: .camera, transition: .init(seconds: 1.5, linear: false), atFrame: 40),
+            .init(kind: .states(.init(objects: ["nmr"], mode: .loop, firstModel: 2,
+                                      lastModel: 9, durationSeconds: 6))),
+            .init(kind: .states(.init())),
+        ]
+    }
+
+    private func payload(_ records: [PyMOLEngine.TimelineRecord], untracked: Bool) throws -> Data {
+        struct Payload: Encodable { var items: [PyMOLEngine.TimelineRecord]; var untrackedMovie: Bool }
+        return try JSONEncoder().encode(Payload(items: records, untrackedMovie: untracked))
+    }
+
+    func testRecordsRoundTripEveryKind() {
+        let items = lane()
+        let back = PyMOLEngine.timelineItems(from: PyMOLEngine.timelineRecords(items))
+        XCTAssertEqual(back, items)
+    }
+
+    func testRestoreEventCarriesTheLane() throws {
+        let items = lane()
+        let parsed = PyMOLEngine.timelineRestorePayload(
+            try payload(PyMOLEngine.timelineRecords(items), untracked: false))
+        XCTAssertEqual(parsed?.items, items)
+        XCTAssertEqual(parsed?.untrackedMovie, false)
+    }
+
+    func testRestoreEventOfAnOldSessionReportsItsMovie() throws {
+        let parsed = PyMOLEngine.timelineRestorePayload(try payload([], untracked: true))
+        XCTAssertEqual(parsed?.items, [])
+        XCTAssertEqual(parsed?.untrackedMovie, true)
+    }
+
+    func testUnreadableRecordsAreDropped() throws {
+        let items = lane()
+        var records = PyMOLEngine.timelineRecords(items)
+        records[0].id = "not-a-uuid"
+        records[1].kind = "hologram"
+        let parsed = PyMOLEngine.timelineRestorePayload(try payload(records, untracked: false))
+        XCTAssertEqual(parsed?.items, Array(items.dropFirst(2)))
+    }
+
+    func testMalformedPayloadsAreRejected() {
+        XCTAssertNil(PyMOLEngine.timelineRestorePayload(Data()))
+        XCTAssertNil(PyMOLEngine.timelineRestorePayload(Data("not json".utf8)))
+        XCTAssertNil(PyMOLEngine.timelineRestorePayload(Data("{\"items\":7}".utf8)))
+    }
+
+    // The shape appkit_movie._emit_timeline writes (json.dump of the Python
+    // dict): a long lane, nil keys absent, `objects` null.
+    func testDecodesWhatPythonWrites() {
+        let cams = (0..<200).map { _ in
+            "{\"id\": \"\(UUID().uuidString)\", \"kind\": \"camera\", \"seconds\": 2.0, \"linear\": false}"
+        }
+        let states = "{\"id\": \"\(UUID().uuidString)\", \"kind\": \"states\", \"seconds\": 2.0, "
+            + "\"linear\": false, \"states\": {\"objects\": null, \"mode\": \"loop\", "
+            + "\"first\": 1, \"last\": 0, \"seconds\": 4.0}}"
+        let json = "{\"items\": [" + (cams + [states]).joined(separator: ", ")
+            + "], \"untrackedMovie\": false}"
+        let parsed = PyMOLEngine.timelineRestorePayload(Data(json.utf8))
+        XCTAssertEqual(parsed?.items.count, 201)
+        XCTAssertEqual(parsed?.items.last?.kind,
+                       .states(.init(objects: nil, mode: .loop, firstModel: 1, lastModel: 0,
+                                     durationSeconds: 4)))
+    }
+}
+
 // MARK: - Mouse legend in Lights mode (#677)
 
 final class MouseLegendPresentationTests: XCTestCase {

@@ -920,6 +920,11 @@ def on_scene_action(key, action, new_key=None, _self=cmd):
             _anim.rename_scene(key, new_key, _self)
         except Exception as e:
             print('MOVIE_ERR:' + str(e))
+        try:
+            from pymol import appkit_movie as _am
+            _am.rename_scene(key, new_key)
+        except Exception as e:
+            print('MOVIE_ERR:' + str(e))
         _emit_rename(key, new_key)
 
 
