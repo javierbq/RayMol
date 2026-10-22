@@ -10,6 +10,8 @@ Tests that:
     morph_jobs == {} and the object list intact
   - morph_object / morph_cancel / morph_dismiss are registered in cmd.keyword
   - morph_cancel and morph_dismiss are exercised through cmd.do() (the parser path)
+  - the inspector detail payload's `objmeta` carries each object's atom count
+    (`natoms`), which the Morph sheet's memory estimate reads
 
 Runs on a RayMol --testing build:
     pymol -ckqy testing/testing.py --run testing/tests/raymol/morph_panel.py
@@ -104,3 +106,11 @@ class TestMorphPanelPayload(testing.PyMOLTestCase):
         # Dismiss via the PyMOL command line
         cmd.do('morph_dismiss src_morph')
         self.assertEqual(mj.recent_objects(), [])
+
+    def testObjmetaCarriesAtomCount(self):
+        '''The Morph sheet's memory estimate reads the atom count from the
+        inspector detail payload rather than issuing a query of its own.'''
+        cmd.fab('ACD', 'a')
+        appkit_inspector.poll(['a'])
+        p = json.load(open(raymol_tmp.channel_path('pymol_objdetail')))
+        self.assertEqual(p['objmeta']['a']['natoms'], cmd.count_atoms('a'))

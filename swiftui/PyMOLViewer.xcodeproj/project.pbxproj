@@ -261,6 +261,7 @@
 		B936D1EEC4FAB31339D4CB2E /* LightsAtmosphereCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6743F01EAFCBFE01B6ADD02 /* LightsAtmosphereCard.swift */; };
 		BA5F8346B75009D86D7C7815 /* LightsFloatingTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8090F993FEBF06819166C82 /* LightsFloatingTools.swift */; };
 		BA6C9B288CFD5EB53D0E0057 /* RayMolMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9371B6FFB30D6166234C678B /* RayMolMain.swift */; };
+		BA974256A8C0FC7B47483AD4 /* MorphSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 317DAB07A10B39A70ECB7C7A /* MorphSheet.swift */; };
 		BAAE4478A0C2B308D407E7C1 /* LightGizmoModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DE5E23E8AA19BB9D3F2C227 /* LightGizmoModel.swift */; };
 		BAF51FE61B64C23C51DF4AAF /* ProtenixJobManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B2D0B8DEF98F905922AE2FD /* ProtenixJobManager.swift */; };
 		BDF58C2A00D4BFACD41D6462 /* ProgressTray.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4857D1284B60EB0C750C02F /* ProgressTray.swift */; };
@@ -351,6 +352,7 @@
 		FCE3C0AD3EC5319F8F2E144E /* DesignEditInferenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D6A959CC1590FC60333582B /* DesignEditInferenceTests.swift */; };
 		FE667ADF3DAD102C12DC4DA2 /* HoverReadoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BF1264ED4865B293F313315 /* HoverReadoutTests.swift */; };
 		FF325D5404E69D05274EEB81 /* SelectionInputField.swift in Sources */ = {isa = PBXBuildFile; fileRef = D55EF2F596852510DDACA576 /* SelectionInputField.swift */; };
+		FFF893B673C4A9414704C452 /* MorphSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 317DAB07A10B39A70ECB7C7A /* MorphSheet.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -420,6 +422,7 @@
 		2E368EA22919158B4EAA000F /* MorphSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MorphSettingsTests.swift; sourceTree = "<group>"; };
 		2E5AA1A4BFA5787E1B83D100 /* PredictAvailability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictAvailability.swift; sourceTree = "<group>"; };
 		2E5C2F6163EFEA36009B55A5 /* MSAServerControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MSAServerControls.swift; sourceTree = "<group>"; };
+		317DAB07A10B39A70ECB7C7A /* MorphSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MorphSheet.swift; sourceTree = "<group>"; };
 		33D6A753E4525628B96C259C /* PyMOLEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PyMOLEngine.swift; sourceTree = "<group>"; };
 		35444C782524F25C4DDD4F9F /* LightsBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsBar.swift; sourceTree = "<group>"; };
 		356FC561FA1515B3D15A26E2 /* PyMOLBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PyMOLBridge.mm; sourceTree = "<group>"; };
@@ -636,6 +639,7 @@
 				CE692F1547C53D28B5F9A9AD /* MCPConnectSheet.swift */,
 				B9EC978B16F58D988575E206 /* MCPDrivingBanner.swift */,
 				FB1304C662D9011F7C4505FC /* MCPStatusView.swift */,
+				317DAB07A10B39A70ECB7C7A /* MorphSheet.swift */,
 				221117550FAD97CF81924E05 /* MousePanel.swift */,
 				0ED5BFF3FEE9D6621BB40AE5 /* MovieBuilderSheet.swift */,
 				8FE79EC8844C681A41A1E54A /* MovieExportSheet.swift */,
@@ -1834,6 +1838,7 @@
 				55ADA607AC3BB30CC3F6EE15 /* MSAServerControls.swift in Sources */,
 				104B27F848D308735A6D6DD2 /* MetalViewport.swift in Sources */,
 				0FDC151AF9199F82402C844C /* MorphSettings.swift in Sources */,
+				BA974256A8C0FC7B47483AD4 /* MorphSheet.swift in Sources */,
 				5313FFF152E5D3F23159919B /* MousePanel.swift in Sources */,
 				ACBE8F70B980BCCE6730141A /* MovieBuilderSheet.swift in Sources */,
 				FC8808FCB845C7543244AC94 /* MovieExportSheet.swift in Sources */,
@@ -1928,6 +1933,7 @@
 				D00E3076FED2390242EFE8AA /* MSAServerControls.swift in Sources */,
 				979AB10150CC62EE5E7962F9 /* MetalViewport.swift in Sources */,
 				FC4A54641D8CC5020B186234 /* MorphSettings.swift in Sources */,
+				FFF893B673C4A9414704C452 /* MorphSheet.swift in Sources */,
 				F619DEB3EA3D691634AE8268 /* MousePanel.swift in Sources */,
 				667B289D123B261F82B10FFC /* MovieBuilderSheet.swift in Sources */,
 				7B9C53449F7557047170D008 /* MovieExportSheet.swift in Sources */,

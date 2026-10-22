@@ -5143,7 +5143,8 @@ final class PyMOLEngine: ObservableObject {
             // renders no row rather than a row in a neutral state, which is the
             // safe direction — an inert control on an object it does not apply
             // to is worse than a missing one.
-            hasPeelRow: ((m["peel_row"] as? NSNumber)?.intValue ?? 0) != 0)
+            hasPeelRow: ((m["peel_row"] as? NSNumber)?.intValue ?? 0) != 0,
+            atomCount: (m["natoms"] as? NSNumber)?.intValue)
     }
 
     /// Ask the core for the material table, unless we already have it.

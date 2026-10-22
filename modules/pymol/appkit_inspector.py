@@ -490,6 +490,9 @@ def _build(objs):
         known = set(cmd.get_names('all') or [])
     except Exception:
         known = None
+    # Objects the selector accepts, recorded by the rep loop so the objmeta pass
+    # below can count atoms without repeating the #219 guard.
+    atomic = set()
     for o in objs:
         if known is not None and o not in known:
             # Stale name from the panel: object deleted, or reinitialize ran. Emitting
@@ -505,6 +508,7 @@ def _build(objs):
         if not takes_atom_selection(o):
             detail[o] = reps
             continue
+        atomic.add(o)
         # Effective per-atom transparency range per setting, computed once per
         # object; attached to the rep whose transparency setting is overridden so
         # the expanded card can show "per-atom: min–max" and a Clear action.
@@ -569,6 +573,14 @@ def _build(objs):
             continue
         entry = {'state': int(round(_num('state', o))),
                  'all': int(round(_num('all_states', o)))}
+        # Atom count for the Morph sheet's memory estimate (#morph). Only for
+        # objects the selector accepts (#219); absent otherwise, and the sheet
+        # then leaves the estimate out rather than showing 0.
+        if o in atomic:
+            try:
+                entry['natoms'] = int(cmd.count_atoms('?' + o))
+            except Exception:
+                pass
         # Object-wide peel row (#498). It lives on the object header rather
         # than in a rep panel because the setting is object-scoped, and only
         # for objects the scene loop can peel.

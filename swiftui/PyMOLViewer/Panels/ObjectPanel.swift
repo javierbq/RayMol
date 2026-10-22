@@ -171,6 +171,11 @@ struct ObjStateMeta: Equatable {
     /// peel is for. Groups and ramps (a gadget) are excluded.
     var hasPeelRow: Bool = false
 
+    /// Atom count (`natoms`), read by the Morph sheet's memory estimate (#morph).
+    /// Nil for an object the selector does not accept, or a payload that
+    /// predates the key — the sheet then omits the estimate rather than show 0.
+    var atomCount: Int? = nil
+
     /// Does the object header show any of these rows at all?
     ///
     /// Extracted so the gate is testable. What a test can reach is this
@@ -3656,13 +3661,21 @@ private struct ObjectRowContent: View {
             .help(entry.displayName)
 
         // Model / state count, right of the name (the structure's "frame count").
+        // A morph (#morph) prefixes the count with a `repeat` glyph: its states
+        // are frames of a loop, not models.
         if entry.stateCount > 1 {
-            Text("\(entry.stateCount)")
-                .font(.system(size: 9, weight: .semibold, design: .rounded))
-                .foregroundColor(PanelTheme.headerColor)
-                .padding(.horizontal, 4).padding(.vertical, 1)
-                .background(Capsule().fill(PanelTheme.buttonBackground))
-                .help("\(entry.stateCount) models / states")
+            HStack(spacing: 2) {
+                if entry.morphSource != nil {
+                    Image(systemName: "repeat").font(.system(size: 8, weight: .semibold))
+                }
+                Text("\(entry.stateCount)")
+                    .font(.system(size: 9, weight: .semibold, design: .rounded))
+            }
+            .foregroundColor(PanelTheme.headerColor)
+            .padding(.horizontal, 4).padding(.vertical, 1)
+            .background(Capsule().fill(PanelTheme.buttonBackground))
+            .help(entry.morphSource.map { "Morph of \($0) · \(entry.stateCount) frames" }
+                  ?? "\(entry.stateCount) models / states")
         }
 
         // Discoverability badge: this object has per-atom transparency overrides,
@@ -3707,6 +3720,8 @@ private struct ObjectCard: View {
     // Live state-slider value while dragging (nil = follow the object poll). Keeps
     // the thumb from snapping back to the last-polled state mid-drag.
     @State private var scrubState: Int? = nil
+    // The State row's "Morph…" sheet (#morph).
+    @State private var showMorphSheet = false
 
     private var expanded: Bool { engine.expandedDetail == entry.name }
     private var reps: [RepState] { engine.objectDetails[entry.name] ?? [] }
@@ -3852,6 +3867,9 @@ private struct ObjectCard: View {
                 .background(PanelTheme.rowAltBackground.opacity(0.6))
             }
         }
+        // On the card, not inside `if expanded`, so a re-render of the detail
+        // block cannot take the sheet down with it.
+        .sheet(isPresented: $showMorphSheet) { morphSheet() }
     }
 
     private func toggleExpand() {
@@ -3977,8 +3995,67 @@ private struct ObjectCard: View {
                 stateActionButton("Fit") { engine.runCommand("intra_fit \(entry.name)", naming: entry.name) }
                 stateActionButton("Split") { engine.runCommand("split_states \(entry.name)", naming: entry.name) }
                 stateActionButton("Sync") { engine.runCommand("unset state, \(entry.name)", naming: entry.name) }
+                // Hidden while a morph of this object is being built: Python refuses a
+                // second job on the same target, so the UI must not offer one.
+                if !entry.isPending && !morphBuilding {
+                    stateActionButton("Morph…") { showMorphSheet = true }
+                        .help("Build a smooth, looping version of this object's models")
+                        .accessibilityIdentifier("stateRow.morph.\(entry.name)")
+                }
             }
         }
+    }
+
+    // MARK: Morph (#morph)
+
+    /// What this card morphs FROM: itself for a plain ensemble; for a morph, the
+    /// source the panel payload names or, after a session reload, the one the
+    /// `<source>_morph` convention points at. Only a source that is still loaded
+    /// counts, so a morph whose source was deleted is treated as an ensemble.
+    private var morphSourceName: String {
+        let names = engine.objects.map(\.name)
+        if let s = entry.morphSource, names.contains(s) { return s }
+        return MorphSettings.conventionalSource(of: entry.name, existing: names) ?? entry.name
+    }
+
+    /// A morph job writing the object this card's Morph… would write is running.
+    private var morphBuilding: Bool {
+        let source = morphSourceName
+        let target = source == entry.name ? MorphSettings.morphName(for: source) : entry.name
+        return engine.morphJobs.contains { $0.id == target && !$0.isError }
+    }
+
+    private func morphSheet() -> some View {
+        let source = morphSourceName
+        let isMorph = source != entry.name
+        let target = isMorph ? entry.name : MorphSettings.morphName(for: source)
+        let models = isMorph
+            ? (engine.objects.first { $0.name == source }?.stateCount ?? entry.stateCount)
+            : entry.stateCount
+        // Only the expanded card's reps are polled, so this is known for a plain
+        // ensemble (the card IS the source) and absent for a morph's source.
+        let surfaceOrMesh = (engine.objectDetails[source] ?? [])
+            .contains { $0.visible && ($0.rep == "surface" || $0.rep == "mesh") }
+        return MorphSheet(
+            source: source, target: target, models: models,
+            atoms: engine.objectMeta[entry.name]?.atomCount,
+            fps: engine.playback.movieFPS,
+            existingSettings: engine.morphSpecs[entry.name],
+            isMorphObject: isMorph,
+            sourceShowsSurfaceOrMesh: surfaceOrMesh,
+            onMorph: { settings in
+                showMorphSheet = false
+                // Re-morph rebuilds under the same name, so clips and scenes naming
+                // the morph keep working.
+                engine.morph(source: source, settings: settings, autoPlay: true,
+                             name: isMorph ? entry.name : nil)
+            },
+            onDelete: isMorph ? {
+                showMorphSheet = false
+                engine.runCommand("delete \(entry.name); enable \(source)",
+                                  naming: entry.name, source)
+            } : nil,
+            onCancel: { showMorphSheet = false })
     }
 
     private func setState(_ n: Int) {
