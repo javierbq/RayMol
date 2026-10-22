@@ -178,6 +178,10 @@ a speed multiplier):
 - **Lockstep**: Moves all objects through the same model numbers together;
   objects with fewer states hold their last model.
 
+To make the models glide instead of flip, turn on **Smooth transitions
+(morph)** in the Play models sheet, or build a morph from the Object panel;
+see [Morphing](/RayMol/guides/morph/).
+
 ## Build a Movie from Scenes
 
 Assembling a movie from saved scenes produces rich, cinematic presentations
