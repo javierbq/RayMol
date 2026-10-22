@@ -25,6 +25,11 @@ on:
     branches: [master]
     paths-ignore:
       - 'docs/**'
+  # Also on master itself: two PRs can each pass alone and break together.
+  push:
+    branches: [master]
+    paths-ignore:
+      - 'docs/**'
   workflow_dispatch:
 
 concurrency:
@@ -49,6 +54,11 @@ jobs:
       - name: Toolchain
         # The macOS set from swiftui/ci_scripts/ci_post_clone.sh: glm headers,
         # libomp (linked statically by path), xcodegen. cmake is preinstalled.
+        # Xcode 26+ ships the Metal compiler as a separate download, and
+        # mlx-swift's Cmlx target compiles .metal kernels ("cannot execute tool
+        # 'metal' due to missing Metal Toolchain" without it). puma installs it
+        # once at setup (docs/ci/selfhosted-beta-runner.md); a hosted runner
+        # starts clean every time.
         run: |
           set -euo pipefail
           xcodebuild -version
@@ -57,6 +67,8 @@ jobs:
             echo "::error::brew prefix is $(brew --prefix), PyMOLBridge.xcconfig expects $PYMOL_EXTERNAL_PREFIX"; exit 1; }
           brew install glm libomp xcodegen
           test -f "$PYMOL_EXTERNAL_PREFIX/opt/libomp/lib/libomp.a"
+          xcodebuild -downloadComponent MetalToolchain
+          xcrun -f metal
 
       # deps_macos is pinned entirely by these scripts (python-build-standalone
       # release, numpy/Biopython wheels, libpng/freetype sources), so their hash
@@ -82,8 +94,11 @@ jobs:
         # project.yml is the source of truth; Xcode Cloud and puma regenerate too.
         run: cd swiftui && xcodegen generate
 
-      - name: Cache Swift packages
-        uses: actions/cache@v4
+      # Restore and save separately, so the checkouts (mlx-swift is large) are
+      # kept even when a test fails.
+      - name: Restore Swift packages
+        id: spm-cache
+        uses: actions/cache/restore@v4
         with:
           path: build_xcode_mac/SourcePackages
           key: spm-${{ runner.arch }}-${{ hashFiles('swiftui/PyMOLViewer.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved') }}
@@ -107,6 +122,13 @@ jobs:
             CODE_SIGN_IDENTITY=- \
             2>&1 | tee ../build_xcode_mac/xcodebuild-test.log \
                  | xcbeautify --renderer github-actions
+
+      - name: Save Swift packages
+        if: always() && steps.spm-cache.outputs.cache-hit != 'true' && hashFiles('build_xcode_mac/SourcePackages/workspace-state.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: build_xcode_mac/SourcePackages
+          key: ${{ steps.spm-cache.outputs.cache-primary-key }}
 
       - name: Keep results
         if: failure()
