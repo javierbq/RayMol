@@ -752,6 +752,9 @@ struct ContentView: View {
         let inspector = PanelLayout.macInspectorPresentation(
             windowWidth: winGeo.size.width, userShown: showObjectPanel,
             narrowOpen: engine.macInspectorNarrowOpen)
+        // A full-width right column (below) covers the whole left column.
+        let leftCovered = (narrow && showThemeStudio)
+            || (!showThemeStudio && inspector == .fullWidth)
         VStack(spacing: 0) {
             // (The MCP "Claude is controlling RayMol" banner is NOT laid out here:
             // as a stack child it pushed the whole window down on every tool call,
@@ -825,6 +828,13 @@ struct ContentView: View {
             }
             } // end left-column VStack
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // #914: while a full-width panel covers this column, nothing in it may
+            // take keys or VoiceOver focus — Tab must not walk back into the hidden
+            // console, nor VoiceOver read the hidden rail. Applied BEFORE the
+            // overlays, so the panel on top stays live. The column (and its Metal
+            // viewport) stays mounted; see also resignCoveredTextFocus.
+            .disabled(leftCovered)
+            .accessibilityHidden(leftCovered)
             // Inspector CLOSED → its tongue rides the left column's trailing edge, so
             // there is still something to grab once the toolbar toggle is gone. Open →
             // the tongue moves onto the inspector's own leading edge (below). Hidden
@@ -886,6 +896,9 @@ struct ContentView: View {
         .onChange(of: narrow, initial: true) { _, isNarrow in
             engine.macInspectorNarrow = isNarrow
             engine.macInspectorNarrowOpen = false
+        }
+        .onChange(of: leftCovered) { _, covered in
+            if covered { resignCoveredTextFocus() }
         }
         .overlay { busyOverlay }
         .alert("Fetch from PDB", isPresented: $showMacFetch) {
@@ -956,6 +969,17 @@ struct ContentView: View {
         // so this is what the window enforces — see .windowResizability in PyMOLApp.
         .frame(minWidth: PanelLayout.macMinWindowWidth,
                maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // #914: a full-width panel just covered the left column. `.disabled` stops
+    // new focus going there but doesn't end an edit already in progress, so a
+    // focused console field would keep taking keystrokes — and Return would run
+    // them — invisibly under the panel. Any field focused at this point is in the
+    // covered column or in a panel view that was just replaced (docked Theme
+    // Studio → full-width), so drop the field editor either way.
+    private func resignCoveredTextFocus() {
+        guard let window = NSApp.keyWindow, window.firstResponder is NSText else { return }
+        window.makeFirstResponder(nil)
     }
 
     // Theme Studio in the right column — docked, or full-width in a narrow
