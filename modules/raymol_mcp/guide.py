@@ -84,8 +84,8 @@ MORPHS  (commands morph_object, morph_cancel, morph_dismiss)
   (by default looping back to model 1). Use it instead of stepping raw
   states with mset/mplay. It builds in the background: poll
   raymol.morph_jobs in get_session_state until its status is done
-  (async_=0, with the underscore, waits for it but blocks the app). With no
-  movie defined, frames follow its states, so mplay and export_movie play it.
+  (async_=0 waits for it but blocks the app). With no movie defined, frames
+  follow its states, so mplay and export_movie play it.
     morph_object 2kpo                    (builds 2kpo_morph)
     morph_object 2kpo, frames_per_model=10, loop=0
     morph_cancel 2kpo_morph              (stop a build and drop it)

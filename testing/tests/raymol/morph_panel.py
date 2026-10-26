@@ -9,7 +9,9 @@ Tests that:
   - when _pending_maps('morph_jobs') raises, the payload is still written with
     morph_jobs == {} and the object list intact
   - morph_object / morph_cancel / morph_dismiss are registered in cmd.keyword
-  - morph_cancel and morph_dismiss are exercised through cmd.do() (the parser path)
+  - morph_object (with async=0, as for fetch, and a rate with a space),
+    morph_cancel and morph_dismiss are exercised through cmd.do() (the parser
+    path); morph_object refuses an argument it does not know
   - the inspector detail payload's `objmeta` carries each object's atom count
     (`natoms`), which the Morph sheet's memory estimate reads
   - the main payload's `morph_bytes_per_frame` carries morph_jobs'
@@ -117,11 +119,20 @@ class TestMorphPanelPayload(testing.PyMOLTestCase):
         # All three morph commands must be reachable from the PyMOL command line
         for kw in ('morph_object', 'morph_cancel', 'morph_dismiss'):
             self.assertIn(kw, cmd.keyword)
-        # morph_object: call via Python API because async_=0 maps to the `async`
-        # keyword, which is a Python reserved word and rejected by the STRICT parser.
+        # the command line users and agents type: async=0 as for fetch, and a
+        # rate with a space
         ensemble('src')
-        cmd.morph_object('src', frames_per_model=4, async_=0)
+        cmd.do('morph_object src, frames_per_model=4, rate=ramp up, async=0')
         self.assertEqual(cmd.count_states('src_morph'), 16)
+        self.assertEqual(mj.morph_spec('src_morph')['spec']['rate'], 'ramp up')
+        # async_ still works; a misspelt argument is refused, not ignored
+        self.assertEqual(mj.morph_object('src', frames_per_model=3, async_=0),
+                         'src_morph')
+        self.assertEqual(cmd.count_states('src_morph'), 12)
+        with self.assertRaisesRegex(pymol.CmdException,
+                                    'unknown argument.*frames_per_mode'):
+            mj.morph_object('src', frames_per_mode=4, async_=0)
+        self.assertEqual(cmd.count_states('src_morph'), 12)
 
     def testCancelAndDismissViaCommandLine(self):
         '''morph_cancel and morph_dismiss exercise the cmd.do() / STRICT parser path.'''

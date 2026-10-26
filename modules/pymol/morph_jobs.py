@@ -31,6 +31,7 @@ import struct
 import sys
 import threading
 import time
+import traceback
 
 import pymol
 from pymol import morphing
@@ -225,19 +226,20 @@ def morph_name(source, _self=cmd):
 
 
 def _is_known_morph(name, source, _self=cmd):
-    '''True when *name* is a morph of *source* built this session and the
-    object there is still that morph: a molecular object with the atom count
-    the job created.  The registry outlives deletes, so a record alone must
-    not claim a group, map, CGO or unrelated molecule made later under the
-    same name (a re-morph deletes the object it claims).'''
+    '''True when *name* is a morph of *source* started since launch and the
+    object there is still that morph: one being built (the job has not been
+    cleaned up, so the object holds what it has landed; a job that failed
+    keeps its partial morph until the next pump) or one built (_is_output).
+    The registry outlives deletes and cancels, and a re-morph deletes the
+    object it claims, so a record alone claims nothing: not a group, map or
+    CGO made later under the name, nor a molecule, even one with the same
+    atoms.'''
     job = _JOBS.get(name)
     if getattr(job, 'source', None) != source:
         return False
-    try:
-        return (_self.get_type(name) == 'object:molecule'
-                and _self.count_atoms(name) == job.natoms)
-    except pymol.CmdException:
-        return False                             # no such object any more
+    if not job._finalised:
+        return _holds(job, 1 + job._landed, _self)
+    return _is_output(job, _self)
 
 
 # --------------------------------------------------------------------------
@@ -506,7 +508,11 @@ def _make_spec(frames_per_model, loop, method, refinement, rate, copy_look):
     if refinement < 0:
         raise pymol.CmdException('morph: refinement must be 0 or more')
     method = str(method).lower()
-    if method != 'linear' and method not in _RIGID_METHODS:
+    if method in _RIGID_METHODS:
+        # one name for cmd.morph's aliases of the same method: reuse=1
+        # compares specs, and the sheet's Method control knows two values
+        method = 'rigimol'
+    elif method != 'linear':
         raise pymol.CmdException('morph: unknown method "%s"' % method)
     rate = str(rate).lower().replace('_', ' ')
     if rate not in morphing._RATES:
@@ -524,12 +530,13 @@ class MorphJob(object):
     ``pump()`` lands queued frames.  ``state`` is 'queued', 'running', 'done',
     'error' or 'cancelled'; a terminal state is never overwritten.
 
-    Shared with a worker thread: ``state``, ``error``, ``done_legs``,
-    ``_held`` and the snapshot (``_coords``, ``_info``, ``_pos``) change
-    only under ``_lock``; ``_queue`` carries finished legs to the main
-    thread; ``_room`` (a Condition on ``_lock``) is notified when a leg is
-    queued or has landed and when the job ends (the worker waits on it for
-    room, pump() for the next leg); ``_cancel`` stops the worker.
+    Shared with a worker thread: ``state``, ``error``, ``_traceback``,
+    ``done_legs``, ``_held`` and the snapshot (``_coords``, ``_info``,
+    ``_pos``) change only under ``_lock``; ``_queue`` carries finished legs
+    to the main thread; ``_room`` (a Condition on ``_lock``) is notified
+    when a leg is queued or has landed and when the job ends (the worker
+    waits on it for room, pump() for the next leg); ``_cancel`` stops the
+    worker.
     ``landed_legs``, ``_landing`` and the remaining flags belong to the main
     thread.'''
 
@@ -546,10 +553,13 @@ class MorphJob(object):
         self.legs = max(self.models if spec['loop'] else self.models - 1, 0)
         self.done_legs = 0          # computed by step()
         self.landed_legs = 0        # written into the object by pump()
-        self._landed = 0            # frames written: the object has 1 + this states
+        # frames loaded: the object has 1 + this states (the last one may
+        # still be being cleaned up, _landing[3])
+        self._landed = 0
         self._output_crc = None     # _frame_crc of the finished morph (_complete)
         self.state = 'queued'
         self.error = None
+        self._traceback = None      # of an unexpected failure, printed by the main thread
         self.started = time.monotonic()
         self.ended = None
         self.run = run              # True: a worker thread calls step()
@@ -562,13 +572,16 @@ class MorphJob(object):
         self._cancel = threading.Event()    # set: the worker stops
         self._thread = None
         self._queue = queue.Queue()         # (leg, frames) not yet landed
-        self._landing = None        # [leg, frames, next frame] being landed
+        # [leg, frames, next frame to load, clean-up cycles still to run on
+        # the frame loaded last] for the leg being landed
+        self._landing = None
         self._finalised = False     # terminal and cleaned up on the main thread
         self._dismissed = False
-        self._sculpting = False
+        self._sculpting = False     # sculpting activated on the morph (_sculpt_activate)
         self._unbuilt = 0           # landed frames whose reps are not built yet
         self._build_cost = None     # seconds to build one frame; None: not measured
-        self._land_cost = 0.0       # seconds to land (and sculpt) one frame
+        # seconds per unit of pump work (_note_land_cost)
+        self._land_cost = 0.0
 
     def step(self):
         '''Compute the next leg into the queue; False when none remain or the
@@ -587,7 +600,12 @@ class MorphJob(object):
                 _leg_hook(self, leg)
             frames = self._compute_leg(leg, coords, info)
         except Exception as e:
-            self._terminate('error', _message(e))
+            # A CmdException explains itself; anything else is a bug, whose
+            # traceback the main thread prints when it cleans up: in the app
+            # a write to stderr goes into the core, which is main-thread only.
+            tb = (None if isinstance(e, pymol.CmdException)
+                  else traceback.format_exc())
+            self._terminate('error', _message(e), tb)
             return False
         with self._lock:
             if self._cancel.is_set() or self.state not in _ACTIVE:
@@ -629,13 +647,14 @@ class MorphJob(object):
                 self._room.wait()
             return self.state in _ACTIVE and not self._cancel.is_set()
 
-    def _terminate(self, state, error=None):
+    def _terminate(self, state, error=None, tb=None):
         '''End the job in *state* unless it has already ended: a terminal
-        state is never overwritten.  True when this call ended it.'''
+        state is never overwritten.  *tb*: the traceback of the failure, for
+        _print_traceback.  True when this call ended it.'''
         with self._room:
             if self.state not in _ACTIVE:
                 return False
-            self.error, self.state = error, state
+            self.error, self.state, self._traceback = error, state, tb
             self._room.notify_all()         # a waiting worker exits
             return True
 
@@ -739,24 +758,40 @@ def start_job(source, name=None, frames_per_model=15, loop=1, method='rigimol',
     if job.run:
         job._thread = threading.Thread(target=job._run, daemon=True,
                                        name='morph ' + target)
-        job._thread.start()
+        try:
+            job._thread.start()
+        except Exception as e:              # e.g. no more threads
+            _fail(job, e, _self)
+            raise pymol.CmdException('morph: could not start the worker: %s' % e)
     return job
 
 
-def pump(budget_ms=100, _self=cmd):
+def pump(budget_ms=100, only=None, _self=cmd):
     '''Land computed frames on the main thread, build their representations
     while the morph is hidden (_prebuild), then finish jobs whose last leg
-    landed.  A frame is landed only while landing it and building every frame
-    this pump landed still fit in what is left of *budget_ms*, at the costs
+    landed.
+
+    The work comes in units: loading one frame, activating sculpting (once
+    per job), or one slice of an intermediate's sculpting clean-up (at most
+    _SCULPT_CYCLES cycles; a frame counts as landed after its last slice).
+    A unit is taken only while running it and building every frame this
+    pump landed still fit in what is left of *budget_ms*, at the costs
     measured so far (a job's first frame is built at once to measure them).
     A worker computing a job's next leg is waited for only within that same
-    allowance.  Every job still gets one unit of work, one frame landed and
-    built, so pump(budget_ms=0) makes progress.  A pump therefore overruns
-    *budget_ms* only by that one unit or by the error of the estimates; the
-    budget is shared by all jobs.  Never raises: a failing job goes to the
+    allowance, so a pump that only waits returns that reserve early.  Every
+    job still gets one unit, so pump(budget_ms=0) makes progress; when that
+    unit alone used the budget, the frames it completed are built by the
+    next pump.  A pump therefore overruns *budget_ms* only by that one unit
+    (activating sculpting on a large morph is the dearest: 1.5 s at 50k
+    atoms) or by the error of the estimates; the budget is shared by all
+    jobs.
+
+    *only*: advance that job alone (morph_object's own job when it runs to
+    completion), not every job.  Never raises: a failing job goes to the
     error path.'''
     deadline = time.monotonic() + max(float(budget_ms), 0.0) / 1000.0
-    for job in [j for j in _JOBS.values() if not j._finalised]:
+    jobs = list(_JOBS.values()) if only is None else [only]
+    for job in [j for j in jobs if not j._finalised]:
         try:
             _advance(job, deadline, _self)
         except Exception as e:
@@ -781,44 +816,69 @@ def _advance(job, deadline, _self):
         return
     try:
         while _unit(job, deadline, _self):
-            if job._build_cost is None:     # first frame: measure the build
-                _sculpt_off(job, _self)
+            if job._build_cost is None and time.monotonic() < deadline:
+                _sculpt_pause(job, _self)   # first frame: measure the build
                 _prebuild(job, _self)
             if time.monotonic() + _reserve(job, 1) >= deadline:
                 break                       # one more would not fit once built
     finally:
-        _sculpt_off(job, _self)
-    _prebuild(job, _self)
+        _sculpt_pause(job, _self)
+    # Build what this pump landed, unless its one guaranteed unit (a clean-up
+    # slice of a large morph, say) has already used the budget: those frames
+    # then wait for the next pump, whose first unit is the next frame's cheap
+    # load, and at the latest for the leg's key frame (_frame_in).
+    if time.monotonic() < deadline:
+        _prebuild(job, _self)
 
 
 def _reserve(job, extra):
-    '''Seconds to land *extra* more frames and to build them together with
-    the frames landed since the last _prebuild, at the measured costs.'''
+    '''Seconds to run *extra* more units and to build their frames together
+    with the frames landed since the last _prebuild, at the measured costs
+    (a clean-up slice adds no frame: the estimate errs towards a smaller
+    pump).'''
     return (extra * job._land_cost
             + (job._unbuilt + extra) * (job._build_cost or 0.0))
+
+
+def _worker_alive(job):
+    return job._thread is None or job._thread.is_alive()
 
 
 def _wait_for_leg(job, deadline):
     '''A worker job with nothing queued is computing its next leg: wait for
     it until *deadline* (no wait once it has passed).  The wait releases the
     job lock and the GIL; a queued leg, a terminal state and _end wake it.
-    run=False jobs are never waited for: their legs come from the caller.'''
+    run=False jobs are never waited for: their legs come from the caller.
+
+    A worker that has exited with legs still to compute died (or never
+    started): the job fails, instead of every pump idling its budget for a
+    leg that never comes.'''
     if not job.run:
         return
     with job._room:
         while (job._queue.empty() and job.state in _ACTIVE
-               and not job._cancel.is_set() and job.done_legs < job.legs):
+               and not job._cancel.is_set() and job.done_legs < job.legs
+               and _worker_alive(job)):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return
+                break
             job._room.wait(remaining)
+        died = (job._queue.empty() and job.state in _ACTIVE
+                and job.done_legs < job.legs and not _worker_alive(job))
+    if died:                                # _terminate takes the lock
+        job._terminate('error', 'morph: worker died')
 
 
 def _unit(job, deadline, _self):
-    '''One unit of work; False when the job must wait or has ended.'''
+    '''One unit of work: a slice of the clean-up of the frame loaded last
+    (or the activation it needs first), or else the next frame loaded.
+    False when the job must wait or has ended.'''
     if job.state in _FAILED:                # step() failed during this pump
         _finalise_failed(job, _self)
         return False
+    if job._landing is not None and job._landing[3]:
+        _sculpt_slice(job, _self)
+        return True
     if job._landing is None:
         _wait_for_leg(job, deadline - _reserve(job, 1))
         if job.state in _FAILED:            # the worker failed meanwhile
@@ -829,7 +889,7 @@ def _unit(job, deadline, _self):
         except queue.Empty:
             pass
         else:
-            job._landing = [leg, frames, 0]
+            job._landing = [leg, frames, 0, 0]
     if job._landing is not None:
         _land_frame(job, _self)
         return True
@@ -839,18 +899,56 @@ def _unit(job, deadline, _self):
 
 
 def _land_frame(job, _self):
-    '''Append the next frame of the leg being landed; sculpt it when it is an
-    intermediate; title the leg once its key frame is in, build the leg's
-    frames, and only then let the worker compute the next leg.'''
+    '''Load the next frame of the leg being landed.  An intermediate that is
+    cleaned up gets its sculpting cycles as later units (_sculpt_slice);
+    any other frame is in at once (_frame_in).'''
     t = time.monotonic()
-    leg, frames, k = job._landing
+    leg, frames, k, _ = job._landing
     _self.load_coordset(frames[k], job.name, 0)
     job._landed += 1
+    job._landing[2] = k + 1
+    if k + 1 < len(frames) and job.spec['refinement'] > 0:
+        job._landing[3] = morphing._SCULPT_CYCLES * job.spec['refinement']
+        _note_land_cost(job, time.monotonic() - t)
+        return
+    _frame_in(job, t, _self)
+
+
+def _sculpt_slice(job, _self):
+    '''Run one slice, at most _SCULPT_CYCLES cycles, of the clean-up of the
+    intermediate loaded last (state ``2 + leg·f + j`` for frame j of the
+    leg, and _landing[2] is j + 1); it is in once its last slice has run.
+    Sculpting iterates, so slices add up to the one call morphing.morph
+    makes for the frame, and the pump checks its budget between them.
+    Activating sculpting, which the first slice needs, is a unit of its
+    own (it costs more than a slice for a large morph), except while the
+    global ``sculpting`` setting is on: every pump then ends by switching
+    sculpting off (_sculpt_pause), so a pump with room for only the
+    activation would never get to a slice.'''
+    t = time.monotonic()
+    if not job._sculpting:
+        _sculpt_activate(job, _self)
+        if not _self.get_setting_int('sculpting'):
+            _note_land_cost(job, time.monotonic() - t)
+            return
+    leg, frames, k, left = job._landing
+    cycles = min(morphing._SCULPT_CYCLES, left)
+    _self.sculpt_iterate(job.name, 1 + leg * job.frames_per_model + k, cycles)
+    job._landing[3] = left - cycles
+    if job._landing[3]:
+        _note_land_cost(job, time.monotonic() - t)
+    else:
+        _frame_in(job, t, _self)
+
+
+def _frame_in(job, t, _self):
+    '''The frame loaded last is complete (cleaned up, if it is): it joins the
+    frames _prebuild builds.  Once the leg's key frame is in, title the leg,
+    build the leg's frames, and only then let the worker compute the next
+    leg.  *t*: when this unit began (_note_land_cost).'''
     job._unbuilt += 1
-    if k + 1 < len(frames):
-        job._landing[2] = k + 1
-        if job.spec['refinement'] > 0:
-            _sculpt(job, 2 + leg * job.frames_per_model + k, _self)
+    leg, frames, k, _ = job._landing
+    if k < len(frames):
         _note_land_cost(job, time.monotonic() - t)
         return
     job._landing = None
@@ -863,7 +961,7 @@ def _land_frame(job, _self):
     # waits for it hundreds of times: 5-10x slower at leg boundaries.  Frames
     # of the next leg land only once the worker has queued it and waits for
     # room again, so no build overlaps a computing worker.
-    _sculpt_off(job, _self)
+    _sculpt_pause(job, _self)
     _prebuild(job, _self)
     with job._room:
         job._held -= 1
@@ -871,23 +969,33 @@ def _land_frame(job, _self):
 
 
 def _note_land_cost(job, seconds):
-    '''Running estimate of the time one frame takes to land.'''
+    '''Running estimate of the time one unit takes: a frame loaded,
+    sculpting activated or a clean-up slice.'''
     job._land_cost = seconds if not job._land_cost else 0.5 * (job._land_cost + seconds)
 
 
-def _sculpt(job, state, _self):
-    '''Clean up one landed intermediate as morphing.sculpt_states does.
+def _sculpt_activate(job, _self):
+    '''Set up the clean-up as morphing.sculpt_states does: backbone fixed,
+    sculpting imprinted from model 1.
 
-    Sculpting is switched on here and off at the end of every pump, never
-    left active between pumps: with the global ``sculpting`` setting on, the
-    render loop sculpts an active object's current state, which may be a key
-    frame that must stay an exact copy of its model.'''
-    if not job._sculpting:
-        job._sculpting = True
-        _self.flag('fix', '%s and %s' % (job.name, morphing._SCULPT_FIX), 'set', quiet=1)
-        _self.sculpt_activate(job.name, 1)
-    _self.sculpt_iterate(job.name, state,
-                         morphing._SCULPT_CYCLES * job.spec['refinement'])
+    Sculpting is activated before the job's first slice and stays active
+    until the job ends (_sculpt_off): activating costs far more than a slice
+    for a large morph (1.5 s at 50k atoms), so it is paid once per job, not
+    once per pump.  _sculpt_pause switches it off between pumps only while
+    the global ``sculpting`` setting is on.'''
+    job._sculpting = True
+    _self.flag('fix', '%s and %s' % (job.name, morphing._SCULPT_FIX), 'set', quiet=1)
+    _self.sculpt_activate(job.name, 1)
+
+
+def _sculpt_pause(job, _self):
+    '''End of a pump (or before a build): leave sculpting active, unless the
+    global ``sculpting`` setting is on.  Then the render loop sculpts every
+    activated molecule's current state (ExecutiveSculptIterateAll), which may
+    be a key frame that must stay an exact copy of its model, so sculpting
+    goes off and the next slice activates it again.'''
+    if job._sculpting and _self.get_setting_int('sculpting'):
+        _sculpt_off(job, _self)
 
 
 def _sculpt_off(job, _self):
@@ -929,25 +1037,32 @@ def _prebuild(job, _self):
             job._build_cost = 0.0           # nothing will be built here
         return
     t = time.monotonic()
+    built = False
     _self.enable(name)
     try:
         with _self.lockcm:
             # update phase only: reps mask 0, update 1, build 0 (layer4/Cmd.cpp)
             prepare(_self._COb, [name], 0, 1, 0)
+        built = True
     except Exception:
         pass                                # e.g. a modal draw owns the core
     finally:
         _self.disable(name)
-    # per frame, with the call's fixed cost spread over the frames: rises at
-    # once, falls by halves, so an estimate errs towards a smaller pump
-    per = (time.monotonic() - t) / job._unbuilt
-    old = job._build_cost
-    job._build_cost = per if old is None or per > old else 0.5 * (old + per)
+    if built:
+        # per frame, with the call's fixed cost spread over the frames: rises
+        # at once, falls by halves, so an estimate errs towards a smaller pump.
+        # A failed call measured nothing: its near-zero time would let the
+        # next pump land and build far more than its budget allows.
+        per = (time.monotonic() - t) / job._unbuilt
+        old = job._build_cost
+        job._build_cost = per if old is None or per > old else 0.5 * (old + per)
     job._unbuilt = 0
 
 
 def _complete(job, _self):
-    '''Verify the finished morph, then show it in place of the source.'''
+    '''Verify the finished morph, then show it in place of the source.  The
+    morph gets no object-level ``state``: like any multi-state object it
+    follows the global frame (mset, mplay, a Lockstep clip, movie export).'''
     name = job.name
     expected = job.legs * job.frames_per_model
     got = _self.count_states(name)
@@ -965,7 +1080,6 @@ def _complete(job, _self):
     except Exception:
         job._output_crc = None      # a session restore then forgets the record
     _sculpt_off(job, _self)
-    _self.set('state', 1, name)
     _self.enable(name)
     if job.source in _self.get_names('objects'):
         _self.disable(job.source)
@@ -990,10 +1104,20 @@ def _end(job):
         job._room.notify_all()
 
 
+def _print_traceback(job):
+    '''Print, once, the traceback a worker kept for an unexpected failure
+    (main thread only: in the app stderr writes into the core).'''
+    with job._lock:
+        tb, job._traceback = job._traceback, None
+    if tb:
+        sys.stderr.write(tb)
+
+
 def _finalise_failed(job, _self):
     '''Cancel/error cleanup: drop the partial morph and show the source
     again.  The record stays in recent_objects() until morph_dismiss.  An
     object that took the name meanwhile is not the partial morph: it stays.'''
+    _print_traceback(job)
     _end(job)
     _sculpt_off(job, _self)
     try:
@@ -1012,18 +1136,22 @@ def _release(job, state, error):
     used were replaced and the names now belong to whatever replaced them.  A
     job that had already ended keeps its state.'''
     job._terminate(state, error)
-    job._sculpting = False          # never left on between pumps (_sculpt)
+    _print_traceback(job)
+    # the sculpting it activated went with the object that was replaced; a
+    # sculpt_deactivate now would act on the object that replaced it
+    job._sculpting = False
     _end(job)
 
 
 def _holds(job, states, _self):
     '''True when the object under *job*'s name is a molecule with the job's
     atoms and *states* states: still the morph the job is building (states
-    ``1 + job._landed``) or built (``legs * frames_per_model``).'''
+    ``1 + job._landed``) or built (``legs * frames_per_model``).  Cheapest
+    test first: count_atoms is a selector pass over the session.'''
     try:
         return (_self.get_type(job.name) == 'object:molecule'
-                and _self.count_atoms(job.name) == job.natoms
-                and _self.count_states(job.name) == states)
+                and _self.count_states(job.name) == states
+                and _self.count_atoms(job.name) == job.natoms)
     except pymol.CmdException:
         return False                # no such object any more
 
@@ -1066,6 +1194,11 @@ def _message(exc):
 
 
 def _fail(job, exc, _self):
+    '''End *job* in error for *exc*, raised on the main thread, and clean up.
+    A CmdException explains itself; anything else is a bug, whose traceback
+    is printed (the card keeps the one-line message).'''
+    if not isinstance(exc, pymol.CmdException):
+        traceback.print_exception(type(exc), exc, exc.__traceback__)
     job._terminate('error', _message(exc))
     _finalise_failed(job, _self)
 
@@ -1076,7 +1209,7 @@ def _fail(job, exc, _self):
 
 def morph_object(source, name=None, frames_per_model=15, loop=1,
                  method='rigimol', refinement=3, rate='linear', copy_look=1,
-                 async_=1, reuse=0, quiet=1, _self=cmd):
+                 async_=1, reuse=0, quiet=1, _self=cmd, **kwargs):
     '''
 DESCRIPTION
 
@@ -1093,7 +1226,7 @@ DESCRIPTION
 USAGE
 
     morph_object source [, name [, frames_per_model [, loop [, method
-        [, refinement [, rate [, copy_look [, async_ [, reuse ]]]]]]]]]
+        [, refinement [, rate [, copy_look [, async [, reuse ]]]]]]]]]
 
 ARGUMENTS
 
@@ -1114,8 +1247,8 @@ ARGUMENTS
 
     copy_look = 0/1: copy the source's object-level settings {default: 1}
 
-    async_ = 0/1: build in the background (1) or finish before returning
-    {default: 1}
+    async = 0/1: build in the background (1) or finish before returning;
+    written async_ from Python, as for fetch {default: 1}
 
     reuse = 0/1: keep an existing morph built with the same settings from
     the unchanged source {default: 0}
@@ -1124,6 +1257,13 @@ SEE ALSO
 
     morph, morph_cancel, morph_dismiss
     '''
+    # **kwargs takes `async` (a Python keyword) as fetch does.  It also turns
+    # off the parser's check of argument names (parsing.prepare_call), so
+    # anything else left over is refused here.
+    async_ = int(kwargs.pop('async', async_))
+    if kwargs:
+        raise pymol.CmdException('morph_object: unknown argument(s): %s'
+                                 % ', '.join(sorted(kwargs)))
     spec = None
     try:
         spec = _make_spec(frames_per_model, loop, method, refinement, rate,
@@ -1143,9 +1283,11 @@ SEE ALSO
         if not int(quiet):
             print(' morph_object: building %s (%d legs)' % (job.name, job.legs))
         return job.name
+    # its own job only: another morph a worker builds meanwhile is left to
+    # the app's polls, not waited for here
     while job.step():
-        pump(budget_ms=10 ** 9, _self=_self)
-    pump(budget_ms=10 ** 9, _self=_self)
+        pump(budget_ms=10 ** 9, only=job, _self=_self)
+    pump(budget_ms=10 ** 9, only=job, _self=_self)
     if job.state != 'done':
         raise pymol.CmdException(job.error or 'morph: %s did not complete' % job.name)
     if not int(quiet):
@@ -1250,7 +1392,7 @@ def morph_sources(_self=cmd):
 # Session replacement and session files
 # --------------------------------------------------------------------------
 
-def reset(names=None, _self=cmd):
+def reset(names=None, *, dismiss=False, _self=cmd):
     '''Objects were replaced under the registry: by a session load or
     ``reinitialize`` (*names* None: every object), or by a partial load
     (*names*: the objects it brought in).
@@ -1259,14 +1401,22 @@ def reset(names=None, _self=cmd):
     belongs to the session that replaced it; its tray card reads cancelled.
     A finished morph's record goes unless the object there is still exactly
     that morph, as after the Theme studio restores its snapshot: the Timeline
-    then maps a restored morph clip with the stride the clip saved.'''
+    then maps a restored morph clip with the stride the clip saved.
+
+    *dismiss* (a new session: ``reinitialize``, the app's Clear Session):
+    nothing is left to explain, so a job it stops leaves no card and the
+    records of earlier cancelled or failed morphs go as well.'''
     for name, job in list(_JOBS.items()):
         if names is not None and name not in names:
             continue
         if not job._finalised:
             _release(job, 'cancelled',
                      'morph: stopped because the session was replaced')
+            if dismiss:
+                job._dismissed = True
         elif job.state == 'done' and not _is_output(job, _self, exact=True):
+            del _JOBS[name]
+        elif dismiss and job.state in _FAILED:
             del _JOBS[name]
 
 
@@ -1280,7 +1430,7 @@ def session_restore(session, *, _self=cmd, **_kwargs):
         if raymol_scenes.restoring_partial(_self):
             names = {e[0] for e in session.get('names') or ()
                      if e and isinstance(e[0], str)}
-        reset(names, _self)
+        reset(names, _self=_self)
     except Exception as e:
         print(' morph_jobs: session restore: %s' % e)
     return 1

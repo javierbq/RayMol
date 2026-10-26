@@ -836,7 +836,8 @@ EXAMPLE
         if color_segments and seg_of_pos:
             _self.alter(out, 'b = seg[pos[index]]', space={'seg': seg_of_pos, 'pos': pos})
             _self.spectrum('b', 'rainbow', out)
-        _self.set('state', 1, out)
+        # no object-level `state`: the morph follows the global frame, so
+        # mset/mplay and movie export play it like any multi-state object
         _take_name(out, name, _self)
     except Exception:
         # never leave the half-built morph behind, nor the alignment; the

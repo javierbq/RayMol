@@ -85,8 +85,9 @@ with a dashed outline and reads `2kpo_morph — not built · morph 2kpo to fill`
 right-click it and select **Build 2kpo_morph from 2kpo** to morph the source
 at the clip's own frames per model, or morph the source again yourself. Any
 Play-models clip whose object is not loaded is marked the same way ("not
-loaded"). Opening another session, or starting a new one, stops the build and
-leaves the card reading **Morph cancelled**.
+loaded"). Opening another session stops the build and leaves the card reading
+**Morph cancelled**; starting a new session (**Clear Session**) stops it and
+clears the card.
 
 ### When it is done
 
@@ -94,14 +95,13 @@ leaves the card reading **Morph cancelled**.
   loop (repeat) icon before its frame count (tooltip "Morph of 2kpo · 300
   frames").
 - It starts playing at the movie frame rate (its Play speed is set to match).
-  While the Movie timeline is open, model playback is off, so the morph waits
-  on its first frame instead.
+  While the Movie timeline is open, model playback is off, so the morph
+  follows the movie's current frame instead.
 - The **Name** line tells you where you are: `model 7` on a key frame, `7 → 8`
   between models, `20 → 1` on the leg that loops back.
 - From here it is an ordinary multi-state object: the State slider, Play,
-  Sweep and Loop clips, movie export and saved sessions treat it like any
-  other. Lockstep clips need one extra step (see
-  [Smooth playback in a movie](#smooth-playback-in-a-movie)).
+  Sweep, Loop and Lockstep clips, movie export and saved sessions treat it
+  like any other.
 
 ### Rebuild or delete a morph
 
@@ -145,10 +145,11 @@ a clip named `2kpo_morph`, marked with the loop icon. If the morph is still
 building, the movie is rebuilt once it is complete. A morph built this way
 does not start playing in the Object panel.
 
-- **Use Sweep or Loop** for a smooth clip. A finished morph is pinned to its
-  own state, which a **Lockstep** clip does not move, so Lockstep plays the
-  morph only after you select **Sync** on the morph's row in the Objects tab
-  (playing or scrubbing it there pins it again).
+- **Sweep, Loop and Lockstep all play a morph.** Lockstep moves the global
+  frame, so it does not move an object pinned to its own state: a morph whose
+  own Play you stopped in the Objects tab stays on that frame, so select
+  **Sync** on its row (entering the Movie tab while an object is still
+  playing releases it for you).
 - **Start and End count models**, not frames. Start 3, End 8 plays from model
   3 and stops exactly on model 8. The full range (1 to the last model) includes
   the leg back to model 1, so a Sweep clip ends where it started and the movie
@@ -262,9 +263,9 @@ morph_object 2kpo
 morph_object 2kpo, frames_per_model=30, loop=0, async_=0
 ```
 
-Pass `async_=0` in scripts, and always in command-line PyMOL, where nothing
-lands the frames of a background morph. It keeps its underscore: unlike
-`fetch`, `morph_object` rejects `async=0`. `morph_cancel 2kpo_morph` stops a
+Pass `async_=0` (or `async=0`, as for `fetch`) in scripts, and always in
+command-line PyMOL, where nothing lands the frames of a background morph.
+`morph_cancel 2kpo_morph` stops a
 morph being built and `morph_dismiss 2kpo_morph` clears the card of a
 cancelled or failed one. Running `morph_object` again on the same source
 rebuilds `2kpo_morph` in place when it was built in this session. For a morph
