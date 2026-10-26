@@ -55,7 +55,7 @@ A 20-model NMR ensemble at 15 frames per model gives a 300-frame morph, a
 | **Rate** | Linear, Sinusoidal, Ramp up, Ramp down | Linear | The pace inside each leg: constant (Linear), easing out of and into every model (Sinusoidal), starting slowly (Ramp up), or ending slowly (Ramp down). |
 
 The line under the settings summarises the job and updates as you change them,
-for example `20 models → 300 frames · 10 s at 30 fps · ≈ 29 MB · creates
+for example `20 models → 300 frames · 10 s at 30 fps · ≈ 867 MB · creates
 2kpo_morph, hides 2kpo`. The seconds use the movie frame rate, which is also
 the speed the finished morph plays at. The line turns orange above the memory
 warning level, and **Morph** is disabled above the limit (see
@@ -187,36 +187,67 @@ morph"). Once a morph exists you can also pick it in the object menu
   source afterwards reaches the morph: morph again.
 
 Some multi-state objects cannot be morphed: models that do not all hold the
-same atoms, discrete objects (loaded with `discrete=1`, such as multi-compound
-SDF libraries), and objects whose atoms are not uniquely identified by
-segment, chain, residue number, residue name and atom name. They still offer
-**Morph…**, but the morph is refused, nothing is created, and the reason
-("models have different atoms; morph needs the same atoms in every model", or
-"atom identifiers … are not unique") is printed in the console.
+same atoms (even when they hold the same number of atoms), discrete objects
+(loaded with `discrete=1`, such as multi-compound SDF libraries), objects
+whose atoms are not uniquely identified by segment, chain, residue number,
+residue name and atom name, objects with no atoms in altloc `A` or without an
+altloc, and multi-state objects that are not molecules (CGOs, maps). They
+still offer **Morph…**, but the morph is refused and nothing is created. The
+reason ("models have different atoms; morph needs the same atoms in every
+model", "atom identifiers … are not unique", "… is not a molecular object")
+appears in a **Morph failed** card in the progress tray, and in the console;
+**Dismiss** clears the card. A morph too large for the memory limit is
+refused the same way (see below).
 
 ## Memory and size
 
-A morph stores every frame, so its size grows with atoms × frames. An
-atom-frame is one atom in one frame: 1,860 atoms × 300 frames is about 0.56
-million atom-frames, roughly 29 MB. The Morph sheet counts about 53 bytes per
-atom-frame (coordinates plus a cartoon) and reacts at two levels:
+A morph stores every frame, and RayMol keeps the representations of every
+frame built so the morph plays without stalls. Its memory therefore grows with
+frames × (atoms plus the representations the source shows, which the morph
+copies). RayMol estimates it per frame from costs measured on its own
+renderer:
+
+| Per frame | Cost |
+| :--- | :--- |
+| Coordinates | about 45 bytes per atom |
+| Cartoon | about 14 KB per residue, 31 KB per helix residue |
+| Sticks | about 100 bytes per atom shown as sticks |
+| Lines | about 80 bytes per atom |
+| Spheres | about 65 bytes per atom |
+| Ribbon | about 100 bytes per residue |
+| Dots | about 1.6 KB per atom |
+| Labels | about 130 bytes per labelled atom |
+
+plus 10%. Surfaces and meshes are not carried to a morph and cost nothing.
+Only atoms with no alternate location or altloc `A` count. Cartoon is the
+largest part for most proteins: 2kpo (20 models, 110 residues, 59 of them in
+helices) shown as cartoon needs about 2.9 MB per frame, so at 15 frames per
+model (300 frames) the sheet reads `≈ 867 MB` (the finished morph measures
+about 0.6 GB on a Mac). Shown as lines instead, the same morph needs about
+77 MB. When a source has no secondary structure assigned, every cartoon
+residue is counted as helix: the morph assigns its own when it is created.
+
+The Morph sheet reacts at two levels, which depend on the device's memory:
 
 | | Warning (orange summary) | Limit (Morph disabled) |
 | :--- | :--- | :--- |
-| **macOS** | 200 MB, about 3.8 million atom-frames | 1 GB, about 19 million atom-frames |
-| **iPhone & iPad** | 100 MB, about 1.9 million atom-frames | 400 MB, about 7.6 million atom-frames |
+| **macOS** | 200 MB or 1/16 of the Mac's memory, whichever is larger (1 GB on a 16 GB Mac) | 1 GB or 1/4 of the Mac's memory, whichever is larger (4 GB on a 16 GB Mac) |
+| **iPhone & iPad** | 100 MB or 1/4 of the memory available to RayMol, whichever is larger | 400 MB or 1/2 of the memory available to RayMol, whichever is larger |
 
-`morph_object`, which the sheet runs, enforces the same limit (1 GB in
-command-line PyMOL too, on any platform) with its own estimate, counting every
-representation the source shows: with cartoon and sticks shown, the macOS
-limit falls to about 12.6 million atom-frames. Such a morph can be refused
-although the sheet allowed it; the console then shows "Reduce frames per model
-or morph fewer models".
+The memory available to RayMol on iPhone and iPad changes with what else is
+running, so the levels are read again each time. The sheet and
+`morph_object` use one estimate, computed by RayMol from the representations
+the source shows, and the same levels (command-line PyMOL uses the macOS
+rule, from the computer's memory). A morph refused for its size leaves a
+**Morph failed** card reading "this morph needs about … MB. Reduce frames per
+model or morph fewer models".
 
 To fit a large system, lower **Frames per model**, turn off **Loop back to
-model 1** (one leg fewer), build the source from fewer models, or remove atoms
-you do not need (waters, other chains) first. Clean-up takes most of the build
-time: with 0 cycles a morph builds several times faster.
+model 1** (one leg fewer), build the source from fewer models, hide
+representations you do not need on the source (dots and cartoon cost the
+most), or remove atoms you do not need (waters, other chains) first. Clean-up
+takes most of the build time: with 0 cycles a morph builds several times
+faster.
 
 ## Command line
 
