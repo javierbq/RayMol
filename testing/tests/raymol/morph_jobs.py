@@ -19,7 +19,10 @@ Tests that:
     object, the pending surface publishes designing-shaped records, and the
     reuse and explicit-name rules hold, and pump() builds the representations
     of the frames it lands while the morph is still hidden; a refused morph
-    creates nothing, and the memory refusal comes before the per-state check
+    creates nothing, and the memory refusal comes before the per-state check;
+    loop=0 with method=linear and a sinusoidal rate, and loop=1 with ramp
+    up: state count, last state and title, and the first intermediate's
+    fraction (the non-last leg's j/f schedule)
   - morph_object(async_=1) computes legs on a worker thread and pump() lands
     them: completion, cancel between legs, cancel while a leg is in flight
     (ends 'cancelled', never 'error'), source deleted mid-job, a worker
@@ -38,6 +41,7 @@ Runs on a RayMol --testing build:
 '''
 
 import json
+import math
 import os
 import tempfile
 import threading
@@ -416,6 +420,39 @@ class TestMorphJobPipeline(testing.PyMOLTestCase):
         self.assertEqual(mj.morph_sources()['src_morph']['spec']['frames_per_model'], 5)
         self.assertEqual(mj.morph_spec('src_morph')['spec']['frames_per_model'], 5)
         self.assertEqual(mj.morph_spec('src_morph')['state'], 'done')
+
+    @testing.foreach((0, 'linear', 'sinusoidal'), (1, 'rigimol', 'ramp up'))
+    def testLoopMethodAndRate(self, loop, method, rate):
+        # Every other pipeline test is loop=1, rigimol, linear rate.  Without
+        # the loop, legs = models - 1 and the last leg lands j/(f-1), ending
+        # exactly on the last model; a non-last leg lands j/f.
+        self.ensemble(models=3)
+        name = mj.morph_object('src', frames_per_model=4, loop=loop,
+                               method=method, rate=rate, refinement=0,
+                               async_=0)
+        nstates, last_model = (8, 3) if loop == 0 else (12, 1)
+        self.assertEqual(cmd.count_states(name), nstates)
+        self.assertLess(max_dev(coords(name, nstates), coords('src', last_model)),
+                        1e-4)
+        self.assertEqual(cmd.get_title(name, nstates), 'model %d' % last_model)
+        self.assertEqual(cmd.get_title(name, 5), 'model 2')
+        self.assertEqual(mj.morph_sources()[name]['spec']['rate'], rate)
+        if method == 'linear':
+            # state 2 = leg 1 (not the last) at j/f = 1/4 of the rate curve;
+            # written out, not read from morphing._RATES
+            want = (1.0 - math.cos(math.pi / 4.0)) / 2.0        # 0.1464
+            S, E, X = coords('src', 1), coords('src', 2), coords(name, 2)
+            fracs = []
+            for k in S:
+                d = [E[k][i] - S[k][i] for i in range(3)]
+                dd = sum(v * v for v in d)
+                if dd > 1.0:
+                    fracs.append(sum((X[k][i] - S[k][i]) * d[i]
+                                     for i in range(3)) / dd)
+            self.assertTrue(fracs)
+            self.assertLess(max(abs(f - want) for f in fracs), 1e-4,
+                            'fractions %.5f..%.5f, want %.5f'
+                            % (min(fracs), max(fracs), want))
 
     def testSpecIsIntsNotBools(self):
         # Swift decodes loop/copy_look as Int; a JSON true fails the whole
