@@ -22,7 +22,8 @@ Tests that:
     creates nothing, and the memory refusal comes before the per-state check;
     loop=0 with method=linear and a sinusoidal rate, and loop=1 with ramp
     up: state count, last state and title, and the first intermediate's
-    fraction (the non-last leg's j/f schedule)
+    fraction (the non-last leg's j/f schedule); a hinge between two helices
+    reaches the job's frames (the second helix stays rigid at the mid frame)
   - morph_object(async_=1) computes legs on a worker thread and pump() lands
     them: completion, cancel between legs, cancel while a leg is in flight
     (ends 'cancelled', never 'error'), source deleted mid-job, a worker
@@ -53,6 +54,7 @@ import pymol.setting
 from pymol import appkit_movie, cgo, cmd, testing
 
 import pymol.morph_jobs as mj
+import pymol.morphing as morphing
 
 
 def coords(obj, state):
@@ -70,6 +72,21 @@ def max_dev(a, b):
     if not shared:
         return float('inf')
     return max(max(abs(a[k][i] - b[k][i]) for i in range(3)) for k in shared)
+
+
+def xyz_list(sele, state):
+    return [[float(v) for v in p] for p in cmd.get_coords(sele, state)]
+
+
+def internal_rmsd(sele, state, ref_state=1):
+    '''rmsd of *sele* in *state* after superposing it onto *ref_state*: ~0
+    when the atoms moved as one rigid body.'''
+    ref, cur = xyz_list(sele, ref_state), xyz_list(sele, state)
+    R, cs, ct = morphing._fit(ref, cur)
+    fit = [morphing._add(morphing._rot_apply(R, morphing._sub(p, cs)), ct)
+           for p in cur]
+    return math.sqrt(sum(morphing._dot(morphing._sub(p, q), morphing._sub(p, q))
+                         for p, q in zip(fit, ref)) / len(ref))
 
 
 #: The record keys designing.pending_info publishes; the Swift tray decodes
@@ -453,6 +470,27 @@ class TestMorphJobPipeline(testing.PyMOLTestCase):
             self.assertLess(max(abs(f - want) for f in fracs), 1e-4,
                             'fractions %.5f..%.5f, want %.5f'
                             % (min(fracs), max(fracs), want))
+
+    def testHingedSegmentsReachTheJobLayer(self):
+        # Two 15-residue helices joined by six glycines (resi 16-21); in
+        # model 2 the second half (resi 19-36) is turned 40 deg about an axis
+        # across the chain through CA 18.  With the hinge found, the second
+        # helix (resi 22-36, clear of the hinge blend) moves as one rigid
+        # body; a morph that silently became one rigid body interpolates its
+        # residual motion linearly and bends it.  Measured at the mid frame:
+        # 2e-6 A with two segments, 0.099 A with one.
+        cmd.fab('A' * 15 + 'G' * 6 + 'A' * 15, 'hh', ss=1)
+        cmd.create('hh', 'hh', 1, 2)
+        ca1, ca18, ca36 = (xyz_list('hh and name CA and resi %d' % r, 1)[0]
+                           for r in (1, 18, 36))
+        axis = morphing._cross(morphing._sub(ca36, ca1), [0.1, 0.2, 1.0])
+        cmd.rotate(axis, 40, 'hh and resi 19-36', 2, camera=0, origin=ca18)
+        name = mj.morph_object('hh', frames_per_model=5, loop=0, refinement=0,
+                               async_=0)
+        self.assertEqual(cmd.count_states(name), 5)
+        self.assertLess(max_dev(coords(name, 5), coords('hh', 2)), 1e-4)
+        # state 3 = the only leg (the last) at j/(f-1) = 2/4
+        self.assertLess(internal_rmsd(name + ' and resi 22-36', 3), 0.01)
 
     def testSpecIsIntsNotBools(self):
         # Swift decodes loop/copy_look as Int; a JSON true fails the whole

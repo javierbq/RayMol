@@ -18,8 +18,12 @@ Tests that:
   - each rate preset sets the first intermediate's fraction (values written
     out, not read from _RATES), for both methods
   - _segment_chains cuts two helices joined by a glycine loop exactly once,
-    inside the loop; rigid segments distort far fewer bonds than linear
-  - two different selections of one object are refused with a message
+    inside the loop, and both segments reach cmd.morph's output (two segment
+    colours; the second helix stays rigid at the mid frame); rigid segments
+    distort far fewer bonds than linear
+  - two different selections of one object are refused with a message when
+    nothing can pair them (align, super, an alignment object, or in/like
+    with no shared atoms); match=in/like still pair overlapping selections
   - morph() keeps key-frame states as exact copies of the input models
   - multi-state morph with state1=0 / state2=0 / state2=-1 state counts
   - steps=1 / bad method / bad rate / unknown alignment raise CmdException
@@ -105,6 +109,15 @@ def leg_inputs(obj, state1, state2):
                       'info.append((segi, chain, resv, resi, name))', space=sp)
     cmd.iterate_state(state2, obj, 'E.append([x, y, z])', space=sp)
     return sp['S'], sp['E'], sp['info']
+
+
+def internal_rmsd(sele, state, ref_state=1):
+    '''rmsd of *sele* in *state* after superposing it onto *ref_state*: ~0
+    when the atoms moved as one rigid body.'''
+    ref = [[float(v) for v in p] for p in cmd.get_coords(sele, ref_state)]
+    cur = [[float(v) for v in p] for p in cmd.get_coords(sele, state)]
+    R, cs, ct = morphing._fit(ref, cur)
+    return rmsd(fitted(R, cs, ct, cur), ref)
 
 
 def distorted_bonds(obj, state, ref_state, tol):
@@ -437,6 +450,17 @@ class TestMorphEngine(testing.PyMOLTestCase):
         self.assertEqual(len(hinges), 1)
         # the cut falls between two loop residues
         self.assertIn(int(hinges[0]), range(17, 22), 'cut before %s' % hinges[0])
+        # ... and both segments reach the morph cmd.morph builds, whatever the
+        # cause of a single rigid body (how morph calls the segmentation, say)
+        cmd.morph('ms', 'hh', steps=5, refinement=0, color_segments=1)
+        bs = set()
+        cmd.iterate('ms', 'bs.add(b)', space={'bs': bs})
+        self.assertEqual(len(bs), 2, 'segments coloured: %s' % sorted(bs))
+        # The second helix (resi 22-36, clear of the hinge blend) moves as one
+        # rigid body at the mid frame (state 3 = f 0.5).  A single rigid body
+        # for the whole chain interpolates its residual motion linearly, which
+        # bends it: measured 2e-6 A with two segments, 0.099 A with one.
+        self.assertLess(internal_rmsd('ms and resi 22-36', 3), 0.01)
 
     def testRigidKeepsBondsBetterThanLinear(self):
         # At 40 deg no bond of either morph is 10 % off (a linear midpoint
@@ -490,18 +514,46 @@ class TestMorphEngine(testing.PyMOLTestCase):
         cmd.alter('chb', 'chain="B"')
         cmd.create('dimer', 'cha or chb')
         cmd.delete('cha or chb')
-        with self.assertRaisesRegex(
-                pymol.CmdException,
-                'morph: both selections lie in object dimer but are not the '
-                'same atoms; create them as separate objects first'):
-            cmd.morph('m', 'dimer and chain A', 'dimer and chain B')
-        self.assertEqual(cmd.get_names('objects'), ['dimer'])
-        self.assertNoScratchObjects()
+        refusal = ('morph: both selections lie in object dimer but are not the '
+                   'same atoms; create them as separate objects first')
+        # align and super cannot run within one object; the in and like keys
+        # hold the chain, so nothing pairs either
+        for match in ('align', 'super', 'in', 'like'):
+            with self.assertRaisesRegex(pymol.CmdException, refusal, msg=match):
+                cmd.morph('m', 'dimer and chain A', 'dimer and chain B',
+                          match=match)
+            self.assertEqual(cmd.get_names('objects'), ['dimer'])
+            self.assertNoScratchObjects()
         # what the message says to do works
         cmd.create('chA', 'dimer and chain A')
         cmd.create('chB', 'dimer and chain B')
         self.assertEqual(cmd.morph('m', 'chA', 'chB', steps=3, refinement=0), 3)
         self.assertEqual(cmd.count_atoms('m'), cmd.count_atoms('chA'))
+        # an alignment object cannot pair two selections of one object either
+        cmd.align('chA', 'chB', cycles=0, transform=0, object='aln_ab')
+        with self.assertRaisesRegex(pymol.CmdException, refusal):
+            cmd.morph('m2', 'dimer and chain A', 'dimer and chain B',
+                      match='aln_ab')
+        self.assertNotIn('m2', cmd.get_names('objects'))
+
+    def testSameObjectSubsetsPairByIdentifiers(self):
+        # Two different but overlapping selections of one object: match=in
+        # and like pair the atoms they share (each with itself), so the morph
+        # runs on those atoms between the two states.
+        cmd.fab('ACDEFGHIK', 'sub')
+        cmd.create('sub', 'sub', 1, 2)
+        cmd.rotate('y', 30, 'sub and resi 5-9', 2, camera=0,
+                   origin=ca_xyz('sub', 5))
+        ca = 'sub and name CA'
+        nca = cmd.count_atoms(ca)
+        for match in ('in', 'like'):
+            out = 'msub_' + match
+            self.assertEqual(cmd.morph(out, ca, 'sub', state1=1, state2=2,
+                                       steps=4, refinement=0, match=match), 4)
+            self.assertEqual(cmd.count_atoms(out), nca, match)
+            self.assertLess(max_dev(coords(out, 1), coords(ca, 1)), 1e-3, match)
+            self.assertLess(max_dev(coords(out, 4), coords(ca, 2)), 1e-3, match)
+        self.assertNoScratchObjects()
 
     def testErrorStateOutOfRangeLeavesNothing(self):
         # state2 beyond the object's states: a CmdException (was a raw
