@@ -11,6 +11,7 @@ Tests that:
   - morph() keeps key-frame states as exact copies of the input models
   - multi-state morph with state1=0 / state2=0 / state2=-1 state counts
   - steps=1 / bad method / bad rate / unknown alignment raise CmdException
+  - a state with no coordinates raises CmdException and leaves no output
 
 Runs on a RayMol --testing build:
     pymol -ckqy testing/testing.py --run testing/tests/raymol/morph_engine.py
@@ -234,6 +235,16 @@ class TestMorphEngine(testing.PyMOLTestCase):
         except pymol.CmdException as e:
             self.assertIn('morph:', str(e),
                           'error text should contain morph: but got: %s' % e)
+
+    def testErrorStateOutOfRangeLeavesNothing(self):
+        # state2 beyond the object's states: a CmdException (was a raw
+        # KeyError from _coords_by_pos) and no half-built output object.
+        cmd.fab('ACDE', 'o5')
+        cmd.create('o5', 'o5', 1, 2)
+        with self.assertRaisesRegex(pymol.CmdException,
+                                    'missing coordinates in state 5'):
+            cmd.morph('mb', 'o5', state1=1, state2=5)
+        self.assertNotIn('mb', cmd.get_names('objects'))
 
     def testErrorUnknownAlignment(self):
         cmd.fab('ACDE', 'e4a')

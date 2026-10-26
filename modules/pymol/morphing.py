@@ -240,9 +240,10 @@ def _coords_by_pos(obj, state, index_map, pos, _self):
     _self.iterate_state(state, obj, 'c[index] = (x, y, z)', space={'c': c})
     out = [None] * len(pos)
     for inew, iobj in index_map.items():
-        out[pos[inew]] = list(c[iobj])
-    if any(v is None for v in out):
-        raise pymol.CmdException('morph: missing coordinates in state %d' % state)
+        v = c.get(iobj)
+        if v is None:       # the atom has no coordinates in this state
+            raise pymol.CmdException('morph: missing coordinates in state %d' % state)
+        out[pos[inew]] = list(v)
     return out
 
 
@@ -609,93 +610,101 @@ EXAMPLE
 
     # ---- output object: first conformation, paired atoms only
     _self.create(name, subset, first_state, 1, zoom=0, quiet=1)
-    if tmp_aln:
-        _self.delete(tmp_aln)
-    natoms = _self.count_atoms(name)
-    if natoms == 0:
-        raise pymol.CmdException('morph: no atoms in output')
+    try:
+        if tmp_aln:
+            _self.delete(tmp_aln)
+            tmp_aln = None
+        natoms = _self.count_atoms(name)
+        if natoms == 0:
+            raise pymol.CmdException('morph: no atoms in output')
 
-    # new object atom -> source atom (by identifiers) -> partner atom
-    new_idx, pos, src_of, info = _snapshot(name, sele1, obj1, _self)
-    if pairs is None:
-        partner_of = dict(src_of)
-    else:
-        partner_of = {inew: pairs[isrc] for inew, isrc in src_of.items() if isrc in pairs}
-        if len(partner_of) != natoms:
-            raise pymol.CmdException('morph: internal pairing mismatch (%d of %d)'
-                                     % (len(partner_of), natoms))
-
-    def coords_of(obj, state, index_map):
-        return _coords_by_pos(obj, state, index_map, pos, _self)
-
-    # ---- generate frames leg by leg
-    nlegs = len(legs)
-    frames_written = 1          # state 1 already holds the first conformation
-    seg_report = []
-    seg_of_pos = None
-    E = None
-    for li, (sa, sb) in enumerate(legs):
-        S = coords_of(obj1, sa, src_of)
-        E = coords_of(obj2, sb, partner_of)
-        last_leg = (li == nlegs - 1)
-        if last_leg:
-            raw = [k / float(steps - 1) for k in range(steps)]
+        # new object atom -> source atom (by identifiers) -> partner atom
+        new_idx, pos, src_of, info = _snapshot(name, sele1, obj1, _self)
+        if pairs is None:
+            partner_of = dict(src_of)
         else:
-            raw = [k / float(steps) for k in range(steps)]
-        fracs = [rate_fn(f) for f in raw]
-        if method == 'linear':
-            gen = _frames_linear(S, E, fracs)
-        else:
-            segments, blend_of_pos, report = _segment_chains(
-                S, E, info, core_fraction, min_hinge, hinge_blend)
-            seg_report.append(report)
-            if seg_of_pos is None:
-                seg_of_pos = {}
-                for sid, seg in enumerate(segments):
-                    for p in seg.atoms:
-                        seg_of_pos[p] = sid
-            gen = _frames_rigid(S, E, segments, blend_of_pos, fracs)
-        for k, frame in enumerate(gen):
-            if li == 0 and k == 0:
-                continue                        # already present as state 1
-            if last_leg and k == steps - 1:
-                frame = E                       # exact endpoint
-            _self.load_coordset(frame, name, 0)
-            frames_written += 1
+            partner_of = {inew: pairs[isrc] for inew, isrc in src_of.items() if isrc in pairs}
+            if len(partner_of) != natoms:
+                raise pymol.CmdException('morph: internal pairing mismatch (%d of %d)'
+                                         % (len(partner_of), natoms))
 
-    nstates = _self.count_states(name)
-    if nstates != frames_written or nstates != steps * nlegs:
-        raise pymol.CmdException('morph: expected %d states, got %d'
-                                 % (steps * nlegs, nstates))
+        def coords_of(obj, state, index_map):
+            return _coords_by_pos(obj, state, index_map, pos, _self)
 
-    # round-trip check of the write order (load_coordset is order-sensitive)
-    chk = {}
-    _self.iterate_state(nstates, name, 'chk[index] = (x, y, z)', space={'chk': chk})
-    err = max(abs(chk[inew][a] - E[pos[inew]][a]) for inew in new_idx for a in range(3))
-    if err > 1e-3:
-        raise pymol.CmdException('morph: coordinate write order mismatch (%.3g)' % err)
+        # ---- generate frames leg by leg
+        nlegs = len(legs)
+        frames_written = 1          # state 1 already holds the first conformation
+        seg_report = []
+        seg_of_pos = None
+        E = None
+        for li, (sa, sb) in enumerate(legs):
+            S = coords_of(obj1, sa, src_of)
+            E = coords_of(obj2, sb, partner_of)
+            last_leg = (li == nlegs - 1)
+            if last_leg:
+                raw = [k / float(steps - 1) for k in range(steps)]
+            else:
+                raw = [k / float(steps) for k in range(steps)]
+            fracs = [rate_fn(f) for f in raw]
+            if method == 'linear':
+                gen = _frames_linear(S, E, fracs)
+            else:
+                segments, blend_of_pos, report = _segment_chains(
+                    S, E, info, core_fraction, min_hinge, hinge_blend)
+                seg_report.append(report)
+                if seg_of_pos is None:
+                    seg_of_pos = {}
+                    for sid, seg in enumerate(segments):
+                        for p in seg.atoms:
+                            seg_of_pos[p] = sid
+                gen = _frames_rigid(S, E, segments, blend_of_pos, fracs)
+            for k, frame in enumerate(gen):
+                if li == 0 and k == 0:
+                    continue                        # already present as state 1
+                if last_leg and k == steps - 1:
+                    frame = E                       # exact endpoint
+                _self.load_coordset(frame, name, 0)
+                frames_written += 1
 
-    # ---- refinement: sculpt side chains, backbone fixed, key frames untouched
-    sculpt_states(name, nstates, steps, nlegs, refinement, _self)
+        nstates = _self.count_states(name)
+        if nstates != frames_written or nstates != steps * nlegs:
+            raise pymol.CmdException('morph: expected %d states, got %d'
+                                     % (steps * nlegs, nstates))
 
-    if color_segments and seg_of_pos:
-        _self.alter(name, 'b = seg[pos[index]]', space={'seg': seg_of_pos, 'pos': pos})
-        _self.spectrum('b', 'rainbow', name)
+        # round-trip check of the write order (load_coordset is order-sensitive)
+        chk = {}
+        _self.iterate_state(nstates, name, 'chk[index] = (x, y, z)', space={'chk': chk})
+        err = max(abs(chk[inew][a] - E[pos[inew]][a]) for inew in new_idx for a in range(3))
+        if err > 1e-3:
+            raise pymol.CmdException('morph: coordinate write order mismatch (%.3g)' % err)
 
-    if hide:
-        for o in {obj1, obj2}:
-            if o != name:
-                _self.disable(o)
-    _self.set('state', 1, name)
+        # ---- refinement: sculpt side chains, backbone fixed, key frames untouched
+        sculpt_states(name, nstates, steps, nlegs, refinement, _self)
 
-    if not quiet:
-        print(' morph: %d atoms, %d states (%d leg(s), %s, %s) in %.2fs'
-              % (natoms, nstates, nlegs, method, rate, time.time() - t_start))
-        for rep in seg_report[:1]:
-            for ckey, nseg, hinges in rep:
-                print('  chain %s/%s: %d segment(s)%s' % (
-                    ckey[0] or '-', ckey[1] or '-', nseg,
-                    (', hinges before residues ' + ', '.join(hinges)) if hinges else ''))
-    return nstates
+        if color_segments and seg_of_pos:
+            _self.alter(name, 'b = seg[pos[index]]', space={'seg': seg_of_pos, 'pos': pos})
+            _self.spectrum('b', 'rainbow', name)
+
+        if hide:
+            for o in {obj1, obj2}:
+                if o != name:
+                    _self.disable(o)
+        _self.set('state', 1, name)
+
+        if not quiet:
+            print(' morph: %d atoms, %d states (%d leg(s), %s, %s) in %.2fs'
+                  % (natoms, nstates, nlegs, method, rate, time.time() - t_start))
+            for rep in seg_report[:1]:
+                for ckey, nseg, hinges in rep:
+                    print('  chain %s/%s: %d segment(s)%s' % (
+                        ckey[0] or '-', ckey[1] or '-', nseg,
+                        (', hinges before residues ' + ', '.join(hinges)) if hinges else ''))
+        return nstates
+    except Exception:
+        # never leave a half-built output object behind, nor the alignment
+        _self.delete(name)
+        if tmp_aln:
+            _self.delete(tmp_aln)
+        raise
 
 # vi: ts=4:sw=4:smarttab:expandtab
