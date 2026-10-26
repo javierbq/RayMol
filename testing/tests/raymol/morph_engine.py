@@ -6,6 +6,11 @@ Tests that:
   - residue_order() sorts (resv, resi) keys numerically then by insertion code
   - _Screw.at(1) is exact for 60 random screws (including tiny and ~180 deg)
   - _axis_angle handles 180 deg and 1e-7 rad without collapse
+  - _fit (Horn's quaternion method) recovers random rigid motions to 1e-6,
+    a 180 deg turn about each principal axis, and never fails on
+    near-collinear (strand-like) points; rigid morphs of a bent flat
+    peptide and of a flexible-peptide ensemble succeed (the old iterative
+    fit raised ValueError on both)
   - _split_runs implements the ChimeraX hinge rule
   - _index_ranges compresses sorted ints to PyMOL range syntax
   - morph() keeps key-frame states as exact copies of the input models
@@ -50,6 +55,39 @@ def max_dev(a, b):
     if not shared:
         return float('inf')
     return max(max(abs(a[k][i] - b[k][i]) for i in range(3)) for k in shared)
+
+
+def ca_xyz(obj, resi, state=1):
+    '''Coordinates of residue *resi*'s CA as a list of 3 floats.'''
+    return [float(v) for v in
+            cmd.get_coords('%s and resi %d and name CA' % (obj, resi), state)[0]]
+
+
+def rigidly_moved(pts, rng):
+    '''*pts* under a random rotation (any angle up to 180 deg) and a random
+    translation.'''
+    axis = [rng.gauss(0, 1) for _ in range(3)]
+    axis = morphing._scale(axis, 1.0 / morphing._norm(axis))
+    R = morphing._rodrigues(axis, rng.uniform(0.0, math.pi))
+    t = [rng.uniform(-20, 20) for _ in range(3)]
+    return [morphing._add(morphing._rot_apply(R, p), t) for p in pts]
+
+
+def fitted(R, cs, ct, pts):
+    '''_fit's result applied to *pts*: R·(x - cs) + ct.'''
+    if R is None:
+        return [morphing._add(morphing._sub(p, cs), ct) for p in pts]
+    return [morphing._add(morphing._rot_apply(R, morphing._sub(p, cs)), ct)
+            for p in pts]
+
+
+def rmsd(a, b):
+    return math.sqrt(sum(morphing._dot(morphing._sub(p, q), morphing._sub(p, q))
+                         for p, q in zip(a, b)) / len(a))
+
+
+def det3(R):
+    return morphing._dot(R[0], morphing._cross(R[1], R[2]))
 
 
 # --------------------------------------------------------------------------
@@ -189,6 +227,84 @@ class TestMorphEngine(testing.PyMOLTestCase):
         _, ta = morphing._axis_angle(morphing._rodrigues([1.0, 0, 0], 1e-7))
         self.assertLess(abs(ta - 1e-7), 1e-12,
                         'axis-angle at 1e-7 rad must not collapse to zero')
+
+    # ---- rigid fit ----------------------------------------------------------
+
+    def testFitRecoversRandomRigidMotions(self):
+        '''_fit undoes 200 random rotations + translations of a 30-point
+        cloud to 1e-6 Å (the old iterative fit stopped at a 1e-3 tolerance).'''
+        rng = random.Random(5)
+        cloud = [[rng.uniform(-10, 10) for _ in range(3)] for _ in range(30)]
+        worst = 0.0
+        for trial in range(200):
+            target = rigidly_moved(cloud, rng)
+            R, cs, ct = morphing._fit(target, cloud)
+            worst = max(worst, max(max(abs(a - b) for a, b in zip(f, t))
+                                   for f, t in zip(fitted(R, cs, ct, cloud), target)))
+        self.assertLess(worst, 1e-6, 'worst fitted deviation %.2e' % worst)
+
+    def testFitRecovers180AboutPrincipalAxes(self):
+        '''A 180 deg turn about a principal axis makes the correlation matrix
+        symmetric; the old fit took that for convergence at the identity.'''
+        import numpy
+        cmd.fab('A' * 15, 'hx', ss=1)
+        cloud = [list(map(float, p)) for p in cmd.get_coords('hx and name CA')]
+        c = numpy.mean(cloud, axis=0)
+        _, axes = numpy.linalg.eigh(numpy.cov((numpy.array(cloud) - c).T))
+        for k in range(3):
+            R = morphing._rodrigues([float(v) for v in axes[:, k]], math.pi)
+            target = [morphing._add(morphing._rot_apply(R, morphing._sub(p, list(c))),
+                                    [5.0, -3.0, 2.0]) for p in cloud]
+            Rf, cs, ct = morphing._fit(target, cloud)
+            _, theta = morphing._axis_angle(Rf)
+            self.assertLess(abs(math.degrees(theta) - 180.0), 0.01,
+                            'axis %d: fit angle %.4f deg' % (k, math.degrees(theta)))
+
+    def testFitNeverFailsOnStrandLikePoints(self):
+        '''Near-collinear guide sets (a beta strand's CAs) made the old fit
+        raise a bare ValueError ("too many iterations").'''
+        rng = random.Random(7)
+        worst = 0.0
+        for trial in range(500):
+            strand = [[3.3 * i + rng.gauss(0, 0.3),
+                       (1.0 if i % 2 else -1.0) + rng.gauss(0, 0.3),
+                       rng.gauss(0, 0.3)] for i in range(12)]
+            target = rigidly_moved(strand, rng)
+            R, cs, ct = morphing._fit(target, strand)
+            self.assertLess(abs(det3(R) - 1.0), 1e-9, 'a proper rotation')
+            worst = max(worst, rmsd(fitted(R, cs, ct, strand), target))
+        self.assertLess(worst, 0.5, 'worst rmsd %.3g' % worst)
+
+    def testRigidMorphOfBentFlatPeptide(self):
+        # A flat 24-mer whose C-terminal half turns 60 deg about an axis
+        # across the chain at CA 12: the second segment's fit raised
+        # ValueError and the whole morph failed.
+        cmd.fab('A' * 24, 'pep', ss=0)
+        cmd.create('pep', 'pep', 1, 2)
+        along = morphing._sub(ca_xyz('pep', 24), ca_xyz('pep', 1))
+        across = morphing._cross(along, [0.1, 0.2, 1.0])
+        cmd.rotate(across, 60, 'pep and resi 13-24', 2, camera=0,
+                   origin=ca_xyz('pep', 12))
+        self.assertEqual(cmd.morph('m', 'pep', state1=1, state2=2, steps=10,
+                                   refinement=0), 10)
+        self.assertLess(max_dev(coords('m', 10), coords('pep', 2)), 1e-3)
+
+    def testRigidMorphOfFlexiblePeptideEnsemble(self):
+        # A 5-model GS-repeat ensemble, each model bent +/-30 deg at three
+        # points: an ordinary disordered-peptide NMR ensemble, for which the
+        # old fit failed in 8 of 10 seeds.
+        rng = random.Random(0)
+        cmd.fab('GS' * 10, 'p', ss=0)
+        for st in range(2, 6):
+            cmd.create('p', 'p', 1, st)
+            for pivot in (6, 11, 16):
+                axis = [rng.gauss(0, 1) for _ in range(3)]
+                cmd.rotate(axis, rng.uniform(-30, 30), 'p and resi %d-20' % (pivot + 1),
+                           st, camera=0, origin=ca_xyz('p', pivot, st))
+        self.assertEqual(cmd.morph('m', 'p', state1=0, steps=4, refinement=0), 20)
+        for state, model in ((1, 1), (5, 2), (9, 3), (13, 4), (17, 5), (20, 1)):
+            self.assertLess(max_dev(coords('m', state), coords('p', model)), 1e-3,
+                            'state %d should be model %d' % (state, model))
 
     # ---- hinge rule ---------------------------------------------------------
 

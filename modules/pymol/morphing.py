@@ -117,14 +117,98 @@ def _rodrigues(u, phi):
             [z * x * C - y * s, z * y * C + x * s, c + z * z * C]]
 
 
+def _jacobi_top_eigenvector(A, tol=1e-12, max_sweeps=60):
+    '''Unit eigenvector of the largest eigenvalue of the small symmetric
+    matrix A (list of rows), by cyclic Jacobi rotations.  Stops once the
+    off-diagonal norm is below tol times A's Frobenius norm (which the
+    rotations preserve); returns None if that takes more than max_sweeps
+    sweeps, or the input is not finite.  Never raises: no ** (a float
+    power can raise OverflowError), and a zero pivot is skipped.'''
+    n = len(A)
+    a = [[float(v) for v in row] for row in A]
+    V = [[1.0 if i == j else 0.0 for j in range(n)] for i in range(n)]
+    scale = math.sqrt(sum(v * v for row in a for v in row))
+    if not scale < float('inf'):
+        return None                     # inf or nan in the input
+    limit = tol * scale
+    for sweep in range(max_sweeps + 1):
+        off = math.sqrt(sum(a[i][j] * a[i][j]
+                            for i in range(n) for j in range(n) if i != j))
+        if off <= limit:
+            k = max(range(n), key=lambda i: a[i][i])
+            return [V[i][k] for i in range(n)]
+        if sweep == max_sweeps:
+            break
+        for p in range(n - 1):
+            for q in range(p + 1, n):
+                apq = a[p][q]
+                if apq == 0.0:
+                    continue
+                theta = (a[q][q] - a[p][p]) / (2.0 * apq)
+                t = 1.0 / (abs(theta) + math.sqrt(theta * theta + 1.0))
+                if theta < 0.0:
+                    t = -t
+                c = 1.0 / math.sqrt(t * t + 1.0)
+                s = t * c
+                for k in range(n):              # A <- A J
+                    akp, akq = a[k][p], a[k][q]
+                    a[k][p] = c * akp - s * akq
+                    a[k][q] = s * akp + c * akq
+                for k in range(n):              # A <- J^T A
+                    apk, aqk = a[p][k], a[q][k]
+                    a[p][k] = c * apk - s * aqk
+                    a[q][k] = s * apk + c * aqk
+                a[p][q] = a[q][p] = 0.0
+                for k in range(n):              # V <- V J
+                    vkp, vkq = V[k][p], V[k][q]
+                    V[k][p] = c * vkp - s * vkq
+                    V[k][q] = s * vkp + c * vkq
+    return None
+
+
 def _fit(target_pts, source_pts):
     '''Rigid transform taking source onto target (least squares).
     Returns (R, c_src, c_tgt): fitted = R·(x - c_src) + c_tgt.
-    R is None when fewer than three points (translation only).'''
+    R is None when fewer than three points (translation only).
+
+    Horn's closed-form quaternion method (J Opt Soc Am A 4:629, 1987): the
+    best rotation is the unit quaternion of the largest eigenvalue of a
+    symmetric 4x4 matrix built from the cross-covariance, so it is always
+    a proper rotation (never a reflection) and, unlike an iterative fit,
+    does not fail on near-collinear points (a beta strand's CAs) or stop at
+    the identity for a 180 degree turn.  Should the eigen-solver ever not
+    converge, R is None (translation only); it never raises.'''
+    c_src, c_tgt = _mean(source_pts), _mean(target_pts)
     if len(target_pts) < 3:
-        return None, _mean(source_pts), _mean(target_pts)
-    t1, t2, R, rmsd = cpv.fit(target_pts, source_pts)
-    return R, t2, t1
+        return None, c_src, c_tgt
+    sxx = sxy = sxz = syx = syy = syz = szx = szy = szz = 0.0
+    for s, t in zip(source_pts, target_pts):
+        ax, ay, az = s[0] - c_src[0], s[1] - c_src[1], s[2] - c_src[2]
+        bx, by, bz = t[0] - c_tgt[0], t[1] - c_tgt[1], t[2] - c_tgt[2]
+        sxx += ax * bx
+        sxy += ax * by
+        sxz += ax * bz
+        syx += ay * bx
+        syy += ay * by
+        syz += ay * bz
+        szx += az * bx
+        szy += az * by
+        szz += az * bz
+    N = [[sxx + syy + szz, syz - szy, szx - sxz, sxy - syx],
+         [syz - szy, sxx - syy - szz, sxy + syx, szx + sxz],
+         [szx - sxz, sxy + syx, -sxx + syy - szz, syz + szy],
+         [sxy - syx, szx + sxz, syz + szy, -sxx - syy + szz]]
+    q = _jacobi_top_eigenvector(N)
+    if q is None:
+        return None, c_src, c_tgt
+    qn = math.sqrt(sum(v * v for v in q))
+    if not 0.0 < qn < float('inf'):
+        return None, c_src, c_tgt
+    w, x, y, z = q[0] / qn, q[1] / qn, q[2] / qn, q[3] / qn
+    R = [[w * w + x * x - y * y - z * z, 2.0 * (x * y - w * z), 2.0 * (x * z + w * y)],
+         [2.0 * (y * x + w * z), w * w - x * x + y * y - z * z, 2.0 * (y * z - w * x)],
+         [2.0 * (z * x - w * y), 2.0 * (z * y + w * x), w * w - x * x - y * y + z * z]]
+    return R, c_src, c_tgt
 
 
 class _Screw(object):
