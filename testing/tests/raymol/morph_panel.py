@@ -12,14 +12,23 @@ Tests that:
   - morph_cancel and morph_dismiss are exercised through cmd.do() (the parser path)
   - the inspector detail payload's `objmeta` carries each object's atom count
     (`natoms`), which the Morph sheet's memory estimate reads
+  - the main payload's `morph_bytes_per_frame` carries morph_jobs'
+    bytes_per_frame for every multi-state molecular object (none for 1-state
+    objects or CGOs), and {} when computing it fails
+  - a refused morph (discrete source, memory limit) leaves a failed card in
+    `morph_jobs` that morph_dismiss clears; a refusal while the morph builds
+    adds no record, and one after a finished build keeps the finished morph's
+    record and files the card under '<name> (refused)'
 
 Runs on a RayMol --testing build:
     pymol -ckqy testing/testing.py --run testing/tests/raymol/morph_panel.py
 '''
 
 import json
+from unittest import mock
 
-from pymol import appkit_inspector, cmd, raymol_tmp, testing
+import pymol
+from pymol import appkit_inspector, cgo, cmd, raymol_tmp, testing
 import pymol.morph_jobs as mj
 
 
@@ -36,6 +45,7 @@ class TestMorphPanelPayload(testing.PyMOLTestCase):
     def setUp(self):
         super(TestMorphPanelPayload, self).setUp()
         mj._JOBS.clear()
+        appkit_inspector._BYTES_PER_FRAME.clear()   # objects of earlier tests
 
     def tearDown(self):
         mj._JOBS.clear()
@@ -125,6 +135,108 @@ class TestMorphPanelPayload(testing.PyMOLTestCase):
         # Dismiss via the PyMOL command line
         cmd.do('morph_dismiss src_morph')
         self.assertEqual(mj.recent_objects(), [])
+
+    def payload(self):
+        appkit_inspector.poll_panel()
+        return json.load(open(raymol_tmp.channel_path('pymol_objpanel')))
+
+    def testPayloadCarriesBytesPerFrame(self):
+        '''The Morph sheet and the Play-models sheet read the estimate's
+        per-frame bytes from here, so they and morph_object agree.'''
+        ensemble('src')
+        cmd.show('cartoon', 'src')
+        cmd.fab('ACD', 'single')
+        cmd.load_cgo([cgo.SPHERE, 0.0, 0.0, 0.0, 1.0], 'arrows', 1)
+        cmd.load_cgo([cgo.SPHERE, 1.0, 0.0, 0.0, 1.0], 'arrows', 2)
+        p = self.payload()
+        self.assertEqual(p['morph_bytes_per_frame'],
+                         {'src': mj.bytes_per_frame('src')})
+
+    def testBytesPerFrameIsCachedBetweenPolls(self):
+        '''A figure takes selector passes over every loaded atom, so the poll
+        keeps it until the object's signature (state count, cmd.get_vis entry)
+        changes, or for at most _BYTES_PER_FRAME_TTL seconds.'''
+        ensemble('src')
+        cmd.show_as('cartoon', 'src')
+        first = self.payload()['morph_bytes_per_frame']['src']
+        cmd.show('sticks', 'src and resi 1-3')  # get_vis does not see this
+        self.assertEqual(self.payload()['morph_bytes_per_frame']['src'], first)
+        with mock.patch.object(appkit_inspector, '_BYTES_PER_FRAME_TTL', 0.0):
+            again = self.payload()['morph_bytes_per_frame']['src']
+        self.assertEqual(again, mj.bytes_per_frame('src'))
+        self.assertGreater(again, first)
+        cmd.show('spheres', 'src and resi 4-6')
+        self.assertEqual(self.payload()['morph_bytes_per_frame']['src'], again)
+        cmd.create('src', 'src', 1, 5)          # a new state: computed at once
+        latest = self.payload()['morph_bytes_per_frame']['src']
+        self.assertEqual(latest, mj.bytes_per_frame('src'))
+        self.assertGreater(latest, again)
+        cmd.delete('src')
+        self.assertEqual(self.payload()['morph_bytes_per_frame'], {})
+        self.assertEqual(appkit_inspector._BYTES_PER_FRAME, {})
+
+    def testBytesPerFrameFailureWritesPanelWithEmptyMap(self):
+        ensemble('src')
+        with mock.patch.object(mj, 'bytes_per_frame',
+                               side_effect=RuntimeError('simulated failure')):
+            p = self.payload()
+        self.assertIn('src', p['objects'])
+        self.assertEqual(p['morph_bytes_per_frame'], {})
+
+    def assertFailedCard(self, name, text):
+        rec = self.payload()['morph_jobs'][name]
+        self.assertEqual(rec['state'], 'error')
+        self.assertIn(text, rec['error'])
+        self.assertIn(text, rec['detail'])         # not "leg 0 of 0 · 0%"
+        mj.morph_dismiss(name)
+        self.assertNotIn(name, self.payload()['morph_jobs'])
+
+    def testRefusedSourceLeavesAFailedCard(self):
+        '''A refusal raised before the job existed used to reach the console
+        only: the sheet closed and nothing appeared.'''
+        ensemble('src')
+        cmd.create('disc', 'src', 0, 0, discrete=1)
+        objects = cmd.get_names('objects')
+        with self.assertRaisesRegex(pymol.CmdException, 'different atoms'):
+            mj.morph_object('disc', async_=0)
+        self.assertEqual(cmd.get_names('objects'), objects)
+        self.assertFailedCard('disc_morph', 'different atoms')
+
+    def testMemoryRefusalLeavesAFailedCard(self):
+        ensemble('src')
+        self.addCleanup(setattr, mj, 'REFUSE_BYTES', None)
+        mj.REFUSE_BYTES = 10
+        objects = cmd.get_names('objects')
+        with self.assertRaisesRegex(pymol.CmdException, 'Reduce frames per model'):
+            mj.morph_object('src', async_=0)
+        self.assertEqual(cmd.get_names('objects'), objects)
+        self.assertFailedCard('src_morph', 'Reduce frames per model')
+
+    def testRefusalWhileBuildingAddsNoRecord(self):
+        '''Its running card is showing; the refusal must not replace it.'''
+        ensemble('src')
+        job = mj.start_job('src', frames_per_model=5)
+        with self.assertRaisesRegex(pymol.CmdException, 'already being built'):
+            mj.morph_object('src', async_=0)
+        self.assertEqual(list(mj._JOBS), ['src_morph'])
+        self.assertIs(mj._JOBS['src_morph'], job)
+        self.assertIn(self.payload()['morph_jobs']['src_morph']['state'],
+                      ('queued', 'running'))
+
+    def testRefusalAfterABuildKeepsTheFinishedMorph(self):
+        '''morph_sources, the badge and the clip stride read the finished
+        record: the card goes under its own name.'''
+        ensemble('src')
+        mj.morph_object('src', frames_per_model=3, refinement=0, async_=0)
+        self.addCleanup(setattr, mj, 'REFUSE_BYTES', None)
+        mj.REFUSE_BYTES = 10
+        with self.assertRaisesRegex(pymol.CmdException, 'Reduce frames per model'):
+            mj.morph_object('src', async_=0)
+        self.assertIn('src_morph', mj.morph_sources())
+        self.assertEqual(mj._JOBS['src_morph'].state, 'done')
+        self.assertIn('src_morph', self.payload()['morph'])
+        self.assertFailedCard('src_morph (refused)', 'Reduce frames per model')
+        self.assertIn('src_morph', mj.morph_sources())
 
     def testObjmetaCarriesAtomCount(self):
         '''The Morph sheet's memory estimate reads the atom count from the

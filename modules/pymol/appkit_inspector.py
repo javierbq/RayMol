@@ -920,6 +920,55 @@ def _object_peel(obj):
         return 0
 
 
+#: morph_bytes_per_frame's cache, {name: (signature, bytes, monotonic time)}.
+_BYTES_PER_FRAME = {}
+#: Seconds a cached figure is trusted while its signature holds.
+_BYTES_PER_FRAME_TTL = 2.0
+
+
+def _morph_bytes_per_frame(objs, nstate):
+    """{name: morph_jobs.bytes_per_frame(name)} for the multi-state molecules.
+
+    Only those: nothing else can be morphed, and counting atoms of a CGO or a
+    map would log a Selector-Error per tick (#219). A figure takes a few
+    selector passes over every loaded atom (about 8 ms for a 100k-atom
+    object), so it is cached per object and computed again when the object's
+    signature changes (its state count, or its entry in cmd.get_vis(), which
+    is free to read) or, for at most one object per poll, once it is
+    _BYTES_PER_FRAME_TTL old: a rep shown on more atoms, an alter of ss or a
+    removal of atoms leaves the signature alone and reaches the figure that
+    late. One object at a time: a failing one costs only its own entry."""
+    import time
+    from pymol import morph_jobs
+    try:
+        vis = cmd.get_vis() or {}
+    except Exception:
+        vis = {}
+    now = time.monotonic()
+    out = {}
+    refreshed = False
+    for o in objs:
+        if nstate.get(o, 0) <= 1 or _object_kind(o) != 'object:molecule':
+            continue
+        sig = (nstate[o], repr(vis.get(o)))
+        hit = _BYTES_PER_FRAME.get(o)
+        if hit is not None and hit[0] == sig:
+            if refreshed or now - hit[2] < _BYTES_PER_FRAME_TTL:
+                out[o] = hit[1]
+                continue
+            refreshed = True
+        try:
+            value = int(morph_jobs.bytes_per_frame(o))
+        except Exception:
+            _BYTES_PER_FRAME.pop(o, None)
+            continue
+        _BYTES_PER_FRAME[o] = (sig, value, now)
+        out[o] = value
+    for o in [n for n in _BYTES_PER_FRAME if n not in out]:
+        del _BYTES_PER_FRAME[o]
+    return out
+
+
 def poll_panel():
     """Write the object-list JSON to a temp file and print a short marker.
 
@@ -1075,6 +1124,16 @@ def poll_panel():
             payload['morph'] = _mj_src.morph_sources()
         except Exception:
             payload['morph'] = {}
+        # Bytes one morph frame of each multi-state molecule would hold
+        # (morph_jobs.bytes_per_frame: coordinates plus the reps it shows). The
+        # Morph sheet and the Play-models sheet multiply it by their frame count,
+        # so their estimate is morph_object's own. OPTIONAL on the Swift side.
+        # Its own try: a failure must not cost the panel its update.
+        try:
+            payload['morph_bytes_per_frame'] = _morph_bytes_per_frame(
+                objs, payload['nstate'])
+        except Exception:
+            payload['morph_bytes_per_frame'] = {}
         # Design-mode selection fingerprint. Computed inside raymol_design and
         # GATED there on Design mode being active, so this main-thread 500 ms poll
         # pays a single boolean check whenever Design mode is off (PR #270 made

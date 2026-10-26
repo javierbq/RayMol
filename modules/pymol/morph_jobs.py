@@ -7,7 +7,8 @@ on the main thread, MorphJob.step() computes one leg of frames without touching
 cmd (on a daemon worker thread for async morphs), and pump() lands computed
 frames on the main thread within a time budget.  The pending surface
 (pending_objects / recent_objects / pending_info) feeds the progress tray with
-the same record shape designing.pending_info publishes.
+the same record shape designing.pending_info publishes; a morph_object that
+start_job refuses is filed there as a failed job too (_record_refusal).
 
 The embedded core is main-thread only: everything that touches cmd happens in
 start_job, pump, morph_cancel, morph_dismiss or morph_object.  A worker shares
@@ -23,6 +24,7 @@ Convention: only alt ''+A atoms are counted (consistent with morphing.py).
 
 import binascii
 import itertools
+import os
 import queue
 import re
 import struct
@@ -38,17 +40,74 @@ cmd = __import__("sys").modules["pymol.cmd"]
 # --------------------------------------------------------------------------
 # Platform memory thresholds
 # --------------------------------------------------------------------------
+#
+# morph_estimate's bytes are the memory the finished morph holds; above
+# warn the sheet turns orange, above refuse the morph is refused.  The
+# constants are floors only: on macOS (and command-line PyMOL anywhere) the
+# thresholds scale with the machine's physical memory, on iPhone and iPad
+# with the memory the app may still allocate before the system ends it
+# (os_proc_available_memory), read each time because it changes.  Any
+# failure to read a figure falls back to the floors.
+
+_WARN_FLOOR, _REFUSE_FLOOR = 200e6, 1e9
+_IOS_WARN_FLOOR, _IOS_REFUSE_FLOOR = 100e6, 400e6
+
+
+def _is_ios():
+    return sys.platform == 'ios'
+
+
+def _physical_memory():
+    return os.sysconf('SC_PHYS_PAGES') * os.sysconf('SC_PAGE_SIZE')
+
+
+def _ios_available_memory():
+    import ctypes
+    available = ctypes.CDLL(None).os_proc_available_memory
+    available.restype = ctypes.c_size_t
+    available.argtypes = []
+    return available()
+
 
 def _platform_warn():
-    return 100e6 if sys.platform == 'ios' else 200e6
+    '''Warn threshold: 1/4 of what an iOS app may still allocate (at least
+    100 MB), elsewhere 1/16 of physical memory (at least 200 MB).'''
+    if _is_ios():
+        try:
+            return max(_IOS_WARN_FLOOR, _ios_available_memory() / 4.0)
+        except Exception:
+            return _IOS_WARN_FLOOR
+    try:
+        return max(_WARN_FLOOR, _physical_memory() / 16.0)
+    except Exception:
+        return _WARN_FLOOR
 
 
 def _platform_refuse():
-    return 400e6 if sys.platform == 'ios' else 1e9
+    '''Refuse threshold: 1/2 of what an iOS app may still allocate (at least
+    400 MB), elsewhere 1/4 of physical memory (at least 1 GB).'''
+    if _is_ios():
+        try:
+            return max(_IOS_REFUSE_FLOOR, _ios_available_memory() / 2.0)
+        except Exception:
+            return _IOS_REFUSE_FLOOR
+    try:
+        return max(_REFUSE_FLOOR, _physical_memory() / 4.0)
+    except Exception:
+        return _REFUSE_FLOOR
 
 
-WARN_BYTES = _platform_warn()
-REFUSE_BYTES = _platform_refuse()
+# None: thresholds() asks _platform_warn / _platform_refuse at each call.  A
+# number set here (a test, a script) is used as is.
+WARN_BYTES = None
+REFUSE_BYTES = None
+
+
+def thresholds():
+    '''``(warn, refuse)`` in bytes, compared with morph_estimate's bytes.'''
+    warn = WARN_BYTES if WARN_BYTES is not None else _platform_warn()
+    refuse = REFUSE_BYTES if REFUSE_BYTES is not None else _platform_refuse()
+    return warn, refuse
 
 # --------------------------------------------------------------------------
 # Job registry: morph-object name -> the MorphJob that last built it, terminal
@@ -81,10 +140,10 @@ _leg_hook = None
 # Computed legs a worker may hold before they have landed: it waits while this
 # many are queued or being landed, and computes the next leg only once one has
 # landed completely.  With 1, a single leg of frames exists as Python lists at
-# any time (about 160 B per atom-frame, three times what the memory estimate
-# budgets for cartoon), whatever the morph's size and however slowly pump()
-# runs.  pump() waits for the next leg within its budget, so small legs do not
-# cost one pump call each.
+# any time (about 160 B per atom-frame, transient, outside the memory
+# estimate), whatever the morph's size and however slowly pump() runs.
+# pump() waits for the next leg within its budget, so small legs do not cost
+# one pump call each.
 _LEGS_AHEAD = 1
 
 # cmd.morph's method aliases and segmentation defaults
@@ -92,18 +151,51 @@ _RIGID_METHODS = ('rigimol', 'rigid', 'segments', 'corkscrew')
 _CORE_FRACTION, _MIN_HINGE, _HINGE_BLEND = 0.5, 6, 3
 
 # --------------------------------------------------------------------------
-# Rep cost table: bytes per atom per interpolated frame
+# Memory one morph frame holds (bytes_per_frame)
 # --------------------------------------------------------------------------
+#
+# Resident bytes per built state, measured headless on this core.  With the
+# app's defer_builds_mode 0 the core builds and keeps the representations of
+# every state of the morph, so each frame costs this for good.  Method: one
+# fresh process per figure; load the model, show one representation, add
+# 300 states to a copy of it (with cmd.create, and with load_coordset as a
+# morph does), force the core's update phase over all of them (the call
+# _prebuild makes) and read RSS (ps) before and after.  Models: 2kpo (20
+# models; 1860 atoms, 917 without hydrogens; 110 residues: 59 helix, 23
+# strand, 28 loop) and a 120-residue Ala peptide with every residue set to
+# one secondary structure.  The larger per-unit figure is kept:
+#
+#   coordinates only  23-25 B/atom (create), 27-46 (load_coordset)        45
+#   cartoon           13.8 KB/residue loop, 8.7 strand, 30.8 helix  14000/res
+#                     (2kpo: 18.4-18.5 KB/residue, the model 23)    +17000/helix
+#                     at the default sampling (auto: 20 rings per residue
+#                     with cartoon_spline); 2kpo costs 7.5 KB/residue at
+#                     cartoon_sampling 7 and 16.3 at 18, the app's highest
+#                     zoom level, so the default bounds what zooming builds
+#   sticks            95-98 B/atom                                       100
+#   lines             77-78 B/atom                                        80
+#   spheres           64-65 B/atom                                        65
+#   ribbon            101-103 B/residue                                  105
+#   dots              1.2 KB/atom with hydrogens, 1.6 KB without        1600
+#   labels            124-127 B/atom (atom-name labels)                  130
+#
+# Helix residues are the source's own, or every residue when the source has
+# no secondary structure assigned (_helix_residues).  Surfaces and meshes are
+# never carried onto a morph (start_job hides them).  bytes_per_frame adds
+# 10 %.  Not counted: while it builds, the job's snapshot of the models and
+# one leg of frames held as Python lists; on the Metal path, GPU buffers of
+# the frames drawn.
 
-_REP_COST = {
-    'cartoon': 36,
-    'sticks': 24,
-    'lines': 8,
-    'spheres': 12,
-    'ribbon': 16,
-    'dots': 8,
-    'labels': 4,
-}
+_COORD_COST = 45
+_ATOM_REP_COST = {'sticks': 100, 'lines': 80, 'spheres': 65, 'dots': 1600,
+                  'labels': 130}
+_RESIDUE_REP_COST = {'cartoon': 14000, 'ribbon': 105}
+_HELIX_CARTOON_COST = 17000     # on top of the cartoon's per-residue cost
+# One atom per polymer residue (CA; C4' in nucleic acids): the guide atoms
+# cartoon and ribbon trace.  A flag test, cheaper in the selector than
+# matching names, and it leaves out calcium ions named CA.
+_RESIDUE = 'guide'
+_FRAME_OVERHEAD = 1.1
 
 # Alt filter used throughout this module
 _ALT = "alt ''+A"
@@ -152,6 +244,23 @@ def _is_known_morph(name, source, _self=cmd):
 # validate_source
 # --------------------------------------------------------------------------
 
+_MISMATCH = ('morph: models have different atoms; '
+             'morph needs the same atoms in every model')
+
+
+def _molecular_models(source, _self):
+    '''``count_states(source)`` once *source* is known to be a molecular
+    object.  Raises CmdException when there is no such object or it is not a
+    molecule (a CGO, map, group...).  Existence is checked by name first:
+    get_type would log a Selector-Error and raise without a message, which a
+    tray card would show as " Error: ".'''
+    if str(source) not in _self.get_names('objects'):
+        raise pymol.CmdException('morph: there is no object named %s' % source)
+    if _self.get_type(source) != 'object:molecule':
+        raise pymol.CmdException('morph: %s is not a molecular object' % source)
+    return _self.count_states(source)
+
+
 def validate_source(source, _self=cmd):
     '''Validate *source* for morphing.
 
@@ -159,28 +268,34 @@ def validate_source(source, _self=cmd):
     model 1 and *models* is ``count_states(source)``.
 
     Raises ``pymol.CmdException`` if:
-    - the object does not exist (propagated from get_type),
-    - the object is discrete, or
-    - atom counts differ across states.
-
-    Error text for the last two: "morph: models have different atoms;
-    morph needs the same atoms in every model".
+    - the object does not exist ("morph: there is no object named <source>"),
+    - it is not a molecular object ("morph: <source> is not a molecular
+      object"),
+    - it has no atoms with no alternate location or altloc A ("morph:
+      <source> has no atoms in alt '' or A"), or
+    - it is discrete, or its states do not all hold the same atoms ("morph:
+      models have different atoms; morph needs the same atoms in every
+      model").  Counts are compared first; equal counts must also be the same
+      atoms: every atom of model 1 is present in model k (the ``state``
+      selection operator, so the check runs in the selector, not one Python
+      call per atom).
     '''
-    _MISMATCH = ('morph: models have different atoms; '
-                 'morph needs the same atoms in every model')
-
-    _self.get_type(source)          # raises CmdException if not found
+    models = _molecular_models(source, _self)
 
     # Discrete objects store different atoms per state — not morphable
     if _self.count_discrete(source) > 0:
         raise pymol.CmdException(_MISMATCH)
 
-    models = _self.count_states(source)
     sel = '(%s) and %s' % (source, _ALT)
     atoms = _self.count_atoms(sel, state=1)
+    if atoms == 0:
+        raise pymol.CmdException("morph: %s has no atoms in alt '' or A" % source)
 
     for k in range(2, models + 1):
         if _self.count_atoms(sel, state=k) != atoms:
+            raise pymol.CmdException(_MISMATCH)
+    for k in range(2, models + 1):
+        if _self.count_atoms('%s and state 1 and state %d' % (sel, k)) != atoms:
             raise pymol.CmdException(_MISMATCH)
 
     return atoms, models
@@ -190,6 +305,65 @@ def validate_source(source, _self=cmd):
 # morph_estimate
 # --------------------------------------------------------------------------
 
+def bytes_per_frame(source, _self=cmd):
+    '''Bytes one interpolated state of a morph of *source* holds once built.
+
+    Coordinates of the ``(source) and alt ''+A`` atoms plus the
+    representations the source shows now (a morph copies them; surface and
+    mesh excluded, a morph never carries them), at the costs measured above
+    (_COORD_COST, _ATOM_REP_COST, _RESIDUE_REP_COST, _HELIX_CARTOON_COST),
+    plus 10 %.  morph_estimate, the Morph sheet and the Play-models sheet
+    (the panel payload's ``morph_bytes_per_frame``) use this one figure.'''
+    sel = '(%s) and %s' % (source, _ALT)
+    total = _COORD_COST * _self.count_atoms(sel, state=1)
+    shown = _shown_reps(sel, _self)
+    for rep, cost in _ATOM_REP_COST.items():
+        if rep in shown:
+            total += cost * _self.count_atoms('%s and rep %s' % (sel, rep), state=1)
+    for rep, cost in _RESIDUE_REP_COST.items():
+        if rep not in shown:
+            continue
+        traced = '%s and rep %s and %s' % (sel, rep, _RESIDUE)
+        residues = _self.count_atoms(traced, state=1)
+        total += cost * residues
+        if rep == 'cartoon' and residues:
+            total += _HELIX_CARTOON_COST * _helix_residues(traced, residues, _self)
+    return int(_FRAME_OVERHEAD * total)
+
+
+def _shown_reps(sel, _self):
+    '''Names of the representations at least one atom of *sel* shows: one
+    selector pass (the fork's _cmd.get_atom_reps, the OR of the atoms' rep
+    flags), so bytes_per_frame counts only those (the panel poll calls it
+    for every multi-state molecule).  Every costed rep when the call is
+    missing or fails, which only costs the counts.'''
+    reps = set(_ATOM_REP_COST) | set(_RESIDUE_REP_COST)
+    try:
+        from pymol import _cmd
+        from pymol.constants import repres
+        with _self.lockcm:
+            shown = set(_cmd.get_atom_reps(_self._COb, sel))
+        return {r for r in reps if repres[r] in shown}
+    except Exception:
+        return reps
+
+
+def _helix_residues(traced, residues, _self):
+    '''Residues of *traced* (the cartoon's) that the morph will draw as
+    helix.  The morph object is created with one state, so with auto_dss on
+    (the default) the core assigns its secondary structure itself (dss on
+    model 1).  A source whose secondary structure was never assigned (no
+    helix and no strand, as after fab or a multi-model file without helix
+    records) says nothing about what that will find, so every residue is
+    counted as helix, the dearer case; otherwise the source's own
+    assignment stands in for it.'''
+    helix = _self.count_atoms(traced + ' and ss H', state=1)
+    if (not helix and _self.get_setting_int('auto_dss')
+            and not _self.count_atoms(traced + ' and ss S', state=1)):
+        return residues
+    return helix
+
+
 def morph_estimate(source, frames_per_model=15, loop=1, refinement=3,
                    _self=cmd):
     '''Estimate resource usage for morphing *source*.
@@ -197,26 +371,19 @@ def morph_estimate(source, frames_per_model=15, loop=1, refinement=3,
     Returns a dict with keys:
       models, legs, frames, atoms, bytes, seconds, warn, refuse
 
-    ``bytes`` uses 12 bytes per xyz coord plus rep-based overhead, times 1.1
-    for the output object.  ``warn`` / ``refuse`` compare against the
-    module-level WARN_BYTES / REFUSE_BYTES thresholds (read at call time so
-    tests can monkeypatch them).
+    ``bytes`` is bytes_per_frame(source) times the frames: the memory the
+    finished morph holds.  ``warn`` / ``refuse`` are true when it is above
+    the thresholds() (WARN_BYTES / REFUSE_BYTES when set, else the platform
+    figures, read at call time).
     '''
     models = _self.count_states(source)
     legs = models if loop else max(1, models - 1)
     frames = legs * frames_per_model
     atoms = _self.count_atoms('(%s) and %s' % (source, _ALT), state=1)
-
-    # Sum rep costs for representations currently shown on source
-    rep_cost = sum(
-        cost
-        for rep, cost in _REP_COST.items()
-        if _self.count_atoms('(%s) and rep %s' % (source, rep)) > 0
-    )
-
-    nbytes = int(atoms * frames * (12 + rep_cost) * 1.1)
+    nbytes = bytes_per_frame(source, _self) * frames
     seconds = (atoms * legs * 0.05e-3
                + atoms * frames * 0.25e-3 * (1 if refinement > 0 else 0))
+    warn, refuse = thresholds()
 
     return {
         'models': models,
@@ -225,8 +392,8 @@ def morph_estimate(source, frames_per_model=15, loop=1, refinement=3,
         'atoms': atoms,
         'bytes': nbytes,
         'seconds': seconds,
-        'warn': nbytes >= WARN_BYTES,
-        'refuse': nbytes >= REFUSE_BYTES,
+        'warn': nbytes > warn,
+        'refuse': nbytes > refuse,
     }
 
 
@@ -375,7 +542,8 @@ class MorphJob(object):
         self.frames_per_model = spec['frames_per_model']
         self.natoms = len(pos)      # atoms in the morph object
         self.models = len(coords)
-        self.legs = self.models if spec['loop'] else self.models - 1
+        # 0 for a refusal's record (_record_refusal), which has no models
+        self.legs = max(self.models if spec['loop'] else self.models - 1, 0)
         self.done_legs = 0          # computed by step()
         self.landed_legs = 0        # written into the object by pump()
         self._landed = 0            # frames written: the object has 1 + this states
@@ -521,9 +689,13 @@ def start_job(source, name=None, frames_per_model=15, loop=1, method='rigimol',
 
     run=False: the caller drives ``job.step()``.  run=True: a daemon worker
     thread drives ``step()`` until the legs run out or the job ends.  Either
-    way pump() only lands what is queued; it never calls ``step()``.'''
+    way pump() only lands what is queued; it never calls ``step()``.
+
+    Refusals come cheapest first: the source's type, its number of models,
+    the memory limit, and only then validate_source's per-state checks, so a
+    trajectory too large to morph is refused without visiting its states.'''
     spec = _make_spec(frames_per_model, loop, method, refinement, rate, copy_look)
-    _, models = validate_source(source, _self)
+    models = _molecular_models(source, _self)
     if models < 2:
         raise pymol.CmdException(
             'morph: %s has one model; morph needs at least two' % source)
@@ -533,6 +705,7 @@ def start_job(source, name=None, frames_per_model=15, loop=1, method='rigimol',
         raise pymol.CmdException(
             'morph: this morph needs about %d MB. Reduce frames per model or '
             'morph fewer models' % (est['bytes'] // 1000000))
+    validate_source(source, _self)
     target = _target_name(source, name, _self)
     old = _JOBS.get(target)
     if old is not None and old.state in _ACTIVE:
@@ -912,6 +1085,11 @@ DESCRIPTION
     sculpting clean-up), the key frames stay exact copies of the models, and
     the result replaces the source on screen when it is complete.
 
+    A refused morph (one model, models with different atoms, not a
+    molecule, larger than the memory limit, ...) raises and creates
+    nothing; its reason stays listed as a failed morph (the app's progress
+    tray shows it) until morph_dismiss.
+
 USAGE
 
     morph_object source [, name [, frames_per_model [, loop [, method
@@ -946,15 +1124,21 @@ SEE ALSO
 
     morph, morph_cancel, morph_dismiss
     '''
-    spec = _make_spec(frames_per_model, loop, method, refinement, rate, copy_look)
-    if int(reuse):
-        target = _target_name(source, name, _self)
-        job = _JOBS.get(target)
-        if (job is not None and job.source == source and job.spec == spec
-                and _is_output(job, _self)
-                and job.fingerprint == fingerprint(source, _self)):
-            return target
-    job = start_job(source, name, run=bool(int(async_)), _self=_self, **spec)
+    spec = None
+    try:
+        spec = _make_spec(frames_per_model, loop, method, refinement, rate,
+                          copy_look)
+        if int(reuse):
+            target = _target_name(source, name, _self)
+            job = _JOBS.get(target)
+            if (job is not None and job.source == source and job.spec == spec
+                    and _is_output(job, _self)
+                    and job.fingerprint == fingerprint(source, _self)):
+                return target
+        job = start_job(source, name, run=bool(int(async_)), _self=_self, **spec)
+    except pymol.CmdException as exc:
+        _record_refusal(source, name, spec, exc, _self)
+        raise
     if job.run:
         if not int(quiet):
             print(' morph_object: building %s (%d legs)' % (job.name, job.legs))
@@ -968,6 +1152,43 @@ SEE ALSO
         print(' morph_object: %s, %d states from %d models'
               % (job.name, job.legs * job.frames_per_model, job.models))
     return job.name
+
+
+#: The spec a refusal's record carries when the arguments themselves were
+#: refused (morph_spec reports it).
+_DEFAULT_SPEC = _make_spec(15, 1, 'rigimol', 3, 'linear', 1)
+
+
+def _record_refusal(source, name, spec, exc, _self):
+    '''Register a refused morph_object as a failed job, so the tray shows a
+    "Morph failed" card and the MCP state lists it, as for a morph that fails
+    while it builds: start_job refuses before any job exists, and the app
+    starts a morph without waiting for an answer.
+
+    Filed under the morph's name (the conventional ``<source>_morph`` when
+    the name itself was refused), replacing a cancelled or failed record
+    there.  Nothing is filed while a job builds under that name (its running
+    card is showing), and a finished morph's record is never displaced
+    (morph_sources, the badge and the clip stride read it): the card goes
+    under ``<name> (refused)`` instead.  The record holds no object, so
+    morph_dismiss is all it needs.'''
+    try:
+        target = _target_name(source, name, _self)
+    except Exception:
+        target = None
+    if not target:
+        try:
+            target = _self.get_legal_name(str(source) + '_morph')
+        except Exception:
+            target = str(source) + '_morph'
+    old = _JOBS.get(target)
+    if old is not None and old.state in _ACTIVE:
+        return
+    key = target if old is None or old.state in _FAILED else target + ' (refused)'
+    job = MorphJob(key, source, spec or _DEFAULT_SPEC, {}, {}, [], [], False)
+    job._terminate('error', _message(exc))
+    _end(job)
+    _JOBS[key] = job
 
 
 def morph_cancel(name, quiet=1, _self=cmd):
@@ -1117,14 +1338,18 @@ def pending_info(name, _self=cmd):
             phase = 'computing'
         fraction = job.landed_legs / float(max(job.legs, 1))
         end = job.ended if job.ended is not None else time.monotonic()
+        if job.legs == 0:                   # a refusal (_record_refusal)
+            detail = str(error or '')
+        else:
+            detail = 'leg %d of %d · %d%%' % (job.landed_legs, job.legs,
+                                              int(fraction * 100))
         return {
             'state': state, 'phase': phase, 'fraction': fraction,
             'moving': state == 'running',
             'models_done': job.landed_legs, 'models_total': job.legs,
             'elapsed': max(end - job.started, 0.0),
             'error': None if error is None else str(error),
-            'detail': 'leg %d of %d · %d%%' % (job.landed_legs, job.legs,
-                                               int(fraction * 100)),
+            'detail': detail,
             'bundle': None, 'step': None, 'total_steps': None,
             'remaining': None, 'batch': None, 'batch_index': None,
             'batch_total': None, 'run_remaining': None,

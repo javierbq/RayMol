@@ -10,6 +10,7 @@ import os
 import tempfile
 import unittest
 
+import pymol
 from pymol import cmd
 
 import raymol_mcp.mainthread as mainthread
@@ -269,6 +270,17 @@ class TestSessionStateMorphJobs(_NativeCase):
             [("src_morph", "src", "cancelled")])
         self.mj.morph_dismiss("src_morph")
         self.assertEqual(self.morph_jobs_state(), [])
+
+    def test_a_refused_morph_is_listed_as_an_error(self):
+        # Refused before any job existed: still a record, so an agent sees why
+        self.addCleanup(setattr, self.mj, "REFUSE_BYTES", None)
+        self.mj.REFUSE_BYTES = 10
+        with self.assertRaises(pymol.CmdException):
+            self.mj.morph_object("src", async_=0)
+        jobs = self.morph_jobs_state()
+        self.assertEqual([(j["name"], j["source"], j["status"]) for j in jobs],
+                         [("src_morph", "src", "error")])
+        self.assertIn("Reduce frames per model", jobs[0]["error"])
 
     def test_a_broken_morph_surface_leaves_the_rest_of_the_state(self):
         def boom():

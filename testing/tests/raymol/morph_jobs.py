@@ -4,8 +4,13 @@ look copy, titles, fingerprint.
 
 Tests that:
   - morph_name() returns the expected name and handles collisions
-  - validate_source() returns (atoms, models) and raises on bad input
-  - morph_estimate() returns correct fields and bytes formula
+  - validate_source() returns (atoms, models) and raises on bad input:
+    discrete, different atoms (also at equal counts), no alt ''/A atoms,
+    not a molecular object
+  - morph_estimate() returns correct fields: bytes_per_frame() (measured
+    costs of coordinates and the shown reps) times frames, compared above
+    the thresholds, which scale with the machine's memory (constants are
+    floors); the estimate matches the memory a built morph really holds
   - copy_look() copies explicit per-object settings, hides surface/mesh
   - set_state_titles() labels key frames and intermediates correctly
   - fingerprint() returns a dict that changes when state count changes
@@ -13,7 +18,8 @@ Tests that:
     morph_object(async_=0) runs it to completion, cancel deletes the partial
     object, the pending surface publishes designing-shaped records, and the
     reuse and explicit-name rules hold, and pump() builds the representations
-    of the frames it lands while the morph is still hidden
+    of the frames it lands while the morph is still hidden; a refused morph
+    creates nothing, and the memory refusal comes before the per-state check
   - morph_object(async_=1) computes legs on a worker thread and pump() lands
     them: completion, cancel between legs, cancel while a leg is in flight
     (ends 'cancelled', never 'error'), source deleted mid-job, a worker
@@ -130,9 +136,38 @@ class TestMorphJobsBlocks(testing.PyMOLTestCase):
         cmd.delete('disc')
         cmd.delete('dsrc')
 
-        # Non-existent object must raise
-        with self.assertRaises(pymol.CmdException):
+        # Non-existent object must raise, with a message a tray card can show
+        with self.assertRaisesRegex(pymol.CmdException,
+                                    'there is no object named nosuch_object_xyz'):
             mj.validate_source('nosuch_object_xyz')
+
+    def testValidateRefusesSameCountDifferentAtoms(self):
+        # Equal atom counts per state, different atoms: state 2 has CX where
+        # state 1 has CB.  Counting alone passed this and the morph then died
+        # on a KeyError inside start_job.
+        cmd.fab('ACD', 'swap')
+        cmd.create('swap_tmp', 'swap')
+        cmd.alter('swap_tmp and resi 2 and name CB', "name='CX'")
+        cmd.create('swap', 'swap_tmp', 1, 2)
+        cmd.delete('swap_tmp')
+        self.assertEqual(cmd.count_atoms('swap', state=1),
+                         cmd.count_atoms('swap', state=2))
+        with self.assertRaisesRegex(pymol.CmdException, 'models have different atoms'):
+            mj.validate_source('swap')
+
+    def testValidateRefusesEmptyAndNonMolecularSources(self):
+        cmd.fab('ACD', 'altb')
+        cmd.create('altb', 'altb', 1, 2)
+        cmd.alter('altb', "alt='B'")
+        with self.assertRaisesRegex(pymol.CmdException,
+                                    "altb has no atoms in alt '' or A"):
+            mj.validate_source('altb')
+        cmd.load_cgo([cgo.SPHERE, 0.0, 0.0, 0.0, 1.0], 'arrows', 1)
+        cmd.load_cgo([cgo.SPHERE, 1.0, 0.0, 0.0, 1.0], 'arrows', 2)
+        self.assertEqual(cmd.count_states('arrows'), 2)
+        with self.assertRaisesRegex(pymol.CmdException,
+                                    'arrows is not a molecular object'):
+            mj.validate_source('arrows')
 
     # ---- morph_estimate ------------------------------------------------------
 
@@ -145,10 +180,10 @@ class TestMorphJobsBlocks(testing.PyMOLTestCase):
         est = mj.morph_estimate('ee', frames_per_model=10, loop=1)
         self.assertEqual((est['models'], est['legs'], est['frames']), (3, 3, 30))
 
+        # one frame's bytes times the frames, nothing on top
         atoms = cmd.count_atoms('ee')
-        expected_bytes = int(atoms * 30 * 12 * 1.1)
-        self.assertAlmostEqual(est['bytes'], expected_bytes,
-                               delta=expected_bytes * 0.1)
+        self.assertEqual(est['bytes'], mj.bytes_per_frame('ee') * 30)
+        self.assertEqual(est['bytes'], int(1.1 * mj._COORD_COST * atoms) * 30)
 
         # With cartoon shown, bytes should grow (larger rep_cost)
         cmd.show('cartoon', 'ee')
@@ -160,6 +195,96 @@ class TestMorphJobsBlocks(testing.PyMOLTestCase):
 
         # loop=0 → legs = models - 1 = 2
         self.assertEqual(mj.morph_estimate('ee', 10, 0)['legs'], 2)
+
+    def testBytesPerFrameCountsTheShownReps(self):
+        # Coordinates for every alt ''/A atom, plus each representation the
+        # source shows at its measured cost: cartoon and ribbon per residue
+        # (their geometry scales with residues, not atoms; a helix residue's
+        # cartoon costs about twice a loop's), the others per atom showing
+        # them.  Surfaces and meshes cost nothing: the morph never carries
+        # them.
+        cmd.fab('ACDEFGHIK', 'bp')
+        cmd.create('bp', 'bp', 1, 2)
+        cmd.alter('bp', "ss='L'")
+        cmd.alter('bp and resi 7-9', "ss='S'")
+        atoms = cmd.count_atoms('bp')
+        res = cmd.count_atoms('bp and name CA')
+        coord = mj._COORD_COST * atoms
+        cmd.hide('everything', 'bp')
+        self.assertEqual(mj.bytes_per_frame('bp'), int(1.1 * coord))
+        cmd.show('surface', 'bp')
+        self.assertEqual(mj.bytes_per_frame('bp'), int(1.1 * coord))
+        cmd.show('cartoon', 'bp')
+        cartoon = mj._RESIDUE_REP_COST['cartoon'] * res
+        helix = mj._HELIX_CARTOON_COST
+        self.assertEqual(mj.bytes_per_frame('bp'), int(1.1 * (coord + cartoon)))
+        cmd.alter('bp and resi 2-5', "ss='H'")
+        self.assertEqual(mj.bytes_per_frame('bp'),
+                         int(1.1 * (coord + cartoon + 4 * helix)))
+        # No secondary structure assigned at all: the morph's own (auto_dss on
+        # its one-state creation) is unknown, so every residue counts as helix
+        cmd.alter('bp', "ss='L'")
+        self.assertEqual(mj.bytes_per_frame('bp'),
+                         int(1.1 * (coord + cartoon + res * helix)))
+        cmd.set('auto_dss', 0)              # the morph keeps the source's ss
+        self.assertEqual(mj.bytes_per_frame('bp'), int(1.1 * (coord + cartoon)))
+        cmd.set('auto_dss', 1)
+        cmd.alter('bp and resi 7-9', "ss='S'")
+        cmd.show('sticks', 'bp and resi 1-3')
+        sticks = mj._ATOM_REP_COST['sticks'] * cmd.count_atoms('bp and resi 1-3')
+        self.assertEqual(mj.bytes_per_frame('bp'),
+                         int(1.1 * (coord + cartoon + sticks)))
+        # atoms in other alternate locations are not morphed
+        cmd.alter('bp and resi 9', "alt='B'")
+        alt = cmd.count_atoms('bp and resi 9')
+        self.assertEqual(mj.bytes_per_frame('bp'),
+                         int(1.1 * (mj._COORD_COST * (atoms - alt)
+                                    + mj._RESIDUE_REP_COST['cartoon'] * (res - 1)
+                                    + sticks)))
+        # the measured magnitudes, not the old guesses (cartoon 36 B per atom)
+        self.assertGreater(mj._RESIDUE_REP_COST['cartoon'], 10000)
+        self.assertGreater(mj._COORD_COST, 30)
+
+    def testThresholdsScaleWithMemory(self):
+        # None: the platform's live figure; the constants are floors only.
+        self.assertIsNone(mj.WARN_BYTES)
+        self.assertIsNone(mj.REFUSE_BYTES)
+        phys = os.sysconf('SC_PHYS_PAGES') * os.sysconf('SC_PAGE_SIZE')
+        self.assertEqual(mj.thresholds(), (max(200e6, phys / 16.0),
+                                           max(1e9, phys / 4.0)))
+        with mock.patch.object(mj, '_physical_memory', return_value=64e9):
+            self.assertEqual(mj.thresholds(), (4e9, 16e9))
+        with mock.patch.object(mj, '_physical_memory', return_value=2e9):
+            self.assertEqual(mj.thresholds(), (200e6, 1e9))
+        with mock.patch.object(mj, '_physical_memory', side_effect=OSError):
+            self.assertEqual(mj.thresholds(), (200e6, 1e9))
+        # iPhone and iPad: what the app may still allocate
+        with mock.patch.object(mj, '_is_ios', return_value=True):
+            with mock.patch.object(mj, '_ios_available_memory', return_value=3e9):
+                self.assertEqual(mj.thresholds(), (750e6, 1.5e9))
+            with mock.patch.object(mj, '_ios_available_memory', return_value=1e8):
+                self.assertEqual(mj.thresholds(), (100e6, 400e6))
+            with mock.patch.object(mj, '_ios_available_memory', side_effect=OSError):
+                self.assertEqual(mj.thresholds(), (100e6, 400e6))
+        # a number set by a test or a user is used as is
+        self.addCleanup(setattr, mj, 'WARN_BYTES', None)
+        self.addCleanup(setattr, mj, 'REFUSE_BYTES', None)
+        mj.WARN_BYTES, mj.REFUSE_BYTES = 5, 10
+        self.assertEqual(mj.thresholds(), (5, 10))
+
+    def testEstimateWarnsAndRefusesAboveTheThresholds(self):
+        # "above": an estimate equal to a threshold passes it (Swift uses >)
+        cmd.fab('ACDEFGHIK', 'ee')
+        cmd.create('ee', 'ee', 1, 2)
+        nbytes = mj.morph_estimate('ee', 10, 1)['bytes']
+        self.addCleanup(setattr, mj, 'WARN_BYTES', None)
+        self.addCleanup(setattr, mj, 'REFUSE_BYTES', None)
+        mj.WARN_BYTES = mj.REFUSE_BYTES = nbytes
+        est = mj.morph_estimate('ee', 10, 1)
+        self.assertEqual((est['warn'], est['refuse']), (False, False))
+        mj.WARN_BYTES = mj.REFUSE_BYTES = nbytes - 1
+        est = mj.morph_estimate('ee', 10, 1)
+        self.assertEqual((est['warn'], est['refuse']), (True, True))
 
     # ---- copy_look -----------------------------------------------------------
 
@@ -842,7 +967,94 @@ class TestMorphJobPipeline(testing.PyMOLTestCase):
                 mj.start_job('src')
             self.assertNotIn('src_morph', cmd.get_names('objects'))
         finally:
-            mj.REFUSE_BYTES = mj._platform_refuse()
+            mj.REFUSE_BYTES = None
+
+    def testMemoryRefusalComesBeforeThePerStateCheck(self):
+        # A refused trajectory never pays validate_source's per-state loop.
+        self.ensemble()
+        self.addCleanup(setattr, mj, 'REFUSE_BYTES', None)
+        mj.REFUSE_BYTES = 10
+        with mock.patch.object(mj, 'validate_source',
+                               side_effect=AssertionError('per-state check ran')):
+            with self.assertRaisesRegex(pymol.CmdException, 'Reduce frames per model'):
+                mj.start_job('src')
+
+    #: Run by testEstimateMatchesBuiltMemory in a fresh interpreter.
+    _MEMCHECK = '''
+import os, subprocess
+import pymol
+pymol.finish_launching(['pymol', '-qck'])
+from pymol import cmd, _cmd
+import pymol.morph_jobs as mj
+
+def rss():
+    out = subprocess.check_output(['ps', '-o', 'rss=', '-p', str(os.getpid())])
+    return int(out) * 1024
+
+cmd.set('defer_builds_mode', 0)
+cmd.fab('A' * 120, 'src', ss=1)
+for k in (2, 3):
+    cmd.create('src', 'src', 1, k)
+    cmd.rotate('y', 20 * (k - 1), 'src and resi 60-120', k)
+cmd.show_as('cartoon', 'src')
+estimate = mj.morph_estimate('src', 40, 1, 0)['bytes']
+before = rss()
+name = mj.morph_object('src', frames_per_model=40, refinement=0, async_=0)
+cmd.enable(name)
+with cmd.lockcm:        # build anything still unbuilt (update phase)
+    _cmd.surface_pick_prepare(cmd._COb, [name], 0, 1, 0)
+line = 'MEMCHECK %d %d %d\\n' % (cmd.count_states(name), estimate, rss() - before)
+os.write(1, line.encode())      # fd 1: PyMOL may have replaced sys.stdout
+'''
+
+    def testEstimateMatchesBuiltMemory(self):
+        # The estimate is what a finished morph really holds: with the app's
+        # defer_builds_mode 0 the core keeps every state's representations.
+        # The old table read ~20x low for cartoon (8 MB for 383 MB here).
+        # Measured in a fresh interpreter: in this long-lived test process
+        # RSS also moves with memory earlier tests freed (it fell by 860 MB
+        # across this build in a full run).  RSS is noisy, so the window is
+        # wide on purpose; the error it guards is far outside it.
+        import re
+        import subprocess
+        import sys
+        if not sys.executable:
+            self.skipTest('no interpreter to run the measurement in')
+        run = subprocess.run([sys.executable, '-c', self._MEMCHECK],
+                             capture_output=True, text=True, timeout=600)
+        found = re.search(r'MEMCHECK (\d+) (\d+) (-?\d+)', run.stdout)
+        self.assertIsNotNone(found, run.stdout[-2000:] + run.stderr[-2000:])
+        states, estimate, actual = (int(g) for g in found.groups())
+        self.assertEqual(states, 120)
+        self.assertGreater(actual, 0)
+        self.assertTrue(0.4 <= estimate / float(actual) <= 2.5,
+                        'estimate %.0f MB, built %.0f MB' % (estimate / 1e6, actual / 1e6))
+
+    def testMorphRefusesSameCountDifferentAtoms(self):
+        cmd.fab('ACDEFGHIK', 'src')
+        cmd.create('tmp', 'src')
+        cmd.alter('tmp and resi 4 and name CB', "name='CX'")
+        cmd.create('src', 'tmp', 1, 2)
+        cmd.delete('tmp')
+        objects = cmd.get_names('objects')
+        with self.assertRaisesRegex(pymol.CmdException, 'models have different atoms'):
+            mj.morph_object('src', async_=0)
+        self.assertEqual(cmd.get_names('objects'), objects)     # creates nothing
+
+    def testMorphRefusesSourceWithoutAltAAtoms(self):
+        self.ensemble('altb')
+        cmd.alter('altb', "alt='B'")
+        with self.assertRaisesRegex(pymol.CmdException, 'has no atoms'):
+            mj.morph_object('altb', async_=0)
+        self.assertNotIn('altb_morph', cmd.get_names('objects'))
+
+    def testMorphRefusesNonMolecularObject(self):
+        # was "Selector-Error: Invalid selection name"
+        cmd.load_cgo([cgo.SPHERE, 0.0, 0.0, 0.0, 1.0], 'arrows', 1)
+        cmd.load_cgo([cgo.SPHERE, 1.0, 0.0, 0.0, 1.0], 'arrows', 2)
+        with self.assertRaisesRegex(pymol.CmdException, 'not a molecular object'):
+            mj.morph_object('arrows', async_=0)
+        self.assertNotIn('arrows_morph', cmd.get_names('objects'))
 
 
 #: A morph clip in the Timeline lane, as the app stages it (#901).
