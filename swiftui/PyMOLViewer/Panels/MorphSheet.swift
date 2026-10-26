@@ -5,9 +5,12 @@
 // and how much memory it will take. Pure view: the card that presents it owns
 // the engine calls (submit, delete) and passes them in as closures, so this
 // file has no engine dependency. Laid out like the Timeline's "Play models"
-// sheet (TimelinePanel.statesConfigSheet).
+// sheet (TimelinePanel.PlayModelsSheet).
 #if os(macOS) || os(iOS)
 import SwiftUI
+#if os(iOS)
+import os
+#endif
 
 struct MorphSheet: View {
     /// The object the morph is built FROM. Named in the title even when the
@@ -18,9 +21,13 @@ struct MorphSheet: View {
     let target: String
     /// Models (states) in `source`.
     let models: Int
-    /// Atom count for the memory estimate, or nil when the inspector has not
-    /// reported one — the summary then omits the estimate rather than show 0.
+    /// Atom count for the build-time hint, or nil when the inspector has not
+    /// reported one — the summary then omits the hint rather than show 0.
     let atoms: Int?
+    /// Python's bytes per morph frame of `source` (the panel payload's
+    /// `morph_bytes_per_frame`), or nil when the poll has not published it — the
+    /// summary then omits the memory estimate and the tier is `.ok`.
+    let bytesPerFrame: Int?
     /// Movie fps: the rate auto-play uses, so the summary's seconds are real.
     let fps: Double
     /// The settings that built the morph, when the sheet is opened on one.
@@ -39,15 +46,16 @@ struct MorphSheet: View {
 
     @State private var settings: MorphSettings
 
-    init(source: String, target: String, models: Int, atoms: Int?, fps: Double,
-         existingSettings: MorphSettings?, isMorphObject: Bool,
+    init(source: String, target: String, models: Int, atoms: Int?, bytesPerFrame: Int?,
+         fps: Double, existingSettings: MorphSettings?, isMorphObject: Bool,
          targetExists: Bool = false,
          sourceShowsSurfaceOrMesh: Bool = false,
          onMorph: @escaping (MorphSettings) -> Void,
          onDelete: (() -> Void)?,
          onCancel: @escaping () -> Void) {
         self.source = source; self.target = target
-        self.models = models; self.atoms = atoms; self.fps = fps
+        self.models = models; self.atoms = atoms; self.bytesPerFrame = bytesPerFrame
+        self.fps = fps
         self.existingSettings = existingSettings
         self.isMorphObject = isMorphObject
         self.targetExists = targetExists
@@ -89,16 +97,20 @@ struct MorphSheet: View {
             .padding(20)
             .frame(width: 380)
         #else
-        // Scrolls rather than clips if the iOS controls (taller than macOS's)
-        // overflow the detent, so Cancel / Morph always stay reachable.
+        // The iOS controls are taller than macOS's: title, five control rows, a
+        // two- or three-line summary and the buttons come to about 420 pt, so
+        // the first detent shows Cancel / Morph (PlayModelsSheet opens its
+        // comparable stack at 480). Scrolls rather than clips if a longer
+        // summary still overflows it.
         ScrollView { content.padding(20) }
-            .presentationDetents([.height(360)])
+            .presentationDetents([.height(440), .large])
         #endif
     }
 
     private var content: some View {
-        let summary = settings.summary(models: models, atoms: atoms ?? 0, fps: fps)
-        let tier = Self.memoryTier(bytes: atoms == nil ? nil : summary.bytes)
+        let summary = settings.summary(models: models, atoms: atoms ?? 0,
+                                       bytesPerFrame: bytesPerFrame, fps: fps)
+        let tier = Self.memoryTier(bytes: summary.bytes, thresholds: Self.currentThresholds())
         return VStack(alignment: .leading, spacing: 16) {
             HStack {
                 Text("Morph \(source)").font(.system(size: 15, weight: .semibold))
@@ -109,8 +121,7 @@ struct MorphSheet: View {
             MorphSettingsControls(settings: $settings, showsLoop: true, idPrefix: "morphSheet")
 
             VStack(alignment: .leading, spacing: 4) {
-                Text(Self.summaryLine(summary, models: models, fps: fps,
-                                      showBytes: atoms != nil, source: source,
+                Text(Self.summaryLine(summary, models: models, fps: fps, source: source,
                                       target: target, isMorphObject: isMorphObject,
                                       targetExists: targetExists))
                     .foregroundStyle(tier == .ok ? Color.secondary : Color.orange)
@@ -162,47 +173,74 @@ struct MorphSheet: View {
 
     enum MemoryTier { case ok, warn, refuse }
 
-    #if os(iOS)
-    static let warnBytes = 100e6, refuseBytes = 400e6
-    #else
-    static let warnBytes = 200e6, refuseBytes = 1e9
-    #endif
+    /// The thresholds `morph_jobs.thresholds()` uses, in bytes (spec §5.6, its
+    /// figures as floors): on iPhone and iPad 1/4 and 1/2 of what the app may
+    /// still allocate (`available`, at least 100 MB and 400 MB; the floors when
+    /// unknown), elsewhere 1/16 and 1/4 of the machine's memory (at least 200 MB
+    /// and 1 GB). The two sides read their figures independently, so they agree
+    /// up to what the app allocated in between.
+    static func memoryThresholds(physical: UInt64, available: UInt64?,
+                                 iOS: Bool) -> (warn: Double, refuse: Double) {
+        if iOS {
+            let left = Double(available ?? 0)
+            return (max(100e6, left / 4), max(400e6, left / 2))
+        }
+        let total = Double(physical)
+        return (max(200e6, total / 16), max(1e9, total / 4))
+    }
 
-    /// Where an estimate falls against the platform thresholds (spec §5.6).
-    /// An unknown estimate (`nil`) is `.ok`: the sheet cannot judge it, and
-    /// `morph_object` enforces the hard limit itself.
-    static func memoryTier(bytes: Int?, warnAbove: Double = warnBytes,
-                           refuseAbove: Double = refuseBytes) -> MemoryTier {
+    /// The thresholds now: `ProcessInfo.physicalMemory`, and on iOS
+    /// `os_proc_available_memory()` (as DesignSizeGuard reads it), read at each
+    /// call because the headroom changes as the session grows.
+    static func currentThresholds() -> (warn: Double, refuse: Double) {
+        #if os(iOS)
+        let left = UInt64(os_proc_available_memory())
+        return memoryThresholds(physical: ProcessInfo.processInfo.physicalMemory,
+                                available: left > 0 ? left : nil, iOS: true)
+        #else
+        return memoryThresholds(physical: ProcessInfo.processInfo.physicalMemory,
+                                available: nil, iOS: false)
+        #endif
+    }
+
+    /// Where an estimate falls against the thresholds: above `warn` orange, above
+    /// `refuse` refused, as `morph_estimate` compares (`>`). An unknown estimate
+    /// (`nil`) is `.ok`: the sheet cannot judge it, and `morph_object` enforces
+    /// the hard limit itself.
+    static func memoryTier(bytes: Int?, thresholds: (warn: Double, refuse: Double)) -> MemoryTier {
         guard let b = bytes.map(Double.init) else { return .ok }
-        if b > refuseAbove { return .refuse }
-        if b > warnAbove { return .warn }
+        if b > thresholds.refuse { return .refuse }
+        if b > thresholds.warn { return .warn }
         return .ok
     }
 
-    /// "20 models → 300 frames · 10 s at 30 fps · ≈ 29 MB · creates 2kpo_morph,
-    /// hides 2kpo". `showBytes` false drops the estimate (atom count unknown).
+    /// The build-time hint (spec §5.2), shown only above 10 s: "≈ 75 s to build",
+    /// "≈ 2 min to build" from 100 s.
+    static func buildTime(_ seconds: Double) -> String? {
+        guard seconds > 10 else { return nil }
+        if seconds < 100 { return "≈ \(Int(seconds.rounded())) s to build" }
+        return "≈ \(Int((seconds / 60).rounded())) min to build"
+    }
+
+    /// "20 models → 300 frames · 10 s at 30 fps · ≈ 867 MB · creates 2kpo_morph,
+    /// hides 2kpo · ≈ 28 s to build". Without Python's bytes per frame the
+    /// estimate is dropped; without an atom count, the build time.
     /// From a source whose morph is already loaded (`targetExists`) it reads
     /// "rebuilds 2kpo_morph, hides 2kpo"; on the morph itself, "rebuilds 2kpo_morph".
     static func summaryLine(_ s: MorphSettings.Summary, models: Int, fps: Double,
-                            showBytes: Bool, source: String, target: String,
+                            source: String, target: String,
                             isMorphObject: Bool, targetExists: Bool = false) -> String {
         var parts = ["\(models) models → \(s.frames) frames",
                      "\(MorphSettings.number(s.seconds)) s at "
                         + "\(MorphSettings.number(max(fps, 1))) fps"]
-        if showBytes { parts.append(megabytes(s.bytes)) }
+        if let bytes = s.bytes { parts.append(MorphSettings.megabytes(bytes)) }
         if isMorphObject {
             parts.append("rebuilds \(target)")
         } else {
             parts.append("\(targetExists ? "rebuilds" : "creates") \(target), hides \(source)")
         }
+        if let build = buildTime(s.buildSeconds) { parts.append(build) }
         return parts.joined(separator: " · ")
-    }
-
-    private static func megabytes(_ bytes: Int) -> String {
-        let mb = Double(bytes) / 1e6
-        if mb < 1 { return "< 1 MB" }
-        if mb < 1000 { return "≈ \(Int(mb.rounded())) MB" }
-        return String(format: "≈ %.1f GB", mb / 1000)
     }
 }
 

@@ -52,23 +52,44 @@ struct MorphSettings: Codable, Equatable {
         let frames: Int
         /// Wall-clock length at the given frame rate.
         let seconds: Double
-        /// Conservative RAM estimate (×1.1 overhead factor).
-        let bytes: Int
+        /// Memory the finished morph holds: the frames times Python's bytes per
+        /// frame. nil when Python has not published that figure.
+        let bytes: Int?
+        /// Rough time the app takes to build it, in seconds; 0 when the atom
+        /// count is unknown. A hint only (spec §5.2), see `buildSeconds(…)`.
+        let buildSeconds: Double
     }
 
     /// Estimate the output size and duration for a given molecule and frame rate.
     ///
     /// - Parameters:
     ///   - models: Number of states in the source object.
-    ///   - atoms: Atom count of the source object.
+    ///   - atoms: Atom count of the source object (0 when unknown), for the build time.
+    ///   - bytesPerFrame: `morph_jobs.bytes_per_frame` of the source, from the
+    ///     panel payload's `morph_bytes_per_frame`: coordinates plus the
+    ///     representations the source shows, overhead included. The same figure
+    ///     `morph_estimate` multiplies, so the sheet and `morph_object` agree.
     ///   - fps: Display frame rate in frames per second.
-    ///   - repCostPerAtom: Per-atom representation cost in bytes (default 36).
-    func summary(models: Int, atoms: Int, fps: Double, repCostPerAtom: Int = 36) -> Summary {
+    func summary(models: Int, atoms: Int, bytesPerFrame: Int?, fps: Double) -> Summary {
         let legs = loop ? models : models - 1
         let frames = legs * framesPerModel
         let seconds = Double(frames) / max(fps, 1)
-        let bytes = Int(Double(atoms * frames * (12 + repCostPerAtom)) * 1.1)
-        return Summary(legs: legs, frames: frames, seconds: seconds, bytes: bytes)
+        return Summary(legs: legs, frames: frames, seconds: seconds,
+                       bytes: bytesPerFrame.map { frames * $0 },
+                       buildSeconds: Self.buildSeconds(atoms: atoms, legs: legs, frames: frames,
+                                                       refinement: refinement))
+    }
+
+    /// Seconds the app takes to build a morph, roughly: per atom per leg (spec
+    /// §5.2's 0.05 ms) plus per atom per frame, growing with the clean-up cycles.
+    /// The per-frame cost is measured, headless at the app's cadence (`pump(100)`
+    /// every 500 ms): 2kpo (1860 atoms) 300 frames took 8 s at 0 cycles and 32 s
+    /// at 3, 1200 frames 117 s at 3, 45 frames 3.6 s at 3; 50k atoms × 45 frames
+    /// 88 s at 3. This reads them within ±30 %. Spec §5.2's 0.25 ms per atom per
+    /// frame reads 4.5–6.5× the measurements (141 s for the 32 s morph).
+    static func buildSeconds(atoms: Int, legs: Int, frames: Int, refinement: Int) -> Double {
+        let perAtomFrame = 1.4e-5 + 1.1e-5 * Double(max(refinement, 0))
+        return Double(atoms) * (Double(legs) * 0.05e-3 + Double(frames) * perAtomFrame)
     }
 
     // MARK: - Python command
@@ -116,8 +137,7 @@ struct MorphSettings: Codable, Equatable {
     /// - Returns: The source name, or nil when `name` does not match the
     ///   pattern or the inferred source is absent from `existing`.
     static func conventionalSource(of name: String, existing: [String]) -> String? {
-        // Pattern: <source>_morph optionally followed by one or more digits, at end of string.
-        guard let regex = try? NSRegularExpression(pattern: #"^(.+)_morph(\d+)?$"#),
+        guard let regex = conventionalName,
               let match = regex.firstMatch(
                   in: name,
                   range: NSRange(name.startIndex..., in: name)),
@@ -125,6 +145,18 @@ struct MorphSettings: Codable, Equatable {
         else { return nil }
         let source = String(name[sourceRange])
         return existing.contains(source) ? source : nil
+    }
+
+    /// `<source>_morph` optionally followed by digits, at the end of the name.
+    /// Built once: the Object panel asks for every multi-state row it draws.
+    private static let conventionalName = try? NSRegularExpression(pattern: #"^(.+)_morph(\d+)?$"#)
+
+    /// The source a row's ⟳ badge and its "Morph of …" tooltip name: the
+    /// registry's (`registry`, this app run's finished morphs), else the one the
+    /// `<source>_morph` convention points at, so a morph a relaunch brought back
+    /// reads as a morph, as its card's sheet already treats it (spec §5.9).
+    static func badgeSource(registry: String?, name: String, existing: [String]) -> String? {
+        registry ?? conventionalSource(of: name, existing: existing)
     }
 
     /// The object a Morph started from `card` writes, and whether its name is
@@ -143,22 +175,33 @@ struct MorphSettings: Codable, Equatable {
     ///   the first of `<source>_morph`, `<source>_morph2`, … that is free or a
     ///   known morph of this source.
     ///
+    /// A morph of this source still being built (`building`) counts as one of its
+    /// known morphs: until its first leg lands it has one state and no finished
+    /// record, so it would otherwise read as a user's molecule and send the answer
+    /// on to `_morph2`, while Python's registry targets the running job.
+    ///
     /// - Parameters:
     ///   - objects: the loaded objects (not selections), name → state count.
     ///   - groups: the names in `objects` that are groups.
     ///   - morphSources: completed morphs of this session, morph → source.
+    ///   - building: names of morph jobs queued or running.
     static func morphTarget(card: String, source: String, objects: [String: Int],
-                            groups: Set<String>,
-                            morphSources: [String: String]) -> (name: String, explicit: Bool) {
+                            groups: Set<String>, morphSources: [String: String],
+                            building: Set<String> = []) -> (name: String, explicit: Bool) {
         if card != source { return (card, true) }
+        var sources = morphSources
+        for name in building where sources[name] == nil
+            && conventionalSource(of: name, existing: [source]) == source {
+            sources[name] = source
+        }
         let base = morphName(for: source)
-        if let states = objects[base], morphSources[base] == nil,
+        if let states = objects[base], sources[base] == nil,
            !groups.contains(base), states > 1 {
             return (base, true)
         }
         var candidate = base
         var n = 2
-        while objects[candidate] != nil && morphSources[candidate] != source {
+        while objects[candidate] != nil && sources[candidate] != source {
             candidate = "\(base)\(n)"
             n += 1
         }
@@ -171,6 +214,38 @@ struct MorphSettings: Codable, Equatable {
     /// seconds and fps in the sheets' summary lines.
     static func number(_ x: Double) -> String {
         abs(x - x.rounded()) < 0.05 ? String(Int(x.rounded())) : String(format: "%.1f", x)
+    }
+
+    /// A memory estimate in the sheets: "< 1 MB", "≈ 29 MB", "≈ 1.2 GB".
+    static func megabytes(_ bytes: Int) -> String {
+        let mb = Double(bytes) / 1e6
+        if mb < 1 { return "< 1 MB" }
+        if mb < 1000 { return "≈ \(Int(mb.rounded())) MB" }
+        return String(format: "≈ %.1f GB", mb / 1000)
+    }
+}
+
+// MARK: - Decoding
+
+extension MorphSettings {
+    /// Each key on its own: a key the saved JSON lacks (one a later build adds,
+    /// or `movieSmooth` in a save older than it) or cannot read takes its
+    /// default, and the others keep what was saved. The synthesized decoder
+    /// threw on the first missing key, and `load()` then dropped every saved
+    /// value. Encoding stays synthesized (every key). In an extension, so the
+    /// memberwise and `MorphSettings()` initializers remain.
+    init(from decoder: Decoder) throws {
+        self.init()
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) -> T {
+            (try? c.decodeIfPresent(T.self, forKey: key)) ?? fallback
+        }
+        framesPerModel = value(.framesPerModel, framesPerModel)
+        loop = value(.loop, loop)
+        method = value(.method, method)
+        refinement = value(.refinement, refinement)
+        rate = value(.rate, rate)
+        movieSmooth = value(.movieSmooth, movieSmooth)
     }
 }
 
@@ -209,21 +284,15 @@ enum MorphMovie {
     }
 
     /// The object a smooth clip of `source` plays, and whether its name is passed
-    /// to `morph_object`: the Object panel's resolver (MorphSettings.morphTarget),
-    /// except that a morph of this source still being built counts as its morph.
-    /// Such an object has one state and no completed record yet, so the resolver
-    /// alone would take it for a user's molecule and answer `<source>_morph2`,
-    /// while Python's registry targets the running job.
+    /// to `morph_object`: the Object panel's resolver for the source's own card
+    /// (MorphSettings.morphTarget), a morph of this source still being built
+    /// counting as its morph.
     static func target(source: String, objects: [String: Int], groups: Set<String>,
                        morphSources: [String: String],
                        building: Set<String>) -> (name: String, explicit: Bool) {
-        var sources = morphSources
-        for name in building where sources[name] == nil
-            && MorphSettings.conventionalSource(of: name, existing: [source]) == source {
-            sources[name] = source
-        }
-        return MorphSettings.morphTarget(card: source, source: source, objects: objects,
-                                         groups: groups, morphSources: sources)
+        MorphSettings.morphTarget(card: source, source: source, objects: objects,
+                                  groups: groups, morphSources: morphSources,
+                                  building: building)
     }
 
     /// Length of the smooth clip at its natural speed: the morph's frames (a
@@ -247,30 +316,72 @@ enum MorphMovie {
 
     /// Duration after the toggle or frames per model changed: the natural length
     /// while smoothing, unless the user has edited Duration since the sheet opened;
-    /// otherwise the current value. Kept inside the stepper's range, which shrinks
-    /// when smoothing turns off or frames per model drops.
+    /// with smoothing off and Duration unedited, the value the sheet opened with
+    /// (`opening`, when given: the toggle had overwritten it with the natural
+    /// length); otherwise the current value. Kept inside the stepper's range,
+    /// which shrinks when smoothing turns off or frames per model drops.
     static func duration(current: Double, smooth: Bool, edited: Bool,
-                         natural: Double) -> Double {
+                         natural: Double, opening: Double? = nil) -> Double {
         let range = durationRange(smooth: smooth, natural: natural)
-        let d = smooth && !edited ? natural : current
+        let d: Double
+        if edited {
+            d = current
+        } else if smooth {
+            d = natural
+        } else {
+            d = opening ?? current
+        }
         return min(max(d, range.lowerBound), range.upperBound)
     }
 
     /// The line under the toggle: "Builds 2kpo_morph (20 models × 15 frames) and
-    /// plays that instead · 10 s at 30 fps" while on, the reason while unavailable,
+    /// plays that instead · 10 s at 30 fps" while on, followed by `memory` (the
+    /// estimate, `memoryNote`'s text) when given; the reason while unavailable;
     /// nothing while off. `target` is the resolved morph name.
     static func caption(_ availability: Availability, smooth: Bool, target: String,
-                        models: Int, framesPerModel: Int, fps: Double) -> String? {
+                        models: Int, framesPerModel: Int, fps: Double,
+                        memory: String? = nil) -> String? {
         switch availability {
         case .unavailable(let reason):
             return reason
         case .available:
             guard smooth else { return nil }
             let s = naturalSeconds(models: models, framesPerModel: framesPerModel, fps: fps)
-            return "Builds \(target) (\(models) models × \(framesPerModel) frames) "
+            let line = "Builds \(target) (\(models) models × \(framesPerModel) frames) "
                 + "and plays that instead · \(MorphSettings.number(s)) s at "
                 + "\(MorphSettings.number(max(fps, 1))) fps"
+            return memory.map { "\(line) · \($0)" } ?? line
         }
+    }
+
+    /// Memory the smooth clip's morph would hold: its frames (a loop, so models ×
+    /// frames per model) times Python's bytes per frame of the source (the panel
+    /// payload's `morph_bytes_per_frame`), as `morph_estimate` computes it; nil
+    /// without that figure.
+    static func estimatedBytes(models: Int, framesPerModel: Int, bytesPerFrame: Int?) -> Int? {
+        var loop = MorphSettings()
+        loop.framesPerModel = framesPerModel
+        loop.loop = true
+        return loop.summary(models: models, atoms: 0, bytesPerFrame: bytesPerFrame, fps: 1).bytes
+    }
+
+    /// The caption's memory part and its tier against `thresholds` (spec §5.6,
+    /// as the Morph sheet judges it): "≈ 412 MB", with the remedy appended above
+    /// the refuse threshold ("≈ 3.5 GB · reduce frames per model"). No text and
+    /// `.ok` while the estimate is unknown.
+    static func memoryNote(bytes: Int?, thresholds: (warn: Double, refuse: Double))
+        -> (text: String?, tier: MorphSheet.MemoryTier) {
+        guard let bytes else { return (nil, .ok) }
+        let tier = MorphSheet.memoryTier(bytes: bytes, thresholds: thresholds)
+        let size = MorphSettings.megabytes(bytes)
+        return (tier == .refuse ? "\(size) · reduce frames per model" : size, tier)
+    }
+
+    /// Whether Add may run: not for a smooth clip whose morph Python would refuse
+    /// for its size, which would leave a clip naming an object that never
+    /// appears. A plain clip, or a smooth one under the limit, can be added.
+    static func canAdd(smoothOn: Bool, tier: MorphSheet.MemoryTier) -> Bool {
+        !(smoothOn && tier == .refuse)
     }
 
     /// What Add does.

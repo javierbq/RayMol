@@ -3662,10 +3662,14 @@ private struct ObjectRowContent: View {
 
         // Model / state count, right of the name (the structure's "frame count").
         // A morph (#morph) prefixes the count with a `repeat` glyph: its states
-        // are frames of a loop, not models.
+        // are frames of a loop, not models. A morph this app run built is named by
+        // the registry; one a relaunch brought back, by the `<source>_morph`
+        // convention, as its card's sheet resolves it (spec §5.9).
         if entry.stateCount > 1 {
+            let morphOf = MorphSettings.badgeSource(registry: entry.morphSource, name: entry.name,
+                                                    existing: engine.objects.map(\.name))
             HStack(spacing: 2) {
-                if entry.morphSource != nil {
+                if morphOf != nil {
                     Image(systemName: "repeat").font(.system(size: 8, weight: .semibold))
                 }
                 Text("\(entry.stateCount)")
@@ -3678,7 +3682,7 @@ private struct ObjectRowContent: View {
             // column, the badge wrapped onto two lines. The name truncates instead
             // (its tooltip carries the full name, #350).
             .fixedSize()
-            .help(entry.morphSource.map { "Morph of \($0) · \(entry.stateCount) frames" }
+            .help(morphOf.map { "Morph of \($0) · \(entry.stateCount) frames" }
                   ?? "\(entry.stateCount) models / states")
         }
 
@@ -4062,7 +4066,10 @@ private struct ObjectCard: View {
     }
 
     /// The object this card's Morph… writes, and whether it is named to Python
-    /// (MorphSettings.morphTarget).
+    /// (MorphSettings.morphTarget). A morph of this source still being built
+    /// counts as its morph from the first poll, while it has one state: the
+    /// capsule's watch then finds that job and stays hidden, and the sheet names
+    /// `<source>_morph`, not `<source>_morph2` (a morph's own card is the card).
     private func morphTarget(source: String) -> (name: String, explicit: Bool) {
         let loaded = engine.objects.filter { !$0.isSelection }
         return MorphSettings.morphTarget(
@@ -4070,7 +4077,8 @@ private struct ObjectCard: View {
             objects: Dictionary(loaded.map { ($0.name, $0.stateCount) },
                                 uniquingKeysWith: { a, _ in a }),
             groups: Set(loaded.filter { $0.isGroup }.map { $0.name }),
-            morphSources: engine.morphSources)
+            morphSources: engine.morphSources,
+            building: Set(engine.morphJobs.filter { !$0.isError }.map { $0.id }))
     }
 
     /// A morph job writing the object this card's Morph… would write is running.
@@ -4094,6 +4102,9 @@ private struct ObjectCard: View {
         return MorphSheet(
             source: source, target: target, models: models,
             atoms: engine.objectMeta[entry.name]?.atomCount,
+            // morph_estimate's figure is the SOURCE's (its reps), also from a
+            // morph's own card; published for every multi-state molecule.
+            bytesPerFrame: engine.morphBytesPerFrame[source],
             fps: engine.playback.movieFPS,
             existingSettings: engine.morphSpecs[entry.name],
             isMorphObject: isMorph,
@@ -6093,6 +6104,14 @@ struct PanelPayload: Decodable {
     ///
     /// Optional for the same reason as every field above.
     let morph: [String: MorphInfoWire]?
+    /// Bytes one morph frame of each multi-state molecule would hold
+    /// (`morph_jobs.bytes_per_frame`: its coordinates plus the reps it shows,
+    /// overhead included), keyed by object name. The Morph sheet and the
+    /// Play-models sheet multiply it by their frames, so their estimate is
+    /// `morph_object`'s own. Not listed: other objects, morphs being built.
+    ///
+    /// Optional for the same reason as every field above.
+    let morph_bytes_per_frame: [String: Int]?
 
     struct AlignmentSummary: Decodable {
         let depth: Int
@@ -6247,6 +6266,8 @@ extension PyMOLEngine {
             if self.predictionJobs != jobs { self.predictionJobs = jobs }
             if self.designJobs != designs { self.designJobs = designs }
 
+            let bytesPerFrame = payload.morph_bytes_per_frame ?? [:]
+            if self.morphBytesPerFrame != bytesPerFrame { self.morphBytesPerFrame = bytesPerFrame }
             self.applyMorphPoll(jobs: morphJobList, running: nowRunningMorphs,
                                 sources: newMorphSources, specs: newMorphSpecs,
                                 builds: newMorphBuilds)

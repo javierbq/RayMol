@@ -73,6 +73,69 @@ final class MorphEngineTests: XCTestCase {
             [])
     }
 
+    /// The auto-play requests a poll leaves: only those that may still complete.
+    /// A job whose record is terminal (failed, cancelled, refused) and a name that
+    /// left the running set without a finished record (dismissed, deleted) lose
+    /// theirs; otherwise a later build of that name that did not ask for auto-play
+    /// (a Movie-tab smooth Add, a command-line morph) would start playing.
+    func testAutoPlayAfterPoll() {
+        // Cancelled or failed while building: dropped; the other one stays.
+        XCTAssertEqual(PyMOLEngine.autoPlayAfterPoll(
+            autoPlay: ["a_morph", "b_morph"], previouslyRunning: ["a_morph", "b_morph"],
+            nowRunning: ["b_morph"], sources: [:], failed: ["a_morph"]), ["b_morph"])
+        // Refused at once (never ran): its error record drops it.
+        XCTAssertEqual(PyMOLEngine.autoPlayAfterPoll(
+            autoPlay: ["r_morph"], previouslyRunning: [], nowRunning: [],
+            sources: [:], failed: ["r_morph"]), [])
+        // Refused next to a finished morph of that name: Python files the card
+        // under "<name> (refused)".
+        XCTAssertEqual(PyMOLEngine.autoPlayAfterPoll(
+            autoPlay: ["f_morph"], previouslyRunning: [], nowRunning: [],
+            sources: ["f_morph": "f"], failed: ["f_morph (refused)"]), [])
+        // Left running with no record at all (dismissed): dropped.
+        XCTAssertEqual(PyMOLEngine.autoPlayAfterPoll(
+            autoPlay: ["d_morph"], previouslyRunning: ["d_morph"], nowRunning: [],
+            sources: [:], failed: []), [])
+        // Left running and finished: kept, for morphDidComplete to consume.
+        XCTAssertEqual(PyMOLEngine.autoPlayAfterPoll(
+            autoPlay: ["c_morph"], previouslyRunning: ["c_morph"], nowRunning: [],
+            sources: ["c_morph": "c"], failed: []), ["c_morph"])
+        // Just requested, not listed by any poll yet: kept.
+        XCTAssertEqual(PyMOLEngine.autoPlayAfterPoll(
+            autoPlay: ["n_morph"], previouslyRunning: [], nowRunning: [],
+            sources: [:], failed: []), ["n_morph"])
+    }
+
+    /// The engine applies that rule on every poll, and a morph started without
+    /// auto-play clears an earlier request for its target. The test host runs a
+    /// live engine: the morph's source does not exist, so Python refuses it and
+    /// files a failed record, which the test removes.
+    func testAutoPlayRequestsAreClearedByPollsAndByANonAutoPlayMorph() {
+        let engine = PyMOLEngine.shared
+        let saved = (engine.morphJobs, engine.runningMorphs)
+        defer {
+            engine.runPython("from pymol import morph_jobs as _mj\n"
+                             + "_mj.morph_dismiss('t4ap_src_morph')\n"
+                             + "_mj._JOBS.pop('t4ap_src_morph', None)")
+            engine.morphJobs = saved.0
+            engine.runningMorphs = saved.1
+        }
+        var s = MorphSettings()
+        s.framesPerModel = 2
+        s.refinement = 0
+        engine.morph(source: "t4ap_src", settings: s, autoPlay: true)
+        XCTAssertTrue(engine.morphAutoPlay.contains("t4ap_src_morph"))
+        engine.morph(source: "t4ap_src", settings: s, autoPlay: false)
+        XCTAssertFalse(engine.morphAutoPlay.contains("t4ap_src_morph"))
+        engine.morph(source: "t4ap_src", settings: s, autoPlay: true)
+        XCTAssertTrue(engine.morphAutoPlay.contains("t4ap_src_morph"))
+        engine.applyMorphPoll(
+            jobs: [PredictionJobState.fixture(id: "t4ap_src_morph", state: "error",
+                                              error: "morph: refused")],
+            running: [], sources: [:], specs: [:], builds: [:])
+        XCTAssertFalse(engine.morphAutoPlay.contains("t4ap_src_morph"))
+    }
+
     /// A finished morph whose build number no poll has reported is a completion,
     /// whether or not a poll saw it building: a small morph lands inside one
     /// poll's pump, and a rebuild with the same settings changes nothing else.
@@ -102,6 +165,19 @@ final class MorphEngineTests: XCTestCase {
         XCTAssertEqual(payload.morph?["s_morph"]?.spec.frames_per_model, 10)
         XCTAssertNil(payload.morph?["t_morph"]?.build)
         XCTAssertEqual(payload.morph?["t_morph"]?.source, "t")
+        // No morph_bytes_per_frame (an older bundled Python): still decodes.
+        XCTAssertNil(payload.morph_bytes_per_frame)
+    }
+
+    /// Python's bytes per morph frame of each multi-state molecule, the figure
+    /// both sheets multiply by their frames.
+    func testPanelPayloadCarriesMorphBytesPerFrame() throws {
+        let json = """
+        {"objects":["2kpo"],"selections":[],"enabled":["2kpo"],"sel_counts":{},
+         "nstate":{"2kpo":20},"morph":{},"morph_bytes_per_frame":{"2kpo":2890000}}
+        """
+        let payload = try JSONDecoder().decode(PanelPayload.self, from: Data(json.utf8))
+        XCTAssertEqual(payload.morph_bytes_per_frame, ["2kpo": 2_890_000])
     }
 
     // MARK: - Per-object playback timers
@@ -139,6 +215,62 @@ final class MorphEngineTests: XCTestCase {
         s.refinement = 0
         engine.morph(source: "t8b_src", settings: s, autoPlay: false, name: "t8b_src_morph")
         XCTAssertFalse(engine.playingObjects.contains("t8b_src_morph"))
+    }
+
+    /// Stopping every per-object player for the Movie tab hands the objects back to
+    /// the movie: each timer pinned its object with `set state`, so releasing
+    /// unsets it. A plain stop leaves the states alone. Uses the live engine's
+    /// command tap; the objects named do not exist.
+    func testStopAllObjectStatesReleasingUnpinsTheObjects() {
+        let engine = PyMOLEngine.shared
+        var commands: [String] = []
+        engine.commandTap = { commands.append($0) }
+        defer { engine.commandTap = nil }
+        engine.playingObjects = ["t4rel_a", "t4rel_b"]
+        engine.stopAllObjectStates()
+        XCTAssertEqual(commands, [])
+        XCTAssertTrue(engine.playingObjects.isEmpty)
+        engine.playingObjects = ["t4rel_a", "t4rel_b"]
+        engine.stopAllObjectStates(releasing: true)
+        XCTAssertEqual(Set(commands), ["unset state, t4rel_a", "unset state, t4rel_b"])
+        XCTAssertTrue(engine.playingObjects.isEmpty)
+    }
+
+    /// iOS memory warning (spec §5.6; OOM is uncatchable there): every morph still
+    /// building is cancelled, which frees its partial object and the worker's leg,
+    /// per-object playback stops, and the console says why. Records already failed
+    /// or cancelled are left alone. The live engine's Python tap records the calls;
+    /// the jobs named do not exist, so morph_cancel does nothing.
+    func testMemoryWarningCancelsBuildingMorphs() {
+        let engine = PyMOLEngine.shared
+        let saved = engine.morphJobs
+        var python: [String] = []
+        engine.pythonTap = { python.append($0) }
+        defer {
+            engine.pythonTap = nil
+            engine.morphJobs = saved
+        }
+        engine.morphJobs = [
+            PredictionJobState.fixture(id: "t4mw_run", state: "running"),
+            PredictionJobState.fixture(id: "t4mw_queued", state: "queued"),
+            PredictionJobState.fixture(id: "t4mw_err", state: "error", error: "x"),
+            PredictionJobState.fixture(id: "t4mw_cancel", state: "cancelled"),
+        ]
+        engine.playingObjects = ["t4mw_play"]
+        engine.cancelMorphsForMemoryWarning()
+        XCTAssertEqual(Set(python.filter { $0.contains("morph_cancel(") }), [
+            "from pymol import cmd as _c\n_c.morph_cancel('t4mw_queued')",
+            "from pymol import cmd as _c\n_c.morph_cancel('t4mw_run')",
+        ])
+        XCTAssertTrue(engine.playingObjects.isEmpty)
+        XCTAssertEqual(engine.feedbackLog.last, "morph: cancelled on memory warning")
+        // Nothing building: no cancel, no console line.
+        python.removeAll()
+        let lines = engine.feedbackLog.count
+        engine.morphJobs = [PredictionJobState.fixture(id: "t4mw_err", state: "error", error: "x")]
+        engine.cancelMorphsForMemoryWarning()
+        XCTAssertEqual(python.filter { $0.contains("morph_cancel(") }, [])
+        XCTAssertEqual(engine.feedbackLog.count, lines)
     }
 
     // MARK: - statesClipRange
@@ -261,6 +393,29 @@ final class MorphEngineTests: XCTestCase {
         XCTAssertTrue(PyMOLEngine.statesClipLabel(all, models: 20) == ("20 models 2–20", "film.stack"))
         let two = PyMOLEngine.StatesSpec(objects: ["a", "b"], firstModel: 1, lastModel: 5)
         XCTAssertTrue(PyMOLEngine.statesClipLabel(two, models: 20) == ("2 objects 1–5", "film.stack"))
+        // A plain single-object clip is measured against that object's own models,
+        // whatever else is loaded: its full range has no suffix.
+        var plain = PyMOLEngine.StatesSpec(objects: ["1nmr"], firstModel: 1, lastModel: 20)
+        XCTAssertTrue(PyMOLEngine.statesClipLabel(plain, models: 20) == ("1nmr", "film.stack"))
+        plain.lastModel = 10
+        XCTAssertTrue(PyMOLEngine.statesClipLabel(plain, models: 20) == ("1nmr 1–10", "film.stack"))
+    }
+
+    /// A clip that plays nothing reads "label — note" when it is wide enough; a
+    /// narrow one shows the note alone (the lane draws the ⚠ glyph before it), so
+    /// the reason is not cut off. The name stays in the tooltip and the menu.
+    func testStatesClipCaption() {
+        let note = "not built · morph 2kpo to fill"
+        XCTAssertEqual(PyMOLEngine.statesClipCaption(label: "2kpo_morph", note: nil, width: 40),
+                       "2kpo_morph")
+        XCTAssertEqual(PyMOLEngine.statesClipCaption(label: "2kpo_morph", note: note, width: 400),
+                       "2kpo_morph — \(note)")
+        XCTAssertEqual(PyMOLEngine.statesClipCaption(label: "2kpo_morph", note: note, width: 160),
+                       "2kpo_morph — \(note)")
+        XCTAssertEqual(PyMOLEngine.statesClipCaption(label: "2kpo_morph", note: note, width: 159),
+                       note)
+        XCTAssertEqual(PyMOLEngine.statesClipCaption(label: "2kpo_morph", note: note, width: 30),
+                       note)
     }
 
     // MARK: - Clips whose objects are not loaded

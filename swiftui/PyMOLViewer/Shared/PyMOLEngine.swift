@@ -228,10 +228,17 @@ final class PyMOLEngine: ObservableObject {
     /// wire spec in the payload. Populated in lock-step with `morphSources`.
     /// `movieSmooth` is left at its default (the wire does not carry it).
     @Published var morphSpecs: [String: MorphSettings] = [:]
+    /// Bytes one morph frame of each multi-state molecule would hold, from the
+    /// panel payload's `morph_bytes_per_frame` (Python's `bytes_per_frame`). The
+    /// Morph sheet and the Play-models sheet multiply it by their frame count.
+    @Published var morphBytesPerFrame: [String: Int] = [:]
     /// Morph names for which the tray's "auto-play on completion" flag is set.
     /// Keyed by the TARGET name (settings.morphName(for: source)); consumed and
-    /// removed by `morphDidComplete(_:)`. Not @Published — purely internal bookkeeping.
-    private var morphAutoPlay: Set<String> = []
+    /// removed by `morphDidComplete(_:)`, dropped by each poll for a job that can
+    /// no longer complete (`autoPlayAfterPoll`) and by a morph of that target
+    /// started without auto-play. Not @Published — purely internal bookkeeping
+    /// (readable for tests).
+    private(set) var morphAutoPlay: Set<String> = []
     /// Currently-running morph names (isError == false in morph_jobs), tracked by
     /// the parse path to detect completions across consecutive polls.
     /// Updated only on the main thread inside `parseObjectPanelFeedback`.
@@ -653,11 +660,21 @@ final class PyMOLEngine: ObservableObject {
     private var restoreFrameRendered = false
     // Backstop that drops a stuck snapshot if the render loop never presents.
     private var restoreBackstop: DispatchWorkItem?
+    // The memory-warning observer (cancelMorphsForMemoryWarning).
+    private var memoryWarningObserver: NSObjectProtocol?
     #endif
 
     private init() {
         #if os(iOS)
         preloadRestoreSnapshot()
+        // Out-of-memory is uncatchable on iOS: a memory warning cancels the morphs
+        // being built (spec §5.6). The engine is the app-lifetime singleton, so
+        // the observer is never removed.
+        memoryWarningObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didReceiveMemoryWarningNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                self?.cancelMorphsForMemoryWarning()
+            }
         #endif
     }
 
@@ -2119,6 +2136,12 @@ final class PyMOLEngine: ObservableObject {
         untrackedMovie = false
         pendingTimelineAdd = nil
         runPython("from pymol import appkit_movie as _am\n_am.forget_all_views()")
+        // A morph still building is cancelled and dismissed before its source
+        // goes, so no card is left in the tray for an object the user just
+        // wiped ("source deleted"); reinitialize resets the registry too. The
+        // per-object players go with the objects they play.
+        runPython("from pymol import morph_jobs as _mj\n_mj.reset(dismiss=True)")
+        stopAllObjectStates()
         runCommand("reinitialize")
         // reinitialize also resets engine settings to defaults — restore the
         // fetch_path that initialize() set (the writable temp dir) so a post-clear
@@ -2260,7 +2283,15 @@ final class PyMOLEngine: ObservableObject {
         playingObjects.remove(name)
     }
 
-    func stopAllObjectStates() {
+    /// Stop every per-object player. `releasing` (entering the Movie tab or the
+    /// timeline): also hand each object back to the movie, since its timer pinned
+    /// it with `set state` ticks and a pinned object ignores the movie's frames.
+    func stopAllObjectStates(releasing: Bool = false) {
+        if releasing {
+            for name in playingObjects.sorted() {
+                runCommand("unset state, \(name)", naming: name)
+            }
+        }
         objectStateTimers.values.forEach { $0.invalidate() }
         objectStateTimers.removeAll()
         if !playingObjects.isEmpty { playingObjects.removeAll() }
@@ -2301,7 +2332,9 @@ final class PyMOLEngine: ObservableObject {
         guard isLegalObjectName(source) else { return }
         if let n = name, !isLegalObjectName(n) { return }
         let target = expected ?? name ?? MorphSettings.morphName(for: source)
-        if autoPlay { morphAutoPlay.insert(target) }
+        // A request left by an earlier morph of this target that never completed
+        // must not make this one play.
+        if autoPlay { morphAutoPlay.insert(target) } else { morphAutoPlay.remove(target) }
         // The rebuild replaces the target's states; a timer still playing it would
         // step through the partial object, then miss it if the job is cancelled.
         // Completion restarts playback when auto-play is on.
@@ -2312,6 +2345,18 @@ final class PyMOLEngine: ObservableObject {
     /// Cancel a running morph job via the Python morph_cancel command.
     func cancelMorph(_ name: String) {
         runPython("from pymol import cmd as _c\n_c.morph_cancel(\(InferenceJob.pythonLiteral(name)))")
+    }
+
+    /// The system is short of memory (iOS `didReceiveMemoryWarningNotification`;
+    /// out-of-memory is uncatchable there, spec §5.6): cancel every morph still
+    /// being built, which deletes its partial object and drops the worker's leg,
+    /// and stop per-object playback, which builds each state it shows. One
+    /// console line says why, when a morph was cancelled.
+    func cancelMorphsForMemoryWarning() {
+        let building = morphJobs.filter { !$0.isError }.map { $0.id }
+        for name in building { cancelMorph(name) }
+        stopAllObjectStates()
+        if !building.isEmpty { logLine("morph: cancelled on memory warning") }
     }
 
     /// Called by the parse path when a morph name transitions from running to
@@ -2369,6 +2414,9 @@ final class PyMOLEngine: ObservableObject {
         let completed = Set(Self.completedMorphs(previouslyRunning: runningMorphs,
                                                  nowRunning: running, known: sources))
             .union(Self.newlyBuiltMorphs(builds: builds, seen: seenMorphBuilds))
+        morphAutoPlay = Self.autoPlayAfterPoll(
+            autoPlay: morphAutoPlay, previouslyRunning: runningMorphs, nowRunning: running,
+            sources: sources, failed: Set(jobs.filter { $0.isError }.map { $0.id }))
         runningMorphs = running
         seenMorphBuilds.formUnion(builds.values)
         let previousSpecs = morphSpecs
@@ -2428,6 +2476,24 @@ final class PyMOLEngine: ObservableObject {
     /// settings, which publishes the same source and spec.
     static func newlyBuiltMorphs(builds: [String: Int], seen: Set<Int>) -> [String] {
         builds.filter { !seen.contains($0.value) }.keys.sorted()
+    }
+
+    /// The auto-play requests a poll leaves: those that may still complete.
+    /// Dropped: a target whose job record is terminal (`failed`: error, cancelled,
+    /// or refused, which Python files as `<name> (refused)` when a finished morph
+    /// holds the name), and a name that left the running set without a finished
+    /// record (dismissed, or deleted with its record). Kept: a finished one, for
+    /// `morphDidComplete` to consume, and one no poll has listed yet. Without
+    /// this a later build of that name that never asked for auto-play (a Movie-tab
+    /// smooth Add, a command-line morph) would start playing.
+    static func autoPlayAfterPoll(autoPlay: Set<String>, previouslyRunning: Set<String>,
+                                  nowRunning: Set<String>, sources: [String: String],
+                                  failed: Set<String>) -> Set<String> {
+        autoPlay.filter { name in
+            if failed.contains(name) || failed.contains(name + " (refused)") { return false }
+            let leftRunning = previouslyRunning.contains(name) && !nowRunning.contains(name)
+            return !leftRunning || sources[name] != nil
+        }
     }
 
     /// Names in `previouslyRunning` that have disappeared from `nowRunning`
@@ -3058,6 +3124,16 @@ final class PyMOLEngine: ObservableObject {
         }
         if let objs = spec.objects, objs.count == 1 { return "not loaded" }
         return missing.joined(separator: ", ") + " not loaded"
+    }
+
+    /// The text a states clip draws in the lane, `width` points wide: "label —
+    /// note" for a clip that plays nothing, or the note alone when the clip is
+    /// narrower than 160 pt (the lane draws the ⚠ glyph before it), so the
+    /// reason is what stays readable. The name stays in the tooltip and in the
+    /// context menu's header.
+    static func statesClipCaption(label: String, note: String?, width: CGFloat) -> String {
+        guard let note else { return label }
+        return width < 160 ? note : "\(label) — \(note)"
     }
 
     /// Fill a morph clip whose object is not loaded: morph its source into the
@@ -5370,6 +5446,11 @@ final class PyMOLEngine: ObservableObject {
                     if let data = FileManager.default.contents(atPath: path),
                        let restored = Self.timelineRestorePayload(data) {
                         DispatchQueue.main.async {
+                            // A per-object player outlives the session it was
+                            // started in, and would drive a restored object of
+                            // the same name. Not released: a restored .pse
+                            // carries its objects' own states.
+                            self.stopAllObjectStates()
                             self.applyRestoredTimeline(restored.items, untrackedMovie: restored.untrackedMovie)
                         }
                     }

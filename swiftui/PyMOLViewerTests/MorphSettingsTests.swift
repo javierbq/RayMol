@@ -10,19 +10,29 @@ final class MorphSettingsTests: XCTestCase {
 
     // MARK: - Summary
 
+    /// The bytes are Python's figure for one frame (morph_jobs.bytes_per_frame,
+    /// overhead included) times the frames, as morph_estimate computes them.
     func testSummaryAtMovieFPS() {
         let s = MorphSettings()
-        let sum = s.summary(models: 20, atoms: 1656, fps: 30)
+        let sum = s.summary(models: 20, atoms: 1656, bytesPerFrame: 2_890_000, fps: 30)
         XCTAssertEqual(sum.legs, 20)
         XCTAssertEqual(sum.frames, 300)
         XCTAssertEqual(sum.seconds, 10, accuracy: 1e-9)
-        XCTAssertEqual(sum.bytes, Int(Double(1656 * 300 * 48) * 1.1))
+        XCTAssertEqual(sum.bytes, 300 * 2_890_000)
+    }
+
+    /// No figure from Python (the poll has not published one): no estimate.
+    func testSummaryWithoutBytesPerFrameHasNoEstimate() {
+        XCTAssertNil(MorphSettings().summary(models: 20, atoms: 1656, bytesPerFrame: nil,
+                                             fps: 30).bytes)
     }
 
     func testSummaryNoLoop() {
         var s = MorphSettings()
         s.loop = false
-        XCTAssertEqual(s.summary(models: 20, atoms: 10, fps: 30).legs, 19)
+        let sum = s.summary(models: 20, atoms: 10, bytesPerFrame: 1000, fps: 30)
+        XCTAssertEqual(sum.legs, 19)
+        XCTAssertEqual(sum.bytes, 19 * 15 * 1000)
     }
 
     // MARK: - MorphClipMapping
@@ -106,8 +116,10 @@ final class MorphSettingsTests: XCTestCase {
                                              groups: [], morphSources: [:])
         XCTAssertEqual(user.name, "2kpo_morph2")
         XCTAssertFalse(user.explicit)
+        // A group reports its members' states (count_states), so the group guard,
+        // not the state count, is what sends this one to _morph2.
         let group = MorphSettings.morphTarget(card: "2kpo", source: "2kpo",
-                                              objects: ["2kpo": 20, "2kpo_morph": 1],
+                                              objects: ["2kpo": 20, "2kpo_morph": 20],
                                               groups: ["2kpo_morph"], morphSources: [:])
         XCTAssertEqual(group.name, "2kpo_morph2")
         XCTAssertFalse(group.explicit)
@@ -117,6 +129,45 @@ final class MorphSettingsTests: XCTestCase {
             groups: [], morphSources: ["2kpo_morph": "other", "2kpo_morph3": "2kpo"])
         XCTAssertEqual(foreign.name, "2kpo_morph3")     // _morph2 is a user object
         XCTAssertFalse(foreign.explicit)
+    }
+
+    /// Until its first leg lands, a morph being built has one state and no finished
+    /// record; it still counts as this source's morph, so the source card's Morph…
+    /// capsule stays hidden and its sheet names `2kpo_morph`, not `2kpo_morph2`.
+    func testMorphTargetCountsABuildingMorph() {
+        let t = MorphSettings.morphTarget(card: "2kpo", source: "2kpo",
+                                          objects: ["2kpo": 20, "2kpo_morph": 1],
+                                          groups: [], morphSources: [:],
+                                          building: ["2kpo_morph"])
+        XCTAssertEqual(t.name, "2kpo_morph")
+        XCTAssertFalse(t.explicit)
+        // Another source's building morph is not this source's.
+        let other = MorphSettings.morphTarget(card: "2kpo", source: "2kpo",
+                                              objects: ["2kpo": 20, "2kpo_morph": 1],
+                                              groups: [], morphSources: [:],
+                                              building: ["1nmr_morph"])
+        XCTAssertEqual(other.name, "2kpo_morph2")
+        // A morph's own card is the card, named, building or not.
+        let own = MorphSettings.morphTarget(card: "2kpo_morph", source: "2kpo",
+                                            objects: ["2kpo": 20, "2kpo_morph": 1],
+                                            groups: [], morphSources: [:],
+                                            building: ["2kpo_morph"])
+        XCTAssertEqual(own.name, "2kpo_morph")
+        XCTAssertTrue(own.explicit)
+    }
+
+    /// The row's ⟳ badge and its tooltip: the registry's source, else the
+    /// `<source>_morph` convention (a morph a relaunch brought back), as the
+    /// card's sheet resolves it.
+    func testBadgeSource() {
+        XCTAssertEqual(MorphSettings.badgeSource(registry: "2kpo", name: "2kpo_morph",
+                                                 existing: ["2kpo_morph"]), "2kpo")
+        XCTAssertEqual(MorphSettings.badgeSource(registry: nil, name: "2kpo_morph",
+                                                 existing: ["2kpo", "2kpo_morph"]), "2kpo")
+        XCTAssertNil(MorphSettings.badgeSource(registry: nil, name: "2kpo_morph",
+                                               existing: ["2kpo_morph"]))
+        XCTAssertNil(MorphSettings.badgeSource(registry: nil, name: "1nmr",
+                                               existing: ["1nmr", "2kpo"]))
     }
 
     // MARK: - Sheet pre-fill
@@ -158,6 +209,30 @@ final class MorphSettingsTests: XCTestCase {
         XCTAssertEqual(MorphSettings.load(UserDefaults(suiteName: "Empty")!), MorphSettings())
     }
 
+    /// A key the saved JSON lacks (one a later build added, or this build's
+    /// movieSmooth in an older save) takes its default; the keys present keep
+    /// what was saved instead of the whole struct falling back to defaults.
+    func testDecodeKeepsSavedKeysWhenOneIsMissing() throws {
+        let json = #"{"framesPerModel":42,"loop":false,"method":"linear","refinement":5,"rate":"ramp up"}"#
+        let s = try JSONDecoder().decode(MorphSettings.self, from: Data(json.utf8))
+        XCTAssertEqual(s.framesPerModel, 42)
+        XCTAssertFalse(s.loop)
+        XCTAssertEqual(s.method, "linear")
+        XCTAssertEqual(s.refinement, 5)
+        XCTAssertEqual(s.rate, "ramp up")
+        XCTAssertFalse(s.movieSmooth)                   // the default
+        // A key of the wrong type falls back alone; unknown keys are ignored.
+        let odd = #"{"framesPerModel":"many","refinement":2,"later":1}"#
+        let t = try JSONDecoder().decode(MorphSettings.self, from: Data(odd.utf8))
+        XCTAssertEqual(t.framesPerModel, MorphSettings().framesPerModel)
+        XCTAssertEqual(t.refinement, 2)
+        // The encoding is unchanged: every key, read back equal.
+        var all = MorphSettings()
+        all.movieSmooth = true; all.framesPerModel = 7
+        XCTAssertEqual(try JSONDecoder().decode(MorphSettings.self,
+                                                from: JSONEncoder().encode(all)), all)
+    }
+
     // MARK: - MorphCompletion
 
     func testCompletionPlanRespectsTimelineMode() {
@@ -167,44 +242,74 @@ final class MorphSettingsTests: XCTestCase {
 
     // MARK: - MorphSheet summary
 
+    /// 2kpo shown as cartoon: Python's 2.89 MB per frame × 300 frames, and the
+    /// build-time hint (1860 atoms, 3 clean-up cycles: ≈ 28 s).
     func testSheetSummaryLine() {
-        let sum = MorphSettings().summary(models: 20, atoms: 1860, fps: 30)
+        let sum = MorphSettings().summary(models: 20, atoms: 1860, bytesPerFrame: 2_890_000, fps: 30)
         XCTAssertEqual(
-            MorphSheet.summaryLine(sum, models: 20, fps: 30, showBytes: true,
+            MorphSheet.summaryLine(sum, models: 20, fps: 30,
                                    source: "2kpo", target: "2kpo_morph",
                                    isMorphObject: false),
-            "20 models → 300 frames · 10 s at 30 fps · ≈ 29 MB · creates 2kpo_morph, hides 2kpo")
+            "20 models → 300 frames · 10 s at 30 fps · ≈ 867 MB · creates 2kpo_morph, hides 2kpo"
+                + " · ≈ 28 s to build")
         XCTAssertEqual(
-            MorphSheet.summaryLine(sum, models: 20, fps: 30, showBytes: true,
+            MorphSheet.summaryLine(sum, models: 20, fps: 30,
                                    source: "2kpo", target: "2kpo_morph",
                                    isMorphObject: true),
-            "20 models → 300 frames · 10 s at 30 fps · ≈ 29 MB · rebuilds 2kpo_morph")
+            "20 models → 300 frames · 10 s at 30 fps · ≈ 867 MB · rebuilds 2kpo_morph"
+                + " · ≈ 28 s to build")
         // From the source, when its morph is already loaded (e.g. after a reload)
         XCTAssertEqual(
-            MorphSheet.summaryLine(sum, models: 20, fps: 30, showBytes: true,
+            MorphSheet.summaryLine(sum, models: 20, fps: 30,
                                    source: "2kpo", target: "2kpo_morph",
                                    isMorphObject: false, targetExists: true),
-            "20 models → 300 frames · 10 s at 30 fps · ≈ 29 MB · rebuilds 2kpo_morph, hides 2kpo")
+            "20 models → 300 frames · 10 s at 30 fps · ≈ 867 MB · rebuilds 2kpo_morph, hides 2kpo"
+                + " · ≈ 28 s to build")
     }
 
     func testSheetSummaryOmitsBytesWithoutAtomsAndGuardsZeroFPS() {
         var s = MorphSettings()
         s.framesPerModel = 10
-        let sum = s.summary(models: 20, atoms: 0, fps: 0)
+        let sum = s.summary(models: 20, atoms: 0, bytesPerFrame: nil, fps: 0)
         XCTAssertEqual(
-            MorphSheet.summaryLine(sum, models: 20, fps: 0, showBytes: false,
+            MorphSheet.summaryLine(sum, models: 20, fps: 0,
                                    source: "a", target: "a_morph", isMorphObject: false),
             "20 models → 200 frames · 200 s at 1 fps · creates a_morph, hides a")
     }
 
+    /// Spec §5.2's build-time hint, from measured costs: per atom per leg, plus
+    /// per atom per frame growing with the clean-up cycles. Shown above 10 s.
+    func testBuildSeconds() {
+        // 2kpo, 20 legs: 300 frames at 3 cycles (measured 32 s), 1200 (117 s), at 0 (8 s).
+        XCTAssertEqual(MorphSettings.buildSeconds(atoms: 1860, legs: 20, frames: 300,
+                                                  refinement: 3), 28.086, accuracy: 0.01)
+        XCTAssertEqual(MorphSettings.buildSeconds(atoms: 1860, legs: 20, frames: 1200,
+                                                  refinement: 3), 106.764, accuracy: 0.01)
+        XCTAssertEqual(MorphSettings.buildSeconds(atoms: 1860, legs: 20, frames: 300,
+                                                  refinement: 0), 9.672, accuracy: 0.01)
+        // 50k atoms, 3 models × 15 frames at 3 cycles (measured 88 s).
+        XCTAssertEqual(MorphSettings.buildSeconds(atoms: 50_220, legs: 3, frames: 45,
+                                                  refinement: 3), 113.75, accuracy: 0.01)
+        XCTAssertEqual(MorphSettings.buildSeconds(atoms: 0, legs: 20, frames: 300,
+                                                  refinement: 3), 0)
+        XCTAssertEqual(MorphSettings().summary(models: 20, atoms: 1860, bytesPerFrame: nil,
+                                               fps: 30).buildSeconds, 28.086, accuracy: 0.01)
+        XCTAssertNil(MorphSheet.buildTime(10))
+        XCTAssertNil(MorphSheet.buildTime(0))
+        XCTAssertEqual(MorphSheet.buildTime(10.4), "≈ 10 s to build")
+        XCTAssertEqual(MorphSheet.buildTime(75), "≈ 75 s to build")
+        XCTAssertEqual(MorphSheet.buildTime(99.4), "≈ 99 s to build")
+        XCTAssertEqual(MorphSheet.buildTime(106.8), "≈ 2 min to build")
+        XCTAssertEqual(MorphSheet.buildTime(600), "≈ 10 min to build")
+    }
+
     func testSheetMemoryTier() {
-        XCTAssertEqual(MorphSheet.memoryTier(bytes: nil), .ok)
-        XCTAssertEqual(MorphSheet.memoryTier(bytes: 200, warnAbove: 200, refuseAbove: 1000), .ok)
-        XCTAssertEqual(MorphSheet.memoryTier(bytes: 201, warnAbove: 200, refuseAbove: 1000), .warn)
-        XCTAssertEqual(MorphSheet.memoryTier(bytes: 1001, warnAbove: 200, refuseAbove: 1000), .refuse)
-        // macOS thresholds (the test host is macOS).
-        XCTAssertEqual(MorphSheet.warnBytes, 200e6)
-        XCTAssertEqual(MorphSheet.refuseBytes, 1e9)
+        let th = (warn: 200.0, refuse: 1000.0)
+        XCTAssertEqual(MorphSheet.memoryTier(bytes: nil, thresholds: th), .ok)
+        XCTAssertEqual(MorphSheet.memoryTier(bytes: 200, thresholds: th), .ok)
+        XCTAssertEqual(MorphSheet.memoryTier(bytes: 201, thresholds: th), .warn)
+        XCTAssertEqual(MorphSheet.memoryTier(bytes: 1000, thresholds: th), .warn)
+        XCTAssertEqual(MorphSheet.memoryTier(bytes: 1001, thresholds: th), .refuse)
     }
 
     func testObjMetaCarriesAtomCount() {
@@ -267,6 +372,18 @@ final class MorphSettingsTests: XCTestCase {
         XCTAssertEqual(MorphMovie.duration(current: 40, smooth: true, edited: true, natural: 10), 30)
         // A natural length under a second is the stepper's 1 s floor.
         XCTAssertEqual(MorphMovie.duration(current: 8, smooth: true, edited: false, natural: 0.1), 1)
+        // Off again with Duration unedited: the value the sheet opened with (8 s),
+        // not the natural length the toggle wrote.
+        XCTAssertEqual(MorphMovie.duration(current: 10, smooth: false, edited: false,
+                                           natural: 10, opening: 8), 8)
+        XCTAssertEqual(MorphMovie.duration(current: 30, smooth: false, edited: false,
+                                           natural: 40, opening: 8), 8)
+        // Edited: the user's value stays when smoothing turns off.
+        XCTAssertEqual(MorphMovie.duration(current: 12, smooth: false, edited: true,
+                                           natural: 10, opening: 8), 12)
+        // Smoothing ignores the opening value.
+        XCTAssertEqual(MorphMovie.duration(current: 8, smooth: true, edited: false,
+                                           natural: 10, opening: 8), 10)
     }
 
     func testMovieCaption() {
@@ -284,6 +401,80 @@ final class MorphSettingsTests: XCTestCase {
             MorphMovie.caption(.unavailable(reason: "Pick one object to smooth"), smooth: true,
                                target: "x_morph", models: 20, framesPerModel: 15, fps: 30),
             "Pick one object to smooth")
+        // The memory note follows the seconds while smoothing, and only then.
+        XCTAssertEqual(
+            MorphMovie.caption(.available, smooth: true, target: "2kpo_morph",
+                               models: 20, framesPerModel: 15, fps: 30, memory: "≈ 867 MB"),
+            "Builds 2kpo_morph (20 models × 15 frames) and plays that instead · 10 s at 30 fps"
+                + " · ≈ 867 MB")
+        XCTAssertNil(MorphMovie.caption(.available, smooth: false, target: "2kpo_morph",
+                                        models: 20, framesPerModel: 15, fps: 30,
+                                        memory: "≈ 867 MB"))
+        XCTAssertEqual(
+            MorphMovie.caption(.unavailable(reason: "Already a smooth morph"), smooth: true,
+                               target: "x_morph", models: 20, framesPerModel: 15, fps: 30,
+                               memory: "≈ 867 MB"),
+            "Already a smooth morph")
+    }
+
+    // MARK: - Memory (both sheets, spec §5.6)
+
+    /// The thresholds morph_jobs.thresholds() uses: on macOS 1/16 and 1/4 of the
+    /// machine's memory (at least 200 MB and 1 GB), on iOS 1/4 and 1/2 of what the
+    /// app may still allocate (at least 100 MB and 400 MB; the floors when unknown).
+    func testMemoryThresholds() {
+        let gib: UInt64 = 1 << 30
+        let mac = MorphSheet.memoryThresholds(physical: 36 * gib, available: nil, iOS: false)
+        XCTAssertEqual(mac.warn, Double(36 * gib) / 16)
+        XCTAssertEqual(mac.refuse, Double(36 * gib) / 4)
+        let smallMac = MorphSheet.memoryThresholds(physical: 2_000_000_000, available: 5, iOS: false)
+        XCTAssertEqual(smallMac.warn, 200e6)
+        XCTAssertEqual(smallMac.refuse, 1e9)
+        let ios = MorphSheet.memoryThresholds(physical: 8 * gib, available: 3_000_000_000, iOS: true)
+        XCTAssertEqual(ios.warn, 750e6)
+        XCTAssertEqual(ios.refuse, 1.5e9)
+        let tight = MorphSheet.memoryThresholds(physical: 8 * gib, available: 600_000_000, iOS: true)
+        XCTAssertEqual(tight.warn, 150e6)
+        XCTAssertEqual(tight.refuse, 400e6)
+        let unknown = MorphSheet.memoryThresholds(physical: 8 * gib, available: nil, iOS: true)
+        XCTAssertEqual(unknown.warn, 100e6)
+        XCTAssertEqual(unknown.refuse, 400e6)
+        // The test host's live figures: the macOS rule on its own memory.
+        let live = MorphSheet.currentThresholds()
+        let host = MorphSheet.memoryThresholds(physical: ProcessInfo.processInfo.physicalMemory,
+                                               available: nil, iOS: false)
+        XCTAssertEqual(live.warn, host.warn)
+        XCTAssertEqual(live.refuse, host.refuse)
+    }
+
+    /// The Play-models caption's estimate: the morph's frames (a loop) times
+    /// Python's bytes per frame, orange above warn, with the remedy above refuse.
+    func testMovieMemoryNote() {
+        XCTAssertEqual(MorphMovie.estimatedBytes(models: 20, framesPerModel: 15,
+                                                 bytesPerFrame: 2_890_000), 300 * 2_890_000)
+        XCTAssertNil(MorphMovie.estimatedBytes(models: 20, framesPerModel: 15, bytesPerFrame: nil))
+        let th = (warn: 200e6, refuse: 1e9)
+        let none = MorphMovie.memoryNote(bytes: nil, thresholds: th)
+        XCTAssertNil(none.text)
+        XCTAssertEqual(none.tier, .ok)
+        let ok = MorphMovie.memoryNote(bytes: 29_000_000, thresholds: th)
+        XCTAssertEqual(ok.text, "≈ 29 MB")
+        XCTAssertEqual(ok.tier, .ok)
+        let warn = MorphMovie.memoryNote(bytes: 412_000_000, thresholds: th)
+        XCTAssertEqual(warn.text, "≈ 412 MB")
+        XCTAssertEqual(warn.tier, .warn)
+        let refuse = MorphMovie.memoryNote(bytes: 3_470_000_000, thresholds: th)
+        XCTAssertEqual(refuse.text, "≈ 3.5 GB · reduce frames per model")
+        XCTAssertEqual(refuse.tier, .refuse)
+    }
+
+    /// Add cannot submit a smooth clip whose morph Python would refuse; a plain
+    /// clip, or a smooth one under the limit, can be added.
+    func testMovieAddDisabledAtTheRefuseTier() {
+        XCTAssertFalse(MorphMovie.canAdd(smoothOn: true, tier: .refuse))
+        XCTAssertTrue(MorphMovie.canAdd(smoothOn: true, tier: .warn))
+        XCTAssertTrue(MorphMovie.canAdd(smoothOn: true, tier: .ok))
+        XCTAssertTrue(MorphMovie.canAdd(smoothOn: false, tier: .refuse))
     }
 
     /// The resolver is the Object panel's (MorphSettings.morphTarget), except that a

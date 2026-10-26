@@ -56,11 +56,13 @@ A 20-model NMR ensemble at 15 frames per model gives a 300-frame morph, a
 
 The line under the settings summarises the job and updates as you change them,
 for example `20 models → 300 frames · 10 s at 30 fps · ≈ 867 MB · creates
-2kpo_morph, hides 2kpo`. The seconds use the movie frame rate, which is also
-the speed the finished morph plays at. The line turns orange above the memory
-warning level, and **Morph** is disabled above the limit (see
-[Memory and size](#memory-and-size)). If the object shows a surface or mesh, a
-second line reminds you that they are not carried to the morph.
+2kpo_morph, hides 2kpo · ≈ 28 s to build`. The seconds use the movie frame
+rate, which is also the speed the finished morph plays at. The build time is a
+rough hint, shown when it is over 10 s; clean-up cycles add most of it. The
+line turns orange above the memory warning level, and **Morph** is disabled
+above the limit (see [Memory and size](#memory-and-size)). If the object shows
+a surface or mesh, a second line reminds you that they are not carried to the
+morph.
 
 The sheet remembers the settings you last morphed with.
 
@@ -116,11 +118,11 @@ so if you cancel or the build fails, no morph is left and you morph again.
 **Morph…** on the source also rebuilds its existing morph rather than making a
 second one.
 
-A morph saved in a session comes back as an ordinary multi-state object: its
-row shows the frame count without the loop icon, and the sheet opens with your
-remembered settings rather than the ones that built it. While its source is
-loaded, **Morph…** still recognises it by its `<source>_morph` name and
-rebuilds it in place.
+A morph saved in a session comes back as an ordinary multi-state object: the
+sheet opens with your remembered settings rather than the ones that built it.
+While its source is loaded, RayMol still recognises it by its
+`<source>_morph` name: its row keeps the loop icon and the "Morph of 2kpo"
+tooltip, and **Morph…** rebuilds it in place.
 
 ## Smooth playback in a movie
 
@@ -132,7 +134,9 @@ models:
    object menu (for example `2kpo · 20`), and select **Append**.
 2. In the **Play models** sheet, turn on **Smooth transitions (morph)**. The
    line under it reads, for example, "Builds 2kpo_morph (20 models × 15
-   frames) and plays that instead · 10 s at 30 fps".
+   frames) and plays that instead · 10 s at 30 fps · ≈ 867 MB". As in the
+   Morph sheet, it turns orange above the memory warning level; above the
+   limit it adds "reduce frames per model" and **Add** is disabled.
 3. Optionally open **Morph settings…** for frames per model, method, clean-up
    cycles and rate: the Morph sheet's controls, except Loop, which is always on
    here.
@@ -228,7 +232,8 @@ about 0.6 GB on a Mac). Shown as lines instead, the same morph needs about
 77 MB. When a source has no secondary structure assigned, every cartoon
 residue is counted as helix: the morph assigns its own when it is created.
 
-The Morph sheet reacts at two levels, which depend on the device's memory:
+The Morph sheet, and the Play-models sheet while smoothing, react at two
+levels, which depend on the device's memory:
 
 | | Warning (orange summary) | Limit (Morph disabled) |
 | :--- | :--- | :--- |
@@ -241,7 +246,10 @@ running, so the levels are read again each time. The sheet and
 the source shows, and the same levels (command-line PyMOL uses the macOS
 rule, from the computer's memory). A morph refused for its size leaves a
 **Morph failed** card reading "this morph needs about … MB. Reduce frames per
-model or morph fewer models".
+model or morph fewer models". On iPhone and iPad, when the system warns that
+memory is low, RayMol cancels every morph being built (its card reads **Morph
+cancelled**) and stops model playback in the Object panel; the console reads
+`morph: cancelled on memory warning`.
 
 To fit a large system, lower **Frames per model**, turn off **Loop back to
 model 1** (one leg fewer), build the source from fewer models, hide

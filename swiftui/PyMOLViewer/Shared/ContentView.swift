@@ -2318,8 +2318,9 @@ struct ContentView: View {
             if hSize == .compact {
                 withAnimation(.easeInOut(duration: 0.2)) { engine.timelineMode = (tab == 2) }
             }
-            // Entering the Movie tab = authoring; stop any model-inspection playback.
-            if tab == 2 { engine.pause(); engine.stopAllObjectStates() }
+            // Entering the Movie tab = authoring; stop any model-inspection playback
+            // and hand the objects back to the movie (releasing their pinned states).
+            if tab == 2 { engine.pause(); engine.stopAllObjectStates(releasing: true) }
         }
         // Programmatic entry (test hooks / "Open in movie"): flipping timelineMode
         // on iPhone jumps to the Movie tab that now HOSTS the timeline.
@@ -3936,10 +3937,10 @@ struct ContentView: View {
         // Auto-stop model/movie playback when entering the Movie tab or expanding
         // the timeline dock (you're authoring now, not inspecting the ensemble).
         .onChange(of: inspectorTab) { tab in
-            if tab == .movie { engine.pause(); engine.stopAllObjectStates() }
+            if tab == .movie { engine.pause(); engine.stopAllObjectStates(releasing: true) }
         }
         .onChange(of: engine.timelineMode) { on in
-            if on { engine.pause(); engine.stopAllObjectStates() }
+            if on { engine.pause(); engine.stopAllObjectStates(releasing: true) }
         }
     }
 

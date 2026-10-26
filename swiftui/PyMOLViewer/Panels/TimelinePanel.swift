@@ -601,7 +601,10 @@ struct TimelinePanel: View {
         // The object(s), with the model range only when it's a subset (e.g. "3–7").
         let (label, glyph) = PyMOLEngine.statesClipLabel(spec, models: engine.statesClipModels(spec))
         let note = missingNote(spec)
+        // The whole text for the tooltip and VoiceOver; a narrow clip draws the
+        // note alone after the ⚠ glyph, so the reason is what stays readable.
         let text = note.map { "\(label) — \($0)" } ?? label
+        let caption = PyMOLEngine.statesClipCaption(label: label, note: note, width: w)
         return RoundedRectangle(cornerRadius: 4)
             .fill(TimelineTheme.accent.opacity(note == nil ? 0.10 : 0.04))   // discreet — blends with the lane
             .overlay(
@@ -617,7 +620,7 @@ struct TimelinePanel: View {
                 HStack(spacing: 3) {
                     Image(systemName: note == nil ? glyph : "exclamationmark.triangle")
                         .font(.system(size: 8))
-                    Text(text).font(.system(size: 10, weight: .medium)).lineLimit(1)
+                    Text(caption).font(.system(size: 10, weight: .medium)).lineLimit(1)
                 }
                 .foregroundColor(TimelineTheme.text.opacity(note == nil ? 0.85 : 0.5))
                 .padding(.horizontal, 6)
@@ -1003,6 +1006,10 @@ private struct PlayModelsSheet: View {
     @State private var smooth: Bool
     @State private var morph: MorphSettings        // saved on Add, shared with Morph…
     @State private var morphExpanded = false
+    /// Duration without smoothing as the sheet opened (8 s): turning Smooth off
+    /// with Duration unedited goes back to it, not to the natural length the
+    /// toggle wrote.
+    private static let openingDuration: Double = 8
 
     /// `models`, `fps` and `smoothAvailable` set the opening Duration: a remembered
     /// toggle opens at the natural length.
@@ -1016,7 +1023,7 @@ private struct PlayModelsSheet: View {
         _smooth = State(initialValue: saved.movieSmooth)
         _morph = State(initialValue: saved)
         _duration = State(initialValue: MorphMovie.duration(
-            current: 8, smooth: saved.movieSmooth && smoothAvailable, edited: false,
+            current: Self.openingDuration, smooth: saved.movieSmooth && smoothAvailable, edited: false,
             natural: MorphMovie.naturalSeconds(models: models,
                                                framesPerModel: saved.framesPerModel, fps: fps)))
     }
@@ -1069,7 +1076,17 @@ private struct PlayModelsSheet: View {
     /// Callers pass the values they are writing rather than re-reading them.
     private func smoothDuration(smooth: Bool, framesPerModel: Int) -> Double {
         MorphMovie.duration(current: duration, smooth: smooth && availability == .available,
-                            edited: durationEdited, natural: natural(framesPerModel: framesPerModel))
+                            edited: durationEdited, natural: natural(framesPerModel: framesPerModel),
+                            opening: Self.openingDuration)
+    }
+    /// The smooth clip's morph against the memory thresholds (spec §5.6): Python's
+    /// bytes per frame of the target times the loop's frames, as morph_object
+    /// estimates it. `.ok` with no text while that figure is unknown.
+    private func memoryNote(models n: Int) -> (text: String?, tier: MorphSheet.MemoryTier) {
+        let bytes = MorphMovie.estimatedBytes(
+            models: n, framesPerModel: morph.framesPerModel,
+            bytesPerFrame: target.flatMap { engine.morphBytesPerFrame[$0] })
+        return MorphMovie.memoryNote(bytes: bytes, thresholds: MorphSheet.currentThresholds())
     }
 
     // MARK: Layout
@@ -1094,9 +1111,11 @@ private struct PlayModelsSheet: View {
         let last = (lastModel < 1 || lastModel > n) ? n : lastModel
         let first = min(max(firstModel, 1), last)
         let availability = self.availability
+        let memory: (text: String?, tier: MorphSheet.MemoryTier) =
+            smoothOn ? memoryNote(models: n) : (nil, .ok)
         let caption = MorphMovie.caption(availability, smooth: smoothOn, target: smoothTarget,
                                          models: n, framesPerModel: morph.framesPerModel,
-                                         fps: playback.movieFPS)
+                                         fps: playback.movieFPS, memory: memory.text)
         return VStack(alignment: .leading, spacing: 16) {
             HStack {
                 Text("Play models").font(.system(size: 15, weight: .semibold))
@@ -1140,7 +1159,8 @@ private struct PlayModelsSheet: View {
                     .accessibilityIdentifier("playModels.smooth")
                 if let caption {
                     Text(caption)
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .font(.system(size: 11))
+                        .foregroundStyle(memory.tier == .ok ? Color.secondary : Color.orange)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("playModels.smoothCaption")
                 }
@@ -1176,6 +1196,10 @@ private struct PlayModelsSheet: View {
                 Button("Add") { add(first: first, last: last) }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
+                    // Python would refuse the morph: no clip naming an object that
+                    // never appears. Lower frames per model to enable it.
+                    .disabled(!MorphMovie.canAdd(smoothOn: smoothOn, tier: memory.tier))
+                    .accessibilityIdentifier("playModels.add")
             }
         }
     }
