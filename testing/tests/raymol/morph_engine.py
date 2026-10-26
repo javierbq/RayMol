@@ -13,6 +13,13 @@ Tests that:
     fit raised ValueError on both)
   - _split_runs implements the ChimeraX hinge rule
   - _index_ranges compresses sorted ints to PyMOL range syntax
+  - two-object pairing: match=in/like/align/super each pair every atom, start
+    on the first object and end exactly on the second; like ignores resn
+  - each rate preset sets the first intermediate's fraction (values written
+    out, not read from _RATES), for both methods
+  - _segment_chains cuts two helices joined by a glycine loop exactly once,
+    inside the loop; rigid segments distort far fewer bonds than linear
+  - two different selections of one object are refused with a message
   - morph() keeps key-frame states as exact copies of the input models
   - multi-state morph with state1=0 / state2=0 / state2=-1 state counts
   - steps=1 / bad method / bad rate / unknown alignment raise CmdException
@@ -88,6 +95,31 @@ def rmsd(a, b):
 
 def det3(R):
     return morphing._dot(R[0], morphing._cross(R[1], R[2]))
+
+
+def leg_inputs(obj, state1, state2):
+    '''(S, E, info) for one leg between two states of *obj*, in atom order,
+    as cmd.morph hands them to _segment_chains.'''
+    sp = {'S': [], 'E': [], 'info': []}
+    cmd.iterate_state(state1, obj, 'S.append([x, y, z]); '
+                      'info.append((segi, chain, resv, resi, name))', space=sp)
+    cmd.iterate_state(state2, obj, 'E.append([x, y, z])', space=sp)
+    return sp['S'], sp['E'], sp['info']
+
+
+def distorted_bonds(obj, state, ref_state, tol):
+    '''Bonds of *obj* whose length in *state* is off by more than *tol*
+    (a fraction) from their length in *ref_state*.'''
+    ref = cmd.get_model(obj, state=ref_state)
+    cur = cmd.get_model(obj, state=state)
+    n = 0
+    for b in ref.bond:
+        i, j = b.index
+        d0 = morphing._norm(morphing._sub(ref.atom[i].coord, ref.atom[j].coord))
+        d1 = morphing._norm(morphing._sub(cur.atom[i].coord, cur.atom[j].coord))
+        if abs(d1 - d0) > tol * d0:
+            n += 1
+    return n
 
 
 # --------------------------------------------------------------------------
@@ -326,6 +358,97 @@ class TestMorphEngine(testing.PyMOLTestCase):
         self.assertEqual(
             morphing._index_ranges([1, 2, 3, 7, 9, 10]), '1-3+7+9-10')
 
+    # ---- pairing, rates, hinges, geometry (the POC harness checks) ----------
+
+    def twins(self):
+        '''twinA, and twinB: a copy with residues 11-20 turned 30 deg.
+        (Not "b": that is a selection keyword, and the object gets renamed.)'''
+        cmd.fab('ACDEFGHIKLMNPQRSTVWY', 'twinA', ss=1)
+        cmd.create('twinB', 'twinA')
+        cmd.rotate('y', 30, 'twinB and resi 11-20', camera=0,
+                   origin=ca_xyz('twinB', 10))
+
+    def testTwoObjectPairing(self):
+        # A wrong pairing gives a plausible-looking morph to the wrong place,
+        # or silently drops atoms; every match mode must pair every atom and
+        # land exactly on the second object.
+        self.twins()
+        natoms = cmd.count_atoms('twinA')
+        for match in ('in', 'like', 'align', 'super'):
+            out = 'mo_' + match
+            self.assertEqual(cmd.morph(out, 'twinA', 'twinB', steps=5,
+                                       refinement=0, match=match), 5)
+            self.assertEqual(cmd.count_atoms(out), natoms, match)
+            self.assertLess(max_dev(coords(out, 1), coords('twinA', 1)), 1e-3,
+                            'match=%s: state 1 should be twinA' % match)
+            self.assertLess(max_dev(coords(out, 5), coords('twinB', 1)), 1e-3,
+                            'match=%s: the last state should be twinB' % match)
+        # "like" ignores residue names, "in" does not
+        cmd.alter('twinB and resi 5', 'resn="GLY"')
+        cmd.morph('mo_like2', 'twinA', 'twinB', steps=5, refinement=0, match='like')
+        self.assertEqual(cmd.count_atoms('mo_like2'), natoms)
+        self.assertLess(max_dev(coords('mo_like2', 5), coords('twinB', 1)), 1e-3)
+        cmd.morph('mo_in2', 'twinA', 'twinB', steps=5, refinement=0, match='in')
+        self.assertEqual(cmd.count_atoms('mo_in2'),
+                         natoms - cmd.count_atoms('twinA and resi 5'))
+
+    def testRatesSetTheFrameSchedule(self):
+        # state 2 = model 2 moved 10 Å along x, so an atom's progress along
+        # x is the frame's fraction; one leg of 5 steps lands k/4, k = 0..4
+        cmd.fab('ACDEFGHIK', 'tr')
+        cmd.create('tr', 'tr', 1, 2)
+        cmd.alter_state(2, 'tr', 'x = x + 10.0')
+        # the first intermediate's fraction, written out rather than read
+        # from _RATES, so a broken table cannot agree with itself
+        want = {'linear': 0.25,
+                'sinusoidal': (1.0 - math.cos(math.pi / 4.0)) / 2.0,   # 0.1464
+                'ramp up': 1.0 - math.cos(math.pi / 8.0),             # 0.0761
+                'ramp down': math.sin(math.pi / 8.0)}                 # 0.3827
+        self.assertEqual(set(want), set(morphing._RATES))
+        for method in ('linear', 'rigimol'):
+            for rate in sorted(want):
+                cmd.morph('mr', 'tr', steps=5, method=method, refinement=0,
+                          rate=rate)
+                s, x = coords('mr', 1), coords('mr', 2)
+                fracs = [(x[k][0] - s[k][0]) / 10.0 for k in s]
+                self.assertLess(max(abs(f - want[rate]) for f in fracs), 1e-4,
+                                '%s, rate %s: fraction %.5f, want %.5f'
+                                % (method, rate, fracs[0], want[rate]))
+                self.assertLess(abs(morphing._RATES[rate](0.25) - want[rate]), 1e-12)
+
+    def two_helices(self, angle):
+        '''Two 15-residue helices joined by six glycines (resi 16-21); in
+        state 2 the second half (resi 19-36) is turned *angle* degrees about
+        an axis across the chain through CA 18, the loop's midpoint.'''
+        cmd.fab('A' * 15 + 'G' * 6 + 'A' * 15, 'hh', ss=1)
+        cmd.create('hh', 'hh', 1, 2)
+        along = morphing._sub(ca_xyz('hh', 36), ca_xyz('hh', 1))
+        cmd.rotate(morphing._cross(along, [0.1, 0.2, 1.0]), angle,
+                   'hh and resi 19-36', 2, camera=0, origin=ca_xyz('hh', 18))
+
+    def testHingeBetweenTwoHelices(self):
+        # the sieve finds the rigid core and _split_runs cuts once, in the loop
+        self.two_helices(40)
+        S, E, info = leg_inputs('hh', 1, 2)
+        segments, _, report = morphing._segment_chains(S, E, info, 0.5, 6, 3)
+        self.assertEqual(len(segments), 2)
+        [(_, nseg, hinges)] = report
+        self.assertEqual(nseg, 2)
+        self.assertEqual(len(hinges), 1)
+        # the cut falls between two loop residues
+        self.assertIn(int(hinges[0]), range(17, 22), 'cut before %s' % hinges[0])
+
+    def testRigidKeepsBondsBetterThanLinear(self):
+        # At 40 deg no bond of either morph is 10 % off (a linear midpoint
+        # shortens a rotated bond by 1 - cos(20 deg) = 6 %), so turn 60 deg:
+        # measured, linear 85-94 bonds of 341, rigid segments 1.
+        self.two_helices(60)
+        off = {}
+        for method in ('linear', 'rigimol'):
+            cmd.morph('m_' + method, 'hh', steps=10, refinement=0, method=method)
+            off[method] = distorted_bonds('m_' + method, 5, 1, 0.10)
+        self.assertLess(4 * off['rigimol'], off['linear'], off)
+
     # ---- error handling -----------------------------------------------------
 
     def testErrorSteps1(self):
@@ -357,6 +480,28 @@ class TestMorphEngine(testing.PyMOLTestCase):
         except pymol.CmdException as e:
             self.assertIn('morph:', str(e),
                           'error text should contain morph: but got: %s' % e)
+
+    def testErrorTwoSelectionsOfOneObject(self):
+        # Chain A vs chain B of one object (an NCS morph): cmd.align refused
+        # the pair and the user saw an empty " Error: ".
+        cmd.fab('ACDEFGHIK', 'cha')
+        cmd.alter('cha', 'chain="A"')
+        cmd.fab('ACDEFGHIK', 'chb')
+        cmd.alter('chb', 'chain="B"')
+        cmd.create('dimer', 'cha or chb')
+        cmd.delete('cha or chb')
+        with self.assertRaisesRegex(
+                pymol.CmdException,
+                'morph: both selections lie in object dimer but are not the '
+                'same atoms; create them as separate objects first'):
+            cmd.morph('m', 'dimer and chain A', 'dimer and chain B')
+        self.assertEqual(cmd.get_names('objects'), ['dimer'])
+        self.assertNoScratchObjects()
+        # what the message says to do works
+        cmd.create('chA', 'dimer and chain A')
+        cmd.create('chB', 'dimer and chain B')
+        self.assertEqual(cmd.morph('m', 'chA', 'chB', steps=3, refinement=0), 3)
+        self.assertEqual(cmd.count_atoms('m'), cmd.count_atoms('chA'))
 
     def testErrorStateOutOfRangeLeavesNothing(self):
         # state2 beyond the object's states: a CmdException (was a raw

@@ -291,7 +291,8 @@ morph mout, 1akeA, 4akeA
 - Each selection must lie within one object. Atoms are paired by a sequence
   alignment, so morph one chain of each entry (`fetch 1akeA` loads chain A
   only) or select matching chains. The result holds only the paired atoms, so
-  ligands and waters drop out.
+  ligands and waters drop out. To morph between two chains of one object,
+  copy them into separate objects first (`create chA, dimer and chain A`).
 - `steps` sets the number of frames (30 by default); `refinement`, `method` and
   `rate` work as in `morph_object`, and `color_segments=1` colours the result
   by rigid segment.

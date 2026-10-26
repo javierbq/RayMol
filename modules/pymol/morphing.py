@@ -625,7 +625,10 @@ ARGUMENTS
 
     sele1 = string: atom selection of first conformation
 
-    sele2 = string: atom selection of second conformation {default: <sele1>}
+    sele2 = string: atom selection of second conformation {default: <sele1>}.
+    In the same object as sele1 it must be the same atoms (another state);
+    to morph between two parts of one object (chain A to chain B, say),
+    create them as separate objects first.
 
     state1 = int: sele1 state {default: 1}. If state1=0 and sele1 has N
     states, create N morphings between all consecutive states and back from
@@ -707,6 +710,12 @@ EXAMPLE
         same_object = True
         sele2, obj2 = sele1, obj1
     else:
+        if obj1 == obj2 and not same_object:
+            # align/super refuse two selections of one object (an empty
+            # " Error: "), and in/like keys include the chain
+            raise pymol.CmdException(
+                'morph: both selections lie in object %s but are not the same '
+                'atoms; create them as separate objects first' % obj1)
         legs = [(state1, state2)]
     first_state = legs[0][0]
 
