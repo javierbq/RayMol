@@ -486,6 +486,10 @@ struct PyMOLApp: App {
         Window("RayMol", id: "raymol-main") { rootView }
             .windowStyle(.titleBar)
             .defaultSize(width: 1200, height: 800)
+            // #914: enforce the content's minimum (PanelLayout.macMinWindowWidth,
+            // set on ContentView's root) so the window can't be dragged narrower
+            // than one side panel.
+            .windowResizability(.contentMinSize)
             .commands { macCommands }
         Window("Analysis Notes", id: "analysis-notes") {
             NotesInspectorView()
@@ -576,6 +580,11 @@ struct PyMOLApp: App {
     // tongue all flip one persisted flag and can never disagree.
     @AppStorage(PanelLayout.consoleVisibleKey) private var showCommandPanel = true
     @AppStorage(PanelLayout.objectsVisibleKey) private var showObjectPanel = true
+    // #914: whether the side panel is on screen now — in a window too narrow to
+    // dock it, the full-width panel rather than the persisted flag.
+    private var sidePanelShown: Bool {
+        engine.macInspectorNarrow ? engine.macInspectorNarrowOpen : showObjectPanel
+    }
     // The keys-to-viewport opt-in (#261): same UserDefaults key the key monitor
     // reads, default off.
     @AppStorage(KeyRouting.viewportKeysWhileTypingKey) private var viewportKeysWhileTyping = false
@@ -765,8 +774,14 @@ struct PyMOLApp: App {
                     engine.sequenceVisible.toggle()
                 }
                 .keyboardShortcut(AppShortcuts.sequencePane)
-                Button(showObjectPanel ? "Hide Side Panel" : "Show Side Panel") {
-                    showObjectPanel.toggle()
+                // #914: same rule as ContentView's tongue binding — in a window
+                // too narrow to dock, "shown" is the full-width panel. Re-read in
+                // the action: the menu is rebuilt lazily, so a value captured
+                // when the title was computed can predate a window resize.
+                Button(sidePanelShown ? "Hide Side Panel" : "Show Side Panel") {
+                    let show = !sidePanelShown
+                    if engine.macInspectorNarrow { engine.macInspectorNarrowOpen = show }
+                    showObjectPanel = show
                 }
                 .keyboardShortcut(AppShortcuts.sidePanel)
                 // Lets the user's ALT-/CTSH- set_key bindings fire while the
