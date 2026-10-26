@@ -257,7 +257,7 @@ struct ContentView: View {
     @State private var macConsoleDragAnchor: CGFloat? = nil
     // The macOS inspector width the USER chose, as a fraction of the window width
     // (#350: object names were unreadable at the fixed column width). 0 means
-    // "never resized", which selects the absolute 340pt default instead.
+    // "never resized", which selects the absolute default instead (PanelLayout).
     @AppStorage(PanelLayout.inspectorFracKey) private var inspectorFrac = 0.0
     // The inspector width the current macOS seam drag started from, in points.
     @State private var macInspectorDragAnchor: CGFloat? = nil
@@ -659,7 +659,7 @@ struct ContentView: View {
     }
 
     // The right (inspector / Theme Studio) column's current width: the share the
-    // user dragged the seam to, or the absolute 340pt default until they have
+    // user dragged the seam to, or the absolute default until they have
     // (#350) — clamped every layout pass so a window shrink can't squeeze the
     // viewport below its minimum width.
     private func macInspectorWidth(windowWidth: CGFloat) -> CGFloat {
@@ -747,6 +747,15 @@ struct ContentView: View {
         // 748pt inside a 684pt window, and NSWindow isn't on screen yet at first
         // layout. Its children are explicitly told to fill it, below.
         return GeometryReader { winGeo in
+        // #914: the window decides how the inspector can be shown — docked beside
+        // the viewport, auto-hidden, or (opened while narrow) over the whole window.
+        let narrow = PanelLayout.macInspectorIsNarrow(windowWidth: winGeo.size.width)
+        let inspector = PanelLayout.macInspectorPresentation(
+            windowWidth: winGeo.size.width, userShown: showObjectPanel,
+            narrowOpen: engine.macInspectorNarrowOpen)
+        // A full-width right column (below) covers the whole left column.
+        let leftCovered = (narrow && showThemeStudio)
+            || (!showThemeStudio && inspector == .fullWidth)
         VStack(spacing: 0) {
             // (The MCP "Claude is controlling RayMol" banner is NOT laid out here:
             // as a stack child it pushed the whole window down on every tool call,
@@ -820,35 +829,55 @@ struct ContentView: View {
             }
             } // end left-column VStack
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // #914: while a full-width panel covers this column, nothing in it may
+            // take keys or VoiceOver focus — Tab must not walk back into the hidden
+            // console, nor VoiceOver read the hidden rail. Applied BEFORE the
+            // overlays, so the panel on top stays live. The column (and its Metal
+            // viewport) stays mounted; see also resignCoveredTextFocus.
+            .disabled(leftCovered)
+            .accessibilityHidden(leftCovered)
             // Inspector CLOSED → its tongue rides the left column's trailing edge, so
             // there is still something to grab once the toolbar toggle is gone. Open →
             // the tongue moves onto the inspector's own leading edge (below). Hidden
             // while Theme Studio owns the right column: that panel has its own close
             // button. Mirrors the iPad landscape layout.
             .overlay(alignment: .trailing) {
-                if !showThemeStudio && !showObjectPanel {
+                if !showThemeStudio && inspector == .hidden {
                     panelTongue(shown: objectsBinding, axis: .vertical)
+                }
+            }
+            // #914: a window too narrow to dock the right column shows it OVER the
+            // left column instead, at the full window width, rather than squeezing
+            // it (its content then overflowed onto the viewport). An overlay, not a
+            // replacement, so the Metal viewport keeps its identity underneath.
+            // The tongue sits on the panel's leading edge to close it again.
+            .overlay {
+                if narrow && showThemeStudio {
+                    macThemeStudioPanel
+                } else if !showThemeStudio && inspector == .fullWidth {
+                    inspectorSwitcher()
+                        .overlay(alignment: .leading) {
+                            panelTongue(shown: objectsBinding, axis: .vertical)
+                        }
                 }
             }
 
             // Right column: objects + (chat). Only exists (and only occupies its
             // width) when at least one of its panels is shown — when both are off
-            // the layout collapses to just the left column. Width is 340pt until
+            // the layout collapses to just the left column. Width is the default until
             // the user drags the seam (#350); Theme Studio shares the SAME width so
             // toggling between the two never makes the right edge jump. The mouse
             // legend moved to the floating viewport overlay (above) so it stays
             // reachable regardless.
-            if showThemeStudio {
+            if showThemeStudio && !narrow {
                 // Theme studio takes over the right column; viewport stays live.
                 macInspectorDivider(windowWidth: winGeo.size.width)
-                ThemeStudioPanel(onClose: { withAnimation(.easeInOut(duration: 0.2)) { showThemeStudio = false } })
-                    .environmentObject(engine)
-                    .environmentObject(themeManager)
+                macThemeStudioPanel
                     .frame(width: macInspectorWidth(windowWidth: winGeo.size.width))
-            } else if showObjectPanel {
+            } else if !showThemeStudio && inspector == .docked {
                 // The seam the tongue centres on, and (#350) the drag handle that
                 // resizes the column. The Movie-tab transport is shrunk (TransportBar
-                // kT* consts) to fit the 340pt default rather than requiring more.
+                // kT* consts) to fit the default width rather than requiring more.
                 macInspectorDivider(windowWidth: winGeo.size.width)
                 inspectorSwitcher()
                     .frame(width: macInspectorWidth(windowWidth: winGeo.size.width))
@@ -860,6 +889,18 @@ struct ContentView: View {
             }
         }
         } // end VStack
+        // #914: every crossing of the dock width resets "opened while narrow", so
+        // shrinking a window auto-hides a docked panel (without touching the
+        // user's persisted side-panel flag) and widening it re-docks whatever
+        // that flag says. Shrinking further while full-width crosses nothing, so
+        // a panel the user opened stays open.
+        .onChange(of: narrow, initial: true) { _, isNarrow in
+            engine.macInspectorNarrow = isNarrow
+            engine.macInspectorNarrowOpen = false
+        }
+        .onChange(of: leftCovered) { _, covered in
+            if covered { resignCoveredTextFocus() }
+        }
         .overlay { busyOverlay }
         .alert("Fetch from PDB", isPresented: $showMacFetch) {
             TextField("PDB ID (e.g. 1ubq)", text: $macFetchID)
@@ -925,7 +966,29 @@ struct ContentView: View {
         }
         #endif
         } // end GeometryReader (window height for the console share)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // #914: OUTSIDE the GeometryReader (which reports no minimum of its own),
+        // so this is what the window enforces — see .windowResizability in PyMOLApp.
+        .frame(minWidth: PanelLayout.macMinWindowWidth,
+               maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // #914: a full-width panel just covered the left column. `.disabled` stops
+    // new focus going there but doesn't end an edit already in progress, so a
+    // focused console field would keep taking keystrokes — and Return would run
+    // them — invisibly under the panel. Any field focused at this point is in the
+    // covered column or in a panel view that was just replaced (docked Theme
+    // Studio → full-width), so drop the field editor either way.
+    private func resignCoveredTextFocus() {
+        guard let window = NSApp.keyWindow, window.firstResponder is NSText else { return }
+        window.makeFirstResponder(nil)
+    }
+
+    // Theme Studio in the right column — docked, or full-width in a narrow
+    // window (#914).
+    private var macThemeStudioPanel: some View {
+        ThemeStudioPanel(onClose: { withAnimation(.easeInOut(duration: 0.2)) { showThemeStudio = false } })
+            .environmentObject(engine)
+            .environmentObject(themeManager)
     }
 
     private var macOSLayout: some View {
@@ -1235,7 +1298,7 @@ struct ContentView: View {
     @ViewBuilder
     private var macViewport: some View {
         MetalViewport()
-            .frame(minWidth: 400, minHeight: 360)
+            .frame(minWidth: PanelLayout.macViewportMinWidth, minHeight: 360)
             .layoutPriority(1)
             // The light gizmo (#622): first, so the bar and the side column
             // in the next overlay draw above it.
@@ -1679,7 +1742,15 @@ struct ContentView: View {
         #if os(iOS)
         return isPhoneLandscape ? $landObjects : $showObjectPanel
         #else
-        return $showObjectPanel
+        // #914: in a window too narrow to dock, "shown" is the full-width panel.
+        // The user's choice is still written to the persisted flag, so widening
+        // the window keeps it (opened → docks; closed → stays closed).
+        return Binding(
+            get: { engine.macInspectorNarrow ? engine.macInspectorNarrowOpen : showObjectPanel },
+            set: { shown in
+                if engine.macInspectorNarrow { engine.macInspectorNarrowOpen = shown }
+                showObjectPanel = shown
+            })
         #endif
     }
 
