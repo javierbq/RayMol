@@ -12,6 +12,11 @@ Tests that:
   - multi-state morph with state1=0 / state2=0 / state2=-1 state counts
   - steps=1 / bad method / bad rate / unknown alignment raise CmdException
   - a state with no coordinates raises CmdException and leaves no output
+  - the output name: an input object, a group or a selection is refused and
+    left as it was; a failed morph leaves an existing object of that name as
+    it was, also when the final rename fails; a morph that succeeds replaces
+    it (running the same morph command again works); the name is legalised
+    before it is compared with the inputs; no scratch object is left behind
 
 Runs on a RayMol --testing build:
     pymol -ckqy testing/testing.py --run testing/tests/raymol/morph_engine.py
@@ -19,6 +24,7 @@ Runs on a RayMol --testing build:
 
 import math
 import random
+from unittest import mock
 
 import pymol
 from pymol import cmd, testing
@@ -245,6 +251,127 @@ class TestMorphEngine(testing.PyMOLTestCase):
                                     'missing coordinates in state 5'):
             cmd.morph('mb', 'o5', state1=1, state2=5)
         self.assertNotIn('mb', cmd.get_names('objects'))
+
+    # ---- the output name ----------------------------------------------------
+
+    def three_models(self, name):
+        cmd.fab('ACDEFGHIK', name)
+        cmd.create(name, name, 1, 2)
+        cmd.create(name, name, 1, 3)
+        cmd.rotate('x', 90, name, 2)
+        cmd.rotate('x', 45, name, 3)
+
+    def snapshot(self, obj):
+        '''Atom count, state count and every state's coordinates.'''
+        n = cmd.count_states(obj)
+        return (cmd.count_atoms(obj), n,
+                [coords(obj, s) for s in range(1, n + 1)])
+
+    def assertNoScratchObjects(self):
+        self.assertEqual([n for n in cmd.get_names('all') if n.startswith('_morph')],
+                         [])
+
+    def testOutputCannotBeAnInput(self):
+        # `morph a, a` merged the frames into the source, failed on the state
+        # count, and the failure clean-up then deleted the source.
+        self.three_models('a')
+        before = self.snapshot('a')
+        with self.assertRaisesRegex(pymol.CmdException, 'cannot be an input'):
+            cmd.morph('a', 'a', steps=5, refinement=0)
+        self.assertEqual(self.snapshot('a'), before)
+        # the second of two objects too
+        cmd.create('a2', 'a', 2, 1)
+        before = self.snapshot('a2')
+        with self.assertRaisesRegex(pymol.CmdException, 'cannot be an input'):
+            cmd.morph('a2', 'a', 'a2', steps=5, refinement=0)
+        self.assertEqual(self.snapshot('a2'), before)
+        self.assertEqual(cmd.get_names('objects'), ['a', 'a2'])
+        self.assertNoScratchObjects()
+
+    def testOutputCannotReplaceAGroupOrASelection(self):
+        self.three_models('g1')
+        cmd.group('grp', 'g1')
+        with self.assertRaisesRegex(pymol.CmdException, 'grp is a group'):
+            cmd.morph('grp', 'g1', steps=5, refinement=0)
+        self.assertEqual(cmd.get_type('grp'), 'object:group')
+        self.assertEqual(cmd.count_states('g1'), 3)
+        cmd.select('mysel', 'g1 and name CA')
+        with self.assertRaisesRegex(pymol.CmdException, 'mysel is a selection'):
+            cmd.morph('mysel', 'g1', steps=5, refinement=0)
+        self.assertEqual(cmd.count_atoms('mysel'), 9)
+        self.assertNoScratchObjects()
+
+    def testFailedMorphLeavesAnExistingObjectAlone(self):
+        # The failure clean-up deleted whatever held the name, here an object
+        # unrelated to the morph.
+        cmd.fab('ACDE', 'o5')
+        cmd.create('o5', 'o5', 1, 2)
+        cmd.fab('GGG', 'keepme')
+        before = self.snapshot('keepme')
+        with self.assertRaisesRegex(pymol.CmdException,
+                                    'missing coordinates in state 5'):
+            cmd.morph('keepme', 'o5', state1=1, state2=5)
+        self.assertEqual(self.snapshot('keepme'), before)
+        self.assertEqual(cmd.get_names('objects'), ['o5', 'keepme'])
+        self.assertNoScratchObjects()
+
+    def testMorphAgainReplacesItsOutput(self):
+        # Running the same morph command again failed ("expected 5 states,
+        # got 9": create merged into the earlier output) and then deleted it.
+        self.three_models('m1')
+        self.assertEqual(cmd.morph('mout', 'm1', steps=5, refinement=0), 5)
+        self.assertEqual(cmd.morph('mout', 'm1', None, 0, -1, 0, 5, 'linear'), 15)
+        self.assertEqual(cmd.count_states('mout'), 15)
+        self.assertEqual(cmd.count_atoms('mout'), cmd.count_atoms('m1'))
+        self.assertLess(max_dev(coords('mout', 6), coords('m1', 2)), 1e-4)
+        self.assertEqual(cmd.get_names('objects'), ['m1', 'mout'])
+        # a re-run that fails leaves the earlier output as it was
+        before = self.snapshot('mout')
+        with self.assertRaisesRegex(pymol.CmdException,
+                                    'missing coordinates in state 5'):
+            cmd.morph('mout', 'm1', state1=1, state2=5)
+        self.assertEqual(self.snapshot('mout'), before)
+        self.assertEqual(cmd.get_names('objects'), ['m1', 'mout'])
+        self.assertNoScratchObjects()
+
+    def testFailedRenameKeepsTheEarlierOutput(self):
+        # The earlier output is moved aside, not deleted, until the new morph
+        # holds the name.
+        self.three_models('m3')
+        cmd.morph('mout', 'm3', steps=5, refinement=0)
+        before = self.snapshot('mout')
+        real = cmd.set_name
+
+        def failing(old, new, *a, **k):
+            if old.startswith('_morph_out'):
+                raise pymol.CmdException('simulated rename failure')
+            return real(old, new, *a, **k)
+
+        with mock.patch.object(cmd, 'set_name', side_effect=failing):
+            with self.assertRaisesRegex(pymol.CmdException, 'simulated'):
+                cmd.morph('mout', 'm3', steps=4, refinement=0)
+        self.assertEqual(self.snapshot('mout'), before)
+        self.assertEqual(cmd.get_names('objects'), ['m3', 'mout'])
+        self.assertNoScratchObjects()
+
+    def testOutputNameIsLegalised(self):
+        # create legalises the name; the morph then addressed the raw one.
+        self.three_models('m2')
+        self.assertEqual(cmd.morph('my morph', 'm2', steps=3, refinement=0), 3)
+        self.assertEqual(cmd.count_states('my_morph'), 3)
+        # a spelling that legalises to an input names that input
+        before = self.snapshot('my_morph')
+        with self.assertRaisesRegex(pymol.CmdException, 'cannot be an input'):
+            cmd.morph('my morph', 'my_morph', steps=3, refinement=0)
+        self.assertEqual(self.snapshot('my_morph'), before)
+        # an object can be created as "same", but none can be renamed to it
+        cmd.create('same', 'm2', 1, 1)
+        before = self.snapshot('same')
+        with self.assertRaisesRegex(pymol.CmdException, 'same is a selection keyword'):
+            cmd.morph('same', 'm2', steps=3, refinement=0)
+        self.assertEqual(self.snapshot('same'), before)
+        self.assertEqual(cmd.get_names('objects'), ['m2', 'my_morph', 'same'])
+        self.assertNoScratchObjects()
 
     def testErrorUnknownAlignment(self):
         cmd.fab('ACDE', 'e4a')

@@ -1171,7 +1171,9 @@ def _record_refusal(source, name, spec, exc, _self):
     card is showing), and a finished morph's record is never displaced
     (morph_sources, the badge and the clip stride read it): the card goes
     under ``<name> (refused)`` instead.  The record holds no object, so
-    morph_dismiss is all it needs.'''
+    morph_dismiss is all it needs.  A failed record the pump has not cleaned
+    up yet is cleaned up first (_finalise_failed): once replaced, the pump
+    never sees it, and its hidden partial morph would stay.'''
     try:
         target = _target_name(source, name, _self)
     except Exception:
@@ -1184,6 +1186,8 @@ def _record_refusal(source, name, spec, exc, _self):
     old = _JOBS.get(target)
     if old is not None and old.state in _ACTIVE:
         return
+    if old is not None and old.state in _FAILED and not old._finalised:
+        _finalise_failed(old, _self)
     key = target if old is None or old.state in _FAILED else target + ' (refused)'
     job = MorphJob(key, source, spec or _DEFAULT_SPEC, {}, {}, [], [], False)
     job._terminate('error', _message(exc))

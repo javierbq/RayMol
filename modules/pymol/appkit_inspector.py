@@ -924,44 +924,65 @@ def _object_peel(obj):
 _BYTES_PER_FRAME = {}
 #: Seconds a cached figure is trusted while its signature holds.
 _BYTES_PER_FRAME_TTL = 2.0
+#: Seconds of one poll that figures past their TTL may be refreshed in.
+_BYTES_PER_FRAME_REFRESH_S = 0.002
 
 
 def _morph_bytes_per_frame(objs, nstate):
     """{name: morph_jobs.bytes_per_frame(name)} for the multi-state molecules.
 
     Only those: nothing else can be morphed, and counting atoms of a CGO or a
-    map would log a Selector-Error per tick (#219). A figure takes a few
+    map would log a Selector-Error per tick (#219). Nor the morphs being
+    built: their state count grows on every poll, so their figure would be
+    computed on every poll, and it is never used. A figure takes a few
     selector passes over every loaded atom (about 8 ms for a 100k-atom
     object), so it is cached per object and computed again when the object's
     signature changes (its state count, or its entry in cmd.get_vis(), which
-    is free to read) or, for at most one object per poll, once it is
-    _BYTES_PER_FRAME_TTL old: a rep shown on more atoms, an alter of ss or a
-    removal of atoms leaves the signature alone and reaches the figure that
-    late. One object at a time: a failing one costs only its own entry."""
+    is free to read) or once it is _BYTES_PER_FRAME_TTL old: a rep shown on
+    more atoms, an alter of ss or a removal of atoms leaves the signature
+    alone. Figures past their TTL are refreshed while this poll has spent
+    less than _BYTES_PER_FRAME_REFRESH_S on such refreshes, and at least one
+    per poll, so such a change reaches the figure within the TTL plus one poll
+    per refresh that did not fit (one 100k-atom object per poll; small ones
+    together). One object at a time: a failing one costs only its own
+    entry."""
     import time
     from pymol import morph_jobs
     try:
         vis = cmd.get_vis() or {}
     except Exception:
         vis = {}
+    try:
+        building = set(morph_jobs.pending_objects())
+    except Exception:
+        building = set()
     now = time.monotonic()
     out = {}
-    refreshed = False
+    refreshes = 0
+    spent = 0.0
     for o in objs:
-        if nstate.get(o, 0) <= 1 or _object_kind(o) != 'object:molecule':
+        if (nstate.get(o, 0) <= 1 or o in building
+                or _object_kind(o) != 'object:molecule'):
             continue
         sig = (nstate[o], repr(vis.get(o)))
         hit = _BYTES_PER_FRAME.get(o)
+        refresh = False
         if hit is not None and hit[0] == sig:
-            if refreshed or now - hit[2] < _BYTES_PER_FRAME_TTL:
+            if (now - hit[2] < _BYTES_PER_FRAME_TTL
+                    or (refreshes and spent >= _BYTES_PER_FRAME_REFRESH_S)):
                 out[o] = hit[1]
                 continue
-            refreshed = True
+            refresh = True
+        t0 = time.perf_counter()
         try:
             value = int(morph_jobs.bytes_per_frame(o))
         except Exception:
             _BYTES_PER_FRAME.pop(o, None)
             continue
+        finally:
+            if refresh:
+                refreshes += 1
+                spent += time.perf_counter() - t0
         _BYTES_PER_FRAME[o] = (sig, value, now)
         out[o] = value
     for o in [n for n in _BYTES_PER_FRAME if n not in out]:

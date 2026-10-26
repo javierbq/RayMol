@@ -298,6 +298,9 @@ morph mout, 1akeA, 4akeA
 - `morph` runs to completion before it returns and hides the input objects. It
   does not copy object settings or hide surfaces, and it shows no progress
   card.
+- Running the same `morph mout, …` command again replaces `mout` once the new
+  morph is built. A morph that fails leaves your objects as they were. The
+  output cannot be one of the input objects, a group or a selection.
 
 `morph` also takes a single ensemble: `morph ens, 2kpo, state1=0` morphs
 through every model and back to model 1 (add `state2=0` to stop at the last

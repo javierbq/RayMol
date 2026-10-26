@@ -14,11 +14,13 @@ Tests that:
     (`natoms`), which the Morph sheet's memory estimate reads
   - the main payload's `morph_bytes_per_frame` carries morph_jobs'
     bytes_per_frame for every multi-state molecular object (none for 1-state
-    objects or CGOs), and {} when computing it fails
+    objects, CGOs or the morph being built), and {} when computing it fails;
+    figures past their TTL are refreshed within a per-poll budget
   - a refused morph (discrete source, memory limit) leaves a failed card in
     `morph_jobs` that morph_dismiss clears; a refusal while the morph builds
     adds no record, and one after a finished build keeps the finished morph's
-    record and files the card under '<name> (refused)'
+    record and files the card under '<name> (refused)'; one filed over a
+    failed build the pump has not cleaned up yet cleans it up first
 
 Runs on a RayMol --testing build:
     pymol -ckqy testing/testing.py --run testing/tests/raymol/morph_panel.py
@@ -175,6 +177,45 @@ class TestMorphPanelPayload(testing.PyMOLTestCase):
         self.assertEqual(self.payload()['morph_bytes_per_frame'], {})
         self.assertEqual(appkit_inspector._BYTES_PER_FRAME, {})
 
+    def testExpiredFiguresRefreshWithinABudget(self):
+        '''Figures past their TTL are refreshed while the poll's refresh
+        budget lasts, at least one per poll: N cheap objects whose TTL ran
+        out together do not take N polls.'''
+        names = ['e%d' % i for i in range(4)]
+        for n in names:
+            ensemble(n, models=2)
+            cmd.show_as('cartoon', n)
+        self.payload()
+        for n in names:
+            cmd.show('sticks', '%s and resi 1-3' % n)  # get_vis does not see this
+        want = {n: mj.bytes_per_frame(n) for n in names}
+        with mock.patch.object(appkit_inspector, '_BYTES_PER_FRAME_TTL', 0.0):
+            with mock.patch.object(appkit_inspector,
+                                   '_BYTES_PER_FRAME_REFRESH_S', 0.0):
+                got = self.payload()['morph_bytes_per_frame']
+            self.assertEqual(sum(got[n] == want[n] for n in names), 1)
+            with mock.patch.object(appkit_inspector,
+                                   '_BYTES_PER_FRAME_REFRESH_S', 60.0):
+                got = self.payload()['morph_bytes_per_frame']
+        self.assertEqual(got, want)
+
+    def testBuildingMorphIsNotMeasured(self):
+        '''The morph being built gains states on every poll, so its signature
+        never holds; its figure is never used (it is not a morph source while
+        it builds) and would cost selector passes on every poll.'''
+        ensemble('src')
+        job = mj.start_job('src', frames_per_model=5)
+        job.step()
+        with mock.patch.object(mj, 'bytes_per_frame',
+                               wraps=mj.bytes_per_frame) as bpf:
+            p = self.payload()                  # pumps: lands leg 1
+            self.assertGreater(cmd.count_states('src_morph'), 1)
+            p = self.payload()
+        self.assertIn('src_morph', p['morph_jobs'])
+        self.assertNotIn('src_morph', p['morph_bytes_per_frame'])
+        self.assertIn('src', p['morph_bytes_per_frame'])
+        self.assertNotIn(mock.call('src_morph'), bpf.call_args_list)
+
     def testBytesPerFrameFailureWritesPanelWithEmptyMap(self):
         ensemble('src')
         with mock.patch.object(mj, 'bytes_per_frame',
@@ -237,6 +278,25 @@ class TestMorphPanelPayload(testing.PyMOLTestCase):
         self.assertIn('src_morph', self.payload()['morph'])
         self.assertFailedCard('src_morph (refused)', 'Reduce frames per model')
         self.assertIn('src_morph', mj.morph_sources())
+
+    def testRefusalOverAnUnfinishedFailureCleansItUp(self):
+        '''A build that failed after landing frames is cleaned up by the next
+        pump. A refusal filed before that pump replaced its record, so pump
+        never saw it again: the hidden partial morph stayed in the session.'''
+        ensemble('src')
+        job = mj.start_job('src', frames_per_model=5)
+        job.step()
+        mj.pump()                                   # the partial morph exists
+        self.assertIn('src_morph', cmd.get_names('objects'))
+        job._terminate('error', 'morph: simulated leg failure')   # no pump yet
+        self.addCleanup(setattr, mj, 'REFUSE_BYTES', None)
+        mj.REFUSE_BYTES = 10
+        with self.assertRaisesRegex(pymol.CmdException, 'Reduce frames per model'):
+            mj.morph_object('src', async_=0)
+        self.assertTrue(job._finalised)
+        self.assertNotIn('src_morph', cmd.get_names('objects'))
+        self.assertIn('src', cmd.get_names('objects', enabled_only=1))
+        self.assertFailedCard('src_morph', 'Reduce frames per model')
 
     def testObjmetaCarriesAtomCount(self):
         '''The Morph sheet's memory estimate reads the atom count from the

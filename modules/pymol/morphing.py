@@ -192,6 +192,46 @@ def _index_by_key(sele, keyexpr, _self):
     return m
 
 
+def _check_output_name(name, inputs, _self):
+    '''Refuse an output name (already legalised) the finished morph must not
+    take over: blank, one of the input objects, or an existing object that is
+    not a molecule (a group would take its members with it) or a selection.
+    An existing molecule is allowed: _take_name replaces it once the morph is
+    built.  "same" is legal, so an object can hold it, but set_name refuses
+    it: _take_name could neither name the morph nor put that object back.'''
+    if not name:
+        raise pymol.CmdException('morph: name the object to create')
+    if name.lower() == 'same':
+        raise pymol.CmdException('morph: same is a selection keyword; '
+                                 'choose another name for the output')
+    if name in inputs:
+        raise pymol.CmdException('morph: the output %s cannot be an input '
+                                 'object; choose another name' % name)
+    if name in _self.get_names('all'):
+        kind = _self.get_type(name)
+        if kind != 'object:molecule':
+            raise pymol.CmdException('morph: %s is a %s; choose another name '
+                                     'for the output' % (name, kind.split(':')[-1]))
+
+
+def _take_name(out, name, _self):
+    '''Give the finished morph *out* its name.  An earlier molecule of that
+    name (the output of a previous run, say) is replaced: it is renamed aside
+    first and deleted only once the morph holds the name, so a rename that
+    fails leaves it as it was.'''
+    if name not in _self.get_names('objects'):
+        _self.set_name(out, name)
+        return
+    old = _self.get_unused_name('_morph_old')
+    _self.set_name(name, old)
+    try:
+        _self.set_name(out, name)
+    except Exception:
+        _self.set_name(old, name)
+        raise
+    _self.delete(old)
+
+
 def _pairs_by_identifiers(sele1, sele2, keyexpr, _self):
     m1 = _index_by_key(sele1, keyexpr, _self)
     m2 = _index_by_key(sele2, keyexpr, _self)
@@ -494,7 +534,10 @@ DESCRIPTION
 
 ARGUMENTS
 
-    name = string: name of object to create
+    name = string: name of object to create. It cannot be one of the input
+    objects, a group or a selection. An existing molecule of that name (the
+    output of an earlier morph, say) is replaced once the morph is built; a
+    morph that fails leaves it as it was.
 
     sele1 = string: atom selection of first conformation
 
@@ -554,11 +597,14 @@ EXAMPLE
         raise pymol.CmdException('morph: unknown rate "%s"' % rate)
     if sele2 is None:
         sele2 = sele1
+    # the name creating an object would give it (spaces, quotes, * ...)
+    name = _self.get_legal_name(str(name))
     # one alternate location per atom, so identifiers are unique
     sele1 = "((%s) and alt ''+A)" % sele1
     sele2 = "((%s) and alt ''+A)" % sele2
     obj1 = _single_object(sele1, _self)
     obj2 = _single_object(sele2, _self)
+    _check_output_name(name, (obj1, obj2), _self)
     n1 = _self.count_atoms(sele1)
     same_object = (obj1 == obj2 and n1 == _self.count_atoms(sele2)
                    and _self.count_atoms(sele1 + ' and ' + sele2) == n1)
@@ -608,18 +654,22 @@ EXAMPLE
                 _self.delete(tmp_aln)
             raise pymol.CmdException('morph: no atoms could be paired')
 
-    # ---- output object: first conformation, paired atoms only
-    _self.create(name, subset, first_state, 1, zoom=0, quiet=1)
+    # ---- output object: first conformation, paired atoms only. Built under
+    # a scratch name and named only once complete, so an existing object of
+    # that name is neither merged into (create would add the atoms and states
+    # to it) nor lost when the morph fails.
+    out = _self.get_unused_name('_morph_out')
+    _self.create(out, subset, first_state, 1, zoom=0, quiet=1)
     try:
         if tmp_aln:
             _self.delete(tmp_aln)
             tmp_aln = None
-        natoms = _self.count_atoms(name)
+        natoms = _self.count_atoms(out)
         if natoms == 0:
             raise pymol.CmdException('morph: no atoms in output')
 
         # new object atom -> source atom (by identifiers) -> partner atom
-        new_idx, pos, src_of, info = _snapshot(name, sele1, obj1, _self)
+        new_idx, pos, src_of, info = _snapshot(out, sele1, obj1, _self)
         if pairs is None:
             partner_of = dict(src_of)
         else:
@@ -663,48 +713,48 @@ EXAMPLE
                     continue                        # already present as state 1
                 if last_leg and k == steps - 1:
                     frame = E                       # exact endpoint
-                _self.load_coordset(frame, name, 0)
+                _self.load_coordset(frame, out, 0)
                 frames_written += 1
 
-        nstates = _self.count_states(name)
+        nstates = _self.count_states(out)
         if nstates != frames_written or nstates != steps * nlegs:
             raise pymol.CmdException('morph: expected %d states, got %d'
                                      % (steps * nlegs, nstates))
 
         # round-trip check of the write order (load_coordset is order-sensitive)
         chk = {}
-        _self.iterate_state(nstates, name, 'chk[index] = (x, y, z)', space={'chk': chk})
+        _self.iterate_state(nstates, out, 'chk[index] = (x, y, z)', space={'chk': chk})
         err = max(abs(chk[inew][a] - E[pos[inew]][a]) for inew in new_idx for a in range(3))
         if err > 1e-3:
             raise pymol.CmdException('morph: coordinate write order mismatch (%.3g)' % err)
 
         # ---- refinement: sculpt side chains, backbone fixed, key frames untouched
-        sculpt_states(name, nstates, steps, nlegs, refinement, _self)
+        sculpt_states(out, nstates, steps, nlegs, refinement, _self)
 
         if color_segments and seg_of_pos:
-            _self.alter(name, 'b = seg[pos[index]]', space={'seg': seg_of_pos, 'pos': pos})
-            _self.spectrum('b', 'rainbow', name)
-
-        if hide:
-            for o in {obj1, obj2}:
-                if o != name:
-                    _self.disable(o)
-        _self.set('state', 1, name)
-
-        if not quiet:
-            print(' morph: %d atoms, %d states (%d leg(s), %s, %s) in %.2fs'
-                  % (natoms, nstates, nlegs, method, rate, time.time() - t_start))
-            for rep in seg_report[:1]:
-                for ckey, nseg, hinges in rep:
-                    print('  chain %s/%s: %d segment(s)%s' % (
-                        ckey[0] or '-', ckey[1] or '-', nseg,
-                        (', hinges before residues ' + ', '.join(hinges)) if hinges else ''))
-        return nstates
+            _self.alter(out, 'b = seg[pos[index]]', space={'seg': seg_of_pos, 'pos': pos})
+            _self.spectrum('b', 'rainbow', out)
+        _self.set('state', 1, out)
+        _take_name(out, name, _self)
     except Exception:
-        # never leave a half-built output object behind, nor the alignment
-        _self.delete(name)
+        # never leave the half-built morph behind, nor the alignment; the
+        # inputs and any object already called `name` are untouched
+        _self.delete(out)
         if tmp_aln:
             _self.delete(tmp_aln)
         raise
+
+    if hide:
+        for o in {obj1, obj2}:
+            _self.disable(o)
+    if not quiet:
+        print(' morph: %d atoms, %d states (%d leg(s), %s, %s) in %.2fs'
+              % (natoms, nstates, nlegs, method, rate, time.time() - t_start))
+        for rep in seg_report[:1]:
+            for ckey, nseg, hinges in rep:
+                print('  chain %s/%s: %d segment(s)%s' % (
+                    ckey[0] or '-', ckey[1] or '-', nseg,
+                    (', hinges before residues ' + ', '.join(hinges)) if hinges else ''))
+    return nstates
 
 # vi: ts=4:sw=4:smarttab:expandtab
