@@ -582,6 +582,8 @@ class MorphJob(object):
         self._build_cost = None     # seconds to build one frame; None: not measured
         # seconds per unit of pump work (_note_land_cost)
         self._land_cost = 0.0
+        # seconds per clean-up cycle (_sculpt_slice); None: not measured
+        self._cycle_cost = None
 
     def step(self):
         '''Compute the next leg into the queue; False when none remain or the
@@ -772,11 +774,13 @@ def pump(budget_ms=100, only=None, _self=cmd):
     landed.
 
     The work comes in units: loading one frame, activating sculpting (once
-    per job), or one slice of an intermediate's sculpting clean-up (at most
-    _SCULPT_CYCLES cycles; a frame counts as landed after its last slice).
-    A unit is taken only while running it and building every frame this
-    pump landed still fit in what is left of *budget_ms*, at the costs
-    measured so far (a job's first frame is built at once to measure them).
+    per job), or running an intermediate's sculpting clean-up: all its
+    cycles in one call when they fit what is left of *budget_ms* at the
+    measured cost per cycle, else a slice of _SCULPT_CYCLES cycles (a frame
+    counts as landed after its last cycle).  A unit is taken only while
+    running it and building every frame this pump landed still fit in what
+    is left of *budget_ms*, at the costs measured so far (a job's first
+    frame is built at once to measure them).
     A worker computing a job's next leg is waited for only within that same
     allowance, so a pump that only waits returns that reserve early.  Every
     job still gets one unit, so pump(budget_ms=0) makes progress; when that
@@ -810,19 +814,17 @@ def _advance(job, deadline, _self):
             'morph: %s was deleted while it was being built' % job.name)
     if not _holds(job, 1 + job._landed, _self):
         # Another object took the name (created over it, or brought in by a
-        # load): it is not this job's to grow, retitle or delete.
+        # load), or the morph was edited in place: it is not this job's to
+        # grow, retitle or delete.
         _release(job, 'error',
-                 'morph: %s was replaced while it was being built' % job.name)
+                 'morph: %s was replaced while it was being built' % job.name,
+                 _self)
         return
-    try:
-        while _unit(job, deadline, _self):
-            if job._build_cost is None and time.monotonic() < deadline:
-                _sculpt_pause(job, _self)   # first frame: measure the build
-                _prebuild(job, _self)
-            if time.monotonic() + _reserve(job, 1) >= deadline:
-                break                       # one more would not fit once built
-    finally:
-        _sculpt_pause(job, _self)
+    while _unit(job, deadline, _self):
+        if job._build_cost is None and time.monotonic() < deadline:
+            _prebuild(job, _self)           # first frame: measure the build
+        if time.monotonic() + _reserve(job, 1) >= deadline:
+            break                           # one more would not fit once built
     # Build what this pump landed, unless its one guaranteed unit (a clean-up
     # slice of a large morph, say) has already used the budget: those frames
     # then wait for the next pump, whose first unit is the next frame's cheap
@@ -870,14 +872,14 @@ def _wait_for_leg(job, deadline):
 
 
 def _unit(job, deadline, _self):
-    '''One unit of work: a slice of the clean-up of the frame loaded last
-    (or the activation it needs first), or else the next frame loaded.
-    False when the job must wait or has ended.'''
+    '''One unit of work: clean-up cycles of the frame loaded last (or the
+    activation they need first), or else the next frame loaded.  False when
+    the job must wait or has ended.'''
     if job.state in _FAILED:                # step() failed during this pump
         _finalise_failed(job, _self)
         return False
     if job._landing is not None and job._landing[3]:
-        _sculpt_slice(job, _self)
+        _sculpt_slice(job, deadline, _self)
         return True
     if job._landing is None:
         _wait_for_leg(job, deadline - _reserve(job, 1))
@@ -914,31 +916,52 @@ def _land_frame(job, _self):
     _frame_in(job, t, _self)
 
 
-def _sculpt_slice(job, _self):
-    '''Run one slice, at most _SCULPT_CYCLES cycles, of the clean-up of the
-    intermediate loaded last (state ``2 + leg·f + j`` for frame j of the
-    leg, and _landing[2] is j + 1); it is in once its last slice has run.
-    Sculpting iterates, so slices add up to the one call morphing.morph
-    makes for the frame, and the pump checks its budget between them.
-    Activating sculpting, which the first slice needs, is a unit of its
-    own (it costs more than a slice for a large morph), except while the
-    global ``sculpting`` setting is on: every pump then ends by switching
-    sculpting off (_sculpt_pause), so a pump with room for only the
-    activation would never get to a slice.'''
+def _sculpt_slice(job, deadline, _self):
+    '''Run clean-up cycles on the intermediate loaded last (state
+    ``2 + leg·f + j`` for frame j of the leg, and _landing[2] is j + 1); it
+    is in once its last cycle has run.
+
+    Every sculpt_iterate call pays its own setup and non-bonded passes
+    (layer2/Sculpt.cpp resets them per call), so cycles split over several
+    calls cost more than one call and do not give the same coordinates.
+    The cycles left therefore run in one call when they fit before
+    *deadline* (_slice_cycles), as they always do with no budget to speak
+    of (morph_object async_=0), and in slices of _SCULPT_CYCLES only when
+    they do not: a large morph's pump then checks its budget between
+    slices.  Activating sculpting, which the first call needs, is a unit of
+    its own: it costs more than a slice for a large morph.'''
     t = time.monotonic()
     if not job._sculpting:
         _sculpt_activate(job, _self)
-        if not _self.get_setting_int('sculpting'):
-            _note_land_cost(job, time.monotonic() - t)
-            return
+        _note_land_cost(job, time.monotonic() - t)
+        return
     leg, frames, k, left = job._landing
-    cycles = min(morphing._SCULPT_CYCLES, left)
+    cycles = _slice_cycles(job, left, deadline)
     _self.sculpt_iterate(job.name, 1 + leg * job.frames_per_model + k, cycles)
+    per = (time.monotonic() - t) / cycles
+    job._cycle_cost = per if job._cycle_cost is None else 0.5 * (job._cycle_cost + per)
     job._landing[3] = left - cycles
     if job._landing[3]:
         _note_land_cost(job, time.monotonic() - t)
     else:
         _frame_in(job, t, _self)
+
+
+def _slice_cycles(job, left, deadline):
+    '''How many of the *left* clean-up cycles the next call runs: all of
+    them when, at the measured cost per cycle, they fit before *deadline*
+    together with building this frame and the frames waiting for _prebuild;
+    otherwise a slice of _SCULPT_CYCLES (fewer when fewer are left).  The
+    job's first call is a slice, which measures the cost.  Every call has
+    fixed costs, so the cost per cycle measured on slices overestimates a
+    whole frame's call (the error is on the side of a slice); measured on
+    whole frames' calls, it matches the next one.'''
+    cycles = min(morphing._SCULPT_CYCLES, left)
+    if job._cycle_cost is None or cycles == left:
+        return cycles
+    room = (deadline - time.monotonic()
+            - (job._unbuilt + 1) * (job._build_cost or 0.0))
+    return left if left * job._cycle_cost <= room else cycles
 
 
 def _frame_in(job, t, _self):
@@ -961,7 +984,6 @@ def _frame_in(job, t, _self):
     # waits for it hundreds of times: 5-10x slower at leg boundaries.  Frames
     # of the next leg land only once the worker has queued it and waits for
     # room again, so no build overlaps a computing worker.
-    _sculpt_pause(job, _self)
     _prebuild(job, _self)
     with job._room:
         job._held -= 1
@@ -970,7 +992,7 @@ def _frame_in(job, t, _self):
 
 def _note_land_cost(job, seconds):
     '''Running estimate of the time one unit takes: a frame loaded,
-    sculpting activated or a clean-up slice.'''
+    sculpting activated or a clean-up call.'''
     job._land_cost = seconds if not job._land_cost else 0.5 * (job._land_cost + seconds)
 
 
@@ -978,35 +1000,54 @@ def _sculpt_activate(job, _self):
     '''Set up the clean-up as morphing.sculpt_states does: backbone fixed,
     sculpting imprinted from model 1.
 
-    Sculpting is activated before the job's first slice and stays active
-    until the job ends (_sculpt_off): activating costs far more than a slice
-    for a large morph (1.5 s at 50k atoms), so it is paid once per job, not
-    once per pump.  _sculpt_pause switches it off between pumps only while
-    the global ``sculpting`` setting is on.'''
+    Sculpting is activated before the job's first clean-up call and stays
+    active until the job ends (_sculpt_off): activating costs far more than
+    a slice for a large morph (1.5 s at 50k atoms), so it is paid once per
+    job, not once per pump.  The morph's own ``sculpting`` setting is off
+    meanwhile.  With the global setting on (the Sculpting menu, or
+    auto_sculpt while dragging atoms, at any moment), the draw loop's
+    ExecutiveSculptIterateAll sculpts the current state of every activated
+    molecule whose ``sculpting`` is on: for the hidden morph that state is
+    usually a key frame, which must stay an exact copy of its model.  An
+    explicit sculpt_iterate does not read the setting.'''
     job._sculpting = True
+    _self.set('sculpting', 0, job.name, quiet=1)
     _self.flag('fix', '%s and %s' % (job.name, morphing._SCULPT_FIX), 'set', quiet=1)
     _self.sculpt_activate(job.name, 1)
 
 
-def _sculpt_pause(job, _self):
-    '''End of a pump (or before a build): leave sculpting active, unless the
-    global ``sculpting`` setting is on.  Then the render loop sculpts every
-    activated molecule's current state (ExecutiveSculptIterateAll), which may
-    be a key frame that must stay an exact copy of its model, so sculpting
-    goes off and the next slice activates it again.'''
-    if job._sculpting and _self.get_setting_int('sculpting'):
-        _sculpt_off(job, _self)
-
-
-def _sculpt_off(job, _self):
+def _sculpt_off(job, _self, mine=False):
+    '''Undo _sculpt_activate when the job ends: deactivate sculpting, clear
+    the fix flags and drop the object-level ``sculpting`` off.  Only on the
+    job's own object: *mine* when the caller knows it is (_complete), else
+    when the object under the name still carries that setting
+    (_sculpt_marked), which is the morph, edited in place perhaps, but never
+    an object that replaced it or a name that is gone.'''
     if not job._sculpting:
         return
     job._sculpting = False
     try:
-        _self.sculpt_deactivate(job.name)
-        _self.flag('fix', job.name, 'clear', quiet=1)
+        if mine or _sculpt_marked(job, _self):
+            _self.sculpt_deactivate(job.name)
+            _self.flag('fix', job.name, 'clear', quiet=1)
+            _self.unset('sculpting', job.name, quiet=1)
     except Exception:
-        pass                                # the object is already gone
+        pass                                # e.g. the object went meanwhile
+
+
+def _sculpt_marked(job, _self):
+    '''True when the object under *job*'s name carries the object-level
+    ``sculpting`` off that _sculpt_activate set and only _sculpt_off removes:
+    the job's own object.  An object that took the name starts without it:
+    one from a load (a .pse never holds a building morph: session_save) or
+    a delete and create.  Editing the morph in place (removing atoms,
+    loading or creating states into it) keeps the object, and the setting.'''
+    import pymol.setting as _ps
+    if job.name not in _self.get_names('objects'):
+        return False
+    index = _ps._get_index('sculpting')
+    return any(i == index and not v
+               for i, _t, v in _self.get_object_settings(job.name) or ())
 
 
 def _prebuild(job, _self):
@@ -1079,7 +1120,7 @@ def _complete(job, _self):
         job._output_crc = _frame_crc(name, _self)
     except Exception:
         job._output_crc = None      # a session restore then forgets the record
-    _sculpt_off(job, _self)
+    _sculpt_off(job, _self, mine=True)
     _self.enable(name)
     if job.source in _self.get_names('objects'):
         _self.disable(job.source)
@@ -1116,7 +1157,8 @@ def _print_traceback(job):
 def _finalise_failed(job, _self):
     '''Cancel/error cleanup: drop the partial morph and show the source
     again.  The record stays in recent_objects() until morph_dismiss.  An
-    object that took the name meanwhile is not the partial morph: it stays.'''
+    object that took the name meanwhile is not the partial morph: it stays,
+    and so do its sculpting and fix flags (_sculpt_off).'''
     _print_traceback(job)
     _end(job)
     _sculpt_off(job, _self)
@@ -1130,16 +1172,20 @@ def _finalise_failed(job, _self):
         pass
 
 
-def _release(job, state, error):
+def _release(job, state, error, _self):
     '''End *job* without touching the session: stop its worker and drop what
     it holds, but delete, enable or disable nothing, because the objects it
     used were replaced and the names now belong to whatever replaced them.  A
-    job that had already ended keeps its state.'''
+    job that had already ended keeps its state.
+
+    The one exception is the sculpting it activated: a partial morph edited
+    in place (other atoms or states, the same object) is the user's now,
+    and keeps neither the backbone fix flags nor the morph's own
+    ``sculpting`` off; an object that replaced the morph is left alone
+    (_sculpt_off).'''
     job._terminate(state, error)
     _print_traceback(job)
-    # the sculpting it activated went with the object that was replaced; a
-    # sculpt_deactivate now would act on the object that replaced it
-    job._sculpting = False
+    _sculpt_off(job, _self)
     _end(job)
 
 
@@ -1411,7 +1457,7 @@ def reset(names=None, *, dismiss=False, _self=cmd):
             continue
         if not job._finalised:
             _release(job, 'cancelled',
-                     'morph: stopped because the session was replaced')
+                     'morph: stopped because the session was replaced', _self)
             if dismiss:
                 job._dismissed = True
         elif job.state == 'done' and not _is_output(job, _self, exact=True):

@@ -29,9 +29,15 @@ Tests that:
     morph (and a cmd.morph result) has no object-level state, so mset,
     frame and a Lockstep clip move it; a stale record (cancelled, or a
     deleted finished morph) claims no molecule made under its name
-  - the sculpting clean-up runs in slices of _SCULPT_CYCLES cycles, one per
-    unit of pump work, with sculpting activated once per job, so a large
-    morph's pumps stay near their budget; key frames stay exact
+  - the sculpting clean-up of an intermediate runs in one call when its
+    cycles fit the pump's budget (always, for a synchronous morph) and in
+    slices of _SCULPT_CYCLES cycles, one per unit of pump work, when they
+    do not, with sculpting activated once per job, so a large morph's pumps
+    stay near their budget; key frames stay exact, also when the global
+    `sculpting` setting goes on between pumps (the morph's own is off while
+    it builds); a failed or released job undoes sculpting only on its own
+    object (a partial morph edited in place included), never on an object
+    that took the name
   - morph_object(async_=1) computes legs on a worker thread and pump() lands
     them: completion, cancel between legs, cancel while a leg is in flight
     (ends 'cancelled', never 'error'), source deleted mid-job, a worker
@@ -882,12 +888,12 @@ class TestMorphJobPipeline(testing.PyMOLTestCase):
             self.assertEqual(on.call_count, 1)
             self.assertEqual(off.call_count, 1)
         self.assertEqual(cmd.count_states(name), 12)
-        # each intermediate got its 10 x refinement cycles, in slices
+        # each intermediate got its 10 x refinement cycles, in one call or in
+        # slices, as the budget allowed
         cycles = {}
         for call in it.call_args_list:
             obj, state, n = call.args
             self.assertEqual(obj, name)
-            self.assertLessEqual(n, morphing._SCULPT_CYCLES)
             cycles[state] = cycles.get(state, 0) + n
         self.assertEqual(cycles, {s: 3 * morphing._SCULPT_CYCLES
                                   for s in (2, 3, 4, 6, 7, 8, 10, 11)})
@@ -906,12 +912,11 @@ class TestMorphJobPipeline(testing.PyMOLTestCase):
             self.assertGreater(max_dev(sculpted[s], coords(name, s)), 1e-3,
                                'state %d was not sculpted' % s)
 
-    def testGlobalSculptingStillProgresses(self):
-        # With the global `sculpting` setting on, the render loop sculpts
-        # every activated molecule, so each pump ends with sculpting off.  A
-        # pump with room for one unit then activates and runs a slice in that
-        # one unit: an activation unit of its own would be undone before any
-        # slice ran, for ever.
+    def testGlobalSculptingStillActivatesOnce(self):
+        # With the global `sculpting` setting on, the draw loop sculpts every
+        # activated molecule whose own `sculpting` is on.  The morph's is off
+        # while it builds, so sculpting stays activated across pumps, once
+        # per job, as with the setting off, and the key frames stay exact.
         self.ensemble()
         self.addCleanup(cmd.set, 'sculpting', 0)
         cmd.set('sculpting', 1)
@@ -925,11 +930,164 @@ class TestMorphJobPipeline(testing.PyMOLTestCase):
                 mj.pump(budget_ms=0)
         self.assertEqual(job.state, 'done')
         self.assertFalse(job._sculpting)
-        self.assertGreater(on.call_count, 1)        # once per pump that sculpted
-        self.assertEqual(off.call_count, on.call_count)
+        self.assertEqual((on.call_count, off.call_count), (1, 1))
         for state, model in ((1, 1), (6, 2), (11, 3), (16, 4), (20, 1)):
             self.assertLess(max_dev(coords(name, state), coords('src', model)),
                             1e-4, 'state %d should be model %d' % (state, model))
+
+    def testGlobalSculptingBetweenPumpsLeavesKeyFramesExact(self):
+        # Sculpting stays activated on the hidden morph between pumps, and
+        # the user may switch the global `sculpting` setting on at any time
+        # (the Sculpting menu; auto_sculpt while dragging atoms).  Display
+        # ticks then run PyMOL_Idle, whose ExecutiveSculptIterateAll sculpts
+        # the current state of every activated molecule whose own `sculpting`
+        # is on: here state 1, a key frame that must stay an exact copy of
+        # model 1.  The morph's object-level `sculpting` is off while it
+        # builds, and gone once it is done.
+        from pymol import _cmd
+        self.ensemble()
+        self.addCleanup(cmd.set, 'sculpting', 0)
+        cmd.set('state', 1)
+        job = mj.start_job('src', frames_per_model=5)
+        toggled = False
+        for _ in range(500):
+            if job._queue.empty() and job.done_legs < job.legs:
+                job.step()
+            mj.pump(budget_ms=0)
+            if job.state not in ('queued', 'running'):
+                break
+            if job._sculpting and not toggled:
+                cmd.set('sculpting', 1)             # right after a pump
+                toggled = True
+            for _ in range(5):
+                _cmd._idle(cmd._COb)                # display ticks between pumps
+        cmd.set('sculpting', 0)
+        self.assertTrue(toggled)
+        self.assertEqual(job.state, 'done')
+        for state, model in ((1, 1), (6, 2), (11, 3), (16, 4), (20, 1)):
+            self.assertLess(max_dev(coords('src_morph', state), coords('src', model)),
+                            1e-4, 'state %d should be model %d' % (state, model))
+        self.assertNotIn('sculpting', _settings_by_name('src_morph'))
+
+    def testCleanUpRunsInOneCallWhenItFits(self):
+        # Every sculpt_iterate call pays its own setup and non-bonded passes
+        # (layer2/Sculpt.cpp resets them per call), so three 10-cycle slices
+        # cost more than one 30-cycle call and give other coordinates.  A
+        # frame's clean-up is sliced only when its cycles would not fit what
+        # is left of the pump's budget at the measured cost per cycle: a
+        # synchronous morph (no budget to speak of) cleans every intermediate
+        # in one call, once the first slice has measured the cost.
+        self.ensemble()
+        with mock.patch.object(cmd, 'sculpt_iterate',
+                               wraps=cmd.sculpt_iterate) as it:
+            name = mj.morph_object('src', frames_per_model=5, async_=0)
+        full = 3 * morphing._SCULPT_CYCLES
+        middle = [s for s in range(2, 20) if s not in (6, 11, 16)]
+        self.assertEqual([c.args for c in it.call_args_list],
+                         [(name, 2, morphing._SCULPT_CYCLES),
+                          (name, 2, full - morphing._SCULPT_CYCLES)]
+                         + [(name, s, full) for s in middle[1:]])
+
+    def testCleanUpIsSlicedWhenItDoesNotFit(self):
+        # With no time to spare (budget 0) every call is one slice of at most
+        # _SCULPT_CYCLES cycles, and each intermediate still gets them all.
+        self.ensemble()
+        job = mj.start_job('src', frames_per_model=5)
+        with mock.patch.object(cmd, 'sculpt_iterate',
+                               wraps=cmd.sculpt_iterate) as it:
+            for _ in range(500):
+                if job._queue.empty() and job.done_legs < job.legs:
+                    job.step()
+                mj.pump(budget_ms=0)
+                if job.state != 'running':
+                    break
+        self.assertEqual(job.state, 'done')
+        cycles = {}
+        for call in it.call_args_list:
+            _, state, n = call.args
+            self.assertLessEqual(n, morphing._SCULPT_CYCLES)
+            cycles[state] = cycles.get(state, 0) + n
+        self.assertEqual(cycles, {s: 3 * morphing._SCULPT_CYCLES for s in range(2, 20)
+                                  if s not in (6, 11, 16)})
+
+    def sculpting_job(self):
+        '''A caller-driven morph of src (refinement 3) whose sculpting has
+        been activated: its first intermediate is being cleaned up.'''
+        self.ensemble()
+        job = mj.start_job('src', frames_per_model=5)
+        job.step()
+        for _ in range(20):
+            mj.pump(budget_ms=0)
+            if job._sculpting:
+                break
+        self.assertTrue(job._sculpting)
+        self.assertEqual(cmd.count_atoms('src_morph and fixed'),
+                         cmd.count_atoms('src_morph and name N+CA+C+O'))
+        return job
+
+    def testCleanupLeavesAnObjectThatTookTheNameAlone(self):
+        # Sculpting stays activated between pumps, but the cleanup of a
+        # failed or cancelled job undoes it only on the job's own object:
+        # not on an object that took the name meanwhile, and not on a name
+        # that is gone (no "object not found" error).
+        job = self.sculpting_job()
+        cmd.delete('src_morph')
+        cmd.create('src_morph', 'src', 1, 1)        # the user's, 1 state
+        cmd.flag('fix', 'src_morph and name CA', 'set', quiet=1)
+        with mock.patch.object(cmd, 'sculpt_deactivate',
+                               wraps=cmd.sculpt_deactivate) as off:
+            mj.morph_cancel('src_morph')
+        self.assertEqual(job.state, 'cancelled')
+        self.assertFalse(job._sculpting)
+        self.assertEqual(off.call_count, 0)
+        self.assertEqual(cmd.count_atoms('src_morph and fixed'), 9)
+        self.assertEqual(cmd.count_states('src_morph'), 1)      # left alone
+        mj._JOBS.clear()
+        cmd.delete('*')
+        job = self.sculpting_job()
+        cmd.delete('src_morph')                     # the user deletes it
+        with mock.patch.object(cmd, 'sculpt_deactivate',
+                               wraps=cmd.sculpt_deactivate) as off:
+            mj.pump()
+        self.assertEqual(job.state, 'error')
+        self.assertIn('deleted', job.error)
+        self.assertFalse(job._sculpting)
+        self.assertEqual(off.call_count, 0)
+
+    def testReleaseCleansAPartialMorphEditedInPlace(self):
+        # A partial morph edited in place (other atoms, the same object) is
+        # released and left to the user, without the backbone fix flags and
+        # object-level `sculpting` the job put on it.  An object a load put
+        # under the name is the load's: its fix flags stay.
+        job = self.sculpting_job()
+        cmd.remove('src_morph and resi 1')
+        with mock.patch.object(cmd, 'sculpt_deactivate',
+                               wraps=cmd.sculpt_deactivate) as off:
+            mj.pump()
+        self.assertEqual(job.state, 'error')
+        self.assertIn('replaced', job.error)
+        self.assertIn('src_morph', cmd.get_names('objects'))   # the user's now
+        self.assertFalse(job._sculpting)
+        self.assertEqual(off.call_count, 1)
+        self.assertEqual(cmd.count_atoms('src_morph and fixed'), 0)
+        self.assertNotIn('sculpting', _settings_by_name('src_morph'))
+        mj._JOBS.clear()
+        cmd.delete('*')
+        cmd.fab('ACDEFGHIK', 'src_morph')
+        cmd.flag('fix', 'src_morph and name CA', 'set', quiet=1)
+        handle, path = tempfile.mkstemp(suffix='.pse')
+        os.close(handle)
+        self.addCleanup(os.unlink, path)
+        cmd.save(path)
+        cmd.delete('*')
+        job = self.sculpting_job()
+        with mock.patch.object(cmd, 'sculpt_deactivate',
+                               wraps=cmd.sculpt_deactivate) as off:
+            cmd.load(path)
+        self.assertEqual(job.state, 'cancelled')
+        self.assertFalse(job._sculpting)
+        self.assertEqual(off.call_count, 0)
+        self.assertEqual(cmd.count_atoms('src_morph and fixed'), 9)
 
     def testPrebuildLeavesUserVisibilityAlone(self):
         # Building while hidden toggles the morph into the scene for one update
