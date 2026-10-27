@@ -29,6 +29,7 @@ Z* -------------------------------------------------------------------
 #include"ShaderMgr.h"
 #include"pymol/zstring_view.h"
 
+#include <functional>
 #include <vector>
 
 #define SDOF_NORMAL_MODE 0
@@ -236,6 +237,17 @@ int SceneDeferDrag(Block * block, int x, int y, int mod);
 bool SceneDeferImage(PyMOLGlobals* G, const Extent2D& extent,
     const char* filename, int antialias, float dpi, int format, int quiet,
     pymol::Image* out_img);
+/**
+ * Like SceneDeferImage with out_img, but hands the image (its data is the PNG)
+ * to `receive` instead of writing through a pointer. A deferred render runs at
+ * the next draw (headless: the next refresh), so use this whenever the image's
+ * destination may be gone by then: `receive` looks it up when it runs.
+ *
+ * @return true if rendering was deferred, false if it was rendered immediately.
+ */
+bool SceneDeferImageTo(PyMOLGlobals* G, const Extent2D& extent, int antialias,
+    float dpi, int format, int quiet,
+    std::function<void(pymol::Image&&)> receive);
 const char *SceneGetSeleModeKeyword(PyMOLGlobals * G);
 void SceneUpdateStereo(PyMOLGlobals * G);
 float ScenePushRasterMatrix(PyMOLGlobals * G, float *v);

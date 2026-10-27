@@ -229,7 +229,19 @@ pymol::Result<> MovieSceneStore(PyMOLGlobals * G, const char * name,
     SceneUpdate(G, false); // Make sure scene is on screen
     Extent2D extent{static_cast<std::uint32_t>(thumbnailImage.getWidth()),
         static_cast<std::uint32_t>(thumbnailImage.getHeight())};
-    SceneDeferImage(G, extent, nullptr, 0, -1, 0, 1, &thumbnailImage);
+    // Without a valid context the render waits for the next draw (headless:
+    // the next refresh). By then reinitialize, a session load or scene
+    // delete/clear/rename may have freed this scene, so the render finds the
+    // scene by name when it runs instead of keeping a pointer into the dict.
+    SceneDeferImageTo(
+        G, extent, 0, -1, 0, 1, [G, stack, key](pymol::Image&& image) {
+          if (!G->scenes)
+            return;
+          auto& dict = G->scenes[stack].dict;
+          auto it = dict.find(key);
+          if (it != dict.end())
+            it->second.thumbnail.setVecData(image.getVecData());
+        });
     SceneInvalidate(G); // Used to refresh the screen
   }
 
@@ -309,7 +321,10 @@ pymol::Result<MovieScene> MovieSceneStoreNoStore(PyMOLGlobals* G,
     SceneUpdate(G, false); // Make sure scene is on screen
     Extent2D extent{static_cast<std::uint32_t>(thumbnailImage.getWidth()),
         static_cast<std::uint32_t>(thumbnailImage.getHeight())};
-    SceneDeferImage(G, extent, nullptr, 0, -1, 0, 1, &thumbnailImage);
+    // `scene` is a local returned by value: a deferred render would write
+    // into it after this function returns. Render only when it runs now.
+    if (G->ValidContext)
+      SceneDeferImage(G, extent, nullptr, 0, -1, 0, 1, &thumbnailImage);
     SceneInvalidate(G); // Used to refresh the screen
   }
 

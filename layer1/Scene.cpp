@@ -4150,6 +4150,27 @@ bool SceneDeferImage(PyMOLGlobals* G, const Extent2D& extent,
   return true;
 }
 
+bool SceneDeferImageTo(PyMOLGlobals* G, const Extent2D& extent, int antialias,
+    float dpi, int format, int quiet,
+    std::function<void(pymol::Image&&)> receive)
+{
+  // The image lives in the job, not in the caller's storage: the job may
+  // outlive whatever asked for it.
+  std::function<void()> deferred = [=]() {
+    pymol::Image image;
+    SceneImage(G, extent, antialias, dpi, format, quiet, &image, {});
+    receive(std::move(image));
+  };
+
+  if (G->ValidContext) {
+    deferred();
+    return false;
+  }
+
+  OrthoDefer(G, std::move(deferred));
+  return true;
+}
+
 int CScene::click(int button, int x, int y, int mod) // Originally SceneDeferClick!!
 {
   return SceneDeferClickWhen(this, button, x, y, UtilGetSeconds(m_G), mod);
