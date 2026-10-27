@@ -252,6 +252,45 @@ final class MorphEngineTests: XCTestCase {
         XCTAssertTrue(engine.playingObjects.isEmpty)
     }
 
+    /// The registry calls a player sends to appkit_movie, which keeps a playing
+    /// object's timer pin out of a saved session (close-out B).
+    static func registryCalls(_ python: [String]) -> [String] {
+        python.filter { $0.contains("note_object_playing(") || $0.contains("clear_playing_objects(") }
+    }
+
+    /// Stopping a player takes it out of the Python registry; stopping one that
+    /// is not playing sends nothing, and stopping them all clears the registry
+    /// whether or not the objects are released. The live engine's Python tap
+    /// records the calls; the objects named do not exist.
+    func testStoppingPlayersUpdatesThePythonRegistry() {
+        let engine = PyMOLEngine.shared
+        var python: [String] = []
+        engine.pythonTap = { python.append($0) }
+        defer { engine.pythonTap = nil }
+        engine.playingObjects = []
+        engine.stopObjectStates("t4reg_a")
+        XCTAssertEqual(Self.registryCalls(python), [])
+        engine.playingObjects = ["t4reg_a", "t4reg_b"]
+        engine.stopObjectStates("t4reg_a")
+        XCTAssertEqual(Self.registryCalls(python), [
+            "from pymol import appkit_movie as _am\n_am.note_object_playing('t4reg_a', False)",
+        ])
+        python.removeAll()
+        engine.stopAllObjectStates()
+        XCTAssertEqual(Self.registryCalls(python), [
+            "from pymol import appkit_movie as _am\n_am.clear_playing_objects()",
+        ])
+        python.removeAll()
+        engine.playingObjects = ["t4reg_a"]
+        engine.stopAllObjectStates(releasing: true)
+        XCTAssertEqual(Self.registryCalls(python), [
+            "from pymol import appkit_movie as _am\n_am.clear_playing_objects()",
+        ])
+        python.removeAll()
+        engine.stopAllObjectStates()                    // nothing playing
+        XCTAssertEqual(Self.registryCalls(python), [])
+    }
+
     /// iOS memory warning (spec §5.6; OOM is uncatchable there): every morph still
     /// building is cancelled, which frees its partial object and the worker's leg,
     /// per-object playback stops, and the console says why. Records already failed
@@ -1101,6 +1140,56 @@ final class SessionReplaceStopsPlayersTests: XCTestCase {
         engine.runPython("from pymol import appkit_movie as _am\n_am._emit_timeline([])")
         spin { engine.playingObjects.isEmpty }
         XCTAssertEqual(engine.playingObjects, [])
+    }
+
+    /// What appkit_movie's player registry holds now, read back through a file.
+    private func pythonRegistry() -> [String]? {
+        let path = NSTemporaryDirectory() + "t5ss_registry_\(UUID().uuidString).json"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        engine.runPython("import json\nfrom pymol import appkit_movie as _am\n"
+                         + "open(\(InferenceJob.pythonLiteral(path)), 'w').write("
+                         + "json.dumps(_am.playing_objects()))")
+        guard let data = FileManager.default.contents(atPath: path) else { return nil }
+        return try? JSONDecoder().decode([String].self, from: data)
+    }
+
+    /// Close-out B: starting a player notes the object in appkit_movie once, not
+    /// on every tick, so a session saved while it plays leaves out the pin its
+    /// ticks set; stopping the player takes it out again. A re-time (fps change)
+    /// stops and starts it.
+    func testPlayerStartAndStopNoteThePythonRegistry() {
+        engine.runPython("from pymol import cmd as _c\n"
+                         + "_c.fab('AGA', 't5ss_reg')\n_c.create('t5ss_reg', 't5ss_reg', 1, 2)")
+        spin { engine.objects.contains { $0.name == "t5ss_reg" && $0.stateCount > 1 } }
+        var python: [String] = []
+        engine.pythonTap = { python.append($0) }
+        defer {
+            engine.pythonTap = nil
+            engine.stopObjectStates("t5ss_reg")
+            engine.objectFPS["t5ss_reg"] = nil
+        }
+        engine.startObjectStates("t5ss_reg")
+        XCTAssertEqual(engine.playingObjects, ["t5ss_reg"])
+        spin(0.4) { false }                 // several ticks at 15 fps
+        XCTAssertEqual(MorphEngineTests.registryCalls(python), [
+            "from pymol import appkit_movie as _am\n_am.note_object_playing('t5ss_reg', True)",
+        ])
+        XCTAssertEqual(pythonRegistry(), ["t5ss_reg"])
+
+        python.removeAll()
+        engine.setObjectFPS("t5ss_reg", 30)
+        XCTAssertEqual(MorphEngineTests.registryCalls(python), [
+            "from pymol import appkit_movie as _am\n_am.note_object_playing('t5ss_reg', False)",
+            "from pymol import appkit_movie as _am\n_am.note_object_playing('t5ss_reg', True)",
+        ])
+        XCTAssertEqual(pythonRegistry(), ["t5ss_reg"])
+
+        python.removeAll()
+        engine.stopObjectStates("t5ss_reg")
+        XCTAssertEqual(MorphEngineTests.registryCalls(python), [
+            "from pymol import appkit_movie as _am\n_am.note_object_playing('t5ss_reg', False)",
+        ])
+        XCTAssertEqual(pythonRegistry(), [])
     }
 }
 

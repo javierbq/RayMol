@@ -2287,6 +2287,7 @@ final class PyMOLEngine: ObservableObject {
         let fps = objectPlaybackFPS(name)
         var k = min(max(objectMeta[name]?.state ?? 1, 1), total)
         playingObjects.insert(name)
+        notePlayerRegistry(name, playing: true)
         let t = Timer(timeInterval: 1.0 / max(fps, 0.1), repeats: true) { [weak self] _ in
             guard let self else { return }
             k = k >= total ? 1 : k + 1
@@ -2298,7 +2299,7 @@ final class PyMOLEngine: ObservableObject {
 
     func stopObjectStates(_ name: String) {
         objectStateTimers[name]?.invalidate(); objectStateTimers[name] = nil
-        playingObjects.remove(name)
+        if playingObjects.remove(name) != nil { notePlayerRegistry(name, playing: false) }
     }
 
     /// Stop every per-object player. `releasing` (entering the Movie tab or the
@@ -2312,7 +2313,21 @@ final class PyMOLEngine: ObservableObject {
         }
         objectStateTimers.values.forEach { $0.invalidate() }
         objectStateTimers.removeAll()
-        if !playingObjects.isEmpty { playingObjects.removeAll() }
+        if !playingObjects.isEmpty {
+            playingObjects.removeAll()
+            runPython("from pymol import appkit_movie as _am\n_am.clear_playing_objects()")
+        }
+    }
+
+    /// Tell appkit_movie which objects the timers play: a session saved while
+    /// one plays leaves out the pin its `set state` ticks set, so the reopened
+    /// object follows the movie (Lockstep, mplay, export) instead of freezing
+    /// on the saved frame. One call per start or stop, never per tick. Names
+    /// follow `playingObjects`: a renamed or deleted object's player stops at
+    /// the next panel poll (`timersToStop`), which takes its old name out.
+    private func notePlayerRegistry(_ name: String, playing: Bool) {
+        runPython("from pymol import appkit_movie as _am\n"
+                  + "_am.note_object_playing(\(InferenceJob.pythonLiteral(name)), \(playing ? "True" : "False"))")
     }
 
     /// Playing objects that are no longer loaded. Their timers must stop: an object
