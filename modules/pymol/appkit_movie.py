@@ -667,8 +667,9 @@ def _pinned_by_players(entries, _self):
     k, <group>` pins the objects inside the group, all the way down, and not
     the group, so a playing group stands for its members. The session's own
     group links (entry[6]) reach every member it holds, whatever its type; a
-    partial save may hold a member without the groups above it, so the live
-    groups add their molecules (the only members a selection reaches)."""
+    partial save may hold a member without the groups above it, so a playing
+    group the session lacks adds its live members (_group_members). A full
+    save holds every group, so it never reads them."""
     parent = {}
     for entry in entries:
         try:
@@ -685,13 +686,32 @@ def _pinned_by_players(entries, _self):
                 break
             seen.add(node)
             node = parent.get(node)
+    missing = set()
     try:
-        groups = _playing.intersection(_self.get_names('group_objects') or [])
-        for group in groups:
-            names.update(_self.get_object_list('(%s)' % group) or [])
+        missing = _playing.intersection(
+            _self.get_names('group_objects') or []) - set(parent)
+        if missing:
+            names.update(_group_members(sorted(missing), _self) & set(parent))
     except Exception:
-        pass
+        # at least the molecules, which a selection reaches
+        for group in missing:
+            try:
+                names.update(_self.get_object_list('(%s)' % group) or [])
+            except Exception:
+                pass
     return names
+
+
+def _group_members(groups, _self):
+    """Every object inside `groups`, all the way down and of every type (a CGO,
+    a map: get_object_list reports only molecules). The core expands a group
+    named to get_session into its members, so a partial read of these groups
+    lists them. The core call, not cmd.get_session: that would run the
+    session-save tasks again, this one among them."""
+    sub = {}
+    with _self.lockcm:
+        _self._cmd.get_session(_self._COb, sub, ' '.join(groups), 1, 1)
+    return {e[0] for e in sub.get('names') or [] if e} - set(groups)
 
 
 def _leave_player_pins_out(session, _self=cmd):

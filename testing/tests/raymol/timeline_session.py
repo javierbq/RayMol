@@ -406,6 +406,25 @@ class PlayerPinSessionTest(testing.PyMOLTestCase):
         self.reopen(saved)
         self.assertIsNone(self.pin('m1'))
 
+    def test_a_partial_save_of_a_nested_group_players_cgo_leaves_its_pin_out(self):
+        # Two group levels above a CGO are missing from the file, and a
+        # selection never reaches a CGO: the live group's members come from a
+        # core read of that group instead. (The molecule makes the group
+        # playable: a CGO-only group counts no states.)
+        self.cgo_ensemble('cg')
+        self.ensemble('m1')
+        cmd.group('inner', 'cg m1')
+        cmd.group('outer', 'inner')
+        cmd.set('state', 3, 'outer')
+        self.assertEqual(self.pin('cg'), 3)
+        appkit_movie.note_object_playing('outer', True)
+        saved = self.pse()
+        cmd.save(saved, 'cg')
+        self.assertEqual(self.pin('cg'), 3)     # the live player goes on
+
+        self.reopen(saved)
+        self.assertIsNone(self.pin('cg'))
+
     def test_renaming_a_playing_object_lets_it_go(self):
         # The player's timer goes on sending `set state, k, <old name>` until
         # the panel poll stops it, so it no longer reaches the renamed object:
