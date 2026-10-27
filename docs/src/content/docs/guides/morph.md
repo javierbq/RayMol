@@ -136,7 +136,9 @@ models:
    line under it reads, for example, "Builds 2kpo_morph (20 models × 15
    frames) and plays that instead · 10 s at 30 fps · ≈ 867 MB". As in the
    Morph sheet, it turns orange above the memory warning level; above the
-   limit it adds "reduce frames per model" and **Add** is disabled.
+   limit it adds "reduce frames per model" and **Add** is disabled. A morph
+   that **Add** would reuse (see below) or that is already building is never
+   refused, so the line shows its size alone and **Add** stays enabled.
 3. Optionally open **Morph settings…** for frames per model, method, clean-up
    cycles and rate: the Morph sheet's controls, except Loop, which is always on
    here.

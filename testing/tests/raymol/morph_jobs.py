@@ -244,6 +244,28 @@ class TestMorphJobsBlocks(testing.PyMOLTestCase):
         # loop=0 → legs = models - 1 = 2
         self.assertEqual(mj.morph_estimate('ee', 10, 0)['legs'], 2)
 
+    def testEstimateSecondsUsesTheMeasuredCosts(self):
+        # The build-time hint the Morph sheet shows (MorphSettings.buildSeconds
+        # in Swift, the same constants): per atom per leg, plus per atom per
+        # frame growing with the clean-up cycles.  Measured headless at the
+        # app's cadence: 2kpo (1860 atoms) 300 frames 32 s at 3 cycles and
+        # 8 s at 0, 1200 frames 117 s; 50k atoms x 45 frames 88 s.
+        self.assertAlmostEqual(mj.build_seconds(1860, 20, 300, 3), 28.086, places=2)
+        self.assertAlmostEqual(mj.build_seconds(1860, 20, 1200, 3), 106.764, places=2)
+        self.assertAlmostEqual(mj.build_seconds(1860, 20, 300, 0), 9.672, places=2)
+        self.assertAlmostEqual(mj.build_seconds(50220, 3, 45, 3), 113.75, places=2)
+        self.assertEqual(mj.build_seconds(0, 20, 300, 3), 0)
+
+        cmd.fab('ACDEFGHIK', 'es')
+        cmd.create('es', 'es', 1, 2)
+        cmd.create('es', 'es', 1, 3)
+        est = mj.morph_estimate('es', 10, 1, refinement=2)
+        self.assertAlmostEqual(est['seconds'],
+                               mj.build_seconds(est['atoms'], 3, 30, 2))
+        # each clean-up cycle adds to it, not only the first
+        self.assertGreater(mj.morph_estimate('es', 10, 1, refinement=3)['seconds'],
+                           est['seconds'])
+
     def testBytesPerFrameCountsTheShownReps(self):
         # Coordinates for every alt ''/A atom, plus each representation the
         # source shows at its measured cost: cartoon and ribbon per residue

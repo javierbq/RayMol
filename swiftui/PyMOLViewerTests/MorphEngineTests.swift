@@ -82,28 +82,44 @@ final class MorphEngineTests: XCTestCase {
         // Cancelled or failed while building: dropped; the other one stays.
         XCTAssertEqual(PyMOLEngine.autoPlayAfterPoll(
             autoPlay: ["a_morph", "b_morph"], previouslyRunning: ["a_morph", "b_morph"],
-            nowRunning: ["b_morph"], sources: [:], failed: ["a_morph"]), ["b_morph"])
+            nowRunning: ["b_morph"], sources: [:], failed: ["a_morph"], completed: []),
+            ["b_morph"])
         // Refused at once (never ran): its error record drops it.
         XCTAssertEqual(PyMOLEngine.autoPlayAfterPoll(
             autoPlay: ["r_morph"], previouslyRunning: [], nowRunning: [],
-            sources: [:], failed: ["r_morph"]), [])
+            sources: [:], failed: ["r_morph"], completed: []), [])
         // Refused next to a finished morph of that name: Python files the card
         // under "<name> (refused)".
         XCTAssertEqual(PyMOLEngine.autoPlayAfterPoll(
             autoPlay: ["f_morph"], previouslyRunning: [], nowRunning: [],
-            sources: ["f_morph": "f"], failed: ["f_morph (refused)"]), [])
+            sources: ["f_morph": "f"], failed: ["f_morph (refused)"], completed: []), [])
         // Left running with no record at all (dismissed): dropped.
         XCTAssertEqual(PyMOLEngine.autoPlayAfterPoll(
             autoPlay: ["d_morph"], previouslyRunning: ["d_morph"], nowRunning: [],
-            sources: [:], failed: []), [])
+            sources: [:], failed: [], completed: []), [])
         // Left running and finished: kept, for morphDidComplete to consume.
         XCTAssertEqual(PyMOLEngine.autoPlayAfterPoll(
             autoPlay: ["c_morph"], previouslyRunning: ["c_morph"], nowRunning: [],
-            sources: ["c_morph": "c"], failed: []), ["c_morph"])
+            sources: ["c_morph": "c"], failed: [], completed: ["c_morph"]), ["c_morph"])
         // Just requested, not listed by any poll yet: kept.
         XCTAssertEqual(PyMOLEngine.autoPlayAfterPoll(
             autoPlay: ["n_morph"], previouslyRunning: [], nowRunning: [],
-            sources: [:], failed: []), ["n_morph"])
+            sources: [:], failed: [], completed: []), ["n_morph"])
+        // A new build of the name while an earlier refusal's card is still in the
+        // tray (the user re-morphed without dismissing it): the build owns the
+        // request, whether a poll lists it running, it finishes inside this poll
+        // (a small morph no poll saw running), or it left running finished.
+        XCTAssertEqual(PyMOLEngine.autoPlayAfterPoll(
+            autoPlay: ["f_morph"], previouslyRunning: [], nowRunning: ["f_morph"],
+            sources: [:], failed: ["f_morph (refused)"], completed: []), ["f_morph"])
+        XCTAssertEqual(PyMOLEngine.autoPlayAfterPoll(
+            autoPlay: ["f_morph"], previouslyRunning: [], nowRunning: [],
+            sources: ["f_morph": "f"], failed: ["f_morph (refused)"],
+            completed: ["f_morph"]), ["f_morph"])
+        XCTAssertEqual(PyMOLEngine.autoPlayAfterPoll(
+            autoPlay: ["f_morph"], previouslyRunning: ["f_morph"], nowRunning: [],
+            sources: ["f_morph": "f"], failed: ["f_morph (refused)"],
+            completed: ["f_morph"]), ["f_morph"])
     }
 
     /// The engine applies that rule on every poll, and a morph started without
@@ -734,6 +750,35 @@ final class MorphCompletionRebuildTests: XCTestCase {
         XCTAssertEqual(engine.expandedDetail, morph)
     }
 
+    /// A morph started from the Object panel (auto-play on) while an earlier
+    /// refusal's card for its name is still in the tray plays when it completes:
+    /// the polls that list it running and then finished keep its request. The
+    /// morph call reaches the live engine's Python, which refuses it (no such
+    /// source) and files a record; the test removes it.
+    func testAutoPlayOutlivesAnEarlierRefusalCard() {
+        smallMorphLane()
+        engine.morphSources = [:]
+        engine.morphSpecs = [:]
+        engine.seenMorphBuilds = []
+        defer {
+            engine.runPython("from pymol import morph_jobs as _mj\n"
+                             + "_mj.morph_dismiss('\(morph)')\n"
+                             + "_mj._JOBS.pop('\(morph)', None)")
+            engine.stopObjectStates(morph)
+        }
+        var settings = frames(10)
+        settings.refinement = 0
+        engine.morph(source: "t12f_src", settings: settings, autoPlay: true)
+        let card = PredictionJobState.fixture(id: "\(morph) (refused)", state: "error",
+                                              error: "morph: refused")
+        engine.applyMorphPoll(jobs: [card, PredictionJobState.fixture(id: morph)],
+                              running: [morph], sources: [:], specs: [:], builds: [:])
+        XCTAssertTrue(engine.morphAutoPlay.contains(morph))
+        engine.applyMorphPoll(jobs: [card], running: [], sources: [morph: "t12f_src"],
+                              specs: [morph: frames(10)], builds: [morph: 9_105])
+        XCTAssertTrue(engine.playingObjects.contains(morph), "the morph did not auto-play")
+    }
+
     /// A build already reported is not a completion again: the next polls, and a
     /// Theme studio restore that keeps the record, rebuild nothing.
     func testAReportedBuildIsNotACompletionAgain() {
@@ -976,6 +1021,86 @@ final class MissingClipObjectTests: XCTestCase {
         python.removeAll()
         engine.fillMorphClip(clip)
         XCTAssertFalse(python.contains { $0.contains("morph_object(") })
+    }
+}
+
+/// Per-object players (a morph's auto-play, an object's Play) end when the session
+/// they play is replaced, before the new one loads: a timer tick after the load
+/// would send `set state` to a restored object of the same name and pin it there.
+/// The Theme studio's restore puts back the very session it hid, so they keep
+/// playing through it. Uses the live engine the unit-test host runs; the loads
+/// name files that do not exist, and the test restores what it changes.
+final class SessionReplaceStopsPlayersTests: XCTestCase {
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var savedItems: [PyMOLEngine.TimelineItem] = []
+    private var savedUntracked = false
+
+    override func setUpWithError() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            XCTFail("PyMOLEngine.shared was not ready")
+            throw NSError(domain: "PyMOLEngine", code: 1)
+        }
+        savedItems = engine.timelineItems
+        savedUntracked = engine.untrackedMovie
+    }
+
+    override func tearDown() {
+        engine.playingObjects = []
+        engine.runPython("from pymol import cmd as _c\n_c.delete('t5ss_*')")
+        engine.pendingTimelineAdd = nil
+        engine.timelineItems = savedItems
+        engine.untrackedMovie = savedUntracked
+        super.tearDown()
+    }
+
+    /// Spins the run loop (the host's polls) until `done`, or `seconds`.
+    private func spin(_ seconds: Double = 5, until done: () -> Bool) {
+        let deadline = Date().addingTimeInterval(seconds)
+        while !done() && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+    }
+
+    /// File > Open, drag-drop, Open With and a `load x.pse` typed in the console
+    /// all run the load through runCommand, which stops the players first. A
+    /// structure file joins the session, and a partial session load merges into
+    /// it: the players go on.
+    func testASessionLoadStopsPlayersFirst() {
+        engine.playingObjects = ["t5ss_a"]
+        engine.loadStructure(path: "/nonexistent-t5ss/t5ss_x.pdb", name: "t5ss_x")
+        XCTAssertEqual(engine.playingObjects, ["t5ss_a"])
+        engine.runCommand("load /nonexistent-t5ss/t5ss_x.pse, partial=1")
+        XCTAssertEqual(engine.playingObjects, ["t5ss_a"])
+        engine.loadStructure(path: "/nonexistent-t5ss/t5ss_x.pse", name: "t5ss_x")
+        XCTAssertEqual(engine.playingObjects, [])
+        engine.playingObjects = ["t5ss_a"]
+        engine.runCommand("load /nonexistent-t5ss/t5ss_x.pse")
+        XCTAssertEqual(engine.playingObjects, [])
+    }
+
+    /// Closing the Theme studio restores the session it snapshotted, which
+    /// announces a restored Timeline like any session load. That restore keeps
+    /// the players; any other announced one (a session loaded from MCP or a
+    /// Python `cmd.load`, which never pass through runCommand) stops them.
+    func testThemeStudioRestoreKeepsPlayers() {
+        engine.runPython("from pymol import cmd as _c\n"
+                         + "_c.fab('AGA', 't5ss_obj')\n_c.create('t5ss_obj', 't5ss_obj', 1, 2)")
+        spin { engine.objects.contains { $0.name == "t5ss_obj" } }
+        engine.playingObjects = ["t5ss_obj"]
+        engine.beginThemePreview()
+        engine.endThemePreview()
+        XCTAssertTrue(engine.themeRestorePending)
+        spin { !engine.themeRestorePending }
+        spin(0.5) { false }                 // the main-queue work the lines queued
+        XCTAssertFalse(engine.themeRestorePending, "the restore's lines were never read")
+        XCTAssertEqual(engine.playingObjects, ["t5ss_obj"])
+        engine.runPython("from pymol import appkit_movie as _am\n_am._emit_timeline([])")
+        spin { engine.playingObjects.isEmpty }
+        XCTAssertEqual(engine.playingObjects, [])
     }
 }
 

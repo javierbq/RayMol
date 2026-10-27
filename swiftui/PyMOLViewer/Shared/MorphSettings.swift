@@ -80,13 +80,13 @@ struct MorphSettings: Codable, Equatable {
                                                        refinement: refinement))
     }
 
-    /// Seconds the app takes to build a morph, roughly: per atom per leg (spec
-    /// §5.2's 0.05 ms) plus per atom per frame, growing with the clean-up cycles.
-    /// The per-frame cost is measured, headless at the app's cadence (`pump(100)`
-    /// every 500 ms): 2kpo (1860 atoms) 300 frames took 8 s at 0 cycles and 32 s
-    /// at 3, 1200 frames 117 s at 3, 45 frames 3.6 s at 3; 50k atoms × 45 frames
-    /// 88 s at 3. This reads them within ±30 %. Spec §5.2's 0.25 ms per atom per
-    /// frame reads 4.5–6.5× the measurements (141 s for the 32 s morph).
+    /// Seconds the app takes to build a morph, roughly (spec §5.2): 0.05 ms per
+    /// atom per leg, plus per atom per frame 0.014 ms and 0.011 ms more per
+    /// clean-up cycle. Measured headless at the app's cadence (`pump(100)` every
+    /// 500 ms): 2kpo (1860 atoms) 300 frames took 8 s at 0 cycles and 32 s at 3,
+    /// 1200 frames 117 s at 3, 45 frames 3.6 s at 3; 50k atoms × 45 frames 88 s
+    /// at 3. This reads them within ±30 %. `morph_jobs.build_seconds` (Python's
+    /// `morph_estimate['seconds']`) uses the same three constants.
     static func buildSeconds(atoms: Int, legs: Int, frames: Int, refinement: Int) -> Double {
         let perAtomFrame = 1.4e-5 + 1.1e-5 * Double(max(refinement, 0))
         return Double(atoms) * (Double(legs) * 0.05e-3 + Double(frames) * perAtomFrame)
@@ -368,12 +368,17 @@ enum MorphMovie {
     /// The caption's memory part and its tier against `thresholds` (spec §5.6,
     /// as the Morph sheet judges it): "≈ 412 MB", with the remedy appended above
     /// the refuse threshold ("≈ 3.5 GB · reduce frames per model"). No text and
-    /// `.ok` while the estimate is unknown.
-    static func memoryNote(bytes: Int?, thresholds: (warn: Double, refuse: Double))
+    /// `.ok` while the estimate is unknown. A morph Python will not size up
+    /// (`sized` false, see `sizesMorph`) shows its size alone, at `.ok`: Python
+    /// refuses nothing it does not build, so neither the remedy nor a disabled
+    /// Add would be true.
+    static func memoryNote(bytes: Int?, thresholds: (warn: Double, refuse: Double),
+                           sized: Bool = true)
         -> (text: String?, tier: MorphSheet.MemoryTier) {
         guard let bytes else { return (nil, .ok) }
-        let tier = MorphSheet.memoryTier(bytes: bytes, thresholds: thresholds)
         let size = MorphSettings.megabytes(bytes)
+        guard sized else { return (size, .ok) }
+        let tier = MorphSheet.memoryTier(bytes: bytes, thresholds: thresholds)
         return (tier == .refuse ? "\(size) · reduce frames per model" : size, tier)
     }
 
@@ -382,6 +387,25 @@ enum MorphMovie {
     /// appears. A plain clip, or a smooth one under the limit, can be added.
     static func canAdd(smoothOn: Bool, tier: MorphSheet.MemoryTier) -> Bool {
         !(smoothOn && tier == .refuse)
+    }
+
+    /// Whether Python sizes up the morph Add would ask for (spec §5.6): only one
+    /// it builds. Not when Add submits no job (`plan.morph` nil: a plain clip, or
+    /// that morph is already building), nor for a reuse: `morph_object` keeps a
+    /// finished morph whose source and spec match the ones sent before it
+    /// estimates anything (spec §5.2), as the registry's `morphSources` and
+    /// `morphSpecs` show here. Python also compares the source's fingerprint:
+    /// an edited source is rebuilt, and refused when too large, which leaves its
+    /// clip naming the old morph and a refusal card in the tray. On iOS this is
+    /// reachable: the finished morph's own memory lowers the available-memory
+    /// thresholds that it passed when it was built.
+    static func sizesMorph(_ plan: AddPlan, morphSources: [String: String],
+                           morphSpecs: [String: MorphSettings]) -> Bool {
+        guard let call = plan.morph else { return false }
+        guard morphSources[call.target] == call.source,
+              var built = morphSpecs[call.target] else { return true }
+        built.movieSmooth = call.settings.movieSmooth   // the sheet's, not the job's
+        return built != call.settings
     }
 
     /// What Add does.

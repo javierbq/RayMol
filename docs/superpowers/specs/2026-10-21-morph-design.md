@@ -218,8 +218,11 @@ both, and the Movie path (§5.7) reuses an existing morph only when spec and
 fingerprint both match; otherwise it rebuilds.
 
 **Size policy.** `morph_estimate` also returns `seconds`, from the measured
-costs (≈ 0.05 ms per atom per leg for frames, ≈ 0.25 ms per atom-state for
-sculpting); the sheet shows it as a hint only. The user decided (§3.6) that
+costs (≈ 0.05 ms per atom per leg, plus ≈ 0.014 ms per atom per frame and
+≈ 0.011 ms more per clean-up cycle; `morph_jobs.build_seconds`, measured at
+the app's cadence; the first draft's 0.25 ms per atom-state read 4.5–6.5×
+high with clean-up and 4× low without it); the sheet shows it as a hint only,
+from the same constants (`MorphSettings.buildSeconds`). The user decided (§3.6) that
 the worker thread ships before any UI, so nothing is refused on time; only
 the memory limit (§5.6) refuses. Sculpting still runs on the main thread
 inside `pump()`'s budget, so very large morphs complete slowly but never

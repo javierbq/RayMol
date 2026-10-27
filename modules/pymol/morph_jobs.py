@@ -366,6 +366,26 @@ def _helix_residues(traced, residues, _self):
     return helix
 
 
+#: Build-time costs in seconds, measured headless at the app's cadence
+#: (pump(100) every 500 ms): per atom per leg, and per atom per frame with no
+#: clean-up plus per clean-up cycle.  2kpo (1860 atoms) 300 frames took 8 s at
+#: 0 cycles and 32 s at 3, 1200 frames 117 s at 3; 50k atoms x 45 frames 88 s
+#: at 3; these read them within +-30 %.  MorphSettings.buildSeconds (Swift)
+#: uses the same three numbers for the Morph sheet's hint.
+_SECONDS_PER_ATOM_LEG = 0.05e-3
+_SECONDS_PER_ATOM_FRAME = 1.4e-5
+_SECONDS_PER_ATOM_FRAME_CYCLE = 1.1e-5
+
+
+def build_seconds(atoms, legs, frames, refinement):
+    '''Rough seconds the app takes to build a morph of *atoms* atoms with
+    *legs* legs, *frames* frames in all and *refinement* clean-up cycles: a
+    hint only (spec section 5.2); nothing is refused on time.'''
+    per_frame = (_SECONDS_PER_ATOM_FRAME
+                 + _SECONDS_PER_ATOM_FRAME_CYCLE * max(int(refinement), 0))
+    return atoms * (legs * _SECONDS_PER_ATOM_LEG + frames * per_frame)
+
+
 def morph_estimate(source, frames_per_model=15, loop=1, refinement=3,
                    _self=cmd):
     '''Estimate resource usage for morphing *source*.
@@ -374,7 +394,8 @@ def morph_estimate(source, frames_per_model=15, loop=1, refinement=3,
       models, legs, frames, atoms, bytes, seconds, warn, refuse
 
     ``bytes`` is bytes_per_frame(source) times the frames: the memory the
-    finished morph holds.  ``warn`` / ``refuse`` are true when it is above
+    finished morph holds.  ``seconds`` is build_seconds(): the build-time hint
+    the Morph sheet shows.  ``warn`` / ``refuse`` are true when it is above
     the thresholds() (WARN_BYTES / REFUSE_BYTES when set, else the platform
     figures, read at call time).
     '''
@@ -383,8 +404,7 @@ def morph_estimate(source, frames_per_model=15, loop=1, refinement=3,
     frames = legs * frames_per_model
     atoms = _self.count_atoms('(%s) and %s' % (source, _ALT), state=1)
     nbytes = bytes_per_frame(source, _self) * frames
-    seconds = (atoms * legs * 0.05e-3
-               + atoms * frames * 0.25e-3 * (1 if refinement > 0 else 0))
+    seconds = build_seconds(atoms, legs, frames, refinement)
     warn, refuse = thresholds()
 
     return {

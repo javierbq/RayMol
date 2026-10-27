@@ -477,6 +477,58 @@ final class MorphSettingsTests: XCTestCase {
         XCTAssertTrue(MorphMovie.canAdd(smoothOn: false, tier: .refuse))
     }
 
+    /// Python sizes up only a morph it would build. It keeps a finished morph of
+    /// the source whose spec matches the one sent before it estimates anything
+    /// (reuse), and Add submits no job while that morph is building. Neither is
+    /// refused, so neither disables Add: the note shows the size alone, at `.ok`.
+    func testMovieAddStaysEnabledWhenPythonWouldNotSizeTheMorph() {
+        var s = MorphSettings()
+        s.framesPerModel = 120
+        s.loop = false                      // the Object panel's last choice
+        s.movieSmooth = true
+        var built = s                       // the registry's spec: loop on, no toggle
+        built.loop = true
+        built.movieSmooth = false
+        let sources = ["2kpo_morph": "2kpo"]
+        let plan = MorphMovie.addPlan(target: "2kpo", smooth: true, settings: s,
+                                      objects: ["2kpo": 20, "2kpo_morph": 2400], groups: [],
+                                      morphSources: sources, building: [])
+        // Reused: the finished morph of this source was built with these settings.
+        XCTAssertFalse(MorphMovie.sizesMorph(plan, morphSources: sources,
+                                             morphSpecs: ["2kpo_morph": built]))
+        // Built again, so sized: another spec, no spec known, another source's morph.
+        var other = built
+        other.refinement = 0
+        XCTAssertTrue(MorphMovie.sizesMorph(plan, morphSources: sources,
+                                            morphSpecs: ["2kpo_morph": other]))
+        XCTAssertTrue(MorphMovie.sizesMorph(plan, morphSources: sources, morphSpecs: [:]))
+        XCTAssertTrue(MorphMovie.sizesMorph(plan, morphSources: ["2kpo_morph": "1nmr"],
+                                            morphSpecs: ["2kpo_morph": built]))
+        // A first build is sized.
+        let first = MorphMovie.addPlan(target: "2kpo", smooth: true, settings: s,
+                                       objects: ["2kpo": 20], groups: [],
+                                       morphSources: [:], building: [])
+        XCTAssertTrue(MorphMovie.sizesMorph(first, morphSources: [:], morphSpecs: [:]))
+        // Already building: no job, nothing sized. A plain clip has no morph.
+        let building = MorphMovie.addPlan(target: "2kpo", smooth: true, settings: s,
+                                          objects: ["2kpo": 20, "2kpo_morph": 1], groups: [],
+                                          morphSources: [:], building: ["2kpo_morph"])
+        XCTAssertFalse(MorphMovie.sizesMorph(building, morphSources: [:], morphSpecs: [:]))
+        let plain = MorphMovie.addPlan(target: "2kpo", smooth: false, settings: s,
+                                       objects: ["2kpo": 20], groups: [],
+                                       morphSources: [:], building: [])
+        XCTAssertFalse(MorphMovie.sizesMorph(plain, morphSources: [:], morphSpecs: [:]))
+        // Above the limit but not sized: the size alone, `.ok`, so Add stays enabled.
+        let th = (warn: 200e6, refuse: 1e9)
+        let kept = MorphMovie.memoryNote(bytes: 6_936_000_000, thresholds: th, sized: false)
+        XCTAssertEqual(kept.text, "≈ 6.9 GB")
+        XCTAssertEqual(kept.tier, .ok)
+        XCTAssertTrue(MorphMovie.canAdd(smoothOn: true, tier: kept.tier))
+        let sized = MorphMovie.memoryNote(bytes: 6_936_000_000, thresholds: th, sized: true)
+        XCTAssertEqual(sized.text, "≈ 6.9 GB · reduce frames per model")
+        XCTAssertFalse(MorphMovie.canAdd(smoothOn: true, tier: sized.tier))
+    }
+
     /// The resolver is the Object panel's (MorphSettings.morphTarget), except that a
     /// morph still being built counts as this source's morph: its object has one
     /// state and no completed record yet, so the resolver alone would say `_morph2`.

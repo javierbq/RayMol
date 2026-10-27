@@ -313,6 +313,13 @@ final class PyMOLEngine: ObservableObject {
     // object (it's underscore-prefixed → excluded from public_objects) to stay
     // in sync with the displayed structure instead of the user's hidden objects.
     var themePreviewActive = false
+    // True from `endThemePreview` until its THEMEPREVIEW:restore line is read.
+    // The restore's set_session announces TIMELINE:ready like a session load,
+    // but it puts back the session the studio hid, so the per-object players
+    // (a morph's auto-play, an object's Play) keep going through it. Read and
+    // cleared on the main thread, in feedback order: the restore prints its
+    // line after set_session has announced the Timeline.
+    private(set) var themeRestorePending = false
 
     // macOS "Trackpad" mouse mode: when on, the MetalViewport trackpad gesture
     // handlers (scroll/pinch) drive rotate/pan/zoom/roll/clip directly, mirroring
@@ -1403,10 +1410,20 @@ final class PyMOLEngine: ObservableObject {
         _ = PyMOLBridge_TurnZ(instance, degrees)
     }
 
-    // Synchronous command body. Safe on the main thread (light commands) or on
-    // coreQueue (heavy commands): it calls only direct bridge/runPython helpers,
-    // never runCommand, so it can't re-enter the heavy-dispatch path.
+    // Synchronous command body, always on the main thread (light commands
+    // directly, heavy ones from runHeavy's main-queue hop): it calls only direct
+    // bridge/runPython helpers, never runCommand, so it can't re-enter the
+    // heavy-dispatch path.
     private func runCommandCore(_ command: String) {
+        // A command that replaces the whole session (a full .pse load from File >
+        // Open, drag-drop, Open With or the console, or reinitialize: the commands
+        // Lights mode ends on) stops every per-object player BEFORE it runs. A
+        // timer tick after it would send `set state` to the restored object of the
+        // same name and pin it there (blank past its last state). Loads that never
+        // pass through here (MCP, Python `cmd.load`) are caught at TIMELINE:ready.
+        if !playingObjects.isEmpty, Self.endsLightsMode(command: command) {
+            stopAllObjectStates()
+        }
         PyMOLBridge_RunCommand(command)
         noteCommandForLightsMode(command)
         handleSessionViewport(for: command)
@@ -2204,6 +2221,7 @@ final class PyMOLEngine: ObservableObject {
     func endThemePreview() {
         guard isReady else { return }
         themePreviewActive = false
+        themeRestorePending = true
         runPython("from pymol import appkit_theme_preview as _tp\n_tp.restore()")
         applyTheme(ThemeManager.shared.active)
         refreshAfterRestore()
@@ -2416,7 +2434,8 @@ final class PyMOLEngine: ObservableObject {
             .union(Self.newlyBuiltMorphs(builds: builds, seen: seenMorphBuilds))
         morphAutoPlay = Self.autoPlayAfterPoll(
             autoPlay: morphAutoPlay, previouslyRunning: runningMorphs, nowRunning: running,
-            sources: sources, failed: Set(jobs.filter { $0.isError }.map { $0.id }))
+            sources: sources, failed: Set(jobs.filter { $0.isError }.map { $0.id }),
+            completed: completed)
         runningMorphs = running
         seenMorphBuilds.formUnion(builds.values)
         let previousSpecs = morphSpecs
@@ -2479,20 +2498,23 @@ final class PyMOLEngine: ObservableObject {
     }
 
     /// The auto-play requests a poll leaves: those that may still complete.
-    /// Dropped: a target whose job record is terminal (`failed`: error, cancelled,
-    /// or refused, which Python files as `<name> (refused)` when a finished morph
-    /// holds the name), and a name that left the running set without a finished
-    /// record (dismissed, or deleted with its record). Kept: a finished one, for
-    /// `morphDidComplete` to consume, and one no poll has listed yet. Without
-    /// this a later build of that name that never asked for auto-play (a Movie-tab
-    /// smooth Add, a command-line morph) would start playing.
+    /// Kept: a name a build of which is running (`nowRunning`) or finished in this
+    /// poll (`completed`, for `morphDidComplete` to consume), whatever older card
+    /// is still in the tray, and one no poll has listed yet. Otherwise dropped: a
+    /// target whose job record is terminal (`failed`: error, cancelled, or
+    /// refused, which Python files as `<name> (refused)` when a finished morph
+    /// holds the name, so that card outlives a later build of the name), and a
+    /// name that left the running set without a finished record (dismissed, or
+    /// deleted with its record). Without this a later build of that name that
+    /// never asked for auto-play (a Movie-tab smooth Add, a command-line morph)
+    /// would start playing.
     static func autoPlayAfterPoll(autoPlay: Set<String>, previouslyRunning: Set<String>,
                                   nowRunning: Set<String>, sources: [String: String],
-                                  failed: Set<String>) -> Set<String> {
+                                  failed: Set<String>, completed: Set<String>) -> Set<String> {
         autoPlay.filter { name in
+            if nowRunning.contains(name) || completed.contains(name) { return true }
             if failed.contains(name) || failed.contains(name + " (refused)") { return false }
-            let leftRunning = previouslyRunning.contains(name) && !nowRunning.contains(name)
-            return !leftRunning || sources[name] != nil
+            return !previouslyRunning.contains(name) || sources[name] != nil
         }
     }
 
@@ -5414,6 +5436,11 @@ final class PyMOLEngine: ObservableObject {
         if !text.isEmpty {
             // Check for ObjectPanel feedback before appending to log
             for line in text.components(separatedBy: "\n") {
+                // The Theme studio's restore is over once its own line is read
+                // (it still goes on to the console below).
+                if line == "THEMEPREVIEW:restore" || line.hasPrefix("THEMEPREVIEW_ERR:restore") {
+                    themeRestorePending = false
+                }
                 if line.hasPrefix("OBJPANEL:") {
                     parseObjectPanelFeedback(line)
                 } else if line.hasPrefix("OBJDETAIL:") {
@@ -5445,12 +5472,18 @@ final class PyMOLEngine: ObservableObject {
                     let path = TempChannel.path(TempChannel.Stem.timeline)
                     if let data = FileManager.default.contents(atPath: path),
                        let restored = Self.timelineRestorePayload(data) {
+                        // Read now, in feedback order (see themeRestorePending).
+                        let replacedSession = !themeRestorePending
                         DispatchQueue.main.async {
                             // A per-object player outlives the session it was
                             // started in, and would drive a restored object of
-                            // the same name. Not released: a restored .pse
-                            // carries its objects' own states.
-                            self.stopAllObjectStates()
+                            // the same name. runCommandCore stops them before a
+                            // load it runs; this catches loads that bypass it
+                            // (MCP, Python `cmd.load`). The Theme studio's
+                            // restore is the same session: they keep playing.
+                            // Not released: a restored .pse carries its
+                            // objects' own states.
+                            if replacedSession { self.stopAllObjectStates() }
                             self.applyRestoredTimeline(restored.items, untrackedMovie: restored.untrackedMovie)
                         }
                     }

@@ -1081,12 +1081,25 @@ private struct PlayModelsSheet: View {
     }
     /// The smooth clip's morph against the memory thresholds (spec §5.6): Python's
     /// bytes per frame of the target times the loop's frames, as morph_object
-    /// estimates it. `.ok` with no text while that figure is unknown.
+    /// estimates it. `.ok` with no text while that figure is unknown, and `.ok`
+    /// with the size alone when Add's morph is one Python keeps or is already
+    /// building (MorphMovie.sizesMorph): it refuses only what it builds.
     private func memoryNote(models n: Int) -> (text: String?, tier: MorphSheet.MemoryTier) {
         let bytes = MorphMovie.estimatedBytes(
             models: n, framesPerModel: morph.framesPerModel,
             bytesPerFrame: target.flatMap { engine.morphBytesPerFrame[$0] })
-        return MorphMovie.memoryNote(bytes: bytes, thresholds: MorphSheet.currentThresholds())
+        let sized = MorphMovie.sizesMorph(plan, morphSources: engine.morphSources,
+                                          morphSpecs: engine.morphSpecs)
+        return MorphMovie.memoryNote(bytes: bytes, thresholds: MorphSheet.currentThresholds(),
+                                     sized: sized)
+    }
+
+    /// What Add does with the sheet as it stands.
+    private var plan: MorphMovie.AddPlan {
+        MorphMovie.addPlan(
+            target: target, smooth: smooth, settings: morph,
+            objects: Self.loadedObjects(engine), groups: groups,
+            morphSources: engine.morphSources, building: Self.building(engine))
     }
 
     // MARK: Layout
@@ -1197,7 +1210,8 @@ private struct PlayModelsSheet: View {
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
                     // Python would refuse the morph: no clip naming an object that
-                    // never appears. Lower frames per model to enable it.
+                    // never appears. Lower frames per model to enable it. (A morph
+                    // Python keeps, or one already building, is never refused.)
                     .disabled(!MorphMovie.canAdd(smoothOn: smoothOn, tier: memory.tier))
                     .accessibilityIdentifier("playModels.add")
             }
@@ -1205,10 +1219,7 @@ private struct PlayModelsSheet: View {
     }
 
     private func add(first: Int, last: Int) {
-        let plan = MorphMovie.addPlan(
-            target: target, smooth: smooth, settings: morph,
-            objects: Self.loadedObjects(engine), groups: groups,
-            morphSources: engine.morphSources, building: Self.building(engine))
+        let plan = self.plan
         // Python keeps an existing morph with the same spec and source fingerprint
         // (reuse); otherwise it builds, and the clip naming the morph fills in as legs
         // land and is rebuilt when it completes. One engine call, so a replace prompt
