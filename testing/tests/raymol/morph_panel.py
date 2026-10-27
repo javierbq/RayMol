@@ -17,7 +17,8 @@ Tests that:
   - the main payload's `morph_bytes_per_frame` carries morph_jobs'
     bytes_per_frame for every multi-state molecular object (none for 1-state
     objects, CGOs or the morph being built), and {} when computing it fails;
-    figures past their TTL are refreshed within a per-poll budget
+    figures past their TTL are refreshed within a per-poll budget, oldest
+    first
   - the main payload's `morph_atoms_per_frame` carries morph_estimate's
     `atoms` (state 1) from the same cached pass, one model's atoms for a
     discrete object (not the object's total)
@@ -245,6 +246,31 @@ class TestMorphPanelPayload(testing.PyMOLTestCase):
             with mock.patch.object(appkit_inspector,
                                    '_BYTES_PER_FRAME_REFRESH_S', 60.0):
                 got = self.payload()['morph_bytes_per_frame']
+        self.assertEqual(got, want)
+
+    def testExpiredFiguresRefreshOldestFirst(self):
+        '''With more expired figures than a poll's budget refreshes, the
+        oldest goes first, so every object gets its turn. In object-list
+        order the first few took every poll's refresh: with five sources each
+        costing more than the budget (a few ms each beside a 60k-atom
+        structure), a 500 ms poll and a 2 s TTL, the fifth one's figure never
+        refreshed.'''
+        names = ['e%d' % i for i in range(6)]
+        for n in names:
+            ensemble(n, models=2)
+            cmd.show_as('cartoon', n)
+        self.payload()
+        for n in names:
+            cmd.show('sticks', '%s and resi 1-3' % n)  # get_vis does not see this
+        want = {n: mj.bytes_per_frame(n) for n in names}
+        with mock.patch.object(appkit_inspector, '_BYTES_PER_FRAME_TTL', 0.0), \
+                mock.patch.object(appkit_inspector,
+                                  '_BYTES_PER_FRAME_REFRESH_S', 0.0), \
+                mock.patch.object(mj, 'frame_cost',
+                                  wraps=mj.frame_cost) as cost:
+            for _ in names:                         # one refresh per poll
+                got = self.payload()['morph_bytes_per_frame']
+        self.assertEqual(sorted(c.args[0] for c in cost.call_args_list), names)
         self.assertEqual(got, want)
 
     def testBuildingMorphIsNotMeasured(self):

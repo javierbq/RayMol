@@ -943,12 +943,12 @@ def _morph_frame_costs(objs, nstate):
     signature changes (its state count, or its entry in cmd.get_vis(), which
     is free to read) or once it is _BYTES_PER_FRAME_TTL old: a rep shown on
     more atoms, an alter of ss or a removal of atoms leaves the signature
-    alone. Figures past their TTL are refreshed while this poll has spent
-    less than _BYTES_PER_FRAME_REFRESH_S on such refreshes, and at least one
-    per poll, so such a change reaches the figure within the TTL plus one poll
-    per refresh that did not fit (one 100k-atom object per poll; small ones
-    together). One object at a time: a failing one costs only its own
-    entry."""
+    alone. Figures past their TTL are refreshed, oldest first, while this
+    poll has spent less than _BYTES_PER_FRAME_REFRESH_S on such refreshes,
+    and at least one per poll, so such a change reaches the figure within the
+    TTL plus one poll per refresh that did not fit (one 100k-atom object per
+    poll; small ones together). One object at a time: a failing one costs
+    only its own entry."""
     import time
     from pymol import morph_jobs
     try:
@@ -963,7 +963,11 @@ def _morph_frame_costs(objs, nstate):
     out = {}
     refreshes = 0
     spent = 0.0
-    for o in objs:
+    # Oldest figure first, so every expired one gets its turn: in object-list
+    # order the first few re-expire in time to take every poll's refresh, and
+    # a later object's figure never refreshed.
+    for o in sorted(objs, key=lambda n: _BYTES_PER_FRAME.get(
+            n, (None, None, float('-inf')))[2]):
         if (nstate.get(o, 0) <= 1 or o in building
                 or _object_kind(o) != 'object:molecule'):
             continue
