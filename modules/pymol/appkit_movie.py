@@ -15,6 +15,7 @@ Kept as a bundled module (not an inline Swift string) so it stays readable and
 testable. Mirrors the appkit_inspector.poll pattern.
 """
 
+import contextlib
 import copy
 
 from pymol import cmd
@@ -540,8 +541,10 @@ def forget_all_views():
 
 def reset():
     """Empty the lane after a full `reinitialize`, which drops the core movie
-    and scenes it describes, and tell the app so it empties its copy too."""
+    and scenes it describes, and tell the app so it empties its copy too. The
+    objects the players played are gone too."""
     forget_all_views()
+    _playing.clear()
     _emit_timeline([])
 
 
@@ -595,8 +598,82 @@ def _camera_ids(items):
             if isinstance(it, dict) and it.get('kind') == 'camera']
 
 
+# --- Objects-panel players (morph close-out B) ------------------------------
+#
+# PyMOLEngine.startObjectStates animates an object on a Swift timer that sends
+# `set state, k, name`, so while it plays the object carries an object-level
+# `state` setting (a pin) nobody asked for. Written into a .pse, the pin
+# outlives the timer: the reopened object ignores the movie's frames, so a
+# Lockstep clip, mplay and movie export show it frozen on the saved frame. The
+# app notes here which objects it is playing (one call per start or stop,
+# never per tick), and session_save leaves those objects' pins out of the
+# session it writes. A pin on any other object is the user's (a typed
+# `set state`, a Play stopped on a frame) and stays.
+
+_playing = set()
+
+
+def note_object_playing(name, on=True):
+    """The app started (`on`) or stopped playing `name` in the Objects panel."""
+    if on:
+        _playing.add(str(name))
+    else:
+        _playing.discard(str(name))
+
+
+def clear_playing_objects():
+    """The app stopped every Objects-panel player."""
+    _playing.clear()
+
+
+def playing_objects():
+    """The objects the app is playing, sorted."""
+    return sorted(_playing)
+
+
+@contextlib.contextmanager
+def players_go_on():
+    """Around an in-memory snapshot or restore of the live session (the Theme
+    studio's get_session / set_session): it is the same session, and the app
+    keeps playing through it, so the snapshot keeps the players' pins and the
+    restore keeps the registry."""
+    kept = set(_playing)
+    _playing.clear()
+    try:
+        yield
+    finally:
+        _playing.clear()
+        _playing.update(kept)
+
+
+def _leave_player_pins_out(session):
+    """Drop the object-level `state` of every playing object from `session`,
+    the copy get_session just filled, so the live objects keep theirs and the
+    players go on. An entry of ``session['names']`` is ``[name, type, visible,
+    None, objtype, data, group]``; ``data[0]`` is the object's ObjectAsPyList,
+    whose item 8 lists its settings as ``[index, type, value]`` (None when it
+    has none)."""
+    if not _playing:
+        return
+    from pymol import setting
+    index = setting._get_index('state')
+    for entry in session.get('names') or []:
+        if not entry or entry[0] not in _playing:
+            continue
+        try:
+            base = entry[5][0]
+            settings = base[8]
+        except (IndexError, KeyError, TypeError):
+            continue
+        if settings:
+            base[8] = [s for s in settings if not (s and s[0] == index)]
+
+
 def session_save(session, **_kwargs):
-    """Write the staged lane and the camera views its items use (#901)."""
+    """Write the staged lane and the camera views its items use (#901), and
+    leave the Objects-panel players' pins out (they reopen on the movie's
+    frame)."""
+    _leave_player_pins_out(session)
     if _timeline:
         ids = _camera_ids(_timeline)
         session[SESSION_KEY] = {
@@ -615,12 +692,14 @@ def session_restore(session, *, _self=None, **_kwargs):
     A session with no lane empties it, and reports whether the session still
     carries a movie of its own (left as it is). A partial restore
     (`load x.pse, partial=1`) leaves the live lane alone, as the core leaves
-    the movie (#617)."""
+    the movie (#617). A full restore also forgets the players: the objects
+    they played are gone."""
     global _timeline
     from pymol import raymol_scenes
     _self = cmd if _self is None else _self
     if raymol_scenes.restoring_partial(_self):
         return 1
+    _playing.clear()
     value = session.get(SESSION_KEY)
     items = value.get('items') if isinstance(value, dict) else None
     _views.clear()

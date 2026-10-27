@@ -166,7 +166,9 @@ built this way does not start playing in the Object panel.
   scrubbing a morph in the Objects tab pins it, and so does the auto-play
   after every build or rebuild from the Objects tab. Entering the Movie tab
   while it is still playing releases it; a morph you stopped or scrubbed
-  stays on its frame until you select **Sync** on its row.
+  stays on its frame until you select **Sync** on its row. A session saved
+  while a morph is playing reopens with it on the movie's frame, ready for
+  the Movie tab.
 - **Start and End count models**, not frames. In Sweep mode, Start 3, End 8
   plays from model 3 and stops exactly on model 8. The full range (1 to the
   last model) includes the leg back to model 1, so a Sweep clip ends where it

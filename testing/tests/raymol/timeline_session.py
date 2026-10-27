@@ -244,3 +244,165 @@ class TimelineSessionTest(testing.PyMOLTestCase):
         with open(raymol_tmp.channel_path('pymol_timeline'), encoding='utf-8') as handle:
             self.assertEqual(json.load(handle),
                              {'items': items, 'untrackedMovie': False})
+
+
+STATE = 193     # the `state` setting's index (setting.index_dict['state'])
+
+
+class PlayerPinSessionTest(testing.PyMOLTestCase):
+    '''Morph close-out B (F5 residual): the Objects-panel player animates an
+    object by sending `set state, k, name` on a timer, so while it plays the
+    object carries an object-level `state` (a pin). The app notes the objects
+    it plays in appkit_movie; a session written meanwhile leaves their pins
+    out, so the reopened morph follows the movie (Lockstep, mplay, export)
+    instead of freezing on the saved frame. Every other pin is the user's and
+    stays (C2), and the live objects keep theirs.'''
+
+    def setUp(self):
+        super().setUp()
+        cmd.reinitialize()
+        appkit_movie.clear_playing_objects()
+        self.addCleanup(appkit_movie.clear_playing_objects)
+        real = appkit_movie._emit_timeline
+        appkit_movie._emit_timeline = lambda items, untracked_movie=False: None
+        self.addCleanup(setattr, appkit_movie, '_emit_timeline', real)
+
+    def pse(self):
+        handle, path = tempfile.mkstemp(suffix='.pse')
+        os.close(handle)
+        self.addCleanup(lambda: os.path.exists(path) and os.unlink(path))
+        return path
+
+    def ensemble(self, name, states=12):
+        cmd.fab('AGA', name)
+        for k in range(2, states + 1):
+            cmd.create(name, name, 1, k)
+
+    def pin(self, name):
+        '''The object-level `state` setting, or None. get_object_settings
+        runs no session-save task, so this reads the live object.'''
+        for index, _type, value in cmd.get_object_settings(name) or []:
+            if index == STATE:
+                return value
+        return None
+
+    def reopen(self, path):
+        cmd.reinitialize()
+        cmd.load(path)
+        cmd.mset('1 -12')
+        cmd.frame(7)
+
+    def test_state_index(self):
+        from pymol import setting
+        self.assertEqual(setting._get_index('state'), STATE)
+
+    @testing.foreach(0, 1)
+    def test_save_while_playing_leaves_the_timer_pin_out(self, binary):
+        cmd.set('pse_binary_dump', binary)
+        self.ensemble('src_morph')
+        cmd.set('state', 5, 'src_morph')
+        cmd.set('sphere_scale', 0.5, 'src_morph')
+        appkit_movie.note_object_playing('src_morph', True)
+        saved = self.pse()
+        cmd.save(saved)
+        # The live object keeps its pin: the player goes on.
+        self.assertEqual(self.pin('src_morph'), 5)
+        self.assertEqual(appkit_movie.playing_objects(), ['src_morph'])
+
+        self.reopen(saved)
+        self.assertIsNone(self.pin('src_morph'))
+        self.assertEqual(cmd.get_setting_int('state', 'src_morph'), 7)
+        # Only `state` goes: the object's other settings ride along.
+        self.assertEqual(cmd.get_setting_float('sphere_scale', 'src_morph'), 0.5)
+
+    def test_a_pin_on_an_object_not_playing_stays(self):
+        self.ensemble('src_morph')
+        self.ensemble('other')
+        cmd.set('state', 5, 'src_morph')
+        cmd.set('state', 3, 'other')
+        appkit_movie.note_object_playing('other', True)
+        saved = self.pse()
+        cmd.save(saved)
+
+        self.reopen(saved)
+        self.assertEqual(self.pin('src_morph'), 5)
+        self.assertEqual(cmd.get_setting_int('state', 'src_morph'), 5)
+        self.assertIsNone(self.pin('other'))
+        self.assertEqual(cmd.get_setting_int('state', 'other'), 7)
+
+    def test_a_player_stopped_on_a_frame_keeps_its_pin(self):
+        self.ensemble('src_morph')
+        cmd.set('state', 5, 'src_morph')
+        appkit_movie.note_object_playing('src_morph', True)
+        appkit_movie.note_object_playing('src_morph', False)
+        self.assertEqual(appkit_movie.playing_objects(), [])
+        saved = self.pse()
+        cmd.save(saved)
+
+        self.reopen(saved)
+        self.assertEqual(self.pin('src_morph'), 5)
+
+    def test_a_snapshot_is_a_copy(self):
+        self.ensemble('src_morph')
+        cmd.set('state', 5, 'src_morph')
+        appkit_movie.note_object_playing('src_morph', True)
+        session = cmd.get_session()
+        entry = next(e for e in session['names'] if e and e[0] == 'src_morph')
+        self.assertNotIn(STATE, [s[0] for s in entry[5][0][8] or []])
+        self.assertEqual(self.pin('src_morph'), 5)
+
+    def test_a_partial_save_leaves_the_timer_pin_out(self):
+        self.ensemble('src_morph')
+        cmd.set('state', 5, 'src_morph')
+        appkit_movie.note_object_playing('src_morph', True)
+        saved = self.pse()
+        cmd.save(saved, 'src_morph')
+
+        self.reopen(saved)
+        self.assertIsNone(self.pin('src_morph'))
+
+    def test_a_player_with_nothing_to_strip_saves(self):
+        # No object settings at all (None in the session), and a name the
+        # session does not hold.
+        self.ensemble('src_morph')
+        appkit_movie.note_object_playing('src_morph', True)
+        appkit_movie.note_object_playing('gone', True)
+        saved = self.pse()
+        cmd.save(saved)
+        self.reopen(saved)
+        self.assertIsNone(self.pin('src_morph'))
+
+    def test_reinitialize_clears_the_registry(self):
+        appkit_movie.note_object_playing('src_morph', True)
+        cmd.reinitialize()
+        self.assertEqual(appkit_movie.playing_objects(), [])
+
+    def test_reinitialize_of_settings_keeps_the_registry(self):
+        appkit_movie.note_object_playing('src_morph', True)
+        cmd.reinitialize('settings')
+        self.assertEqual(appkit_movie.playing_objects(), ['src_morph'])
+
+    def test_a_full_restore_clears_the_registry_a_partial_keeps_it(self):
+        self.ensemble('src_morph')
+        saved = self.pse()
+        cmd.save(saved)
+        appkit_movie.note_object_playing('src_morph', True)
+        cmd.load(saved, partial=1)
+        self.assertEqual(appkit_movie.playing_objects(), ['src_morph'])
+        cmd.load(saved)
+        self.assertEqual(appkit_movie.playing_objects(), [])
+
+    def test_theme_studio_round_trip_keeps_players_and_their_pins(self):
+        # The studio snapshots the session in memory and puts it back: the
+        # same session, so the players go on (PyMOLEngine keeps their timers
+        # through the restore) and the objects keep their pins.
+        from pymol import appkit_theme_preview as tp
+        self.addCleanup(setattr, tp, '_saved', None)
+        self.ensemble('src_morph')
+        cmd.set('state', 5, 'src_morph')
+        appkit_movie.note_object_playing('src_morph', True)
+        tp.begin(cmd.exp_path('$PYMOL_DATA/demo/pept.pdb'))
+        self.assertEqual(appkit_movie.playing_objects(), ['src_morph'])
+        tp.restore()
+        self.assertEqual(appkit_movie.playing_objects(), ['src_morph'])
+        self.assertEqual(self.pin('src_morph'), 5)
