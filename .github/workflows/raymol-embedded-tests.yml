@@ -43,6 +43,12 @@ jobs:
               --no-build-isolation --config-settings glut=true .
 
       - name: Run RayMol unit tests under embedded pymol
+        env:
+          # ortho_deferred_reentrant.py's Guard Malloc subtest makes a read of
+          # the freed deferred-job queue fault deterministically: fail, don't
+          # skip, if Guard Malloc cannot load here (e.g. a hardened-runtime
+          # Python that drops DYLD_INSERT_LIBRARIES). Drop this only knowingly.
+          RAYMOL_REQUIRE_GMALLOC: "1"
         run: |
           pymol -ckqy testing/testing.py --run \
               testing/tests/test_raymol_tmp.py \
@@ -132,6 +138,7 @@ jobs:
               testing/tests/raymol/movie_object_settings.py \
               testing/tests/raymol/movie_hold_model.py \
               testing/tests/raymol/notes_session.py \
+              testing/tests/raymol/ortho_deferred_reentrant.py \
               testing/tests/jira/multistate_timeline.py \
               testing/tests/raymol/metal_frees_gpu_buffers.py \
               testing/tests/raymol/metal_pick.py \
