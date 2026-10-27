@@ -120,14 +120,15 @@ second one.
 
 RayMol remembers how it built each morph since it was launched, for as long as
 that morph is still loaded unchanged. This holds when you reopen a session you
-saved in the same run: the morph's row keeps the loop icon, **Morph…** on that
+saved with it in the same run, with no other session opened and no **Clear
+Session** in between: the morph's row keeps the loop icon, **Morph…** on that
 row opens with the settings that built it, and the Movie tab's **Add** can
-reuse it. After a relaunch or **Clear Session**, or when the saved morph
-differs from the one RayMol last built under that name, it comes back as an
-ordinary multi-state object: **Morph…** on its row opens with your remembered
-settings rather than the ones that built it, and **Add** rebuilds it. While
-its source is loaded, RayMol still recognises it by its `<source>_morph` name:
-its row keeps the loop icon and the "Morph of 2kpo" tooltip, and **Morph…**
+reuse it. After a relaunch, **Clear Session** or opening another session, or
+when the saved morph differs from the one RayMol last built under that name,
+it comes back as an ordinary multi-state object: **Morph…** on its row opens
+with your remembered settings rather than the ones that built it, and **Add**
+rebuilds it. While its source is loaded, RayMol still recognises it by its
+`<source>_morph` name: its row keeps the loop icon and the "Morph of 2kpo" tooltip, and **Morph…**
 rebuilds it in place.
 
 ## Smooth playback in a movie
@@ -153,11 +154,12 @@ models:
 **Add** starts building `2kpo_morph` in the background and appends a clip
 named `2kpo_morph`, marked with the loop icon. It reuses the morph instead when
 it was built from the unchanged source with the same settings since RayMol was
-launched and is still loaded unchanged (reopening the session you saved in the
-same run keeps it reusable; after a relaunch, or when the saved morph differs,
-**Add** rebuilds it). If the morph is still building, the movie is rebuilt
-once it is complete. A morph built this way does not start playing in the
-Object panel.
+launched and is still loaded unchanged (reopening a session you saved with it
+in the same run, with no other session opened and no **Clear Session** in
+between, keeps it reusable; after a relaunch, **Clear Session** or opening
+another session, or when the saved morph differs, **Add** rebuilds it). If the
+morph is still building, the movie is rebuilt once it is complete. A morph
+built this way does not start playing in the Object panel.
 
 - **Sweep, Loop and Lockstep all play a morph.** Lockstep moves the global
   frame, so it does not move an object pinned to its own state. Playing or
@@ -301,11 +303,12 @@ command-line PyMOL, where nothing lands the frames of a background morph.
 morph being built and `morph_dismiss 2kpo_morph` clears the card of a
 cancelled or failed one. Running `morph_object` again on the same source
 rebuilds `2kpo_morph` in place when it was built since RayMol was launched and
-is still loaded unchanged (reopening the session you saved in the same run
-keeps it recognised). After a relaunch, or when the saved morph differs, it
-comes back as an ordinary multi-state object: name it
-(`morph_object 2kpo, name=2kpo_morph`), or a second morph, `2kpo_morph2`, is
-created beside it. A morph started from the command line does not start
+is still loaded unchanged (reopening a session you saved with it in the same
+run, with no other session opened and no `reinitialize` (**Clear Session**) in
+between, keeps it recognised). After a relaunch, `reinitialize` or opening
+another session, or when the saved morph differs, it comes back as an ordinary
+multi-state object: name it (`morph_object 2kpo, name=2kpo_morph`), or a
+second morph, `2kpo_morph2`, is created beside it. A morph started from the command line does not start
 playing by itself. The
 [command reference](/RayMol/reference/commands/#morph_object) lists every
 option (`method=linear`, `refinement=0`, `rate=sinusoidal`, `reuse=1`, …).

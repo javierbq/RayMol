@@ -1866,6 +1866,39 @@ class TestMorphSessionReplacement(testing.PyMOLTestCase):
         self.assertEqual(mj.morph_spec('src_morph')['started'], started)
         self.assertEqual(mj.morph_sources()['src_morph']['build'], build)  # not a new build
 
+    def testSameRunReopenKeepsTheRecordOnlyWithNoSessionBetween(self):
+        # The guide's condition (morph.md Rebuild or delete, Add, Command
+        # line; commands.md morph_object): reopening a session saved with the
+        # morph, in the same run, keeps it recognised and reusable; opening
+        # another session or Clear Session (reinitialize) in between does not.
+        self.ensemble()
+        other = self.pse()
+        cmd.save(other)                                 # src, no morph
+        mj.morph_object('src', frames_per_model=3, refinement=0, async_=0)
+        build = mj.morph_sources()['src_morph']['build']
+        path = self.pse()
+        cmd.save(path)
+        cmd.load(path)
+        self.assertEqual(mj.morph_sources()['src_morph']['build'], build)
+        self.assertEqual(
+            mj.morph_object('src', frames_per_model=3, refinement=0, async_=0,
+                            reuse=1), 'src_morph')
+        self.assertEqual(mj.morph_sources()['src_morph']['build'], build)  # reused
+
+        cmd.load(other)                                 # another session first
+        cmd.load(path)
+        self.assertEqual(mj.morph_sources(), {})
+        self.assertIsNone(mj.morph_spec('src_morph'))
+
+        mj.morph_object('src', name='src_morph', frames_per_model=3,
+                        refinement=0, async_=0)
+        self.assertIn('src_morph', mj.morph_sources())
+        cmd.save(path)
+        cmd.reinitialize()                              # Clear Session
+        cmd.load(path)
+        self.assertEqual(mj.morph_sources(), {})
+        self.assertEqual(cmd.count_states('src_morph'), 12)
+
     def testRegistryChecksTheObjectIsStillTheMorph(self):
         self.ensemble()
         mj.morph_object('src', frames_per_model=3, refinement=0, async_=0)
