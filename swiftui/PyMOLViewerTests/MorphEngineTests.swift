@@ -1485,7 +1485,10 @@ final class TimelineClipCaptionLayoutTests: XCTestCase {
         let lane = try XCTUnwrap(scrollViews(host).first {
             ($0.documentView?.frame.width ?? 0) > $0.frame.width + 50 && $0.frame.height > 60
         }, "no overflowing lane")
-        let laneRect = lane.convert(lane.bounds, to: host)       // host points, y down
+        // The lane's viewport, its clip view, in host points (y down). Not the
+        // scroll view's own frame: with legacy scroll bars (a mouse attached, or
+        // a CI runner) that also holds the 17 pt scroller below the content.
+        let laneRect = lane.contentView.convert(lane.contentView.bounds, to: host)
         XCTAssertTrue(host.isFlipped)
         XCTAssertEqual(laneRect.height, 84, accuracy: 0.5)
         let fade = laneRect.width * 0.05                          // the lane's edge fades
