@@ -45,7 +45,9 @@ jobs:
       - name: Run RayMol unit tests under embedded pymol
         env:
           # scene_thumbnail_defer.py's Guard Malloc subtests are the only ones
-          # that catch the freed-scene thumbnail write: fail, don't skip, if
+          # that catch the freed-scene thumbnail write, and
+          # ortho_deferred_reentrant.py's makes a read of the freed
+          # deferred-job queue fault deterministically: fail, don't skip, if
           # Guard Malloc cannot load here (e.g. a hardened-runtime Python that
           # drops DYLD_INSERT_LIBRARIES). Drop this only knowingly.
           RAYMOL_REQUIRE_GMALLOC: "1"
@@ -139,6 +141,7 @@ jobs:
               testing/tests/raymol/movie_hold_model.py \
               testing/tests/raymol/notes_session.py \
               testing/tests/raymol/timeline_session.py \
+              testing/tests/raymol/ortho_deferred_reentrant.py \
               testing/tests/jira/multistate_timeline.py \
               testing/tests/raymol/metal_frees_gpu_buffers.py \
               testing/tests/raymol/metal_pick.py \
