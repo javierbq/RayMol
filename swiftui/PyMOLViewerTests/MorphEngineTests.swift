@@ -1191,6 +1191,49 @@ final class SessionReplaceStopsPlayersTests: XCTestCase {
         ])
         XCTAssertEqual(pythonRegistry(), [])
     }
+
+    /// The object-level `state` (the pin) `name` carries now, read back through
+    /// a file: its value, "none" when it has none, nil when it could not be read.
+    private func pythonPin(_ name: String) -> String? {
+        let path = NSTemporaryDirectory() + "t5ss_pin_\(UUID().uuidString).txt"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        engine.runPython("from pymol import cmd as _c, setting as _s\n"
+                         + "_i = _s._get_index('state')\n"
+                         + "_v = [v for i, t, v in (_c.get_object_settings("
+                         + "\(InferenceJob.pythonLiteral(name))) or []) if i == _i]\n"
+                         + "open(\(InferenceJob.pythonLiteral(path)), 'w').write("
+                         + "str(_v[0]) if _v else 'none')")
+        guard let data = FileManager.default.contents(atPath: path) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    /// Close-out B review: the Objects panel's rename of a playing object
+    /// leaves no timer pin on it. `cmd.set_name` drops the pin the ticks left,
+    /// and the rename stops the player at once: the new name here extends the
+    /// old one, and PyMOL matches an unambiguous name prefix, so a tick of
+    /// `set state, k, t5ss_ren` left running until the panel poll would pin
+    /// `t5ss_ren2` again. Kept, that pin would freeze the object in every
+    /// later save.
+    func testRenamingAPlayingObjectLeavesNoTimerPin() {
+        engine.runPython("from pymol import cmd as _c\n"
+                         + "_c.fab('AGA', 't5ss_ren')\n_c.create('t5ss_ren', 't5ss_ren', 1, 2)")
+        spin { engine.objects.contains { $0.name == "t5ss_ren" && $0.stateCount > 1 } }
+        defer {
+            engine.stopObjectStates("t5ss_ren")
+            engine.objectFPS["t5ss_ren"] = nil
+        }
+        engine.startObjectStates("t5ss_ren")
+        spin(0.4) { false }                 // several ticks at 15 fps
+        let pinned = pythonPin("t5ss_ren")
+        XCTAssertTrue(pinned == "1" || pinned == "2", "the ticks pin the object: \(String(describing: pinned))")
+
+        engine.renameObject("t5ss_ren", to: "t5ss_ren2")
+        XCTAssertEqual(pythonPin("t5ss_ren2"), "none")
+        XCTAssertEqual(engine.playingObjects, [])
+        XCTAssertEqual(pythonRegistry(), [])
+        spin(0.4) { false }                 // a timer left running would tick here
+        XCTAssertEqual(pythonPin("t5ss_ren2"), "none")
+    }
 }
 
 // MARK: - Test-only PredictionJobState fixture

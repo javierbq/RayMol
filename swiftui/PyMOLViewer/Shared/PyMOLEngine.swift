@@ -2323,8 +2323,12 @@ final class PyMOLEngine: ObservableObject {
     /// one plays leaves out the pin its `set state` ticks set, so the reopened
     /// object follows the movie (Lockstep, mplay, export) instead of freezing
     /// on the saved frame. One call per start or stop, never per tick. Names
-    /// follow `playingObjects`: a renamed or deleted object's player stops at
-    /// the next panel poll (`timersToStop`), which takes its old name out.
+    /// follow `playingObjects`: the Objects panel's rename stops the player
+    /// (`renameObject`), and any other rename or a delete stops it at the next
+    /// panel poll (`timersToStop`), which takes its old name out. The renamed
+    /// object does not keep the timer's last pin: `cmd.set_name` drops it on
+    /// every rename path (`appkit_movie.object_renamed`). A playing group's
+    /// ticks pin its members, and the save strips theirs.
     private func notePlayerRegistry(_ name: String, playing: Bool) {
         runPython("from pymol import appkit_movie as _am\n"
                   + "_am.note_object_playing(\(InferenceJob.pythonLiteral(name)), \(playing ? "True" : "False"))")
@@ -3451,6 +3455,12 @@ final class PyMOLEngine: ObservableObject {
         runPython("import base64 as _b64\nfrom pymol import cmd as _c\n"
             + "_c.set_name(_b64.b64decode('\(ob)').decode('utf-8'), "
             + "_b64.b64decode('\(nb)').decode('utf-8'))")
+        // A player of `old` stops now, not at the next panel poll: its ticks
+        // (`set state, k, old`) would still reach the renamed object when the
+        // new name extends the old one (PyMOL matches an unambiguous name
+        // prefix) and pin it again. AFTER set_name, which drops the pin the
+        // ticks left while `old` is still in appkit_movie's registry.
+        stopObjectStates(old)
     }
 
     // MARK: - Interactive measurement

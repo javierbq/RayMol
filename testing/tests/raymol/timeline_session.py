@@ -361,6 +361,102 @@ class PlayerPinSessionTest(testing.PyMOLTestCase):
         self.reopen(saved)
         self.assertIsNone(self.pin('src_morph'))
 
+    def cgo_ensemble(self, name, states=5):
+        from pymol.cgo import SPHERE
+        for k in range(1, states + 1):
+            cmd.load_cgo([SPHERE, float(k), 0.0, 0.0, 1.0], name, state=k)
+
+    def test_a_group_player_leaves_its_members_pins_out(self):
+        # `set state, k, <group>` pins the objects inside the group, all the
+        # way down, and not the group itself. The registry holds the group's
+        # name, so the save strips its members: molecules, and objects no
+        # selection reaches (a CGO).
+        self.ensemble('m1')
+        self.cgo_ensemble('cg')
+        self.ensemble('outside')
+        cmd.group('grp', 'm1 cg')
+        cmd.group('outer', 'grp')
+        cmd.set('state', 5, 'outer')
+        cmd.set('state', 3, 'outside')
+        self.assertEqual(self.pin('m1'), 5)
+        self.assertEqual(self.pin('cg'), 5)
+        appkit_movie.note_object_playing('outer', True)
+        saved = self.pse()
+        cmd.save(saved)
+        self.assertEqual(self.pin('m1'), 5)
+
+        self.reopen(saved)
+        self.assertIsNone(self.pin('m1'))
+        self.assertEqual(cmd.get_setting_int('state', 'm1'), 7)
+        self.assertIsNone(self.pin('cg'))
+        # C2: an object outside the playing group keeps its pin.
+        self.assertEqual(self.pin('outside'), 3)
+
+    def test_a_partial_save_of_a_group_players_member_leaves_its_pin_out(self):
+        # The file holds the member but not the groups above it, so only the
+        # live group still names it.
+        self.ensemble('m1')
+        cmd.group('grp', 'm1')
+        cmd.group('outer', 'grp')
+        cmd.set('state', 5, 'outer')
+        appkit_movie.note_object_playing('outer', True)
+        saved = self.pse()
+        cmd.save(saved, 'm1')
+
+        self.reopen(saved)
+        self.assertIsNone(self.pin('m1'))
+
+    def test_renaming_a_playing_object_lets_it_go(self):
+        # The player's timer goes on sending `set state, k, <old name>` until
+        # the panel poll stops it, so it no longer reaches the renamed object:
+        # the rename drops the pin the timer left on it, live and so in every
+        # later save. The registry keeps the old name, which the timer still
+        # targets, until the app stops that player.
+        self.ensemble('src_morph')
+        cmd.set('state', 5, 'src_morph')
+        appkit_movie.note_object_playing('src_morph', True)
+        cmd.set_name('src_morph', 'renamed')
+        self.assertIsNone(self.pin('renamed'))
+        self.assertEqual(appkit_movie.playing_objects(), ['src_morph'])
+        appkit_movie.note_object_playing('src_morph', False)   # the poll's prune
+        saved = self.pse()
+        cmd.save(saved)
+
+        self.reopen(saved)
+        self.assertIsNone(self.pin('renamed'))
+        self.assertEqual(cmd.get_setting_int('state', 'renamed'), 7)
+
+    def test_renaming_to_a_name_the_core_rewrites_lets_it_go(self):
+        # set_name legalises the new name ('my morph' -> 'my_morph').
+        self.ensemble('src_morph')
+        cmd.set('state', 5, 'src_morph')
+        appkit_movie.note_object_playing('src_morph', True)
+        cmd.set_name('src_morph', 'my morph')
+        self.assertIn('my_morph', cmd.get_names('objects'))
+        self.assertIsNone(self.pin('my_morph'))
+
+    def test_renaming_a_playing_group_lets_its_members_go(self):
+        self.ensemble('m1')
+        cmd.group('grp', 'm1')
+        cmd.set('state', 5, 'grp')
+        appkit_movie.note_object_playing('grp', True)
+        cmd.set_name('grp', 'grp2')
+        self.assertIsNone(self.pin('m1'))
+
+    def test_renaming_an_object_not_playing_keeps_its_pin(self):
+        # C2: a player stopped on a frame, or a typed `set state`.
+        self.ensemble('src_morph')
+        self.ensemble('other')
+        cmd.set('state', 5, 'src_morph')
+        cmd.set('state', 3, 'other')
+        appkit_movie.note_object_playing('src_morph', True)
+        appkit_movie.note_object_playing('src_morph', False)
+        appkit_movie.note_object_playing('third', True)
+        cmd.set_name('src_morph', 'stopped')
+        cmd.set_name('other', 'typed')
+        self.assertEqual(self.pin('stopped'), 5)
+        self.assertEqual(self.pin('typed'), 3)
+
     def test_a_player_with_nothing_to_strip_saves(self):
         # No object settings at all (None in the session), and a name the
         # session does not hold.

@@ -646,19 +646,69 @@ def players_go_on():
         _playing.update(kept)
 
 
-def _leave_player_pins_out(session):
-    """Drop the object-level `state` of every playing object from `session`,
-    the copy get_session just filled, so the live objects keep theirs and the
-    players go on. An entry of ``session['names']`` is ``[name, type, visible,
-    None, objtype, data, group]``; ``data[0]`` is the object's ObjectAsPyList,
-    whose item 8 lists its settings as ``[index, type, value]`` (None when it
-    has none)."""
+def object_renamed(old, new, _self=cmd):
+    """`set_name old, new` just ran. A playing object's timer goes on sending
+    `set state, k, old` until the panel poll stops that player, so it no longer
+    reaches the renamed object: drop the pin it left there (on a group, its
+    members), or the object would keep it live and in every later save. The
+    registry keeps `old`, which the timer still targets, until the app stops
+    it. set_name legalises `new` ('my morph' becomes 'my_morph'), so the
+    object may carry the legal form."""
+    if str(old) not in _playing:
+        return
+    new = str(new)
+    if new not in (_self.get_names('all') or []):
+        new = _self.get_legal_name(new)
+    _self.unset('state', new, quiet=1)
+
+
+def _pinned_by_players(entries, _self):
+    """The names in `entries` whose `state` a player's ticks set. `set state,
+    k, <group>` pins the objects inside the group, all the way down, and not
+    the group, so a playing group stands for its members. The session's own
+    group links (entry[6]) reach every member it holds, whatever its type; a
+    partial save may hold a member without the groups above it, so the live
+    groups add their molecules (the only members a selection reaches)."""
+    parent = {}
+    for entry in entries:
+        try:
+            parent[entry[0]] = entry[6]
+        except (IndexError, KeyError, TypeError):
+            continue
+    names = set()
+    for name in parent:
+        seen = set()
+        node = name
+        while node and node not in seen:
+            if node in _playing:
+                names.add(name)
+                break
+            seen.add(node)
+            node = parent.get(node)
+    try:
+        groups = _playing.intersection(_self.get_names('group_objects') or [])
+        for group in groups:
+            names.update(_self.get_object_list('(%s)' % group) or [])
+    except Exception:
+        pass
+    return names
+
+
+def _leave_player_pins_out(session, _self=cmd):
+    """Drop the object-level `state` of every playing object (a playing
+    group's: of its members) from `session`, the copy get_session just
+    filled, so the live objects keep theirs and the players go on. An entry of
+    ``session['names']`` is ``[name, type, visible, None, objtype, data,
+    group]``; ``data[0]`` is the object's ObjectAsPyList, whose item 8 lists
+    its settings as ``[index, type, value]`` (None when it has none)."""
     if not _playing:
         return
     from pymol import setting
     index = setting._get_index('state')
-    for entry in session.get('names') or []:
-        if not entry or entry[0] not in _playing:
+    entries = [e for e in session.get('names') or [] if e]
+    pinned = _pinned_by_players(entries, _self)
+    for entry in entries:
+        if entry[0] not in pinned:
             continue
         try:
             base = entry[5][0]
@@ -669,11 +719,11 @@ def _leave_player_pins_out(session):
             base[8] = [s for s in settings if not (s and s[0] == index)]
 
 
-def session_save(session, **_kwargs):
+def session_save(session, *, _self=None, **_kwargs):
     """Write the staged lane and the camera views its items use (#901), and
     leave the Objects-panel players' pins out (they reopen on the movie's
     frame)."""
-    _leave_player_pins_out(session)
+    _leave_player_pins_out(session, cmd if _self is None else _self)
     if _timeline:
         ids = _camera_ids(_timeline)
         session[SESSION_KEY] = {
