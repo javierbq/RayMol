@@ -3172,14 +3172,32 @@ final class PyMOLEngine: ObservableObject {
         return missing.joined(separator: ", ") + " not loaded"
     }
 
-    /// The text a states clip draws in the lane, `width` points wide: "label —
-    /// note" for a clip that plays nothing, or the note alone when the clip is
-    /// narrower than 160 pt (the lane draws the ⚠ glyph before it), so the
-    /// reason is what stays readable. The name stays in the tooltip and in the
-    /// context menu's header.
+    /// The text a states clip draws in the lane, `width` points of it on screen:
+    /// "label — note" for a clip that plays nothing, or, narrower than 160 pt,
+    /// only the reason (the note up to its " · ", "not built" for a morph clip;
+    /// the lane draws the ⚠ glyph before it), so the reason is what stays
+    /// readable. The name and the remedy ("morph 2kpo to fill") stay in the
+    /// tooltip and in the context menu, which also offers the Build action.
     static func statesClipCaption(label: String, note: String?, width: CGFloat) -> String {
         guard let note else { return label }
-        return width < 160 ? note : "\(label) — \(note)"
+        guard width < 160 else { return "\(label) — \(note)" }
+        return note.components(separatedBy: " · ").first ?? note
+    }
+
+    /// The part of a states clip's block the lane shows, as `x` from the block's
+    /// leading edge and `width`: where its caption is laid out, leading-aligned
+    /// (the lane adds its padding), so a clip longer than the lane, or one
+    /// scrolled past its start, still shows its ⚠ and the start of its text.
+    /// All in lane (content) coordinates: the block spans `blockX` +
+    /// `blockWidth`, the lane shows `visibleX` + `visibleWidth`. A block with
+    /// nothing on screen gets its whole width, as before.
+    static func statesClipVisibleSpan(blockX: CGFloat, blockWidth: CGFloat,
+                                      visibleX: CGFloat,
+                                      visibleWidth: CGFloat) -> (x: CGFloat, width: CGFloat) {
+        let lo = max(blockX, visibleX)
+        let hi = min(blockX + blockWidth, visibleX + visibleWidth)
+        guard hi > lo else { return (0, blockWidth) }
+        return (lo - blockX, hi - lo)
     }
 
     /// Fill a morph clip whose object is not loaded: morph its source into the

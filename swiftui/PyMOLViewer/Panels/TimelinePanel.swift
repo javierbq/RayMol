@@ -78,6 +78,11 @@ struct TimelinePanel: View {
     @State private var paletteContentW: CGFloat = 0
     @State private var paletteViewportW: CGFloat = 0
 
+    // The lane's horizontal scroll offset, for the states clips' captions, which
+    // lay out in the part of their block on screen. @State does not observe the
+    // object, so a scroll re-renders only the captions that read it, not the panel.
+    @State private var laneScroll = TimelineLaneScroll()
+
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var hSize
     private var isCompact: Bool { forceCompact || hSize == .compact }
@@ -89,6 +94,9 @@ struct TimelinePanel: View {
     private let rulerH: CGFloat = 28
     private var labelW: CGFloat { isCompact ? 34 : 90 }   // wide enough for "Scenes" without wrapping
     private let laneSpace = "timelineLane"   // coord space for drag/tap -> frame
+    private let laneViewportSpace = "timelineLaneViewport"   // the lane's scroll view: its scroll offset
+    // Width of each edge fade of an overflowing scroll row, as a fraction of it.
+    private let scrollFadeFraction: CGFloat = 0.05
     private let minZoom: CGFloat = 0.05
     private let maxZoom: CGFloat = 8.0
 
@@ -124,8 +132,8 @@ struct TimelinePanel: View {
             stops: active
                 ? [
                     .init(color: .clear, location: 0),
-                    .init(color: .black, location: 0.05),
-                    .init(color: .black, location: 0.95),
+                    .init(color: .black, location: scrollFadeFraction),
+                    .init(color: .black, location: 1 - scrollFadeFraction),
                     .init(color: .clear, location: 1),
                   ]
                 // Fully opaque (no fade) so a row that fits isn't clipped.
@@ -367,12 +375,16 @@ struct TimelinePanel: View {
                 let w = geo.size.width
                 let pps = ppsFor(w)
                 let cW = contentWidth(w, pps: pps)
+                // What the lane shows clearly, for the clip captions: the viewport
+                // inside the edge fades an overflowing lane draws (scrollFadeMask).
+                let fade = cW > w + 1 ? w * scrollFadeFraction : 0
                 ScrollViewReader { proxy in
                     ScrollView(.horizontal, showsIndicators: true) {
                         ZStack(alignment: .topLeading) {
                             VStack(spacing: 0) {
                                 ruler(contentW: cW, pps: pps)
-                                itemLane(contentW: cW, pps: pps)
+                                itemLane(contentW: cW, pps: pps,
+                                         clear: (inset: fade, width: max(w - 2 * fade, 1)))
                             }
                             playhead(pps: pps)
                             // Invisible follow-anchor centered on the playhead.
@@ -383,7 +395,19 @@ struct TimelinePanel: View {
                         }
                         .frame(width: cW, height: rulerH + laneH, alignment: .topLeading)
                         .coordinateSpace(name: laneSpace)
+                        // The scroll offset: the content's leading edge, seen from
+                        // the scroll view's own (unscrolled) coordinate space. Read
+                        // with onChange, not a preference: the reader re-evaluates on
+                        // every scroll, but in this panel onPreferenceChange never
+                        // fired for a scroll (checked on macOS in a hosted panel).
+                        .background(GeometryReader { g in
+                            let x = -g.frame(in: .named(laneViewportSpace)).minX
+                            Color.clear.onChange(of: x, initial: true) { _, x in
+                                if abs(laneScroll.x - x) >= 0.5 { laneScroll.x = x }
+                            }
+                        })
                     }
+                    .coordinateSpace(name: laneViewportSpace)
                     // (the seconds playhead is suppressed for a bare ensemble; the
                     // model band carries its own current-model marker)
                     // Bound the scroll view's own height — a horizontal ScrollView is
@@ -445,8 +469,11 @@ struct TimelinePanel: View {
         )
     }
 
+    /// `clear`: the part of the lane's viewport drawn unfaded, `inset` from its
+    /// leading edge (the clip captions lay out there).
     @ViewBuilder
-    private func itemLane(contentW: CGFloat, pps: CGFloat) -> some View {
+    private func itemLane(contentW: CGFloat, pps: CGFloat,
+                          clear: (inset: CGFloat, width: CGFloat)) -> some View {
         let items = laidOut
         ZStack(alignment: .topLeading) {
             Rectangle().fill(TimelineTheme.accent.opacity(0.05))
@@ -461,7 +488,7 @@ struct TimelinePanel: View {
                     connectorIfSequential(laid, items, pps: pps)
                 }
                 ForEach(items) { laid in
-                    itemNode(laid, pps: pps)
+                    itemNode(laid, pps: pps, clear: clear)
                 }
             }
         }
@@ -529,7 +556,8 @@ struct TimelinePanel: View {
     }
 
     // A camera keyframe (diamond) or scene marker (chip) at its timeline frame.
-    private func itemNode(_ laid: Laid, pps: CGFloat) -> some View {
+    private func itemNode(_ laid: Laid, pps: CGFloat,
+                          clear: (inset: CGFloat, width: CGFloat)) -> some View {
         let dragging = dragItemID == laid.item.id
         let startX = dragging ? dragX : xFor(laid.frame, pps: pps)
         let w = nodeHitWidth(laid, pps: pps)
@@ -544,7 +572,7 @@ struct TimelinePanel: View {
             case .scene(let name):
                 sceneNode(name)
             case .states(let spec):
-                statesNode(laid, spec: spec, pps: pps)
+                statesNode(laid, spec: spec, pps: pps, blockX: startX, clear: clear)
             }
         }
         .scaleEffect(dragging ? 1.25 : 1)
@@ -596,15 +624,19 @@ struct TimelinePanel: View {
     // decimated guide ticks (never one per model — a 2000-frame MD stays a block).
     // A clip whose object is not loaded (a morph saved while it was still being
     // built, a deleted object) is dimmed, with a dashed outline, and says so.
-    private func statesNode(_ laid: Laid, spec: PyMOLEngine.StatesSpec, pps: CGFloat) -> some View {
+    // `blockX`: the block's leading edge in the lane; `clear`: the unfaded part of
+    // the lane's viewport, where the caption lays out (StatesClipCaption).
+    private func statesNode(_ laid: Laid, spec: PyMOLEngine.StatesSpec, pps: CGFloat,
+                            blockX: CGFloat,
+                            clear: (inset: CGFloat, width: CGFloat)) -> some View {
         let w = max(30, xFor(laid.endFrame, pps: pps) - xFor(laid.frame, pps: pps))
         // The object(s), with the model range only when it's a subset (e.g. "3–7").
         let (label, glyph) = PyMOLEngine.statesClipLabel(spec, models: engine.statesClipModels(spec))
         let note = missingNote(spec)
-        // The whole text for the tooltip and VoiceOver; a narrow clip draws the
-        // note alone after the ⚠ glyph, so the reason is what stays readable.
+        // The whole text, remedy included, for the tooltip and VoiceOver; the
+        // context menu carries it too. A narrow clip draws only the reason after
+        // the ⚠ glyph, so it is what stays readable.
         let text = note.map { "\(label) — \($0)" } ?? label
-        let caption = PyMOLEngine.statesClipCaption(label: label, note: note, width: w)
         return RoundedRectangle(cornerRadius: 4)
             .fill(TimelineTheme.accent.opacity(note == nil ? 0.10 : 0.04))   // discreet — blends with the lane
             .overlay(
@@ -616,15 +648,10 @@ struct TimelinePanel: View {
                 }
                 .opacity(note == nil ? 1 : 0)
             )
-            .overlay(
-                HStack(spacing: 3) {
-                    Image(systemName: note == nil ? glyph : "exclamationmark.triangle")
-                        .font(.system(size: 8))
-                    Text(caption).font(.system(size: 10, weight: .medium)).lineLimit(1)
-                }
-                .foregroundColor(TimelineTheme.text.opacity(note == nil ? 0.85 : 0.5))
-                .padding(.horizontal, 6)
-            )
+            .overlay(alignment: .leading) {
+                StatesClipCaption(scroll: laneScroll, blockX: blockX, blockWidth: w,
+                                  clear: clear, label: label, note: note, glyph: glyph)
+            }
             .overlay(RoundedRectangle(cornerRadius: 4)
                 .stroke(TimelineTheme.accent.opacity(note == nil ? 0.45 : 0.3),
                         style: StrokeStyle(lineWidth: 0.75, dash: note == nil ? [] : [3, 2])))
@@ -1260,6 +1287,49 @@ private struct PaletteContentWKey: PreferenceKey {
 private struct PaletteViewportWKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+/// The lane's horizontal scroll offset in points (0 at its start), kept by the
+/// lane's scroll view for the states clips' captions.
+private final class TimelineLaneScroll: ObservableObject {
+    @Published var x: CGFloat = 0
+}
+
+/// A states clip's caption: its glyph (⚠ for a clip that plays nothing) and
+/// text, leading-aligned with the lane's padding in the part of the block the
+/// lane shows unfaded (`PyMOLEngine.statesClipVisibleSpan`). A clip longer than
+/// the lane, or scrolled past its start, so still shows its ⚠ and the start of
+/// its text, and the text's form follows the room on screen
+/// (`PyMOLEngine.statesClipCaption`). Observes the scroll offset itself, so a
+/// scroll re-lays out the captions only. Sits in a leading-aligned overlay of
+/// the block.
+private struct StatesClipCaption: View {
+    @ObservedObject var scroll: TimelineLaneScroll
+    /// The block's leading edge and width, in the lane.
+    let blockX: CGFloat
+    let blockWidth: CGFloat
+    /// The unfaded part of the lane's viewport, `inset` from its leading edge.
+    let clear: (inset: CGFloat, width: CGFloat)
+    let label: String
+    let note: String?
+    let glyph: String
+
+    var body: some View {
+        let span = PyMOLEngine.statesClipVisibleSpan(
+            blockX: blockX, blockWidth: blockWidth,
+            visibleX: scroll.x + clear.inset, visibleWidth: clear.width)
+        let caption = PyMOLEngine.statesClipCaption(label: label, note: note, width: span.width)
+        HStack(spacing: 3) {
+            Image(systemName: note == nil ? glyph : "exclamationmark.triangle")
+                .font(.system(size: 8))
+            Text(caption).font(.system(size: 10, weight: .medium)).lineLimit(1)
+        }
+        .foregroundColor(TimelineTheme.text.opacity(note == nil ? 0.85 : 0.5))
+        .padding(.horizontal, 6)
+        .frame(width: span.width, alignment: .leading)
+        // Laid out (not offset), so its accessibility frame is where it draws.
+        .padding(.leading, span.x)
+    }
 }
 
 // Small downward-pointing triangle for the playhead head.

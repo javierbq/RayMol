@@ -464,20 +464,69 @@ final class MorphEngineTests: XCTestCase {
     }
 
     /// A clip that plays nothing reads "label — note" when it is wide enough; a
-    /// narrow one shows the note alone (the lane draws the ⚠ glyph before it), so
-    /// the reason is not cut off. The name stays in the tooltip and the menu.
+    /// narrow one (under 160 pt) shows only the reason, "not built" for a morph
+    /// clip (the lane draws the ⚠ glyph before it), so it is not cut off. The
+    /// name and the remedy ("morph 2kpo to fill") stay in the tooltip and the
+    /// context menu.
     func testStatesClipCaption() {
         let note = "not built · morph 2kpo to fill"
         XCTAssertEqual(PyMOLEngine.statesClipCaption(label: "2kpo_morph", note: nil, width: 40),
                        "2kpo_morph")
+        XCTAssertEqual(PyMOLEngine.statesClipCaption(label: "2kpo_morph", note: nil, width: 400),
+                       "2kpo_morph")
+        // Wide: the name, the reason and the remedy.
         XCTAssertEqual(PyMOLEngine.statesClipCaption(label: "2kpo_morph", note: note, width: 400),
                        "2kpo_morph — \(note)")
         XCTAssertEqual(PyMOLEngine.statesClipCaption(label: "2kpo_morph", note: note, width: 160),
                        "2kpo_morph — \(note)")
+        // Narrow: the reason alone.
         XCTAssertEqual(PyMOLEngine.statesClipCaption(label: "2kpo_morph", note: note, width: 159),
-                       note)
+                       "not built")
+        XCTAssertEqual(PyMOLEngine.statesClipCaption(label: "2kpo_morph", note: note, width: 100),
+                       "not built")
         XCTAssertEqual(PyMOLEngine.statesClipCaption(label: "2kpo_morph", note: note, width: 30),
-                       note)
+                       "not built")
+        XCTAssertEqual(PyMOLEngine.statesClipCaption(label: "2kpo_morph",
+                                                     note: "not built · morph its source to fill",
+                                                     width: 50),
+                       "not built")
+        // A plain clip's note has no remedy to drop.
+        XCTAssertEqual(PyMOLEngine.statesClipCaption(label: "2kpo", note: "not loaded", width: 100),
+                       "not loaded")
+        XCTAssertEqual(PyMOLEngine.statesClipCaption(label: "3 objects", note: "a, c not loaded",
+                                                     width: 100),
+                       "a, c not loaded")
+        XCTAssertEqual(PyMOLEngine.statesClipCaption(label: "2kpo", note: "not loaded", width: 200),
+                       "2kpo — not loaded")
+    }
+
+    /// The part of a states clip's block the lane shows, relative to the block's
+    /// leading edge: its caption is laid out there (leading-aligned, with the
+    /// lane's padding), so it is on screen however the lane is scrolled.
+    func testStatesClipVisibleSpan() {
+        func span(_ blockX: CGFloat, _ blockWidth: CGFloat,
+                  _ visibleX: CGFloat, _ visibleWidth: CGFloat) -> [CGFloat] {
+            let s = PyMOLEngine.statesClipVisibleSpan(blockX: blockX, blockWidth: blockWidth,
+                                                      visibleX: visibleX, visibleWidth: visibleWidth)
+            return [s.x, s.width]
+        }
+        // Fully visible: the whole block.
+        XCTAssertEqual(span(100, 200, 0, 800), [0, 200])
+        XCTAssertEqual(span(100, 200, 50, 800), [0, 200])
+        // The VM's case: the block starts on screen and runs past the lane's
+        // trailing edge, so the caption gets the part up to that edge, not the
+        // block's centre.
+        XCTAssertEqual(span(900, 700, 0, 1020), [0, 120])
+        // Start scrolled off: the caption starts at the lane's visible left edge.
+        XCTAssertEqual(span(100, 600, 300, 800), [200, 400])
+        // Wider than the lane: the visible window of it.
+        XCTAssertEqual(span(0, 2000, 500, 800), [500, 800])
+        XCTAssertEqual(span(-50, 2000, 0, 800), [50, 800])
+        // Off screen (nothing of it shows): the whole block, as before.
+        XCTAssertEqual(span(2000, 100, 0, 800), [0, 100])
+        XCTAssertEqual(span(0, 100, 300, 800), [0, 100])
+        // Touching the edge only: off screen too.
+        XCTAssertEqual(span(800, 100, 0, 800), [0, 100])
     }
 
     // MARK: - Clips whose objects are not loaded
