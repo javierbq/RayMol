@@ -83,7 +83,9 @@ the reason.
 
 A session saved while a morph builds does not include the unfinished morph; a
 movie clip that names it stays. After reopening the session the clip is dimmed
-with a dashed outline and reads `2kpo_morph — not built · morph 2kpo to fill`:
+with a dashed outline and reads `2kpo_morph — not built · morph 2kpo to fill`
+(when little of the clip is on screen, just `not built`; its tooltip carries
+the rest):
 right-click it and select **Build 2kpo_morph from 2kpo** to morph the source
 at the clip's own frames per model, or morph the source again yourself. Any
 Play-models clip whose object is not loaded is marked the same way ("not
