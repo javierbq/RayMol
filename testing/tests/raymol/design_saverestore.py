@@ -3,12 +3,48 @@
 Runs via the repo test runner:
     pymol -ckqy testing/testing.py --run tests/raymol/design_saverestore.py
 """
+import os
+from unittest import mock
+
 from pymol import cmd, testing
 
 _TSET = ['cartoon_transparency', 'transparency', 'stick_transparency', 'sphere_transparency']
 
 
 class TestDesignSaveRestore(testing.PyMOLTestCase):
+    def testSnapshotIsPerProcess(self):
+        """Another process's snapshot must not replace ours.
+
+        Two processes on one machine (e.g. parallel CI lists) both write a
+        snapshot under $TMPDIR; with one shared file name the later write wins
+        and the earlier process restores the other one's scene, or reads it
+        half-written. The second process is simulated with a different pid.
+        """
+        from pymol import raymol_design
+        cmd.reinitialize()
+        cmd.fragment('ala', 'm1')
+        cmd.color('red', 'm1')
+        before = []
+        cmd.iterate('m1', 'before.append(color)', space={'before': before})
+        raymol_design.snapshot_visual_state('m1')
+
+        # The other process snapshots its own scene in the meantime.
+        cmd.color('blue', 'm1')
+        raymol_design.dim_object('m1', 'gray70', 0.7)
+        with mock.patch('os.getpid', return_value=os.getpid() + 1):
+            other_path = raymol_design._snapshot_path()
+            self.addCleanup(lambda: os.path.exists(other_path)
+                            and os.remove(other_path))
+            raymol_design.snapshot_visual_state('m1')
+        self.assertNotEqual(other_path, raymol_design._snapshot_path())
+
+        raymol_design.restore_visual_state()
+        after = []
+        cmd.iterate('m1', 'after.append(color)', space={'after': after})
+        self.assertEqual(before, after)
+        self.assertAlmostEqual(
+            cmd.get_setting_float('transparency', 'm1'), 0.0, places=5)
+
     def testColorAndTransparencyRestoredExactly(self):
         cmd.reinitialize()
         cmd.fragment('ala', 'm1')

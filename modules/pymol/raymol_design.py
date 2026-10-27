@@ -1,6 +1,7 @@
 """RayMol Design-mode core helpers: residue enumeration, coloring, and
 exact visual-state save/restore. Mirrors the appkit_sequence bundled-module
 pattern (writes JSON to TMPDIR, returns a short marker)."""
+import atexit
 import base64
 import hashlib
 import json
@@ -52,6 +53,28 @@ except Exception as _mt_e:      # pragma: no cover - bookkeeping must never brea
 
 def _tmp(name):
     return os.path.join(tempfile.gettempdir(), name)
+
+
+def _snapshot_path():
+    """This process's visual-state snapshot file.
+
+    Per-pid, because $TMPDIR is shared by every process of one user: two RayMol
+    or pymol processes (parallel test runs, two app instances) writing one fixed
+    name restore each other's scene, or read it half-written. Only this module
+    reads the file — Swift calls snapshot/restore and never opens it — so the
+    name is free to change.
+    """
+    return _tmp('raymol_design_snapshot.%d.json' % os.getpid())
+
+
+_SNAPSHOTS_TO_REMOVE = set()
+
+
+def _remove_snapshot(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def enumerate_design_residues(obj, state):
@@ -536,7 +559,7 @@ def apply_design_coloring(obj, values_json_path, palette, lo, hi, metric='',
     # snapshot baseline so a previously-dimmed object is fully visible when it
     # becomes the focus.  If the snapshot is absent (e.g. loaded mid-mode) or
     # the object is not recorded in it, skip gracefully.
-    snap_path = _tmp('raymol_design_snapshot.json')
+    snap_path = _snapshot_path()
     if os.path.exists(snap_path):
         try:
             with open(snap_path) as _snap_f:
@@ -652,7 +675,8 @@ def snapshot_visual_state(objects_csv):
       - per-atom color (integer color index) keyed by atom *index* (str in JSON)
       - each transparency setting from _TRANSP per object (unknown settings skipped)
 
-    Writes to $TMPDIR/raymol_design_snapshot.json.
+    Writes to $TMPDIR/raymol_design_snapshot.<pid>.json (see _snapshot_path),
+    removed when the process exits.
     Returns 'DESIGN_SNAP:ok'.
     """
     objs = [o.strip() for o in objects_csv.split(',') if o.strip()]
@@ -665,8 +689,13 @@ def snapshot_visual_state(objects_csv):
         colors[o] = {str(k): v for k, v in d.items()}
         settings[o] = _get_transp_settings(o)
     snap = {'objects': objs, 'colors': colors, 'settings': settings}
-    with open(_tmp('raymol_design_snapshot.json'), 'w') as f:
+    path = _snapshot_path()
+    with open(path, 'w') as f:
         json.dump(snap, f)
+    # One file per pid would otherwise pile up in $TMPDIR, one per run.
+    if path not in _SNAPSHOTS_TO_REMOVE:
+        _SNAPSHOTS_TO_REMOVE.add(path)
+        atexit.register(_remove_snapshot, path)
     return 'DESIGN_SNAP:ok'
 
 
@@ -688,13 +717,13 @@ def dim_object(obj, gray_color, transparency):
 def restore_visual_state():
     """Restore exact per-atom colors and transparency settings from snapshot.
 
-    Loads $TMPDIR/raymol_design_snapshot.json written by snapshot_visual_state.
+    Loads this process's snapshot written by snapshot_visual_state.
     For each object: restores transparency settings, then restores per-atom
     colors via alter (JSON string keys are converted back to int for matching),
     then calls recolor() to flush the display.
     Returns 'DESIGN_RESTORE:ok'.
     """
-    with open(_tmp('raymol_design_snapshot.json')) as f:
+    with open(_snapshot_path()) as f:
         snap = json.load(f)
     for o in snap['objects']:
         # Restore transparency settings first.
