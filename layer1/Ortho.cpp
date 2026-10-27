@@ -272,10 +272,14 @@ void OrthoExecDeferred(PyMOLGlobals* G)
   COrtho* I = G->Ortho;
   /* execute all deferred actions that happened to require a
    * valid OpenGL context (such as atom picks, etc.) */
-  for (const auto& d : I->deferred) {
+  // A job can queue another (OrthoDeferImage -> SceneDeferImage without a
+  // valid context). Run the jobs taken here, so a new one waits for the next
+  // drain instead of being cleared unrun or reallocating under this loop.
+  std::vector<std::function<void()>> deferred;
+  deferred.swap(I->deferred);
+  for (const auto& d : deferred) {
     d();
   }
-  I->deferred.clear();
 }
 
 void OrthoDefer(PyMOLGlobals* G, std::function<void()>&& D)
