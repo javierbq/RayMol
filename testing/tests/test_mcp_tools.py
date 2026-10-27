@@ -253,6 +253,11 @@ class TestMcpToolsRegistry(unittest.TestCase):
             self.assertTrue(t["description"].strip())
             self.assertEqual(t["inputSchema"]["type"], "object")
 
+    def test_session_state_description_names_morph_jobs(self):
+        # raymol.morph_jobs is part of the state; a client reads the schema
+        desc = {t["name"]: t["description"] for t in tools.list_tools()}
+        self.assertIn("morph jobs", desc["get_session_state"])
+
     def test_unknown_tool_is_error_not_exception(self):
         res = tools.call("nope", {})
         self.assertTrue(res["isError"])

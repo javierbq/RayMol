@@ -1408,7 +1408,23 @@ def morph_cancel(name, quiet=1, _self=cmd):
 DESCRIPTION
 
     Cancel a morph that is being built: the partial object is deleted and the
-    source is shown again.
+    source is shown again.  The morph is then listed as cancelled (the app's
+    progress tray shows a "Morph cancelled" card) until morph_dismiss.
+    Cancelling a rebuild also loses the previous morph, which was deleted
+    when the rebuild started.
+
+USAGE
+
+    morph_cancel name
+
+ARGUMENTS
+
+    name = str: the morph object being built (e.g. 2kpo_morph), not the
+    source it is built from
+
+SEE ALSO
+
+    morph_object, morph_dismiss
     '''
     job = _JOBS.get(name)
     if job is None or job._finalised:
@@ -1423,7 +1439,23 @@ def morph_dismiss(name, quiet=1, _self=cmd):
     '''
 DESCRIPTION
 
-    Forget the record of a cancelled or failed morph (its progress card).
+    Forget the record of a cancelled or failed morph: its card in the app's
+    progress tray and its entry in the MCP session state.  A completed morph
+    leaves nothing to dismiss.
+
+USAGE
+
+    morph_dismiss name
+
+ARGUMENTS
+
+    name = str: the morph object the record is listed under (e.g.
+    2kpo_morph), not the source; a morph refused while a finished morph held
+    that name is listed as "2kpo_morph (refused)"
+
+SEE ALSO
+
+    morph_object, morph_cancel
     '''
     job = _JOBS.get(name)
     if job is not None and job.state in _FAILED:

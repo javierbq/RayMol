@@ -83,14 +83,16 @@ MORPHS  (commands morph_object, morph_cancel, morph_dismiss)
   object <source>_morph with interpolated frames between consecutive models
   (by default looping back to model 1). Use it instead of stepping raw
   states with mset/mplay. It builds in the background: poll
-  raymol.morph_jobs in get_session_state until its status is done
-  (async_=0 waits for it but blocks the app). With no movie defined, frames
+  raymol.morph_jobs in get_session_state until its status is done,
+  cancelled or error (morph_dismiss clears a cancelled or failed record;
+  async_=0 waits for it but blocks the app). With no movie defined, frames
   follow its states, so mplay and export_movie play it.
     morph_object 2kpo                    (builds 2kpo_morph)
     morph_object 2kpo, frames_per_model=10, loop=0
     morph_cancel 2kpo_morph              (stop a build and drop it)
     morph_dismiss 2kpo_morph             (forget a cancelled or failed build)
-  The stock 'morph' command morphs between two different objects.
+  RayMol's 'morph' command morphs between two objects (or through an
+  ensemble with state1=0).
 
 STRUCTURE PREDICTION, ON DEVICE  (tools predict_structure, job_status)
   Folds protein sequences locally with Boltz-2 or Protenix (weights download

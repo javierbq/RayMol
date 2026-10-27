@@ -118,11 +118,17 @@ so if you cancel or the build fails, no morph is left and you morph again.
 **Morph…** on the source also rebuilds its existing morph rather than making a
 second one.
 
-A morph saved in a session comes back as an ordinary multi-state object: the
-sheet opens with your remembered settings rather than the ones that built it.
-While its source is loaded, RayMol still recognises it by its
-`<source>_morph` name: its row keeps the loop icon and the "Morph of 2kpo"
-tooltip, and **Morph…** rebuilds it in place.
+RayMol remembers how it built each morph since it was launched, for as long as
+that morph is still loaded unchanged. This holds when you reopen a session you
+saved in the same run: the morph's row keeps the loop icon, **Morph…** on that
+row opens with the settings that built it, and the Movie tab's **Add** can
+reuse it. After a relaunch or **Clear Session**, or when the saved morph
+differs from the one RayMol last built under that name, it comes back as an
+ordinary multi-state object: **Morph…** on its row opens with your remembered
+settings rather than the ones that built it, and **Add** rebuilds it. While
+its source is loaded, RayMol still recognises it by its `<source>_morph` name:
+its row keeps the loop icon and the "Morph of 2kpo" tooltip, and **Morph…**
+rebuilds it in place.
 
 ## Smooth playback in a movie
 
@@ -144,29 +150,38 @@ models:
    here.
 4. Select **Add**.
 
-**Add** starts building `2kpo_morph` in the background, or reuses it when it
-was already built in this session with the same settings from the unchanged
-source (a morph restored from a saved session is always rebuilt), and appends
-a clip named `2kpo_morph`, marked with the loop icon. If the morph is still
-building, the movie is rebuilt once it is complete. A morph built this way
-does not start playing in the Object panel.
+**Add** starts building `2kpo_morph` in the background and appends a clip
+named `2kpo_morph`, marked with the loop icon. It reuses the morph instead when
+it was built from the unchanged source with the same settings since RayMol was
+launched and is still loaded unchanged (reopening the session you saved in the
+same run keeps it reusable; after a relaunch, or when the saved morph differs,
+**Add** rebuilds it). If the morph is still building, the movie is rebuilt
+once it is complete. A morph built this way does not start playing in the
+Object panel.
 
 - **Sweep, Loop and Lockstep all play a morph.** Lockstep moves the global
-  frame, so it does not move an object pinned to its own state: a morph whose
-  own Play you stopped in the Objects tab stays on that frame, so select
-  **Sync** on its row (entering the Movie tab while an object is still
-  playing releases it for you).
-- **Start and End count models**, not frames. Start 3, End 8 plays from model
-  3 and stops exactly on model 8. The full range (1 to the last model) includes
-  the leg back to model 1, so a Sweep clip ends where it started and the movie
-  loops seamlessly.
+  frame, so it does not move an object pinned to its own state. Playing or
+  scrubbing a morph in the Objects tab pins it, and so does the auto-play
+  after every build or rebuild from the Objects tab. Entering the Movie tab
+  while it is still playing releases it; a morph you stopped or scrubbed
+  stays on its frame until you select **Sync** on its row.
+- **Start and End count models**, not frames. In Sweep mode, Start 3, End 8
+  plays from model 3 and stops exactly on model 8. The full range (1 to the
+  last model) includes the leg back to model 1, so a Sweep clip ends where it
+  started and the movie loops seamlessly.
+- **Loop plays forward, then back**, within the clip's Duration, so it ends
+  where it started: a Start 3, End 8 Loop clip ends on model 3. It covers its
+  range twice, so at natural speed it needs twice a Sweep clip's Duration:
+  20 s rather than 10 s for the full 300-frame morph at 30 fps. The stepper
+  goes up to 30 s, or to the natural length when that is longer, so for the
+  full range of a morph longer than 15 s use Sweep instead.
 - **Duration** follows the whole morph's natural length, frames ÷ movie frame
   rate (10 s for 300 frames at 30 fps), when you turn the toggle on or change
   frames per model, until you step Duration yourself. It ignores Start and End,
-  so step it down for a shorter range: at natural speed a range lasts
-  (End − Start) × frames per model ÷ frame rate, 2.5 s for Start 3, End 8 (the
-  stepper moves in whole seconds). While smoothing, the stepper goes past 30 s
-  when the natural length needs it.
+  so step it down for a shorter range: in Sweep mode, at natural speed a range
+  lasts (End − Start) × frames per model ÷ frame rate, 2.5 s for Start 3,
+  End 8 (the stepper moves in whole seconds). While smoothing, the stepper goes
+  past 30 s when the natural length needs it.
 - If you later rebuild the morph with a different number of frames per model,
   the clip keeps playing the same models: its range is remapped to the new
   frames when the movie is rebuilt.
@@ -260,6 +275,13 @@ most), or remove atoms you do not need (waters, other chains) first. Clean-up
 takes most of the build time: with 0 cycles a morph builds several times
 faster.
 
+Every change to a finished morph's look (a colour, a material, transparency,
+a shown representation, a theme) rebuilds all of its frames in the next
+redraw: for 2kpo shown as cartoon, about 0.4 s at 300 frames and 1.5 s at
+1,200 on an M-series Mac, the same cost as for any object with that many
+states and atoms. Turning the camera and playing the morph are not slowed. If
+edits feel slow, build the morph with fewer frames per model.
+
 ## Command line
 
 `morph_object` does what the Morph sheet does:
@@ -278,10 +300,13 @@ command-line PyMOL, where nothing lands the frames of a background morph.
 `morph_cancel 2kpo_morph` stops a
 morph being built and `morph_dismiss 2kpo_morph` clears the card of a
 cancelled or failed one. Running `morph_object` again on the same source
-rebuilds `2kpo_morph` in place when it was built in this session. For a morph
-restored from a saved session, name it (`morph_object 2kpo, name=2kpo_morph`),
-or a second morph, `2kpo_morph2`, is created beside it. A morph started from
-the command line does not start playing by itself. The
+rebuilds `2kpo_morph` in place when it was built since RayMol was launched and
+is still loaded unchanged (reopening the session you saved in the same run
+keeps it recognised). After a relaunch, or when the saved morph differs, it
+comes back as an ordinary multi-state object: name it
+(`morph_object 2kpo, name=2kpo_morph`), or a second morph, `2kpo_morph2`, is
+created beside it. A morph started from the command line does not start
+playing by itself. The
 [command reference](/RayMol/reference/commands/#morph_object) lists every
 option (`method=linear`, `refinement=0`, `rate=sinusoidal`, `reuse=1`, …).
 

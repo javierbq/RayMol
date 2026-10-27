@@ -298,6 +298,26 @@ class TestSessionStateMorphJobs(_NativeCase):
             self.assertFalse(res["isError"], (name, res))
             self.assertIn("DESCRIPTION", res["content"][0]["text"])
 
+    def test_cancel_and_dismiss_manuals_name_the_morph_object(self):
+        # An agent guessing `morph_cancel 2kpo` (the source) gets "not being
+        # built": the manual must say the argument is the morph's own name.
+        for name in ("morph_cancel", "morph_dismiss"):
+            text = tools.call("raymol_help", {"topic": name})["content"][0]["text"]
+            text = " ".join(text.split())       # the manual wraps its lines
+            for part in ("USAGE", "ARGUMENTS", "name = str", "2kpo_morph",
+                         "not the source"):
+                self.assertIn(part, text, name)
+
+    def test_guide_says_when_to_stop_polling_a_morph(self):
+        # "until its status is done" never ends after a cancel or a failure
+        from raymol_mcp import guide
+        start = guide.GUIDE.index("MORPHS")
+        block = " ".join(guide.GUIDE[start:guide.GUIDE.index("\n\n", start)].split())
+        self.assertIn("until its status is done, cancelled or error", block)
+        # RayMol's own morph, which also morphs through one ensemble
+        self.assertIn("state1=0", block)
+        self.assertNotIn("stock", block)
+
 
 class TestHabitNotes(_NativeCase):
     def test_stock_pymol_idioms_get_a_note(self):
