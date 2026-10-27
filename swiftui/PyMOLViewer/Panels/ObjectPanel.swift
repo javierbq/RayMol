@@ -4101,7 +4101,11 @@ private struct ObjectCard: View {
             .contains { $0.visible && ($0.rep == "surface" || $0.rep == "mesh") }
         return MorphSheet(
             source: source, target: target, models: models,
-            atoms: engine.objectMeta[entry.name]?.atomCount,
+            // The atoms one morph frame holds (Python's, from every poll);
+            // the card's own count only without it, which for a discrete
+            // object is every state's atoms.
+            atoms: MorphSheet.buildAtoms(perFrame: engine.morphAtomsPerFrame[source],
+                                         objectAtoms: engine.objectMeta[entry.name]?.atomCount),
             // morph_estimate's figure is the SOURCE's (its reps), also from a
             // morph's own card; published for every multi-state molecule.
             bytesPerFrame: engine.morphBytesPerFrame[source],
@@ -6112,6 +6116,13 @@ struct PanelPayload: Decodable {
     ///
     /// Optional for the same reason as every field above.
     let morph_bytes_per_frame: [String: Int]?
+    /// Atoms one morph frame of each of those molecules would hold
+    /// (`morph_estimate`'s `atoms`: state 1, alt '' and A), from the same pass,
+    /// keyed by object name. The Morph sheet's build-time hint: the object's own
+    /// atom count is every state's atoms for a discrete object.
+    ///
+    /// Optional for the same reason as every field above.
+    let morph_atoms_per_frame: [String: Int]?
 
     struct AlignmentSummary: Decodable {
         let depth: Int
@@ -6268,6 +6279,8 @@ extension PyMOLEngine {
 
             let bytesPerFrame = payload.morph_bytes_per_frame ?? [:]
             if self.morphBytesPerFrame != bytesPerFrame { self.morphBytesPerFrame = bytesPerFrame }
+            let atomsPerFrame = payload.morph_atoms_per_frame ?? [:]
+            if self.morphAtomsPerFrame != atomsPerFrame { self.morphAtomsPerFrame = atomsPerFrame }
             self.applyMorphPoll(jobs: morphJobList, running: nowRunningMorphs,
                                 sources: newMorphSources, specs: newMorphSpecs,
                                 builds: newMorphBuilds)

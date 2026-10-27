@@ -316,8 +316,19 @@ def bytes_per_frame(source, _self=cmd):
     (_COORD_COST, _ATOM_REP_COST, _RESIDUE_REP_COST, _HELIX_CARTOON_COST),
     plus 10 %.  morph_estimate, the Morph sheet and the Play-models sheet
     (the panel payload's ``morph_bytes_per_frame``) use this one figure.'''
+    return frame_cost(source, _self)[1]
+
+
+def frame_cost(source, _self=cmd):
+    '''``(atoms, bytes)`` of one interpolated state of a morph of *source*:
+    the ``(source) and alt ''+A`` atoms of state 1 (morph_estimate's
+    ``atoms``, what one morph frame holds: one model's atoms, also for a
+    discrete object) and bytes_per_frame().  One pass for both, so the panel
+    poll publishes both figures (``morph_atoms_per_frame``,
+    ``morph_bytes_per_frame``) for the price of the bytes.'''
     sel = '(%s) and %s' % (source, _ALT)
-    total = _COORD_COST * _self.count_atoms(sel, state=1)
+    atoms = _self.count_atoms(sel, state=1)
+    total = _COORD_COST * atoms
     shown = _shown_reps(sel, _self)
     for rep, cost in _ATOM_REP_COST.items():
         if rep in shown:
@@ -330,7 +341,7 @@ def bytes_per_frame(source, _self=cmd):
         total += cost * residues
         if rep == 'cartoon' and residues:
             total += _HELIX_CARTOON_COST * _helix_residues(traced, residues, _self)
-    return int(_FRAME_OVERHEAD * total)
+    return atoms, int(_FRAME_OVERHEAD * total)
 
 
 def _shown_reps(sel, _self):
@@ -402,8 +413,8 @@ def morph_estimate(source, frames_per_model=15, loop=1, refinement=3,
     models = _self.count_states(source)
     legs = models if loop else max(1, models - 1)
     frames = legs * frames_per_model
-    atoms = _self.count_atoms('(%s) and %s' % (source, _ALT), state=1)
-    nbytes = bytes_per_frame(source, _self) * frames
+    atoms, per_frame = frame_cost(source, _self)
+    nbytes = per_frame * frames
     seconds = build_seconds(atoms, legs, frames, refinement)
     warn, refuse = thresholds()
 

@@ -18,6 +18,9 @@ Tests that:
     bytes_per_frame for every multi-state molecular object (none for 1-state
     objects, CGOs or the morph being built), and {} when computing it fails;
     figures past their TTL are refreshed within a per-poll budget
+  - the main payload's `morph_atoms_per_frame` carries morph_estimate's
+    `atoms` (state 1) from the same cached pass, one model's atoms for a
+    discrete object (not the object's total)
   - a refused morph (discrete source, memory limit) leaves a failed card in
     `morph_jobs` that morph_dismiss clears; a refusal while the morph builds
     adds no record, and one after a finished build keeps the finished morph's
@@ -165,6 +168,40 @@ class TestMorphPanelPayload(testing.PyMOLTestCase):
         self.assertEqual(p['morph_bytes_per_frame'],
                          {'src': mj.bytes_per_frame('src')})
 
+    def testPayloadCarriesAtomsPerFrame(self):
+        '''The Morph sheet's build-time hint reads the atoms one morph frame
+        holds from here: morph_estimate's `atoms` (state 1, alt '' and A).
+        For a discrete object that is one model's atoms, not the total the
+        object panel shows for it (every state's own atoms).'''
+        ensemble('src')
+        cmd.create('disc', 'src', 0, 0, discrete=1)
+        per_state = cmd.count_atoms('src', state=1)
+        self.assertEqual(cmd.count_states('disc'), 4)
+        self.assertEqual(cmd.count_atoms('disc'), 4 * per_state)
+        p = self.payload()
+        self.assertEqual(p['morph_atoms_per_frame'],
+                         {'src': per_state, 'disc': per_state})
+        self.assertEqual(p['morph_atoms_per_frame']['disc'],
+                         mj.morph_estimate('disc')['atoms'])
+        self.assertEqual(p['morph_bytes_per_frame'],
+                         {'src': mj.bytes_per_frame('src'),
+                          'disc': mj.bytes_per_frame('disc')})
+        # from the same cached figure: a cached poll does not count again
+        with mock.patch.object(mj, 'frame_cost',
+                               wraps=mj.frame_cost) as cost:
+            again = self.payload()
+        self.assertEqual(cost.call_count, 0)
+        self.assertEqual(again['morph_atoms_per_frame'], p['morph_atoms_per_frame'])
+
+    def testFrameCostIsTheEstimatesFigures(self):
+        '''frame_cost() is the one pass both payload maps come from: the
+        atoms morph_estimate reports and bytes_per_frame().'''
+        ensemble('src')
+        cmd.show('cartoon', 'src')
+        atoms, nbytes = mj.frame_cost('src')
+        self.assertEqual(atoms, mj.morph_estimate('src')['atoms'])
+        self.assertEqual(nbytes, mj.bytes_per_frame('src'))
+
     def testBytesPerFrameIsCachedBetweenPolls(self):
         '''A figure takes selector passes over every loaded atom, so the poll
         keeps it until the object's signature (state count, cmd.get_vis entry)
@@ -217,23 +254,37 @@ class TestMorphPanelPayload(testing.PyMOLTestCase):
         ensemble('src')
         job = mj.start_job('src', frames_per_model=5)
         job.step()
-        with mock.patch.object(mj, 'bytes_per_frame',
-                               wraps=mj.bytes_per_frame) as bpf:
+        with mock.patch.object(mj, 'frame_cost',
+                               wraps=mj.frame_cost) as cost:
             p = self.payload()                  # pumps: lands leg 1
             self.assertGreater(cmd.count_states('src_morph'), 1)
             p = self.payload()
         self.assertIn('src_morph', p['morph_jobs'])
         self.assertNotIn('src_morph', p['morph_bytes_per_frame'])
+        self.assertNotIn('src_morph', p['morph_atoms_per_frame'])
         self.assertIn('src', p['morph_bytes_per_frame'])
-        self.assertNotIn(mock.call('src_morph'), bpf.call_args_list)
+        self.assertIn('src', p['morph_atoms_per_frame'])
+        self.assertNotIn(mock.call('src_morph'), cost.call_args_list)
 
     def testBytesPerFrameFailureWritesPanelWithEmptyMap(self):
         ensemble('src')
-        with mock.patch.object(mj, 'bytes_per_frame',
+        with mock.patch.object(mj, 'frame_cost',
                                side_effect=RuntimeError('simulated failure')):
             p = self.payload()
         self.assertIn('src', p['objects'])
         self.assertEqual(p['morph_bytes_per_frame'], {})
+        self.assertEqual(p['morph_atoms_per_frame'], {})
+
+    def testFrameCostsFailureWritesPanelWithEmptyMaps(self):
+        '''A failure of the whole computation (not one object's) costs the
+        panel neither its update nor the other key.'''
+        ensemble('src')
+        with mock.patch.object(appkit_inspector, '_morph_frame_costs',
+                               side_effect=RuntimeError('simulated failure')):
+            p = self.payload()
+        self.assertIn('src', p['objects'])
+        self.assertEqual(p['morph_bytes_per_frame'], {})
+        self.assertEqual(p['morph_atoms_per_frame'], {})
 
     def assertFailedCard(self, name, text):
         rec = self.payload()['morph_jobs'][name]

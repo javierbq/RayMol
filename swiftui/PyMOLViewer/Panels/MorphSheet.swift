@@ -21,8 +21,9 @@ struct MorphSheet: View {
     let target: String
     /// Models (states) in `source`.
     let models: Int
-    /// Atom count for the build-time hint, or nil when the inspector has not
-    /// reported one — the summary then omits the hint rather than show 0.
+    /// Atoms one morph frame holds, for the build-time hint (`buildAtoms(…)`),
+    /// or nil when neither the poll nor the inspector has reported one — the
+    /// summary then omits the hint rather than show 0.
     let atoms: Int?
     /// Python's bytes per morph frame of `source` (the panel payload's
     /// `morph_bytes_per_frame`), or nil when the poll has not published it — the
@@ -212,6 +213,15 @@ struct MorphSheet: View {
         if b > thresholds.refuse { return .refuse }
         if b > thresholds.warn { return .warn }
         return .ok
+    }
+
+    /// The atoms the build-time hint counts: Python's atoms per morph frame of
+    /// the source (the panel payload's `morph_atoms_per_frame`, state 1, as
+    /// `morph_estimate` counts) when published, else the object's own atom count
+    /// (an older bundled Python). The latter is every state's atoms for a
+    /// discrete object, 20 times too many for 2kpo made discrete.
+    static func buildAtoms(perFrame: Int?, objectAtoms: Int?) -> Int? {
+        perFrame ?? objectAtoms
     }
 
     /// The build-time hint (spec §5.2), shown only above 10 s: "≈ 75 s to build",

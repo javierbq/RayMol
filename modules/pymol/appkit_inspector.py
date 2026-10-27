@@ -920,7 +920,8 @@ def _object_peel(obj):
         return 0
 
 
-#: morph_bytes_per_frame's cache, {name: (signature, bytes, monotonic time)}.
+#: The morph frame costs' cache (the payload's morph_bytes_per_frame and
+#: morph_atoms_per_frame), {name: (signature, (atoms, bytes), monotonic time)}.
 _BYTES_PER_FRAME = {}
 #: Seconds a cached figure is trusted while its signature holds.
 _BYTES_PER_FRAME_TTL = 2.0
@@ -928,8 +929,10 @@ _BYTES_PER_FRAME_TTL = 2.0
 _BYTES_PER_FRAME_REFRESH_S = 0.002
 
 
-def _morph_bytes_per_frame(objs, nstate):
-    """{name: morph_jobs.bytes_per_frame(name)} for the multi-state molecules.
+def _morph_frame_costs(objs, nstate):
+    """{name: morph_jobs.frame_cost(name)} for the multi-state molecules: the
+    atoms one morph frame holds (state 1: one model's atoms, also for a
+    discrete object) and its bytes (bytes_per_frame), from one pass.
 
     Only those: nothing else can be morphed, and counting atoms of a CGO or a
     map would log a Selector-Error per tick (#219). Nor the morphs being
@@ -975,7 +978,8 @@ def _morph_bytes_per_frame(objs, nstate):
             refresh = True
         t0 = time.perf_counter()
         try:
-            value = int(morph_jobs.bytes_per_frame(o))
+            atoms, nbytes = morph_jobs.frame_cost(o)
+            value = (int(atoms), int(nbytes))
         except Exception:
             _BYTES_PER_FRAME.pop(o, None)
             continue
@@ -1148,13 +1152,18 @@ def poll_panel():
         # Bytes one morph frame of each multi-state molecule would hold
         # (morph_jobs.bytes_per_frame: coordinates plus the reps it shows). The
         # Morph sheet and the Play-models sheet multiply it by their frame count,
-        # so their estimate is morph_object's own. OPTIONAL on the Swift side.
-        # Its own try: a failure must not cost the panel its update.
+        # so their estimate is morph_object's own. Beside it, from the same pass,
+        # the atoms one frame holds (morph_estimate's `atoms`, state 1): the Morph
+        # sheet's build-time hint, which the object's own atom count overstates
+        # for a discrete object (that counts every state's atoms). Both OPTIONAL
+        # on the Swift side. Their own try: a failure must not cost the panel its
+        # update.
         try:
-            payload['morph_bytes_per_frame'] = _morph_bytes_per_frame(
-                objs, payload['nstate'])
+            costs = _morph_frame_costs(objs, payload['nstate'])
         except Exception:
-            payload['morph_bytes_per_frame'] = {}
+            costs = {}
+        payload['morph_bytes_per_frame'] = {o: c[1] for o, c in costs.items()}
+        payload['morph_atoms_per_frame'] = {o: c[0] for o, c in costs.items()}
         # Design-mode selection fingerprint. Computed inside raymol_design and
         # GATED there on Design mode being active, so this main-thread 500 ms poll
         # pays a single boolean check whenever Design mode is off (PR #270 made

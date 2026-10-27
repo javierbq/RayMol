@@ -232,6 +232,11 @@ final class PyMOLEngine: ObservableObject {
     /// panel payload's `morph_bytes_per_frame` (Python's `bytes_per_frame`). The
     /// Morph sheet and the Play-models sheet multiply it by their frame count.
     @Published var morphBytesPerFrame: [String: Int] = [:]
+    /// Atoms one morph frame of each multi-state molecule would hold (state 1),
+    /// from the panel payload's `morph_atoms_per_frame` (`morph_estimate`'s
+    /// `atoms`). The Morph sheet's build-time hint counts these: a discrete
+    /// object's own atom count is every state's atoms.
+    @Published var morphAtomsPerFrame: [String: Int] = [:]
     /// Morph names for which the tray's "auto-play on completion" flag is set.
     /// Keyed by the TARGET name (settings.morphName(for: source)); consumed and
     /// removed by `morphDidComplete(_:)`, dropped by each poll for a job that can

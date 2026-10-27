@@ -267,6 +267,31 @@ final class MorphSettingsTests: XCTestCase {
                 + " · ≈ 28 s to build")
     }
 
+    /// The build-time hint counts the atoms one morph frame holds (Python's
+    /// `morph_atoms_per_frame`: state 1, as `morph_estimate` counts), not the
+    /// object's own atom count, which for a discrete object is every state's
+    /// atoms: 2kpo made discrete has 37,200 atoms over 20 models of 1,860. With
+    /// no Python figure (an older bundled Python), the object's count stands in.
+    func testSheetBuildAtomsPreferPythonsPerFrameCount() {
+        XCTAssertEqual(MorphSheet.buildAtoms(perFrame: 1860, objectAtoms: 37_200), 1860)
+        XCTAssertEqual(MorphSheet.buildAtoms(perFrame: nil, objectAtoms: 1860), 1860)
+        XCTAssertEqual(MorphSheet.buildAtoms(perFrame: 1860, objectAtoms: nil), 1860)
+        XCTAssertNil(MorphSheet.buildAtoms(perFrame: nil, objectAtoms: nil))
+        // The discrete object reads what 2kpo reads, not nine minutes.
+        let atoms = MorphSheet.buildAtoms(perFrame: 1860, objectAtoms: 37_200) ?? 0
+        let sum = MorphSettings().summary(models: 20, atoms: atoms, bytesPerFrame: 2_890_000,
+                                          fps: 30)
+        XCTAssertEqual(sum.buildSeconds, 28.086, accuracy: 0.01)
+        XCTAssertEqual(
+            MorphSheet.summaryLine(sum, models: 20, fps: 30, source: "disc",
+                                   target: "disc_morph", isMorphObject: false),
+            "20 models → 300 frames · 10 s at 30 fps · ≈ 867 MB · creates disc_morph, hides disc"
+                + " · ≈ 28 s to build")
+        let total = MorphSettings().summary(models: 20, atoms: 37_200, bytesPerFrame: 2_890_000,
+                                            fps: 30)
+        XCTAssertEqual(MorphSheet.buildTime(total.buildSeconds), "≈ 9 min to build")
+    }
+
     func testSheetSummaryOmitsBytesWithoutAtomsAndGuardsZeroFPS() {
         var s = MorphSettings()
         s.framesPerModel = 10

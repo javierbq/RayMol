@@ -181,19 +181,26 @@ final class MorphEngineTests: XCTestCase {
         XCTAssertEqual(payload.morph?["s_morph"]?.spec.frames_per_model, 10)
         XCTAssertNil(payload.morph?["t_morph"]?.build)
         XCTAssertEqual(payload.morph?["t_morph"]?.source, "t")
-        // No morph_bytes_per_frame (an older bundled Python): still decodes.
+        // No morph_bytes_per_frame or morph_atoms_per_frame (an older bundled
+        // Python): still decodes.
         XCTAssertNil(payload.morph_bytes_per_frame)
+        XCTAssertNil(payload.morph_atoms_per_frame)
     }
 
     /// Python's bytes per morph frame of each multi-state molecule, the figure
-    /// both sheets multiply by their frames.
+    /// both sheets multiply by their frames; and the atoms one frame holds (state
+    /// 1), the Morph sheet's build-time hint: one model's atoms for a discrete
+    /// object, whose own atom count is every state's.
     func testPanelPayloadCarriesMorphBytesPerFrame() throws {
         let json = """
-        {"objects":["2kpo"],"selections":[],"enabled":["2kpo"],"sel_counts":{},
-         "nstate":{"2kpo":20},"morph":{},"morph_bytes_per_frame":{"2kpo":2890000}}
+        {"objects":["2kpo","disc"],"selections":[],"enabled":["2kpo"],"sel_counts":{},
+         "nstate":{"2kpo":20,"disc":20},"morph":{},
+         "morph_bytes_per_frame":{"2kpo":2890000,"disc":2890000},
+         "morph_atoms_per_frame":{"2kpo":1860,"disc":1860}}
         """
         let payload = try JSONDecoder().decode(PanelPayload.self, from: Data(json.utf8))
-        XCTAssertEqual(payload.morph_bytes_per_frame, ["2kpo": 2_890_000])
+        XCTAssertEqual(payload.morph_bytes_per_frame, ["2kpo": 2_890_000, "disc": 2_890_000])
+        XCTAssertEqual(payload.morph_atoms_per_frame, ["2kpo": 1860, "disc": 1860])
     }
 
     // MARK: - Per-object playback timers
@@ -843,6 +850,8 @@ final class MorphCompletionRebuildTests: XCTestCase {
 ///   track for it.
 /// - A clip naming a morph that is not loaded (a session saved while it was
 ///   being built, reopened): the polls mark it, and its Build action fills it.
+/// - The polls publish the atoms one morph frame holds: for a discrete copy of
+///   the source, one model's atoms, not the copy's total.
 final class MorphClipLiveTests: XCTestCase {
     private var engine: PyMOLEngine { PyMOLEngine.shared }
     private var savedItems: [PyMOLEngine.TimelineItem] = []
@@ -950,6 +959,23 @@ final class MorphClipLiveTests: XCTestCase {
         XCTAssertEqual(track[1], 11, "track \(track), a poll saw it running: \(sawRunning)")
         XCTAssertEqual(track[length], 31, "track \(track), a poll saw it running: \(sawRunning)")
         print("MorphClipLiveTests: a poll saw the morph running: \(sawRunning)")
+    }
+
+    /// Python → panel file → engine: the Morph sheet's build-time hint reads
+    /// `morphAtomsPerFrame`, which for a discrete object is what the plain
+    /// ensemble holds per model (the object's own atom count is 5 times that).
+    func testPollPublishesAtomsPerFrameOfADiscreteObject() throws {
+        makeSource()
+        let disc = source + "_disc"
+        engine.runPython("from pymol import cmd as _c\n"
+                         + "_c.create('\(disc)', '\(source)', 0, 0, discrete=1)")
+        spin { engine.morphAtomsPerFrame[disc] != nil && engine.morphAtomsPerFrame[source] != nil }
+        let perModel = try XCTUnwrap(engine.morphAtomsPerFrame[source], "never published")
+        XCTAssertGreaterThan(perModel, 0)
+        XCTAssertEqual(engine.morphAtomsPerFrame[disc], perModel)
+        XCTAssertNotNil(engine.morphBytesPerFrame[disc])
+        XCTAssertEqual(MorphSheet.buildAtoms(perFrame: engine.morphAtomsPerFrame[disc],
+                                             objectAtoms: 5 * perModel), perModel)
     }
 
     func testMissingMorphClipIsMarkedThenFilled() throws {
