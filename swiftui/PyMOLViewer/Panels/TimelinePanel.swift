@@ -77,6 +77,14 @@ struct TimelinePanel: View {
     // (issue #131). Set from GeometryReader preferences below.
     @State private var paletteContentW: CGFloat = 0
     @State private var paletteViewportW: CGFloat = 0
+    // The lane's viewport width, so the track row knows whether the lane
+    // overflows (and so shows a legacy scroll bar) — see laneScrollerH.
+    @State private var laneViewportW: CGFloat = 0
+    #if os(macOS)
+    // AppKit draws legacy (always-visible) scroll bars: "Show scroll bars:
+    // Always", or "Automatically" with a mouse attached (CI runners and VMs too).
+    @State private var legacyScrollers = NSScroller.preferredScrollerStyle == .legacy
+    #endif
 
     // The lane's horizontal scroll offset, for the states clips' captions, which
     // lay out in the part of their block on screen. @State does not observe the
@@ -93,6 +101,21 @@ struct TimelinePanel: View {
     private let laneH: CGFloat = 56
     private let rulerH: CGFloat = 28
     private var labelW: CGFloat { isCompact ? 34 : 90 }   // wide enough for "Scenes" without wrapping
+    // Room for the lane's horizontal scroll bar below the ruler + items. A legacy
+    // scroller sits UNDER the content (17 pt), and SwiftUI grows the backing
+    // NSScrollView past the lane's .frame(height:), centred: the ruler slid
+    // 8.5 pt up into the header and the bar hung over the scenes strip. Overlay
+    // scrollers float over the content, and AppKit hides the bar while the lane
+    // fits, so neither needs room.
+    private var laneScrollerH: CGFloat {
+        #if os(macOS)
+        guard legacyScrollers, laneViewportW > 0,
+              contentWidth(laneViewportW, pps: ppsFor(laneViewportW)) > laneViewportW else { return 0 }
+        return NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy)
+        #else
+        return 0
+        #endif
+    }
     private let laneSpace = "timelineLane"   // coord space for drag/tap -> frame
     private let laneViewportSpace = "timelineLaneViewport"   // the lane's scroll view: its scroll offset
     // Width of each edge fade of an overflowing scroll row, as a fraction of it.
@@ -351,7 +374,9 @@ struct TimelinePanel: View {
     // MARK: - The unified lane (fixed-scale, scrollable)
 
     private var tracksSection: some View {
-        HStack(spacing: 0) {
+        // Top-aligned: the gutter stays level with the ruler + items, and any
+        // legacy scroll bar band (laneScrollerH) is left below it.
+        HStack(alignment: .top, spacing: 0) {
             VStack(spacing: 0) {
                 Color.clear.frame(height: rulerH)
                 HStack(spacing: 6) {
@@ -412,8 +437,10 @@ struct TimelinePanel: View {
                     // model band carries its own current-model marker)
                     // Bound the scroll view's own height — a horizontal ScrollView is
                     // otherwise vertically greedy and would absorb the panel's slack,
-                    // opening gaps above the ruler / below the lane.
-                    .frame(height: rulerH + laneH)
+                    // opening gaps above the ruler / below the lane. It includes a
+                    // legacy scroll bar, which SwiftUI puts below the content.
+                    .frame(height: rulerH + laneH + laneScrollerH)
+                    .preference(key: LaneViewportWKey.self, value: w)
                     // Symmetric edge-fade when the lane is longer than the viewport,
                     // so it's obvious the track scrolls horizontally (issue #131) —
                     // trailing at rest, leading too once scrolled off the start.
@@ -426,12 +453,19 @@ struct TimelinePanel: View {
                     }
                 }
             }
-            .frame(height: rulerH + laneH)
+            .frame(height: rulerH + laneH + laneScrollerH)
+            .onPreferenceChange(LaneViewportWKey.self) { laneViewportW = $0 }
         }
         // Bound the whole track row — the gutter VStack + divider are otherwise
         // vertically greedy and, in a taller pane, would center the ruler/lane
         // inside an over-tall region (empty bands above/below).
-        .frame(height: rulerH + laneH)
+        .frame(height: rulerH + laneH + laneScrollerH)
+        #if os(macOS)
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSScroller.preferredScrollerStyleDidChangeNotification)) { _ in
+            legacyScrollers = NSScroller.preferredScrollerStyle == .legacy
+        }
+        #endif
     }
 
     // Tick ruler across the whole (scrollable) content width. Tap to seek.
@@ -1286,6 +1320,10 @@ private struct PaletteContentWKey: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
 private struct PaletteViewportWKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+private struct LaneViewportWKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
 }
