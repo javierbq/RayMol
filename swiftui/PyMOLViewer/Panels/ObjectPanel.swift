@@ -4103,9 +4103,10 @@ private struct ObjectCard: View {
             source: source, target: target, models: models,
             // The atoms one morph frame holds (Python's, from every poll);
             // the card's own count only without it, which for a discrete
-            // object is every state's atoms.
-            atoms: MorphSheet.buildAtoms(perFrame: engine.morphAtomsPerFrame[source],
-                                         objectAtoms: engine.objectMeta[entry.name]?.atomCount),
+            // object is every state's atoms. buildAtoms picks; pass the maps.
+            atoms: MorphSheet.buildAtoms(source: source, card: entry.name,
+                                         atomsPerFrame: engine.morphAtomsPerFrame,
+                                         objectMeta: engine.objectMeta),
             // morph_estimate's figure is the SOURCE's (its reps), also from a
             // morph's own card; published for every multi-state molecule.
             bytesPerFrame: engine.morphBytesPerFrame[source],

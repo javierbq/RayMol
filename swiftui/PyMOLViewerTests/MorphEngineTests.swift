@@ -1,4 +1,6 @@
 #if os(macOS)
+import AppKit
+import SwiftUI
 import XCTest
 @testable import RayMol
 
@@ -463,41 +465,32 @@ final class MorphEngineTests: XCTestCase {
         XCTAssertTrue(PyMOLEngine.statesClipLabel(plain, models: 20) == ("1nmr 1–10", "film.stack"))
     }
 
-    /// A clip that plays nothing reads "label — note" when it is wide enough; a
-    /// narrow one (under 160 pt) shows only the reason, "not built" for a morph
-    /// clip (the lane draws the ⚠ glyph before it), so it is not cut off. The
-    /// name and the remedy ("morph 2kpo to fill") stay in the tooltip and the
-    /// context menu.
-    func testStatesClipCaption() {
-        let note = "not built · morph 2kpo to fill"
-        XCTAssertEqual(PyMOLEngine.statesClipCaption(label: "2kpo_morph", note: nil, width: 40),
-                       "2kpo_morph")
-        XCTAssertEqual(PyMOLEngine.statesClipCaption(label: "2kpo_morph", note: nil, width: 400),
-                       "2kpo_morph")
-        // Wide: the name, the reason and the remedy.
-        XCTAssertEqual(PyMOLEngine.statesClipCaption(label: "2kpo_morph", note: note, width: 400),
-                       "2kpo_morph — \(note)")
-        XCTAssertEqual(PyMOLEngine.statesClipCaption(label: "2kpo_morph", note: note, width: 160),
-                       "2kpo_morph — \(note)")
-        // Narrow: the reason alone.
-        XCTAssertEqual(PyMOLEngine.statesClipCaption(label: "2kpo_morph", note: note, width: 159),
-                       "not built")
-        XCTAssertEqual(PyMOLEngine.statesClipCaption(label: "2kpo_morph", note: note, width: 100),
-                       "not built")
-        XCTAssertEqual(PyMOLEngine.statesClipCaption(label: "2kpo_morph", note: note, width: 30),
-                       "not built")
-        XCTAssertEqual(PyMOLEngine.statesClipCaption(label: "2kpo_morph",
-                                                     note: "not built · morph its source to fill",
-                                                     width: 50),
-                       "not built")
-        // A plain clip's note has no remedy to drop.
-        XCTAssertEqual(PyMOLEngine.statesClipCaption(label: "2kpo", note: "not loaded", width: 100),
-                       "not loaded")
-        XCTAssertEqual(PyMOLEngine.statesClipCaption(label: "3 objects", note: "a, c not loaded",
-                                                     width: 100),
-                       "a, c not loaded")
-        XCTAssertEqual(PyMOLEngine.statesClipCaption(label: "2kpo", note: "not loaded", width: 200),
-                       "2kpo — not loaded")
+    /// The forms a states clip's caption can take, widest first: the lane draws
+    /// the first that fits the part of the clip on screen (a ViewThatFits), so
+    /// the choice follows the text's width, not a fixed cutoff. A clip that plays
+    /// nothing reads "label — note", then "label — reason" (the note up to its
+    /// " · "), then the reason alone ("not built"; the lane draws the ⚠ glyph
+    /// before it), so the reason is what stays readable. The remedy ("morph 2kpo
+    /// to fill") stays in the tooltip and the context menu.
+    /// `TimelineClipCaptionLayoutTests` checks the choice in the real lane.
+    func testStatesClipCaptions() {
+        XCTAssertEqual(PyMOLEngine.statesClipCaptions(label: "2kpo_morph", note: nil),
+                       ["2kpo_morph"])
+        XCTAssertEqual(PyMOLEngine.statesClipCaptions(label: "2kpo_morph",
+                                                      note: "not built · morph 2kpo to fill"),
+                       ["2kpo_morph — not built · morph 2kpo to fill",
+                        "2kpo_morph — not built",
+                        "not built"])
+        XCTAssertEqual(PyMOLEngine.statesClipCaptions(label: "2kpo_morph",
+                                                      note: "not built · morph its source to fill"),
+                       ["2kpo_morph — not built · morph its source to fill",
+                        "2kpo_morph — not built",
+                        "not built"])
+        // A plain clip's note has no remedy to drop: no form repeats.
+        XCTAssertEqual(PyMOLEngine.statesClipCaptions(label: "2kpo", note: "not loaded"),
+                       ["2kpo — not loaded", "not loaded"])
+        XCTAssertEqual(PyMOLEngine.statesClipCaptions(label: "3 objects", note: "a, c not loaded"),
+                       ["3 objects — a, c not loaded", "a, c not loaded"])
     }
 
     /// The part of a states clip's block the lane shows, relative to the block's
@@ -527,6 +520,18 @@ final class MorphEngineTests: XCTestCase {
         XCTAssertEqual(span(0, 100, 300, 800), [0, 100])
         // Touching the edge only: off screen too.
         XCTAssertEqual(span(800, 100, 0, 800), [0, 100])
+        // A sliver (less than the padding, the glyph and an ellipsis) counts as
+        // off screen: the caption stays at the block's start, inside the block,
+        // instead of running from the sliver over the next item. The tail of a
+        // clip whose start is scrolled off, 3 pt of it on screen:
+        XCTAssertEqual(span(0, 600, 597, 800), [0, 600])
+        // Its head entering at the lane's trailing edge:
+        XCTAssertEqual(span(797, 600, 0, 800), [0, 600])
+        // Just enough of it: laid out there.
+        let least = PyMOLEngine.statesClipCaptionMinWidth
+        XCTAssertGreaterThanOrEqual(least, 20)
+        XCTAssertEqual(span(0, 600, 600 - least, 800), [600 - least, least])
+        XCTAssertEqual(span(0, 600, 600 - least + 1, 800), [0, 600])
     }
 
     // MARK: - Clips whose objects are not loaded
@@ -1023,8 +1028,11 @@ final class MorphClipLiveTests: XCTestCase {
         XCTAssertGreaterThan(perModel, 0)
         XCTAssertEqual(engine.morphAtomsPerFrame[disc], perModel)
         XCTAssertNotNil(engine.morphBytesPerFrame[disc])
-        XCTAssertEqual(MorphSheet.buildAtoms(perFrame: engine.morphAtomsPerFrame[disc],
-                                             objectAtoms: 5 * perModel), perModel)
+        var meta = ObjStateMeta()
+        meta.atomCount = 5 * perModel        // the discrete copy's own total
+        XCTAssertEqual(MorphSheet.buildAtoms(source: disc, card: disc,
+                                             atomsPerFrame: engine.morphAtomsPerFrame,
+                                             objectMeta: [disc: meta]), perModel)
     }
 
     func testMissingMorphClipIsMarkedThenFilled() throws {
@@ -1308,6 +1316,253 @@ final class SessionReplaceStopsPlayersTests: XCTestCase {
         XCTAssertEqual(pythonRegistry(), [])
         spin(0.4) { false }                 // a timer left running would tick here
         XCTAssertEqual(pythonPin("t5ss_ren2"), "none")
+    }
+}
+
+// MARK: - A states clip's caption in the real lane
+
+/// The real `TimelinePanel`, in an NSHostingView, lays a states clip's caption
+/// out in the part of the clip on screen. `statesClipVisibleSpan` and
+/// `statesClipCaptions` are tested above; this covers the view's use of them:
+/// the lane's scroll-offset tracking (a GeometryReader read with onChange into
+/// `TimelineLaneScroll`; a PreferenceKey version of it never updated on a
+/// scroll in this panel), the caption at the lane's clear left edge once the
+/// clip's start is scrolled off, the form chosen by what fits, and a sliver's
+/// caption kept inside its block. The clip is a not-built morph clip (its
+/// source is loaded, its morph is not) longer than the lane, with a camera
+/// keyframe after it so the lane scrolls past its end.
+///
+/// SwiftUI builds no accessibility tree for an in-process query here (the VM
+/// check reads it from outside), so the caption is found in the drawn panel:
+/// the columns of the clip's middle band holding the caption's colour (the
+/// theme's panel text at half opacity, the ⚠ glyph and the text), which the
+/// lane's blue connectors and dashed outline do not match. Uses the live engine
+/// the unit-test host runs; restores what it changes.
+final class TimelineClipCaptionLayoutTests: XCTestCase {
+    private var engine: PyMOLEngine { PyMOLEngine.shared }
+    private var savedItems: [PyMOLEngine.TimelineItem] = []
+    private var savedUntracked = false
+    private var window: NSWindow?
+    private let source = "tccl_src"
+    private var morph: String { source + "_morph" }
+    private let scale: CGFloat = 2          // pixels per point of the drawn panel
+
+    override func setUpWithError() throws {
+        let deadline = Date().addingTimeInterval(20)
+        while !engine.isReady && Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        guard engine.isReady else {
+            XCTFail("PyMOLEngine.shared was not ready")
+            throw NSError(domain: "PyMOLEngine", code: 1)
+        }
+        savedItems = engine.timelineItems
+        savedUntracked = engine.untrackedMovie
+    }
+
+    override func tearDown() {
+        window?.orderOut(nil)
+        window?.contentView = nil
+        window = nil
+        engine.runPython("from pymol import cmd as _c\n_c.delete('\(source)*')")
+        engine.clearMovieItems()
+        engine.timelineItems = savedItems
+        engine.untrackedMovie = savedUntracked
+        super.tearDown()
+    }
+
+    private func settle(_ seconds: TimeInterval) {
+        RunLoop.current.run(until: Date().addingTimeInterval(seconds))
+    }
+
+    private func scrollViews(_ view: NSView) -> [NSScrollView] {
+        var found: [NSScrollView] = []
+        if let s = view as? NSScrollView { found.append(s) }
+        for sub in view.subviews { found += scrollViews(sub) }
+        return found
+    }
+
+    private typealias RGB = (r: Double, g: Double, b: Double)
+
+    private func rgb(_ color: Color) -> RGB {
+        let c = NSColor(color).usingColorSpace(.sRGB) ?? .gray
+        return (Double(c.redComponent), Double(c.greenComponent), Double(c.blueComponent))
+    }
+
+    /// The panel as drawn, RGBA, `scale` pixels per point, row 0 at the top.
+    private func draw(_ host: NSView) throws -> (pixels: [UInt8], width: Int) {
+        let w = Int(host.bounds.width * scale), h = Int(host.bounds.height * scale)
+        var pixels = [UInt8](repeating: 0, count: w * h * 4)
+        let layer = try XCTUnwrap(host.layer)
+        try pixels.withUnsafeMutableBytes { buf in
+            let ctx = try XCTUnwrap(CGContext(
+                data: buf.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            ctx.translateBy(x: 0, y: CGFloat(h))
+            ctx.scaleBy(x: scale, y: -scale)
+            layer.render(in: ctx)
+        }
+        return (pixels, w)
+    }
+
+    /// The columns, in host points, of `xs` whose band `ys` (host points) holds a
+    /// pixel of the caption's colour, `text` at `opacity` over the band's own
+    /// background (its median colour): at least halfway there from the
+    /// background, and on the line between the two.
+    private func inkColumns(_ drawn: (pixels: [UInt8], width: Int), xs: ClosedRange<CGFloat>,
+                            ys: ClosedRange<CGFloat>, text: RGB, opacity: Double) -> [CGFloat] {
+        let px0 = max(Int(xs.lowerBound * scale), 0)
+        let px1 = min(Int(xs.upperBound * scale), drawn.width - 1)
+        let py0 = Int(ys.lowerBound * scale), py1 = Int(ys.upperBound * scale)
+        guard px1 > px0 else { return [] }
+        func at(_ x: Int, _ y: Int) -> RGB {
+            let i = (y * drawn.width + x) * 4
+            let a = max(Double(drawn.pixels[i + 3]) / 255, 1e-6)
+            return (Double(drawn.pixels[i]) / 255 / a, Double(drawn.pixels[i + 1]) / 255 / a,
+                    Double(drawn.pixels[i + 2]) / 255 / a)
+        }
+        var all: [RGB] = []
+        for y in py0...py1 { for x in stride(from: px0, through: px1, by: 3) { all.append(at(x, y)) } }
+        func lum(_ c: RGB) -> Double { 0.3 * c.r + 0.59 * c.g + 0.11 * c.b }
+        let bg = all.sorted { lum($0) < lum($1) }[all.count / 2]
+        let d = (opacity * (text.r - bg.r), opacity * (text.g - bg.g), opacity * (text.b - bg.b))
+        let dd = d.0 * d.0 + d.1 * d.1 + d.2 * d.2
+        guard dd > 0.01 else { return [] }
+        var columns: [CGFloat] = []
+        for x in px0...px1 {
+            for y in py0...py1 {
+                let c = at(x, y)
+                let v = (c.r - bg.r, c.g - bg.g, c.b - bg.b)
+                let t = (v.0 * d.0 + v.1 * d.1 + v.2 * d.2) / dd
+                let off = (v.0 - t * d.0, v.1 - t * d.1, v.2 - t * d.2)
+                if t > 0.5 && (off.0 * off.0 + off.1 * off.1 + off.2 * off.2).squareRoot() < 0.12 {
+                    columns.append(CGFloat(x) / scale)
+                    break
+                }
+            }
+        }
+        return columns
+    }
+
+    func testCaptionLaysOutInThePartOfTheClipOnScreen() throws {
+        engine.runPython("from pymol import cmd as _c\n_c.fab('ACDEFGHIK', '\(source)')")
+        engine.clearMovieItems()
+        var spec = PyMOLEngine.StatesSpec(objects: [morph], firstModel: 1, lastModel: 0)
+        spec.morphStride = 35
+        spec.durationSeconds = 24
+        engine.timelineItems = [
+            PyMOLEngine.TimelineItem(kind: .camera),
+            PyMOLEngine.TimelineItem(kind: .states(spec), transition: .init(seconds: 10)),
+            // Transitions add up from the movie's start: 10 + 40 s puts this
+            // keyframe 16 s past the clip's end (34 s).
+            PyMOLEngine.TimelineItem(kind: .camera, transition: .init(seconds: 40)),
+        ]
+        let deadline = Date().addingTimeInterval(15)
+        while (engine.statesClipMissing(spec).isEmpty
+               || !engine.objects.contains { $0.name == source }) && Date() < deadline {
+            settle(0.05)
+        }
+        XCTAssertEqual(engine.statesClipMissing(spec), [morph])
+        let note = try XCTUnwrap(PyMOLEngine.statesClipMissingNote(
+            spec, missing: [morph], loaded: engine.objects.map(\.name)))
+        XCTAssertEqual(note, "not built · morph \(source) to fill")
+
+        let width: CGFloat = 900
+        let host = NSHostingView(rootView: TimelinePanel()
+            .environmentObject(engine)
+            .environmentObject(engine.playback))
+        let window = NSWindow(contentRect: NSRect(x: -20000, y: -20000, width: width, height: 420),
+                              styleMask: [.borderless], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentView = host
+        self.window = window
+        host.layoutSubtreeIfNeeded()
+        settle(0.8)
+
+        // The lane: the horizontal scroll view whose content overflows it (the
+        // ruler, 28 pt, over the item row, 56 pt).
+        let lane = try XCTUnwrap(scrollViews(host).first {
+            ($0.documentView?.frame.width ?? 0) > $0.frame.width + 50 && $0.frame.height > 60
+        }, "no overflowing lane")
+        let laneRect = lane.convert(lane.bounds, to: host)       // host points, y down
+        XCTAssertTrue(host.isFlipped)
+        XCTAssertEqual(laneRect.height, 84, accuracy: 0.5)
+        let fade = laneRect.width * 0.05                          // the lane's edge fades
+        let clearWidth = laneRect.width - 2 * fade
+        let maxScroll = (lane.documentView?.frame.width ?? 0) - lane.contentView.bounds.width
+        let band = (laneRect.minY + 28 + 28 - 4)...(laneRect.minY + 28 + 28 + 4)
+
+        // The clip's block in the lane's content, as the panel lays it out at
+        // zoom 1 (10 s across the lane).
+        let spans = engine.itemSpans()
+        XCTAssertEqual(spans.count, 3)
+        let fps = CGFloat(max(engine.playback.movieFPS, 1))
+        let pps = laneRect.width / 10
+        let blockX = CGFloat(spans[1].start - 1) / fps * pps
+        let blockEnd = blockX + max(30, CGFloat(spans[1].end - spans[1].start) / fps * pps)
+        XCTAssertGreaterThan(blockEnd - blockX, laneRect.width + 500, "the clip is longer than the lane")
+        XCTAssertGreaterThan(blockX, clearWidth, "the clip starts past the lane's first screen")
+
+        // The caption's colour (a clip that plays nothing draws the panel text at
+        // half opacity), and the width each of its forms draws: the ⚠ glyph
+        // (about 9 pt), 3 pt, the text.
+        let text = rgb(TimelineTheme.text)
+        let font = NSFont.systemFont(ofSize: 10, weight: .medium)
+        let forms = PyMOLEngine.statesClipCaptions(label: morph, note: note)
+        XCTAssertEqual(forms.count, 3)
+        let drawnWidth = forms.map { 12 + ($0 as NSString).size(withAttributes: [.font: font]).width }
+
+        // Scrolls the lane to `x`, draws the panel, and returns the caption's ink
+        // in `xs` (lane content coordinates), as host points.
+        func caption(scroll x: CGFloat, in xs: ClosedRange<CGFloat>) throws
+            -> (left: CGFloat, width: CGFloat)? {
+            lane.contentView.scroll(to: NSPoint(x: min(max(x, 0), maxScroll), y: 0))
+            lane.reflectScrolledClipView(lane.contentView)
+            settle(0.5)
+            host.layoutSubtreeIfNeeded()
+            let toHost = laneRect.minX - lane.contentView.bounds.origin.x
+            let columns = inkColumns(try draw(host),
+                                     xs: (xs.lowerBound + toHost)...(xs.upperBound + toHost),
+                                     ys: band, text: text, opacity: 0.5)
+            guard let first = columns.first, let last = columns.last else { return nil }
+            return (first - toHost, last - first)
+        }
+        let clearLeft: (CGFloat) -> ClosedRange<CGFloat> = { x in (x + fade)...(x + fade + clearWidth) }
+
+        // Its start on screen, 200 pt in: the caption starts at the block's start
+        // (after its 6 pt padding), and the whole text fits.
+        let xA = blockX - 200
+        let a = try XCTUnwrap(try caption(scroll: xA, in: clearLeft(xA)), "no caption")
+        XCTAssertEqual(a.left - blockX, 6, accuracy: 3, "starts at the block's start")
+        XCTAssertEqual(a.width, drawnWidth[0], accuracy: 8, "the whole text; forms \(drawnWidth)")
+
+        // Its start scrolled 450 pt off: the caption starts at the lane's clear
+        // left edge (inside the fade), not at the block's start or centre.
+        let xB = blockX + 450
+        let b = try XCTUnwrap(try caption(scroll: xB, in: clearLeft(xB)), "no caption on screen")
+        XCTAssertEqual(b.left - (xB + fade), 6, accuracy: 3, "starts at the lane's clear left edge")
+        XCTAssertEqual(b.width, drawnWidth[0], accuracy: 8, "the whole text; forms \(drawnWidth)")
+
+        // About 210 pt of it on screen (its head, at the lane's trailing edge):
+        // too little for the whole text, room for the name and the reason (a
+        // fixed 160 pt cutoff drew the whole text there, cut off).
+        let xD = blockX - (fade + clearWidth) + 210
+        let d = try XCTUnwrap(try caption(scroll: xD, in: blockX...(xD + fade + clearWidth)))
+        XCTAssertEqual(d.left - blockX, 6, accuracy: 3)
+        XCTAssertEqual(d.width, drawnWidth[1], accuracy: 8, "\(forms[1]); forms \(drawnWidth)")
+
+        // About 100 pt of it on screen: the reason alone.
+        let xC = blockX - (fade + clearWidth) + 100
+        let c = try XCTUnwrap(try caption(scroll: xC, in: blockX...(xC + fade + clearWidth)))
+        XCTAssertEqual(c.width, drawnWidth[2], accuracy: 8, "\(forms[2]); forms \(drawnWidth)")
+
+        // The last 3 pt of it on screen (its start long scrolled off): no caption
+        // runs from that sliver over what follows it.
+        let xE = blockEnd - fade - 3
+        XCTAssertLessThanOrEqual(xE, maxScroll, "the lane scrolls past the clip")
+        let e = try caption(scroll: xE, in: (blockEnd + 1)...(blockEnd + 80))
+        XCTAssertNil(e, "the caption runs past the block's end: \(String(describing: e))")
     }
 }
 

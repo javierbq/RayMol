@@ -634,8 +634,9 @@ struct TimelinePanel: View {
         let (label, glyph) = PyMOLEngine.statesClipLabel(spec, models: engine.statesClipModels(spec))
         let note = missingNote(spec)
         // The whole text, remedy included, for the tooltip and VoiceOver; the
-        // context menu carries it too. A narrow clip draws only the reason after
-        // the ⚠ glyph, so it is what stays readable.
+        // context menu carries it too. With less of the clip on screen than the
+        // whole text needs, the lane draws a shorter form, down to the reason
+        // alone after the ⚠ glyph, so it is what stays readable.
         let text = note.map { "\(label) — \($0)" } ?? label
         return RoundedRectangle(cornerRadius: 4)
             .fill(TimelineTheme.accent.opacity(note == nil ? 0.10 : 0.04))   // discreet — blends with the lane
@@ -1299,10 +1300,13 @@ private final class TimelineLaneScroll: ObservableObject {
 /// text, leading-aligned with the lane's padding in the part of the block the
 /// lane shows unfaded (`PyMOLEngine.statesClipVisibleSpan`). A clip longer than
 /// the lane, or scrolled past its start, so still shows its ⚠ and the start of
-/// its text, and the text's form follows the room on screen
-/// (`PyMOLEngine.statesClipCaption`). Observes the scroll offset itself, so a
-/// scroll re-lays out the captions only. Sits in a leading-aligned overlay of
-/// the block.
+/// its text. The text is the widest of its forms (`PyMOLEngine.statesClipCaptions`)
+/// that fits that part, so the reason stays readable however little of the clip
+/// is on screen; it never draws past that part, so never past the block. A
+/// sliver of the block counts as off screen (the caption stays at its start).
+/// Observes the scroll offset itself, so a scroll re-lays out the captions
+/// only. Sits in a leading-aligned overlay of the block. Covered in the real
+/// panel by `TimelineClipCaptionLayoutTests`.
 private struct StatesClipCaption: View {
     @ObservedObject var scroll: TimelineLaneScroll
     /// The block's leading edge and width, in the lane.
@@ -1317,16 +1321,24 @@ private struct StatesClipCaption: View {
     var body: some View {
         let span = PyMOLEngine.statesClipVisibleSpan(
             blockX: blockX, blockWidth: blockWidth,
-            visibleX: scroll.x + clear.inset, visibleWidth: clear.width)
-        let caption = PyMOLEngine.statesClipCaption(label: label, note: note, width: span.width)
-        HStack(spacing: 3) {
-            Image(systemName: note == nil ? glyph : "exclamationmark.triangle")
-                .font(.system(size: 8))
-            Text(caption).font(.system(size: 10, weight: .medium)).lineLimit(1)
+            visibleX: scroll.x + clear.inset, visibleWidth: clear.width,
+            minWidth: PyMOLEngine.statesClipCaptionMinWidth)
+        // The first form whose whole text fits; the last (the reason alone, or
+        // a playing clip's label), truncated, when none does.
+        ViewThatFits(in: .horizontal) {
+            ForEach(PyMOLEngine.statesClipCaptions(label: label, note: note), id: \.self) { text in
+                HStack(spacing: 3) {
+                    Image(systemName: note == nil ? glyph : "exclamationmark.triangle")
+                        .font(.system(size: 8))
+                    Text(text).font(.system(size: 10, weight: .medium)).lineLimit(1)
+                }
+            }
         }
         .foregroundColor(TimelineTheme.text.opacity(note == nil ? 0.85 : 0.5))
         .padding(.horizontal, 6)
         .frame(width: span.width, alignment: .leading)
+        // What does not fit even truncated (the glyph) stays inside its span.
+        .clipped()
         // Laid out (not offset), so its accessibility frame is where it draws.
         .padding(.leading, span.x)
     }

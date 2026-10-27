@@ -347,9 +347,10 @@ def frame_cost(source, _self=cmd):
 def _shown_reps(sel, _self):
     '''Names of the representations at least one atom of *sel* shows: one
     selector pass (the fork's _cmd.get_atom_reps, the OR of the atoms' rep
-    flags), so bytes_per_frame counts only those (the panel poll calls it
-    for every multi-state molecule).  Every costed rep when the call is
-    missing or fails, which only costs the counts.'''
+    flags), so frame_cost counts only those (the panel poll calls
+    frame_cost, whose bytes bytes_per_frame returns, for every multi-state
+    molecule).  Every costed rep when the call is missing or fails, which
+    only costs the counts.'''
     reps = set(_ATOM_REP_COST) | set(_RESIDUE_REP_COST)
     try:
         from pymol import _cmd

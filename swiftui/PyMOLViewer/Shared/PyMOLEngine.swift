@@ -3172,17 +3172,26 @@ final class PyMOLEngine: ObservableObject {
         return missing.joined(separator: ", ") + " not loaded"
     }
 
-    /// The text a states clip draws in the lane, `width` points of it on screen:
-    /// "label — note" for a clip that plays nothing, or, narrower than 160 pt,
-    /// only the reason (the note up to its " · ", "not built" for a morph clip;
-    /// the lane draws the ⚠ glyph before it), so the reason is what stays
-    /// readable. The name and the remedy ("morph 2kpo to fill") stay in the
-    /// tooltip and in the context menu, which also offers the Build action.
-    static func statesClipCaption(label: String, note: String?, width: CGFloat) -> String {
-        guard let note else { return label }
-        guard width < 160 else { return "\(label) — \(note)" }
-        return note.components(separatedBy: " · ").first ?? note
+    /// The forms a states clip's caption takes in the lane, widest first; the
+    /// lane draws the first that fits the part of the clip on screen (a
+    /// ViewThatFits in `StatesClipCaption`), else the last, truncated. A clip
+    /// that plays nothing: "label — note", then "label — reason" (the note up to
+    /// its " · ", "not built" for a morph clip), then the reason alone (the lane
+    /// draws the ⚠ glyph before it), so the reason is what stays readable. The
+    /// remedy ("morph 2kpo to fill") stays in the tooltip and in the context
+    /// menu, which also offers the Build action. A clip that plays: its label.
+    static func statesClipCaptions(label: String, note: String?) -> [String] {
+        guard let note else { return [label] }
+        let reason = note.components(separatedBy: " · ").first ?? note
+        var forms = ["\(label) — \(note)"]
+        if reason != note { forms.append("\(label) — \(reason)") }
+        forms.append(reason)
+        return forms
     }
+
+    /// The least of a states clip on screen its caption lays out in: the
+    /// caption's leading padding, the ⚠ glyph and an ellipsis. Less is a sliver.
+    static let statesClipCaptionMinWidth: CGFloat = 26
 
     /// The part of a states clip's block the lane shows, as `x` from the block's
     /// leading edge and `width`: where its caption is laid out, leading-aligned
@@ -3190,13 +3199,16 @@ final class PyMOLEngine: ObservableObject {
     /// scrolled past its start, still shows its ⚠ and the start of its text.
     /// All in lane (content) coordinates: the block spans `blockX` +
     /// `blockWidth`, the lane shows `visibleX` + `visibleWidth`. A block with
-    /// nothing on screen gets its whole width, as before.
+    /// nothing on screen, or less than `minWidth` of it, gets its whole width,
+    /// as before: a caption laid out in a sliver of the block's tail would run
+    /// past the block's end, over the next item.
     static func statesClipVisibleSpan(blockX: CGFloat, blockWidth: CGFloat,
-                                      visibleX: CGFloat,
-                                      visibleWidth: CGFloat) -> (x: CGFloat, width: CGFloat) {
+                                      visibleX: CGFloat, visibleWidth: CGFloat,
+                                      minWidth: CGFloat = statesClipCaptionMinWidth)
+        -> (x: CGFloat, width: CGFloat) {
         let lo = max(blockX, visibleX)
         let hi = min(blockX + blockWidth, visibleX + visibleWidth)
-        guard hi > lo else { return (0, blockWidth) }
+        guard hi > lo, hi - lo >= minWidth else { return (0, blockWidth) }
         return (lo - blockX, hi - lo)
     }
 

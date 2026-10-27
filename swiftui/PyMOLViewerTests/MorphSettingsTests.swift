@@ -271,14 +271,37 @@ final class MorphSettingsTests: XCTestCase {
     /// `morph_atoms_per_frame`: state 1, as `morph_estimate` counts), not the
     /// object's own atom count, which for a discrete object is every state's
     /// atoms: 2kpo made discrete has 37,200 atoms over 20 models of 1,860. With
-    /// no Python figure (an older bundled Python), the object's count stands in.
+    /// no Python figure (an older bundled Python), the card's count stands in.
+    /// The sheet passes the engine's two maps as they are (`ObjectCard.morphSheet`).
     func testSheetBuildAtomsPreferPythonsPerFrameCount() {
-        XCTAssertEqual(MorphSheet.buildAtoms(perFrame: 1860, objectAtoms: 37_200), 1860)
-        XCTAssertEqual(MorphSheet.buildAtoms(perFrame: nil, objectAtoms: 1860), 1860)
-        XCTAssertEqual(MorphSheet.buildAtoms(perFrame: 1860, objectAtoms: nil), 1860)
-        XCTAssertNil(MorphSheet.buildAtoms(perFrame: nil, objectAtoms: nil))
+        func meta(_ atoms: Int?) -> ObjStateMeta {
+            var m = ObjStateMeta()
+            m.atomCount = atoms
+            return m
+        }
+        // A discrete object's own card: its objectMeta total is 20 times one model.
+        let perFrame = ["disc": 1860, "2kpo": 1860, "2kpo_morph": 1855]
+        let objectMeta = ["disc": meta(37_200), "2kpo": meta(1860), "2kpo_morph": meta(1855)]
+        XCTAssertEqual(MorphSheet.buildAtoms(source: "disc", card: "disc",
+                                             atomsPerFrame: perFrame, objectMeta: objectMeta), 1860)
+        // A morph's own card: the morph is of its SOURCE, so the source's figure,
+        // not the card's.
+        XCTAssertEqual(MorphSheet.buildAtoms(source: "2kpo", card: "2kpo_morph",
+                                             atomsPerFrame: perFrame, objectMeta: objectMeta), 1860)
+        // No Python figure (an older bundled Python): the card's own count.
+        XCTAssertEqual(MorphSheet.buildAtoms(source: "disc", card: "disc",
+                                             atomsPerFrame: [:], objectMeta: objectMeta), 37_200)
+        XCTAssertEqual(MorphSheet.buildAtoms(source: "2kpo", card: "2kpo_morph",
+                                             atomsPerFrame: ["disc": 1860], objectMeta: objectMeta),
+                       1855)
+        // Neither: no hint rather than 0.
+        XCTAssertNil(MorphSheet.buildAtoms(source: "disc", card: "disc",
+                                           atomsPerFrame: [:], objectMeta: [:]))
+        XCTAssertNil(MorphSheet.buildAtoms(source: "disc", card: "disc",
+                                           atomsPerFrame: [:], objectMeta: ["disc": meta(nil)]))
         // The discrete object reads what 2kpo reads, not nine minutes.
-        let atoms = MorphSheet.buildAtoms(perFrame: 1860, objectAtoms: 37_200) ?? 0
+        let atoms = MorphSheet.buildAtoms(source: "disc", card: "disc",
+                                          atomsPerFrame: perFrame, objectMeta: objectMeta) ?? 0
         let sum = MorphSettings().summary(models: 20, atoms: atoms, bytesPerFrame: 2_890_000,
                                           fps: 30)
         XCTAssertEqual(sum.buildSeconds, 28.086, accuracy: 0.01)

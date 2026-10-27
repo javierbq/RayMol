@@ -215,13 +215,16 @@ struct MorphSheet: View {
         return .ok
     }
 
-    /// The atoms the build-time hint counts: Python's atoms per morph frame of
-    /// the source (the panel payload's `morph_atoms_per_frame`, state 1, as
-    /// `morph_estimate` counts) when published, else the object's own atom count
-    /// (an older bundled Python). The latter is every state's atoms for a
-    /// discrete object, 20 times too many for 2kpo made discrete.
-    static func buildAtoms(perFrame: Int?, objectAtoms: Int?) -> Int? {
-        perFrame ?? objectAtoms
+    /// The atoms the build-time hint counts, for the Morph sheet of `card` (an
+    /// ensemble, or a morph of `source`), from the engine's maps as they are:
+    /// Python's atoms per morph frame of the SOURCE (`atomsPerFrame`, the panel
+    /// payload's `morph_atoms_per_frame`: state 1, as `morph_estimate` counts)
+    /// when published, else the card's own atom count (`objectMeta`, for an
+    /// older bundled Python). The latter is every state's atoms for a discrete
+    /// object, 20 times too many for 2kpo made discrete.
+    static func buildAtoms(source: String, card: String, atomsPerFrame: [String: Int],
+                           objectMeta: [String: ObjStateMeta]) -> Int? {
+        atomsPerFrame[source] ?? objectMeta[card]?.atomCount
     }
 
     /// The build-time hint (spec §5.2), shown only above 10 s: "≈ 75 s to build",
