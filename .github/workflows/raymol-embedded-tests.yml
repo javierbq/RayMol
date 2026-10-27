@@ -43,6 +43,12 @@ jobs:
               --no-build-isolation --config-settings glut=true .
 
       - name: Run RayMol unit tests under embedded pymol
+        env:
+          # scene_thumbnail_defer.py's Guard Malloc subtests are the only ones
+          # that catch the freed-scene thumbnail write: fail, don't skip, if
+          # Guard Malloc cannot load here (e.g. a hardened-runtime Python that
+          # drops DYLD_INSERT_LIBRARIES). Drop this only knowingly.
+          RAYMOL_REQUIRE_GMALLOC: "1"
         run: |
           pymol -ckqy testing/testing.py --run \
               testing/tests/test_raymol_tmp.py \

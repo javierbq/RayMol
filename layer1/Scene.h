@@ -225,23 +225,26 @@ int SceneDeferDrag(Block * block, int x, int y, int mod);
  * If we have a current OpenGL context, render the image immediately.
  * Otherwise, defer the rendering.
  *
+ * Writes `filename`, or with none, hands the image to the raw image callback
+ * or the clipboard. To get the image data back, use SceneDeferImageTo: there
+ * is deliberately no out-pointer here, since a deferred render would write
+ * through it after the caller's storage may be gone.
+ *
  * @param extent requested extent in Pixels
  * @param filename image filename
  * @param antialias antialiasing level (via Supersampling not via shader)
  * @param dpi image resolution in dots per inch
  * @param format image format
  * @param quiet suppress messages
- * @param[out] out_img image data
  * @return true if rendering was deferred, false if it was rendered immediately.
  */
 bool SceneDeferImage(PyMOLGlobals* G, const Extent2D& extent,
-    const char* filename, int antialias, float dpi, int format, int quiet,
-    pymol::Image* out_img);
+    const char* filename, int antialias, float dpi, int format, int quiet);
 /**
- * Like SceneDeferImage with out_img, but hands the image (its data is the PNG)
- * to `receive` instead of writing through a pointer. A deferred render runs at
- * the next draw (headless: the next refresh), so use this whenever the image's
- * destination may be gone by then: `receive` looks it up when it runs.
+ * Renders like SceneDeferImage and hands the image (its data is the PNG) to
+ * `receive`. A deferred render runs at the next draw (headless: the next
+ * refresh), when the image's destination may be gone: `receive` must look it
+ * up when it runs, not capture a pointer to it.
  *
  * @return true if rendering was deferred, false if it was rendered immediately.
  */

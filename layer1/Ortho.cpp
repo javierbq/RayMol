@@ -3181,14 +3181,14 @@ static pymol::Result<pymol::Image> OrthoMakeSizedImage(
   return final_image;
 }
 
-pymol::Result<bool> OrthoDeferImage(PyMOLGlobals* G, Extent2D extent, const char* filename,
-    int antialias, float dpi, int format, int quiet, pymol::Image* out_img,
+pymol::Result<bool> OrthoDeferImage(PyMOLGlobals* G, Extent2D extent,
+    const char* filename, int antialias, float dpi, int format, int quiet,
     bool with_overlay)
 {
   std::string filename_str = filename ? filename : "";
   std::function<void()> deferred = [=]() {
-    auto prior = SceneDeferImage(G, extent, filename_str.c_str(), antialias,
-        dpi, format, quiet, out_img);
+    auto prior = SceneDeferImage(
+        G, extent, filename_str.c_str(), antialias, dpi, format, quiet);
     if (prior) {
       // Something went bad here. Should fire on deferred.
       return;

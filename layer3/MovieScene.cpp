@@ -321,10 +321,15 @@ pymol::Result<MovieScene> MovieSceneStoreNoStore(PyMOLGlobals* G,
     SceneUpdate(G, false); // Make sure scene is on screen
     Extent2D extent{static_cast<std::uint32_t>(thumbnailImage.getWidth()),
         static_cast<std::uint32_t>(thumbnailImage.getHeight())};
-    // `scene` is a local returned by value: a deferred render would write
-    // into it after this function returns. Render only when it runs now.
-    if (G->ValidContext)
-      SceneDeferImage(G, extent, nullptr, 0, -1, 0, 1, &thumbnailImage);
+    // `scene` is a local returned by value, so a deferred render would have
+    // nowhere to land. With a valid context SceneDeferImageTo renders before
+    // it returns, so only then may the receiver write into the local.
+    if (G->ValidContext) {
+      SceneDeferImageTo(
+          G, extent, 0, -1, 0, 1, [&thumbnailImage](pymol::Image&& image) {
+            thumbnailImage.setVecData(image.getVecData());
+          });
+    }
     SceneInvalidate(G); // Used to refresh the screen
   }
 

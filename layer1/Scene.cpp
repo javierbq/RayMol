@@ -4133,12 +4133,11 @@ static void SceneImage(PyMOLGlobals* G, const Extent2D& extent, int antialias,
 }
 
 bool SceneDeferImage(PyMOLGlobals* G, const Extent2D& extent,
-    const char* filename, int antialias, float dpi, int format, int quiet,
-    pymol::Image* out_img)
+    const char* filename, int antialias, float dpi, int format, int quiet)
 {
   std::string filenameStr = filename ? filename : "";
   std::function<void()> deferred = [=]() {
-    SceneImage(G, extent, antialias, dpi, format, quiet, out_img, filenameStr);
+    SceneImage(G, extent, antialias, dpi, format, quiet, nullptr, filenameStr);
   };
 
   if (G->ValidContext) {

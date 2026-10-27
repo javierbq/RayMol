@@ -2389,7 +2389,7 @@ int ExecutiveDrawCmd(PyMOLGlobals* G, int width, int height, int antialias,
       SceneUpdate(G, false);
     }
     SceneDeferImage(
-        G, extent, nullptr, antialias, -1.0, cMyPNG_FormatPNG, quiet, nullptr);
+        G, extent, nullptr, antialias, -1.0, cMyPNG_FormatPNG, quiet);
   }
   return 1;
 }

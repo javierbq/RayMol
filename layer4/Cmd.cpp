@@ -6455,8 +6455,8 @@ static PyObject *CmdPNG(PyObject * self, PyObject * args)
         Extent2D extent{static_cast<std::uint32_t>(width),
             static_cast<std::uint32_t>(height)};
         bool withOverlay = true; // TODO: Retrieve from python
-        prior = !OrthoDeferImage(G, extent, fileview.c_str(), -1, dpi, format,
-            quiet, nullptr, withOverlay);
+        prior = !OrthoDeferImage(
+            G, extent, fileview.c_str(), -1, dpi, format, quiet, withOverlay);
         result = bool(filename);
       } else if(!SceneGetCopyType(G)) {
         ExecutiveDrawNow(G);      /* TODO STATUS */
