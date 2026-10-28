@@ -77,14 +77,14 @@ final class MorphSettingsTests: XCTestCase {
     func testMorphTargetFromMorphCardIsTheCardNamed() {
         let t = MorphSettings.morphTarget(card: "2kpo_morph2", source: "2kpo",
                                           objects: ["2kpo": 20, "2kpo_morph2": 300],
-                                          groups: [], morphSources: [:])
+                                          groups: [], molecules: ["2kpo", "2kpo_morph2"], morphSources: [:])
         XCTAssertEqual(t.name, "2kpo_morph2")
         XCTAssertTrue(t.explicit)
     }
 
     func testMorphTargetNewMorphLeavesNameToPython() {
         let t = MorphSettings.morphTarget(card: "2kpo", source: "2kpo", objects: ["2kpo": 20],
-                                          groups: [], morphSources: [:])
+                                          groups: [], molecules: ["2kpo"], morphSources: [:])
         XCTAssertEqual(t.name, "2kpo_morph")
         XCTAssertFalse(t.explicit)
     }
@@ -94,7 +94,7 @@ final class MorphSettingsTests: XCTestCase {
     func testMorphTargetReloadedMorphIsNamed() {
         let t = MorphSettings.morphTarget(card: "2kpo", source: "2kpo",
                                           objects: ["2kpo": 20, "2kpo_morph": 1200],
-                                          groups: [], morphSources: [:])
+                                          groups: [], molecules: ["2kpo", "2kpo_morph"], morphSources: [:])
         XCTAssertEqual(t.name, "2kpo_morph")
         XCTAssertTrue(t.explicit)
     }
@@ -103,7 +103,7 @@ final class MorphSettingsTests: XCTestCase {
     func testMorphTargetKnownMorphIsReusedUnnamed() {
         let t = MorphSettings.morphTarget(card: "2kpo", source: "2kpo",
                                           objects: ["2kpo": 20, "2kpo_morph": 1200],
-                                          groups: [], morphSources: ["2kpo_morph": "2kpo"])
+                                          groups: [], molecules: ["2kpo", "2kpo_morph"], morphSources: ["2kpo_morph": "2kpo"])
         XCTAssertEqual(t.name, "2kpo_morph")
         XCTAssertFalse(t.explicit)
     }
@@ -113,20 +113,28 @@ final class MorphSettingsTests: XCTestCase {
     func testMorphTargetTakenByNonMorphGoesToMorph2() {
         let user = MorphSettings.morphTarget(card: "2kpo", source: "2kpo",
                                              objects: ["2kpo": 20, "2kpo_morph": 1],
-                                             groups: [], morphSources: [:])
+                                             groups: [], molecules: ["2kpo"], morphSources: [:])
         XCTAssertEqual(user.name, "2kpo_morph2")
         XCTAssertFalse(user.explicit)
         // A group reports its members' states (count_states), so the group guard,
         // not the state count, is what sends this one to _morph2.
         let group = MorphSettings.morphTarget(card: "2kpo", source: "2kpo",
                                               objects: ["2kpo": 20, "2kpo_morph": 20],
-                                              groups: ["2kpo_morph"], morphSources: [:])
+                                              groups: ["2kpo_morph"], molecules: ["2kpo"], morphSources: [:])
         XCTAssertEqual(group.name, "2kpo_morph2")
         XCTAssertFalse(group.explicit)
+        // An alignment's name selects atoms too, so it reports states, but it is
+        // not a molecule: Python refuses that name, and picks _morph2 unnamed.
+        let alignment = MorphSettings.morphTarget(card: "2kpo", source: "2kpo",
+                                                  objects: ["2kpo": 20, "2kpo_morph": 20],
+                                                  groups: [], molecules: ["2kpo"],
+                                                  morphSources: [:])
+        XCTAssertEqual(alignment.name, "2kpo_morph2")
+        XCTAssertFalse(alignment.explicit)
         let foreign = MorphSettings.morphTarget(
             card: "2kpo", source: "2kpo",
             objects: ["2kpo": 20, "2kpo_morph": 300, "2kpo_morph2": 1, "2kpo_morph3": 300],
-            groups: [], morphSources: ["2kpo_morph": "other", "2kpo_morph3": "2kpo"])
+            groups: [], molecules: ["2kpo", "2kpo_morph", "2kpo_morph3"], morphSources: ["2kpo_morph": "other", "2kpo_morph3": "2kpo"])
         XCTAssertEqual(foreign.name, "2kpo_morph3")     // _morph2 is a user object
         XCTAssertFalse(foreign.explicit)
     }
@@ -137,20 +145,20 @@ final class MorphSettingsTests: XCTestCase {
     func testMorphTargetCountsABuildingMorph() {
         let t = MorphSettings.morphTarget(card: "2kpo", source: "2kpo",
                                           objects: ["2kpo": 20, "2kpo_morph": 1],
-                                          groups: [], morphSources: [:],
+                                          groups: [], molecules: ["2kpo"], morphSources: [:],
                                           building: ["2kpo_morph"])
         XCTAssertEqual(t.name, "2kpo_morph")
         XCTAssertFalse(t.explicit)
         // Another source's building morph is not this source's.
         let other = MorphSettings.morphTarget(card: "2kpo", source: "2kpo",
                                               objects: ["2kpo": 20, "2kpo_morph": 1],
-                                              groups: [], morphSources: [:],
+                                              groups: [], molecules: ["2kpo"], morphSources: [:],
                                               building: ["1nmr_morph"])
         XCTAssertEqual(other.name, "2kpo_morph2")
         // A morph's own card is the card, named, building or not.
         let own = MorphSettings.morphTarget(card: "2kpo_morph", source: "2kpo",
                                             objects: ["2kpo": 20, "2kpo_morph": 1],
-                                            groups: [], morphSources: [:],
+                                            groups: [], molecules: ["2kpo"], morphSources: [:],
                                             building: ["2kpo_morph"])
         XCTAssertEqual(own.name, "2kpo_morph")
         XCTAssertTrue(own.explicit)
@@ -540,7 +548,7 @@ final class MorphSettingsTests: XCTestCase {
         let sources = ["2kpo_morph": "2kpo"]
         let plan = MorphMovie.addPlan(target: "2kpo", smooth: true, settings: s,
                                       objects: ["2kpo": 20, "2kpo_morph": 2400], groups: [],
-                                      morphSources: sources, building: [])
+                                      molecules: ["2kpo", "2kpo_morph"], morphSources: sources, building: [])
         // Reused: the finished morph of this source was built with these settings.
         XCTAssertFalse(MorphMovie.sizesMorph(plan, morphSources: sources,
                                              morphSpecs: ["2kpo_morph": built]))
@@ -555,16 +563,16 @@ final class MorphSettingsTests: XCTestCase {
         // A first build is sized.
         let first = MorphMovie.addPlan(target: "2kpo", smooth: true, settings: s,
                                        objects: ["2kpo": 20], groups: [],
-                                       morphSources: [:], building: [])
+                                       molecules: ["2kpo"], morphSources: [:], building: [])
         XCTAssertTrue(MorphMovie.sizesMorph(first, morphSources: [:], morphSpecs: [:]))
         // Already building: no job, nothing sized. A plain clip has no morph.
         let building = MorphMovie.addPlan(target: "2kpo", smooth: true, settings: s,
                                           objects: ["2kpo": 20, "2kpo_morph": 1], groups: [],
-                                          morphSources: [:], building: ["2kpo_morph"])
+                                          molecules: ["2kpo"], morphSources: [:], building: ["2kpo_morph"])
         XCTAssertFalse(MorphMovie.sizesMorph(building, morphSources: [:], morphSpecs: [:]))
         let plain = MorphMovie.addPlan(target: "2kpo", smooth: false, settings: s,
                                        objects: ["2kpo": 20], groups: [],
-                                       morphSources: [:], building: [])
+                                       molecules: ["2kpo"], morphSources: [:], building: [])
         XCTAssertFalse(MorphMovie.sizesMorph(plain, morphSources: [:], morphSpecs: [:]))
         // Above the limit but not sized: the size alone, `.ok`, so Add stays enabled.
         let th = (warn: 200e6, refuse: 1e9)
@@ -582,15 +590,15 @@ final class MorphSettingsTests: XCTestCase {
     /// state and no completed record yet, so the resolver alone would say `_morph2`.
     func testMovieTargetCountsARunningMorphAsTheSources() {
         let new = MorphMovie.target(source: "2kpo", objects: ["2kpo": 20],
-                                    groups: [], morphSources: [:], building: [])
+                                    groups: [], molecules: ["2kpo"], morphSources: [:], building: [])
         XCTAssertEqual(new.name, "2kpo_morph")
         XCTAssertFalse(new.explicit)
         let running = MorphMovie.target(source: "2kpo", objects: ["2kpo": 20, "2kpo_morph": 1],
-                                        groups: [], morphSources: [:], building: ["2kpo_morph"])
+                                        groups: [], molecules: ["2kpo"], morphSources: [:], building: ["2kpo_morph"])
         XCTAssertEqual(running.name, "2kpo_morph")
         XCTAssertFalse(running.explicit)
         let reloaded = MorphMovie.target(source: "2kpo", objects: ["2kpo": 20, "2kpo_morph": 300],
-                                         groups: [], morphSources: [:], building: [])
+                                         groups: [], molecules: ["2kpo", "2kpo_morph"], morphSources: [:], building: [])
         XCTAssertEqual(reloaded.name, "2kpo_morph")
         XCTAssertTrue(reloaded.explicit)
     }
@@ -601,7 +609,7 @@ final class MorphSettingsTests: XCTestCase {
         s.framesPerModel = 20
         let plan = MorphMovie.addPlan(target: "2kpo", smooth: true, settings: s,
                                       objects: ["2kpo": 20], groups: [],
-                                      morphSources: [:], building: [])
+                                      molecules: ["2kpo"], morphSources: [:], building: [])
         var sent = s
         sent.loop = true                    // implied on for the Movie path
         XCTAssertEqual(plan.morph, MorphMovie.AddPlan.MorphCall(
@@ -616,10 +624,23 @@ final class MorphSettingsTests: XCTestCase {
     func testMovieAddPlanNamesAReloadedMorph() {
         let plan = MorphMovie.addPlan(target: "2kpo", smooth: true, settings: MorphSettings(),
                                       objects: ["2kpo": 20, "2kpo_morph": 300], groups: [],
-                                      morphSources: [:], building: [])
+                                      molecules: ["2kpo", "2kpo_morph"], morphSources: [:], building: [])
         XCTAssertEqual(plan.morph?.name, "2kpo_morph")
         XCTAssertEqual(plan.morph?.target, "2kpo_morph")
         XCTAssertEqual(plan.objects, ["2kpo_morph"])
+    }
+
+    /// An alignment named like the morph reports states (its name selects atoms)
+    /// but is not a molecule: the morph goes to `_morph2`, unnamed, and the clip
+    /// never plays the foreign object.
+    func testMovieAddPlanNonMoleculeNamedLikeAMorphGoesToMorph2() {
+        let plan = MorphMovie.addPlan(target: "2kpo", smooth: true, settings: MorphSettings(),
+                                      objects: ["2kpo": 20, "2kpo_morph": 20], groups: [],
+                                      molecules: ["2kpo"], morphSources: [:], building: [])
+        XCTAssertNotNil(plan.morph)
+        XCTAssertNil(plan.morph?.name)
+        XCTAssertEqual(plan.morph?.target, "2kpo_morph2")
+        XCTAssertEqual(plan.objects, ["2kpo_morph2"])
     }
 
     func testMovieAddPlanToggleOffIsAPlainClipAndRemembersOff() {
@@ -627,7 +648,7 @@ final class MorphSettingsTests: XCTestCase {
         s.movieSmooth = true
         let plan = MorphMovie.addPlan(target: "2kpo", smooth: false, settings: s,
                                       objects: ["2kpo": 20], groups: [],
-                                      morphSources: [:], building: [])
+                                      molecules: ["2kpo"], morphSources: [:], building: [])
         XCTAssertNil(plan.morph)
         XCTAssertEqual(plan.objects, ["2kpo"])
         XCTAssertNil(plan.morphStride)
@@ -638,13 +659,14 @@ final class MorphSettingsTests: XCTestCase {
     func testMovieAddPlanUnavailableLeavesSettingsAlone() {
         let all = MorphMovie.addPlan(target: nil, smooth: true, settings: MorphSettings(),
                                      objects: ["2kpo": 20], groups: [],
-                                     morphSources: [:], building: [])
+                                     molecules: ["2kpo"], morphSources: [:], building: [])
         XCTAssertNil(all.morph)
         XCTAssertNil(all.objects)
         XCTAssertNil(all.morphStride)
         XCTAssertNil(all.save)
         let morph = MorphMovie.addPlan(target: "2kpo_morph", smooth: true, settings: MorphSettings(),
                                        objects: ["2kpo": 20, "2kpo_morph": 300], groups: [],
+                                       molecules: ["2kpo", "2kpo_morph"],
                                        morphSources: ["2kpo_morph": "2kpo"], building: [])
         XCTAssertNil(morph.morph)
         XCTAssertEqual(morph.objects, ["2kpo_morph"])
@@ -657,7 +679,7 @@ final class MorphSettingsTests: XCTestCase {
     func testMovieAddPlanWhileItsMorphIsBuilding() {
         let plan = MorphMovie.addPlan(target: "2kpo", smooth: true, settings: MorphSettings(),
                                       objects: ["2kpo": 20, "2kpo_morph": 1], groups: [],
-                                      morphSources: [:], building: ["2kpo_morph"])
+                                      molecules: ["2kpo"], morphSources: [:], building: ["2kpo_morph"])
         XCTAssertNil(plan.morph)
         XCTAssertEqual(plan.objects, ["2kpo_morph"])
         XCTAssertEqual(plan.morphStride, 15)

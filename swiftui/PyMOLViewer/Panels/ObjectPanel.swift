@@ -4043,8 +4043,11 @@ private struct ObjectCard: View {
                 stateActionButton("Split") { engine.runCommand("split_states \(entry.name)", naming: entry.name) }
                 stateActionButton("Sync") { engine.runCommand("unset state, \(entry.name)", naming: entry.name) }
                 // Hidden while a morph of this object is being built: Python refuses a
-                // second job on the same target, so the UI must not offer one.
-                if !entry.isPending && !morphBuilding {
+                // second job on the same target, so the UI must not offer one. Only a
+                // molecule morphs: an alignment (or another type whose name selects
+                // atoms) can report states too, and Python refuses it.
+                if !entry.isPending && !morphBuilding
+                    && engine.morphBytesPerFrame[entry.name] != nil {
                     stateActionButton("Morph…") { showMorphSheet = true }
                         .help("Build a smooth, looping version of this object's models")
                         .accessibilityIdentifier("stateRow.morph.\(entry.name)")
@@ -4077,6 +4080,7 @@ private struct ObjectCard: View {
             objects: Dictionary(loaded.map { ($0.name, $0.stateCount) },
                                 uniquingKeysWith: { a, _ in a }),
             groups: Set(loaded.filter { $0.isGroup }.map { $0.name }),
+            molecules: Set(engine.morphBytesPerFrame.keys),
             morphSources: engine.morphSources,
             building: Set(engine.morphJobs.filter { !$0.isError }.map { $0.id }))
     }

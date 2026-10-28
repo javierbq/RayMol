@@ -1105,6 +1105,12 @@ private struct PlayModelsSheet: View {
                    uniquingKeysWith: { a, _ in a })
     }
 
+    /// The multi-state molecules not being built, as the Object panel's resolver
+    /// reads them (MorphSettings.morphTarget).
+    static func molecules(_ engine: PyMOLEngine) -> Set<String> {
+        Set(engine.morphBytesPerFrame.keys)
+    }
+
     /// Morph jobs queued or running.
     static func building(_ engine: PyMOLEngine) -> Set<String> {
         Set(engine.morphJobs.filter { $0.state == "queued" || $0.state == "running" }.map { $0.id })
@@ -1126,6 +1132,7 @@ private struct PlayModelsSheet: View {
     private var smoothTarget: String {
         target.map {
             MorphMovie.target(source: $0, objects: Self.loadedObjects(engine), groups: groups,
+                              molecules: Self.molecules(engine),
                               morphSources: engine.morphSources,
                               building: Self.building(engine)).name
         } ?? ""
@@ -1161,6 +1168,7 @@ private struct PlayModelsSheet: View {
         MorphMovie.addPlan(
             target: target, smooth: smooth, settings: morph,
             objects: Self.loadedObjects(engine), groups: groups,
+            molecules: Self.molecules(engine),
             morphSources: engine.morphSources, building: Self.building(engine))
     }
 

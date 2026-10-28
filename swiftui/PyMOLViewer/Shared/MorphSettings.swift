@@ -167,9 +167,11 @@ struct MorphSettings: Codable, Equatable {
     ///   re-morph rebuilds it in place.
     /// - A source's card, named only for a morph restored from a session: an
     ///   object `<source>_morph` that is not a known morph of this session
-    ///   (`morphSources`), not a group, and has more than one state. Python has no
-    ///   job record for it and, unnamed, would build `<source>_morph2`; named, its
-    ///   explicit-name rule rebuilds it in place (spec §5.2).
+    ///   (`morphSources`) and is a multi-state molecule (`molecules`). Python has
+    ///   no job record for it and, unnamed, would build `<source>_morph2`; named,
+    ///   its explicit-name rule rebuilds it in place (spec §5.2). That rule takes
+    ///   only a molecule: a group's or an alignment's name selects atoms, so it
+    ///   reports states too, but naming it would be refused.
     /// - Otherwise no name: Python's registry decides (spec §5.1, `_morph2` only
     ///   when the name is taken by a non-morph), and this mirrors its choice:
     ///   the first of `<source>_morph`, `<source>_morph2`, … that is free or a
@@ -183,10 +185,13 @@ struct MorphSettings: Codable, Equatable {
     /// - Parameters:
     ///   - objects: the loaded objects (not selections), name → state count.
     ///   - groups: the names in `objects` that are groups.
+    ///   - molecules: the multi-state molecules not being built: the keys of
+    ///     `PyMOLEngine.morphBytesPerFrame`, which Python publishes only for those.
     ///   - morphSources: completed morphs of this session, morph → source.
     ///   - building: names of morph jobs queued or running.
     static func morphTarget(card: String, source: String, objects: [String: Int],
-                            groups: Set<String>, morphSources: [String: String],
+                            groups: Set<String>, molecules: Set<String>,
+                            morphSources: [String: String],
                             building: Set<String> = []) -> (name: String, explicit: Bool) {
         if card != source { return (card, true) }
         var sources = morphSources
@@ -196,7 +201,7 @@ struct MorphSettings: Codable, Equatable {
         }
         let base = morphName(for: source)
         if let states = objects[base], sources[base] == nil,
-           !groups.contains(base), states > 1 {
+           !groups.contains(base), states > 1, molecules.contains(base) {
             return (base, true)
         }
         var candidate = base
@@ -288,11 +293,11 @@ enum MorphMovie {
     /// (MorphSettings.morphTarget), a morph of this source still being built
     /// counting as its morph.
     static func target(source: String, objects: [String: Int], groups: Set<String>,
-                       morphSources: [String: String],
+                       molecules: Set<String>, morphSources: [String: String],
                        building: Set<String>) -> (name: String, explicit: Bool) {
         MorphSettings.morphTarget(card: source, source: source, objects: objects,
-                                  groups: groups, morphSources: morphSources,
-                                  building: building)
+                                  groups: groups, molecules: molecules,
+                                  morphSources: morphSources, building: building)
     }
 
     /// Length of the smooth clip at its natural speed: the morph's frames (a
@@ -438,7 +443,7 @@ enum MorphMovie {
 
     static func addPlan(target: String?, smooth: Bool, settings: MorphSettings,
                         objects: [String: Int], groups: Set<String>,
-                        morphSources: [String: String],
+                        molecules: Set<String>, morphSources: [String: String],
                         building: Set<String>) -> AddPlan {
         guard let source = target,
               availability(target: source, objects: objects, morphSources: morphSources,
@@ -452,7 +457,8 @@ enum MorphMovie {
             return AddPlan(morph: nil, objects: [source], morphStride: nil, save: saved)
         }
         let resolved = Self.target(source: source, objects: objects, groups: groups,
-                                   morphSources: morphSources, building: building)
+                                   molecules: molecules, morphSources: morphSources,
+                                   building: building)
         var sent = settings
         sent.loop = true
         let call = building.contains(resolved.name) ? nil

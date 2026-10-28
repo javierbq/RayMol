@@ -231,6 +231,9 @@ final class PyMOLEngine: ObservableObject {
     /// Bytes one morph frame of each multi-state molecule would hold, from the
     /// panel payload's `morph_bytes_per_frame` (Python's `bytes_per_frame`). The
     /// Morph sheet and the Play-models sheet multiply it by their frame count.
+    /// Its keys are also relied on as the multi-state molecules not being built
+    /// (the morph-name resolver, the card's Morph… button): Python publishes a
+    /// figure for exactly those (appkit_inspector._morph_frame_costs).
     @Published var morphBytesPerFrame: [String: Int] = [:]
     /// Atoms one morph frame of each multi-state molecule would hold (state 1),
     /// from the panel payload's `morph_atoms_per_frame` (`morph_estimate`'s
