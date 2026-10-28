@@ -77,9 +77,9 @@ on the morph until the build finishes or is cancelled, so cancel the build to
 change its settings.
 
 **Cancel** deletes the partial morph and shows the source again; the card then
-reads **Morph cancelled** until you select **Dismiss**. A build that fails (for
-example, because the source was deleted) leaves a **Morph failed** card with
-the reason.
+reads **Morph cancelled: 2kpo_morph** until you select **Dismiss**. A build that
+fails (for example, because the source was deleted) leaves a **Morph failed:
+2kpo_morph** card with the reason.
 
 A session saved while a morph builds does not include the unfinished morph; a
 movie clip that names it stays. After reopening the session the clip is dimmed
@@ -90,8 +90,8 @@ right-click it and select **Build 2kpo_morph from 2kpo** to morph the source
 at the clip's own frames per model, or morph the source again yourself. Any
 Play-models clip whose object is not loaded is marked the same way ("not
 loaded"). Opening another session stops the build and leaves the card reading
-**Morph cancelled**; starting a new session (**Clear Session**) stops it and
-clears the card.
+**Morph cancelled: 2kpo_morph**; starting a new session (**Clear Session**)
+stops it and clears the card.
 
 ### When it is done
 
@@ -99,8 +99,11 @@ clears the card.
   loop (repeat) icon before its frame count (tooltip "Morph of 2kpo · 300
   frames").
 - It starts playing at the movie frame rate (its Play speed is set to match).
-  While the Movie timeline is open, model playback is off, so the morph
-  follows the movie's current frame instead.
+  While the timeline is expanded (on iPhone, while the Movie tab is open),
+  model playback is off, so the morph follows the movie's current frame
+  instead. On Mac and iPad, a morph that finishes while the Movie tab is
+  showing does start playing: switch to the Objects tab and back to release
+  it before playing a Lockstep movie.
 - The **Name** line tells you where you are: `model 7` on a key frame, `7 → 8`
   between models, `20 → 1` on the leg that loops back.
 - From here it is an ordinary multi-state object: the State slider, Play,
@@ -260,7 +263,8 @@ helices) shown as cartoon needs about 2.9 MB per frame, so at 15 frames per
 model (300 frames) the sheet reads `≈ 867 MB` (the finished morph measures
 about 0.6 GB on a Mac). Shown as lines instead, the same morph needs about
 77 MB. When a source has no secondary structure assigned, every cartoon
-residue is counted as helix: the morph assigns its own when it is created.
+residue is counted as helix: with `auto_dss` on (the default), the morph
+assigns its own when it is created.
 
 The Morph sheet, and the Play-models sheet while smoothing, react at two
 levels, which depend on the device's memory:
@@ -270,11 +274,12 @@ levels, which depend on the device's memory:
 | **macOS** | 200 MB or 1/16 of the Mac's memory, whichever is larger (1 GB on a 16 GB Mac) | 1 GB or 1/4 of the Mac's memory, whichever is larger (4 GB on a 16 GB Mac) |
 | **iPhone & iPad** | 100 MB or 1/4 of the memory available to RayMol, whichever is larger | 400 MB or 1/2 of the memory available to RayMol, whichever is larger |
 
-The memory available to RayMol on iPhone and iPad changes with what else is
-running, so the levels are read again each time. The sheet and
-`morph_object` use one estimate, computed by RayMol from the representations
-the source shows, and the same levels (command-line PyMOL uses the macOS
-rule, from the computer's memory). A morph refused for its size leaves a
+On iPhone and iPad the memory available to RayMol is what it may still
+allocate, which shrinks as the session grows (finished morphs included), so
+the levels are read again each time. The sheet and `morph_object` use one
+estimate, computed by RayMol from the representations the source shows, and
+the same levels (command-line PyMOL uses the macOS rule, from the computer's
+memory). A morph refused for its size leaves a
 **Morph failed** card reading "this morph needs about … MB. Reduce frames per
 model or morph fewer models". On iPhone and iPad, when the system warns that
 memory is low, RayMol cancels every morph being built (its card reads **Morph

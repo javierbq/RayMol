@@ -619,9 +619,10 @@ DESCRIPTION
 ARGUMENTS
 
     name = string: name of object to create. It cannot be one of the input
-    objects, a group or a selection. An existing molecule of that name (the
-    output of an earlier morph, say) is replaced once the morph is built; a
-    morph that fails leaves it as it was.
+    objects, a selection, or an existing object that is not a molecule (a
+    group, a map, a CGO, ...). An existing molecule of that name (the output
+    of an earlier morph, say) is replaced once the morph is built; a morph
+    that fails leaves it as it was.
 
     sele1 = string: atom selection of first conformation
 
@@ -642,14 +643,14 @@ ARGUMENTS
     refinement = int: number of sculpting refinement cycles to clean
     distorted intermediates {default: 3}
 
-    steps = int: number of states for sele2 object {default: 30}
+    steps = int: states per leg (per pair of conformations) {default: 30}
 
     method = string: rigimol or linear {default: rigimol}
 
     match = string: in, like, align, super, or the name of an alignment
     object {default: align}
 
-    rate = string: linear, sinusoidal, "ramp up" or "ramp down"
+    rate = string: linear, sinusoidal, ramp_up or ramp_down
     {default: linear}
 
     core_fraction = float: fraction of residues per chain kept as the rigid
@@ -659,6 +660,9 @@ ARGUMENTS
 
     hinge_blend = int: residues on each side of a hinge whose motion is
     blended between the two segments {default: 3}
+
+    hide = 0/1: disable the input objects once the morph is built
+    {default: 1}
 
     color_segments = 0/1: colour the output by rigid segment {default: 0}
 

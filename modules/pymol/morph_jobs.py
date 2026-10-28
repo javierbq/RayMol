@@ -1310,7 +1310,10 @@ ARGUMENTS
 
     source = str: multi-state object; every model must have the same atoms
 
-    name = str: output object {default: <source>_morph}
+    name = str: output object {default: <source>_morph, or <source>_morph2,
+    ... when another object holds that name}. An existing object may be
+    replaced only if it is a morph of source built since launch, or a
+    molecule named <source>_morph or <source>_morph<N>
 
     frames_per_model = int: states per model {default: 15}
 
@@ -1321,12 +1324,14 @@ ARGUMENTS
     refinement = int: sculpting clean-up of intermediates, 0 for none
     {default: 3}
 
-    rate = linear, sinusoidal, "ramp up" or "ramp down" {default: linear}
+    rate = linear, sinusoidal, ramp_up or ramp_down {default: linear}
 
     copy_look = 0/1: copy the source's object-level settings {default: 1}
 
     async = 0/1: build in the background (1) or finish before returning;
-    written async_ from Python, as for fetch {default: 1}
+    written async_ from Python, as for fetch {default: 1}. Outside the
+    RayMol app (scripts, command-line PyMOL) pass async=0: nothing lands a
+    background morph's frames there
 
     reuse = 0/1: keep an existing morph built with the same settings from
     the unchanged source {default: 0}

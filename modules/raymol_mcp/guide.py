@@ -80,12 +80,15 @@ IMAGES AND MOVIES  (tools capture_viewport, export_image, export_movie)
 MORPHS  (commands morph_object, morph_cancel, morph_dismiss)
   Turns a multi-state object whose models share their atoms (NMR ensemble,
   trajectory frames, predicted models) into a smoothly playing morph: a new
-  object <source>_morph with interpolated frames between consecutive models
-  (by default looping back to model 1). Use it instead of stepping raw
-  states with mset/mplay. It builds in the background: poll
-  raymol.morph_jobs in get_session_state until its status is done,
-  cancelled or error (morph_dismiss clears a cancelled or failed record;
-  async_=0 waits for it but blocks the app). With no movie defined, frames
+  object <source>_morph (or <source>_morph2, ... when another object holds
+  that name; name= chooses it) with interpolated frames between consecutive
+  models (by default looping back to model 1). Use it instead of stepping
+  raw states with mset/mplay. It builds in the background: poll
+  raymol.morph_jobs in get_session_state, finding the job by its source,
+  until its status is done, cancelled or error. A refused morph is listed
+  with status error (under '<name> (refused)' when a finished morph holds
+  the name); morph_dismiss clears a cancelled or failed record; async_=0
+  waits for it but blocks the app. With no movie defined, frames
   follow its states, so mplay and export_movie play it.
     morph_object 2kpo                    (builds 2kpo_morph)
     morph_object 2kpo, frames_per_model=10, loop=0
