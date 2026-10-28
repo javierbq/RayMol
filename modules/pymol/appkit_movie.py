@@ -707,10 +707,12 @@ def _group_members(groups, _self):
     a map: get_object_list reports only molecules). The core expands a group
     named to get_session into its members, so a partial read of these groups
     lists them. The core call, not cmd.get_session: that would run the
-    session-save tasks again, this one among them."""
+    session-save tasks again, this one among them. A binary dump at the
+    current version, whatever the user's pse settings: only the names are
+    read, so the members' data is not worth turning into Python lists."""
     sub = {}
     with _self.lockcm:
-        _self._cmd.get_session(_self._COb, sub, ' '.join(groups), 1, 1)
+        _self._cmd.get_session(_self._COb, sub, ' '.join(groups), 1, 1, 1, 0.0)
     return {e[0] for e in sub.get('names') or [] if e} - set(groups)
 
 
