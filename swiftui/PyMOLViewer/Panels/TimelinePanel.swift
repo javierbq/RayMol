@@ -1118,7 +1118,8 @@ private struct PlayModelsSheet: View {
 
     static func availability(_ engine: PyMOLEngine, _ target: String?) -> MorphMovie.Availability {
         MorphMovie.availability(target: target, objects: loadedObjects(engine),
-                                morphSources: engine.morphSources, building: building(engine))
+                                molecules: molecules(engine), morphSources: engine.morphSources,
+                                building: building(engine))
     }
 
     private var models: Int { Self.models(engine, target) }

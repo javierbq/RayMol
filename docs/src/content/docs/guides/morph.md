@@ -10,8 +10,8 @@ viewport, in movie clips and in exported videos.
 
 ## What a morph is
 
-A morph is built from a **source**: any object with two or more states (models)
-that all hold the same atoms, such as an NMR ensemble, snapshots from a
+A morph is built from a **source**: any molecular object with two or more
+states (models) that all hold the same atoms, such as an NMR ensemble, snapshots from a
 molecular dynamics trajectory, or several predicted models of one sequence
 loaded as states.
 
@@ -145,12 +145,13 @@ models:
    line under it reads, for example, "Builds 2kpo_morph (20 models × 15
    frames) and plays that instead · 10 s at 30 fps · ≈ 867 MB". As in the
    Morph sheet, it turns orange above the memory warning level; above the
-   limit it adds "reduce frames per model" and **Add** is disabled. A morph
-   that **Add** would reuse (see below) is never refused, so the line shows its
-   size alone and **Add** stays enabled. While that morph is still being built
-   (for example from the Object panel), the line reads "2kpo_morph is still
-   being built · Add once it is done" and **Add** is disabled until it
-   finishes: the running build may use other settings, such as Loop off.
+   limit it adds "reduce frames per model" and **Add** is disabled. A finished
+   morph that **Add** would reuse (see below) is never refused, so the line
+   shows its size alone and **Add** stays enabled. While the morph **Add**
+   would name is still being built (for example from the Object panel), the
+   line reads "2kpo_morph is still being built · Add once it is done" and
+   **Add** is disabled until it finishes: the running build may use other
+   settings, such as Loop off.
 3. Optionally open **Morph settings…** for frames per model, method, clean-up
    cycles and rate: the Morph sheet's controls, except Loop, which is always on
    here.
@@ -198,9 +199,10 @@ panel.
 - The toggle and the morph settings are remembered when you select **Add**.
 
 The toggle is unavailable, with the reason under it, when the object menu is
-set to **All** ("Pick one object to smooth") or the chosen object is already a
+set to **All** ("Pick one object to smooth"), the chosen object is already a
 morph, finished, still building or restored from a session ("Already a smooth
-morph"). Once a morph exists you can also pick it in the object menu
+morph"), or it is not a molecule, such as a group or an alignment ("Only a
+molecule can be smoothed"). Once a morph exists you can also pick it in the object menu
 (`2kpo_morph · 300`) and add an ordinary Play-models clip.
 
 ## What a morph does not carry over
@@ -222,14 +224,15 @@ Some multi-state objects cannot be morphed: models that do not all hold the
 same atoms (even when they hold the same number of atoms), discrete objects
 (loaded with `discrete=1`, such as multi-compound SDF libraries), objects
 whose atoms are not uniquely identified by segment, chain, residue number,
-residue name and atom name, objects with no atoms in altloc `A` or without an
-altloc, and multi-state objects that are not molecules (CGOs, maps). They
-still offer **Morph…**, but the morph is refused and nothing is created. The
-reason ("models have different atoms; morph needs the same atoms in every
-model", "atom identifiers … are not unique", "… is not a molecular object")
-appears in a **Morph failed** card in the progress tray, and in the console;
-**Dismiss** clears the card. A morph too large for the memory limit is
-refused the same way (see below).
+residue name and atom name, and objects with no atoms in altloc `A` or without
+an altloc. They still offer **Morph…**, but the morph is refused and nothing
+is created. The reason ("models have different atoms; morph needs the same
+atoms in every model", "atom identifiers … are not unique") appears in a
+**Morph failed** card in the progress tray, and in the console; **Dismiss**
+clears the card. A morph too large for the memory limit is refused the same
+way (see below). Objects that are not molecules (CGOs, maps, alignments) do
+not offer **Morph…** at all, and `morph_object` refuses them ("… is not a
+molecular object").
 
 ## Memory and size
 

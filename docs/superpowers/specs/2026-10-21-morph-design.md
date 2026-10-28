@@ -58,7 +58,7 @@ UI is built for it.
 2. Presented as a **plain sibling row** with a morph badge (loop glyph + frame
    count), not as a child row.
 3. Object panel trigger: a **"Morph…" capsule beside Fit / Split / Sync** on the
-   State row of any object with more than one state; opens a small sheet.
+   State row of any molecule with more than one state; opens a small sheet.
 4. Movie tab trigger: a **"Smooth transitions (morph)" toggle inside the
    existing Play-models sheet**, with the morph settings behind a disclosure.
    No new composer preset.
@@ -231,7 +231,11 @@ block.
 ### 5.3 Object panel (`swiftui/PyMOLViewer/Panels/ObjectPanel.swift`)
 
 - **Capsule "Morph…"** appended to `stateActionButtons` after Sync, same style
-  as Fit/Split/Sync, visible when `entry.stateCount > 1 && !entry.isPending`.
+  as Fit/Split/Sync, visible when `!entry.isPending && !morphBuilding &&
+  engine.morphBytesPerFrame[entry.name] != nil` (on the State row, so
+  `entry.stateCount > 1`): Python publishes a frame cost only for a multi-state
+  molecule not being built, and an alignment, whose name selects atoms, reports
+  states too.
   Help text: "Build a smooth, looping version of this object's models".
   Accessibility identifier `stateRow.morph.<name>`.
 - **Morph sheet** (macOS `.sheet`, width 380; iOS detent ≈ 360 pt):
@@ -318,8 +322,10 @@ not the exact rep numbers.
 
 - Add a **Toggle "Smooth transitions (morph)"** under the Start/End/Duration
   row, default off, persisted (`raymol.morph.movieSmooth`). Disabled with a
-  hint when the target is "all models" (`spec.objects == nil`) or the target is
-  already a morph object.
+  hint when the target is "all models" (`spec.objects == nil`), the target is
+  already a morph object, or it is not a multi-state molecule
+  (`engine.morphBytesPerFrame` has no figure for it: a group or an alignment
+  reports states and so is in the object menu, but only a molecule morphs).
 - A `DisclosureGroup "Morph settings…"` beneath it holds the same four
   controls as §5.3 (frames per model, method, clean-up, rate); loop is implied
   on for the Movie path (my call: a movie clip of a non-looping morph is

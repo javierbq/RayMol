@@ -937,7 +937,8 @@ def _morph_frame_costs(objs, nstate):
     Only those: nothing else can be morphed, and counting atoms of a CGO or a
     map would log a Selector-Error per tick (#219); the app also reads the
     keys as the morphable molecules (MorphSettings.morphTarget, the Morph…
-    button), so keep them exactly these. Nor the morphs being
+    button), so publish none for any other object (a molecule whose figure
+    fails drops out until it measures again). Nor the morphs being
     built: their state count grows on every poll, so their figure would be
     computed on every poll, and it is never used. A figure takes a few
     selector passes over every loaded atom (about 8 ms for a 100k-atom

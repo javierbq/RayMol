@@ -109,7 +109,9 @@ final class MorphSettingsTests: XCTestCase {
     }
 
     /// Spec §5.1: `_morph2` when the name is taken by a non-morph. A user's
-    /// one-state molecule, a group, or a known morph of another object.
+    /// one-state molecule, a group, an alignment (its name selects atoms, so it
+    /// reports states, but it is not a molecule), or a known morph of another
+    /// object.
     func testMorphTargetTakenByNonMorphGoesToMorph2() {
         let user = MorphSettings.morphTarget(card: "2kpo", source: "2kpo",
                                              objects: ["2kpo": 20, "2kpo_morph": 1],
@@ -376,28 +378,51 @@ final class MorphSettingsTests: XCTestCase {
     // MARK: - MorphMovie (Play-models sheet, spec §5.7)
 
     func testMovieToggleAvailability() {
-        let objs = ["2kpo": 20, "2kpo_morph": 300, "movie": 40]
-        XCTAssertEqual(MorphMovie.availability(target: nil, objects: objs,
+        let objs = ["2kpo": 20, "2kpo_morph": 300, "movie": 40, "aln": 2, "grp": 20]
+        let mols: Set<String> = ["2kpo", "2kpo_morph", "movie"]
+        XCTAssertEqual(MorphMovie.availability(target: nil, objects: objs, molecules: mols,
                                                morphSources: [:], building: []),
                        .unavailable(reason: "Pick one object to smooth"))
-        XCTAssertEqual(MorphMovie.availability(target: "2kpo", objects: objs,
+        XCTAssertEqual(MorphMovie.availability(target: "2kpo", objects: objs, molecules: mols,
                                                morphSources: ["2kpo_morph": "2kpo"], building: []),
                        .available)
         // This session's morph.
-        XCTAssertEqual(MorphMovie.availability(target: "2kpo_morph", objects: objs,
+        XCTAssertEqual(MorphMovie.availability(target: "2kpo_morph", objects: objs, molecules: mols,
                                                morphSources: ["2kpo_morph": "2kpo"], building: []),
                        .unavailable(reason: "Already a smooth morph"))
         // A morph a session reload brought back: the `<source>_morph` convention (§5.9).
-        XCTAssertEqual(MorphMovie.availability(target: "2kpo_morph", objects: objs,
+        XCTAssertEqual(MorphMovie.availability(target: "2kpo_morph", objects: objs, molecules: mols,
                                                morphSources: [:], building: []),
                        .unavailable(reason: "Already a smooth morph"))
         // A morph still being built (not yet in morphSources), whatever its name.
         XCTAssertEqual(MorphMovie.availability(target: "movie", objects: objs,
+                                               molecules: mols.subtracting(["movie"]),
                                                morphSources: [:], building: ["movie"]),
                        .unavailable(reason: "Already a smooth morph"))
-        XCTAssertEqual(MorphMovie.availability(target: "movie", objects: objs,
+        XCTAssertEqual(MorphMovie.availability(target: "movie", objects: objs, molecules: mols,
                                                morphSources: [:], building: []),
                        .available)
+        // Not a molecule: an alignment or a group reports states (its name selects
+        // atoms), so the object menu lists it, but Python morphs only a molecule.
+        for other in ["aln", "grp"] {
+            XCTAssertEqual(MorphMovie.availability(target: other, objects: objs, molecules: mols,
+                                                   morphSources: [:], building: []),
+                           .unavailable(reason: "Only a molecule can be smoothed"), other)
+        }
+    }
+
+    /// A target the toggle is off for adds a plain clip of it, whatever `smooth`
+    /// says, and leaves the saved toggle alone: no morph of an alignment.
+    func testMovieAddPlanNonMoleculeAddsAPlainClip() {
+        var s = MorphSettings()
+        s.framesPerModel = 10
+        let plan = MorphMovie.addPlan(target: "aln", smooth: true, settings: s,
+                                      objects: ["2kpo": 20, "aln": 2], groups: [],
+                                      molecules: ["2kpo"], morphSources: [:], building: [])
+        XCTAssertNil(plan.morph)
+        XCTAssertEqual(plan.objects, ["aln"])
+        XCTAssertNil(plan.morphStride)
+        XCTAssertNil(plan.save)
     }
 
     func testMovieNaturalSecondsRoundsToATenth() {

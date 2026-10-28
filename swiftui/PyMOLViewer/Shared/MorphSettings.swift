@@ -272,18 +272,26 @@ enum MorphMovie {
     /// (`morphSources`), one still being built (`building`, not yet in
     /// `morphSources`), or one a session reload brought back, recognised by the
     /// `<source>_morph` convention as the Object panel does (spec §5.9). Smoothing a
-    /// morph would morph every one of its frames.
+    /// morph would morph every one of its frames. Off for a target that is not a
+    /// molecule: the object menu lists every object that reports states, and a
+    /// group's or an alignment's name selects atoms, so it does, but Python
+    /// morphs only a molecule (the Object panel offers Morph… only for one).
     ///
     /// - Parameters:
     ///   - objects: the loaded objects (not selections), name → state count.
+    ///   - molecules: the multi-state molecules not being built: the keys of
+    ///     `PyMOLEngine.morphBytesPerFrame`.
     ///   - building: names of morph jobs queued or running.
     static func availability(target: String?, objects: [String: Int],
-                             morphSources: [String: String],
+                             molecules: Set<String>, morphSources: [String: String],
                              building: Set<String>) -> Availability {
         guard let t = target else { return .unavailable(reason: "Pick one object to smooth") }
         if morphSources[t] != nil || building.contains(t)
             || MorphSettings.conventionalSource(of: t, existing: Array(objects.keys)) != nil {
             return .unavailable(reason: "Already a smooth morph")
+        }
+        if !molecules.contains(t) {
+            return .unavailable(reason: "Only a molecule can be smoothed")
         }
         return .available
     }
@@ -455,8 +463,8 @@ enum MorphMovie {
                         molecules: Set<String>, morphSources: [String: String],
                         building: Set<String>) -> AddPlan {
         guard let source = target,
-              availability(target: source, objects: objects, morphSources: morphSources,
-                           building: building) == .available
+              availability(target: source, objects: objects, molecules: molecules,
+                           morphSources: morphSources, building: building) == .available
         else {
             return AddPlan(morph: nil, objects: target.map { [$0] }, morphStride: nil, save: nil)
         }
