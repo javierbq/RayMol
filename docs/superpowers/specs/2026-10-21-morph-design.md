@@ -337,6 +337,11 @@ not the exact rep numbers.
   while the morph is still computing simply fills in as legs land; the
   rebuild on completion is triggered by the job's terminal record
   (`engine.rebuildMovie()` when a morph named by any clip completes).
+- While the morph a smooth **Add** would name is still being built (from the
+  Object panel or an earlier Add), **Add** is disabled with "<obj>_morph is
+  still being built · Add once it is done": Python refuses a second job on it,
+  and the running job's spec may differ (Loop off, another rate). Once it is
+  done, the reuse rule above keeps or rebuilds it.
 - Start/End steppers count **models** while the toggle is on. `StatesSpec`
   gains `morphStride: Int?` and keeps `firstModel`/`lastModel` as model
   indices when it is set; `rebuildMovie` converts at rebuild time with the

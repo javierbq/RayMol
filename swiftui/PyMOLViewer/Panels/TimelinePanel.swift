@@ -1151,8 +1151,8 @@ private struct PlayModelsSheet: View {
     /// The smooth clip's morph against the memory thresholds (spec §5.6): Python's
     /// bytes per frame of the target times the loop's frames, as morph_object
     /// estimates it. `.ok` with no text while that figure is unknown, and `.ok`
-    /// with the size alone when Add's morph is one Python keeps or is already
-    /// building (MorphMovie.sizesMorph): it refuses only what it builds.
+    /// with the size alone when Add's morph is one Python keeps or Add waits for
+    /// (MorphMovie.sizesMorph): it refuses only what it builds.
     private func memoryNote(models n: Int) -> (text: String?, tier: MorphSheet.MemoryTier) {
         let bytes = MorphMovie.estimatedBytes(
             models: n, framesPerModel: morph.framesPerModel,
@@ -1196,9 +1196,11 @@ private struct PlayModelsSheet: View {
         let availability = self.availability
         let memory: (text: String?, tier: MorphSheet.MemoryTier) =
             smoothOn ? memoryNote(models: n) : (nil, .ok)
+        let waitsFor = smoothOn ? plan.waitsFor : nil
         let caption = MorphMovie.caption(availability, smooth: smoothOn, target: smoothTarget,
                                          models: n, framesPerModel: morph.framesPerModel,
-                                         fps: playback.movieFPS, memory: memory.text)
+                                         fps: playback.movieFPS, memory: memory.text,
+                                         waitsFor: waitsFor)
         return VStack(alignment: .leading, spacing: 16) {
             HStack {
                 Text("Play models").font(.system(size: 15, weight: .semibold))
@@ -1243,7 +1245,8 @@ private struct PlayModelsSheet: View {
                 if let caption {
                     Text(caption)
                         .font(.system(size: 11))
-                        .foregroundStyle(memory.tier == .ok ? Color.secondary : Color.orange)
+                        .foregroundStyle(memory.tier == .ok && waitsFor == nil
+                                         ? Color.secondary : Color.orange)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("playModels.smoothCaption")
                 }
@@ -1281,8 +1284,10 @@ private struct PlayModelsSheet: View {
                     .buttonStyle(.borderedProminent)
                     // Python would refuse the morph: no clip naming an object that
                     // never appears. Lower frames per model to enable it. (A morph
-                    // Python keeps, or one already building, is never refused.)
-                    .disabled(!MorphMovie.canAdd(smoothOn: smoothOn, tier: memory.tier))
+                    // Python keeps is never refused.) Nor while the morph Add would
+                    // name is still being built: it re-enables when that finishes.
+                    .disabled(!MorphMovie.canAdd(smoothOn: smoothOn, tier: memory.tier,
+                                                 waitsFor: waitsFor))
                     .accessibilityIdentifier("playModels.add")
             }
         }
@@ -1290,6 +1295,7 @@ private struct PlayModelsSheet: View {
 
     private func add(first: Int, last: Int) {
         let plan = self.plan
+        guard plan.waitsFor == nil else { return }  // Add is disabled while it waits
         // Python keeps an existing morph with the same spec and source fingerprint
         // (reuse); otherwise it builds, and the clip naming the morph fills in as legs
         // land and is rebuilt when it completes. One engine call, so a replace prompt

@@ -535,8 +535,9 @@ final class MorphSettingsTests: XCTestCase {
 
     /// Python sizes up only a morph it would build. It keeps a finished morph of
     /// the source whose spec matches the one sent before it estimates anything
-    /// (reuse), and Add submits no job while that morph is building. Neither is
-    /// refused, so neither disables Add: the note shows the size alone, at `.ok`.
+    /// (reuse), so that is not refused and does not disable Add: the note shows
+    /// the size alone, at `.ok`. While that morph is building Add submits no job
+    /// either (nothing sized), but waits (testMovieAddWaitsForItsMorphStillBuilding).
     func testMovieAddStaysEnabledWhenPythonWouldNotSizeTheMorph() {
         var s = MorphSettings()
         s.framesPerModel = 120
@@ -565,10 +566,11 @@ final class MorphSettingsTests: XCTestCase {
                                        objects: ["2kpo": 20], groups: [],
                                        molecules: ["2kpo"], morphSources: [:], building: [])
         XCTAssertTrue(MorphMovie.sizesMorph(first, morphSources: [:], morphSpecs: [:]))
-        // Already building: no job, nothing sized. A plain clip has no morph.
+        // Still building: no job, nothing sized. A plain clip has no morph.
         let building = MorphMovie.addPlan(target: "2kpo", smooth: true, settings: s,
                                           objects: ["2kpo": 20, "2kpo_morph": 1], groups: [],
-                                          molecules: ["2kpo"], morphSources: [:], building: ["2kpo_morph"])
+                                          molecules: ["2kpo"], morphSources: [:],
+                                          building: ["2kpo_morph"])
         XCTAssertFalse(MorphMovie.sizesMorph(building, morphSources: [:], morphSpecs: [:]))
         let plain = MorphMovie.addPlan(target: "2kpo", smooth: false, settings: s,
                                        objects: ["2kpo": 20], groups: [],
@@ -674,16 +676,49 @@ final class MorphSettingsTests: XCTestCase {
         XCTAssertNil(morph.save)
     }
 
-    /// Python refuses a second job on a target being built; the clip names it and
-    /// is rebuilt when it completes.
-    func testMovieAddPlanWhileItsMorphIsBuilding() {
-        let plan = MorphMovie.addPlan(target: "2kpo", smooth: true, settings: MorphSettings(),
-                                      objects: ["2kpo": 20, "2kpo_morph": 1], groups: [],
-                                      molecules: ["2kpo"], morphSources: [:], building: ["2kpo_morph"])
+    /// While the morph a smooth Add would name is still being built, Add waits:
+    /// Python refuses a second job on it, and the running one may not be what the
+    /// sheet asks for. Here it is an Object-panel morph with Loop off, which a
+    /// smooth clip must not adopt (it would end on the last model). Once it is
+    /// done, Add's reuse keeps it if it matches and rebuilds it otherwise.
+    func testMovieAddWaitsForItsMorphStillBuilding() {
+        var s = MorphSettings()
+        s.loop = false                      // the Object panel's last choice
+        let plan = MorphMovie.addPlan(target: "2kpo", smooth: true, settings: s,
+                                      objects: ["2kpo": 20, "2kpo_morph": 31], groups: [],
+                                      molecules: ["2kpo"], morphSources: [:],
+                                      building: ["2kpo_morph"])
         XCTAssertNil(plan.morph)
-        XCTAssertEqual(plan.objects, ["2kpo_morph"])
-        XCTAssertEqual(plan.morphStride, 15)
-        XCTAssertEqual(plan.save?.movieSmooth, true)
+        XCTAssertEqual(plan.waitsFor, "2kpo_morph")
+        XCTAssertFalse(MorphMovie.canAdd(smoothOn: true, tier: .ok, waitsFor: plan.waitsFor))
+        XCTAssertEqual(MorphMovie.caption(.available, smooth: true, target: "2kpo_morph",
+                                          models: 20, framesPerModel: 15, fps: 30,
+                                          waitsFor: plan.waitsFor),
+                       "2kpo_morph is still being built · Add once it is done")
+        // A plain clip does not wait.
+        let plain = MorphMovie.addPlan(target: "2kpo", smooth: false, settings: s,
+                                       objects: ["2kpo": 20, "2kpo_morph": 31], groups: [],
+                                       molecules: ["2kpo"], morphSources: [:],
+                                       building: ["2kpo_morph"])
+        XCTAssertNil(plain.waitsFor)
+        XCTAssertTrue(MorphMovie.canAdd(smoothOn: false, tier: .ok, waitsFor: plain.waitsFor))
+        // Another source's build does not hold it up.
+        let other = MorphMovie.addPlan(target: "2kpo", smooth: true, settings: s,
+                                       objects: ["2kpo": 20], groups: [],
+                                       molecules: ["2kpo"], morphSources: [:],
+                                       building: ["1nmr_morph"])
+        XCTAssertNil(other.waitsFor)
+        XCTAssertNotNil(other.morph)
+        // Done: Add submits the loop the sheet promises, unnamed, so Python's
+        // reuse keeps or rebuilds the finished morph.
+        let done = MorphMovie.addPlan(target: "2kpo", smooth: true, settings: s,
+                                      objects: ["2kpo": 20, "2kpo_morph": 286], groups: [],
+                                      molecules: ["2kpo", "2kpo_morph"],
+                                      morphSources: ["2kpo_morph": "2kpo"], building: [])
+        XCTAssertNil(done.waitsFor)
+        XCTAssertEqual(done.morph?.settings.loop, true)
+        XCTAssertNil(done.morph?.name)
+        XCTAssertEqual(done.objects, ["2kpo_morph"])
     }
 
     func testNumberFormatting() {

@@ -341,16 +341,18 @@ enum MorphMovie {
 
     /// The line under the toggle: "Builds 2kpo_morph (20 models × 15 frames) and
     /// plays that instead · 10 s at 30 fps" while on, followed by `memory` (the
-    /// estimate, `memoryNote`'s text) when given; the reason while unavailable;
-    /// nothing while off. `target` is the resolved morph name.
+    /// estimate, `memoryNote`'s text) when given; why Add waits while the morph
+    /// it would name is still being built (`waitsFor`, AddPlan); the reason
+    /// while unavailable; nothing while off. `target` is the resolved morph name.
     static func caption(_ availability: Availability, smooth: Bool, target: String,
                         models: Int, framesPerModel: Int, fps: Double,
-                        memory: String? = nil) -> String? {
+                        memory: String? = nil, waitsFor: String? = nil) -> String? {
         switch availability {
         case .unavailable(let reason):
             return reason
         case .available:
             guard smooth else { return nil }
+            if let waitsFor { return "\(waitsFor) is still being built · Add once it is done" }
             let s = naturalSeconds(models: models, framesPerModel: framesPerModel, fps: fps)
             let line = "Builds \(target) (\(models) models × \(framesPerModel) frames) "
                 + "and plays that instead · \(MorphSettings.number(s)) s at "
@@ -389,14 +391,17 @@ enum MorphMovie {
 
     /// Whether Add may run: not for a smooth clip whose morph Python would refuse
     /// for its size, which would leave a clip naming an object that never
-    /// appears. A plain clip, or a smooth one under the limit, can be added.
-    static func canAdd(smoothOn: Bool, tier: MorphSheet.MemoryTier) -> Bool {
-        !(smoothOn && tier == .refuse)
+    /// appears, nor while the morph it would name is still being built
+    /// (`waitsFor`, AddPlan). A plain clip, or a smooth one under the limit, can
+    /// be added.
+    static func canAdd(smoothOn: Bool, tier: MorphSheet.MemoryTier,
+                       waitsFor: String? = nil) -> Bool {
+        !(smoothOn && (tier == .refuse || waitsFor != nil))
     }
 
     /// Whether Python sizes up the morph Add would ask for (spec §5.6): only one
     /// it builds. Not when Add submits no job (`plan.morph` nil: a plain clip, or
-    /// that morph is already building), nor for a reuse: `morph_object` keeps a
+    /// Add waits for that morph's build), nor for a reuse: `morph_object` keeps a
     /// finished morph whose source and spec match the ones sent before it
     /// estimates anything (spec §5.2), as the registry's `morphSources` and
     /// `morphSpecs` show here. Python also compares the source's fingerprint:
@@ -427,9 +432,7 @@ enum MorphMovie {
             /// Loop forced on: the Movie path implies it (spec §5.7).
             let settings: MorphSettings
         }
-        /// nil for a plain clip, and when this morph is already being built: Python
-        /// would refuse a second job, and the clip naming it is rebuilt when it
-        /// completes.
+        /// nil for a plain clip, and while Add waits (`waitsFor`).
         let morph: MorphCall?
         /// The clip's objects (nil = all multi-state objects).
         let objects: [String]?
@@ -439,6 +442,12 @@ enum MorphMovie {
         /// The settings to persist (the toggle remembers on and off), or nil to leave
         /// them alone when the toggle could not be used.
         let save: MorphSettings?
+        /// The morph a smooth Add would name while it is still being built: Add
+        /// waits (canAdd). Python refuses a second job on it, and the running one
+        /// may not be what the sheet asks for (an Object-panel morph with Loop off,
+        /// another rate). Once it is done, Add's reuse keeps it if it matches and
+        /// rebuilds it otherwise (spec §5.2).
+        var waitsFor: String? = nil
     }
 
     static func addPlan(target: String?, smooth: Bool, settings: MorphSettings,
@@ -459,11 +468,16 @@ enum MorphMovie {
         let resolved = Self.target(source: source, objects: objects, groups: groups,
                                    molecules: molecules, morphSources: morphSources,
                                    building: building)
+        if building.contains(resolved.name) {
+            return AddPlan(morph: nil, objects: [resolved.name],
+                           morphStride: settings.framesPerModel, save: saved,
+                           waitsFor: resolved.name)
+        }
         var sent = settings
         sent.loop = true
-        let call = building.contains(resolved.name) ? nil
-            : AddPlan.MorphCall(source: source, name: resolved.explicit ? resolved.name : nil,
-                                target: resolved.name, settings: sent)
+        let call = AddPlan.MorphCall(source: source,
+                                     name: resolved.explicit ? resolved.name : nil,
+                                     target: resolved.name, settings: sent)
         return AddPlan(morph: call, objects: [resolved.name],
                        morphStride: settings.framesPerModel, save: saved)
     }

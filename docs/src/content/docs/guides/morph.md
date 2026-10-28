@@ -146,8 +146,11 @@ models:
    frames) and plays that instead · 10 s at 30 fps · ≈ 867 MB". As in the
    Morph sheet, it turns orange above the memory warning level; above the
    limit it adds "reduce frames per model" and **Add** is disabled. A morph
-   that **Add** would reuse (see below) or that is already building is never
-   refused, so the line shows its size alone and **Add** stays enabled.
+   that **Add** would reuse (see below) is never refused, so the line shows its
+   size alone and **Add** stays enabled. While that morph is still being built
+   (for example from the Object panel), the line reads "2kpo_morph is still
+   being built · Add once it is done" and **Add** is disabled until it
+   finishes: the running build may use other settings, such as Loop off.
 3. Optionally open **Morph settings…** for frames per model, method, clean-up
    cycles and rate: the Morph sheet's controls, except Loop, which is always on
    here.
@@ -159,9 +162,10 @@ it was built from the unchanged source with the same settings since RayMol was
 launched and is still loaded unchanged (reopening a session you saved with it
 in the same run, with no other session opened and no **Clear Session** in
 between, keeps it reusable; after a relaunch, **Clear Session** or opening
-another session, or when the saved morph differs, **Add** rebuilds it). If the
-morph is still building, the movie is rebuilt once it is complete. A morph
-built this way does not start playing in the Object panel.
+another session, or when the saved morph differs, **Add** rebuilds it). The
+clip fills in while the morph it started builds, and the movie is rebuilt once
+it is complete. A morph built this way does not start playing in the Object
+panel.
 
 - **Sweep, Loop and Lockstep all play a morph.** Lockstep moves the global
   frame, so it does not move an object pinned to its own state. Playing or
