@@ -5,7 +5,9 @@ the scene. The render used to write through a pointer into that freed scene
 (MovieSceneStore -> SceneDeferImage(..., &scene.thumbnail)), so a later
 refresh aborted with "pointer being freed was not allocated" in the
 SceneDeferImage lambda -- or silently corrupted the heap, depending on what
-had reused the memory. It now finds the scene by name when it runs.
+had reused the memory. It now finds the scene by name when it runs, and
+lands only if that scene still holds the render's ticket: a scene renamed
+onto the name, loaded under it, or stored again since keeps its own.
 
 Only the Guard Malloc subtests catch that bug: a write into a freed scene
 usually lands harmlessly in a normal heap, so the in-process subtests passed
@@ -105,6 +107,50 @@ class TestDeferredSceneThumbnail(testing.PyMOLTestCase):
         cmd.refresh()
         self.assertFalse(_cmd.wait_deferred(cmd._COb))
         self.assertNotEqual(len(cmd.get_scene_thumbnail('A')), UNRENDERED)
+
+    def drawWithImage(self):
+        """Run the queued renders against a real scene image. A headless
+        refresh makes none, so every render it runs is the same 0 bytes: ray
+        one, and drain with _cmd._draw as a host's frame does (`refresh`
+        drops the image before draining)."""
+        cmd.ray(48, 32)
+        _cmd._draw(cmd._COb)
+        self.assertFalse(_cmd.wait_deferred(cmd._COb))
+
+    def testRenderForADeletedSceneSkipsTheSceneRenamedToItsName(self):
+        # The render queued for A finds B under A's name: it must not
+        # replace B's thumbnail.
+        cmd.color('green')
+        cmd.scene('B', 'store')
+        self.drawWithImage()
+        thumbnail = cmd.get_scene_thumbnail('B')
+        self.assertTrue(thumbnail, 'B should hold a real render')
+        cmd.color('red')                # what A's render would show
+        self.storePending('A')
+        cmd.scene('A', 'delete')
+        cmd.scene('B', 'rename', new_key='A')
+        self.drawWithImage()
+        self.assertEqual(cmd.get_scene_thumbnail('A'), thumbnail)
+
+    def testRenderForAReplacedSceneSkipsTheLoadedOne(self):
+        # Sessions carry no thumbnails, and the loaded A is another scene:
+        # the render queued for the old A must not land in it.
+        self.storePending('A')
+        with testing.mktemp('.pse') as filename:
+            cmd.save(filename)
+            cmd.load(filename)
+        self.assertTrue(_cmd.wait_deferred(cmd._COb))
+        self.assertEqual(len(cmd.get_scene_thumbnail('A')), 0)
+        self.drawWithImage()
+        self.assertEqual(len(cmd.get_scene_thumbnail('A')), 0)
+
+    def testRestoredSceneTakesItsLatestRender(self):
+        # storing A again supersedes its pending render, but one still lands
+        self.storePending('A')
+        cmd.color('red')
+        self.storePending('A')
+        self.drawWithImage()
+        self.assertNotIn(len(cmd.get_scene_thumbnail('A')), (0, UNRENDERED))
 
     @testing.foreach(*FREES)
     def testSceneFreedBeforeTheRender(self, how):
