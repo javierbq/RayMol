@@ -42,15 +42,19 @@ A 20-model NMR ensemble at 15 frames per model gives a 300-frame morph, a
 1. In the **Objects** tab, expand the multi-state object. Under its **State**
    slider, on the **Overlay all** line, are the **Fit**, **Split**, **Sync**
    and **Morph…** buttons.
+
+   ![Objects tab with the 2kpo NMR ensemble expanded: State slider at 1/20, a Play button at 15 fps, and the Overlay all line ending in the Fit, Split, Sync and Morph… buttons; the viewport shows 2kpo as a rainbow cartoon](../../../assets/docs/morph-state-row.png)
 2. Select **Morph…**. The Morph sheet opens, titled with the object's name
    (**Morph 2kpo**) and its model count.
 3. Adjust the settings and select **Morph**.
+
+![Morph 2kpo sheet, 20 models: Frames per model 15, Loop back to model 1 checked, the Rigid segments / Linear switch on Rigid segments, Clean-up cycles 3 (sculpting, backbone fixed), Rate Linear, and the orange summary 20 models → 300 frames · 10 s at 30 fps · ≈ 867 MB · creates 2kpo_morph, hides 2kpo · ≈ 28 s to build, above Cancel and Morph buttons](../../../assets/docs/morph-sheet.png)
 
 | Setting | Range | Default | What it does |
 | :--- | :--- | :--- | :--- |
 | **Frames per model** | 2–120 | 15 | Frames in each leg, from one model to the next. |
 | **Loop back to model 1** | On / off | On | Adds the leg from the last model back to the first. |
-| **Method** | Rigid segments / Linear | Rigid segments | How the frames between two models are computed (see above). |
+| Method (the unlabelled **Rigid segments / Linear** switch) | Rigid segments / Linear | Rigid segments | How the frames between two models are computed (see above). |
 | **Clean-up cycles** | 0–10 | 3 | Sculpting on every intermediate frame, backbone fixed; each cycle is 10 sculpting iterations. 0 skips the clean-up. |
 | **Rate** | Linear, Sinusoidal, Ramp up, Ramp down | Linear | The pace inside each leg: constant (Linear), easing out of and into every model (Sinusoidal), starting slowly (Ramp up), or ending slowly (Ramp down). |
 
@@ -59,8 +63,9 @@ for example `20 models → 300 frames · 10 s at 30 fps · ≈ 867 MB · creates
 2kpo_morph, hides 2kpo · ≈ 28 s to build`. The seconds use the movie frame
 rate, which is also the speed the finished morph plays at. The build time is a
 rough hint, shown when it is over 10 s; clean-up cycles add most of it. The
-line turns orange above the memory warning level, and **Morph** is disabled
-above the limit (see [Memory and size](#memory-and-size)). If the object shows
+line turns orange above the memory warning level (as in these screenshots:
+867 MB is above the warning level of the Mac they were taken on), and
+**Morph** is disabled above the limit (see [Memory and size](#memory-and-size)). If the object shows
 a surface or mesh, a second line reminds you that they are not carried to the
 morph.
 
@@ -70,11 +75,13 @@ The sheet remembers the settings you last morphed with.
 
 The morph builds in the background, so you can keep rotating, restyling and
 working with other objects. A card in the progress tray reads **Morphing
-2kpo_morph**, `leg 6 of 20 · 30%`, with a **Cancel** button. The source stays
+2kpo_morph**, `leg 3 of 20 · 15%`, with a **Cancel** button. The source stays
 on screen meanwhile; the `2kpo_morph` row appears at once, switched off, and
 its frame count rises as the legs land. **Morph…** is hidden on the source and
 on the morph until the build finishes or is cancelled, so cancel the build to
 change its settings.
+
+![A morph building: the progress tray at the bottom of the Objects tab reads 1 running, Morphing 2kpo_morph, leg 3 of 20 · 15%, with a Cancel button; the 2kpo row has no Morph… button, and the 2kpo_morph row below it is switched off, with the loop icon and a frame count of 53](../../../assets/docs/morph-building.png)
 
 **Cancel** deletes the partial morph and shows the source again; the card then
 reads **Morph cancelled: 2kpo_morph** until you select **Dismiss**. A build that
@@ -109,6 +116,8 @@ stops it and clears the card.
 - From here it is an ordinary multi-state object: the State slider, Play,
   Sweep, Loop and Lockstep clips, movie export and saved sessions treat it
   like any other.
+
+![The finished morph playing: 2kpo is switched off and collapsed; 2kpo_morph is shown and expanded, with the loop icon and 300 frames, its State slider at 31/300, the Name line reading model 3, a Pause button at 30 fps, and the Fit, Split, Sync and Morph… buttons](../../../assets/docs/morph-done.png)
 
 ### Rebuild or delete a morph
 
@@ -159,6 +168,8 @@ models:
    cycles and rate: the Morph sheet's controls, except Loop, which is always on
    here.
 4. Select **Add**.
+
+![Play models sheet for 2kpo, 20 models: Sweep, Loop and Lockstep, Start 1, End 20 and 10 s, Smooth transitions (morph) checked, the orange line Builds 2kpo_morph (20 models × 15 frames) and plays that instead · 10 s at 30 fps · ≈ 867 MB, a Morph settings… disclosure, and Cancel and Add buttons](../../../assets/docs/morph-play-models.png)
 
 **Add** starts building `2kpo_morph` in the background and appends a clip
 named `2kpo_morph`, marked with the loop icon. It reuses the morph instead when
