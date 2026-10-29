@@ -445,6 +445,22 @@ class PlayerPinSessionTest(testing.PyMOLTestCase):
         self.assertIsNone(self.pin('renamed'))
         self.assertEqual(cmd.get_setting_int('state', 'renamed'), 7)
 
+    def test_a_tick_after_a_prefix_rename_does_not_keep_the_pin(self):
+        # `src` is an unambiguous prefix of `src2`, so a tick sent between the
+        # rename and the poll that stops the player pins the renamed object
+        # again: a save meanwhile leaves it out, and stopping the player drops it.
+        self.ensemble('src')
+        appkit_movie.note_object_playing('src', True)
+        cmd.set_name('src', 'src2')
+        cmd.set('state', 6, 'src')                    # the timer's next tick
+        self.assertEqual(self.pin('src2'), 6)
+        saved = self.pse()
+        cmd.save(saved)
+        appkit_movie.note_object_playing('src', False)   # the poll's prune
+        self.assertIsNone(self.pin('src2'))
+        self.reopen(saved)
+        self.assertIsNone(self.pin('src2'))
+
     def test_renaming_to_a_name_the_core_rewrites_lets_it_go(self):
         # set_name legalises the new name ('my morph' -> 'my_morph').
         self.ensemble('src_morph')

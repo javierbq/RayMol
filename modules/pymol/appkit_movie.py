@@ -68,8 +68,9 @@ def _ease(linear):
 
 def _multistate_objects(names=None):
     """{objname: nstates} for objects with >1 coordinate state. `names` (list)
-    restricts to those objects, a group standing for the molecules in it; None
-    = every object in the session."""
+    restricts to those objects, a group standing for every object inside it
+    (a CGO or a map too, not only molecules: a store through the group used to
+    reach them all); None = every molecule in the session."""
     out = {}
     try:
         objs = names if names else cmd.get_object_list()
@@ -79,7 +80,8 @@ def _multistate_objects(names=None):
     for o in (objs or []):
         try:
             if names and cmd.get_type(o) == 'object:group':
-                expanded += cmd.get_object_list('(%s)' % o) or []
+                expanded += [m for m in sorted(_group_members([o], cmd))
+                             if cmd.get_type(m) != 'object:group']
                 continue
         except Exception:
             pass
@@ -172,12 +174,41 @@ class _no_auto_store(object):
         return False
 
 
+def _share_scene_steps(scene_keys, state_clips, pins, total):
+    """Stopgap (#920): a model track keys frames the scenes don't (a clip's
+    ends and Loop midpoint, a hold, a camera item's pin), and such a key inside
+    a scene transition holds the earlier scene's position (_store_state_track).
+    Key every object the scenes really move (two different positions) at all of
+    those frames, with that same step, in `scene_keys` ({obj: {frame: TTT}}),
+    so objects moved together, an ensemble and its ligand, keep together.
+    Keeping the interpolated move exactly needs the core to interpolate models
+    apart from positions (#920)."""
+    import bisect
+    total = max(int(total), 2)
+    frames = {1, total}
+    for clip in state_clips:
+        s = int(clip['frame'])
+        e = int(clip.get('end', total))
+        frames.update((s - 1, s, (s + e) // 2, e))
+    for ps in pins.values():
+        frames.update(int(f) for f, _ in ps)
+    for keys in scene_keys.values():
+        if len({tuple(t) if t else None for t in keys.values()}) < 2:
+            continue
+        ks = sorted(keys)
+        for f in frames:
+            if 1 <= f <= total and f not in keys:
+                i = bisect.bisect(ks, f)
+                keys[f] = keys[ks[i - 1] if i else ks[0]]
+
+
 def _hold_scene_positions(obj, total, scene_keys):
-    """Stopgap (#920): hold a one-state object the scenes move on the first
-    scene's position before its first scene key and the last scene's after its
-    last, as _store_state_track does for the ensembles, instead of gliding
-    round the loop seam; a ligand moved with its ensemble would otherwise come
-    apart from it there. The camera still wraps."""
+    """Stopgap (#920): hold an object the scenes move but no model track keys
+    (a one-state object, say) on the first scene's position before its first
+    scene key and the last scene's after its last, as _store_state_track does
+    for the ensembles, instead of gliding round the loop seam, and key it at
+    the frames _share_scene_steps added like them; a ligand moved with its
+    ensemble would otherwise come apart from it. The camera still wraps."""
     try:
         total = max(int(total), 2)
         keys = {int(f): t for f, t in (scene_keys or {}).items() if 1 <= int(f) <= total}
@@ -185,11 +216,11 @@ def _hold_scene_positions(obj, total, scene_keys):
             return
         from pymol.raymol_scenes import _IDENTITY_TTT as identity
         ks = sorted(keys)
+        keys.setdefault(1, keys[ks[0]])
+        keys.setdefault(total, keys[ks[-1]])
         with _no_auto_store():
-            for f, k in ((1, ks[0]), (total, ks[-1])):
-                if f in keys:
-                    continue
-                t = keys[k]
+            for f in sorted(keys):
+                t = keys[f]
                 cmd.set_object_ttt(obj, list(t) if t else list(identity))
                 cmd.mview('store', object=obj, first=f, freeze=1)
         cmd.mview('reinterpolate', object=obj, wrap=0)
@@ -727,6 +758,7 @@ def _camera_ids(items):
 # `set state`, a Play stopped on a frame) and stays.
 
 _playing = set()
+_renamed = {}   # old player name -> the name set_name gave its object, until the app stops it
 
 
 def note_object_playing(name, on=True):
@@ -735,11 +767,27 @@ def note_object_playing(name, on=True):
         _playing.add(str(name))
     else:
         _playing.discard(str(name))
+        _release_renamed(str(name))
 
 
 def clear_playing_objects():
     """The app stopped every Objects-panel player."""
     _playing.clear()
+    for old in list(_renamed):
+        _release_renamed(old)
+
+
+def _release_renamed(old, _self=cmd):
+    """The app stopped the player of `old`, an object renamed while it played:
+    its ticks (`set state, k, old`) reached the renamed object until then, since
+    PyMOL takes `old` as an unambiguous prefix of the new name, so drop the pin
+    they left there, or it would stay live and in every later save."""
+    new = _renamed.pop(old, None)
+    if new and new in (_self.get_names('all') or []):
+        try:
+            _self.unset('state', new, quiet=1)
+        except Exception:
+            pass
 
 
 def playing_objects():
@@ -753,13 +801,16 @@ def players_go_on():
     studio's get_session / set_session): it is the same session, and the app
     keeps playing through it, so the snapshot keeps the players' pins and the
     restore keeps the registry."""
-    kept = set(_playing)
+    kept, renamed = set(_playing), dict(_renamed)
     _playing.clear()
+    _renamed.clear()
     try:
         yield
     finally:
         _playing.clear()
         _playing.update(kept)
+        _renamed.clear()
+        _renamed.update(renamed)
 
 
 def object_renamed(old, new, _self=cmd):
@@ -776,6 +827,10 @@ def object_renamed(old, new, _self=cmd):
     if new not in (_self.get_names('all') or []):
         new = _self.get_legal_name(new)
     _self.unset('state', new, quiet=1)
+    # Its ticks may still pin it (a prefix match) until the app stops the
+    # player: release it again then (_release_renamed), and leave it out of
+    # saves meanwhile (_pinned_by_players).
+    _renamed[str(old)] = new
 
 
 def _pinned_by_players(entries, _self):
@@ -797,7 +852,7 @@ def _pinned_by_players(entries, _self):
         seen = set()
         node = name
         while node and node not in seen:
-            if node in _playing:
+            if node in _playing or node in _renamed.values():
                 names.add(name)
                 break
             seen.add(node)
@@ -1050,6 +1105,9 @@ def rebuild(spec_json):
         except Exception as e:
             print('MOVIE_ERR:' + str(e))
 
+        _share_scene_steps(scene_keys, state_clips, pins, total)
+        tracked = set()   # objects given a model track below
+
         # State sweeps — per-object tracks (independent; no clamping between objects).
         if state_clips:
             swept = set()
@@ -1079,10 +1137,12 @@ def rebuild(spec_json):
             # One track per object across all its clips, held between them.
             for obj, clips in sweeps.items():
                 _emit_state_clips(obj, clips, total, scene_keys.get(obj))
+                tracked.add(obj)
             # Objects no clip plays keep the models their camera items hold.
             for obj in _multistate_objects():
                 if obj in pins and obj not in swept:
                     _emit_state_hold(obj, pins[obj], total, scene_keys.get(obj))
+                    tracked.add(obj)
         else:
             # A camera item holds the models it was captured on (#579): a Roll
             # moves the camera, not the ensemble. Objects no item pins (loaded
@@ -1095,12 +1155,12 @@ def rebuild(spec_json):
                 else:
                     _store_state_track(obj, {1: 1, total: n}, total,
                                        scene_keys.get(obj))
+                tracked.add(obj)
 
-        # Stopgap (#920): one-state objects the scenes move hold like the
-        # ensembles' tracks above.
-        multi = _multistate_objects()
+        # Stopgap (#920): objects the scenes move but no model track keys hold
+        # like the tracks above.
         for obj, keys in scene_keys.items():
-            if obj not in multi:
+            if obj not in tracked:
                 _hold_scene_positions(obj, total, keys)
 
         cmd.rewind()

@@ -220,6 +220,21 @@ class TestMultistateTimeline(testing.PyMOLTestCase):
         self.assertEqual({self._ostate('nmr', f) for f in range(1, 121, 8)}, {1})
         self.assertEqual(self._ostate('nmr', 241), 10)
 
+    def test_states_clip_of_a_group_plays_a_multi_state_cgo_in_it(self):
+        cmd.reinitialize()
+        from pymol.cgo import SPHERE
+        self._ensemble('nmr', 10)
+        for s in (1, 2, 3, 4):
+            cmd.load_cgo([SPHERE, float(s), 0., 0., 1.], 'cg', state=s)
+        cmd.group('g', 'nmr cg')
+        spec = [{'frame': 1, 'cam': 'A', 'power': 1.0, 'linear': 1},
+                {'frame': 41, 'end': 121, 'states': 1, 'objects': ['g'],
+                 'mode': 'sweep', 'first': 1, 'last': 0}]
+        appkit_movie.rebuild(json.dumps(spec))
+        self.assertEqual(self._ostate('cg', 20), 1)      # holds before the clip
+        self.assertEqual(self._ostate('cg', 121), 4)
+        self.assertEqual(self._ostate('nmr', 121), 10)
+
     def test_ensemble_and_ligand_moved_together_stay_together(self):
         # A one-state ligand moved with its ensemble between two scenes that come
         # after a camera item: the ensemble's track holds, so the ligand must
@@ -238,6 +253,15 @@ class TestMultistateTimeline(testing.PyMOLTestCase):
             self.assertAlmostEqual(self._xshift('rec', f), self._xshift('lig', f),
                                    delta=0.5, msg='frame %d' % f)
         self.assertEqual(cmd.get_setting_int('movie_auto_store'), -1)  # restored
+        # A model key inside the A -> B move (a clip of rec from frame 91): the
+        # ligand steps with the receptor, so they still keep together.
+        spec.append({'frame': 91, 'end': 181, 'states': 1, 'objects': ['rec'],
+                     'mode': 'sweep', 'first': 1, 'last': 0})
+        appkit_movie.rebuild(json.dumps(spec))
+        for f in (1, 61, 76, 91, 106, 121, 151, 181):
+            self.assertAlmostEqual(self._xshift('rec', f), self._xshift('lig', f),
+                                   delta=0.5, msg='frame %d' % f)
+        self.assertEqual(self._ostate('rec', 181), 10)
 
     def test_reset_ensemble_restores_all_models(self):
         cmd.reinitialize()
