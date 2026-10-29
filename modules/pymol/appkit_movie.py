@@ -68,13 +68,23 @@ def _ease(linear):
 
 def _multistate_objects(names=None):
     """{objname: nstates} for objects with >1 coordinate state. `names` (list)
-    restricts to those objects; None = every object in the session."""
+    restricts to those objects, a group standing for the molecules in it; None
+    = every object in the session."""
     out = {}
     try:
         objs = names if names else cmd.get_object_list()
     except Exception:
         objs = []
+    expanded = []
     for o in (objs or []):
+        try:
+            if names and cmd.get_type(o) == 'object:group':
+                expanded += cmd.get_object_list('(%s)' % o) or []
+                continue
+        except Exception:
+            pass
+        expanded.append(o)
+    for o in expanded:
         try:
             ns = int(cmd.count_states(o))
             if ns > 1:
@@ -84,27 +94,141 @@ def _multistate_objects(names=None):
     return out
 
 
-def _emit_state_sweep(obj, lo, hi, start, end, mode='sweep'):
-    """Store per-object STATE keyframes so `obj` sweeps models lo..hi across movie
-    frames [start,end], then interpolate that object's own track. Both endpoints
-    are flagged (state=) so View.cpp interpolates the state channel; the per-object
-    ViewElem sets the object's own `state` at render (independent of the mset and
-    of other objects). mode: 'sweep' (lo->hi) or 'loop' (lo->hi->lo)."""
+def _store_state_track(obj, pts, total, scene_keys=None):
+    """Store `obj`'s own STATE track: the model keyframes `pts` ({frame: model}),
+    held from frame 1 and to frame `total`, linear in between as the core
+    interpolates them. The per-object ViewElem sets the object's own `state` at
+    render, independent of the mset and of other objects.
+
+    Frames 1 and `total` are always keyed, so interpolating has no loop seam to
+    fill: with movie_loop on it wraps from the last key back round to the
+    first, which ran the models backwards through a Roll placed before a
+    Play-models clip. Every keyframe of an object's track carries both a model
+    and a Move-mode matrix (`mview store, object=` writes the object's current
+    TTT, and without state= it flags the object's own `state` setting). So the
+    frames the scenes keyed for it (`scene_keys`, {frame: that scene's TTT, None
+    for unmoved}) are stored again with the model the track has there, and
+    every keyframe gets the TTT of the scene key at or before it (the first
+    one, before any): a hold keeps the scenes' positions, and a scene key no
+    longer carries a stale model in between the track's keys. A key strictly
+    between two scenes that move the object holds the earlier scene's position
+    there, so that move happens after the key rather than across the whole
+    transition.
+
+    movie_auto_store is off while the keys are stored: with a movie defined,
+    set_object_ttt would also store a keyframe, with no model, at the current
+    frame (the last item rebuild visited), breaking the model ramp across it,
+    and reinterpolate every track each time. The track is then reinterpolated
+    whole: a plain interpolate refills only never-filled frames, and the scene
+    pass has filled them all."""
+    import bisect
     try:
-        s = int(start); e = int(end); lo = int(lo); hi = int(hi)
-        if e <= s:
-            e = s + 1
-        if hi < lo:
-            lo, hi = hi, lo
-        if mode == 'loop':
-            mid = (s + e) // 2
-            cmd.mview('store', object=obj, first=s,   state=lo)
-            cmd.mview('store', object=obj, first=mid, state=hi)
-            cmd.mview('store', object=obj, first=e,   state=lo)
+        total = max(int(total), 2)
+        pts = {int(f): int(m) for f, m in pts.items()}
+        if not pts:
+            return
+        fs = sorted(pts)
+        pts.setdefault(1, pts[fs[0]])
+        pts.setdefault(total, pts[fs[-1]])
+        fs = sorted(pts)
+        keys = {int(f): t for f, t in (scene_keys or {}).items() if 1 <= int(f) <= total}
+        ks = sorted(keys)
+        identity = None
+        if ks:
+            from pymol.raymol_scenes import _IDENTITY_TTT as identity
+
+        def model_at(f):
+            if f in pts:
+                return pts[f]
+            i = bisect.bisect(fs, f)
+            a, b = fs[i - 1], fs[i]
+            return max(1, int(round(pts[a] + (pts[b] - pts[a]) * (f - a) / float(b - a))))
+
+        with _no_auto_store():
+            for f in sorted(set(fs) | set(ks)):
+                if ks:
+                    i = bisect.bisect(ks, f)
+                    ttt = keys[ks[i - 1] if i else ks[0]]
+                    cmd.set_object_ttt(obj, list(ttt) if ttt else list(identity))
+                cmd.mview('store', object=obj, first=f, state=model_at(f), freeze=1)
+        cmd.mview('reinterpolate', object=obj, wrap=0)
+    except Exception as ex:
+        print('MOVIE_ERR:' + str(ex))
+
+
+class _no_auto_store(object):
+    """movie_auto_store off for the duration, restored exactly: its default is
+    -1, which `set` would turn into 1, so the default is put back by unset."""
+
+    def __enter__(self):
+        self.was = cmd.get_setting_int('movie_auto_store')
+        cmd.set('movie_auto_store', 0)
+
+    def __exit__(self, *exc):
+        if self.was == -1:
+            cmd.unset('movie_auto_store')
         else:
-            cmd.mview('store', object=obj, first=s, state=lo)
-            cmd.mview('store', object=obj, first=e, state=hi)
-        cmd.mview('interpolate', object=obj)
+            cmd.set('movie_auto_store', self.was)
+        return False
+
+
+def _hold_scene_positions(obj, total, scene_keys):
+    """Stopgap (#920): hold a one-state object the scenes move on the first
+    scene's position before its first scene key and the last scene's after its
+    last, as _store_state_track does for the ensembles, instead of gliding
+    round the loop seam; a ligand moved with its ensemble would otherwise come
+    apart from it there. The camera still wraps."""
+    try:
+        total = max(int(total), 2)
+        keys = {int(f): t for f, t in (scene_keys or {}).items() if 1 <= int(f) <= total}
+        if not keys:
+            return
+        from pymol.raymol_scenes import _IDENTITY_TTT as identity
+        ks = sorted(keys)
+        with _no_auto_store():
+            for f, k in ((1, ks[0]), (total, ks[-1])):
+                if f in keys:
+                    continue
+                t = keys[k]
+                cmd.set_object_ttt(obj, list(t) if t else list(identity))
+                cmd.mview('store', object=obj, first=f, freeze=1)
+        cmd.mview('reinterpolate', object=obj, wrap=0)
+    except Exception as ex:
+        print('MOVIE_ERR:' + str(ex))
+
+
+def _emit_state_clips(obj, clips, total, scene_keys=None):
+    """`obj`'s STATE track for its Sweep and Loop clips, (start, end, lo, hi,
+    mode): models lo..hi across movie frames [start, end] ('loop' going back to
+    lo by the end), and a model held on every other frame: the first clip's
+    first model before it, and a clip's last model until the next clip starts
+    or the movie ends. Keys at the clips' own ends alone left the frames outside
+    them to the core: unkeyed frames keep whatever model was last applied, and
+    the loop wrap ran them backwards (see _store_state_track)."""
+    try:
+        pts = {}
+        first_lo = last_state = last_end = None
+        for s, e, lo, hi, mode in sorted(clips, key=lambda c: int(c[0])):
+            s = int(s); e = int(e); lo = int(lo); hi = int(hi)
+            if e <= s:
+                e = s + 1
+            if hi < lo:
+                lo, hi = hi, lo
+            if first_lo is None:
+                first_lo = lo
+            elif s - 1 > last_end:
+                pts[s - 1] = last_state      # hold until this clip starts
+            pts[s] = lo
+            if mode == 'loop':
+                pts[(s + e) // 2] = hi
+                pts[e] = last_state = lo
+            else:
+                pts[e] = last_state = hi
+            last_end = e
+        if first_lo is None:
+            return
+        pts.setdefault(1, first_lo)
+        _store_state_track(obj, pts, total, scene_keys)
     except Exception as ex:
         print('MOVIE_ERR:' + str(ex))
 
@@ -136,7 +260,7 @@ def _current_states():
     return out
 
 
-def _emit_state_hold(obj, pins, total):
+def _emit_state_hold(obj, pins, total, scene_keys=None):
     """Hold `obj` on the models it was pinned to (#579): per-object STATE
     keyframes at each (frame, state) in `pins`, extended to frames 1 and `total`
     so the object never falls back to the global mset (model 1) before the first
@@ -146,15 +270,7 @@ def _emit_state_hold(obj, pins, total):
         pts = {}
         for f, s in pins:
             pts[int(f)] = int(s)
-        if not pts:
-            return
-        fs = sorted(pts)
-        total = max(int(total), 2)
-        pts.setdefault(1, pts[fs[0]])
-        pts.setdefault(total, pts[fs[-1]])
-        for f in sorted(pts):
-            cmd.mview('store', object=obj, first=f, state=pts[f])
-        cmd.mview('interpolate', object=obj)
+        _store_state_track(obj, pts, total, scene_keys)
     except Exception as ex:
         print('MOVIE_ERR:' + str(ex))
 
@@ -863,6 +979,7 @@ def rebuild(spec_json):
         state_clips = [it for it in spec if it.get('states')]
         cam_scene = [it for it in spec if not it.get('states')]
         motion = []   # objects that received per-scene TTT keyframes (#204)
+        scene_keys = {}  # objname -> {frame: that scene's TTT}, for the state tracks
         scene_kfs = []   # (frame, scene_name, power) for the setting animation
         pins = {}        # objname -> [(frame, state)] the items hold it on (#579)
 
@@ -889,7 +1006,11 @@ def rebuild(spec_json):
                 # #204: author per-object Move-mode TTT keyframes for this scene.
                 try:
                     from pymol import raymol_scenes as _rs
-                    motion += _rs.emit_object_motion(name, f)
+                    keyed = _rs.emit_object_motion(name, f)
+                    motion += keyed
+                    ttts = _rs._scene_ttt.get(name) or {}
+                    for o in keyed:
+                        scene_keys.setdefault(o, {})[f] = ttts.get(o)
                 except Exception:
                     pass
                 scene_kfs.append((f, name, power))
@@ -932,6 +1053,7 @@ def rebuild(spec_json):
         # State sweeps — per-object tracks (independent; no clamping between objects).
         if state_clips:
             swept = set()
+            sweeps = {}   # objname -> [(start, end, lo, hi, mode)], all its clips
             for clip in state_clips:
                 start = int(clip['frame']); end = int(clip.get('end', total))
                 mode = str(clip.get('mode', 'sweep'))
@@ -953,11 +1075,14 @@ def rebuild(spec_json):
                     for obj, n in ms.items():
                         lo = max(1, min(req_first, n))
                         hi = n if req_last <= 0 else max(1, min(req_last, n))
-                        _emit_state_sweep(obj, lo, hi, start, end, mode)
+                        sweeps.setdefault(obj, []).append((start, end, lo, hi, mode))
+            # One track per object across all its clips, held between them.
+            for obj, clips in sweeps.items():
+                _emit_state_clips(obj, clips, total, scene_keys.get(obj))
             # Objects no clip plays keep the models their camera items hold.
             for obj in _multistate_objects():
                 if obj in pins and obj not in swept:
-                    _emit_state_hold(obj, pins[obj], total)
+                    _emit_state_hold(obj, pins[obj], total, scene_keys.get(obj))
         else:
             # A camera item holds the models it was captured on (#579): a Roll
             # moves the camera, not the ensemble. Objects no item pins (loaded
@@ -966,9 +1091,17 @@ def rebuild(spec_json):
             # they never freeze on model 1.
             for obj, n in _multistate_objects().items():
                 if obj in pins:
-                    _emit_state_hold(obj, pins[obj], total)
+                    _emit_state_hold(obj, pins[obj], total, scene_keys.get(obj))
                 else:
-                    _emit_state_sweep(obj, 1, n, 1, total, 'sweep')
+                    _store_state_track(obj, {1: 1, total: n}, total,
+                                       scene_keys.get(obj))
+
+        # Stopgap (#920): one-state objects the scenes move hold like the
+        # ensembles' tracks above.
+        multi = _multistate_objects()
+        for obj, keys in scene_keys.items():
+            if obj not in multi:
+                _hold_scene_positions(obj, total, keys)
 
         cmd.rewind()
     except Exception as e:

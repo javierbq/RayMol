@@ -182,8 +182,12 @@ clip fills in while the morph it started builds, and the movie is rebuilt once
 it is complete. A morph built this way does not start playing in the Object
 panel.
 
-- **Sweep, Loop and Lockstep all play a morph.** Lockstep moves the global
-  frame, so it does not move an object pinned to its own state. Playing or
+- **Sweep, Loop and Lockstep all play a morph.** With Sweep or Loop the morph
+  plays only during its clips: before the first one (through a Roll you placed
+  first, say) it holds that clip's first frame, and after a clip the frame it
+  ends on, until its next Sweep or Loop clip. Lockstep
+  moves the global frame, so it does not move an object pinned to its own
+  state. Playing or
   scrubbing a morph in the Objects tab pins it, and so does the auto-play
   after every build or rebuild from the Objects tab. Entering the Movie tab
   while it is still playing releases it; a morph you stopped or scrubbed

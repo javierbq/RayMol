@@ -178,6 +178,12 @@ a speed multiplier):
 - **Lockstep**: Moves all objects through the same model numbers together;
   objects with fewer states hold their last model.
 
+With Sweep or Loop, the clip's objects hold still outside it: before their
+first clip on its first model, and after a clip on the model it ends on, until
+their next Sweep or Loop clip (a Lockstep clip does not move them). Camera
+moves and scene transitions outside the clip, such as a Roll placed before it,
+do not play them.
+
 To make the models glide instead of flip, turn on **Smooth transitions
 (morph)** in the Play models sheet, or build a morph from the Object panel;
 see [Morphing](/RayMol/guides/morph/).
