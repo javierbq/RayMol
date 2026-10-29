@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <map>
+#include <atomic>
 #include <set>
 #include <sstream>
 #include <string>
@@ -32,6 +33,11 @@
 #include "SceneLights.h"
 
 void SceneSetNames(PyMOLGlobals * G, const std::vector<std::string> &list);
+
+// The last thumbnail render ticket handed out (MovieScene::thumbnail_ticket).
+// Never reset: reinitialize recreates G->scenes, and a render queued before it
+// must not match a scene stored after it.
+static std::atomic<std::uint64_t> s_thumbnail_tickets{0};
 
 /**
  * Get read-only pointer to G->scenes->order
@@ -229,7 +235,25 @@ pymol::Result<> MovieSceneStore(PyMOLGlobals * G, const char * name,
     SceneUpdate(G, false); // Make sure scene is on screen
     Extent2D extent{static_cast<std::uint32_t>(thumbnailImage.getWidth()),
         static_cast<std::uint32_t>(thumbnailImage.getHeight())};
-    SceneDeferImage(G, extent, nullptr, 0, -1, 0, 1, &thumbnailImage);
+    // Without a valid context the render waits for the next draw (headless:
+    // the next refresh). By then reinitialize, a session load or scene
+    // delete/clear/rename may have freed this scene, or put another one under
+    // its name, so the render finds the scene by name and ticket when it runs
+    // instead of keeping a pointer into the dict. Set the ticket first: with a
+    // valid context the render runs before SceneDeferImageTo returns.
+    const std::uint64_t ticket = ++s_thumbnail_tickets;
+    scene.thumbnail_ticket = ticket;
+    SceneDeferImageTo(G, extent, 0, -1, 0, 1,
+        [G, stack, key, ticket](pymol::Image&& image) {
+          if (!G->scenes)
+            return;
+          auto& dict = G->scenes[stack].dict;
+          auto it = dict.find(key);
+          // dropped if the scene was deleted, replaced by a load or a
+          // reinitialize, renamed onto this name, or stored again since
+          if (it != dict.end() && it->second.thumbnail_ticket == ticket)
+            it->second.thumbnail.setVecData(image.getVecData());
+        });
     SceneInvalidate(G); // Used to refresh the screen
   }
 
@@ -309,7 +333,15 @@ pymol::Result<MovieScene> MovieSceneStoreNoStore(PyMOLGlobals* G,
     SceneUpdate(G, false); // Make sure scene is on screen
     Extent2D extent{static_cast<std::uint32_t>(thumbnailImage.getWidth()),
         static_cast<std::uint32_t>(thumbnailImage.getHeight())};
-    SceneDeferImage(G, extent, nullptr, 0, -1, 0, 1, &thumbnailImage);
+    // `scene` is a local returned by value, so a deferred render would have
+    // nowhere to land. With a valid context SceneDeferImageTo renders before
+    // it returns, so only then may the receiver write into the local.
+    if (G->ValidContext) {
+      SceneDeferImageTo(
+          G, extent, 0, -1, 0, 1, [&thumbnailImage](pymol::Image&& image) {
+            thumbnailImage.setVecData(image.getVecData());
+          });
+    }
     SceneInvalidate(G); // Used to refresh the screen
   }
 

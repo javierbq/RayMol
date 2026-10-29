@@ -490,6 +490,9 @@ def _build(objs):
         known = set(cmd.get_names('all') or [])
     except Exception:
         known = None
+    # Objects the selector accepts, recorded by the rep loop so the objmeta pass
+    # below can count atoms without repeating the #219 guard.
+    atomic = set()
     for o in objs:
         if known is not None and o not in known:
             # Stale name from the panel: object deleted, or reinitialize ran. Emitting
@@ -505,6 +508,7 @@ def _build(objs):
         if not takes_atom_selection(o):
             detail[o] = reps
             continue
+        atomic.add(o)
         # Effective per-atom transparency range per setting, computed once per
         # object; attached to the rep whose transparency setting is overridden so
         # the expanded card can show "per-atom: min–max" and a Clear action.
@@ -569,6 +573,14 @@ def _build(objs):
             continue
         entry = {'state': int(round(_num('state', o))),
                  'all': int(round(_num('all_states', o)))}
+        # Atom count for the Morph sheet's memory estimate (#morph). Only for
+        # objects the selector accepts (#219); absent otherwise, and the sheet
+        # then leaves the estimate out rather than showing 0.
+        if o in atomic:
+            try:
+                entry['natoms'] = int(cmd.count_atoms('?' + o))
+            except Exception:
+                pass
         # Object-wide peel row (#498). It lives on the object header rather
         # than in a rep panel because the setting is object-scoped, and only
         # for objects the scene loop can peel.
@@ -908,6 +920,87 @@ def _object_peel(obj):
         return 0
 
 
+#: The morph frame costs' cache (the payload's morph_bytes_per_frame and
+#: morph_atoms_per_frame), {name: (signature, (atoms, bytes), monotonic time)}.
+_BYTES_PER_FRAME = {}
+#: Seconds a cached figure is trusted while its signature holds.
+_BYTES_PER_FRAME_TTL = 2.0
+#: Seconds of one poll that figures past their TTL may be refreshed in.
+_BYTES_PER_FRAME_REFRESH_S = 0.002
+
+
+def _morph_frame_costs(objs, nstate):
+    """{name: morph_jobs.frame_cost(name)} for the multi-state molecules: the
+    atoms one morph frame holds (state 1: one model's atoms, also for a
+    discrete object) and its bytes (bytes_per_frame), from one pass.
+
+    Only those: nothing else can be morphed, and counting atoms of a CGO or a
+    map would log a Selector-Error per tick (#219); the app also reads the
+    keys as the morphable molecules (MorphSettings.morphTarget, the Morph…
+    button), so publish none for any other object (a molecule whose figure
+    fails drops out until it measures again). Nor the morphs being
+    built: their state count grows on every poll, so their figure would be
+    computed on every poll, and it is never used. A figure takes a few
+    selector passes over every loaded atom (about 8 ms for a 100k-atom
+    object), so it is cached per object and computed again when the object's
+    signature changes (its state count, or its entry in cmd.get_vis(), which
+    is free to read) or once it is _BYTES_PER_FRAME_TTL old: a rep shown on
+    more atoms, an alter of ss or a removal of atoms leaves the signature
+    alone. Figures past their TTL are refreshed, oldest first, while this
+    poll has spent less than _BYTES_PER_FRAME_REFRESH_S on such refreshes,
+    and at least one per poll, so such a change reaches the figure within the
+    TTL plus one poll per refresh that did not fit (one 100k-atom object per
+    poll; small ones together). One object at a time: a failing one costs
+    only its own entry."""
+    import time
+    from pymol import morph_jobs
+    try:
+        vis = cmd.get_vis() or {}
+    except Exception:
+        vis = {}
+    try:
+        building = set(morph_jobs.pending_objects())
+    except Exception:
+        building = set()
+    now = time.monotonic()
+    out = {}
+    refreshes = 0
+    spent = 0.0
+    # Oldest figure first, so every expired one gets its turn: in object-list
+    # order the first few re-expire in time to take every poll's refresh, and
+    # a later object's figure never refreshed.
+    for o in sorted(objs, key=lambda n: _BYTES_PER_FRAME.get(
+            n, (None, None, float('-inf')))[2]):
+        if (nstate.get(o, 0) <= 1 or o in building
+                or _object_kind(o) != 'object:molecule'):
+            continue
+        sig = (nstate[o], repr(vis.get(o)))
+        hit = _BYTES_PER_FRAME.get(o)
+        refresh = False
+        if hit is not None and hit[0] == sig:
+            if (now - hit[2] < _BYTES_PER_FRAME_TTL
+                    or (refreshes and spent >= _BYTES_PER_FRAME_REFRESH_S)):
+                out[o] = hit[1]
+                continue
+            refresh = True
+        t0 = time.perf_counter()
+        try:
+            atoms, nbytes = morph_jobs.frame_cost(o)
+            value = (int(atoms), int(nbytes))
+        except Exception:
+            _BYTES_PER_FRAME.pop(o, None)
+            continue
+        finally:
+            if refresh:
+                refreshes += 1
+                spent += time.perf_counter() - t0
+        _BYTES_PER_FRAME[o] = (sig, value, now)
+        out[o] = value
+    for o in [n for n in _BYTES_PER_FRAME if n not in out]:
+        del _BYTES_PER_FRAME[o]
+    return out
+
+
 def poll_panel():
     """Write the object-list JSON to a temp file and print a short marker.
 
@@ -947,6 +1040,15 @@ def poll_panel():
     try:
         from pymol import designing as _designing
         _designing.pump()
+    except Exception:
+        pass
+    # Morph job pump, for exactly the same reason the design pump is here: a leg
+    # whose heavy computation finished on a worker thread lands on the session HERE,
+    # on the main thread. Its own try, and before the object list is gathered, so a
+    # morph leg that lands this tick appears in the object list on the same tick.
+    try:
+        from pymol import morph_jobs as _mj
+        _mj.pump()
     except Exception:
         pass
     try:
@@ -991,6 +1093,20 @@ def poll_panel():
         #
         # Same cost discipline: normally empty, O(pending) and never O(objects).
         design_details, design_records = _pending_maps('designing')
+        # Morph jobs, through the same one pass. A morph's record has the SAME shape
+        # as a prediction's and a design's (pending_info publishes the same keys,
+        # deliberately), but it is a SEPARATE key rather than merged into `pending`:
+        # a running morph is a real object whose enable-toggle must stay active -- the
+        # user may want to hide it while it builds -- so its name must NOT enter
+        # `pending`, which greys and disables the row.
+        #
+        # Same cost discipline: normally empty, O(pending) and never O(objects).
+        # Its own try: a failure must NOT cost the panel its update (the outer except
+        # only prints OBJPANEL_ERR and writes no file, which would freeze the panel).
+        try:
+            _morph_details, morph_records = _pending_maps('morph_jobs')
+        except Exception:
+            morph_records = {}
         payload = {
             'objects': objs,
             'selections': sels,
@@ -1011,6 +1127,11 @@ def poll_panel():
             # that map's only consumer greys an object's enable-toggle -- and a design
             # placeholder needs greying for the same reason a prediction's does.
             'design_jobs': design_records,
+            # Morph progress tray. OPTIONAL on the Swift side, like design_jobs.
+            # NOT merged into `pending` -- a morph object's enable-toggle must stay active
+            # while the job runs (the user may hide it), so the name must never enter the
+            # map that greys and disables the row.
+            'morph_jobs': morph_records,
             # Alignments (#296). Not objects -- they have no geometry and nothing in
             # the Executive knows about them -- so the panel draws them as their own
             # section rather than as rows in the object list.
@@ -1022,6 +1143,34 @@ def poll_panel():
             'msa_searches': _search_map(),
             'msa_failures': _failure_map(),
         }
+        # Completed morphs with their source, spec and build number. OPTIONAL on the
+        # Swift side, like design_jobs and morph_jobs. Its own try: a failure must not
+        # cost the panel its update. Gathered after the payload dict so a morph that
+        # completes this tick (via the pump above) appears in both morph_jobs (empty,
+        # done) and morph (source + spec) on the same tick rather than one tick apart.
+        # A small morph can start and finish inside that one pump, so no poll lists
+        # it in morph_jobs: the app reports a completion when a build number it has
+        # not seen appears here.
+        try:
+            from pymol import morph_jobs as _mj_src
+            payload['morph'] = _mj_src.morph_sources()
+        except Exception:
+            payload['morph'] = {}
+        # Bytes one morph frame of each multi-state molecule would hold
+        # (morph_jobs.bytes_per_frame: coordinates plus the reps it shows). The
+        # Morph sheet and the Play-models sheet multiply it by their frame count,
+        # so their estimate is morph_object's own. Beside it, from the same pass,
+        # the atoms one frame holds (morph_estimate's `atoms`, state 1): the Morph
+        # sheet's build-time hint, which the object's own atom count overstates
+        # for a discrete object (that counts every state's atoms). Both OPTIONAL
+        # on the Swift side. Their own try: a failure must not cost the panel its
+        # update.
+        try:
+            costs = _morph_frame_costs(objs, payload['nstate'])
+        except Exception:
+            costs = {}
+        payload['morph_bytes_per_frame'] = {o: c[1] for o, c in costs.items()}
+        payload['morph_atoms_per_frame'] = {o: c[0] for o, c in costs.items()}
         # Design-mode selection fingerprint. Computed inside raymol_design and
         # GATED there on Design mode being active, so this main-thread 500 ms poll
         # pays a single boolean check whenever Design mode is off (PR #270 made

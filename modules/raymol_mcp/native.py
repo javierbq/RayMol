@@ -144,6 +144,7 @@ def raymol_state(cmd):
     part("prediction_jobs", _prediction_jobs)
     if binder_design_enabled():
         part("design_jobs", _design_jobs)
+    part("morph_jobs", _morph_jobs)
     return state
 
 
@@ -171,6 +172,34 @@ def _prediction_jobs():
 def _design_jobs():
     from pymol import designing
     return designing.design_status()
+
+
+def _morph_jobs():
+    """Morphs of this app run: being built, cancelled or failed (until
+    dismissed), and done ones still loaded, as {name, source, status,
+    progress} (+ error). Read-only: lands no frames (the app's panel poll
+    does), so reading the state never changes it."""
+    from pymol import morph_jobs
+    done = morph_jobs.morph_sources()
+    names = set(morph_jobs.pending_objects())
+    names.update(morph_jobs.recent_objects())
+    names.update(done)
+    out = []
+    for name in sorted(names):
+        record = morph_jobs.morph_spec(name) or {}
+        info = morph_jobs.pending_info(name) or {}
+        status = info.get("state") or record.get("state")
+        entry = {
+            "name": name,
+            "source": record.get("source") or done.get(name, {}).get("source"),
+            "status": status,
+            "progress": 1.0 if status == "done"
+            else round(float(info.get("fraction") or 0.0), 3),
+        }
+        if info.get("error"):
+            entry["error"] = info["error"]
+        out.append(entry)
+    return out
 
 
 # --- tools -----------------------------------------------------------------

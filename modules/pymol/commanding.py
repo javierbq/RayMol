@@ -427,6 +427,16 @@ USAGE
                 _appkit_movie.reset()
             except Exception:
                 pass
+            # Morph jobs build into objects the C reinitialize just deleted: one
+            # left running would land frames into, then delete, an object of the
+            # same name the next session brings. And the registry would vouch
+            # for morphs that are gone. A new session leaves no morph card
+            # behind either (dismiss).
+            try:
+                from pymol import morph_jobs as _morph_jobs
+                _morph_jobs.reset(dismiss=True, _self=_self)
+            except Exception:
+                pass
         if _self._raising(r,_self): raise pymol.CmdException
         return r
 

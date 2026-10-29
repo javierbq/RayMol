@@ -17,12 +17,15 @@ def begin(path):
     """Snapshot the current session, then show only the example molecule.
 
     Guarded so a second begin() (e.g. studio re-opened without a restore) does
-    not overwrite the real snapshot with the preview scene.
+    not overwrite the real snapshot with the preview scene. The Objects-panel
+    players go on through the studio, so the snapshot keeps their pins.
     """
     global _saved
+    from pymol import appkit_movie as _am
     try:
         if _saved is None:
-            _saved = cmd.get_session(partial=0, quiet=1)
+            with _am.players_go_on():
+                _saved = cmd.get_session(partial=0, quiet=1)
     except Exception as e:
         _saved = None
         print("THEMEPREVIEW_ERR:snapshot:" + str(e))
@@ -75,12 +78,15 @@ def style():
 
 def restore():
     """Delete the example and restore the captured session exactly (camera
-    included). An empty snapshot restores to an empty scene."""
+    included). An empty snapshot restores to an empty scene. It is the same
+    session, so the app's Objects-panel players stay registered."""
     global _saved
+    from pymol import appkit_movie as _am
     try:
         cmd.delete(OBJ)
         if _saved is not None:
-            cmd.set_session(_saved, partial=0, quiet=1)
+            with _am.players_go_on():
+                cmd.set_session(_saved, partial=0, quiet=1)
             _saved = None
         print("THEMEPREVIEW:restore")
     except Exception as e:

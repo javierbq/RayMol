@@ -35,7 +35,7 @@ General tools:
 | :--- | :--- |
 | `run_pymol_command` | Executes a single PyMOL command statement (e.g., `fetch 1ubq, async=0`, `show cartoon`, `color marine, chain A`). |
 | `run_python` | Evaluates Python code in a persistent execution namespace with access to the PyMOL API (`cmd`), NumPy (`np` if available), and Biopython (`Bio` if available). Global variables persist across consecutive calls. |
-| `get_session_state` | Returns a structured JSON overview of the active session: loaded molecular objects, atom counts, named selections, current frame, the 18-float camera orientation matrix, and RayMol state (the light rig and atmosphere, render effects, materials, scenes and prediction jobs). |
+| `get_session_state` | Returns a structured JSON overview of the active session: loaded molecular objects, atom counts, named selections, current frame, the 18-float camera orientation matrix, and RayMol state (the light rig and atmosphere, render effects, materials, scenes, prediction jobs and morphs). |
 | `capture_viewport` | Renders the live 3D viewport and returns a PNG image. Rendered images use RayMol's full Metal pipeline (including active studio light rigs and materials) so the AI model sees the exact scene. |
 | `search_pdb` | Queries the RCSB Protein Data Bank via full-text search and returns matching PDB identifiers for subsequent retrieval. |
 

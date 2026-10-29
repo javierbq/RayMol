@@ -4133,12 +4133,32 @@ static void SceneImage(PyMOLGlobals* G, const Extent2D& extent, int antialias,
 }
 
 bool SceneDeferImage(PyMOLGlobals* G, const Extent2D& extent,
-    const char* filename, int antialias, float dpi, int format, int quiet,
-    pymol::Image* out_img)
+    const char* filename, int antialias, float dpi, int format, int quiet)
 {
   std::string filenameStr = filename ? filename : "";
   std::function<void()> deferred = [=]() {
-    SceneImage(G, extent, antialias, dpi, format, quiet, out_img, filenameStr);
+    SceneImage(G, extent, antialias, dpi, format, quiet, nullptr, filenameStr);
+  };
+
+  if (G->ValidContext) {
+    deferred();
+    return false;
+  }
+
+  OrthoDefer(G, std::move(deferred));
+  return true;
+}
+
+bool SceneDeferImageTo(PyMOLGlobals* G, const Extent2D& extent, int antialias,
+    float dpi, int format, int quiet,
+    std::function<void(pymol::Image&&)> receive)
+{
+  // The image lives in the job, not in the caller's storage: the job may
+  // outlive whatever asked for it.
+  std::function<void()> deferred = [=]() {
+    pymol::Image image;
+    SceneImage(G, extent, antialias, dpi, format, quiet, &image, {});
+    receive(std::move(image));
   };
 
   if (G->ValidContext) {

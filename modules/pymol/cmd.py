@@ -114,6 +114,19 @@ def _deferred_init_pymol_internals(_pymol):
     except Exception as _am_e:
         print("appkit_movie registration failed: %s" % _am_e)
 
+    # RayMol morph jobs: a .pse load replaces the objects a job builds into and
+    # that the registry vouches for, so the RESTORE stops those jobs (leaving the
+    # loaded objects alone) and forgets the morphs it replaced; the SAVE leaves a
+    # morph still being built out of the file.
+    try:
+        from pymol import morph_jobs as _mj
+        if _mj.session_restore not in _pymol._session_restore_tasks:
+            _pymol._session_restore_tasks.append(_mj.session_restore)
+        if _mj.session_save not in _pymol._session_save_tasks:
+            _pymol._session_save_tasks.append(_mj.session_save)
+    except Exception as _mj_e:
+        print("morph_jobs registration failed: %s" % _mj_e)
+
     # RayMol alignments (#296): named MSAs, carried in the .pse under `raymol_msa` as
     # gzipped base64. The RESTORE also clears the store when a session carries no
     # alignments, so opening one does not leave the previous session's behind --

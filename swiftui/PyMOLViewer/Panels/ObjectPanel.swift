@@ -171,6 +171,11 @@ struct ObjStateMeta: Equatable {
     /// peel is for. Groups and ramps (a gadget) are excluded.
     var hasPeelRow: Bool = false
 
+    /// Atom count (`natoms`), read by the Morph sheet's memory estimate (#morph).
+    /// Nil for an object the selector does not accept, or a payload that
+    /// predates the key — the sheet then omits the estimate rather than show 0.
+    var atomCount: Int? = nil
+
     /// Does the object header show any of these rows at all?
     ///
     /// Extracted so the gate is testable. What a test can reach is this
@@ -710,6 +715,11 @@ struct ObjectEntry: Identifiable, Equatable {
     // the existing memberwise initializers compiling.
     var isPending: Bool = false
     var pendingDetail: String? = nil
+    // Source object for a morph (#morph). Non-nil when this object was produced
+    // by morph_object and the source is still loaded. The inspector sheet uses it
+    // to reconnect the re-morph sheet to the correct source without a separate
+    // lookup. Defaults nil so the existing memberwise initializers keep compiling.
+    var morphSource: String? = nil
 
     var displayName: String {
         if isSelection, let count = atomCount {
@@ -3651,13 +3661,29 @@ private struct ObjectRowContent: View {
             .help(entry.displayName)
 
         // Model / state count, right of the name (the structure's "frame count").
+        // A morph (#morph) prefixes the count with a `repeat` glyph: its states
+        // are frames of a loop, not models. A morph this app run built is named by
+        // the registry; one a relaunch brought back, by the `<source>_morph`
+        // convention, as its card's sheet resolves it (spec §5.9).
         if entry.stateCount > 1 {
-            Text("\(entry.stateCount)")
-                .font(.system(size: 9, weight: .semibold, design: .rounded))
-                .foregroundColor(PanelTheme.headerColor)
-                .padding(.horizontal, 4).padding(.vertical, 1)
-                .background(Capsule().fill(PanelTheme.buttonBackground))
-                .help("\(entry.stateCount) models / states")
+            let morphOf = MorphSettings.badgeSource(registry: entry.morphSource, name: entry.name,
+                                                    existing: engine.objects.map(\.name))
+            HStack(spacing: 2) {
+                if morphOf != nil {
+                    Image(systemName: "repeat").font(.system(size: 8, weight: .semibold))
+                }
+                Text("\(entry.stateCount)")
+                    .font(.system(size: 9, weight: .semibold, design: .rounded))
+            }
+            .foregroundColor(PanelTheme.headerColor)
+            .padding(.horizontal, 4).padding(.vertical, 1)
+            .background(Capsule().fill(PanelTheme.buttonBackground))
+            // A morph's count runs to four digits ("⟳ 1,200"); squeezed by the name
+            // column, the badge wrapped onto two lines. The name truncates instead
+            // (its tooltip carries the full name, #350).
+            .fixedSize()
+            .help(morphOf.map { "Morph of \($0) · \(entry.stateCount) frames" }
+                  ?? "\(entry.stateCount) models / states")
         }
 
         // Discoverability badge: this object has per-atom transparency overrides,
@@ -3687,6 +3713,45 @@ private struct ObjectRowContent: View {
 
 // MARK: - Expandable object card
 
+/// The State row's slider: one position per state, applied on integer changes.
+///
+/// A stepped SwiftUI Slider becomes an NSSlider with one tick mark per step on
+/// macOS, and AppKit rebuilds the tick-mark cache (O(states)) several times in
+/// every layout pass. For a 1200-frame morph that was ~1.8 s of main thread when
+/// its card expanded on completion, and ~0.5 s again on each later relayout.
+/// Past `maxTickMarks` states, where ticks would be under ~2 pt apart anyway,
+/// the slider is continuous and the binding rounds, so it still lands on whole
+/// states. iOS draws no tick marks either way.
+struct StateSlider: View {
+    let current: Int
+    let total: Int
+    let onChange: (Int) -> Void
+    let onEditingChanged: (Bool) -> Void
+
+    static let maxTickMarks = 100
+
+    /// The Slider's step: 1 (a tick mark per state) up to `maxTickMarks` states,
+    /// none beyond.
+    static func step(forStates total: Int) -> Double? {
+        total <= maxTickMarks ? 1 : nil
+    }
+
+    var body: some View {
+        let value = Binding<Double>(
+            get: { Double(current) },
+            set: { v in
+                let n = min(max(Int(v.rounded()), 1), max(total, 1))
+                if n != current { onChange(n) }   // apply only on integer change
+            })
+        let range = 1...Double(max(total, 2))
+        if let step = Self.step(forStates: total) {
+            Slider(value: value, in: range, step: step, onEditingChanged: onEditingChanged)
+        } else {
+            Slider(value: value, in: range, onEditingChanged: onEditingChanged)
+        }
+    }
+}
+
 private struct ObjectCard: View {
     let entry: ObjectEntry
     let isAlt: Bool
@@ -3702,6 +3767,8 @@ private struct ObjectCard: View {
     // Live state-slider value while dragging (nil = follow the object poll). Keeps
     // the thumb from snapping back to the last-polled state mid-drag.
     @State private var scrubState: Int? = nil
+    // The State row's "Morph…" sheet (#morph).
+    @State private var showMorphSheet = false
 
     private var expanded: Bool { engine.expandedDetail == entry.name }
     private var reps: [RepState] { engine.objectDetails[entry.name] ?? [] }
@@ -3847,6 +3914,9 @@ private struct ObjectCard: View {
                 .background(PanelTheme.rowAltBackground.opacity(0.6))
             }
         }
+        // On the card, not inside `if expanded`, so a re-render of the detail
+        // block cannot take the sheet down with it.
+        .sheet(isPresented: $showMorphSheet) { morphSheet() }
     }
 
     private func toggleExpand() {
@@ -3876,13 +3946,9 @@ private struct ObjectCard: View {
                     Image(systemName: "minus.circle").font(.system(size: 14))
                 }
                 .buttonStyle(.plain).foregroundColor(TimelineTheme.accent)
-                Slider(value: Binding(get: { Double(cur) },
-                                      set: { v in
-                                          let n = min(max(Int(v.rounded()), 1), total)
-                                          if n != cur { scrubState = n; setState(n) }  // apply only on integer change
-                                      }),
-                       in: 1...Double(max(total, 2)), step: 1,
-                       onEditingChanged: { editing in if !editing { scrubState = nil } })
+                StateSlider(current: cur, total: total,
+                            onChange: { n in scrubState = n; setState(n) },
+                            onEditingChanged: { editing in if !editing { scrubState = nil } })
                     .tint(TimelineTheme.accent)
                 Button { scrubState = nil; setState(min(cur + 1, total)) } label: {
                     Image(systemName: "plus.circle").font(.system(size: 14))
@@ -3891,7 +3957,11 @@ private struct ObjectCard: View {
                 Text("\(cur)/\(total)")
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundColor(PanelTheme.textColor)
-                    .frame(width: 42, alignment: .trailing)
+                    // Grows past 42 pt for four-digit counts (a morph's "656/1,200"
+                    // wrapped in the fixed width); the slider gives up the room.
+                    .lineLimit(1)
+                    .fixedSize()
+                    .frame(minWidth: 42, alignment: .trailing)
             }
             // Compound name for this state, when present (e.g. a multi-record
             // SDF's per-record title), so docking-pose / library sets can be
@@ -3972,8 +4042,100 @@ private struct ObjectCard: View {
                 stateActionButton("Fit") { engine.runCommand("intra_fit \(entry.name)", naming: entry.name) }
                 stateActionButton("Split") { engine.runCommand("split_states \(entry.name)", naming: entry.name) }
                 stateActionButton("Sync") { engine.runCommand("unset state, \(entry.name)", naming: entry.name) }
+                // Hidden while a morph of this object is being built: Python refuses a
+                // second job on the same target, so the UI must not offer one. Only a
+                // molecule morphs: an alignment (or another type whose name selects
+                // atoms) can report states too, and Python refuses it.
+                if !entry.isPending && !morphBuilding
+                    && engine.morphBytesPerFrame[entry.name] != nil {
+                    stateActionButton("Morph…") { showMorphSheet = true }
+                        .help("Build a smooth, looping version of this object's models")
+                        .accessibilityIdentifier("stateRow.morph.\(entry.name)")
+                }
             }
         }
+    }
+
+    // MARK: Morph (#morph)
+
+    /// What this card morphs FROM: itself for a plain ensemble; for a morph, the
+    /// source the panel payload names or, after a session reload, the one the
+    /// `<source>_morph` convention points at. Only a source that is still loaded
+    /// counts, so a morph whose source was deleted is treated as an ensemble.
+    private var morphSourceName: String {
+        let names = engine.objects.map(\.name)
+        if let s = entry.morphSource, names.contains(s) { return s }
+        return MorphSettings.conventionalSource(of: entry.name, existing: names) ?? entry.name
+    }
+
+    /// The object this card's Morph… writes, and whether it is named to Python
+    /// (MorphSettings.morphTarget). A morph of this source still being built
+    /// counts as its morph from the first poll, while it has one state: the
+    /// capsule's watch then finds that job and stays hidden, and the sheet names
+    /// `<source>_morph`, not `<source>_morph2` (a morph's own card is the card).
+    private func morphTarget(source: String) -> (name: String, explicit: Bool) {
+        let loaded = engine.objects.filter { !$0.isSelection }
+        return MorphSettings.morphTarget(
+            card: entry.name, source: source,
+            objects: Dictionary(loaded.map { ($0.name, $0.stateCount) },
+                                uniquingKeysWith: { a, _ in a }),
+            groups: Set(loaded.filter { $0.isGroup }.map { $0.name }),
+            molecules: Set(engine.morphBytesPerFrame.keys),
+            morphSources: engine.morphSources,
+            building: Set(engine.morphJobs.filter { !$0.isError }.map { $0.id }))
+    }
+
+    /// A morph job writing the object this card's Morph… would write is running.
+    private var morphBuilding: Bool {
+        let target = morphTarget(source: morphSourceName).name
+        return engine.morphJobs.contains { $0.id == target && !$0.isError }
+    }
+
+    private func morphSheet() -> some View {
+        let source = morphSourceName
+        let isMorph = source != entry.name
+        let resolved = morphTarget(source: source)
+        let target = resolved.name
+        let models = isMorph
+            ? (engine.objects.first { $0.name == source }?.stateCount ?? entry.stateCount)
+            : entry.stateCount
+        // Only the expanded card's reps are polled, so this is known for a plain
+        // ensemble (the card IS the source) and absent for a morph's source.
+        let surfaceOrMesh = (engine.objectDetails[source] ?? [])
+            .contains { $0.visible && ($0.rep == "surface" || $0.rep == "mesh") }
+        return MorphSheet(
+            source: source, target: target, models: models,
+            // The atoms one morph frame holds (Python's, from every poll);
+            // the card's own count only without it, which for a discrete
+            // object is every state's atoms. buildAtoms picks; pass the maps.
+            atoms: MorphSheet.buildAtoms(source: source, card: entry.name,
+                                         atomsPerFrame: engine.morphAtomsPerFrame,
+                                         objectMeta: engine.objectMeta),
+            // morph_estimate's figure is the SOURCE's (its reps), also from a
+            // morph's own card; published for every multi-state molecule.
+            bytesPerFrame: engine.morphBytesPerFrame[source],
+            fps: engine.playback.movieFPS,
+            existingSettings: engine.morphSpecs[entry.name],
+            isMorphObject: isMorph,
+            targetExists: engine.objects.contains { !$0.isSelection && $0.name == target },
+            sourceShowsSurfaceOrMesh: surfaceOrMesh,
+            onMorph: { settings in
+                showMorphSheet = false
+                // Named for a re-morph (same name, so clips and scenes naming the
+                // morph keep working) and for a morph a session reload brought
+                // back; otherwise Python's registry picks, as `target` mirrors.
+                engine.morph(source: source, settings: settings, autoPlay: true,
+                             name: resolved.explicit ? target : nil, target: target)
+            },
+            onDelete: isMorph ? {
+                showMorphSheet = false
+                // A morph auto-plays; its per-object timer would keep sending
+                // `set state` to the deleted name 30 times a second.
+                engine.stopObjectStates(entry.name)
+                engine.runCommand("delete \(entry.name); enable \(source)",
+                                  naming: entry.name, source)
+            } : nil,
+            onCancel: { showMorphSheet = false })
     }
 
     private func setState(_ n: Int) {
@@ -5855,6 +6017,30 @@ struct PredictionJobState: Codable, Equatable, Identifiable {
     }
 }
 
+// MARK: - Morph payload wire types
+
+/// The `spec` sub-object inside a `morph` payload record.
+///
+/// Field names are snake_case to match the JSON keys published by
+/// `appkit_inspector.poll_panel` directly, so the default `JSONDecoder`
+/// (no `keyDecodingStrategy`) picks them up without a `CodingKeys` enum.
+struct MorphSpecWire: Decodable, Equatable {
+    let frames_per_model: Int
+    let loop: Int               // 0 or 1 — Python booleans arrive as ints
+    let method: String
+    let refinement: Int
+    let rate: String
+}
+
+/// One entry in the `morph` payload dict: a completed morph that still exists.
+struct MorphInfoWire: Decodable, Equatable {
+    let source: String
+    let spec: MorphSpecWire
+    /// The build's number (`morph_jobs` `MorphJob.build`): a new one is a morph
+    /// built since the last poll. Optional, like every field added to the payload.
+    let build: Int?
+}
+
 // MARK: - Object panel JSON payload
 
 /// Decoded shape of the tempfile written by `appkit_inspector.poll_panel`.
@@ -5910,6 +6096,38 @@ struct PanelPayload: Decodable {
     ///
     /// Optional, like every field above, and for the same single-`guard let` reason.
     let design_jobs: [String: PredictionJobState]?
+    /// Running and recently-settled MORPH jobs, keyed by morph-object name.
+    ///
+    /// Same record type as `pending_jobs`/`design_jobs` — morph_jobs.pending_info
+    /// publishes the same keys, so one decoder serves all three — but a separate
+    /// key, because the cancel/dismiss commands differ.
+    ///
+    /// A successful job leaves NO record; cancelled/error records stay until dismissed.
+    /// Optional for the same single-`guard let` reason as every field above.
+    let morph_jobs: [String: PredictionJobState]?
+    /// Completed morphs that still exist as PyMOL objects, keyed by morph name.
+    ///
+    /// Only morphs that SUCCEEDED appear here (the Python side writes the record
+    /// on delivery and removes it when the object is deleted). In-flight and
+    /// error/cancelled jobs appear ONLY in `morph_jobs`, not here.
+    ///
+    /// Optional for the same reason as every field above.
+    let morph: [String: MorphInfoWire]?
+    /// Bytes one morph frame of each multi-state molecule would hold
+    /// (`morph_jobs.bytes_per_frame`: its coordinates plus the reps it shows,
+    /// overhead included), keyed by object name. The Morph sheet and the
+    /// Play-models sheet multiply it by their frames, so their estimate is
+    /// `morph_object`'s own. Not listed: other objects, morphs being built.
+    ///
+    /// Optional for the same reason as every field above.
+    let morph_bytes_per_frame: [String: Int]?
+    /// Atoms one morph frame of each of those molecules would hold
+    /// (`morph_estimate`'s `atoms`: state 1, alt '' and A), from the same pass,
+    /// keyed by object name. The Morph sheet's build-time hint: the object's own
+    /// atom count is every state's atoms for a discrete object.
+    ///
+    /// Optional for the same reason as every field above.
+    let morph_atoms_per_frame: [String: Int]?
 
     struct AlignmentSummary: Decodable {
         let depth: Int
@@ -5985,7 +6203,8 @@ extension PyMOLEngine {
                 isGroup: groupSet.contains(name),
                 parent: parentMap[name],
                 isPending: payload.pending?[name] != nil,
-                pendingDetail: payload.pending?[name]
+                pendingDetail: payload.pending?[name],
+                morphSource: payload.morph?[name]?.source
             ))
         }
 
@@ -6007,6 +6226,31 @@ extension PyMOLEngine {
         let designs = (payload.design_jobs ?? [:])
             .map { $0.value.withID($0.key) }
             .sorted { $0.id < $1.id }
+        // Morph jobs (#morph), same record type again, same reasoning: separate job
+        // table, separate cancel/dismiss commands.
+        let morphJobList = (payload.morph_jobs ?? [:])
+            .map { $0.value.withID($0.key) }
+            .sorted { $0.id < $1.id }
+        // "Running" = not terminal. Used by the completion detector below.
+        let nowRunningMorphs = Set(
+            morphJobList.filter { !$0.isError }.map { $0.id }
+        )
+        // Completed morphs: morph name → source name (for morphSources).
+        let morphPayload = payload.morph ?? [:]
+        let newMorphSources = Dictionary(uniqueKeysWithValues: morphPayload.map { ($0.key, $0.value.source) })
+        let newMorphBuilds = morphPayload.compactMapValues { $0.build }
+        // Convert wire specs to MorphSettings, leaving movieSmooth at its default.
+        var newMorphSpecs: [String: MorphSettings] = [:]
+        for (name, info) in morphPayload {
+            var s = MorphSettings()
+            s.framesPerModel = info.spec.frames_per_model
+            s.loop = info.spec.loop != 0
+            s.method = info.spec.method
+            s.refinement = info.spec.refinement
+            s.rate = info.spec.rate
+            newMorphSpecs[name] = s
+        }
+
         // Sorted by name so the order is stable: the payload is a JSON object, and
         // Foundation's dictionary decode does not preserve the store's load order.
         let alignments = (payload.alignments ?? [:]).sorted { $0.key < $1.key }.map {
@@ -6031,8 +6275,22 @@ extension PyMOLEngine {
             // re-assigning an equal array still fires @Published and re-renders
             // the panel (resetting open menus). Only assign on real changes.
             if self.objects != entries { self.objects = entries }
+            for name in Self.timersToStop(playing: self.playingObjects,
+                                          objects: Set(payload.objects)) {
+                self.stopObjectStates(name)
+            }
             if self.predictionJobs != jobs { self.predictionJobs = jobs }
             if self.designJobs != designs { self.designJobs = designs }
+
+            let bytesPerFrame = payload.morph_bytes_per_frame ?? [:]
+            if self.morphBytesPerFrame != bytesPerFrame { self.morphBytesPerFrame = bytesPerFrame }
+            let atomsPerFrame = payload.morph_atoms_per_frame ?? [:]
+            if self.morphAtomsPerFrame != atomsPerFrame { self.morphAtomsPerFrame = atomsPerFrame }
+            self.applyMorphPoll(jobs: morphJobList, running: nowRunningMorphs,
+                                sources: newMorphSources, specs: newMorphSpecs,
+                                builds: newMorphBuilds)
+            self.applyClipObjectPoll(loaded: Set(payload.objects))
+
             if self.alignments != alignments { self.alignments = alignments }
             // Same guard, and it carries the weight here: with no search running this
             // is empty every tick and must not repaint the panel twice a second.

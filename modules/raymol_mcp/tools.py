@@ -278,8 +278,8 @@ TOOLS = [
                         "(name/type/atom count), named selections, camera view "
                         "(18 floats), current frame and frame count, and "
                         "'raymol': the studio light rig and atmosphere, Metal "
-                        "render effects, materials, scenes and on-device "
-                        "prediction jobs."),
+                        "render effects, materials, scenes, on-device "
+                        "prediction jobs and morph jobs."),
         "inputSchema": {"type": "object", "properties": {}},
     },
     {

@@ -48,6 +48,7 @@ export default defineConfig({
             { label: 'Studio Lights & Atmosphere', slug: 'guides/lighting' },
             { label: 'Camera, Lens & Depth of Field', slug: 'guides/camera' },
             { label: 'Movies & Scenes', slug: 'guides/movies' },
+            { label: 'Morphing', slug: 'guides/morph' },
           ],
         },
         {

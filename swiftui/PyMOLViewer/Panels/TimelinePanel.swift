@@ -70,12 +70,8 @@ struct TimelinePanel: View {
     @State private var composerAngle: Double = 30
     @State private var composerSecPerScene: Double = 3
     @State private var composerStatesObject: String? = nil   // nil = all multi-state objects
-    // "Play models" config modal (opened by Append).
+    // "Play models" config modal (opened by Append); PlayModelsSheet owns its state.
     @State private var showStatesSheet = false
-    @State private var sheetMode: PyMOLEngine.StatesMode = .sweep
-    @State private var sheetFirst = 1
-    @State private var sheetLast = 0            // 0 = through the last model
-    @State private var sheetDuration: Double = 8
 
     // Scenes-palette overflow tracking → drives the horizontal-scroll edge fade
     // (issue #131). Set from GeometryReader preferences below.
@@ -89,6 +85,11 @@ struct TimelinePanel: View {
     // Always", or "Automatically" with a mouse attached (CI runners and VMs too).
     @State private var legacyScrollers = NSScroller.preferredScrollerStyle == .legacy
     #endif
+
+    // The lane's horizontal scroll offset, for the states clips' captions, which
+    // lay out in the part of their block on screen. @State does not observe the
+    // object, so a scroll re-renders only the captions that read it, not the panel.
+    @State private var laneScroll = TimelineLaneScroll()
 
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var hSize
@@ -116,6 +117,9 @@ struct TimelinePanel: View {
         #endif
     }
     private let laneSpace = "timelineLane"   // coord space for drag/tap -> frame
+    private let laneViewportSpace = "timelineLaneViewport"   // the lane's scroll view: its scroll offset
+    // Width of each edge fade of an overflowing scroll row, as a fraction of it.
+    private let scrollFadeFraction: CGFloat = 0.05
     private let minZoom: CGFloat = 0.05
     private let maxZoom: CGFloat = 8.0
 
@@ -151,8 +155,8 @@ struct TimelinePanel: View {
             stops: active
                 ? [
                     .init(color: .clear, location: 0),
-                    .init(color: .black, location: 0.05),
-                    .init(color: .black, location: 0.95),
+                    .init(color: .black, location: scrollFadeFraction),
+                    .init(color: .black, location: 1 - scrollFadeFraction),
                     .init(color: .clear, location: 1),
                   ]
                 // Fully opaque (no fade) so a row that fits isn't clipped.
@@ -181,7 +185,14 @@ struct TimelinePanel: View {
             composer
         }
         .background(TimelineTheme.bar)
-        .sheet(isPresented: $showStatesSheet) { statesConfigSheet }
+        .sheet(isPresented: $showStatesSheet) {
+            PlayModelsSheet(
+                target: composerStatesObject,
+                models: PlayModelsSheet.models(engine, composerStatesObject),
+                fps: playback.movieFPS,
+                smoothAvailable: PlayModelsSheet.availability(engine, composerStatesObject) == .available,
+                onClose: { showStatesSheet = false })
+        }
         .sheet(isPresented: $showExport) { MovieExportSheet() }
         .onAppear {
             // Test affordance: auto-open the "Play models" modal so it can be
@@ -389,12 +400,16 @@ struct TimelinePanel: View {
                 let w = geo.size.width
                 let pps = ppsFor(w)
                 let cW = contentWidth(w, pps: pps)
+                // What the lane shows clearly, for the clip captions: the viewport
+                // inside the edge fades an overflowing lane draws (scrollFadeMask).
+                let fade = cW > w + 1 ? w * scrollFadeFraction : 0
                 ScrollViewReader { proxy in
                     ScrollView(.horizontal, showsIndicators: true) {
                         ZStack(alignment: .topLeading) {
                             VStack(spacing: 0) {
                                 ruler(contentW: cW, pps: pps)
-                                itemLane(contentW: cW, pps: pps)
+                                itemLane(contentW: cW, pps: pps,
+                                         clear: (inset: fade, width: max(w - 2 * fade, 1)))
                             }
                             playhead(pps: pps)
                             // Invisible follow-anchor centered on the playhead.
@@ -405,7 +420,19 @@ struct TimelinePanel: View {
                         }
                         .frame(width: cW, height: rulerH + laneH, alignment: .topLeading)
                         .coordinateSpace(name: laneSpace)
+                        // The scroll offset: the content's leading edge, seen from
+                        // the scroll view's own (unscrolled) coordinate space. Read
+                        // with onChange, not a preference: the reader re-evaluates on
+                        // every scroll, but in this panel onPreferenceChange never
+                        // fired for a scroll (checked on macOS in a hosted panel).
+                        .background(GeometryReader { g in
+                            let x = -g.frame(in: .named(laneViewportSpace)).minX
+                            Color.clear.onChange(of: x, initial: true) { _, x in
+                                if abs(laneScroll.x - x) >= 0.5 { laneScroll.x = x }
+                            }
+                        })
                     }
+                    .coordinateSpace(name: laneViewportSpace)
                     // (the seconds playhead is suppressed for a bare ensemble; the
                     // model band carries its own current-model marker)
                     // Bound the scroll view's own height — a horizontal ScrollView is
@@ -476,8 +503,11 @@ struct TimelinePanel: View {
         )
     }
 
+    /// `clear`: the part of the lane's viewport drawn unfaded, `inset` from its
+    /// leading edge (the clip captions lay out there).
     @ViewBuilder
-    private func itemLane(contentW: CGFloat, pps: CGFloat) -> some View {
+    private func itemLane(contentW: CGFloat, pps: CGFloat,
+                          clear: (inset: CGFloat, width: CGFloat)) -> some View {
         let items = laidOut
         ZStack(alignment: .topLeading) {
             Rectangle().fill(TimelineTheme.accent.opacity(0.05))
@@ -492,7 +522,7 @@ struct TimelinePanel: View {
                     connectorIfSequential(laid, items, pps: pps)
                 }
                 ForEach(items) { laid in
-                    itemNode(laid, pps: pps)
+                    itemNode(laid, pps: pps, clear: clear)
                 }
             }
         }
@@ -560,7 +590,8 @@ struct TimelinePanel: View {
     }
 
     // A camera keyframe (diamond) or scene marker (chip) at its timeline frame.
-    private func itemNode(_ laid: Laid, pps: CGFloat) -> some View {
+    private func itemNode(_ laid: Laid, pps: CGFloat,
+                          clear: (inset: CGFloat, width: CGFloat)) -> some View {
         let dragging = dragItemID == laid.item.id
         let startX = dragging ? dragX : xFor(laid.frame, pps: pps)
         let w = nodeHitWidth(laid, pps: pps)
@@ -575,7 +606,7 @@ struct TimelinePanel: View {
             case .scene(let name):
                 sceneNode(name)
             case .states(let spec):
-                statesNode(laid, spec: spec, pps: pps)
+                statesNode(laid, spec: spec, pps: pps, blockX: startX, clear: clear)
             }
         }
         .scaleEffect(dragging ? 1.25 : 1)
@@ -617,19 +648,32 @@ struct TimelinePanel: View {
         return 30
     }
 
+    /// Why a states clip plays nothing (an object it names is not loaded), or nil.
+    private func missingNote(_ spec: PyMOLEngine.StatesSpec) -> String? {
+        PyMOLEngine.statesClipMissingNote(spec, missing: engine.statesClipMissing(spec),
+                                          loaded: engine.objects.map(\.name))
+    }
+
     // A "Play models" ensemble clip: a block spanning its duration with a few
     // decimated guide ticks (never one per model — a 2000-frame MD stays a block).
-    private func statesNode(_ laid: Laid, spec: PyMOLEngine.StatesSpec, pps: CGFloat) -> some View {
+    // A clip whose object is not loaded (a morph saved while it was still being
+    // built, a deleted object) is dimmed, with a dashed outline, and says so.
+    // `blockX`: the block's leading edge in the lane; `clear`: the unfaded part of
+    // the lane's viewport, where the caption lays out (StatesClipCaption).
+    private func statesNode(_ laid: Laid, spec: PyMOLEngine.StatesSpec, pps: CGFloat,
+                            blockX: CGFloat,
+                            clear: (inset: CGFloat, width: CGFloat)) -> some View {
         let w = max(30, xFor(laid.endFrame, pps: pps) - xFor(laid.frame, pps: pps))
-        let who: String = spec.objects.map {
-            $0.count == 1 ? $0[0] : "\($0.count) objects"
-        } ?? "\(engine.maxStateCount) models"
-        // Show the model range only when it's a subset (e.g. "3–7").
-        let rangeSuffix = (spec.firstModel > 1 || (spec.lastModel > 0 && spec.lastModel < engine.maxStateCount))
-            ? " \(spec.firstModel)–\(spec.lastModel > 0 ? spec.lastModel : engine.maxStateCount)" : ""
-        let label = who + rangeSuffix
+        // The object(s), with the model range only when it's a subset (e.g. "3–7").
+        let (label, glyph) = PyMOLEngine.statesClipLabel(spec, models: engine.statesClipModels(spec))
+        let note = missingNote(spec)
+        // The whole text, remedy included, for the tooltip and VoiceOver; the
+        // context menu carries it too. With less of the clip on screen than the
+        // whole text needs, the lane draws a shorter form, down to the reason
+        // alone after the ⚠ glyph, so it is what stays readable.
+        let text = note.map { "\(label) — \($0)" } ?? label
         return RoundedRectangle(cornerRadius: 4)
-            .fill(TimelineTheme.accent.opacity(0.10))     // discreet — blends with the lane
+            .fill(TimelineTheme.accent.opacity(note == nil ? 0.10 : 0.04))   // discreet — blends with the lane
             .overlay(
                 HStack(spacing: 0) {   // ≤ 10 faint guide ticks
                     ForEach(0..<10, id: \.self) { i in
@@ -637,19 +681,18 @@ struct TimelinePanel: View {
                         Spacer(minLength: 0)
                     }
                 }
+                .opacity(note == nil ? 1 : 0)
             )
-            .overlay(
-                HStack(spacing: 3) {
-                    Image(systemName: spec.mode == .loop ? "repeat" : "film.stack").font(.system(size: 8))
-                    Text(label).font(.system(size: 10, weight: .medium)).lineLimit(1)
-                }
-                .foregroundColor(TimelineTheme.text.opacity(0.85))
-                .padding(.horizontal, 6)
-            )
+            .overlay(alignment: .leading) {
+                StatesClipCaption(scroll: laneScroll, blockX: blockX, blockWidth: w,
+                                  clear: clear, label: label, note: note, glyph: glyph)
+            }
             .overlay(RoundedRectangle(cornerRadius: 4)
-                .stroke(TimelineTheme.accent.opacity(0.45), lineWidth: 0.75))
+                .stroke(TimelineTheme.accent.opacity(note == nil ? 0.45 : 0.3),
+                        style: StrokeStyle(lineWidth: 0.75, dash: note == nil ? [] : [3, 2])))
             .frame(width: w, height: laneH - 16)
-            .accessibilityLabel("Play models clip \(label)")
+            .help(text)
+            .accessibilityLabel("Play models clip \(text)")
     }
 
     private func itemMenu(_ laid: Laid) -> some View {
@@ -669,23 +712,34 @@ struct TimelinePanel: View {
                 }
             case .states(let spec):
                 Text("Play models · \(spec.objects?.count.description ?? "all") · frame \(laid.frame)")
+                if let note = missingNote(spec) {
+                    Text(note.prefix(1).uppercased() + note.dropFirst())
+                    // A morph clip saved before its morph finished: morph its source
+                    // at the clip's own stride, into the clip's object.
+                    if let name = spec.objects?.first,
+                       let source = PyMOLEngine.morphClipSource(spec, loaded: engine.objects.map(\.name)) {
+                        Button { engine.fillMorphClip(spec) } label: {
+                            Label("Build \(name) from \(source)", systemImage: "wand.and.stars")
+                        }
+                    }
+                }
                 Menu("Motion") {
                     ForEach([PyMOLEngine.StatesMode.sweep, .loop, .lockstep], id: \.self) { m in
                         Button {
-                            engine.updateStatesClip(laid.item.id, PyMOLEngine.StatesSpec(
-                                objects: spec.objects, mode: m,
-                                firstModel: spec.firstModel, lastModel: spec.lastModel,
-                                durationSeconds: spec.durationSeconds))
+                            // Edit a copy: a morph clip keeps its morphStride, so its
+                            // model range is not reread as absolute states.
+                            var edited = spec
+                            edited.mode = m
+                            engine.updateStatesClip(laid.item.id, edited)
                         } label: { Label(m.rawValue.capitalized, systemImage: spec.mode == m ? "checkmark" : "circle") }
                     }
                 }
                 Menu("Duration") {
                     ForEach([2.0, 4.0, 8.0, 12.0], id: \.self) { d in
                         Button {
-                            engine.updateStatesClip(laid.item.id, PyMOLEngine.StatesSpec(
-                                objects: spec.objects, mode: spec.mode,
-                                firstModel: spec.firstModel, lastModel: spec.lastModel,
-                                durationSeconds: d))
+                            var edited = spec
+                            edited.durationSeconds = d
+                            engine.updateStatesClip(laid.item.id, edited)
                         } label: { Label("\(Int(d)) s", systemImage: spec.durationSeconds == d ? "checkmark" : "clock") }
                     }
                 }
@@ -924,93 +978,11 @@ struct TimelinePanel: View {
         case "scenes":
             engine.appendScenesTemplate(secondsPerScene: composerSecPerScene)
         case "states":
-            // Open the config modal (mode / model range / duration).
-            let n = composerStatesObject
-                .flatMap { name in engine.multiStateObjects().first { $0.name == name }?.count }
-                ?? engine.maxStateCount
-            sheetMode = .sweep; sheetFirst = 1; sheetLast = max(2, n); sheetDuration = 8
+            // Open the config modal (mode / model range / duration / smooth); it
+            // starts from fresh state each time it is presented.
             showStatesSheet = true
         default: break
         }
-    }
-
-    // "Play models" configuration modal. Objects come from the composer dropdown;
-    // here the user picks the motion, the model range, and the duration.
-    private var statesConfigSheet: some View {
-        let n = composerStatesObject
-            .flatMap { name in engine.multiStateObjects().first { $0.name == name }?.count }
-            ?? engine.maxStateCount
-        let target = composerStatesObject ?? "all models"
-        // Resolve to a valid range regardless of prior state (0/out-of-range → 1…N),
-        // and drive both the steppers and Add from the resolved values.
-        let last = (sheetLast < 1 || sheetLast > n) ? n : sheetLast
-        let first = min(max(sheetFirst, 1), last)
-        return VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Text("Play models").font(.system(size: 15, weight: .semibold))
-                Spacer()
-                Text("\(target) · \(n) models").font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-
-            // Motion — a segmented control (no wide dropdown).
-            Picker("", selection: $sheetMode) {
-                Text("Sweep").tag(PyMOLEngine.StatesMode.sweep)
-                Text("Loop").tag(PyMOLEngine.StatesMode.loop)
-                Text("Lockstep").tag(PyMOLEngine.StatesMode.lockstep)
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-
-            // Range + duration: one row where it fits (macOS/iPad), wrapping to two
-            // rows on a narrow phone (iOS steppers are wider than macOS controls).
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 18) {
-                    rangeStart(first, last, n); rangeEnd(first, last, n); rangeDuration()
-                }
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack(spacing: 18) { rangeStart(first, last, n); rangeEnd(first, last, n) }
-                    rangeDuration()
-                }
-            }
-
-            HStack(spacing: 10) {
-                Spacer()
-                Button("Cancel") { showStatesSheet = false }
-                    .keyboardShortcut(.cancelAction)
-                Button("Add") {
-                    engine.appendStatesClip(
-                        objects: composerStatesObject.map { [$0] },
-                        mode: sheetMode, firstModel: first, lastModel: last,
-                        seconds: sheetDuration)
-                    showStatesSheet = false
-                }
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
-            }
-        }
-        .padding(20)
-        #if os(macOS)
-        .frame(width: 400)
-        #else
-        .presentationDetents([.height(300)])
-        #endif
-    }
-
-    // Steppers for the "Play models" modal — reused in the one-row and wrapped
-    // (narrow-phone) layouts so both stay in sync.
-    @ViewBuilder private func rangeStart(_ first: Int, _ last: Int, _ n: Int) -> some View {
-        Stepper("Start \(first)",
-                value: Binding(get: { first }, set: { sheetFirst = min($0, last) }),
-                in: 1...max(1, n)).fixedSize()
-    }
-    @ViewBuilder private func rangeEnd(_ first: Int, _ last: Int, _ n: Int) -> some View {
-        Stepper("End \(last)",
-                value: Binding(get: { last }, set: { sheetLast = max($0, first) }),
-                in: 1...max(1, n)).fixedSize()
-    }
-    @ViewBuilder private func rangeDuration() -> some View {
-        Stepper("\(String(format: "%.0f", sheetDuration)) s",
-                value: $sheetDuration, in: 1...30, step: 1).fixedSize()
     }
 
     // MARK: - Playhead / geometry helpers
@@ -1071,6 +1043,293 @@ struct TimelinePanel: View {
 
 // Scenes-palette width measurement for the horizontal-scroll edge fade (#131):
 // content width vs. viewport width decide whether the trailing fade shows.
+// MARK: - Play-models sheet
+
+/// The Movie tab's "Play models" sheet, opened by Append with the Models preset: the
+/// motion, the model range, the duration and "Smooth transitions (morph)" (spec §5.7).
+///
+/// It owns its state, initialised when it is presented, as MorphSheet does. Kept as
+/// the panel's own @State read from the `.sheet` closure, the sheet saw only their
+/// initial values for state the panel's body never reads: a remembered toggle opened
+/// off at 8 s (checked in the VM with logging; the panel's action had written them).
+private struct PlayModelsSheet: View {
+    @EnvironmentObject var engine: PyMOLEngine
+    @EnvironmentObject var playback: PlaybackState
+
+    /// The object to play, or nil for all multi-state objects.
+    let target: String?
+    let onClose: () -> Void
+
+    @State private var mode: PyMOLEngine.StatesMode = .sweep
+    @State private var firstModel = 1
+    @State private var lastModel: Int              // resolved against `models` below
+    @State private var duration: Double
+    @State private var durationEdited = false      // the user stepped Duration
+    @State private var smooth: Bool
+    @State private var morph: MorphSettings        // saved on Add, shared with Morph…
+    @State private var morphExpanded = false
+    /// Duration without smoothing as the sheet opened (8 s): turning Smooth off
+    /// with Duration unedited goes back to it, not to the natural length the
+    /// toggle wrote.
+    private static let openingDuration: Double = 8
+
+    /// `models`, `fps` and `smoothAvailable` set the opening Duration: a remembered
+    /// toggle opens at the natural length.
+    init(target: String?, models: Int, fps: Double, smoothAvailable: Bool,
+         onClose: @escaping () -> Void) {
+        self.target = target
+        self.onClose = onClose
+        // The toggle remembers its last state; clamped like the Morph… sheet.
+        let saved = MorphSheet.prefill(saved: MorphSettings.load(), existing: nil)
+        _lastModel = State(initialValue: max(2, models))
+        _smooth = State(initialValue: saved.movieSmooth)
+        _morph = State(initialValue: saved)
+        _duration = State(initialValue: MorphMovie.duration(
+            current: Self.openingDuration, smooth: saved.movieSmooth && smoothAvailable, edited: false,
+            natural: MorphMovie.naturalSeconds(models: models,
+                                               framesPerModel: saved.framesPerModel, fps: fps)))
+    }
+
+    // MARK: Engine reads (static so the panel computes the opening values the same way)
+
+    /// Models in `target` (its states), or the most of any object for "all".
+    static func models(_ engine: PyMOLEngine, _ target: String?) -> Int {
+        target.flatMap { name in engine.multiStateObjects().first { $0.name == name }?.count }
+            ?? engine.maxStateCount
+    }
+
+    /// Loaded objects (not selections), name → states: what the morph-name resolver
+    /// reads, as in the Object panel.
+    static func loadedObjects(_ engine: PyMOLEngine) -> [String: Int] {
+        Dictionary(engine.objects.filter { !$0.isSelection }.map { ($0.name, $0.stateCount) },
+                   uniquingKeysWith: { a, _ in a })
+    }
+
+    /// The multi-state molecules not being built, as the Object panel's resolver
+    /// reads them (MorphSettings.morphTarget).
+    static func molecules(_ engine: PyMOLEngine) -> Set<String> {
+        Set(engine.morphBytesPerFrame.keys)
+    }
+
+    /// Morph jobs queued or running.
+    static func building(_ engine: PyMOLEngine) -> Set<String> {
+        Set(engine.morphJobs.filter { $0.state == "queued" || $0.state == "running" }.map { $0.id })
+    }
+
+    static func availability(_ engine: PyMOLEngine, _ target: String?) -> MorphMovie.Availability {
+        MorphMovie.availability(target: target, objects: loadedObjects(engine),
+                                molecules: molecules(engine), morphSources: engine.morphSources,
+                                building: building(engine))
+    }
+
+    private var models: Int { Self.models(engine, target) }
+    private var groups: Set<String> {
+        Set(engine.objects.filter { !$0.isSelection && $0.isGroup }.map { $0.name })
+    }
+    private var availability: MorphMovie.Availability { Self.availability(engine, target) }
+    /// The toggle as shown: off whenever it cannot be used.
+    private var smoothOn: Bool { smooth && availability == .available }
+    /// The morph the smooth clip plays (`2kpo_morph`), as the Object panel names it.
+    private var smoothTarget: String {
+        target.map {
+            MorphMovie.target(source: $0, objects: Self.loadedObjects(engine), groups: groups,
+                              molecules: Self.molecules(engine),
+                              morphSources: engine.morphSources,
+                              building: Self.building(engine)).name
+        } ?? ""
+    }
+    private func natural(framesPerModel: Int) -> Double {
+        MorphMovie.naturalSeconds(models: models, framesPerModel: framesPerModel,
+                                  fps: playback.movieFPS)
+    }
+    /// Duration follows the natural length while smoothing until the user steps it.
+    /// Callers pass the values they are writing rather than re-reading them.
+    private func smoothDuration(smooth: Bool, framesPerModel: Int) -> Double {
+        MorphMovie.duration(current: duration, smooth: smooth && availability == .available,
+                            edited: durationEdited, natural: natural(framesPerModel: framesPerModel),
+                            opening: Self.openingDuration)
+    }
+    /// The smooth clip's morph against the memory thresholds (spec §5.6): Python's
+    /// bytes per frame of the target times the loop's frames, as morph_object
+    /// estimates it. `.ok` with no text while that figure is unknown, and `.ok`
+    /// with the size alone when Add's morph is one Python keeps or Add waits for
+    /// (MorphMovie.sizesMorph): it refuses only what it builds.
+    private func memoryNote(models n: Int) -> (text: String?, tier: MorphSheet.MemoryTier) {
+        let bytes = MorphMovie.estimatedBytes(
+            models: n, framesPerModel: morph.framesPerModel,
+            bytesPerFrame: target.flatMap { engine.morphBytesPerFrame[$0] })
+        let sized = MorphMovie.sizesMorph(plan, morphSources: engine.morphSources,
+                                          morphSpecs: engine.morphSpecs)
+        return MorphMovie.memoryNote(bytes: bytes, thresholds: MorphSheet.currentThresholds(),
+                                     sized: sized)
+    }
+
+    /// What Add does with the sheet as it stands.
+    private var plan: MorphMovie.AddPlan {
+        MorphMovie.addPlan(
+            target: target, smooth: smooth, settings: morph,
+            objects: Self.loadedObjects(engine), groups: groups,
+            molecules: Self.molecules(engine),
+            morphSources: engine.morphSources, building: Self.building(engine))
+    }
+
+    // MARK: Layout
+
+    var body: some View {
+        #if os(macOS)
+        content
+            .padding(20)
+            .frame(width: 400)
+        #else
+        // Scrolls rather than clips when the morph settings are open, so Cancel /
+        // Add stay reachable; the larger detent shows them without scrolling.
+        ScrollView { content.padding(20) }
+            .presentationDetents(smoothOn ? [.height(480), .large] : [.height(380)])
+        #endif
+    }
+
+    private var content: some View {
+        let n = models
+        // Resolve to a valid range regardless of prior state (0/out-of-range → 1…N),
+        // and drive both the steppers and Add from the resolved values.
+        let last = (lastModel < 1 || lastModel > n) ? n : lastModel
+        let first = min(max(firstModel, 1), last)
+        let availability = self.availability
+        let memory: (text: String?, tier: MorphSheet.MemoryTier) =
+            smoothOn ? memoryNote(models: n) : (nil, .ok)
+        let waitsFor = smoothOn ? plan.waitsFor : nil
+        let caption = MorphMovie.caption(availability, smooth: smoothOn, target: smoothTarget,
+                                         models: n, framesPerModel: morph.framesPerModel,
+                                         fps: playback.movieFPS, memory: memory.text,
+                                         waitsFor: waitsFor)
+        return VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("Play models").font(.system(size: 15, weight: .semibold))
+                Spacer()
+                Text("\(target ?? "all models") · \(n) models")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+            }
+
+            // Motion — a segmented control (no wide dropdown).
+            Picker("", selection: $mode) {
+                Text("Sweep").tag(PyMOLEngine.StatesMode.sweep)
+                Text("Loop").tag(PyMOLEngine.StatesMode.loop)
+                Text("Lockstep").tag(PyMOLEngine.StatesMode.lockstep)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            // Range + duration: one row where it fits (macOS/iPad), wrapping to two
+            // rows on a narrow phone (iOS steppers are wider than macOS controls).
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 18) {
+                    rangeStart(first, last, n); rangeEnd(first, last, n); rangeDuration()
+                }
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 18) { rangeStart(first, last, n); rangeEnd(first, last, n) }
+                    rangeDuration()
+                }
+            }
+
+            // Smooth transitions: build a morph of the object and play that instead.
+            // Start/End keep counting models.
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle("Smooth transitions (morph)", isOn: Binding(
+                    get: { smoothOn },
+                    set: { on in
+                        duration = smoothDuration(smooth: on, framesPerModel: morph.framesPerModel)
+                        smooth = on
+                    }))
+                    .tint(TimelineTheme.accent)
+                    .disabled(availability != .available)
+                    .accessibilityIdentifier("playModels.smooth")
+                if let caption {
+                    Text(caption)
+                        .font(.system(size: 11))
+                        .foregroundStyle(memory.tier == .ok && waitsFor == nil
+                                         ? Color.secondary : Color.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("playModels.smoothCaption")
+                }
+            }
+
+            if smoothOn {
+                // Loop is implied on for the Movie path, so only four controls.
+                DisclosureGroup(isExpanded: $morphExpanded) {
+                    MorphSettingsControls(
+                        settings: Binding(
+                            get: { morph },
+                            set: { new in
+                                if new.framesPerModel != morph.framesPerModel {
+                                    duration = smoothDuration(smooth: smooth,
+                                                              framesPerModel: new.framesPerModel)
+                                }
+                                morph = new
+                            }),
+                        showsLoop: false, idPrefix: "playModels")
+                        .padding(.top, 8)
+                } label: {
+                    // On the label, not the group: a group's identifier is handed down
+                    // to every control inside it, replacing their playModels.* ids.
+                    Text("Morph settings…")
+                        .accessibilityIdentifier("playModels.morphSettings")
+                }
+            }
+
+            HStack(spacing: 10) {
+                Spacer()
+                Button("Cancel") { onClose() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Add") { add(first: first, last: last) }
+                    .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.borderedProminent)
+                    // Python would refuse the morph: no clip naming an object that
+                    // never appears. Lower frames per model to enable it. (A morph
+                    // Python keeps is never refused.) Nor while the morph Add would
+                    // name is still being built: it re-enables when that finishes.
+                    .disabled(!MorphMovie.canAdd(smoothOn: smoothOn, tier: memory.tier,
+                                                 waitsFor: waitsFor))
+                    .accessibilityIdentifier("playModels.add")
+            }
+        }
+    }
+
+    private func add(first: Int, last: Int) {
+        let plan = self.plan
+        guard plan.waitsFor == nil else { return }  // Add is disabled while it waits
+        // Python keeps an existing morph with the same spec and source fingerprint
+        // (reuse); otherwise it builds, and the clip naming the morph fills in as legs
+        // land and is rebuilt when it completes. One engine call, so a replace prompt
+        // over an untracked movie holds the morph along with its clip.
+        engine.addPlayModelsClip(plan, mode: mode, firstModel: first, lastModel: last,
+                                 seconds: duration)
+        onClose()
+    }
+
+    // Steppers — reused in the one-row and wrapped (narrow-phone) layouts so both
+    // stay in sync.
+    @ViewBuilder private func rangeStart(_ first: Int, _ last: Int, _ n: Int) -> some View {
+        Stepper("Start \(first)",
+                value: Binding(get: { first }, set: { firstModel = min($0, last) }),
+                in: 1...max(1, n)).fixedSize()
+    }
+    @ViewBuilder private func rangeEnd(_ first: Int, _ last: Int, _ n: Int) -> some View {
+        Stepper("End \(last)",
+                value: Binding(get: { last }, set: { lastModel = max($0, first) }),
+                in: 1...max(1, n)).fixedSize()
+    }
+    @ViewBuilder private func rangeDuration() -> some View {
+        // Shows a natural length like "8.7 s" to its tenth; stepping marks Duration
+        // as the user's, so the toggle and frames per model stop resetting it.
+        Stepper("\(MorphSettings.number(duration)) s",
+                value: Binding(get: { duration }, set: { duration = $0; durationEdited = true }),
+                in: MorphMovie.durationRange(smooth: smoothOn,
+                                             natural: natural(framesPerModel: morph.framesPerModel)),
+                step: 1).fixedSize()
+            .accessibilityIdentifier("playModels.duration")
+    }
+}
+
 private struct PaletteContentWKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
@@ -1082,6 +1341,60 @@ private struct PaletteViewportWKey: PreferenceKey {
 private struct LaneViewportWKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+/// The lane's horizontal scroll offset in points (0 at its start), kept by the
+/// lane's scroll view for the states clips' captions.
+private final class TimelineLaneScroll: ObservableObject {
+    @Published var x: CGFloat = 0
+}
+
+/// A states clip's caption: its glyph (⚠ for a clip that plays nothing) and
+/// text, leading-aligned with the lane's padding in the part of the block the
+/// lane shows unfaded (`PyMOLEngine.statesClipVisibleSpan`). A clip longer than
+/// the lane, or scrolled past its start, so still shows its ⚠ and the start of
+/// its text. The text is the widest of its forms (`PyMOLEngine.statesClipCaptions`)
+/// that fits that part, so the reason stays readable however little of the clip
+/// is on screen; it never draws past that part, so never past the block. A
+/// sliver of the block counts as off screen (the caption stays at its start).
+/// Observes the scroll offset itself, so a scroll re-lays out the captions
+/// only. Sits in a leading-aligned overlay of the block. Covered in the real
+/// panel by `TimelineClipCaptionLayoutTests`.
+private struct StatesClipCaption: View {
+    @ObservedObject var scroll: TimelineLaneScroll
+    /// The block's leading edge and width, in the lane.
+    let blockX: CGFloat
+    let blockWidth: CGFloat
+    /// The unfaded part of the lane's viewport, `inset` from its leading edge.
+    let clear: (inset: CGFloat, width: CGFloat)
+    let label: String
+    let note: String?
+    let glyph: String
+
+    var body: some View {
+        let span = PyMOLEngine.statesClipVisibleSpan(
+            blockX: blockX, blockWidth: blockWidth,
+            visibleX: scroll.x + clear.inset, visibleWidth: clear.width,
+            minWidth: PyMOLEngine.statesClipCaptionMinWidth)
+        // The first form whose whole text fits; the last (the reason alone, or
+        // a playing clip's label), truncated, when none does.
+        ViewThatFits(in: .horizontal) {
+            ForEach(PyMOLEngine.statesClipCaptions(label: label, note: note), id: \.self) { text in
+                HStack(spacing: 3) {
+                    Image(systemName: note == nil ? glyph : "exclamationmark.triangle")
+                        .font(.system(size: 8))
+                    Text(text).font(.system(size: 10, weight: .medium)).lineLimit(1)
+                }
+            }
+        }
+        .foregroundColor(TimelineTheme.text.opacity(note == nil ? 0.85 : 0.5))
+        .padding(.horizontal, 6)
+        .frame(width: span.width, alignment: .leading)
+        // What does not fit even truncated (the glyph) stays inside its span.
+        .clipped()
+        // Laid out (not offset), so its accessibility frame is where it draws.
+        .padding(.leading, span.x)
+    }
 }
 
 // Small downward-pointing triangle for the playhead head.

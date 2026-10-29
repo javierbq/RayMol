@@ -23,7 +23,7 @@ Standard PyMOL commands are fully supported in the command input bar and scripts
 
 ## RayMol commands
 
-RayMol adds specialized commands for studio lighting, physically-based materials, automated SNFG glycan cartoon generation, screen-space box selection, structure prediction, generative design, multiple-sequence alignments, and metric scoring.
+RayMol adds specialized commands for studio lighting, physically-based materials, automated SNFG glycan cartoon generation, screen-space box selection, structure prediction, generative design, multiple-sequence alignments, metric scoring, and smooth morphs of multi-state objects.
 
 ### Rendering & Lighting
 
@@ -281,6 +281,38 @@ Load external metric files conforming to the RayMol schema and attach them to an
 Print the specification, units, scope, and expected ranges for metrics reported by a tool.
 - **Syntax**: `metrics_schema [tool]`
 - **Example**: `metrics_schema boltz2`
+
+---
+
+### Movies & Playback
+
+Commands that turn the models of a multi-state object into a smooth, looping morph. The [Morphing guide](/RayMol/guides/morph/) covers the Object panel's **Morph…** sheet and the Movie tab's **Smooth transitions (morph)** toggle, which run the same job.
+
+#### `morph_object`
+Build a smoothly playing morph of a multi-state object (an NMR ensemble, trajectory snapshots, predicted models). Each pair of consecutive models becomes `frames_per_model` states, the key frames are exact copies of the models, and the result is a separate object, `<source>_morph`: the source keeps its states and is hidden once the morph is complete. Inside the RayMol app the morph builds in the background, with a progress card in the tray; with `async_=0` it is complete when the command returns, which scripts and command-line PyMOL need (outside the app nothing lands the frames of a background morph). Running it again on the same source rebuilds the morph in place when it was built since RayMol was launched and is still loaded unchanged (reopening a session you saved with it in the same run, with no other session opened and no `reinitialize` (Clear Session) in between, keeps it recognised); the old morph is deleted as soon as the rebuild starts. After a relaunch, `reinitialize` or opening another session, or when the saved morph differs, it comes back as an ordinary multi-state object: pass `name=<source>_morph` to rebuild it in place; without a name a new `<source>_morph2` is built beside it. Refuses sources with one model, models with different atoms, discrete objects, objects whose atoms are not uniquely identified by segment, chain, residue number, residue name and atom name, objects with no atoms in altloc `A` or without one, objects that are not molecules, and morphs larger than the memory limit: 1 GB or a quarter of the computer's memory, whichever is larger (on iPhone and iPad, 400 MB or half the memory available to RayMol), against an estimate of the memory the finished morph holds (coordinates plus the representations the source shows, cartoon costing the most; see the guide's Memory and size). Nothing is created when a morph is refused; in the app the reason appears in a **Morph failed** card in the progress tray.
+- **Syntax**: `morph_object source [, name [, frames_per_model [, loop [, method [, refinement [, rate [, copy_look [, async_ [, reuse ]]]]]]]]]`
+- **Arguments**: `source` (multi-state object; every model must hold the same atoms), `name` (default `<source>_morph`, or `<source>_morph2`, … when that name is taken by anything other than a morph of `source` built (or being built) since RayMol was launched and still loaded as built; a molecule you create under a name an earlier (cancelled or deleted) morph had is not claimed. An explicit name may replace only such a morph or a molecule named `<source>_morph` or `<source>_morph<N>`; any other existing object is refused), `frames_per_model` (default `15`, at least `2`), `loop` (default `1`: the last model morphs back into the first), `method` (`rigimol`, the default, moves rigid segments on screw paths; `linear` interpolates every atom in a straight line), `refinement` (sculpting clean-up cycles on the intermediate frames, default `3`; `0` for none), `rate` (`linear` by default, `sinusoidal`, `ramp_up`, `ramp_down`), `copy_look` (default `1`: copy the settings set on the source object), `async_` (default `1`; `async=0` works too, as for `fetch`), `reuse` (default `0`; `1` keeps an existing morph built with the same settings from the unchanged source since RayMol was launched and still loaded unchanged, including one in a session you saved with it and reopened in the same run, with no other session opened and no `reinitialize` (Clear Session) in between)
+- **Guide**: [Morphing](/RayMol/guides/morph/)
+- **Example**: `fetch 2kpo, async=0` then `morph_object 2kpo` in the app, or `morph_object 2kpo, async_=0` in a script (300 states from 20 models); `morph_object 2kpo, frames_per_model=30, loop=0, async_=0` builds 570 states ending on model 20
+
+#### `morph_cancel`
+Stop a morph that is being built: the partial object is deleted and the source is shown again. Its tray card then reads "Morph cancelled: 2kpo_morph" until dismissed. Cancelling a rebuild also loses the previous morph, which was deleted when the rebuild started.
+- **Syntax**: `morph_cancel name`
+- **Arguments**: `name` (the morph object being built, such as `2kpo_morph`, not its source)
+- **Example**: `morph_cancel 2kpo_morph`
+
+#### `morph_dismiss`
+Clear the tray card of a morph that was cancelled or failed (a completed morph leaves no card).
+- **Syntax**: `morph_dismiss name`
+- **Arguments**: `name` (the morph object the card names, such as `2kpo_morph`, not its source; a morph refused while a finished morph held its name is listed as `2kpo_morph (refused)`: dismiss it by that name)
+- **Example**: `morph_dismiss 2kpo_morph`
+
+#### `morph`
+Interpolate between two conformations, from two objects or two states of one, into a new multi-state object. RayMol's open-source implementation of the PyMOL command: rigid segments found by core and hinge analysis move along screw paths, and sculpting cleans up the intermediates. It runs to completion before returning, keeps only the paired atoms, and hides the input objects; it does not copy object settings or show a progress card.
+- **Syntax**: `morph name, sele1 [, sele2 [, state1 [, state2 [, refinement [, steps [, method [, match [, quiet [, rate [, core_fraction [, min_hinge [, hinge_blend [, hide [, color_segments ]]]]]]]]]]]]]]`
+- **Arguments**: `name` (object to create; it cannot be one of the input objects, a selection, or an existing object that is not a molecule, such as a group, map or CGO. An existing molecule of that name, such as the output of an earlier `morph`, is replaced once the new morph is built; a morph that fails leaves it as it was), `sele1`, `sele2` (default `sele1`; each must lie within one object. Two different selections of one object pair only with `match=in` or `like`, which morph the atoms both hold; to morph chain A into chain B, `create` them as separate objects first), `state1` (default `1`; `0` morphs through every model of `sele1` and back to model 1), `state2` (default `2` when both selections are the same atoms, otherwise `1`; with `state1=0`, `state2=0` stops at the last model), `refinement` (default `3`), `steps` (states per leg, default `30`), `method` (`rigimol` default, or `linear`), `match` (how two objects' atoms are paired: `align` default, `super`, `in`, `like`, or an alignment object), `rate` (`linear` default, `sinusoidal`, `ramp_up`, `ramp_down`), `core_fraction` (default `0.5`), `min_hinge` (default `6` residues), `hinge_blend` (default `3` residues), `hide` (default `1`: disable the inputs), `color_segments` (default `0`; `1` colours the result by rigid segment)
+- **Guide**: [Morphing](/RayMol/guides/morph/#morph-between-two-structures)
+- **Example**: `fetch 1akeA 4akeA, async=0`, `align 1akeA, 4akeA`, `morph mout, 1akeA, 4akeA`
 
 ---
 

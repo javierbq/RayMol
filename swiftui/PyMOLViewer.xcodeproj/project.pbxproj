@@ -20,14 +20,15 @@
 		079B071AB492B995CF57638D /* ConsoleLogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2525A88C5285B866035F9B8C /* ConsoleLogTests.swift */; };
 		08A70D51DF9F99AD0951EB6D /* RFD3SizeGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6D700AB27FB3AB04471A2C4 /* RFD3SizeGuard.swift */; };
 		093D4A9965F9F632B853C815 /* whatsnew-1130-atmosphere.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 0CE6A84893291DC401EDE60B /* whatsnew-1130-atmosphere.mp4 */; };
-		9C9F7FDF1AC88D9716B11950 /* whatsnew-1130-presets.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = CAF38ED7C652A3157E7C2F66 /* whatsnew-1130-presets.mp4 */; };
 		096FA7333E120551F0CC84A8 /* whatsnew-1100-predict.png in Resources */ = {isa = PBXBuildFile; fileRef = C84C7665566A983E2AAE8FB9 /* whatsnew-1100-predict.png */; };
 		09A0D4D2ABB5138809537A02 /* whatsnew-1110-boxselect.png in Resources */ = {isa = PBXBuildFile; fileRef = 6316D26C663083E0E595CE15 /* whatsnew-1110-boxselect.png */; };
 		0C0E67D9436CC6DF29DE983C /* DesignEditingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 05E6ECE945556A6D1FAE98F9 /* DesignEditingTests.swift */; };
 		0C7AFC549798A22C0FE22112 /* PredictCompactPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2C2F36B9B6E660DD0256EC2 /* PredictCompactPanel.swift */; };
 		0D7CDD9E16A9A064CE8C3414 /* whatsnew-1120-inspector.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = E3B941EE9F1C7855A8447162 /* whatsnew-1120-inspector.mp4 */; };
 		0DDA865CB0C8ACAC1BFD0FE9 /* NotesInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35DC456EDC3E55F84506C8B7 /* NotesInspectorView.swift */; };
+		0E50F595AA133DD1548EBC39 /* whatsnew-1130-presets.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = A42722E4E3060C38A6CA305A /* whatsnew-1130-presets.mp4 */; };
 		0F6C6BD0DB9B077E51D1EFAF /* WhatsNewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F5377EE69A856479317FD61 /* WhatsNewModel.swift */; };
+		0FDC151AF9199F82402C844C /* MorphSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5BED19C590F00A894126D46 /* MorphSettings.swift */; };
 		0FFCBEB460CD541E932326AB /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D3E805AC2D63B01AB7EE29C /* Theme.swift */; };
 		104B27F848D308735A6D6DD2 /* MetalViewport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E9F8D36908E3216D1C8F893 /* MetalViewport.swift */; };
 		107F92D982CDBA1632A6EEBD /* whatsnew-1110-raytrace.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = B402EB5834127D4E6B217EFE /* whatsnew-1110-raytrace.mp4 */; };
@@ -44,12 +45,14 @@
 		15DA981AD21097BFFD1CE170 /* LightsFloatTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F2E04AAE95A3210E0090C69 /* LightsFloatTests.swift */; };
 		1624BC38CDD73398C68FC135 /* MPNNGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56BE219EF1CF1EB2B05E44AD /* MPNNGate.swift */; };
 		1691ECBD7CEDBFFB64B1D690 /* LightGizmoModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DE5E23E8AA19BB9D3F2C227 /* LightGizmoModel.swift */; };
+		169623811F1570B6FD3F5681 /* MorphEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0CDFBFDED6909CEEE701A002 /* MorphEngineTests.swift */; };
 		174EA423F2E0ED999474C506 /* DesignInferenceSmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B45634C95AE991CC91CFBA75 /* DesignInferenceSmokeTests.swift */; };
 		17D4129435A0B8E793A5B687 /* whatsnew-1120-looks.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 00A00E2879DD065A94A31D21 /* whatsnew-1120-looks.jpg */; };
 		1A580F6792CD440D91FA9F45 /* DesignSizeGuard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E69AA2C12DC2D1583FBF8C8 /* DesignSizeGuard.swift */; };
 		1A70AA9F48AEED67CB42092A /* LightsInspectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BEE4A89F9323D032B1F5F3B /* LightsInspectorTests.swift */; };
 		1BB834E64B2DFAF59645C1EB /* whatsnew-170-homebrew.png in Resources */ = {isa = PBXBuildFile; fileRef = 0C3FB5B53174F8E55104705A /* whatsnew-170-homebrew.png */; };
 		1BD51D786A5D6DFD98F3E6FA /* MPNNRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2D0BB6A1E7959881767F049 /* MPNNRuntime.swift */; };
+		1E9B1EAEFBEB7C293331B026 /* whatsnew-1130-presets.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = A42722E4E3060C38A6CA305A /* whatsnew-1130-presets.mp4 */; };
 		217461B479C6F851A9A6C4C7 /* WhatsNewModal.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4D170B35BCCF683A6B3D655 /* WhatsNewModal.swift */; };
 		2271B125CA7B637F85F2FA65 /* whatsnew-1100-predict.png in Resources */ = {isa = PBXBuildFile; fileRef = C84C7665566A983E2AAE8FB9 /* whatsnew-1100-predict.png */; };
 		238B6F24D467D70AE012E2CB /* BoltzJobManagerMSATests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A75842F74BFC453CE7BA777 /* BoltzJobManagerMSATests.swift */; };
@@ -93,6 +96,7 @@
 		42D3395698D37E4BF7055EEA /* MCPBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A18D8A6B0FB56FCD3C31211 /* MCPBridge.swift */; };
 		42F2467DC338FA8435632918 /* WhatsNew.json in Resources */ = {isa = PBXBuildFile; fileRef = 689CDE512811C244D4BA931B /* WhatsNew.json */; };
 		4328A7D903B06B6115075B3B /* PredictController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B0D207800BE2DDAF04598C1 /* PredictController.swift */; };
+		4420254DE2A9825D077EED1A /* whatsnew-1130-docs.jpg in Resources */ = {isa = PBXBuildFile; fileRef = A71380BEFBBB9FB1E03CBAFB /* whatsnew-1130-docs.jpg */; };
 		456DECCC2554044FEC17F470 /* LightsAtmosphere.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE0C0F45AA673C4AB9B2BDE4 /* LightsAtmosphere.swift */; };
 		45817B402639546111EFD5B7 /* AppVersionFooter.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3F3410F7C0D3C85783B985F /* AppVersionFooter.swift */; };
 		4679E36960C9AE8AAE3B1F7D /* ObjectPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = A73267D4D7B506E647B7A995 /* ObjectPanel.swift */; };
@@ -177,7 +181,6 @@
 		7B9C53449F7557047170D008 /* MovieExportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FE79EC8844C681A41A1E54A /* MovieExportSheet.swift */; };
 		7CE181E4C54482BD67384013 /* RFD3TrayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3441C46AD1B569C623A36B7 /* RFD3TrayTests.swift */; };
 		7DBBB20A7BB5117162D3EA93 /* whatsnew-1130-atmosphere.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 0CE6A84893291DC401EDE60B /* whatsnew-1130-atmosphere.mp4 */; };
-		255F58150D8424D25D1E00BD /* whatsnew-1130-presets.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = CAF38ED7C652A3157E7C2F66 /* whatsnew-1130-presets.mp4 */; };
 		7E655BB536F6CD067C2B0084 /* LightsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C675D41EFF244D46FCD0F46 /* LightsSheet.swift */; };
 		7F9C46E519B7180C507053BB /* MLXRuntimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AD9869000B548D9F7CDF9DE /* MLXRuntimeTests.swift */; };
 		809165FC9A0F411860956BD6 /* PredictAvailabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0825BFE369DAF40A6F3AA5D4 /* PredictAvailabilityTests.swift */; };
@@ -190,7 +193,6 @@
 		848682B247E00ECDD720FF73 /* DesignResidues.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFE9998F68625C92B8BCD710 /* DesignResidues.swift */; };
 		852DCDD1E141CB8BB8128F7C /* LightsTouchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22FE54E560183FF94E1451C6 /* LightsTouchTests.swift */; };
 		85F0DFA22E8C1AF2A35D575F /* whatsnew-1130-glycans.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 47341A7F093B44212F2562B9 /* whatsnew-1130-glycans.jpg */; };
-		16C1054993C58CC86780F666 /* whatsnew-1130-docs.jpg in Resources */ = {isa = PBXBuildFile; fileRef = AD1BFBE6F4D64BA857AC0B04 /* whatsnew-1130-docs.jpg */; };
 		86F8E58F4BAA9E8B03380DBB /* TransportBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C562306A5AD1EEDDBA931B98 /* TransportBar.swift */; };
 		876C79ECB2F8DA63EE7BAC84 /* BinderDesignBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A4B03344972863CC1362ECB /* BinderDesignBar.swift */; };
 		8852A9FA93BDAAB188D4103C /* PyMOLEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33D6A753E4525628B96C259C /* PyMOLEngine.swift */; };
@@ -200,7 +202,6 @@
 		8CDF44341FE9E9CB053BFC76 /* TransportBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = C562306A5AD1EEDDBA931B98 /* TransportBar.swift */; };
 		8DC572A1863238F8B919ED70 /* WhatsNewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F5377EE69A856479317FD61 /* WhatsNewModel.swift */; };
 		8DD3F322033248C1DAC4F31F /* whatsnew-1130-glycans.jpg in Resources */ = {isa = PBXBuildFile; fileRef = 47341A7F093B44212F2562B9 /* whatsnew-1130-glycans.jpg */; };
-		A25BBBA06B70F2D42E836758 /* whatsnew-1130-docs.jpg in Resources */ = {isa = PBXBuildFile; fileRef = AD1BFBE6F4D64BA857AC0B04 /* whatsnew-1130-docs.jpg */; };
 		8E33AC50510ECB1DA4277904 /* RayMol.svg in Resources */ = {isa = PBXBuildFile; fileRef = F16058D96E2773BE9A24C323 /* RayMol.svg */; };
 		8E62E0244A99E106F6D57428 /* whatsnew-1110-sessions.png in Resources */ = {isa = PBXBuildFile; fileRef = BFE8C2D90AA047E31EBBC54C /* whatsnew-1110-sessions.png */; };
 		8F33D1DB927644308CEF0C5B /* WhatsNew.json in Resources */ = {isa = PBXBuildFile; fileRef = 689CDE512811C244D4BA931B /* WhatsNew.json */; };
@@ -260,6 +261,7 @@
 		B936D1EEC4FAB31339D4CB2E /* LightsAtmosphereCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6743F01EAFCBFE01B6ADD02 /* LightsAtmosphereCard.swift */; };
 		BA5F8346B75009D86D7C7815 /* LightsFloatingTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8090F993FEBF06819166C82 /* LightsFloatingTools.swift */; };
 		BA6C9B288CFD5EB53D0E0057 /* RayMolMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9371B6FFB30D6166234C678B /* RayMolMain.swift */; };
+		BA974256A8C0FC7B47483AD4 /* MorphSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 317DAB07A10B39A70ECB7C7A /* MorphSheet.swift */; };
 		BAAE4478A0C2B308D407E7C1 /* LightGizmoModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DE5E23E8AA19BB9D3F2C227 /* LightGizmoModel.swift */; };
 		BAF51FE61B64C23C51DF4AAF /* ProtenixJobManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B2D0B8DEF98F905922AE2FD /* ProtenixJobManager.swift */; };
 		BDF58C2A00D4BFACD41D6462 /* ProgressTray.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4857D1284B60EB0C750C02F /* ProgressTray.swift */; };
@@ -310,6 +312,7 @@
 		E2F5A088F804B59B38054C81 /* LightsController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 40FC41A2798A30FE8E223CEC /* LightsController.swift */; };
 		E3E4D527F2D9B262BA530D00 /* LightRigBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B6A770F5FB9E51200305DDAF /* LightRigBridgeTests.swift */; };
 		E4297BB35BAA562115F71EF2 /* LightsOrbitView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 142BDBF375FA246776AB2CD1 /* LightsOrbitView.swift */; };
+		E4312B988564A872D81EBBA0 /* MorphSettingsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E368EA22919158B4EAA000F /* MorphSettingsTests.swift */; };
 		E51EFBE3A58396C4934721ED /* PredictScreenAwake.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4847B7F5C09AD3E9412C3EB /* PredictScreenAwake.swift */; };
 		E6905FCF1AF24B2A2838E777 /* LightsTouch.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1507FB2A1549FB5126C07E81 /* LightsTouch.swift */; };
 		E71A74DE36694D8CDEAA9AE0 /* LightsSheetTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA477E87A3CFBE90788E6805 /* LightsSheetTests.swift */; };
@@ -328,6 +331,7 @@
 		F03621597BA93F7EADDEF676 /* MPNNRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2D0BB6A1E7959881767F049 /* MPNNRuntime.swift */; };
 		F143E36E786A3B7B29A47F3E /* RFD3ResultWriterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B049A83EEE87CC41BA09889D /* RFD3ResultWriterTests.swift */; };
 		F1D17CB3886E8DED5B79A28B /* RayMolUpdater.swift in Sources */ = {isa = PBXBuildFile; fileRef = F607D204A410CA38B84223BE /* RayMolUpdater.swift */; };
+		F3B52A9C7DBEB1F0D7D4BBDD /* whatsnew-1130-docs.jpg in Resources */ = {isa = PBXBuildFile; fileRef = A71380BEFBBB9FB1E03CBAFB /* whatsnew-1130-docs.jpg */; };
 		F4B0ED522742FC38BFD36368 /* MCPDrivingBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9EC978B16F58D988575E206 /* MCPDrivingBanner.swift */; };
 		F4F8D45CBA50D16F783FBB4F /* whatsnew-152-camera-dock.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 29DBC7BEEA492BFACB616C34 /* whatsnew-152-camera-dock.mp4 */; };
 		F58726A64F44A9435AD8517D /* MCPDesktopInstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = 786939619F7871E32E2BB123 /* MCPDesktopInstaller.swift */; };
@@ -342,12 +346,14 @@
 		FA5250EB01CB7F86C4158D2C /* BinderDesignController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F340621635D0C4E9159141A /* BinderDesignController.swift */; };
 		FAB7D942A53C88BEA4D2FFE4 /* whatsnew-1100-predict-progress.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = C5D633C399E993EE52877C82 /* whatsnew-1100-predict-progress.mp4 */; };
 		FBBEFD0D559EF5CBFD898E40 /* whatsnew-1120-glass.jpg in Resources */ = {isa = PBXBuildFile; fileRef = CDB31EB1A97256BC7A5615E7 /* whatsnew-1120-glass.jpg */; };
+		FC4A54641D8CC5020B186234 /* MorphSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5BED19C590F00A894126D46 /* MorphSettings.swift */; };
 		FC8808FCB845C7543244AC94 /* MovieExportSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FE79EC8844C681A41A1E54A /* MovieExportSheet.swift */; };
 		FCB5A40892C6D7239E49791A /* DesignControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7E41DCBB427678A8F018B0E /* DesignControllerTests.swift */; };
 		FCE3C0AD3EC5319F8F2E144E /* DesignEditInferenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D6A959CC1590FC60333582B /* DesignEditInferenceTests.swift */; };
 		FE667ADF3DAD102C12DC4DA2 /* HoverReadoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BF1264ED4865B293F313315 /* HoverReadoutTests.swift */; };
 		FF325D5404E69D05274EEB81 /* SelectionInputField.swift in Sources */ = {isa = PBXBuildFile; fileRef = D55EF2F596852510DDACA576 /* SelectionInputField.swift */; };
 		FFF826842E1FE0AF110953EB /* TimelineLaneLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BBDEC9D3E4B71F8249F6263 /* TimelineLaneLayoutTests.swift */; };
+		FFF893B673C4A9414704C452 /* MorphSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 317DAB07A10B39A70ECB7C7A /* MorphSheet.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -380,8 +386,8 @@
 		0C3FB5B53174F8E55104705A /* whatsnew-170-homebrew.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-170-homebrew.png"; sourceTree = "<group>"; };
 		0C47FBC551127AB2D73BC6CE /* MetalViewportResponderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetalViewportResponderTests.swift; sourceTree = "<group>"; };
 		0C4E3216DAFC42C515FD0C3E /* WeightsFetchStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeightsFetchStateTests.swift; sourceTree = "<group>"; };
+		0CDFBFDED6909CEEE701A002 /* MorphEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MorphEngineTests.swift; sourceTree = "<group>"; };
 		0CE6A84893291DC401EDE60B /* whatsnew-1130-atmosphere.mp4 */ = {isa = PBXFileReference; path = "whatsnew-1130-atmosphere.mp4"; sourceTree = "<group>"; };
-		CAF38ED7C652A3157E7C2F66 /* whatsnew-1130-presets.mp4 */ = {isa = PBXFileReference; path = "whatsnew-1130-presets.mp4"; sourceTree = "<group>"; };
 		0DBFD1FF07FFAD4B8029FA48 /* Project.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Project.xcconfig; sourceTree = "<group>"; };
 		0ED5BFF3FEE9D6621BB40AE5 /* MovieBuilderSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MovieBuilderSheet.swift; sourceTree = "<group>"; };
 		0F340621635D0C4E9159141A /* BinderDesignController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BinderDesignController.swift; sourceTree = "<group>"; };
@@ -414,8 +420,10 @@
 		2B749BA43350521D047F2CE4 /* whatsnew-190-design.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "whatsnew-190-design.png"; sourceTree = "<group>"; };
 		2BEE4A89F9323D032B1F5F3B /* LightsInspectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsInspectorTests.swift; sourceTree = "<group>"; };
 		2C9BEB27834F9CF6697BDF95 /* GlycanTopologyView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlycanTopologyView.swift; sourceTree = "<group>"; };
+		2E368EA22919158B4EAA000F /* MorphSettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MorphSettingsTests.swift; sourceTree = "<group>"; };
 		2E5AA1A4BFA5787E1B83D100 /* PredictAvailability.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictAvailability.swift; sourceTree = "<group>"; };
 		2E5C2F6163EFEA36009B55A5 /* MSAServerControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MSAServerControls.swift; sourceTree = "<group>"; };
+		317DAB07A10B39A70ECB7C7A /* MorphSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MorphSheet.swift; sourceTree = "<group>"; };
 		33D6A753E4525628B96C259C /* PyMOLEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PyMOLEngine.swift; sourceTree = "<group>"; };
 		35444C782524F25C4DDD4F9F /* LightsBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsBar.swift; sourceTree = "<group>"; };
 		356FC561FA1515B3D15A26E2 /* PyMOLBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = PyMOLBridge.mm; sourceTree = "<group>"; };
@@ -435,7 +443,6 @@
 		43806DC3D1AEE6532E3F262D /* LightsControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightsControllerTests.swift; sourceTree = "<group>"; };
 		45BCB83A35EA5E97D5BBD172 /* ObjectActionMenuUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObjectActionMenuUITests.swift; sourceTree = "<group>"; };
 		47341A7F093B44212F2562B9 /* whatsnew-1130-glycans.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = "whatsnew-1130-glycans.jpg"; sourceTree = "<group>"; };
-		AD1BFBE6F4D64BA857AC0B04 /* whatsnew-1130-docs.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = "whatsnew-1130-docs.jpg"; sourceTree = "<group>"; };
 		474D18A43D0D9A6BDD69EEFD /* SequencePanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SequencePanel.swift; sourceTree = "<group>"; };
 		48793845CB95A609CD9F37BF /* PredictMSAMemorySweepTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PredictMSAMemorySweepTests.swift; sourceTree = "<group>"; };
 		48EDC39F7E7F250CFC4F7D0D /* DesignResiduesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignResiduesTests.swift; sourceTree = "<group>"; };
@@ -504,11 +511,14 @@
 		9E69AA2C12DC2D1583FBF8C8 /* DesignSizeGuard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DesignSizeGuard.swift; sourceTree = "<group>"; };
 		9F13A40FB172D9CA709F83AC /* LightGizmoLiveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LightGizmoLiveTests.swift; sourceTree = "<group>"; };
 		A2367C4CEE5BD2E682055D3F /* BoltzRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoltzRuntime.swift; sourceTree = "<group>"; };
+		A42722E4E3060C38A6CA305A /* whatsnew-1130-presets.mp4 */ = {isa = PBXFileReference; path = "whatsnew-1130-presets.mp4"; sourceTree = "<group>"; };
 		A4857D1284B60EB0C750C02F /* ProgressTray.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProgressTray.swift; sourceTree = "<group>"; };
 		A4CC639810B19E8F5E637E93 /* CopyRouting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CopyRouting.swift; sourceTree = "<group>"; };
 		A4D170B35BCCF683A6B3D655 /* WhatsNewModal.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhatsNewModal.swift; sourceTree = "<group>"; };
+		A5BED19C590F00A894126D46 /* MorphSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MorphSettings.swift; sourceTree = "<group>"; };
 		A63406B360384F3C62E511E1 /* RayMolPython.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = RayMolPython.entitlements; sourceTree = "<group>"; };
 		A635FAA5A9060C06F698A5E9 /* whatsnew-1130-movie-export.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = "whatsnew-1130-movie-export.jpg"; sourceTree = "<group>"; };
+		A71380BEFBBB9FB1E03CBAFB /* whatsnew-1130-docs.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = "whatsnew-1130-docs.jpg"; sourceTree = "<group>"; };
 		A73267D4D7B506E647B7A995 /* ObjectPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ObjectPanel.swift; sourceTree = "<group>"; };
 		A75B6DCB76EF7B2E69DA0BFE /* RFD3TrajectoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RFD3TrajectoryTests.swift; sourceTree = "<group>"; };
 		AA4C108E3D04FD75288859DA /* GizmoOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GizmoOverlay.swift; sourceTree = "<group>"; };
@@ -631,6 +641,7 @@
 				CE692F1547C53D28B5F9A9AD /* MCPConnectSheet.swift */,
 				B9EC978B16F58D988575E206 /* MCPDrivingBanner.swift */,
 				FB1304C662D9011F7C4505FC /* MCPStatusView.swift */,
+				317DAB07A10B39A70ECB7C7A /* MorphSheet.swift */,
 				221117550FAD97CF81924E05 /* MousePanel.swift */,
 				0ED5BFF3FEE9D6621BB40AE5 /* MovieBuilderSheet.swift */,
 				8FE79EC8844C681A41A1E54A /* MovieExportSheet.swift */,
@@ -677,11 +688,11 @@
 				8342C6A3FDF28A858D7E1AA4 /* whatsnew-1120-materials.mp4 */,
 				1926971439F96C03DB81AA8E /* whatsnew-1120-sidechains.jpg */,
 				0CE6A84893291DC401EDE60B /* whatsnew-1130-atmosphere.mp4 */,
-				CAF38ED7C652A3157E7C2F66 /* whatsnew-1130-presets.mp4 */,
+				A71380BEFBBB9FB1E03CBAFB /* whatsnew-1130-docs.jpg */,
 				47341A7F093B44212F2562B9 /* whatsnew-1130-glycans.jpg */,
-				AD1BFBE6F4D64BA857AC0B04 /* whatsnew-1130-docs.jpg */,
 				B54FA1A42323E56130FFE095 /* whatsnew-1130-lights.mp4 */,
 				A635FAA5A9060C06F698A5E9 /* whatsnew-1130-movie-export.jpg */,
+				A42722E4E3060C38A6CA305A /* whatsnew-1130-presets.mp4 */,
 				6F78BC38D7B34542A2291C99 /* whatsnew-1130-shadows.jpg */,
 				689CDE512811C244D4BA931B /* WhatsNew.json */,
 			);
@@ -782,6 +793,7 @@
 				14F3D56C490BC7C6166DD79F /* MCPServerManager.swift */,
 				5E9F8D36908E3216D1C8F893 /* MetalViewport.swift */,
 				86E93358875495F499780A00 /* MLXRuntime.swift */,
+				A5BED19C590F00A894126D46 /* MorphSettings.swift */,
 				56BE219EF1CF1EB2B05E44AD /* MPNNGate.swift */,
 				E2D0BB6A1E7959881767F049 /* MPNNRuntime.swift */,
 				2E5C2F6163EFEA36009B55A5 /* MSAServerControls.swift */,
@@ -869,6 +881,8 @@
 				6BCABF57679F5F6462F91B73 /* MaterialInspectorTests.swift */,
 				0C47FBC551127AB2D73BC6CE /* MetalViewportResponderTests.swift */,
 				7AD9869000B548D9F7CDF9DE /* MLXRuntimeTests.swift */,
+				0CDFBFDED6909CEEE701A002 /* MorphEngineTests.swift */,
+				2E368EA22919158B4EAA000F /* MorphSettingsTests.swift */,
 				7E9067EC240F21BA7F691088 /* ObjectPanelCopyExtractTests.swift */,
 				4A2C1E1633D1E93E9914BEC3 /* OpenFilesTests.swift */,
 				B75287139FE86E2C9524CA8D /* PanelLayoutTests.swift */,
@@ -1069,10 +1083,10 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				5C02477A5F60954358D0D615 /* PyMOLViewer_iOS */,
-				403C29EE7864FF79CFA77A80 /* PyMOLViewer_macOS */,
 				BFFDF4CBA2B92A93CDBB24E7 /* PyMOLViewerTests */,
 				A8AA9F6242B9A29B6AAA26F7 /* PyMOLViewerUITests */,
+				5C02477A5F60954358D0D615 /* PyMOLViewer_iOS */,
+				403C29EE7864FF79CFA77A80 /* PyMOLViewer_macOS */,
 			);
 		};
 /* End PBXProject section */
@@ -1105,11 +1119,11 @@
 				4B84574727FB18090A30B32D /* whatsnew-1120-materials.mp4 in Resources */,
 				A874BBD4EC51E65F61ECD5D2 /* whatsnew-1120-sidechains.jpg in Resources */,
 				7DBBB20A7BB5117162D3EA93 /* whatsnew-1130-atmosphere.mp4 in Resources */,
-				255F58150D8424D25D1E00BD /* whatsnew-1130-presets.mp4 in Resources */,
+				4420254DE2A9825D077EED1A /* whatsnew-1130-docs.jpg in Resources */,
 				85F0DFA22E8C1AF2A35D575F /* whatsnew-1130-glycans.jpg in Resources */,
-				16C1054993C58CC86780F666 /* whatsnew-1130-docs.jpg in Resources */,
 				C0E5F9D9FA0CE3995618FC55 /* whatsnew-1130-lights.mp4 in Resources */,
 				76B529726C7FCD5839431DB0 /* whatsnew-1130-movie-export.jpg in Resources */,
+				1E9B1EAEFBEB7C293331B026 /* whatsnew-1130-presets.mp4 in Resources */,
 				DAC47DC47A669C86E8232361 /* whatsnew-1130-shadows.jpg in Resources */,
 				EB6435B2880C450F33F0291F /* whatsnew-152-camera-dock.mp4 in Resources */,
 				D3C5FDA51512154777B49DA2 /* whatsnew-152-timeline.png in Resources */,
@@ -1150,11 +1164,11 @@
 				E260BED24CBA34D49088686D /* whatsnew-1120-materials.mp4 in Resources */,
 				4C175FC1BC1E83D7C66EC414 /* whatsnew-1120-sidechains.jpg in Resources */,
 				093D4A9965F9F632B853C815 /* whatsnew-1130-atmosphere.mp4 in Resources */,
-				9C9F7FDF1AC88D9716B11950 /* whatsnew-1130-presets.mp4 in Resources */,
+				F3B52A9C7DBEB1F0D7D4BBDD /* whatsnew-1130-docs.jpg in Resources */,
 				8DD3F322033248C1DAC4F31F /* whatsnew-1130-glycans.jpg in Resources */,
-				A25BBBA06B70F2D42E836758 /* whatsnew-1130-docs.jpg in Resources */,
 				B6E84D5397FD9B6522888A78 /* whatsnew-1130-lights.mp4 in Resources */,
 				6F52C05E18364C406E853BB0 /* whatsnew-1130-movie-export.jpg in Resources */,
+				0E50F595AA133DD1548EBC39 /* whatsnew-1130-presets.mp4 in Resources */,
 				4D8DF048FC4285E17546DE34 /* whatsnew-1130-shadows.jpg in Resources */,
 				F4F8D45CBA50D16F783FBB4F /* whatsnew-152-camera-dock.mp4 in Resources */,
 				97F0B5805CD3B11723C7B43B /* whatsnew-152-timeline.png in Resources */,
@@ -1747,6 +1761,8 @@
 				A49F8811F64CD501FF007ECD /* MaterialDropdownTests.swift in Sources */,
 				925BACD42F7BFAB94F42F03C /* MaterialInspectorTests.swift in Sources */,
 				4AD1C0E0E53EC4B34CBE7400 /* MetalViewportResponderTests.swift in Sources */,
+				169623811F1570B6FD3F5681 /* MorphEngineTests.swift in Sources */,
+				E4312B988564A872D81EBBA0 /* MorphSettingsTests.swift in Sources */,
 				39D56E38A606EA05834D9D55 /* ObjectPanelCopyExtractTests.swift in Sources */,
 				C89E138879C40C8FB6C0478A /* OpenFilesTests.swift in Sources */,
 				31E2886301F34D938627FF2D /* PanelLayoutTests.swift in Sources */,
@@ -1825,6 +1841,8 @@
 				1BD51D786A5D6DFD98F3E6FA /* MPNNRuntime.swift in Sources */,
 				55ADA607AC3BB30CC3F6EE15 /* MSAServerControls.swift in Sources */,
 				104B27F848D308735A6D6DD2 /* MetalViewport.swift in Sources */,
+				0FDC151AF9199F82402C844C /* MorphSettings.swift in Sources */,
+				BA974256A8C0FC7B47483AD4 /* MorphSheet.swift in Sources */,
 				5313FFF152E5D3F23159919B /* MousePanel.swift in Sources */,
 				ACBE8F70B980BCCE6730141A /* MovieBuilderSheet.swift in Sources */,
 				FC8808FCB845C7543244AC94 /* MovieExportSheet.swift in Sources */,
@@ -1918,6 +1936,8 @@
 				F03621597BA93F7EADDEF676 /* MPNNRuntime.swift in Sources */,
 				D00E3076FED2390242EFE8AA /* MSAServerControls.swift in Sources */,
 				979AB10150CC62EE5E7962F9 /* MetalViewport.swift in Sources */,
+				FC4A54641D8CC5020B186234 /* MorphSettings.swift in Sources */,
+				FFF893B673C4A9414704C452 /* MorphSheet.swift in Sources */,
 				F619DEB3EA3D691634AE8268 /* MousePanel.swift in Sources */,
 				667B289D123B261F82B10FFC /* MovieBuilderSheet.swift in Sources */,
 				7B9C53449F7557047170D008 /* MovieExportSheet.swift in Sources */,

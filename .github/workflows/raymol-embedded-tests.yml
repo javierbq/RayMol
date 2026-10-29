@@ -44,10 +44,12 @@ jobs:
 
       - name: Run RayMol unit tests under embedded pymol
         env:
-          # ortho_deferred_reentrant.py's Guard Malloc subtest makes a read of
-          # the freed deferred-job queue fault deterministically: fail, don't
-          # skip, if Guard Malloc cannot load here (e.g. a hardened-runtime
-          # Python that drops DYLD_INSERT_LIBRARIES). Drop this only knowingly.
+          # scene_thumbnail_defer.py's Guard Malloc subtests are the only ones
+          # that catch the freed-scene thumbnail write, and
+          # ortho_deferred_reentrant.py's makes a read of the freed
+          # deferred-job queue fault deterministically: fail, don't skip, if
+          # Guard Malloc cannot load here (e.g. a hardened-runtime Python that
+          # drops DYLD_INSERT_LIBRARIES). Drop this only knowingly.
           RAYMOL_REQUIRE_GMALLOC: "1"
         run: |
           pymol -ckqy testing/testing.py --run \
@@ -138,6 +140,7 @@ jobs:
               testing/tests/raymol/movie_object_settings.py \
               testing/tests/raymol/movie_hold_model.py \
               testing/tests/raymol/notes_session.py \
+              testing/tests/raymol/timeline_session.py \
               testing/tests/raymol/ortho_deferred_reentrant.py \
               testing/tests/jira/multistate_timeline.py \
               testing/tests/raymol/metal_frees_gpu_buffers.py \
@@ -145,9 +148,13 @@ jobs:
               testing/tests/raymol/metal_rt_reflect.py \
               testing/tests/raymol/metal_rt_transparent.py \
               testing/tests/raymol/metal_shader_sources.py \
+              testing/tests/raymol/morph_engine.py \
+              testing/tests/raymol/morph_jobs.py \
+              testing/tests/raymol/morph_panel.py \
               testing/tests/raymol/scene_materials.py \
               testing/tests/raymol/scene_object_settings.py \
               testing/tests/raymol/scene_ttt.py \
+              testing/tests/raymol/scene_thumbnail_defer.py \
               testing/tests/raymol/session_view_missing.py \
               testing/tests/raymol/shadow_extent.py \
               testing/tests/raymol/transparency_peel.py \
