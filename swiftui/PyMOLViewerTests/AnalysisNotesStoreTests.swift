@@ -2,6 +2,66 @@ import XCTest
 @testable import RayMol
 
 final class AnalysisNotesStoreTests: XCTestCase {
+    func testStructuredResidueIdentityPreservesInsertionCodesAndEmptyFields() {
+        let reference = AnalysisResidueReference(object: "4tuj", segi: "", chain: "",
+                                                 resn: "NAG", resi: "42A")
+        XCTAssertEqual(reference.structuredText,
+                       #"[Residue: object="4tuj" segi="" chain="" resn="NAG" resi="42A"]"#)
+    }
+
+    func testStructuredIdentityEscapesParserDelimiters() {
+        let reference = AnalysisResidueReference(object: #"model\one"#, segi: "",
+                                                 chain: #"A"B"#, resn: "NAG", resi: "1")
+        XCTAssertEqual(reference.structuredText,
+                       #"[Residue: object="model\\one" segi="" chain="A\"B" resn="NAG" resi="1"]"#)
+    }
+
+    @MainActor
+    func testLogbookPicksAppendInOrderWithoutMovingExistingText() {
+        let store = AnalysisNotesStore(debounceInterval: 60)
+        store.text = "Observation"
+        store.logbookMode = true
+        let first = AnalysisResidueReference(object: "m1", segi: "", chain: "A",
+                                             resn: "GLY", resi: "10")
+        let second = AnalysisResidueReference(object: "m2", segi: "S", chain: "B",
+                                              resn: "NAG", resi: "11A")
+        store.handleViewportPick(first)
+        store.handleViewportPick(second)
+
+        XCTAssertTrue(store.text.hasPrefix("Observation\n"))
+        XCTAssertLessThan(try XCTUnwrap(store.text.range(of: first.structuredText)?.lowerBound),
+                          try XCTUnwrap(store.text.range(of: second.structuredText)?.lowerBound))
+    }
+
+    @MainActor
+    func testNormalPickDoesNotChangeNotesWhenLogbookIsOff() {
+        let store = AnalysisNotesStore(debounceInterval: 60)
+        store.text = "Keep me"
+        let residue = AnalysisResidueReference(object: "m1", segi: "", chain: "A",
+                                               resn: "ALA", resi: "56")
+        store.handleViewportPick(residue)
+        XCTAssertEqual(store.text, "Keep me")
+    }
+
+    @MainActor
+    func testLogbookWritesOnlyToTheActiveNotePage() throws {
+        let store = AnalysisNotesStore(debounceInterval: 60)
+        store.createPage(named: "First")
+        let firstID = try XCTUnwrap(store.activePageID)
+        store.text = "First page"
+        store.createPage(named: "Second")
+        let secondID = try XCTUnwrap(store.activePageID)
+        store.logbookMode = true
+        let residue = AnalysisResidueReference(object: "glycan", segi: "", chain: "G",
+                                               resn: "NAG", resi: "301B")
+        store.handleViewportPick(residue)
+
+        store.selectPage(firstID)
+        XCTAssertEqual(store.text, "First page")
+        store.selectPage(secondID)
+        XCTAssertTrue(store.text.contains(residue.structuredText))
+    }
+
     @MainActor
     func testSavedSessionStagesEmbeddedDocumentAndReloadsRecoveryCopy() throws {
         let root = FileManager.default.temporaryDirectory

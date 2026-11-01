@@ -45,6 +45,44 @@ The **Insert structured scientific data** menu allows you to insert structured t
 
 If there is no `sele` selection (or no measurement), RayMol shows a **Nothing to Insert** alert and leaves the note unchanged.
 
+## Fast object and residue logging
+
+Analysis Notes can insert stable, machine-readable references while you inspect
+large sessions. These references retain the object, segment, chain, residue
+name and residue identifier, including insertion codes and empty fields.
+
+### Reference an object with `@`
+
+Type `@` in Edit mode and continue typing any part of an object name. Choose a
+result with the arrow keys and Return or Tab, or click it, to insert:
+
+```text
+[Object: object="4tuj"]
+```
+
+### Insert the current selection
+
+Create or update the normal PyMOL `sele` selection, place the note cursor where
+the references should appear, then click **Insert Current Selection** (the scope
+button). RayMol inserts every unique selected residue in a stable order:
+
+```text
+[Residue: object="4tuj" segi="" chain="D" resn="NAG" resi="301B"]
+```
+
+### Record repeated picks with Logbook Mode
+
+Enable **Logbook Mode** (the record button), then continue clicking residues in
+the 3D viewport. Each successful pick is appended to the active note without
+moving keyboard focus away from the structure. Ordinary clicks keep their
+normal selection and information behavior, and RayMol does not write residue
+references to the system clipboard.
+
+Logbook Mode is deliberately off whenever RayMol or a session is reopened. On
+macOS, Option-click a residue to insert its structured reference at the last
+saved note cursor instead. The normal PyMOL pick still occurs, and the insertion
+participates in the editor's undo history.
+
 ## Saving & exporting notes
 
 ### Session embedding
